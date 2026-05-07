@@ -47,11 +47,14 @@ pub async fn dispatch(
         "session.destroy" => handle_destroy(manager, id, req.params),
 
         // pty.*
-        "pty.create" => handle_pty_create(manager, conn, id, req.params),
-        "pty.list"   => handle_pty_list(manager, conn, id),
-        "pty.write"  => handle_pty_write(manager, conn, id, req.params),
-        "pty.resize" => handle_pty_resize(manager, conn, id, req.params),
-        "pty.kill"   => handle_pty_kill(manager, conn, id, req.params),
+        "pty.create"           => handle_pty_create(manager, conn, id, req.params),
+        "pty.list"             => handle_pty_list(manager, conn, id),
+        "pty.write"            => handle_pty_write(manager, conn, id, req.params),
+        "pty.resize"           => handle_pty_resize(manager, conn, id, req.params),
+        "pty.kill"             => handle_pty_kill(manager, conn, id, req.params),
+        // v2 shell-integration: block history
+        "pty.list_blocks"      => handle_pty_list_blocks(manager, conn, id, req.params),
+        "pty.get_block_output" => handle_pty_get_block_output(manager, conn, id, req.params),
 
         // view.* (synced tab state)
         "view.open"     => handle_view_open(manager, conn, id, req.params),
@@ -287,6 +290,51 @@ fn handle_pty_kill(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: 
     match s.pty_pool.kill(&p.pty_id) {
         Ok(())  => Response::ok(id, EmptyOk {}),
         Err(_)  => Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found")),
+    }
+}
+
+fn handle_pty_list_blocks(
+    mgr:    &Arc<SessionManager>,
+    conn:   &ConnState,
+    id:     Id,
+    params: Value,
+) -> Response {
+    let Some(s) = current_session(mgr, conn) else {
+        return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
+    };
+    let p: ppty::ListBlocksParams = match parse(params) { Ok(p) => p, Err(e) => return Response::err(id, e) };
+    let Some(pty) = s.pty_pool.get(&p.pty_id) else {
+        return Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found"));
+    };
+    // `limit` is u32 on the wire; cap at usize::MAX for the (unrealistic)
+    // 32-bit overflow case.
+    let limit = p.limit.try_into().unwrap_or(usize::MAX);
+    let blocks = pty.list_blocks(p.before.as_ref(), limit);
+    Response::ok(id, ppty::ListBlocksResult { blocks })
+}
+
+fn handle_pty_get_block_output(
+    mgr:    &Arc<SessionManager>,
+    conn:   &ConnState,
+    id:     Id,
+    params: Value,
+) -> Response {
+    let Some(s) = current_session(mgr, conn) else {
+        return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
+    };
+    let p: ppty::GetBlockOutputParams = match parse(params) { Ok(p) => p, Err(e) => return Response::err(id, e) };
+    let Some(pty) = s.pty_pool.get(&p.pty_id) else {
+        return Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found"));
+    };
+    match pty.get_block_output(&p.block_id) {
+        Some((bytes, truncated)) => Response::ok(id, ppty::GetBlockOutputResult {
+            data_b64:  BASE64.encode(&bytes),
+            truncated,
+        }),
+        None => Response::err(id, RpcError::new(
+            ErrorCode::BlockNotFound,
+            "block id not in ring buffer (rolled out or never existed)",
+        )),
     }
 }
 

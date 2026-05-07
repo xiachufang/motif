@@ -77,8 +77,8 @@ export default function TabBar({ onNewPty }: Props) {
 
   // PTY tabs renumber 1..N by current position so closing tab 2 makes the
   // next one slide up to 2 instead of leaving a "sh-7" gap from the server's
-  // monotonic id. The ordinal is only used as a fallback label when neither
-  // cwd nor fg_name is known yet.
+  // monotonic id. The ordinal is only used as a fallback label when nothing
+  // better (cwd, cmd basename) is known yet.
   let ptySeen = 0;
   return (
     <div className="tab-bar" onDragOver={(e) => { if (dragIdRef.current) e.preventDefault(); }} onDrop={onDrop}>
@@ -174,10 +174,8 @@ function describe(v: ViewInfo, ptyOrdinal: number | null, pty: PtyInfo | null): 
   switch (v.spec.kind) {
     case "pty": {
       const cwd = pty?.cwd ?? "";
-      const fg  = pty?.fg_name ?? "";
       const parts = [`pty ${ptyOrdinal} (${v.spec.pty_id})`];
       if (cwd) parts.push(`cwd: ${cwd}`);
-      if (fg)  parts.push(`fg:  ${fg}`);
       return parts.join("\n");
     }
     case "preview": return `file: ${v.spec.path}`;
@@ -197,13 +195,11 @@ function basename(p: string): string {
 
 function ptyLabel(pty: PtyInfo | null, ordinal: number | null): string {
   const cwdBase = pty?.cwd ? basename(pty.cwd) : "";
-  // Prefer the foreground program name when known; fall back to the basename
-  // of the spawned `cmd` so the user never sees just the cwd in the brief
-  // window before the watcher's first poll resolves.
-  const fg = pty?.fg_name || (pty?.cmd ? basename(firstToken(pty.cmd)) : "");
-  if (cwdBase && fg) return `${cwdBase} · ${fg}`;
-  if (cwdBase)       return cwdBase;
-  if (fg)            return fg;
+  if (cwdBase) return cwdBase;
+  // Fall back to the basename of the spawned `cmd` (e.g. "zsh") until v2
+  // wires up `pty.command_started.text` for a proper foreground label.
+  const cmdBase = pty?.cmd ? basename(firstToken(pty.cmd)) : "";
+  if (cmdBase) return cmdBase;
   return ordinal != null ? String(ordinal) : "pty";
 }
 

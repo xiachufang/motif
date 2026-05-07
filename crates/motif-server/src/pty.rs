@@ -19,14 +19,14 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dashmap::DashMap;
 use motif_proto::common::{ClientId, PtyId, UnixMs};
 use motif_proto::event::Event;
 use motif_proto::pty::{PtyCreateParams, PtyInfo};
-use motif_proto::terminal_query::QueryScanner;
+use motif_proto::terminal_query::{QueryScanner, ScanItem};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
@@ -48,6 +48,11 @@ pub struct Pty {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     state:  Mutex<PtyState>,
+    /// v2 shell-integration. `Some` when motifd injected a bootstrap
+    /// script; the contained tmpdir lives as long as the Pty does, so
+    /// the rcfile copies stay on disk while the child shell sources
+    /// them. Dropped (and removed) automatically when the Pty drops.
+    _bootstrap: Option<crate::shell::Bootstrap>,
 }
 
 struct PtyState {
@@ -61,12 +66,15 @@ struct PtyState {
     primary: Option<ClientId>,
     alive: bool,
     ring:  VecDeque<u8>,
-    /// Last cwd we observed for the foreground process. Used by the watcher
-    /// to dedupe; only transitions are broadcast as `pty.fg_changed`.
+    /// Last cwd we observed for the shell process. Used by the watcher to
+    /// dedupe; only transitions are broadcast as `pty.cwd_changed`.
     last_cwd: Option<PathBuf>,
-    /// Last foreground program name we observed (basename of the executable).
-    /// Same dedupe story as `last_cwd`.
-    last_fg_name: Option<String>,
+    /// v2 shell-integration block state machine. Driven by OSC markers
+    /// in the reader loop; see [`crate::shell::state`].
+    shell: crate::shell::ShellState,
+    /// Per-PTY ring buffer of finished blocks for `pty.list_blocks` /
+    /// `pty.get_block_output` backfill.
+    block_store: crate::shell::BlockStore,
 }
 
 impl Pty {
@@ -82,7 +90,6 @@ impl Pty {
             rows:       s.rows,
             alive:      s.alive,
             created_at: self.created_at,
-            fg_name:    s.last_fg_name.clone(),
         }
     }
 
@@ -140,6 +147,27 @@ impl Pty {
     }
 
     pub fn is_alive(&self) -> bool { self.state.lock().alive }
+
+    /// Snapshot of the BlockStore. Wraps the lock + clone so callers
+    /// (RPC handlers) don't have to know about the inner state machine.
+    pub fn list_blocks(
+        &self,
+        before: Option<&motif_proto::common::BlockId>,
+        limit:  usize,
+    ) -> Vec<motif_proto::pty::BlockSummary> {
+        self.state.lock().block_store.list(before, limit)
+    }
+
+    /// Fetch full output bytes for a recorded block. `None` means the
+    /// block id is not in this PTY's BlockStore (rolled out, or never
+    /// existed).
+    pub fn get_block_output(
+        &self,
+        id: &motif_proto::common::BlockId,
+    ) -> Option<(Vec<u8>, bool)> {
+        self.state.lock().block_store.get(id)
+            .map(|b| (b.output.clone(), b.output_truncated))
+    }
 }
 
 /// Pick the master size: primary's preference if known, else the largest
@@ -252,6 +280,20 @@ impl PtyPool {
         cb.cwd(&cwd);
         for (k, v) in &params.env { cb.env(k, v); }
 
+        // v2 shell integration: detect shell from the spawn cmd, write
+        // bootstrap scripts to a per-PTY tmpdir, and inject the right
+        // flags / env into the CommandBuilder. The Bootstrap value owns
+        // the tmpdir and is moved into the Pty struct so the scripts
+        // stay on disk for the child's lifetime.
+        let detected_kind = crate::shell::detect(&cmd_str);
+        let bootstrap = crate::shell::Bootstrap::prepare(detected_kind, &id);
+        if let Some(ref bs) = bootstrap { bs.apply_to(&mut cb); }
+        // The state machine carries the detected kind even when bootstrap
+        // is None (env-disabled / unknown shell) so the 5s timeout can
+        // emit `shell: "unknown"` without lying about which shell was
+        // attempted.
+        let shell_kind = if bootstrap.is_some() { detected_kind } else { motif_proto::pty::ShellKind::Unknown };
+
         let child = pair.slave.spawn_command(cb)
             .map_err(|e| PtyError::SpawnFailed(e.to_string()))?;
         let killer = child.clone_killer();
@@ -282,8 +324,17 @@ impl PtyPool {
                 alive: true,
                 ring:  VecDeque::with_capacity(RING_BYTES),
                 last_cwd: Some(cwd.clone()),
-                last_fg_name: None,
+                shell: crate::shell::ShellState::new(
+                    shell_kind,
+                    Instant::now(),
+                    Some(cwd.clone()),
+                ),
+                block_store: crate::shell::BlockStore::new(
+                    block_cap_count_env(),
+                    block_cap_bytes_env(),
+                ),
             }),
+            _bootstrap: bootstrap,
         });
 
         self.ptys.insert(id.clone(), pty.clone());
@@ -301,6 +352,12 @@ impl PtyPool {
         // cwd every 1.5s; emits pty.cwd_changed only on a transition. Stops
         // when the PTY exits or the Session is dropped.
         spawn_cwd_watcher(Arc::clone(&pty), self.session.lock().clone());
+
+        // 5s bootstrap timeout: if no OSC 133 marker arrives in that
+        // window, mark the shell as Unknown so clients stop waiting for
+        // block events. Covers MOTIF_SHELL_INTEGRATION=0, /bin/sh, and
+        // bootstrap-injection failures.
+        spawn_bootstrap_timeout(Arc::clone(&pty), self.session.lock().clone());
 
         // Announce.
         if let Some(s) = self.session() {
@@ -362,43 +419,61 @@ fn reader_loop(
             Ok(0)  => break,
             Ok(n)  => {
                 let scan = scanner.feed(&buf[..n]);
-                if !scan.queries.is_empty() {
-                    // OSC 10/11 (foreground/background colour) get answered
-                    // with the client-reported palette when available, so
-                    // theme-aware prompts see the user's actual terminal
-                    // colours; everything else gets the canonical default.
-                    let live_session = session.as_ref().and_then(|w| w.upgrade());
-                    for q in &scan.queries {
-                        let answer: Vec<u8> = live_session.as_ref()
-                            .and_then(|s| s.osc_palette_response(q))
-                            .unwrap_or_else(|| q.canonical_response());
-                        // Best-effort: a transient write failure here just
-                        // means fish waits its full timeout this once.
-                        let _ = pty.write_bytes(&answer);
-                    }
-                }
-                if scan.passthrough.is_empty() {
-                    // Whole chunk was queries — nothing to ring or broadcast.
-                    continue;
-                }
-                {
-                    let mut s = pty.state.lock();
-                    let drop_n = (s.ring.len() + scan.passthrough.len()).saturating_sub(RING_BYTES);
-                    for _ in 0..drop_n { s.ring.pop_front(); }
-                    s.ring.extend(&scan.passthrough);
-                }
-                let chunk = BASE64.encode(&scan.passthrough);
-                if let Some(ref weak) = session {
-                    if let Some(sess) = weak.upgrade() {
-                        let pid = pty_id.clone();
-                        sess.publish_event(|seq| Event::PtyOutput {
-                            pty_id: pid, data_b64: chunk, seq,
-                        });
+                let live_session = session.as_ref().and_then(|w| w.upgrade());
+                // Walk items in arrival order so the BlockState is in
+                // the right state when each passthrough chunk is
+                // recorded — `133;C` must move us to Running before the
+                // command's stdout flows past, and `133;D` must
+                // finalize *after* the trailing output.
+                for item in scan.items {
+                    match item {
+                        ScanItem::Query(q) => {
+                            if q.is_shell_integration() {
+                                let evs = pty.state.lock().shell.on_osc(&q);
+                                for ev in evs {
+                                    dispatch_shell_event(&pty, &session, ev);
+                                }
+                            } else {
+                                // Capability query — write canonical or
+                                // client-palette response back to the
+                                // PTY master.
+                                let answer: Option<Vec<u8>> = live_session.as_ref()
+                                    .and_then(|s| s.osc_palette_response(&q))
+                                    .map(Some)
+                                    .unwrap_or_else(|| q.canonical_response());
+                                if let Some(bytes) = answer {
+                                    let _ = pty.write_bytes(&bytes);
+                                }
+                            }
+                        }
+                        ScanItem::Bytes(bytes) => {
+                            let block_id = {
+                                let mut s = pty.state.lock();
+                                let drop_n = (s.ring.len() + bytes.len()).saturating_sub(RING_BYTES);
+                                for _ in 0..drop_n { s.ring.pop_front(); }
+                                s.ring.extend(&bytes);
+                                s.shell.record_output(&bytes);
+                                s.shell.block_id_in_progress().cloned()
+                            };
+                            let chunk = BASE64.encode(&bytes);
+                            if let Some(ref weak) = session {
+                                if let Some(sess) = weak.upgrade() {
+                                    let pid = pty_id.clone();
+                                    sess.publish_event(|seq| Event::PtyOutput {
+                                        pty_id: pid, data_b64: chunk, block_id, seq,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
             Err(_) => break,
         }
+    }
+    // Force-finalize any in-flight block so its output isn't lost.
+    if let Some(ev) = pty.state.lock().shell.on_exit() {
+        dispatch_shell_event(&pty, &session, ev);
     }
     // Mark dead and announce exit.
     {
@@ -431,6 +506,106 @@ fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
 
+/// BlockStore entry-count cap, override via `MOTIF_BLOCK_CAP_COUNT`.
+fn block_cap_count_env() -> usize {
+    std::env::var("MOTIF_BLOCK_CAP_COUNT")
+        .ok().and_then(|s| s.parse().ok())
+        .unwrap_or(crate::shell::DEFAULT_CAP_COUNT)
+}
+
+/// BlockStore total-bytes cap, override via `MOTIF_BLOCK_CAP_BYTES`.
+fn block_cap_bytes_env() -> u64 {
+    std::env::var("MOTIF_BLOCK_CAP_BYTES")
+        .ok().and_then(|s| s.parse().ok())
+        .unwrap_or(crate::shell::DEFAULT_CAP_TOTAL_BYTES)
+}
+
+/// Translate a `ShellEvent` (BlockState output) into broadcast events
+/// and BlockStore writes. Called inline from `reader_loop` after the
+/// per-OSC state lock is dropped, so we never hold the state lock
+/// across `Session::publish_event`.
+fn dispatch_shell_event(
+    pty:     &Arc<Pty>,
+    session: &Option<Weak<Session>>,
+    ev:      crate::shell::ShellEvent,
+) {
+    let Some(sess) = session.as_ref().and_then(|w| w.upgrade()) else { return };
+    use crate::shell::ShellEvent;
+    match ev {
+        ShellEvent::Bootstrapped => {
+            let kind = pty.state.lock().shell.kind;
+            let pty_id = pty.id.clone();
+            sess.publish_event(|seq| Event::PtyShellBootstrapped {
+                pty_id, shell: kind, seq,
+            });
+        }
+        ShellEvent::CommandStarted { id, text, cwd, started_at } => {
+            let pty_id = pty.id.clone();
+            sess.publish_event(|seq| Event::PtyCommandStarted {
+                pty_id, block_id: id, text, cwd, started_at, seq,
+            });
+        }
+        ShellEvent::CommandFinished {
+            id, cmd, cwd, started_at, finished_at, exit, output, output_truncated,
+        } => {
+            // Broadcast first (clients refresh UI immediately), then
+            // append to the BlockStore for backfill RPCs. Order matters
+            // only if a client races a `pty.list_blocks` against the
+            // `command_finished` they just received — append before
+            // unlocking lets them see the finished block.
+            let pty_id_e = pty.id.clone();
+            let id_for_event = id.clone();
+            sess.publish_event(|seq| Event::PtyCommandFinished {
+                pty_id: pty_id_e, block_id: id_for_event,
+                exit_code: exit, finished_at, seq,
+            });
+            let mut s = pty.state.lock();
+            s.block_store.append(crate::shell::Block {
+                id, cwd, cmd, started_at, finished_at,
+                exit_code: exit, output, output_truncated,
+            });
+        }
+        ShellEvent::Context { ctx } => {
+            let pty_id = pty.id.clone();
+            sess.publish_event(|seq| Event::PtyShellContext {
+                pty_id, ctx, seq,
+            });
+        }
+        ShellEvent::CwdChanged { cwd } => {
+            // OSC 7 path: mirror the pid-poll-driven cwd dedupe in
+            // `spawn_cwd_watcher` so back-to-back OSC 7 + watcher pulse
+            // doesn't double-broadcast.
+            let changed = {
+                let mut s = pty.state.lock();
+                let ch = s.last_cwd.as_ref() != Some(&cwd);
+                if ch { s.last_cwd = Some(cwd.clone()); }
+                ch
+            };
+            if changed {
+                let pty_id = pty.id.clone();
+                sess.publish_event(|seq| Event::PtyCwdChanged {
+                    pty_id, cwd, seq,
+                });
+            }
+        }
+    }
+}
+
+/// 5s post-spawn deadline. If we still haven't seen an OSC 133 marker
+/// by then, mark the PTY's shell as `Unknown` so clients (status bars,
+/// block UIs) stop waiting. Covers `MOTIF_SHELL_INTEGRATION=0`,
+/// /bin/sh / dash, and bootstrap injection failures.
+fn spawn_bootstrap_timeout(pty: Arc<Pty>, session: Option<Weak<Session>>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        if !pty.is_alive() { return; }
+        let ev = pty.state.lock().shell.note_bootstrap_timeout();
+        if let Some(ev) = ev {
+            dispatch_shell_event(&pty, &session, ev);
+        }
+    });
+}
+
 fn spawn_cwd_watcher(pty: Arc<Pty>, session: Option<Weak<Session>>) {
     let Some(session) = session else { return };
     tokio::spawn(async move {
@@ -443,45 +618,28 @@ fn spawn_cwd_watcher(pty: Arc<Pty>, session: Option<Weak<Session>>) {
             if !pty.is_alive() { break; }
             let Some(s) = session.upgrade() else { break };
 
-            // Pick the target pid for cwd lookup. Order of preference:
-            //   1. The controlling tty's foreground process group leader.
-            //      That's whatever process is currently in front of the user
-            //      — a nested shell, vim, etc. — so `cd` inside it surfaces.
-            //   2. The shell pid we originally spawned, as a fallback when
-            //      portable-pty can't tell us the fg pgid (e.g. the shell
-            //      called setsid, or platform doesn't expose it).
-            //
-            // We hold the master mutex only long enough to query the kernel
-            // (tcgetpgrp under the hood); the cwd read is done after release
-            // to keep contention with resize() calls minimal.
-            let target_pid: Option<u32> = {
-                let master = pty.master.lock();
-                #[cfg(unix)]
-                let fg = master.process_group_leader().map(|p| p as u32);
-                #[cfg(not(unix))]
-                let fg: Option<u32> = { let _ = &master; None };
-                fg.or(pty.pid)
-            };
-            let Some(pid) = target_pid else { continue };
-            let Some(cwd) = read_pid_cwd(pid) else { continue };
-            let fg_name   = read_fg_name(pid);
+            // Read the shell's own cwd. We deliberately don't follow the
+            // controlling tty's foreground pgid — chasing vim/htop's cwd
+            // adds platform code (proc_bsdinfo.e_tpgid / /proc/PID/stat
+            // tpgid) and corner-case complexity (vim's `:cd` etc.) for a
+            // payoff users rarely notice. The shell-integration path
+            // (OSC 7 from a chpwd/precmd hook) gives precise cwd updates
+            // when bootstrap is on; this watcher is the fallback.
+            let Some(shell_pid) = pty.pid else { continue };
+            let Some(cwd) = read_pid_cwd(shell_pid) else { continue };
 
             let changed = {
                 let mut state = pty.state.lock();
-                let cwd_changed  = state.last_cwd.as_ref() != Some(&cwd);
-                let name_changed = state.last_fg_name != fg_name;
-                if cwd_changed  { state.last_cwd     = Some(cwd.clone()); }
-                if name_changed { state.last_fg_name = fg_name.clone(); }
-                cwd_changed || name_changed
+                let cwd_changed = state.last_cwd.as_ref() != Some(&cwd);
+                if cwd_changed { state.last_cwd = Some(cwd.clone()); }
+                cwd_changed
             };
             if changed {
                 let pty_id = pty.id.clone();
                 let cwd_for_event = cwd.clone();
-                let name_for_event = fg_name.clone();
-                s.publish_event(|seq| Event::PtyFgChanged {
+                s.publish_event(|seq| Event::PtyCwdChanged {
                     pty_id,
                     cwd: cwd_for_event,
-                    name: name_for_event,
                     seq,
                 });
             }
@@ -577,44 +735,6 @@ fn read_pid_cwd(pid: u32) -> Option<PathBuf> {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_pid_cwd(_pid: u32) -> Option<PathBuf> { None }
-
-/// Best-effort name of a process: the basename of its executable. Used for
-/// labelling tabs (cwd basename · fg name).
-#[cfg(target_os = "linux")]
-fn read_fg_name(pid: u32) -> Option<String> {
-    // /proc/<pid>/comm is the kernel-reported short name (TASK_COMM_LEN=16).
-    // Strip the trailing newline and reject empty results.
-    let raw = std::fs::read_to_string(format!("/proc/{}/comm", pid)).ok()?;
-    let s = raw.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
-}
-
-#[cfg(target_os = "macos")]
-fn read_fg_name(pid: u32) -> Option<String> {
-    use std::ffi::CStr;
-    use std::os::raw::{c_char, c_int};
-
-    extern "C" {
-        // proc_pidpath fills `buffer` with the absolute executable path,
-        // returns the length written (or 0 on failure).
-        fn proc_pidpath(pid: c_int, buffer: *mut c_char, buffersize: u32) -> c_int;
-    }
-    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
-
-    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
-    let n = unsafe {
-        proc_pidpath(pid as c_int, buf.as_mut_ptr() as *mut c_char, buf.len() as u32)
-    };
-    if n <= 0 { return None; }
-    buf.truncate(n as usize);
-    let cstr = CStr::from_bytes_until_nul(&buf).ok().or_else(|| CStr::from_bytes_with_nul(&buf).ok())?;
-    let path = cstr.to_str().ok()?;
-    let base = std::path::Path::new(path).file_name()?.to_str()?;
-    if base.is_empty() { None } else { Some(base.to_string()) }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn read_fg_name(_pid: u32) -> Option<String> { None }
 
 #[cfg(test)]
 mod size_tests {

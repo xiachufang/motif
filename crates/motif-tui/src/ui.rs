@@ -240,13 +240,17 @@ struct AppState {
     active_view:     Option<ViewId>,
 
     /// Latest known cwd per PTY. Seeded from `attach.ptys` and updated on
-    /// `pty.created` and `pty.fg_changed`. The main loop diffs the active
+    /// `pty.created` and `pty.cwd_changed`. The main loop diffs the active
     /// PTY's entry against `current_path` and retargets the tree.
     pty_cwds:        HashMap<PtyId, PathBuf>,
-    /// Latest foreground program name per PTY (e.g. "zsh", "vim", "cargo").
-    /// Used to label tabs as "<cwd basename> · <name>". Seeded from
-    /// `attach.ptys.fg_name`, updated on `pty.fg_changed`.
-    pty_fg_names:    HashMap<PtyId, String>,
+    /// Spawn command per PTY (e.g. "/bin/zsh"), seeded from `attach.ptys`
+    /// and `pty.created`. Used as a fallback label when nothing better is
+    /// available.
+    pty_cmds:        HashMap<PtyId, String>,
+    /// v2 shell-integration UI state per PTY: the currently-running
+    /// command (for `▶ <cmd>` chip + `<cwd> · <fg>` tab labels) and the
+    /// most-recent finish for a brief flash of `✓ 0` / `✗ N`.
+    pty_blocks:      HashMap<PtyId, PtyBlockUi>,
 
     /// True when the user has manually navigated away (Backspace / Enter into
     /// a subdir). While true, we DON'T auto-follow the active PTY's cwd —
@@ -300,6 +304,31 @@ enum ViewBodyCache {
     Diff    { patch: String },
 }
 
+#[derive(Default, Debug, Clone)]
+struct PtyBlockUi {
+    /// Set to the command text on `pty.command_started`, cleared on the
+    /// matching `command_finished`. Drives the "currently running" chip.
+    running: Option<String>,
+    /// Most-recent finish: (command text, exit code, when it landed).
+    /// Rendered for ~3s as a colour flash, then suppressed.
+    flash:   Option<(String, Option<i32>, std::time::Instant)>,
+}
+
+const FLASH_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// First token of a command line, ignoring `KEY=VAL` env-var prefixes
+/// and stripping the path so `/usr/bin/git push` → "git" and
+/// `EDITOR=vim git commit` → "git".
+fn first_meaningful_token(cmd: &str) -> String {
+    for tok in cmd.split_whitespace() {
+        if tok.contains('=') { continue; }
+        return std::path::Path::new(tok)
+            .file_name().and_then(|s| s.to_str())
+            .unwrap_or(tok).to_string();
+    }
+    cmd.split_whitespace().next().unwrap_or("").to_string()
+}
+
 impl AppState {
     fn new(
         session_name:    String,
@@ -315,13 +344,11 @@ impl AppState {
         // session; output will replay via the broadcast ring after attach.
         let mut pty_views     = HashMap::new();
         let mut pty_cwds      = HashMap::new();
-        let mut pty_fg_names  = HashMap::new();
+        let mut pty_cmds      = HashMap::new();
         for p in &attach.ptys {
             pty_views.insert(p.id.clone(), PtyView::new(p.rows.max(1), p.cols.max(1)));
             pty_cwds.insert(p.id.clone(), p.cwd.clone());
-            if let Some(name) = &p.fg_name {
-                pty_fg_names.insert(p.id.clone(), name.clone());
-            }
+            pty_cmds.insert(p.id.clone(), p.cmd.clone());
         }
 
         let session_workdir = attach.session.workdir.clone();
@@ -336,7 +363,8 @@ impl AppState {
             views:           attach.views,
             active_view:     attach.active_view,
             pty_cwds,
-            pty_fg_names,
+            pty_cmds,
+            pty_blocks:      HashMap::new(),
             manual_nav:      false,
             pty_views,
             pty_last_size:   HashMap::new(),
@@ -435,6 +463,7 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 state.pty_views.entry(info.id.clone())
                     .or_insert_with(|| PtyView::new(info.rows.max(1), info.cols.max(1)));
                 state.pty_cwds.insert(info.id.clone(), info.cwd.clone());
+                state.pty_cmds.insert(info.id.clone(), info.cmd.clone());
                 state.status = format!("pty {} created", info.id);
             }
         }
@@ -444,27 +473,53 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 state.pty_views.remove(&pid_owned);
                 state.pty_last_size.remove(&pid_owned);
                 state.pty_cwds.remove(&pid_owned);
-                state.pty_fg_names.remove(&pid_owned);
+                state.pty_cmds.remove(&pid_owned);
+                state.pty_blocks.remove(&pid_owned);
                 state.pty_scanners.remove(&pid_owned);
                 state.pending_pty_writes.retain(|(p, _)| p != &pid_owned);
                 state.status = format!("pty {pid_owned} exited");
             }
         }
-        "pty.fg_changed" => {
-            // `name` is always present on the wire (null when the foreground
-            // process is unknown) — treat null as a clear so a stale label
-            // doesn't survive its process exiting. A truly missing key is
-            // defensive (old server): keep whatever we have.
+        // v2 shell-integration: track running command + last-finished
+        // flash for the header chip and PTY tab label, AND register the
+        // start row in PtyView so Ctrl-g b/f can jump to it later.
+        "pty.command_started" => {
+            if let (Some(pid), Some(block_id), Some(text)) = (
+                n.params.get("pty_id").and_then(|v| v.as_str()),
+                n.params.get("block_id").and_then(|v| v.as_str()),
+                n.params.get("text").and_then(|v| v.as_str()),
+            ) {
+                state.pty_blocks.entry(pid.to_string())
+                    .or_default().running = Some(text.to_string());
+                if let Some(view) = state.pty_views.get_mut(pid) {
+                    view.mark_block_start(block_id.to_string());
+                }
+            }
+        }
+        "pty.command_finished" => {
+            if let Some(pid) = n.params.get("pty_id").and_then(|v| v.as_str()) {
+                let exit = n.params.get("exit_code")
+                    .and_then(|v| if v.is_null() { None } else { v.as_i64().map(|x| x as i32) });
+                let entry = state.pty_blocks.entry(pid.to_string()).or_default();
+                let cmd = entry.running.take().unwrap_or_default();
+                entry.flash = Some((cmd, exit, std::time::Instant::now()));
+                if let (Some(block_id), Some(view)) = (
+                    n.params.get("block_id").and_then(|v| v.as_str()),
+                    state.pty_views.get_mut(pid),
+                ) {
+                    view.mark_block_end(block_id);
+                }
+            }
+        }
+        // shell_bootstrapped / shell_context don't need stored state for
+        // the TUI — bootstrap status only matters for log noise, and
+        // shell_context (git branch / venv) duplicates what the git pane
+        // already shows on a longer cadence.
+        "pty.shell_bootstrapped" | "pty.shell_context" => {}
+        "pty.cwd_changed" => {
             if let Some(pid) = n.params.get("pty_id").and_then(|v| v.as_str()) {
                 if let Some(cwd) = n.params.get("cwd").and_then(|v| v.as_str()) {
                     state.pty_cwds.insert(pid.to_string(), PathBuf::from(cwd));
-                }
-                match n.params.get("name") {
-                    Some(name) if name.is_null() => { state.pty_fg_names.remove(pid); }
-                    Some(name) => if let Some(s) = name.as_str() {
-                        state.pty_fg_names.insert(pid.to_string(), s.to_string());
-                    },
-                    None => { /* old server: leave as-is */ }
                 }
                 // Tree retargeting happens in main_loop (needs &mut Client
                 // for the refresh fetch).
@@ -496,10 +551,14 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                     // consumer reads them with strict framing.
                     let scanner = state.pty_scanners.entry(pid_owned.clone()).or_default();
                     let scan = scanner.feed(&bytes);
+                    // v2: shell-integration markers (OSC 133 / 7 / 7770 /
+                    // 7771) have no canonical response — server already
+                    // consumed them into block events. Only capability
+                    // queries reach this defence-in-depth path.
                     for q in scan.queries {
-                        state.pending_pty_writes.push(
-                            (pid_owned.clone(), q.canonical_response()),
-                        );
+                        if let Some(reply) = q.canonical_response() {
+                            state.pending_pty_writes.push((pid_owned.clone(), reply));
+                        }
                     }
                     let view = state.pty_views.entry(pid_owned)
                         .or_insert_with(|| PtyView::new(24, 80));
@@ -696,7 +755,7 @@ async fn handle_prefix_key(
         // tmux: prefix-? → list keys
         (KeyCode::Char('?'), _) => {
             state.status =
-                "prefix · c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll Ctrl-g=literal Ctrl-c=quit".into();
+                "prefix · c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll b/f=block Ctrl-g=literal Ctrl-c=quit".into();
         }
         // refresh tree + git (motif-specific)
         (KeyCode::Char('r'), false) => refresh_tree(state, client).await,
@@ -717,11 +776,16 @@ async fn handle_prefix_key(
             if active_pty_id(state).is_some() {
                 state.mode = Mode::Scroll;
                 state.status =
-                    "scroll · Ctrl-v/Alt-v page · Alt-</Alt-> top/live · Ctrl-n/Ctrl-p line · q or Ctrl-g leave".into();
+                    "scroll · Ctrl-v/Alt-v page · Alt-</Alt-> top/live · Ctrl-n/Ctrl-p line · b/f block · q or Ctrl-g leave".into();
             } else {
                 state.status = "no PTY to scroll".into();
             }
         }
+        // v2 shell-integration: jump to the previous / next block start.
+        // Enters Scroll mode so the user can keep walking with the same
+        // keys; pressing q / Ctrl-g leaves it as usual.
+        (KeyCode::Char('b'), false) => jump_block(state, /* forward */ false),
+        (KeyCode::Char('f'), false) => jump_block(state, /* forward */ true),
         // tmux: prefix-prefix → send literal prefix to the PTY
         (KeyCode::Char('g'), true) => {
             forward_to_pty(state, client, KeyCode::Char('g'), KeyModifiers::CONTROL).await?;
@@ -729,6 +793,30 @@ async fn handle_prefix_key(
         _ => state.status = "prefix cancelled".into(),
     }
     Ok(KeyOutcome::Stay)
+}
+
+/// Jump the active PTY's viewport to the prev/next block start. Stays
+/// idempotent if there's nothing in that direction.
+fn jump_block(state: &mut AppState, forward: bool) {
+    let pid = match active_pty_id(state) {
+        Some(p) => p.clone(),
+        None    => { state.status = "no PTY to jump".into(); return; }
+    };
+    let view = match state.pty_views.get_mut(&pid) {
+        Some(v) => v,
+        None    => { state.status = "no PTY view yet".into(); return; }
+    };
+    let target = if forward { view.next_block_anchor() } else { view.prev_block_anchor() };
+    let Some(target) = target else {
+        state.status = if forward { "no later block".into() } else { "no earlier block".into() };
+        return;
+    };
+    view.jump_to_abs(target);
+    state.mode   = Mode::Scroll;
+    state.status = format!(
+        "scroll · {} block · b/f to walk · q/Ctrl-g leave",
+        if forward { "next" } else { "prev" },
+    );
 }
 
 /// File-tree navigation. Emacs movement keys; arrows/Backspace/Enter as
@@ -803,6 +891,9 @@ async fn handle_scroll_mode_key(
         // Line up/down.
         (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => scroll_lines(state, -1),
         (KeyCode::Char('p'), true, false) | (KeyCode::Up,   false, false) => scroll_lines(state,  1),
+        // v2 shell-integration: walk between block starts.
+        (KeyCode::Char('b'), false, false) => jump_block(state, /* forward */ false),
+        (KeyCode::Char('f'), false, false) => jump_block(state, /* forward */ true),
         _ => {}
     }
     Ok(KeyOutcome::Stay)
@@ -1009,26 +1100,34 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
         .split(f.area());
 
-    let mut header = format!(
+    let mut spans: Vec<Span> = vec![Span::raw(format!(
         " motif · {} · path: {} · {} other client{}",
         state.session_name,
         state.current_path.display(),
         state.other_clients,
         if state.other_clients == 1 { "" } else { "s" },
-    );
+    ))];
     match state.mode {
         Mode::Pane   => {}
-        Mode::Prefix => header.push_str("  [PREFIX]"),
-        Mode::Tree   => header.push_str("  [TREE]"),
-        Mode::Scroll => header.push_str("  [SCROLL]"),
+        Mode::Prefix => spans.push(Span::raw("  [PREFIX]")),
+        Mode::Tree   => spans.push(Span::raw("  [TREE]")),
+        Mode::Scroll => spans.push(Span::raw("  [SCROLL]")),
     }
-    if state.manual_nav  { header.push_str("  [MANUAL]"); }
+    if state.manual_nav { spans.push(Span::raw("  [MANUAL]")); }
+    // v2 shell-integration: render the active PTY's command-state chip
+    // — `▶ cmd` while running, `✓0 cmd` / `✗N cmd` for ~3s after.
+    if let Some(active_pid) = active_pty_id(state) {
+        if let Some((text, color)) = block_chip(&state.pty_blocks, active_pid.as_str()) {
+            spans.push(Span::raw(" · "));
+            spans.push(Span::styled(text, Style::default().fg(color)));
+        }
+    }
     if !state.status.is_empty() {
-        header.push_str(" · ");
-        header.push_str(&state.status);
+        spans.push(Span::raw(" · "));
+        spans.push(Span::raw(state.status.clone()));
     }
     f.render_widget(
-        Paragraph::new(header).style(Style::default().bg(Color::DarkGray)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray)),
         outer[0],
     );
 
@@ -1189,7 +1288,7 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         Mode::Pane   => " Ctrl-g prefix · keys flow to active PTY ",
         Mode::Prefix => " prefix: c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll ?=help · Ctrl-g=send literal Ctrl-g ",
         Mode::Tree   => " tree: Ctrl-n/p select · Ctrl-m open · Ctrl-h up · Ctrl-v/M-v page · M-</M-> top/bot · q leave · Ctrl-g chain prefix ",
-        Mode::Scroll => " scroll: Ctrl-v/M-v page · M-</M-> top/live · Ctrl-n/p line · q leave · Ctrl-g chain prefix ",
+        Mode::Scroll => " scroll: Ctrl-v/M-v page · M-</M-> top/live · Ctrl-n/p line · b/f block · q leave · Ctrl-g chain prefix ",
     };
     f.render_widget(
         Paragraph::new(help).style(Style::default().bg(Color::DarkGray)),
@@ -1239,18 +1338,63 @@ fn view_label(v: &ViewInfo) -> String {
     }
 }
 
-/// Tab label for a PTY: `<cwd basename> · <fg name>`. Falls back to the
-/// 1-based ordinal when neither is known yet (very brief window).
+/// Header chip text + colour for a PTY's current block state. Returns
+/// `None` when there's nothing to show (idle and outside the
+/// just-finished flash window).
+fn block_chip(blocks: &HashMap<PtyId, PtyBlockUi>, pty_id: &str) -> Option<(String, Color)> {
+    let s = blocks.get(pty_id)?;
+    if let Some(cmd) = &s.running {
+        return Some((format!("▶ {}", trim_cmd(cmd, 40)), Color::Yellow));
+    }
+    if let Some((cmd, exit, ts)) = &s.flash {
+        if ts.elapsed() < FLASH_TTL {
+            let (sym, color) = match exit {
+                Some(0) => ("✓", Color::Green),
+                Some(_) => ("✗", Color::Red),
+                None    => ("·", Color::Gray),
+            };
+            let exit_str = match exit { Some(c) => format!("{c}"), None => String::new() };
+            return Some((format!("{sym}{exit_str} {}", trim_cmd(cmd, 40)), color));
+        }
+    }
+    None
+}
+
+/// Truncate a command string for compact display, appending `…` when
+/// the original was longer.
+fn trim_cmd(cmd: &str, max: usize) -> String {
+    if cmd.chars().count() > max {
+        let take: String = cmd.chars().take(max - 1).collect();
+        format!("{take}…")
+    } else {
+        cmd.to_string()
+    }
+}
+
+/// Tab label for a PTY: `<cwd basename> · <fg>`, where `<fg>` is the
+/// first meaningful token of the running command (`KEY=VAL` prefixes
+/// skipped). When nothing is running, the suffix is omitted; falling
+/// back chain: cwd → spawn cmd basename → 1-based ordinal.
 fn pty_tab_label(state: &AppState, pty_id: &str, ordinal: usize) -> String {
-    let basename = state.pty_cwds.get(pty_id)
+    let cwd_base = state.pty_cwds.get(pty_id)
         .and_then(|p| p.file_name().and_then(|s| s.to_str()))
         .map(|s| s.to_string());
-    let fg = state.pty_fg_names.get(pty_id).cloned();
-    match (basename, fg) {
-        (Some(b), Some(f)) => format!("{b} · {f}"),
-        (Some(b), None)    => b,
+    let fg = state.pty_blocks.get(pty_id)
+        .and_then(|b| b.running.as_deref())
+        .map(first_meaningful_token)
+        .filter(|s| !s.is_empty());
+
+    match (cwd_base, fg) {
+        (Some(c), Some(f)) => format!("{c} · {f}"),
+        (Some(c), None)    => c,
         (None,    Some(f)) => f,
-        (None,    None)    => format!("pty:{ordinal}"),
+        (None,    None)    => {
+            if let Some(cmd) = state.pty_cmds.get(pty_id) {
+                let base = first_meaningful_token(cmd);
+                if !base.is_empty() { return base; }
+            }
+            format!("pty:{ordinal}")
+        }
     }
 }
 

@@ -40,6 +40,18 @@ pub struct PtyView {
     anchor:        Option<u64>,
     abs_top:       u64,
     last_top_hash: Option<u64>,
+    /// v2 shell-integration: per-block start/end absolute row numbers,
+    /// recorded when `pty.command_started` / `pty.command_finished`
+    /// arrive. The list is chronological — entries beyond `abs_floor()`
+    /// have been evicted from scrollback and are pruned on insert.
+    blocks:        Vec<BlockMark>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockMark {
+    pub id:        String,
+    pub start_abs: u64,
+    pub end_abs:   Option<u64>,
 }
 
 impl PtyView {
@@ -49,6 +61,7 @@ impl PtyView {
             anchor:        None,
             abs_top:       0,
             last_top_hash: None,
+            blocks:        Vec::new(),
         }
     }
 
@@ -108,6 +121,63 @@ impl PtyView {
 
     pub fn jump_top(&mut self)  { self.anchor = Some(self.abs_floor()); }
     pub fn jump_live(&mut self) { self.anchor = None; }
+
+    // ── v2 shell-integration: block markers ──────────────────────────
+
+    /// Cursor row in *absolute* coordinates (live-screen cursor row +
+    /// `abs_top`). Used to anchor block markers.
+    fn cursor_abs_row(&self) -> u64 {
+        let (cy, _) = self.parser.screen().cursor_position();
+        self.abs_top.saturating_add(cy as u64)
+    }
+
+    /// Record the start of a new block at the current cursor position.
+    /// Prunes any entries that have rolled past the scrollback floor.
+    pub fn mark_block_start(&mut self, id: String) {
+        let floor = self.abs_floor();
+        self.blocks.retain(|b| b.start_abs >= floor);
+        self.blocks.push(BlockMark {
+            id, start_abs: self.cursor_abs_row(), end_abs: None,
+        });
+    }
+
+    /// Record the end of `id` (most-recent matching mark gets it). No-op
+    /// if the block was never registered (e.g. it predates this client's
+    /// attach and only command_finished was replayed).
+    pub fn mark_block_end(&mut self, id: &str) {
+        let cur = self.cursor_abs_row();
+        if let Some(b) = self.blocks.iter_mut().rev().find(|b| b.id == id && b.end_abs.is_none()) {
+            b.end_abs = Some(cur);
+        }
+    }
+
+    /// Anchor (the line currently at the top of the viewport, or
+    /// `abs_top` when in live mode) of the block immediately *before*
+    /// the user's current scroll position. Returns the start_abs to
+    /// scroll to, or None when there is no earlier block.
+    pub fn prev_block_anchor(&self) -> Option<u64> {
+        let cursor_anchor = self.anchor.unwrap_or(self.abs_top);
+        self.blocks.iter().rev()
+            .find(|b| b.start_abs < cursor_anchor)
+            .map(|b| b.start_abs)
+    }
+
+    /// Anchor of the block strictly after the current scroll position.
+    pub fn next_block_anchor(&self) -> Option<u64> {
+        let cursor_anchor = self.anchor.unwrap_or(0);
+        self.blocks.iter()
+            .find(|b| b.start_abs > cursor_anchor)
+            .map(|b| b.start_abs)
+    }
+
+    /// Move the anchor to a specific absolute row (clamped to the
+    /// scrollback window). Going to or past `abs_top` snaps to live.
+    pub fn jump_to_abs(&mut self, target: u64) {
+        let lo = self.abs_floor();
+        let hi = self.abs_top;
+        let new = target.clamp(lo, hi);
+        self.anchor = if new >= hi { None } else { Some(new) };
+    }
 
     fn sync_drift(&mut self) {
         if self.parser.screen().alternate_screen() {
@@ -217,6 +287,48 @@ mod tests {
         v.process(b"\r\ni\r\nj\r\nk");
         assert_eq!(v.anchor(), Some(2));
         assert!(v.abs_top() >= 7);
+    }
+
+    #[test]
+    fn block_markers_track_prev_next() {
+        let mut v = PtyView::new(4, 10);
+        v.process(b"a\r\nb\r\nc\r\n");
+        v.mark_block_start("01".into());
+        v.process(b"out1\r\n");
+        v.mark_block_end("01");
+
+        v.process(b"d\r\n");
+        v.mark_block_start("02".into());
+        v.process(b"out2\r\n");
+        v.mark_block_end("02");
+
+        v.process(b"e\r\n");
+        v.mark_block_start("03".into());
+        v.process(b"out3\r\n");
+        v.mark_block_end("03");
+
+        // Push scroll past block 03's start so prev/next have room to
+        // walk through all three. Without these extra lines block 02 /
+        // 03 starts live inside the 4-row viewport, so "previous" can
+        // only see block 01 (correct in real use, but uninteresting
+        // for this test).
+        v.process(b"f1\r\nf2\r\nf3\r\n");
+
+        let p1 = v.prev_block_anchor().expect("first prev");
+        v.jump_to_abs(p1);
+        let p2 = v.prev_block_anchor().expect("second prev");
+        assert!(p2 < p1, "second prev must be older than first");
+        v.jump_to_abs(p2);
+        let p3 = v.prev_block_anchor().expect("third prev");
+        assert!(p3 < p2, "third prev must be older than second");
+        v.jump_to_abs(p3);
+        assert!(v.prev_block_anchor().is_none(), "no fourth block");
+
+        // Forward from oldest hops back through 02 then 03.
+        let nxt = v.next_block_anchor().expect("next from oldest");
+        assert_eq!(nxt, p2);
+        v.jump_to_abs(nxt);
+        assert_eq!(v.next_block_anchor(), Some(p1));
     }
 
     #[test]

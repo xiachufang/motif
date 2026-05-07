@@ -1,27 +1,30 @@
-//! Streaming detector for terminal capability queries that shells (notably
-//! fish) and prompt frameworks (starship, oh-my-posh) emit on stdout.
+//! Streaming detector for terminal control sequences that motifd needs to
+//! intercept: capability queries (DA1 / OSC 11 / CPR / …) emitted by shells
+//! and prompt frameworks, plus v2 shell-integration markers (OSC 133 / 7 /
+//! 7770 / 7771) emitted by motif's bootstrap scripts.
 //!
-//! Motif's PTY layer relays bytes through `pty.output` events. The shell
-//! expects "the terminal" to answer queries like DA1 / OSC 11 / CPR by
-//! writing response bytes back to its stdin — but in our split topology
-//! there is no monolithic terminal at the shell's stdin: the client
-//! emulators (vt100 in TUI, xterm.js in web) are downstream of a network
-//! hop and may answer late or not at all. Late answers leak into the
-//! shell's line editor as fake keystrokes (the user sees `^[]11;…` typed
-//! into their prompt).
+//! Two consumer patterns:
 //!
-//! This scanner makes the response path explicit:
-//!   * the server runs it over each PTY chunk and *strips* recognized
-//!     queries from the broadcast stream (so xterm.js never sees them and
-//!     can't generate a delayed response);
-//!   * any client that wants to answer feeds the same scanner over its
-//!     incoming bytes and writes the canonical response via `pty.write`.
+//! * **Capability queries** (`canonical_response()` returns `Some(...)`):
+//!   the shell expects "the terminal" to answer by writing response bytes
+//!   back to its stdin. In motif's split topology there is no monolithic
+//!   terminal at the shell's stdin — the client emulators (vt100 in TUI,
+//!   xterm.js in web) are downstream of a network hop and may answer late
+//!   or not at all. The server runs this scanner, *strips* the query from
+//!   the broadcast stream, and writes the canonical response back to the
+//!   PTY master immediately.
 //!
-//! The scanner is byte-streaming: queries split across read boundaries are
-//! reassembled in `pending`, and bytes that turn out to NOT be a query
-//! (an unrecognized CSI/OSC, garbage after ESC) are released into
-//! `passthrough` in their original form so the downstream emulator sees
-//! them unchanged.
+//! * **Shell-integration markers** (`canonical_response()` returns `None`):
+//!   motif's bootstrap script emits `OSC 133;A/B/C/D` (block boundaries),
+//!   `OSC 7` (cwd), `OSC 7770;<hex>` (preexec command text), and
+//!   `OSC 7771;<hex>` (precmd context JSON). The scanner consumes them and
+//!   the server's `BlockState` state machine turns them into `Event::Pty*`
+//!   broadcasts — they never reach client emulators.
+//!
+//! Anything not matched falls through `passthrough` byte-for-byte so
+//! unrelated OSC / CSI / DCS sequences (alt-screen, OSC 9, OSC 1337, …)
+//! reach the client emulators unchanged. The scanner is byte-streaming:
+//! sequences split across read boundaries are reassembled in `pending`.
 
 // Headroom for the longest legitimately-buffered query. XTGETTCAP requests
 // can chain multiple hex-encoded capability names with `;` separators, so
@@ -32,6 +35,7 @@ const MAX_PENDING: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryKind {
+    // ── Capability queries: server answers, strips, never broadcasts ──
     /// `ESC [ c` (or `ESC [ 0 c`) — Primary Device Attributes.
     Da1,
     /// `ESC [ > c` (or `ESC [ > 0 c`) — Secondary Device Attributes.
@@ -55,14 +59,41 @@ pub enum QueryKind {
     /// is the raw hex bytes the requester sent; the canonical "not
     /// recognized" reply echoes them back so the requester can correlate.
     XtGetTcap { hex_name: Vec<u8> },
+
+    // ── Shell-integration markers: scanner consumes, no canonical answer.
+    //    The server's BlockState turns these into Event::Pty* broadcasts. ──
+    /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
+    /// The host segment is ignored; path is URL-decoded.
+    Osc7Cwd { path: std::path::PathBuf },
+    /// `ESC ] 133 ; A ST` — prompt about to render (FinalTerm A).
+    Osc133PromptStart,
+    /// `ESC ] 133 ; B ST` — prompt rendered, user input phase begins.
+    Osc133PromptEnd,
+    /// `ESC ] 133 ; C ST` — command starting to execute (preexec).
+    Osc133CmdStart,
+    /// `ESC ] 133 ; D [;<exit>] ST` — command finished, exit code is the
+    /// `$?` shell observed on the *previous* command. `None` means the
+    /// shell sent the terminator without a code (e.g., first prompt of a
+    /// session).
+    Osc133CmdEnd { exit: Option<i32> },
+    /// `ESC ] 7770 ; <hex_command> ST` — preexec command text. The inner
+    /// String is hex-decoded and lossily UTF-8-converted (binaries names
+    /// or weird locales would otherwise reject the whole sequence).
+    Osc7770Cmd { text: String },
+    /// `ESC ] 7771 ; <hex_json> ST` — precmd context JSON. Successfully
+    /// parsed into a typed `ShellContext`; if the inner JSON is malformed,
+    /// the scanner drops the whole sequence to passthrough rather than
+    /// surfacing a half-typed structure.
+    Osc7771Context { ctx: crate::pty::ShellContext },
 }
 
 impl QueryKind {
-    /// Bytes the shell expects on its stdin in response. Values chosen to
-    /// match what fish, starship, and oh-my-posh treat as a successful
-    /// reply — any vaguely-conforming response unblocks them.
-    pub fn canonical_response(&self) -> Vec<u8> {
-        match self {
+    /// Bytes the shell expects on its stdin in response. `Some(...)` for
+    /// capability queries (server should write back to the PTY master);
+    /// `None` for shell-integration markers (no response — the BlockState
+    /// state machine consumes them instead).
+    pub fn canonical_response(&self) -> Option<Vec<u8>> {
+        Some(match self {
             // VT102 — minimal, accepted by every consumer we tested.
             Self::Da1   => b"\x1b[?6c".to_vec(),
             Self::Da2   => b"\x1b[>0;0;0c".to_vec(),
@@ -91,18 +122,129 @@ impl QueryKind {
                 v.extend_from_slice(b"\x1b\\");
                 v
             }
-        }
+            // Shell-integration markers: server consumes, no reply.
+            Self::Osc7Cwd { .. }
+            | Self::Osc133PromptStart
+            | Self::Osc133PromptEnd
+            | Self::Osc133CmdStart
+            | Self::Osc133CmdEnd { .. }
+            | Self::Osc7770Cmd { .. }
+            | Self::Osc7771Context { .. } => return None,
+        })
     }
+
+    /// True if this is a v2 shell-integration marker (rather than a
+    /// capability query). Convenience for `pty.rs` reader-loop routing.
+    pub fn is_shell_integration(&self) -> bool {
+        matches!(
+            self,
+            Self::Osc7Cwd { .. }
+            | Self::Osc133PromptStart
+            | Self::Osc133PromptEnd
+            | Self::Osc133CmdStart
+            | Self::Osc133CmdEnd { .. }
+            | Self::Osc7770Cmd { .. }
+            | Self::Osc7771Context { .. }
+        )
+    }
+}
+
+/// Decode an even-length ASCII hex string. Returns `None` on odd length or
+/// any non-hex byte — caller should treat the whole OSC as malformed and
+/// passthrough rather than mis-interpret a corrupted payload.
+fn decode_hex(s: &[u8]) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 { return None; }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let nyb = |b: u8| -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _           => None,
+        }
+    };
+    for chunk in s.chunks_exact(2) {
+        out.push((nyb(chunk[0])? << 4) | nyb(chunk[1])?);
+    }
+    Some(out)
+}
+
+/// Decode a `file://[host]/path` URL into a PathBuf. Hex-encoded bytes
+/// (`%20` etc.) are unescaped. Anything that doesn't start with `file://`
+/// is taken as a literal path — a few shells emit just the path.
+fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
+    let bytes = if s.starts_with(b"file://") {
+        // Skip past the host segment (between `//` and the first `/` of
+        // the path). For `file:///abs` the host is empty.
+        let after_scheme = &s[b"file://".len()..];
+        let path_start = after_scheme.iter().position(|&b| b == b'/')?;
+        &after_scheme[path_start..]
+    } else {
+        s
+    };
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(decoded) = decode_hex(&bytes[i + 1..i + 3]) {
+                out.push(decoded[0]);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(std::path::PathBuf::from(String::from_utf8(out).ok()?))
+}
+
+/// One element of the time-ordered scan output. Use this when the
+/// relative order of bytes and queries matters — for example, v2
+/// shell-integration tags each `pty.output` chunk with the block_id
+/// that was active *while those bytes flowed*, which only works if
+/// queries and bytes interleave correctly inside a single chunk.
+#[derive(Debug, Clone)]
+pub enum ScanItem {
+    /// A run of passthrough bytes (consecutive items are merged).
+    Bytes(Vec<u8>),
+    /// A recognized control sequence.
+    Query(QueryKind),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ScanResult {
-    /// Input bytes minus the recognized query sequences. Hand this to the
-    /// downstream renderer / broadcast as if it were the raw PTY output.
+    /// All passthrough bytes from this batch, concatenated. Equivalent
+    /// to `items.iter().filter_map(...).flatten().collect()`. Kept as a
+    /// convenience for callers that don't care about interleaving order.
     pub passthrough: Vec<u8>,
-    /// Queries found in this batch, in arrival order. Each one's
-    /// `canonical_response()` should be written back to the PTY stdin.
+    /// All queries found, in arrival order.
     pub queries:     Vec<QueryKind>,
+    /// Time-ordered passthrough chunks and queries. Reader loops that
+    /// drive a state machine off the queries should walk this — the
+    /// flat `passthrough` / `queries` are post-mixing and lose the
+    /// "passthrough that arrived between query A and query B" timing.
+    pub items:       Vec<ScanItem>,
+}
+
+impl ScanResult {
+    fn push_passthrough(&mut self, b: u8) {
+        self.passthrough.push(b);
+        match self.items.last_mut() {
+            Some(ScanItem::Bytes(buf)) => buf.push(b),
+            _ => self.items.push(ScanItem::Bytes(vec![b])),
+        }
+    }
+    fn extend_passthrough(&mut self, bs: &[u8]) {
+        self.passthrough.extend_from_slice(bs);
+        match self.items.last_mut() {
+            Some(ScanItem::Bytes(buf)) => buf.extend_from_slice(bs),
+            _ => self.items.push(ScanItem::Bytes(bs.to_vec())),
+        }
+    }
+    fn push_query(&mut self, q: QueryKind) {
+        self.queries.push(q.clone());
+        self.items.push(ScanItem::Query(q));
+    }
 }
 
 #[derive(Default)]
@@ -124,7 +266,7 @@ impl QueryScanner {
     fn step(&mut self, b: u8, r: &mut ScanResult) {
         if self.pending.is_empty() {
             if b == 0x1b { self.pending.push(b); }
-            else         { r.passthrough.push(b); }
+            else         { r.push_passthrough(b); }
             return;
         }
         self.pending.push(b);
@@ -132,7 +274,8 @@ impl QueryScanner {
         if self.pending.len() > MAX_PENDING {
             // Pretender — release verbatim and reset. We may miss a query
             // here but the stream stays byte-accurate.
-            r.passthrough.append(&mut self.pending);
+            let drained = std::mem::take(&mut self.pending);
+            r.extend_passthrough(&drained);
             return;
         }
 
@@ -149,11 +292,12 @@ impl QueryScanner {
         match outcome {
             Decision::Pending => {}
             Decision::Match(k) => {
-                r.queries.push(k);
+                r.push_query(k);
                 self.pending.clear();
             }
             Decision::Reject => {
-                r.passthrough.append(&mut self.pending);
+                let drained = std::mem::take(&mut self.pending);
+                r.extend_passthrough(&drained);
             }
         }
     }
@@ -219,11 +363,65 @@ impl QueryScanner {
         if !bel_term && !st_term { return Decision::Pending; }
 
         let end = if st_term { p.len() - 2 } else { p.len() - 1 };
-        match &p[2..end] {
-            b"10;?" => Decision::Match(QueryKind::Osc10),
-            b"11;?" => Decision::Match(QueryKind::Osc11),
-            _       => Decision::Reject,
+        let body = &p[2..end];
+        match body {
+            b"10;?" => return Decision::Match(QueryKind::Osc10),
+            b"11;?" => return Decision::Match(QueryKind::Osc11),
+            _ => {}
         }
+
+        // ── v2 shell-integration markers ──
+
+        // OSC 7 ; file://...  (cwd update)
+        if let Some(rest) = body.strip_prefix(b"7;") {
+            return match parse_file_uri(rest) {
+                Some(path) => Decision::Match(QueryKind::Osc7Cwd { path }),
+                None       => Decision::Reject,
+            };
+        }
+
+        // OSC 133 ; A | B | C | D[;<exit>]
+        if let Some(rest) = body.strip_prefix(b"133;") {
+            return match rest {
+                b"A" => Decision::Match(QueryKind::Osc133PromptStart),
+                b"B" => Decision::Match(QueryKind::Osc133PromptEnd),
+                b"C" => Decision::Match(QueryKind::Osc133CmdStart),
+                b"D" => Decision::Match(QueryKind::Osc133CmdEnd { exit: None }),
+                _ => {
+                    if let Some(suffix) = rest.strip_prefix(b"D;") {
+                        let s = std::str::from_utf8(suffix).ok().map(str::trim).unwrap_or("");
+                        // Empty `D;` is a malformed marker, but tolerate
+                        // it as "exit unknown" rather than rejecting.
+                        let exit = if s.is_empty() { None } else { s.parse::<i32>().ok() };
+                        return Decision::Match(QueryKind::Osc133CmdEnd { exit });
+                    }
+                    // Unknown 133 subcommand (E? P? not standardized). Pass
+                    // through verbatim — keeps us forward-compatible with
+                    // future FinalTerm extensions.
+                    Decision::Reject
+                }
+            };
+        }
+
+        // OSC 7770 ; <hex>  (preexec command text)
+        if let Some(hex) = body.strip_prefix(b"7770;") {
+            return match decode_hex(hex).and_then(|bs| String::from_utf8(bs).ok()) {
+                Some(text) => Decision::Match(QueryKind::Osc7770Cmd { text }),
+                None       => Decision::Reject,
+            };
+        }
+
+        // OSC 7771 ; <hex>  (precmd context JSON)
+        if let Some(hex) = body.strip_prefix(b"7771;") {
+            return match decode_hex(hex)
+                .and_then(|bs| serde_json::from_slice::<crate::pty::ShellContext>(&bs).ok())
+            {
+                Some(ctx) => Decision::Match(QueryKind::Osc7771Context { ctx }),
+                None      => Decision::Reject,
+            };
+        }
+
+        Decision::Reject
     }
 }
 
@@ -363,7 +561,7 @@ mod tests {
 
     #[test]
     fn osc11_response_is_well_formed() {
-        let bytes = QueryKind::Osc11.canonical_response();
+        let bytes = QueryKind::Osc11.canonical_response().unwrap();
         assert!(bytes.starts_with(b"\x1b]11;rgb:"));
         assert!(bytes.ends_with(b"\x1b\\"));
     }
@@ -402,14 +600,176 @@ mod tests {
         // The "not recognized" reply must echo the same hex bytes the
         // requester sent so they can correlate the answer to their query.
         let q = QueryKind::XtGetTcap { hex_name: b"abc123".to_vec() };
-        assert_eq!(q.canonical_response(), b"\x1bP0+rabc123\x1b\\");
+        assert_eq!(q.canonical_response().unwrap(), b"\x1bP0+rabc123\x1b\\");
     }
 
     #[test]
     fn xtversion_canonical_is_dcs_framed() {
-        let bytes = QueryKind::XtVersion.canonical_response();
+        let bytes = QueryKind::XtVersion.canonical_response().unwrap();
         assert!(bytes.starts_with(b"\x1bP>|"));
         assert!(bytes.ends_with(b"\x1b\\"));
+    }
+
+    // ── v2 shell-integration markers ──
+
+    #[test]
+    fn osc133_prompt_and_cmd_markers() {
+        for (bytes, kind) in [
+            (&b"\x1b]133;A\x07"[..],   QueryKind::Osc133PromptStart),
+            (&b"\x1b]133;B\x07"[..],   QueryKind::Osc133PromptEnd),
+            (&b"\x1b]133;C\x07"[..],   QueryKind::Osc133CmdStart),
+            (&b"\x1b]133;D\x07"[..],   QueryKind::Osc133CmdEnd { exit: None }),
+            (&b"\x1b]133;D;0\x07"[..], QueryKind::Osc133CmdEnd { exit: Some(0) }),
+            (&b"\x1b]133;D;130\x1b\\"[..], QueryKind::Osc133CmdEnd { exit: Some(130) }),
+            (&b"\x1b]133;D;\x07"[..],  QueryKind::Osc133CmdEnd { exit: None }),
+        ] {
+            let r = scan_one(bytes);
+            assert!(r.passthrough.is_empty(), "leak in passthrough: {bytes:?} -> {:?}", r.passthrough);
+            assert_eq!(r.queries, vec![kind], "{:?}", bytes);
+        }
+    }
+
+    #[test]
+    fn osc133_unknown_subcommand_is_passthrough() {
+        // 133;E is not in our recognized set — must surface verbatim so
+        // future FinalTerm extensions don't get silently swallowed.
+        let bytes = b"\x1b]133;E\x07";
+        let r = scan_one(bytes);
+        assert!(r.queries.is_empty());
+        assert_eq!(r.passthrough, bytes);
+    }
+
+    #[test]
+    fn osc7_cwd_with_host() {
+        // Real shells emit `file://hostname/path`; we ignore the host.
+        let r = scan_one(b"\x1b]7;file://laptop.local/home/me/repo\x07");
+        assert!(r.passthrough.is_empty());
+        match &r.queries[..] {
+            [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/home/me/repo"),
+            other => panic!("expected Osc7Cwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc7_cwd_url_decodes_percent_escapes() {
+        let r = scan_one(b"\x1b]7;file:///path/with%20space\x07");
+        match &r.queries[..] {
+            [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/path/with space"),
+            other => panic!("expected Osc7Cwd with decoded space, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc7770_hex_decodes_command_text() {
+        // hex of "echo hi" = 6563686f206869
+        let r = scan_one(b"\x1b]7770;6563686f206869\x07");
+        match &r.queries[..] {
+            [QueryKind::Osc7770Cmd { text }] => assert_eq!(text, "echo hi"),
+            other => panic!("expected Osc7770Cmd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc7770_odd_length_hex_is_passthrough() {
+        // Odd hex length is malformed — better to surface the bytes than
+        // make up a value.
+        let bytes = b"\x1b]7770;abc\x07";
+        let r = scan_one(bytes);
+        assert!(r.queries.is_empty());
+        assert_eq!(r.passthrough, bytes);
+    }
+
+    #[test]
+    fn osc7771_hex_decodes_to_shell_context() {
+        // hex of {"branch":"main","venv":"work"}
+        let json = r#"{"branch":"main","venv":"work"}"#;
+        let hex: String = json.bytes().map(|b| format!("{b:02x}")).collect();
+        let mut bytes = b"\x1b]7771;".to_vec();
+        bytes.extend_from_slice(hex.as_bytes());
+        bytes.push(0x07);
+        let r = scan_one(&bytes);
+        match &r.queries[..] {
+            [QueryKind::Osc7771Context { ctx }] => {
+                assert_eq!(ctx.branch.as_deref(), Some("main"));
+                assert_eq!(ctx.venv.as_deref(),   Some("work"));
+                assert!(ctx.head.is_none());
+            }
+            other => panic!("expected Osc7771Context, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc7771_invalid_json_is_passthrough() {
+        // Hex valid, but the decoded bytes aren't JSON-parseable. The
+        // scanner shouldn't surface a half-typed ShellContext — rejecting
+        // gives the downstream renderer a chance to ignore the OSC.
+        let hex = "6e6f742d6a736f6e";  // "not-json"
+        let mut bytes = b"\x1b]7771;".to_vec();
+        bytes.extend_from_slice(hex.as_bytes());
+        bytes.push(0x07);
+        let r = scan_one(&bytes);
+        assert!(r.queries.is_empty());
+        assert_eq!(r.passthrough, bytes);
+    }
+
+    #[test]
+    fn shell_integration_markers_have_no_response() {
+        // Spec invariant: shell-integration markers must NOT generate
+        // capability-style responses (otherwise we'd be writing OSC echoes
+        // back to the shell stdin and confusing readline).
+        for kind in [
+            QueryKind::Osc133PromptStart,
+            QueryKind::Osc133PromptEnd,
+            QueryKind::Osc133CmdStart,
+            QueryKind::Osc133CmdEnd { exit: Some(0) },
+            QueryKind::Osc7Cwd { path: "/x".into() },
+            QueryKind::Osc7770Cmd { text: "x".into() },
+            QueryKind::Osc7771Context { ctx: crate::pty::ShellContext::default() },
+        ] {
+            assert!(kind.canonical_response().is_none(), "{:?} leaked a response", kind);
+            assert!(kind.is_shell_integration(), "{:?} not flagged as shell-integration", kind);
+        }
+    }
+
+    #[test]
+    fn full_command_lifecycle_in_one_chunk() {
+        // Realistic precmd → preexec → cmd → finish burst.
+        // Hex of "ls -la" = 6c73202d6c61
+        let burst = b"\x1b]133;D;0\x07\
+                      \x1b]133;A\x07\
+                      \x1b]7;file:///tmp\x07\
+                      \x1b]133;B\x07\
+                      \x1b]7770;6c73202d6c61\x07\
+                      \x1b]133;C\x07";
+        let r = scan_one(burst);
+        assert!(r.passthrough.is_empty(), "passthrough leak: {:?}", r.passthrough);
+        assert_eq!(r.queries.len(), 6);
+        assert!(matches!(r.queries[0], QueryKind::Osc133CmdEnd { exit: Some(0) }));
+        assert!(matches!(r.queries[1], QueryKind::Osc133PromptStart));
+        match &r.queries[2] {
+            QueryKind::Osc7Cwd { path } => assert_eq!(path.as_os_str(), "/tmp"),
+            other => panic!("expected Osc7Cwd, got {other:?}"),
+        }
+        assert!(matches!(r.queries[3], QueryKind::Osc133PromptEnd));
+        match &r.queries[4] {
+            QueryKind::Osc7770Cmd { text } => assert_eq!(text, "ls -la"),
+            other => panic!("expected Osc7770Cmd, got {other:?}"),
+        }
+        assert!(matches!(r.queries[5], QueryKind::Osc133CmdStart));
+    }
+
+    #[test]
+    fn osc133_split_across_three_feeds() {
+        // Marker reassembly across read boundaries — same machinery used
+        // for capability queries already covers this; sanity-check.
+        let mut s = QueryScanner::new();
+        let a = s.feed(b"output\x1b]");
+        let b = s.feed(b"133;D;");
+        let c = s.feed(b"42\x07more");
+        assert_eq!(a.passthrough, b"output");
+        assert!(b.passthrough.is_empty());
+        assert_eq!(c.passthrough, b"more");
+        assert_eq!(c.queries, vec![QueryKind::Osc133CmdEnd { exit: Some(42) }]);
     }
 
     #[test]

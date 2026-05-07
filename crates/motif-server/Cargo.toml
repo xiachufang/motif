@@ -45,6 +45,11 @@ thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Shell integration: bootstrap scripts embedded at compile time + per-PTY
+# tmpdir for the live rcfile copy.
+rust-embed         = { workspace = true }
+tempfile           = { workspace = true }
+
 [dev-dependencies]
 motif-proto = { path = "../motif-proto" }
 tokio       = { workspace = true }

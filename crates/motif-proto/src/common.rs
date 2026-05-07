@@ -14,6 +14,11 @@ pub type PtyId = String;
 /// A monotonically increasing sequence number on the broadcast event stream.
 pub type Seq = u64;
 
+/// A block (one shell command's lifecycle) identifier — ULID text. String
+/// rather than u64 to dodge JS `Number` precision after passing through
+/// `ts-rs` derived TS types.
+pub type BlockId = String;
+
 /// Lower-case hex SHA-256 (64 chars).
 pub type Sha256Hex = String;
 

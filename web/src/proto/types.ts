@@ -5,6 +5,30 @@ export type SessionId = string;
 export type ClientId  = string;
 export type PtyId     = string;
 export type Seq       = number;
+/** ULID text for a shell-integration block (one command's lifecycle). */
+export type BlockId   = string;
+
+export type ShellKind = "bash" | "zsh" | "fish" | "unknown";
+
+/** Cheap-to-compute prompt context emitted by the shell's precmd hook. */
+export interface ShellContext {
+  branch?: string | null;
+  head?:   string | null;
+  venv?:   string | null;
+  conda?:  string | null;
+  node?:   string | null;
+}
+
+export interface BlockSummary {
+  id:               BlockId;
+  cwd:              string;
+  cmd:              string;
+  started_at:       number;
+  finished_at?:     number | null;
+  exit_code?:       number | null;
+  output_size:      number;
+  output_truncated: boolean;
+}
 
 export interface SessionInfo {
   id:           SessionId;
@@ -69,26 +93,27 @@ export interface PtyInfo {
   rows:       number;
   alive:      boolean;
   created_at: number;
-  /** Best-effort name of the foreground process inside this PTY (e.g.
-   *  "zsh", "vim", "cargo"). Undefined until the server's watcher resolves
-   *  it on its first poll. */
-  fg_name?:   string | null;
 }
 
 export type Event =
   | { method: "tree.changed";   params: { paths: string[]; seq: Seq } }
-  | { method: "pty.output";     params: { pty_id: PtyId; data_b64: string; seq: Seq } }
+  | { method: "pty.output";     params: { pty_id: PtyId; data_b64: string; block_id?: BlockId | null; seq: Seq } }
   | { method: "pty.resize";     params: { pty_id: PtyId; cols: number; rows: number; seq: Seq } }
   | { method: "pty.created";    params: { info: PtyInfo; seq: Seq } }
   | { method: "pty.exited";     params: { pty_id: PtyId; exit_code: number | null; seq: Seq } }
-  | { method: "pty.fg_changed"; params: { pty_id: PtyId; cwd: string; name: string | null; seq: Seq } }
+  | { method: "pty.cwd_changed"; params: { pty_id: PtyId; cwd: string; seq: Seq } }
   | { method: "git.changed";    params: { seq: Seq } }
   | { method: "client.joined";  params: { client_id: ClientId; since: number; seq: Seq } }
   | { method: "client.left";    params: { client_id: ClientId; seq: Seq } }
   | { method: "view.opened";    params: { view: ViewInfo; seq: Seq } }
   | { method: "view.closed";    params: { view_id: ViewId; seq: Seq } }
   | { method: "view.active_changed"; params: { view_id: ViewId | null; seq: Seq } }
-  | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } };
+  | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } }
+  // ── v2 shell-integration ──
+  | { method: "pty.shell_bootstrapped"; params: { pty_id: PtyId; shell: ShellKind; seq: Seq } }
+  | { method: "pty.command_started";    params: { pty_id: PtyId; block_id: BlockId; text: string; cwd: string; started_at: number; seq: Seq } }
+  | { method: "pty.command_finished";   params: { pty_id: PtyId; block_id: BlockId; exit_code?: number | null; finished_at: number; seq: Seq } }
+  | { method: "pty.shell_context";      params: { pty_id: PtyId; ctx: ShellContext; seq: Seq } };
 
 // ── View / tab synchronization ───────────────────────────────────────────
 

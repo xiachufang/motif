@@ -25,6 +25,9 @@ pub enum ErrorCode {
     BlobLimitReached     = -32013,
     BlobTooLarge         = -32014,
     BlobChecksumMismatch = -32015,
+    /// Block id was not found in the PTY's ring buffer (rolled out, or
+    /// never existed). Returned by `pty.get_block_output`.
+    BlockNotFound        = -32016,
     /// Catch-all for unrecognized internal errors.
     Internal             = -32099,
 }
@@ -52,6 +55,7 @@ impl TryFrom<i32> for ErrorCode {
             -32013 => Self::BlobLimitReached,
             -32014 => Self::BlobTooLarge,
             -32015 => Self::BlobChecksumMismatch,
+            -32016 => Self::BlockNotFound,
             -32099 => Self::Internal,
             other  => return Err(other),
         })

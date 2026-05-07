@@ -63,9 +63,10 @@ tui-term           = "0.3"
 notify             = "8"
 notify-debouncer-mini = "0.7"
 
-# M8 (Web)
+# M8 (Web) + M9 (Shell integration)
 rust-embed         = "8"
 tower-http         = { version = "0.6", features = ["fs"] }
+tempfile           = "3"
 
 [profile.release]
 lto           = "thin"
