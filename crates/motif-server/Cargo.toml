@@ -1,0 +1,51 @@
+[package]
+name        = "motif-server"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Motif remote dev agent — core server library + motifd binary"
+
+[[bin]]
+name = "motifd"
+path = "src/main.rs"
+
+[dependencies]
+motif-proto        = { path = "../motif-proto" }
+
+tokio              = { workspace = true }
+tokio-tungstenite  = { workspace = true }
+tokio-rustls       = { workspace = true }
+rustls             = { workspace = true }
+rustls-pemfile     = { workspace = true }
+axum               = { workspace = true }
+
+futures-util       = { workspace = true }
+
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+bytes              = { workspace = true }
+base64             = { workspace = true }
+
+dashmap            = { workspace = true }
+parking_lot        = { workspace = true }
+portable-pty       = { workspace = true }
+walkdir            = { workspace = true }
+mime_guess         = { workspace = true }
+notify             = { workspace = true }
+notify-debouncer-mini = { workspace = true }
+
+sha2               = { workspace = true }
+hex                = { workspace = true }
+ulid               = { workspace = true }
+
+clap               = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+motif-proto = { path = "../motif-proto" }
+tokio       = { workspace = true }
+ulid        = { workspace = true }

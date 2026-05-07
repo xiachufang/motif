@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+
+# motif state directories (per-binary, used at runtime)
+.motif/
+*.token
+
+# IDE
+.vscode/
+.idea/

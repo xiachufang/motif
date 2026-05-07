@@ -1,0 +1,27 @@
+[package]
+name        = "motif-tailscale"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Motif — embedded Tailscale (libtailscale) FFI wrapper for clients"
+
+[features]
+# `bundled`: build libtailscale from a vendored Go submodule (requires Go 1.21+).
+# `prebuilt`: download a precompiled libtailscale archive from GitHub releases.
+# `stub` (default): no libtailscale link; runtime calls return `Unimplemented`.
+# When motif-tui is built with --features tailscale, it pulls this crate but
+# leaves the implementation as the stub unless one of bundled/prebuilt is also
+# enabled. This makes the crate compile on machines without Go.
+default  = ["stub"]
+stub     = []
+bundled  = []
+prebuilt = []
+
+[dependencies]
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+
+[build-dependencies]
+# real bundled/prebuilt mode would add bindgen + cmake here. Stub mode needs
+# nothing.

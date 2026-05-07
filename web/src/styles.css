@@ -1,0 +1,613 @@
+:root {
+  color-scheme: dark;
+  --bg:        #0e0e0e;
+  --panel:     #161616;
+  --muted-bg:  #1d1d1d;
+  --border:    #2a2a2a;
+  --fg:        #e6e6e6;
+  --muted:     #888;
+  --accent:    #5fb3ff;
+  --accent-bg: #163049;
+  --error-bg:  #4a1a1a;
+  --error-fg:  #ffb0b0;
+  --add:       #1f5b34;
+  --del:       #5b1f1f;
+  --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+button {
+  background: #2a2a2a;
+  color: inherit;
+  border: 1px solid var(--border);
+  padding: 0.45em 0.9em;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+button:hover:not(:disabled)            { background: #353535; }
+button:disabled                        { opacity: 0.55; cursor: not-allowed; }
+button.ghost                           { background: transparent; }
+button.small                           { padding: 0.25em 0.6em; font-size: 12px; }
+
+input[type="text"], input[type="password"], input:not([type]) {
+  background: #1a1a1a;
+  color: inherit;
+  border: 1px solid var(--border);
+  padding: 0.5em 0.7em;
+  border-radius: 4px;
+  font: inherit;
+  min-width: 0;
+}
+
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.center { text-align: center; }
+
+.row { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; }
+.row.tight { gap: 0.4em; }
+
+.pill {
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid #6e2a2a;
+  padding: 0.5em 0.7em;
+  border-radius: 4px;
+  font-family: var(--mono);
+}
+
+/* ── login / sessions card pages ── */
+
+.centered {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.4rem;
+  width: 100%;
+  max-width: 540px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.card h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+.card.login input { width: 100%; }
+.card.sessions header { display: flex; justify-content: space-between; align-items: center; }
+.session-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.session-list li {
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  padding: 0.7em 0.9em;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.session-list li:hover { border-color: var(--accent); }
+.create input { flex: 1; }
+
+/* ── workspace ── */
+
+.workspace { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.topbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5em 0.9em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7em;
+}
+.topbar .status {
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  padding: 0.2em 0.6em;
+  font-size: 12px;
+  color: var(--muted);
+  border-radius: 3px;
+}
+.layout { display: flex; flex: 1 1 auto; min-height: 0; }
+.sidebar {
+  /* width is set inline by Workspace via useDragSize */
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+/* Wrapper around each child panel inside the sidebar. The inner panel
+   handles its own scroll; this layer controls flex sizing for the
+   FileTree↔GitStatus resize. */
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.sidebar-section:last-child { border-bottom: none; }
+.sidebar > section,
+.sidebar-section > section {
+  padding: 0.6em 0.9em;
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  /* Allow children to push the scroll width when paths are long. */
+}
+.sidebar > section > ul,
+.sidebar-section > section > ul,
+.sidebar > section > .git-tree,
+.sidebar-section > section > .git-tree {
+  width: max-content;
+  min-width: 100%;
+}
+.sidebar h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 0.4em 0;
+  display: flex; align-items: center; gap: 0.5em;
+}
+.file-tree ul, .git-status ul {
+  list-style: none; padding: 0; margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.file-tree ul.subtree { list-style: none; padding: 0; margin: 0; }
+.file-tree li { padding: 0; }
+/* Generic tree-row styling — shared by .file-tree and .git-tree.
+   No `overflow: hidden` / `text-overflow: ellipsis`: long names stay on
+   one line and the surrounding scroll container handles overflow-x. */
+.row-tree {
+  padding: 1px 4px;
+  cursor: pointer;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  white-space: nowrap;
+}
+.row-tree:hover { background: var(--muted-bg); }
+.row-tree.dir { color: var(--accent); }
+.file-tree .row-tree.focused {
+  background: var(--accent-bg);
+  outline: 1px solid var(--accent);
+}
+.chevron {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.git-status li {
+  padding: 1px 2px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.git-status .git-file { cursor: pointer; }
+.git-status .git-file:hover { background: var(--muted-bg); }
+.git-status .row-tree.git-file .git-file-name {
+  white-space: nowrap;
+}
+.git-tree { font-family: var(--mono); font-size: 13px; }
+.status-glyph { color: var(--accent); display: inline-block; width: 1.6em; }
+
+/* Tiny segmented control for sidebar headers (List/Tree). */
+.seg.seg-tiny { margin-left: auto; }
+.seg.seg-tiny button { padding: 0.15em 0.5em; font-size: 11px; }
+
+/* Compact icon button for tree expand/collapse-all. */
+button.icon-btn {
+  font-family: var(--mono);
+  letter-spacing: -0.15em;
+  padding: 0.15em 0.5em;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* Drag-to-resize seam between flex items. Sized small but with a wider hit
+   target via a centered pseudo-element so the cursor changes feel snappy. */
+.resizer {
+  position: relative;
+  flex: 0 0 auto;
+  background: transparent;
+  z-index: 3;
+  user-select: none;
+  touch-action: none;
+}
+.resizer-x {
+  width: 4px;
+  cursor: col-resize;
+  align-self: stretch;
+}
+.resizer-y {
+  height: 4px;
+  cursor: row-resize;
+  align-self: stretch;
+}
+.resizer:hover  { background: var(--accent); }
+.resizer:active { background: var(--accent); }
+
+/* Topbar visibility toggles. */
+.panel-toggle {
+  font-size: 14px;
+  padding: 0.15em 0.5em;
+  line-height: 1;
+}
+.panel-toggle.off { opacity: 0.4; }
+.panel-toggle.on  { color: var(--fg); }
+
+.content {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.tab-bar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  gap: 0.45em;
+  align-items: center;
+  padding: 0.45em 0.9em;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  white-space: nowrap;
+  background: transparent;
+  transition: background-color 90ms ease;
+}
+.tab:not(.active):hover { background: rgba(255, 255, 255, 0.05); }
+.tab.active { background: var(--accent-bg); }
+.tab.dragging { opacity: 0.5; }
+/* Drop-target indicator: a 2px accent line on the leading edge of the tab
+   the cursor would insert before. The trailing pseudo-tab uses the same
+   class to render a line at the end of the bar. */
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* Fills the empty stretch between the last tab and the "+" button so the
+   user has a real hit-target for "drop at the end". The visible 2px line is
+   drawn at its leading edge via a pseudo-element so the wrapper itself can
+   stay full-width. */
+.tab-trailing-drop {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 12px;
+  position: relative;
+}
+.tab-trailing-drop.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+.tab-close {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  margin-left: 0.3em;
+  padding: 0 4px;
+  border-radius: 3px;
+  /* Reserve the space so the tab box isn't reflowed when the button shows up,
+     and make the swap smooth so hovering doesn't read as flicker. */
+  opacity: 0;
+  transition: opacity 90ms ease, background-color 90ms ease, color 90ms ease;
+}
+.tab:hover .tab-close { opacity: 1; }
+.tab.active .tab-close { opacity: 0.65; }
+.tab-close:hover { background: #444; color: var(--fg); opacity: 1; }
+.tab-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+  position: relative;
+}
+/* All tab panes share the same area; active is shown, others are display:none.
+   Stays mounted across switches so xterm/scrollback survives. */
+.pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pane.hidden { display: none; }
+.pane.active { display: flex; }
+
+.pty-tab { display: flex; flex-direction: column; height: 100%; }
+.pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.pty-host { flex: 1 1 auto; padding: 4px; }
+.pty-host .xterm { height: 100%; }
+.pty-host .xterm .xterm-viewport { background: transparent; }
+
+.preview {
+  margin: 0;
+  padding: 0.8em;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  height: 100%;
+}
+.preview-binary { padding: 1.5em; }
+
+/* ── diff viewer ── */
+
+.diff-viewer {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg);
+}
+.diff-viewer.empty { display: grid; place-items: center; }
+
+.diff-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8em;
+  padding: 0.45em 0.8em;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 2;
+}
+.diff-summary { display: flex; align-items: center; gap: 0.6em; font-size: 12px; }
+.diff-controls { display: flex; gap: 0.5em; }
+
+.diff-add { color: #6cd07a; font-variant-numeric: tabular-nums; }
+.diff-del { color: #f08585; font-variant-numeric: tabular-nums; }
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.seg button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0.32em 0.75em;
+  font-size: 12px;
+  color: var(--muted);
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover:not(.on) { background: rgba(255,255,255,0.04); color: var(--fg); }
+.seg button.on {
+  background: var(--accent-bg);
+  color: var(--fg);
+  cursor: default;
+}
+
+.diff-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.diff-files {
+  /* width is set inline by DiffTab via useDragSize */
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.diff-files-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4em;
+  padding: 0.4em 0.5em;
+  border-bottom: 1px solid var(--border);
+}
+.diff-files-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.3em 0;
+}
+.diff-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: max-content;
+  min-width: 100%;
+}
+.diff-file-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.32em 0.7em;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+  white-space: nowrap;
+}
+.diff-file-item:hover { background: rgba(255,255,255,0.03); }
+.diff-file-item.active {
+  background: var(--accent-bg);
+  border-left-color: var(--accent);
+}
+.diff-file-item .diff-file-path {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.diff-file-item .diff-file-stats {
+  display: inline-flex;
+  gap: 0.4em;
+  font-size: 11px;
+}
+
+.diff-tree { padding: 0; width: max-content; min-width: 100%; }
+.diff-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.2em 0.6em 0.2em 0;
+  cursor: pointer;
+  white-space: nowrap;
+  border-left: 2px solid transparent;
+}
+.diff-tree-row:hover { background: rgba(255,255,255,0.03); }
+.diff-tree-row.dir { color: var(--accent); }
+.diff-tree-row.file.active {
+  background: var(--accent-bg);
+  border-left-color: var(--accent);
+}
+.diff-tree-row .chevron {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.diff-tree-row .diff-tree-name {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.diff-tree-row.file .diff-tree-name { color: var(--fg); }
+.diff-tree-row .diff-file-stats {
+  display: inline-flex;
+  gap: 0.4em;
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+
+.diff-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 1.4em;
+  height: 1.4em;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #2a2a2a;
+  color: var(--fg);
+  letter-spacing: 0;
+}
+.diff-badge.st-modified { background: #3a3a17; color: #e8d36a; }
+.diff-badge.st-added    { background: #1d4a2a; color: #88e3a0; }
+.diff-badge.st-deleted  { background: #4a1f1f; color: #ff9a9a; }
+.diff-badge.st-renamed  { background: #1d3a4a; color: #8ec8e8; }
+.diff-badge.st-copied   { background: #1d3a4a; color: #8ec8e8; }
+.diff-badge.st-binary   { background: #322b1f; color: #d0a070; }
+.diff-badge.st-mode     { background: #2a2a2a; color: var(--muted); }
+
+.diff-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  padding: 0.6em 0.8em;
+}
+.diff-content.single .diff-file-block { margin-bottom: 0; }
+.diff-content.scroll-all .diff-file-block + .diff-file-block { margin-top: 0.8em; }
+
+.diff-file-block {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.4em 0.7em;
+  background: var(--muted-bg);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.diff-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-file-stats { display: inline-flex; gap: 0.5em; font-size: 11px; }
+.diff-collapse {
+  background: transparent;
+  border: none;
+  padding: 0 0.2em;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.diff-collapse:hover { color: var(--fg); background: transparent; }
+
+.diff-file-body { background: var(--bg); }
+.diff-binary { padding: 0.9em 1em; font-family: var(--mono); font-size: 12px; }
+
+/* Tame diff2html's defaults to fit our dark theme. We rely on its own dark
+   classes (colorScheme: dark) for the line colors; this just smooths the
+   wrapper so it sits inside our panel borders cleanly. */
+.diff-file-body .d2h-wrapper {
+  background: var(--bg);
+  margin: 0;
+}
+.diff-file-body .d2h-file-header { display: none; }
+.diff-file-body .d2h-files-diff,
+.diff-file-body .d2h-file-side-diff { background: var(--bg); }
+.diff-file-body .d2h-code-line,
+.diff-file-body .d2h-code-side-line { font-family: var(--mono); font-size: 12px; }
+.diff-file-body .d2h-file-wrapper {
+  border: none;
+  margin: 0;
+  border-radius: 0;
+}
+
+.image-tab {
+  display: grid; place-items: center;
+  height: 100%; padding: 1em; overflow: auto;
+}
+.image-tab img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }

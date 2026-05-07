@@ -1,0 +1,73 @@
+[workspace]
+members  = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition      = "2021"
+rust-version = "1.78"
+version      = "0.1.0"
+license      = "MIT OR Apache-2.0"
+authors      = ["Motif contributors"]
+
+[workspace.dependencies]
+# Async runtime / IO
+tokio              = { version = "1.52", features = ["full"] }
+tokio-tungstenite  = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+axum               = { version = "0.8", features = ["ws"] }
+tokio-rustls       = "0.26"
+rustls             = "0.23"
+rustls-pemfile     = "2"
+tokio-util         = "0.7"
+
+# Streams / pinning
+futures-util       = "0.3"
+pin-project-lite   = "0.2"
+
+# Serialization
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+bytes              = "1"
+base64             = "0.22"
+
+# CLI / config
+clap               = { version = "4", features = ["derive", "env"] }
+url                = "2"
+
+# Concurrency primitives
+dashmap            = "6"
+parking_lot        = "0.12"
+
+# Low-level FFI (used by motif-tui for termios palette probing)
+libc               = "0.2"
+
+# Hashing / IDs
+sha2               = "0.11"
+hex                = "0.4"
+ulid               = { version = "1", features = ["serde"] }
+
+# Errors / logging
+thiserror          = "2"
+anyhow             = "1"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# PTY / TUI / file ops (M2-M5)
+portable-pty       = "0.9"
+walkdir            = "2"
+mime_guess         = "2"
+which              = "8"
+ratatui            = "0.30"
+crossterm          = "0.29"
+vt100              = "0.16"
+tui-term           = "0.3"
+notify             = "8"
+notify-debouncer-mini = "0.7"
+
+# M8 (Web)
+rust-embed         = "8"
+tower-http         = { version = "0.6", features = ["fs"] }
+
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
