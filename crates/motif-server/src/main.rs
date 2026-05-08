@@ -25,12 +25,18 @@ struct Args {
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
     log: String,
+
+    /// Append every client↔server RPC frame (request, response,
+    /// notification) to this file for protocol debugging. Omit to
+    /// disable. Env: MOTIFD_RPC_LOG.
+    #[arg(long, env = "MOTIFD_RPC_LOG")]
+    rpc_log: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    motif_server::init_tracing(&args.log)?;
+    motif_server::init_tracing(&args.log, args.rpc_log.as_deref())?;
 
     let token = std::fs::read_to_string(&args.token_file)
         .map_err(|e| anyhow::anyhow!("failed to read --token-file {}: {e}", args.token_file.display()))?

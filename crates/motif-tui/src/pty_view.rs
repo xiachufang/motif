@@ -47,11 +47,21 @@ pub struct PtyView {
     blocks:        Vec<BlockMark>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockStatus {
+    Running,
+    /// Finished. `None` means signaled / no exit code (e.g. SIGINT
+    /// before the shell could send `OSC 133;D`); `Some(0)` is success;
+    /// any other Some(N) is a failure with code N.
+    Finished(Option<i32>),
+}
+
 #[derive(Debug, Clone)]
 pub struct BlockMark {
     pub id:        String,
     pub start_abs: u64,
     pub end_abs:   Option<u64>,
+    pub status:    BlockStatus,
 }
 
 impl PtyView {
@@ -138,18 +148,24 @@ impl PtyView {
         self.blocks.retain(|b| b.start_abs >= floor);
         self.blocks.push(BlockMark {
             id, start_abs: self.cursor_abs_row(), end_abs: None,
+            status: BlockStatus::Running,
         });
     }
 
     /// Record the end of `id` (most-recent matching mark gets it). No-op
     /// if the block was never registered (e.g. it predates this client's
     /// attach and only command_finished was replayed).
-    pub fn mark_block_end(&mut self, id: &str) {
+    pub fn mark_block_end(&mut self, id: &str, exit_code: Option<i32>) {
         let cur = self.cursor_abs_row();
         if let Some(b) = self.blocks.iter_mut().rev().find(|b| b.id == id && b.end_abs.is_none()) {
             b.end_abs = Some(cur);
+            b.status  = BlockStatus::Finished(exit_code);
         }
     }
+
+    /// All currently-known block marks, oldest first. Renderers use this
+    /// to paint the gutter for visible rows.
+    pub fn block_marks(&self) -> &[BlockMark] { &self.blocks }
 
     /// Anchor (the line currently at the top of the viewport, or
     /// `abs_top` when in live mode) of the block immediately *before*
@@ -295,17 +311,17 @@ mod tests {
         v.process(b"a\r\nb\r\nc\r\n");
         v.mark_block_start("01".into());
         v.process(b"out1\r\n");
-        v.mark_block_end("01");
+        v.mark_block_end("01", Some(0));
 
         v.process(b"d\r\n");
         v.mark_block_start("02".into());
         v.process(b"out2\r\n");
-        v.mark_block_end("02");
+        v.mark_block_end("02", Some(0));
 
         v.process(b"e\r\n");
         v.mark_block_start("03".into());
         v.process(b"out3\r\n");
-        v.mark_block_end("03");
+        v.mark_block_end("03", Some(0));
 
         // Push scroll past block 03's start so prev/next have room to
         // walk through all three. Without these extra lines block 02 /

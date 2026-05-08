@@ -13,24 +13,70 @@
 
 import { create } from "zustand";
 import type {
-  BlockId, BlockSummary, ClientInfo, GitFile, PtyInfo, SessionInfo,
+  BlockId, ClientInfo, GitFile, PtyInfo, SessionInfo,
   ShellContext, ShellKind, TreeEntry, ViewId, ViewInfo,
 } from "../proto/types";
 import type { RpcClient } from "../ws/client";
 
-/** Per-PTY v2 shell-integration UI state. */
-export interface PtyBlockUi {
+/** A single rendered block in the per-PTY stack.
+ *  - `running`: the in-flight block (header only, body is the live xterm)
+ *  - `card`:    a finalized block with serialized HTML body
+ *  - `alt`:     a finalized block that entered alt-screen mode (no body)
+ *
+ *  `prompt_html` is the SerializeAddon-rendered HTML of the PS1 + typed
+ *  command line — captured at command_started so the sticky header can
+ *  render it with full ANSI colors (matches what the user originally saw
+ *  in the live xterm). May be empty if capture failed (e.g. no shell
+ *  integration, or backfilled history where we don't have the prompt
+ *  bytes); callers fall back to `$ cmd` plain text.
+ */
+export type BlockRender =
+  | {
+      kind:        "running";
+      id:          BlockId;
+      cmd:         string;
+      cwd:         string;
+      started_at:  number;
+      prompt_html: string;
+    }
+  | {
+      kind:        "card";
+      id:          BlockId;
+      cmd:         string;
+      cwd:         string;
+      exit_code:   number | null;
+      started_at:  number;
+      finished_at: number;
+      html_body:   string;
+      prompt_html: string;
+    }
+  | {
+      kind:        "alt";
+      id:          BlockId;
+      cmd:         string;
+      cwd:         string;
+      exit_code:   number | null;
+      started_at:  number;
+      finished_at: number;
+      prompt_html: string;
+    };
+
+/** Per-PTY shell-integration + render state. */
+export interface PtyRenderUi {
   /** Detected/announced shell kind. `unknown` means bootstrap timed out. */
-  shell:    ShellKind | null;
-  /** Currently-running command (set on command_started, cleared on
-   *  command_finished). */
-  running:  { id: BlockId; text: string; cwd: string; started_at: number } | null;
-  /** Most-recent finished block, kept indefinitely so the BlockList
-   *  panel can show recent history without an extra round-trip. The
-   *  full ring lives on the server — fetch via `pty.list_blocks`. */
-  recent:   BlockSummary[];
+  shell:  ShellKind | null;
+  /** Ordered top-to-bottom (oldest first). The trailing entry, if any, is
+   *  always the running block; everything else is finalized. */
+  blocks: BlockRender[];
   /** Latest precmd context (git branch / venv chip in the topbar). */
-  ctx:      ShellContext | null;
+  ctx:    ShellContext | null;
+  /** Server signaled `pty.command_finished` but PtyTab hasn't yet drained
+   *  + serialized the live xterm. Workspace stages the request here;
+   *  PtyTab consumes it via an effect, runs the serialize pipeline, then
+   *  calls `finalizeRunningBlock` (which clears this field). Decoupling
+   *  this lets Workspace stay store-only while DOM-aware work lives in
+   *  PtyTab. */
+  pendingFinalize: { id: BlockId; exit_code: number | null; finished_at: number } | null;
 }
 
 export type Page =
@@ -106,20 +152,36 @@ export interface AppState {
   setCurrentPath: (p: string) => void;
 
   // ── v2 shell-integration ──
-  ptyBlocks:        Map<string, PtyBlockUi>;
-  /// Currently-selected block — set by clicking a row in BlockList,
-  /// observed by PtyTab to scroll the xterm viewport + highlight the
-  /// matching range. `null` means no selection.
+  ptyBlocks:        Map<string, PtyRenderUi>;
+  /// Currently-selected block — set by clicking a card header; observed
+  /// by PtyTab to `scrollIntoView` the matching card and highlight its
+  /// border. `null` means no selection.
   selectedBlock:    { ptyId: string; blockId: BlockId } | null;
   /// Server announced a shell on a PTY (or 5s timeout → "unknown").
   applyShellBootstrapped: (pty_id: string, shell: ShellKind) => void;
-  /// `pty.command_started` arrived — set the running entry.
+  /// `pty.command_started` arrived — append a `running` BlockRender.
   applyCommandStarted:    (pty_id: string, id: BlockId, text: string, cwd: string, started_at: number) => void;
-  /// `pty.command_finished` arrived — clear running, append to `recent`.
-  applyCommandFinished:   (pty_id: string, id: BlockId, exit_code: number | null, finished_at: number) => void;
+  /// PtyTab serialized the prompt row (PS1 + typed command) — attach it
+  /// to the trailing running block so the sticky header can render it.
+  setRunningPromptHtml:   (pty_id: string, id: BlockId, html: string) => void;
+  /// `pty.command_finished` arrived from the server — stage a pending
+  /// finalize. PtyTab observes and runs serialize (then commits via
+  /// `finalizeRunningBlock`).
+  requestFinalizeBlock:   (pty_id: string, id: BlockId, exit_code: number | null, finished_at: number) => void;
+  /// PtyTab finished serializing — replace the trailing `running` entry
+  /// with `card`/`alt` and clear `pendingFinalize`. PtyTab is the only
+  /// caller; serialization needs DOM access.
+  finalizeRunningBlock:   (
+    pty_id: string,
+    id: BlockId,
+    payload:
+      | { kind: "card"; html_body: string; exit_code: number | null; finished_at: number }
+      | { kind: "alt";  exit_code: number | null; finished_at: number },
+  ) => void;
   applyShellContext:      (pty_id: string, ctx: ShellContext) => void;
-  /// Replace the per-PTY `recent` list (used after `pty.list_blocks`).
-  setPtyBlocks:           (pty_id: string, blocks: BlockSummary[]) => void;
+  /// Replace the per-PTY history with backfilled cards (called after
+  /// `pty.list_blocks` + serialize). Preserves any trailing `running`.
+  setBackfilledBlocks:    (pty_id: string, blocks: BlockRender[]) => void;
   setSelectedBlock:       (pty_id: string | null, block_id: BlockId | null) => void;
 
   clientJoined:  (c: ClientInfo) => void;
@@ -154,7 +216,7 @@ const initial = (): Pick<AppState,
   status:        "",
 });
 
-const emptyBlockUi = (): PtyBlockUi => ({ shell: null, running: null, recent: [], ctx: null });
+const emptyBlockUi = (): PtyRenderUi => ({ shell: null, blocks: [], ctx: null, pendingFinalize: null });
 
 function loadToken(): string | null {
   return localStorage.getItem("motif.token") ?? sessionStorage.getItem("motif.token");
@@ -260,23 +322,55 @@ export const useApp = create<AppState>((set) => ({
   applyCommandStarted: (pty_id, id, text, cwd, started_at) => set(s => {
     const m = new Map(s.ptyBlocks);
     const cur = m.get(pty_id) ?? emptyBlockUi();
-    m.set(pty_id, { ...cur, running: { id, text, cwd, started_at } });
+    // If a stale `running` is still trailing (e.g. server restarted mid-block),
+    // drop it — only one running block at a time.
+    const head = cur.blocks.length > 0 && cur.blocks[cur.blocks.length - 1].kind === "running"
+      ? cur.blocks.slice(0, -1)
+      : cur.blocks;
+    const next: BlockRender = { kind: "running", id, cmd: text, cwd, started_at, prompt_html: "" };
+    m.set(pty_id, { ...cur, blocks: [...head, next] });
     return { ptyBlocks: m };
   }),
-  applyCommandFinished: (pty_id, id, exit_code, finished_at) => set(s => {
+  setRunningPromptHtml: (pty_id, id, html) => set(s => {
+    const m = new Map(s.ptyBlocks);
+    const cur = m.get(pty_id);
+    if (!cur || cur.blocks.length === 0) return {};
+    const last = cur.blocks[cur.blocks.length - 1];
+    if (last.kind !== "running" || last.id !== id) return {};
+    const updated: BlockRender = { ...last, prompt_html: html };
+    const blocks = [...cur.blocks.slice(0, -1), updated];
+    m.set(pty_id, { ...cur, blocks });
+    return { ptyBlocks: m };
+  }),
+  requestFinalizeBlock: (pty_id, id, exit_code, finished_at) => set(s => {
     const m = new Map(s.ptyBlocks);
     const cur = m.get(pty_id) ?? emptyBlockUi();
-    // Synthesize a summary from the started entry + exit code so the
-    // BlockList panel can render the finished block immediately
-    // without waiting for the next list_blocks RTT.
-    const r = cur.running;
-    const summary: BlockSummary | null = r && r.id === id ? {
-      id, cwd: r.cwd, cmd: r.text,
-      started_at: r.started_at, finished_at,
-      exit_code, output_size: 0, output_truncated: false,
-    } : null;
-    const recent = summary ? [summary, ...cur.recent].slice(0, 200) : cur.recent;
-    m.set(pty_id, { ...cur, running: null, recent });
+    m.set(pty_id, { ...cur, pendingFinalize: { id, exit_code, finished_at } });
+    return { ptyBlocks: m };
+  }),
+  finalizeRunningBlock: (pty_id, id, payload) => set(s => {
+    const m = new Map(s.ptyBlocks);
+    const cur = m.get(pty_id);
+    if (!cur || cur.blocks.length === 0) return {};
+    const last = cur.blocks[cur.blocks.length - 1];
+    if (last.kind !== "running" || last.id !== id) {
+      // Running entry already gone (e.g. backfill replaced it). Just
+      // clear pending so PtyTab doesn't keep re-running the effect.
+      m.set(pty_id, { ...cur, pendingFinalize: null });
+      return { ptyBlocks: m };
+    }
+    const finalized: BlockRender = payload.kind === "card"
+      ? { kind: "card", id: last.id, cmd: last.cmd, cwd: last.cwd,
+          started_at: last.started_at, finished_at: payload.finished_at,
+          exit_code: payload.exit_code, html_body: payload.html_body,
+          prompt_html: last.prompt_html }
+      : { kind: "alt",  id: last.id, cmd: last.cmd, cwd: last.cwd,
+          started_at: last.started_at, finished_at: payload.finished_at,
+          exit_code: payload.exit_code, prompt_html: last.prompt_html };
+    const blocks = [...cur.blocks.slice(0, -1), finalized];
+    // Cap history to last 200 entries to keep DOM bounded; matches old recent[] cap.
+    const trimmed = blocks.length > 200 ? blocks.slice(blocks.length - 200) : blocks;
+    m.set(pty_id, { ...cur, blocks: trimmed, pendingFinalize: null });
     return { ptyBlocks: m };
   }),
   applyShellContext: (pty_id, ctx) => set(s => {
@@ -285,10 +379,15 @@ export const useApp = create<AppState>((set) => ({
     m.set(pty_id, { ...cur, ctx });
     return { ptyBlocks: m };
   }),
-  setPtyBlocks: (pty_id, blocks) => set(s => {
+  setBackfilledBlocks: (pty_id, blocks) => set(s => {
     const m = new Map(s.ptyBlocks);
     const cur = m.get(pty_id) ?? emptyBlockUi();
-    m.set(pty_id, { ...cur, recent: blocks });
+    // Preserve a trailing `running` block (live state) on top of backfilled history.
+    const trailing = cur.blocks.length > 0 && cur.blocks[cur.blocks.length - 1].kind === "running"
+      ? cur.blocks[cur.blocks.length - 1]
+      : null;
+    const next = trailing ? [...blocks, trailing] : blocks;
+    m.set(pty_id, { ...cur, blocks: next });
     return { ptyBlocks: m };
   }),
   setSelectedBlock: (pty_id, block_id) => set(() => ({

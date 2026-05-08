@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::auth::TokenStore;
 use crate::blob::BlobTransfer;
 use crate::rpc::{self, ConnState};
+use crate::rpc_log;
 use crate::session::manager::SessionManager;
 
 #[derive(Clone)]
@@ -97,6 +98,13 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>) {
             Message::Close(_)  => break,
         };
 
+        tracing::trace!(
+            target: rpc_log::TARGET,
+            "rx     [{}] {}",
+            conn.client_id,
+            rpc_log::truncate(&text),
+        );
+
         let frame: Frame = match serde_json::from_str(&text) {
             Ok(f)  => f,
             Err(e) => {
@@ -114,8 +122,46 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>) {
             _ => continue,
         };
 
+        // Mutating methods (session.attach / session.detach) run serially
+        // on this task: they touch &mut conn AND, on a successful attach,
+        // need the post-dispatch event_task setup to fire before we read
+        // the next frame. Everything else fans out into a tokio task that
+        // runs on the blocking pool — so a slow fs.read or git.diff from
+        // this same client doesn't block subsequent RPCs from the same
+        // connection (and doesn't tie up a runtime worker either).
+        if !rpc::is_mutating_method(&req.method) {
+            let manager_c  = Arc::clone(&manager);
+            let snap       = conn.snapshot();
+            let out_tx_c   = out_tx.clone();
+            let client_id  = conn.client_id.clone();
+            let req_id     = req.id.clone();
+            tokio::spawn(async move {
+                let resp = match tokio::task::spawn_blocking(move || {
+                    rpc::dispatch_concurrent(&manager_c, &snap, req)
+                }).await {
+                    Ok(r)  => r,
+                    Err(e) => Response::err(
+                        req_id,
+                        motif_proto::error::RpcError::internal(format!("dispatch panic: {e}")),
+                    ),
+                };
+                let resp_msg = serialize_response(&resp);
+                if let Message::Text(ref body) = resp_msg {
+                    tracing::trace!(
+                        target: rpc_log::TARGET,
+                        "tx-rsp [{}] {}",
+                        client_id,
+                        rpc_log::truncate(body),
+                    );
+                }
+                let _ = out_tx_c.send(resp_msg);
+            });
+            continue;
+        }
+
+        // Serial path: attach / detach.
         let was_attached_before = conn.attached.is_some();
-        let resp = rpc::dispatch(&manager, &mut conn, req).await;
+        let resp = rpc::dispatch_mut(&manager, &mut conn, req);
 
         if !was_attached_before && conn.attached.is_some() {
             if let Some(name) = &conn.attached {
@@ -141,6 +187,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>) {
                             let n = StdArc::try_unwrap(ev).unwrap_or_else(|a| (*a).clone());
                             let notif = event_to_notification(n);
                             if let Ok(json) = serde_json::to_string(&notif) {
+                                tracing::trace!(
+                                    target: rpc_log::TARGET,
+                                    "tx-evt [{}] {}",
+                                    client_id,
+                                    rpc_log::truncate(&json),
+                                );
                                 if out_tx_clone.send(Message::Text(json.into())).is_err() { return; }
                             }
                         }
@@ -154,6 +206,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>) {
                                     let n = StdArc::try_unwrap(ev).unwrap_or_else(|a| (*a).clone());
                                     let notif = event_to_notification(n);
                                     if let Ok(json) = serde_json::to_string(&notif) {
+                                        tracing::trace!(
+                                            target: rpc_log::TARGET,
+                                            "tx-evt [{}] {}",
+                                            client_id,
+                                            rpc_log::truncate(&json),
+                                        );
                                         if out_tx_clone.send(Message::Text(json.into())).is_err() { break; }
                                     }
                                 }
@@ -168,10 +226,19 @@ async fn handle_socket(socket: WebSocket, manager: Arc<SessionManager>) {
             }
         }
 
-        let _ = out_tx.send(serialize_response(&resp));
+        let resp_msg = serialize_response(&resp);
+        if let Message::Text(ref body) = resp_msg {
+            tracing::trace!(
+                target: rpc_log::TARGET,
+                "tx-rsp [{}] {}",
+                conn.client_id,
+                rpc_log::truncate(body),
+            );
+        }
+        let _ = out_tx.send(resp_msg);
     }
 
-    rpc::on_disconnect(&manager, &conn);
+    rpc::on_disconnect(&manager, &conn.snapshot());
     if let Some(t) = event_task { t.abort(); }
     write_task.abort();
     tracing::info!(client_id = %conn.client_id, "client disconnected");

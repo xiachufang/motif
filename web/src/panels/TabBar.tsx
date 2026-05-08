@@ -121,26 +121,31 @@ export default function TabBar({ onNewPty }: Props) {
           </div>
         );
       })}
-      <div
+      <button
+        type="button"
         className={
-          "tab-trailing-drop"
+          "tab-new"
           + (overIdx === views.length && dragId !== null
              && views.findIndex(x => x.id === dragId) !== views.length - 1
               ? " drop-before" : "")
         }
+        onClick={onNewPty}
+        onDragOver={(e) => {
+          if (!dragIdRef.current) return;
+          e.preventDefault();
+          if (overIdx !== views.length) setOverIdx(views.length);
+        }}
+        title="new pty"
+        aria-label="new pty"
+      >+</button>
+      <div
+        className="tab-trailing-drop"
         onDragOver={(e) => {
           if (!dragIdRef.current) return;
           e.preventDefault();
           if (overIdx !== views.length) setOverIdx(views.length);
         }}
       />
-      <button
-        type="button"
-        className="tab-new"
-        onClick={onNewPty}
-        title="new pty"
-        aria-label="new pty"
-      >+</button>
     </div>
   );
 }

@@ -30,11 +30,61 @@ impl ConnState {
             pending_replay_since: None,
         }
     }
+
+    /// Owned snapshot of the read-only fields handlers actually need.
+    /// The ws layer takes one of these per request when spawning the
+    /// handler concurrently, so the handler can run without holding any
+    /// borrow on the ConnState (which lives on the ws task).
+    pub fn snapshot(&self) -> ConnSnapshot {
+        ConnSnapshot {
+            client_id: self.client_id.clone(),
+            attached:  self.attached.clone(),
+        }
+    }
 }
 
-pub async fn dispatch(
+/// Per-request view of ConnState. Cloned at the moment the WS layer
+/// reads a frame, then passed by reference through dispatch_concurrent
+/// into handlers. Anything mutating (attach/detach) goes through the
+/// serial `dispatch_mut` path instead and operates on `&mut ConnState`.
+#[derive(Clone)]
+pub struct ConnSnapshot {
+    pub client_id: motif_proto::common::ClientId,
+    pub attached:  Option<String>,
+}
+
+/// Serial dispatcher for the small set of methods that mutate
+/// ConnState. The WS layer awaits this in-line so post-attach event
+/// replay setup can run immediately after the response returns.
+pub fn dispatch_mut(
     manager: &Arc<SessionManager>,
     conn:    &mut ConnState,
+    req:     Request,
+) -> Response {
+    let id = req.id.clone();
+    match req.method.as_str() {
+        "session.attach" => handle_attach(manager, conn, id, req.params),
+        "session.detach" => handle_detach(manager, conn, id),
+        // The WS layer routes every other method to dispatch_concurrent;
+        // a stray call here is a programming error, but reply with a
+        // plain method_not_found rather than panic — keeps the protocol
+        // tolerant of older callers.
+        other => Response::err(id, RpcError::method_not_found(other)),
+    }
+}
+
+/// Lookup table of methods routed through `dispatch_mut`. Kept here so
+/// the WS layer doesn't have to hard-code the pair.
+pub fn is_mutating_method(method: &str) -> bool {
+    matches!(method, "session.attach" | "session.detach")
+}
+
+/// Concurrent dispatcher: every other method. Synchronous (no `.await`
+/// inside) so the WS layer can drop it onto `tokio::task::spawn_blocking`
+/// to keep heavy fs/git handlers off the runtime workers.
+pub fn dispatch_concurrent(
+    manager: &Arc<SessionManager>,
+    conn:    &ConnSnapshot,
     req:     Request,
 ) -> Response {
     let id = req.id.clone();
@@ -42,9 +92,10 @@ pub async fn dispatch(
         // session.*
         "session.list"    => handle_list(manager, id, req.params),
         "session.create"  => handle_create(manager, id, req.params),
-        "session.attach"  => handle_attach(manager, conn, id, req.params),
-        "session.detach"  => handle_detach(manager, conn, id),
         "session.destroy" => handle_destroy(manager, id, req.params),
+        // mutating methods belong on the serial path
+        "session.attach" | "session.detach" =>
+            Response::err(id, RpcError::internal("mutating method routed to concurrent dispatcher")),
 
         // pty.*
         "pty.create"           => handle_pty_create(manager, conn, id, req.params),
@@ -222,7 +273,7 @@ fn handle_destroy(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response 
 
 // ─────────────────────────── PTY handlers ───────────────────────────
 
-fn handle_pty_create(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_pty_create(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -241,14 +292,14 @@ fn handle_pty_create(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params
     }
 }
 
-fn handle_pty_list(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id) -> Response {
+fn handle_pty_list(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
     Response::ok(id, ppty::PtyListResult { ptys: s.pty_pool.list() })
 }
 
-fn handle_pty_write(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_pty_write(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -267,7 +318,7 @@ fn handle_pty_write(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params:
     Response::ok(id, EmptyOk {})
 }
 
-fn handle_pty_resize(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_pty_resize(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -282,7 +333,7 @@ fn handle_pty_resize(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params
     Response::ok(id, EmptyOk {})
 }
 
-fn handle_pty_kill(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_pty_kill(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -295,7 +346,7 @@ fn handle_pty_kill(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: 
 
 fn handle_pty_list_blocks(
     mgr:    &Arc<SessionManager>,
-    conn:   &ConnState,
+    conn:   &ConnSnapshot,
     id:     Id,
     params: Value,
 ) -> Response {
@@ -315,7 +366,7 @@ fn handle_pty_list_blocks(
 
 fn handle_pty_get_block_output(
     mgr:    &Arc<SessionManager>,
-    conn:   &ConnState,
+    conn:   &ConnSnapshot,
     id:     Id,
     params: Value,
 ) -> Response {
@@ -340,7 +391,7 @@ fn handle_pty_get_block_output(
 
 // ─────────────────────────── view handlers ───────────────────────────
 
-fn handle_view_open(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_view_open(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -361,7 +412,7 @@ fn handle_view_open(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params:
     Response::ok(id, pview::OpenResult { view: info })
 }
 
-fn handle_view_close(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_view_close(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -371,7 +422,7 @@ fn handle_view_close(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params
     Response::ok(id, pview::CloseResult::default())
 }
 
-fn handle_view_activate(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_view_activate(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -384,7 +435,7 @@ fn handle_view_activate(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, par
     Response::ok(id, pview::ActivateResult::default())
 }
 
-fn handle_view_move(mgr: &Arc<SessionManager>, conn: &ConnState, id: Id, params: Value) -> Response {
+fn handle_view_move(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id, params: Value) -> Response {
     let Some(s) = current_session(mgr, conn) else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "must session.attach first"));
     };
@@ -405,14 +456,14 @@ fn mark_pty_primary(s: &Arc<Session>, pty_id: &str, client: motif_proto::common:
     }
 }
 
-fn current_session(mgr: &Arc<SessionManager>, conn: &ConnState) -> Option<Arc<Session>> {
+fn current_session(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) -> Option<Arc<Session>> {
     let name = conn.attached.as_ref()?;
     mgr.get(name)
 }
 
 fn attached<P, R, F>(
     mgr:    &Arc<SessionManager>,
-    conn:   &ConnState,
+    conn:   &ConnSnapshot,
     id:     Id,
     params: Value,
     f:      F,
@@ -434,7 +485,7 @@ where
 
 fn attached_with_session<P, R, F>(
     mgr:    &Arc<SessionManager>,
-    conn:   &ConnState,
+    conn:   &ConnSnapshot,
     id:     Id,
     params: Value,
     f:      F,
@@ -447,7 +498,7 @@ where
     attached(mgr, conn, id, params, f)
 }
 
-pub fn on_disconnect(mgr: &Arc<SessionManager>, conn: &ConnState) {
+pub fn on_disconnect(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) {
     if let Some(name) = &conn.attached {
         if let Some(s) = mgr.get(name) {
             s.detach_client(&conn.client_id);

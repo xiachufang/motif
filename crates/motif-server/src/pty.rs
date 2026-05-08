@@ -278,6 +278,12 @@ impl PtyPool {
             CommandBuilder::new(&cmd_str)
         };
         cb.cwd(&cwd);
+        // Ensure terminfo-based tools (`clear`, `tput`, `less`, ncurses)
+        // have something sensible to look up. portable-pty inherits the
+        // server process env on Unix, but motifd may have been launched
+        // from a non-interactive context (CI, launchd) where TERM isn't
+        // set. xterm.js advertises xterm-256color compatibility.
+        cb.env("TERM", "xterm-256color");
         for (k, v) in &params.env { cb.env(k, v); }
 
         // v2 shell integration: detect shell from the spawn cmd, write
@@ -538,6 +544,14 @@ fn dispatch_shell_event(
             sess.publish_event(|seq| Event::PtyShellBootstrapped {
                 pty_id, shell: kind, seq,
             });
+        }
+        ShellEvent::PromptStarted => {
+            let pty_id = pty.id.clone();
+            sess.publish_event(|seq| Event::PtyPromptStarted { pty_id, seq });
+        }
+        ShellEvent::PromptEnded => {
+            let pty_id = pty.id.clone();
+            sess.publish_event(|seq| Event::PtyPromptEnded { pty_id, seq });
         }
         ShellEvent::CommandStarted { id, text, cwd, started_at } => {
             let pty_id = pty.id.clone();

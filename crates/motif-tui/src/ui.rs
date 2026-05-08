@@ -95,7 +95,7 @@ use ratatui::Terminal;
 use tui_term::widget::PseudoTerminal;
 
 use crate::client::Client;
-use crate::pty_view::PtyView;
+use crate::pty_view::{BlockMark, BlockStatus, PtyView};
 
 type TermBackend = CrosstermBackend<Stdout>;
 
@@ -507,7 +507,7 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                     n.params.get("block_id").and_then(|v| v.as_str()),
                     state.pty_views.get_mut(pid),
                 ) {
-                    view.mark_block_end(block_id);
+                    view.mark_block_end(block_id, exit);
                 }
             }
         }
@@ -1302,8 +1302,25 @@ fn render_pty_tab(
     id:    &PtyId,
     inner: Rect,
 ) {
-    let cols = inner.width.max(1);
-    let rows = inner.height.max(1);
+    // Reserve one column on the left for a per-block status gutter:
+    //   ▶ yellow │ — running command's row range
+    //   ✓ green  │ — finished, exit 0
+    //   ✗ red    │ — finished, non-zero exit
+    //   ·  gray  │ — finished, signaled (no exit code)
+    // The icon shows on the block's start row; subsequent rows in the
+    // block use a vertical bar in the same color. Rows that don't fall
+    // inside any tracked block stay blank.
+    const GUTTER_W: u16 = 1;
+    if inner.width <= GUTTER_W || inner.height == 0 { return; }
+    let gutter_area = Rect { x: inner.x, y: inner.y, width: GUTTER_W, height: inner.height };
+    let pty_area    = Rect {
+        x: inner.x + GUTTER_W, y: inner.y,
+        width:  inner.width - GUTTER_W,
+        height: inner.height,
+    };
+
+    let cols = pty_area.width.max(1);
+    let rows = pty_area.height.max(1);
 
     let view = state.pty_views.entry(id.clone()).or_insert_with(|| PtyView::new(rows, cols));
     let (sr, sc) = view.current_size();
@@ -1315,16 +1332,45 @@ fn render_pty_tab(
     }
 
     let scr_ref = state.pty_views.get_mut(id).unwrap();
-    let cursor   = scr_ref.cursor_position();
-    let scrolled = scr_ref.is_scrolled_back();
-    f.render_widget(PseudoTerminal::new(scr_ref.screen_for_render()), inner);
+    let cursor          = scr_ref.cursor_position();
+    let scrolled        = scr_ref.is_scrolled_back();
+    let abs_top_visible = scr_ref.anchor().unwrap_or(scr_ref.abs_top());
+    // Snapshot the block list before borrowing the screen; we'll need
+    // the buffer mutably afterward to paint the gutter.
+    let blocks: Vec<BlockMark> = scr_ref.block_marks().to_vec();
+    f.render_widget(PseudoTerminal::new(scr_ref.screen_for_render()), pty_area);
+
+    // Paint the gutter cells.
+    let buf = f.buffer_mut();
+    for r in 0..rows {
+        let abs_r = abs_top_visible.saturating_add(r as u64);
+        let block = blocks.iter().rev().find(|b| {
+            b.start_abs <= abs_r && match b.end_abs {
+                Some(end) => abs_r < end,
+                None      => true, // running: extends to live cursor
+            }
+        });
+        if let Some(b) = block {
+            let (sym, color) = match b.status {
+                BlockStatus::Running           => ("▶", Color::Yellow),
+                BlockStatus::Finished(Some(0)) => ("✓", Color::Green),
+                BlockStatus::Finished(Some(_)) => ("✗", Color::Red),
+                BlockStatus::Finished(None)    => ("·", Color::Gray),
+            };
+            let glyph = if abs_r == b.start_abs { sym } else { "│" };
+            if let Some(cell) = buf.cell_mut(Position { x: gutter_area.x, y: gutter_area.y + r }) {
+                cell.set_symbol(glyph).set_style(Style::default().fg(color));
+            }
+        }
+    }
+
     // Show the cursor only while keys are flowing into this PTY (Pane mode,
     // not scrolled). In Tree/Scroll/Prefix the focus is somewhere else and a
     // blinking cursor here would be misleading.
     if matches!(state.mode, Mode::Pane) && !scrolled {
         let (cy, cx) = cursor;
-        let cur_x = inner.x + cx.min(cols.saturating_sub(1));
-        let cur_y = inner.y + cy.min(rows.saturating_sub(1));
+        let cur_x = pty_area.x + cx.min(cols.saturating_sub(1));
+        let cur_y = pty_area.y + cy.min(rows.saturating_sub(1));
         f.set_cursor_position(Position { x: cur_x, y: cur_y });
     }
 }

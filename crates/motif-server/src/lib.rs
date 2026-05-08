@@ -8,20 +8,62 @@ pub mod fswatch;
 pub mod git;
 pub mod pty;
 pub mod rpc;
+pub mod rpc_log;
 pub mod session;
 pub mod shell;
 pub mod ws;
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 pub use config::ServerConfig;
 
-pub fn init_tracing(filter: &str) -> anyhow::Result<()> {
-    let env = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(env).try_init().ok();
+/// Install the global tracing subscriber.
+///
+/// The stderr layer applies the user-supplied filter, but always turns
+/// the `motif::rpc` target off so the RPC dump (which is large and
+/// frame-by-frame) doesn't drown the operator's regular logs. When
+/// `rpc_log` is set, a second file layer captures only that target —
+/// giving us a clean per-frame audit trail for debugging the wire
+/// protocol.
+pub fn init_tracing(filter: &str, rpc_log: Option<&Path>) -> anyhow::Result<()> {
+    let stderr_filter = EnvFilter::try_new(format!("{filter},{}=off", rpc_log::TARGET))
+        .unwrap_or_else(|_| EnvFilter::new(format!("info,{}=off", rpc_log::TARGET)));
+    let stderr_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_filter);
+
+    let file_layer = match rpc_log {
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("failed to open --rpc-log {}", path.display()))?;
+            // Synchronous Mutex<File> is fine — frames are small and the
+            // log is opt-in for debug runs only. with_ansi(false) keeps
+            // the file clean of color escape codes.
+            let writer = std::sync::Mutex::new(file);
+            let filter = EnvFilter::new(format!("{}=trace", rpc_log::TARGET));
+            Some(
+                fmt::layer()
+                    .with_writer(writer)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .with_filter(filter),
+            )
+        }
+        None => None,
+    };
+
+    Registry::default()
+        .with(stderr_layer)
+        .with(file_layer)
+        .try_init()
+        .ok();
     Ok(())
 }
 

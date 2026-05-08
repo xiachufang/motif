@@ -111,6 +111,8 @@ export type Event =
   | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } }
   // ── v2 shell-integration ──
   | { method: "pty.shell_bootstrapped"; params: { pty_id: PtyId; shell: ShellKind; seq: Seq } }
+  | { method: "pty.prompt_started";     params: { pty_id: PtyId; seq: Seq } }
+  | { method: "pty.prompt_ended";       params: { pty_id: PtyId; seq: Seq } }
   | { method: "pty.command_started";    params: { pty_id: PtyId; block_id: BlockId; text: string; cwd: string; started_at: number; seq: Seq } }
   | { method: "pty.command_finished";   params: { pty_id: PtyId; block_id: BlockId; exit_code?: number | null; finished_at: number; seq: Seq } }
   | { method: "pty.shell_context";      params: { pty_id: PtyId; ctx: ShellContext; seq: Seq } };

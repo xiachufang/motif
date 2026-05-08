@@ -28,10 +28,11 @@ export default function Topbar({ sessionName, sidebar, fileTree, gitStatus }: Pr
   // chip removes itself without needing another event.
   const [, force] = useState(0);
   useEffect(() => {
-    if (!blockUi || blockUi.running) return;
-    const last = blockUi.recent[0];
-    if (!last) return;
-    const remaining = 3000 - (Date.now() - last.finished_at!);
+    if (!blockUi) return;
+    const trailing = blockUi.blocks[blockUi.blocks.length - 1];
+    if (trailing?.kind === "running") return;
+    if (!trailing) return;
+    const remaining = 3000 - (Date.now() - trailing.finished_at);
     if (remaining <= 0) return;
     const t = window.setTimeout(() => force(x => x + 1), remaining + 50);
     return () => window.clearTimeout(t);
@@ -79,26 +80,27 @@ export default function Topbar({ sessionName, sidebar, fileTree, gitStatus }: Pr
   );
 }
 
-import type { PtyBlockUi } from "../store/store";
+import type { PtyRenderUi } from "../store/store";
 import type { ShellContext } from "../proto/types";
 
 /** Currently-running command, or recently-finished flash. */
-function BlockChip({ ui }: { ui: PtyBlockUi }) {
-  if (ui.running) {
+function BlockChip({ ui }: { ui: PtyRenderUi }) {
+  const trailing = ui.blocks[ui.blocks.length - 1];
+  if (!trailing) return null;
+  if (trailing.kind === "running") {
     return (
-      <span className="pill running" title={ui.running.text}>
-        ▶ {trim(ui.running.text, 40)}
+      <span className="pill running" title={trailing.cmd}>
+        ▶ {trim(trailing.cmd, 40)}
       </span>
     );
   }
-  const last = ui.recent[0];
-  if (last && last.finished_at && Date.now() - last.finished_at < 3000) {
-    const code = last.exit_code;
+  if (Date.now() - trailing.finished_at < 3000) {
+    const code = trailing.exit_code;
     const cls = code === 0 ? "success" : code == null ? "neutral" : "failure";
     const sym = code === 0 ? "✓" : code == null ? "·" : "✗";
     return (
-      <span className={"pill " + cls} title={last.cmd}>
-        {sym}{code != null ? code : ""} {trim(last.cmd, 40)}
+      <span className={"pill " + cls} title={trailing.cmd}>
+        {sym}{code != null ? code : ""} {trim(trailing.cmd, 40)}
       </span>
     );
   }

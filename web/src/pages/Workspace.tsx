@@ -5,13 +5,15 @@ import type {
 } from "../proto/types";
 import FileTree   from "../panels/FileTree";
 import GitStatus  from "../panels/GitStatus";
-import BlockList  from "../panels/BlockList";
 import TabBar     from "../panels/TabBar";
 import Topbar     from "../panels/Topbar";
 import Resizer    from "../panels/Resizer";
 import { useDragSize } from "../hooks/useDragSize";
 import { useApp } from "../store/store";
-import { appendOutput, clearPty, clearAll } from "../store/ptyBuffers";
+import {
+  appendOutput, clearPty, clearAll,
+  markPromptStarted, markPromptEnded, markCommandStarted, markCommandFinished,
+} from "../store/ptyBuffers";
 
 function loadBool(key: string, fallback: boolean): boolean {
   try {
@@ -62,7 +64,7 @@ export default function Workspace({ sessionName }: Props) {
   const setStatus      = useApp(s => s.setStatus);
   const applyShellBootstrapped = useApp(s => s.applyShellBootstrapped);
   const applyCommandStarted    = useApp(s => s.applyCommandStarted);
-  const applyCommandFinished   = useApp(s => s.applyCommandFinished);
+  const requestFinalizeBlock   = useApp(s => s.requestFinalizeBlock);
   const applyShellContext      = useApp(s => s.applyShellContext);
   const applyViewOpened        = useApp(s => s.applyViewOpened);
   const applyViewClosed        = useApp(s => s.applyViewClosed);
@@ -111,19 +113,33 @@ export default function Workspace({ sessionName }: Props) {
         case "client.left":   clientLeft(e.params.client_id); break;
         case "pty.created":   registerPty(e.params.info); break;
         case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
-        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64)); break;
+        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64), e.params.block_id ?? null); break;
         case "pty.cwd_changed": updatePtyCwd(e.params.pty_id, e.params.cwd); break;
 
         // v2 shell-integration: command-edge events drive the topbar
-        // chip + BlockList panel + tab-label fg suffix.
+        // chip + tab-label fg suffix.
         case "pty.shell_bootstrapped":
           applyShellBootstrapped(e.params.pty_id, e.params.shell);
           break;
+        case "pty.prompt_started":
+          // Phase boundary: PS1 about to (re)paint. Drives FloatTerm's
+          // synchronous reset via the prompt-listener `boundary` callback.
+          markPromptStarted(e.params.pty_id);
+          break;
+        case "pty.prompt_ended":
+          markPromptEnded(e.params.pty_id);
+          break;
         case "pty.command_started":
+          // Phase → output: subsequent block_id-tagged bytes flow to BlockTerm.
+          markCommandStarted(e.params.pty_id);
           applyCommandStarted(e.params.pty_id, e.params.block_id, e.params.text, e.params.cwd, e.params.started_at);
           break;
         case "pty.command_finished":
-          applyCommandFinished(e.params.pty_id, e.params.block_id, e.params.exit_code ?? null, e.params.finished_at);
+          // Phase → post-output: drop server-side repaint preamble until
+          // the next 133;A. Without this, fish's missing-newline marker
+          // and mode resets leak into FloatTerm and pollute its scrollback.
+          markCommandFinished(e.params.pty_id);
+          requestFinalizeBlock(e.params.pty_id, e.params.block_id, e.params.exit_code ?? null, e.params.finished_at);
           break;
         case "pty.shell_context":
           applyShellContext(e.params.pty_id, e.params.ctx);
@@ -152,7 +168,7 @@ export default function Workspace({ sessionName }: Props) {
       }
     });
   }, [client, clientJoined, clientLeft, registerPty, removePty, updatePtyCwd,
-      applyShellBootstrapped, applyCommandStarted, applyCommandFinished, applyShellContext,
+      applyShellBootstrapped, applyCommandStarted, requestFinalizeBlock, applyShellContext,
       applyViewOpened, applyViewClosed, applyViewActiveChanged, applyViewMoved,
       setDirChildren, setGit, setStatus]);
 
@@ -327,7 +343,6 @@ export default function Workspace({ sessionName }: Props) {
                     onOpenDiff={() => openDiff()}
                     onOpenFileDiff={(path) => openDiff(path)}
                   />
-                  <BlockList />
                 </div>
               )}
             </aside>

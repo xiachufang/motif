@@ -1,185 +1,257 @@
-// xterm.js-based PTY tab. Output bytes flow in via the module-level
-// `ptyBuffers` registry — Workspace populates it from `pty.output` events,
-// and we attach() on mount to atomically grab pre-mount bytes + future ones.
+// Layout shell for a PTY tab. Two stacked panes:
+//   .pty-stack — finalized BlockCard / AltStub history + the trailing
+//                BlockTerm if a command is currently running.
+//   .pty-float — always-visible FloatTerm hosting PS1 + user input + PS2.
 //
-// v2 shell-integration: when `pty.command_started` lands the
-// store gets a new `running` entry and we register an xterm IMarker at
-// the current cursor row; on `command_finished` we register a second
-// marker. Clicking a row in BlockList then sets `selectedBlock` in the
-// store, and the effect below scrolls the viewport + paints a
-// background decoration spanning the marked range.
+// All xterm work lives in FloatTerm / BlockTerm; PtyTab only does:
+//   - block backfill on mount (pty.list_blocks → SerializeAddon → store)
+//   - selectedBlock scrollIntoView
+//   - auto-pin to bottom on block-list changes
+//   - publish FloatTerm's cols to the BlockTerm so they stay aligned
+//
+// FloatTerm owns pty.resize (cols + viewport-derived rows). BlockTerm
+// mirrors cols only.
 
-import { useEffect, useRef } from "react";
-import { Terminal, type IMarker, type IDecoration } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import "@xterm/xterm/css/xterm.css";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { useApp } from "../store/store";
-import { attach } from "../store/ptyBuffers";
+import { useApp, type BlockRender } from "../store/store";
+import {
+  bytesEnteredAltScreen, serializeBytesToHtml,
+} from "./serializeBlock";
+import { AltStub, BlockCard } from "./blockCards";
+import FloatTerm from "./FloatTerm";
+import BlockTerm from "./BlockTerm";
+import type { BlockId, BlockSummary } from "../proto/types";
 
 interface Props { ptyId: string; active: boolean }
 
-interface BlockMarkers { start: IMarker; end?: IMarker }
+interface ListBlocksResult { blocks: BlockSummary[] }
+
+interface GetBlockOutputResult { data_b64: string; truncated: boolean }
+
+function decodeB64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
 
 export default function PtyTab({ ptyId, active }: Props) {
-  const client  = useApp(s => s.client);
-  const ptyInfo = useApp(s => s.ptyInfos.get(ptyId));
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef  = useRef<FitAddon | null>(null);
+  const client            = useApp(s => s.client);
+  const ptyInfo           = useApp(s => s.ptyInfos.get(ptyId));
+  const blocks            = useApp(s => s.ptyBlocks.get(ptyId)?.blocks ?? EMPTY_BLOCKS);
+  const selectedBlock     = useApp(s => s.selectedBlock);
+  const setBackfilled     = useApp(s => s.setBackfilledBlocks);
+  const setSelectedBlock  = useApp(s => s.setSelectedBlock);
 
-  // v2 shell-integration: per-block xterm markers + the active
-  // selection's decoration. Refs (not state) — we only mutate them
-  // imperatively to drive xterm, never need a re-render off them.
-  const markersRef    = useRef<Map<string, BlockMarkers>>(new Map());
-  const decorationRef = useRef<IDecoration | null>(null);
+  const stackRef          = useRef<HTMLDivElement | null>(null);
+  const wasAtBottomRef    = useRef<boolean>(true);
+  // Mirror FloatTerm's chosen cols so BlockTerm stays in sync. Seeded
+  // from the server-known PtyInfo.cols (matters for re-attach where a
+  // running block already exists and BlockTerm mounts before FloatTerm
+  // has fit/published a value); FloatTerm overwrites this on first fit.
+  const [floatCols, setFloatCols] = useState<number>(ptyInfo?.cols ?? 80);
 
-  const runningId      = useApp(s => s.ptyBlocks.get(ptyId)?.running?.id ?? null);
-  const lastFinishedId = useApp(s => s.ptyBlocks.get(ptyId)?.recent?.[0]?.id ?? null);
-  const selectedBlock  = useApp(s => s.selectedBlock);
+  // Trailing entry, if running, is hoisted into BlockTerm in the stack.
+  const trailing = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+  const runningBlock = trailing?.kind === "running" ? trailing : null;
+  const finalizedBlocks = runningBlock ? blocks.slice(0, -1) : blocks;
 
-  // Mount the terminal once and wire it to the byte buffer.
+  // Lifted from BlockTerm: when an alt-screen app is running we collapse
+  // the surrounding chrome (.pty-meta, finalized blocks, FloatTerm) via a
+  // class on .pty-tab so vim/htop get the full tab area.
+  const [altActive, setAltActive] = useState(false);
+  // Belt-and-braces: if the running block goes away (finalize, unmount)
+  // and BlockTerm's own cleanup didn't fire (defensive), force false.
   useEffect(() => {
-    if (!wrapRef.current) return;
-    const wrap = wrapRef.current;
-    const term = new Terminal({
-      fontFamily: "ui-monospace, Menlo, Consolas, monospace",
-      fontSize: 13,
-      cursorBlink: true,
-      scrollback: 5000,
-      theme: { background: "#0a0a0a", foreground: "#e6e6e6" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(wrap);
-    termRef.current = term;
-    fitRef.current  = fit;
+    if (!runningBlock) setAltActive(false);
+  }, [runningBlock]);
 
-    // Defer attach()+initial-write until the wrapper actually has a non-zero
-    // size, so the first bytes (shell banner, alt-screen apps like less) land
-    // on a correctly-sized grid. Writing under xterm's default 80×24 and then
-    // resizing leaves stale cells — xterm doesn't reflow already-written rows.
-    let detachBuffer: (() => void) | null = null;
-    let started = false;
-    const start = () => {
-      if (started) return;
-      if (wrap.clientWidth === 0 || wrap.clientHeight === 0) return;
-      try { fit.fit(); } catch { return; }
-      started = true;
-      const att = attach(ptyId, chunk => term.write(chunk));
-      for (const c of att.initial) term.write(c);
-      detachBuffer = att.detach;
-    };
-
-    const ro = new ResizeObserver(() => {
-      if (!started) start();
-      else { try { fit.fit(); } catch {} }
-    });
-    ro.observe(wrap);
-    start();
-
-    // Forward keystrokes upstream.
-    const offData = term.onData((data) => {
-      // utf-8 → base64. Using TextEncoder for proper UTF-8 handling.
-      const u8 = new TextEncoder().encode(data);
-      let bin = "";
-      for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-      const b64 = btoa(bin);
-      client?.call("pty.write", { pty_id: ptyId, data_b64: b64 }).catch(() => {});
-    });
-
-    // Resize → server.
-    const offResize = term.onResize(({ cols, rows }) => {
-      client?.call("pty.resize", { pty_id: ptyId, cols, rows }).catch(() => {});
-    });
-
-    return () => {
-      ro.disconnect();
-      offData.dispose();
-      offResize.dispose();
-      detachBuffer?.();
-      term.dispose();
-      termRef.current = null;
-      fitRef.current  = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ptyId]);
-
-  // ResizeObserver handles fit on visibility transitions; this only refocuses.
+  // ─────────────────────── selected-block scroll ───────────────────────
   useEffect(() => {
-    if (!active) return;
-    const id = requestAnimationFrame(() => {
-      termRef.current?.focus();
-    });
-    return () => cancelAnimationFrame(id);
-  }, [active]);
-
-  // ── v2 shell-integration: block markers + selected-block highlight ──
-
-  // Register a start marker the first time `running.id` shows up. Idea:
-  // by the time `pty.command_started` reaches the store, the `OSC 133;C`
-  // marker has been stripped from the byte stream and the cursor sits
-  // at the row where the command's output is about to flow in. Marking
-  // here pins that row so we can scroll back to it later.
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term || !runningId) return;
-    if (markersRef.current.has(runningId)) return;
-    const m = term.registerMarker(0);
-    if (m) markersRef.current.set(runningId, { start: m });
-  }, [runningId]);
-
-  // End marker on the matching `command_finished` (= the head of
-  // `recent`). The cursor here is on the row immediately after the
-  // command's output, just before the next prompt re-paints.
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term || !lastFinishedId) return;
-    const entry = markersRef.current.get(lastFinishedId);
-    if (!entry || entry.end) return;
-    const m = term.registerMarker(0);
-    if (m) entry.end = m;
-  }, [lastFinishedId]);
-
-  // Scroll + highlight when the selected block changes. Disposing the
-  // previous decoration first guarantees only one is active.
-  useEffect(() => {
-    const term = termRef.current;
-    if (!term) return;
-    decorationRef.current?.dispose();
-    decorationRef.current = null;
     if (!selectedBlock || selectedBlock.ptyId !== ptyId) return;
-    const entry = markersRef.current.get(selectedBlock.blockId);
-    if (!entry) return;
-    // Pin the start row at the top of the viewport. xterm exposes
-    // viewportY (current scroll position in absolute lines), so the
-    // delta gets us there in one call.
-    const viewportY = term.buffer.active.viewportY;
-    const delta = entry.start.line - viewportY;
-    if (delta !== 0) term.scrollLines(delta);
-    // Decoration height = lines from start to end (inclusive). When
-    // the block is still running we don't know its end yet — fall
-    // back to a 1-row marker on the start row, which the CSS below
-    // styles as a left border.
-    const height = entry.end
-      ? Math.max(1, entry.end.line - entry.start.line + 1)
-      : 1;
-    decorationRef.current = term.registerDecoration({
-      marker: entry.start,
-      height,
-      layer: "bottom",
-      backgroundColor: "#3a3318",
-    }) ?? null;
-  }, [selectedBlock, ptyId, lastFinishedId]);
+    const stack = stackRef.current;
+    if (!stack) return;
+    const el = stack.querySelector(`[data-block-id="${cssEscape(selectedBlock.blockId)}"]`);
+    if (el && "scrollIntoView" in el) {
+      (el as HTMLElement).scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedBlock, ptyId]);
+
+  // ─────────────────────── backfill ───────────────────────
+  // On mount, pull the last 50 finished blocks and pre-render their HTML.
+  const [backfilled, setBackfilledFlag] = useState(false);
+  useEffect(() => {
+    if (!client) return;
+    if (backfilled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await client.call<ListBlocksResult>("pty.list_blocks", {
+          pty_id: ptyId, limit: 50,
+        });
+        if (cancelled) return;
+        // Server returns newest-first; flip so we render oldest-at-top.
+        const summaries = [...r.blocks].reverse();
+        const rendered = await Promise.all(summaries.map(async (s): Promise<BlockRender | null> => {
+          try {
+            const out = await client.call<GetBlockOutputResult>("pty.get_block_output", {
+              pty_id: ptyId, block_id: s.id,
+            });
+            const bytes = decodeB64(out.data_b64);
+            if (bytesEnteredAltScreen(bytes)) {
+              return {
+                kind:        "alt",
+                id:          s.id,
+                cmd:         s.cmd,
+                cwd:         s.cwd,
+                exit_code:   s.exit_code ?? null,
+                started_at:  s.started_at,
+                finished_at: s.finished_at ?? s.started_at,
+                prompt_html: "",
+              };
+            }
+            const html = await serializeBytesToHtml(bytes, { cols: floatCols });
+            return {
+              kind:        "card",
+              id:          s.id,
+              cmd:         s.cmd,
+              cwd:         s.cwd,
+              exit_code:   s.exit_code ?? null,
+              started_at:  s.started_at,
+              finished_at: s.finished_at ?? s.started_at,
+              html_body:   html,
+              prompt_html: "",
+            };
+          } catch {
+            return null;
+          }
+        }));
+        if (cancelled) return;
+        const cards = rendered.filter((b): b is BlockRender => b !== null);
+        setBackfilled(ptyId, cards);
+      } catch {
+        // Server may not support list_blocks (older build) — silently skip.
+      } finally {
+        if (!cancelled) setBackfilledFlag(true);
+      }
+    })();
+    return () => { cancelled = true; };
+    // floatCols intentionally omitted — backfill runs once at mount; later
+    // cols changes don't re-render history.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, ptyId, backfilled, setBackfilled]);
+
+  // ─────────────────────── auto-scroll ───────────────────────
+  useEffect(() => {
+    const stack = stackRef.current;
+    if (!stack) return;
+    const onScroll = () => {
+      const dist = stack.scrollHeight - stack.scrollTop - stack.clientHeight;
+      wasAtBottomRef.current = dist < 64;
+    };
+    onScroll();
+    stack.addEventListener("scroll", onScroll, { passive: true });
+    return () => stack.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Exiting alt-screen mode is the trickiest case: we hide block cards via
+  // CSS (display:none) while .alt-active is on, which means scrollHeight
+  // shrinks without firing a scroll event. When the class drops on
+  // alt-exit the cards reappear, scrollHeight jumps, and the browser
+  // gives no scroll event either — wasAtBottomRef stays at its pre-alt
+  // value but scrollTop is now stuck near the top. We track the alt
+  // transition explicitly and force the scroll synchronously at commit
+  // time (useLayoutEffect — avoids a paint flash that rAF would cause).
+  const prevAltRef = useRef<boolean>(false);
+  useLayoutEffect(() => {
+    const stack = stackRef.current;
+    if (!stack) return;
+    const wasAlt   = prevAltRef.current;
+    const isAlt    = altActive;
+    prevAltRef.current = isAlt;
+    // alt → non-alt: previously-hidden cards just reappeared.
+    if (wasAlt && !isAlt) {
+      stack.scrollTop = stack.scrollHeight;
+      wasAtBottomRef.current = true;
+      return;
+    }
+    // Normal block-list change: stick to the bottom if we were already
+    // there. Done in the same layout effect so the new content + scroll
+    // commit in one frame, no flash.
+    if (!wasAtBottomRef.current) return;
+    stack.scrollTop = stack.scrollHeight;
+  }, [blocks, altActive]);
+
+  // ─────────────────────── render ───────────────────────
+  const onBlockSelect = useCallback((id: BlockId) => {
+    const cur = useApp.getState().selectedBlock;
+    if (cur && cur.ptyId === ptyId && cur.blockId === id) {
+      setSelectedBlock(null, null);
+    } else {
+      setSelectedBlock(ptyId, id);
+    }
+  }, [ptyId, setSelectedBlock]);
 
   return (
-    <div className="pty-tab">
+    <div className={`pty-tab${altActive ? " alt-active" : ""}`}>
       <div className="pty-meta muted small">
         {ptyInfo ? `${ptyInfo.cmd} · ${ptyInfo.cols}×${ptyInfo.rows}` : "(loading…)"}
       </div>
-      <div className="pty-host" ref={wrapRef} />
+      <div className="pty-stack" ref={stackRef}>
+        {finalizedBlocks.map(b => {
+          const sel =
+            !!selectedBlock
+            && selectedBlock.ptyId === ptyId
+            && selectedBlock.blockId === b.id;
+          if (b.kind === "card") {
+            return (
+              <BlockCard
+                key={b.id}
+                block={b}
+                selected={sel}
+                onSelect={() => onBlockSelect(b.id)}
+              />
+            );
+          }
+          if (b.kind === "alt") {
+            return (
+              <AltStub
+                key={b.id}
+                block={b}
+                selected={sel}
+                onSelect={() => onBlockSelect(b.id)}
+              />
+            );
+          }
+          return null;
+        })}
+        {runningBlock && (
+          <BlockTerm
+            key={runningBlock.id}
+            ptyId={ptyId}
+            block={runningBlock}
+            cols={floatCols}
+            stackElRef={stackRef}
+            onAltChange={setAltActive}
+          />
+        )}
+      </div>
+      <div className="pty-float">
+        <FloatTerm
+          ptyId={ptyId}
+          active={active}
+          stackElRef={stackRef}
+          onColsChange={setFloatCols}
+        />
+      </div>
     </div>
   );
+}
+
+const EMPTY_BLOCKS: BlockRender[] = [];
+
+function cssEscape(s: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(s);
+  return s.replace(/[^a-zA-Z0-9_-]/g, ch => "\\" + ch);
 }

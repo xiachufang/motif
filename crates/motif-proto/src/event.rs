@@ -85,6 +85,21 @@ pub enum Event {
     #[serde(rename = "pty.shell_bootstrapped")]
     PtyShellBootstrapped { pty_id: PtyId, shell: ShellKind, seq: Seq },
 
+    /// OSC 133;A observed: shell is (re-)rendering its prompt. Emitted
+    /// on every 133;A — fish redraws the prompt for autosuggest /
+    /// syntax highlighting and each redraw is its own `prompt_started`.
+    /// Clients use this as the boundary to clear their PS1 renderer so
+    /// the next prompt paints on a fresh grid.
+    #[serde(rename = "pty.prompt_started")]
+    PtyPromptStarted { pty_id: PtyId, seq: Seq },
+
+    /// OSC 133;B observed: prompt is done, user is now composing input.
+    /// Only emitted on the AtPrompt → Composing transition (not on
+    /// pure redraws), so clients can use it to freeze the PS1 + user
+    /// input row for the eventual BlockCard header.
+    #[serde(rename = "pty.prompt_ended")]
+    PtyPromptEnded { pty_id: PtyId, seq: Seq },
+
     /// User pressed Enter; shell is about to run a command. Allocates a
     /// `block_id` that subsequent `pty.output` events carry.
     #[serde(rename = "pty.command_started")]
@@ -142,6 +157,8 @@ impl Event {
             Self::ViewActiveChanged   { seq, .. } => *seq,
             Self::ViewMoved           { seq, .. } => *seq,
             Self::PtyShellBootstrapped { seq, .. } => *seq,
+            Self::PtyPromptStarted     { seq, .. } => *seq,
+            Self::PtyPromptEnded       { seq, .. } => *seq,
             Self::PtyCommandStarted    { seq, .. } => *seq,
             Self::PtyCommandFinished   { seq, .. } => *seq,
             Self::PtyShellContext      { seq, .. } => *seq,

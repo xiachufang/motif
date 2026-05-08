@@ -39,6 +39,10 @@ button:disabled                        { opacity: 0.55; cursor: not-allowed; }
 button.ghost                           { background: transparent; }
 button.small                           { padding: 0.25em 0.6em; font-size: 12px; }
 
+pre {
+  margin-block: 0;
+}
+
 input[type="text"], input[type="password"], input:not([type]) {
   background: #1a1a1a;
   color: inherit;
@@ -295,7 +299,8 @@ button.icon-btn {
 /* Drop-target indicator: a 2px accent line on the leading edge of the tab
    the cursor would insert before. The trailing pseudo-tab uses the same
    class to render a line at the end of the bar. */
-.tab.drop-before {
+.tab.drop-before,
+.tab-new.drop-before {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 /* Fills the empty stretch between the last tab and the "+" button so the
@@ -353,11 +358,147 @@ button.icon-btn {
 .pane.hidden { display: none; }
 .pane.active { display: flex; }
 
-.pty-tab { display: flex; flex-direction: column; height: 100%; }
-.pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); }
-.pty-host { flex: 1 1 auto; padding: 4px; }
-.pty-host .xterm { height: 100%; }
-.pty-host .xterm .xterm-viewport { background: transparent; }
+.pty-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+/* The block stack scrolls finalized cards + the running BlockTerm. The
+   FloatTerm input pane sits below as a sibling, always visible. */
+.pty-stack {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background: var(--bg);
+  min-height: 0;
+}
+
+/* ── block stack (v2: minimal sticky-header rendering) ──
+   All three flavors — finalized card, alt-stub, running BlockTerm — share
+   the same outer shell so the stack reads as one continuous flow. No card
+   borders, no status colors, no gutter strip. The only "decoration" is a
+   sticky `$ cmd` header per block; the body is just the command's output. */
+
+.block-card,
+.block-alt,
+.block-running {
+  flex: 0 0 auto;
+  position: relative;
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* When an alt-screen app (vim/htop) is running, the BlockTerm container
+   expands to fill the whole .pty-stack viewport so the program has a full
+   canvas. The height comes from JS (rows × cellHeight). Auto-scroll keeps
+   the block in view when it grows. */
+
+.block-card.selected,
+.block-alt.selected { background: rgba(212, 160, 0, 0.06); }
+
+.block-card-header,
+.block-alt-header,
+.block-running-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  /* Headers are click-to-select for the block, but we keep text selection
+     enabled so users can drag-highlight cmd text to copy. The click
+     handler bails when a non-empty selection exists so a drag-release
+     doesn't toggle block selection. */
+  user-select: text;
+  /* Stick to the top of the .pty-stack so the `$ cmd` is always visible
+     while the body scrolls under it. A solid bg is required for sticky to
+     read against the scrolled content. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+}
+.block-running-header { cursor: default; }
+
+.block-card-header .prompt,
+.block-alt-header  .prompt,
+.block-running-header .prompt { color: var(--muted); flex: 0 0 auto; }
+.block-card-header .cmd,
+.block-alt-header  .cmd,
+.block-running-header .cmd {
+  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* serializeAsHTML wraps content in a <div> per row; inline it so the
+   prompt+cmd reads as a single header line (no row break, no own bg —
+   we want the header's solid bg so sticky still reads against scrolled
+   content). */
+.prompt-html {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.prompt-html > div { display: inline; background: transparent !important; }
+
+.block-card-body,
+.block-running-body {
+  padding: 0 8px 2px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.2;
+}
+.block-card-body {
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* BlockTerm host — natural height, fed by JS (rows × cellHeight on
+   the inner .pty-host). */
+.block-running-body .xterm { height: 100%; }
+.block-running-body .xterm .xterm-viewport { background: transparent; }
+.block-running-body .pty-host { /* height is set inline */ flex: 0 0 auto; }
+
+/* ── float pane (FloatTerm) ──
+   Sibling of .pty-stack. Always visible at the bottom; height grows with
+   PS2 / multi-line input up to a small cap (FloatTerm enforces). */
+.pty-float {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 2px 8px;
+  font-family: var(--mono);
+}
+.pty-float .xterm { height: 100%; }
+.pty-float .xterm .xterm-viewport { background: transparent; }
+.pty-float .pty-float-host { /* height is set inline */ }
+
+/* ── alt-screen fullscreen (vim/htop/less) ──
+   BlockTerm reports its xterm flipped to the alternate buffer; PtyTab
+   adds .alt-active so we collapse everything except the running block:
+   meta strip, prior block cards, and the running header all hide;
+   FloatTerm collapses to height 0 but stays in the DOM with
+   overflow:hidden so its xterm textarea keeps keyboard focus — typed
+   keystrokes still route through FloatTerm → pty.write into the
+   alt-screen app. */
+.pty-tab.alt-active .pty-meta { display: none; }
+.pty-tab.alt-active .pty-stack > .block-card,
+.pty-tab.alt-active .pty-stack > .block-alt { display: none; }
+.pty-tab.alt-active .block-running-header { display: none; }
+.pty-tab.alt-active .pty-float {
+  flex: 0 0 0;
+  height: 0;
+  padding: 0;
+  border-top: none;
+  overflow: hidden;
+}
+.pty-tab.alt-active .pty-stack { padding: 0; }
+.pty-tab.alt-active .block-running-body { padding: 0; }
 
 .preview {
   margin: 0;
@@ -619,21 +760,3 @@ button.icon-btn {
 .pill.failure { background: rgba(220, 50, 50, 0.20); border-color: #a04040; }
 .pill.neutral { background: var(--muted-bg); }
 
-.block-list { padding: 0.5em 0.6em; border-top: 1px solid var(--border); margin-top: 0.5em; }
-.block-list h3 { margin: 0 0 0.4em 0; font-size: 12px; opacity: 0.85; }
-.block-list ul { list-style: none; padding: 0; margin: 0; }
-.block-list li.block {
-  display: flex; gap: 0.5em;
-  padding: 2px 4px; border-radius: 3px;
-  font-family: var(--mono); font-size: 12px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.block-list li.block { cursor: pointer; }
-.block-list li.block:hover { background: var(--muted-bg); }
-.block-list li.block.selected { background: rgba(212, 160, 0, 0.18); border-left: 2px solid #d4a000; padding-left: 2px; }
-.block-list .block-glyph { flex: 0 0 auto; min-width: 1.5em; opacity: 0.85; }
-.block-list .block-cmd   { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-.block-list li.block.success .block-glyph { color: #4caf50; }
-.block-list li.block.failure .block-glyph { color: #d65a5a; }
-.block-list li.block.running { color: #d4a000; }
-.block-list h3 button.ghost { margin-left: auto; font-size: 11px; padding: 0 4px; }

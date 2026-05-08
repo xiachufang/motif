@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
+# 一个终端跑 motifd / motif-web / vite，三路输出混在一起。
+# Rust 端用 cargo-watch 监听对应 crate 自动重启；vite 自带 HMR，启动后不动。
 set -euo pipefail
+# 开 monitor mode，让下面 `( ... ) &` 的每个子 shell 自成进程组，
+# cleanup 才能用 `kill -- -PGID` 把 cargo watch / pnpm 整组带走。
+set -m
 
-CONFIG_NAME="${1:-motif-dev}"
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEV_STATE_DIR="${ROOT_DIR}/.motif-dev"
 TOKEN_FILE="${DEV_STATE_DIR}/token.txt"
-DEV_SESSION_NAME="${MOTIF_DEV_SESSION_NAME:-dev}"
+
 MOTIFD_HOST="${MOTIFD_HOST:-127.0.0.1}"
 MOTIFD_PORT="${MOTIFD_PORT:-7777}"
 MOTIFD_LISTEN="${MOTIFD_LISTEN:-${MOTIFD_HOST}:${MOTIFD_PORT}}"
@@ -17,92 +21,75 @@ VITE_DIR="${VITE_DIR:-${ROOT_DIR}/web}"
 VITE_PKG_MANAGER="${VITE_PKG_MANAGER:-pnpm}"
 VITE_PORT="${VITE_PORT:-5173}"
 
-WARP_DIR="${HOME}/.warp/launch_configurations"
-WARP_CONFIG="${WARP_DIR}/${CONFIG_NAME}.yaml"
-
-if ! command -v open >/dev/null 2>&1; then
-  echo "需要 macOS 的 open 命令来启动 Warp。"
+if ! command -v cargo-watch >/dev/null 2>&1; then
+  echo "缺少 cargo-watch，请先安装：cargo install cargo-watch" >&2
   exit 1
 fi
-
-build_run_cmd() {
-  local bin_name="$1"
-  local cargo_pkg="$2"
-  local args="$3"
-  if command -v "$bin_name" >/dev/null 2>&1; then
-    printf '%s %s' "$bin_name" "$args"
-  else
-    printf 'cargo run -p %s --bin %s -- %s' "$cargo_pkg" "$bin_name" "$args"
-  fi
-}
 
 mkdir -p "$DEV_STATE_DIR"
 if [[ ! -s "$TOKEN_FILE" ]]; then
   printf '%s\n' "motif-dev-token" >"$TOKEN_FILE"
 fi
 
-MOTIFD_RUN_CMD="$(build_run_cmd motifd motif-server "--listen $MOTIFD_LISTEN --token-file \"$TOKEN_FILE\"")"
-MOTIF_WEB_RUN_CMD="$(build_run_cmd motif-web motif-web "--listen $WEB_LISTEN --motifd-url \"$MOTIFD_URL\" --motifd-token-file \"$TOKEN_FILE\" --browser-token-file \"$TOKEN_FILE\"")"
-MOTIF_TUI_BASE_CMD="$(build_run_cmd motif-tui motif-tui "")"
+# motifd RPC 帧日志：默认写到项目根的 motif-rpc.log（已 gitignore），
+# 调试 wire protocol 时直接 `tail -f motif-rpc.log` 即可。
+export MOTIFD_RPC_LOG="${MOTIFD_RPC_LOG:-${ROOT_DIR}/motif-rpc.log}"
 
-# /dev/tcp 是 bash 内建，所以 TUI 的等待循环用 bash -lc 包一层。
-MOTIF_TUI_RUN_CMD="bash -lc 'export MOTIF_TOKEN_FILE=\"$TOKEN_FILE\"; until (echo > /dev/tcp/$MOTIFD_HOST/$MOTIFD_PORT) >/dev/null 2>&1; do sleep 0.2; done; $MOTIF_TUI_BASE_CMD new \"$MOTIFD_URL\" --name \"$DEV_SESSION_NAME\" --workdir \"$ROOT_DIR\" >/dev/null 2>&1 || true; exec $MOTIF_TUI_BASE_CMD attach \"$MOTIFD_URL\" --session \"$DEV_SESSION_NAME\"'"
-
-# vite dev 不依赖 motif-web 进程启动顺序（只在收到请求时才 proxy），直接起即可。
-# 用 bash -lc 走登录 shell，保证 pnpm/node 的 PATH（fnm、~/Library/pnpm 之类）
-# 都被加载；纯 exec 在 Warp 里有时会因为 PATH 不全直接挂掉。
-VITE_RUN_CMD="bash -lc 'cd \"$VITE_DIR\" && exec $VITE_PKG_MANAGER dev'"
-
-mkdir -p "$WARP_DIR"
-
-# Warp launch config 用 YAML 单引号串：内部单引号需要写成 ''。
-# 注意：bash 替换里反斜杠不是转义符，`\'\'` 会被当成字面 4 个字符；
-# 所以替换串必须是纯 `''`（两个单引号）。
-yaml_quote() {
-  local s="$1"
-  local sq="'"
-  s="${s//$sq/$sq$sq}"
-  printf "'%s'" "$s"
+# 给每路输出加彩色前缀。
+# - stdbuf -oL 让 cargo / pnpm 在管道里也按行 flush。
+# - tr '\r' '\n' 把 cargo / vite 进度条的原地刷新（CR）切成多行，
+#   否则按行 prefix 时整段会被压成一根巨长的空白。
+# - awk + fflush() 跨 BSD / GNU 都能稳定按行加前缀。
+run_labeled() {
+  local label="$1" color="$2"; shift 2
+  local prefix
+  printf -v prefix '\033[1;%sm[%-6s]\033[0m ' "$color" "$label"
+  local STDBUF=""
+  if command -v stdbuf >/dev/null 2>&1; then STDBUF="stdbuf -oL"; fi
+  $STDBUF "$@" 2>&1 \
+    | $STDBUF tr '\r' '\n' \
+    | awk -v p="$prefix" '{ print p $0; fflush() }'
 }
 
-cat >"$WARP_CONFIG" <<EOF
----
-name: $CONFIG_NAME
-windows:
-  - tabs:
-      - title: motif-dev
-        layout:
-          split_direction: horizontal
-          panes:
-            - split_direction: vertical
-              panes:
-                - cwd: $(yaml_quote "$ROOT_DIR")
-                  commands:
-                    - exec: $(yaml_quote "$MOTIFD_RUN_CMD")
-                - cwd: $(yaml_quote "$ROOT_DIR")
-                  commands:
-                    - exec: $(yaml_quote "$MOTIF_WEB_RUN_CMD")
-            - split_direction: vertical
-              panes:
-                - cwd: $(yaml_quote "$VITE_DIR")
-                  commands:
-                    - exec: $(yaml_quote "$VITE_RUN_CMD")
-                - cwd: $(yaml_quote "$ROOT_DIR")
-                  commands:
-                    - exec: $(yaml_quote "$MOTIF_TUI_RUN_CMD")
-        is_active: true
-EOF
+pids=()
+cleanup() {
+  trap - INT TERM EXIT
+  for pid in "${pids[@]}"; do
+    # 整组干掉，避免 cargo watch 留下子进程
+    kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
 
-echo "已写入 Warp launch config: $WARP_CONFIG"
-open "warp://launch/$CONFIG_NAME"
+# motifd：watch motif-server + 共享 crate
+( cd "$ROOT_DIR" && \
+  run_labeled motifd 36 cargo watch \
+    -w crates/motif-server -w crates/motif-proto -w crates/motif-tailscale \
+    -x "run -q -p motif-server --bin motifd -- --listen $MOTIFD_LISTEN --token-file $TOKEN_FILE" \
+) &
+pids+=($!)
+
+# motif-web：watch motif-web + 共享 crate
+( cd "$ROOT_DIR" && \
+  run_labeled web 33 cargo watch \
+    -w crates/motif-web -w crates/motif-proto \
+    -x "run -q -p motif-web --bin motif-web -- --listen $WEB_LISTEN --motifd-url $MOTIFD_URL --motifd-token-file $TOKEN_FILE --browser-token-file $TOKEN_FILE" \
+) &
+pids+=($!)
+
+# vite：常驻，HMR 自己处理
+( cd "$VITE_DIR" && \
+  run_labeled vite 35 "$VITE_PKG_MANAGER" dev --host "$WEB_HOST" --port "$VITE_PORT" \
+) &
+pids+=($!)
 
 cat <<EOF
-
-Warp launch config: $CONFIG_NAME
-已启动: motifd / motif-web / vite / motif-tui
-motifd:     ws://$MOTIFD_LISTEN/ws
-motif-web:  http://$WEB_LISTEN          (生产形态：内嵌前端)
-vite dev:   http://$WEB_HOST:$VITE_PORT  (开发形态：HMR，proxy /ws,/blob -> motif-web)
-token file: $TOKEN_FILE
-说明: Warp 各 pane 相互独立，关掉一个不会联动关其它，需要自己管理。
+motifd:    ws://${MOTIFD_LISTEN}/ws    (cargo watch 自动重启)
+motif-web: http://${WEB_LISTEN}        (cargo watch 自动重启)
+vite dev:  http://${WEB_HOST}:${VITE_PORT}      (HMR；proxy /ws,/blob -> motif-web)
+token:     ${TOKEN_FILE}
+按 Ctrl-C 一起停。
 EOF
+
+wait

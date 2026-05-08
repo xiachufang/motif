@@ -44,6 +44,15 @@ pub enum BlockState {
 pub enum ShellEvent {
     /// First successful OSC 133, or 5s timeout (kind = Unknown).
     Bootstrapped,
+    /// Emitted on every OSC 133;A — including fish's prompt redraws for
+    /// autosuggest / syntax highlighting. Clients reset their PS1
+    /// renderer here so each prompt paints on a fresh grid.
+    PromptStarted,
+    /// Emitted on the AtPrompt → Composing transition (OSC 133;B).
+    /// Pure prompt redraws don't fire this — only the first 133;B after
+    /// 133;A does, since the state is already past AtPrompt for redraws
+    /// where the shell skips re-emitting B.
+    PromptEnded,
     CommandStarted {
         id:         BlockId,
         text:       String,
@@ -135,13 +144,39 @@ impl ShellState {
                 // SIGINT killed the command and bash skipped postcmd).
                 if let Some(ev) = self.finalize_running(None, now) {
                     out.push(ev);
+                } else if matches!(self.state, BlockState::Composing) {
+                    // Bare Enter on an empty prompt: shells skip
+                    // preexec/postexec, so 133;C/D never fire. Synthesize
+                    // a degenerate Started+Finished pair so the client
+                    // gets a block delimiter (FloatTerm clears, stack
+                    // gains an empty card).
+                    let id  = Ulid::new().to_string();
+                    let cwd = self.current_cwd.clone().unwrap_or_else(|| PathBuf::from("/"));
+                    let cmd = self.pending_cmd.take().unwrap_or_default();
+                    out.push(ShellEvent::CommandStarted {
+                        id: id.clone(), text: cmd.clone(), cwd: cwd.clone(), started_at: now,
+                    });
+                    out.push(ShellEvent::CommandFinished {
+                        id, cmd, cwd,
+                        started_at: now, finished_at: now,
+                        exit: Some(0),
+                        output: Vec::new(),
+                        output_truncated: false,
+                    });
                 }
                 self.state = BlockState::AtPrompt;
+                // Boundary signal for clients: reset their PS1 renderer
+                // and start collecting fresh prompt-zone bytes. Emitted
+                // after Bootstrapped / force-finalize / synthesize-empty
+                // so clients see those state changes before the new
+                // prompt edge.
+                out.push(ShellEvent::PromptStarted);
             }
             QueryKind::Osc133PromptEnd => {
                 self.first_osc_seen(&mut out);
                 if matches!(self.state, BlockState::AtPrompt) {
                     self.state = BlockState::Composing;
+                    out.push(ShellEvent::PromptEnded);
                 }
             }
             QueryKind::Osc7770Cmd { text } => {
@@ -297,6 +332,54 @@ mod tests {
     }
 
     #[test]
+    fn empty_enter_synthesizes_block() {
+        // Composing → 133;A (no 133;C in between) means user pressed
+        // Enter on an empty line. Shells skip preexec/postexec entirely,
+        // so we synthesize a degenerate block as a delimiter.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        assert!(matches!(s.state, BlockState::Composing));
+        // Fresh 133;A from Composing → synthesize Started + Finished.
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        let started = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandStarted { id, text, .. } => Some((id.clone(), text.clone())),
+            _ => None,
+        }).expect("expected CommandStarted");
+        let finished = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandFinished { id, cmd, exit, output, output_truncated, .. } =>
+                Some((id.clone(), cmd.clone(), *exit, output.clone(), *output_truncated)),
+            _ => None,
+        }).expect("expected CommandFinished");
+        // Same id ties the pair together, both empty.
+        assert_eq!(started.0, finished.0);
+        assert!(started.1.is_empty());
+        assert!(finished.1.is_empty());
+        assert_eq!(finished.2, Some(0));
+        assert!(finished.3.is_empty());
+        assert!(!finished.4);
+        assert!(matches!(s.state, BlockState::AtPrompt));
+    }
+
+    #[test]
+    fn empty_enter_does_not_synthesize_from_at_prompt() {
+        // After a real command finishes (133;D moves us to AtPrompt),
+        // the next 133;A from a re-rendered prompt must NOT synthesize
+        // an extra empty block — there's no "user pressed Enter" event
+        // here, just the shell's own prompt cycle.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        s.on_osc(&QueryKind::Osc7770Cmd { text: "echo hi".into() });
+        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
+        assert!(matches!(s.state, BlockState::AtPrompt));
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::CommandStarted { .. })));
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::CommandFinished { .. })));
+    }
+
+    #[test]
     fn ctrl_c_then_new_prompt_force_finalizes_block() {
         // Real shells sometimes emit `133;A` (new prompt) directly
         // after a SIGINT'd command without a `133;D`. The state
@@ -347,6 +430,67 @@ mod tests {
         // Different → emits.
         let evs = s.on_osc(&QueryKind::Osc7Cwd { path: "/other".into() });
         assert!(evs.iter().any(|e| matches!(e, ShellEvent::CwdChanged { .. })));
+    }
+
+    #[test]
+    fn prompt_started_fires_on_every_133a_including_redraws() {
+        // fish re-emits 133;A on every prompt redraw (autosuggest /
+        // syntax highlight). Each one must yield a PromptStarted so
+        // the client resets its PS1 renderer.
+        let mut s = new_state();
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        assert!(evs.iter().any(|e| matches!(e, ShellEvent::PromptStarted)));
+        // Second 133;A while AtPrompt → still PromptStarted, no other side effects.
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        assert!(evs.iter().any(|e| matches!(e, ShellEvent::PromptStarted)));
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::CommandStarted { .. })));
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::CommandFinished { .. })));
+    }
+
+    #[test]
+    fn prompt_ended_only_on_at_prompt_to_composing_transition() {
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        let evs = s.on_osc(&QueryKind::Osc133PromptEnd);
+        assert!(evs.iter().any(|e| matches!(e, ShellEvent::PromptEnded)));
+        // A second 133;B while already Composing must NOT re-fire.
+        let evs = s.on_osc(&QueryKind::Osc133PromptEnd);
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::PromptEnded)));
+    }
+
+    #[test]
+    fn prompt_started_after_finalize_orders_after_command_finished() {
+        // Ctrl-C path: Running → 133;A force-finalizes the block AND
+        // emits PromptStarted. CommandFinished must come before
+        // PromptStarted so clients commit the block before resetting
+        // their PS1 renderer.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        s.on_osc(&QueryKind::Osc7770Cmd { text: "sleep 30".into() });
+        s.on_osc(&QueryKind::Osc133CmdStart);
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        let cf_idx = evs.iter().position(|e| matches!(e, ShellEvent::CommandFinished { .. }));
+        let ps_idx = evs.iter().position(|e| matches!(e, ShellEvent::PromptStarted));
+        assert!(cf_idx.is_some() && ps_idx.is_some());
+        assert!(cf_idx.unwrap() < ps_idx.unwrap());
+    }
+
+    #[test]
+    fn empty_enter_orders_command_pair_before_prompt_started() {
+        // Composing → 133;A: synthesize CommandStarted+CommandFinished
+        // pair, then PromptStarted last. Same ordering principle as the
+        // Ctrl-C path.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        let cs_idx = evs.iter().position(|e| matches!(e, ShellEvent::CommandStarted { .. }));
+        let cf_idx = evs.iter().position(|e| matches!(e, ShellEvent::CommandFinished { .. }));
+        let ps_idx = evs.iter().position(|e| matches!(e, ShellEvent::PromptStarted));
+        assert!(cs_idx.is_some() && cf_idx.is_some() && ps_idx.is_some());
+        assert!(cs_idx.unwrap() < cf_idx.unwrap());
+        assert!(cf_idx.unwrap() < ps_idx.unwrap());
     }
 
     #[test]

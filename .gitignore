@@ -7,6 +7,9 @@ Cargo.lock.bak
 .motif/
 *.token
 
+# motifd RPC frame dump (enabled by dev-warp.sh)
+motif-rpc.log
+
 # IDE
 .vscode/
 .idea/
