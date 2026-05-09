@@ -22,7 +22,7 @@ export default function Sessions() {
         // Server expands `~` against $HOME at session.create.
         autoCreating.current = true;
         try {
-          await client.call("session.create", { name: "home", workdir: "~" });
+          await client.call("session.create", { name: "home", workdir: "~/AllSunday/claude-proj/motif" });
         } catch (e) {
           // "already exists" is benign (StrictMode double-fire, race with
           // another client). Anything else surfaces as an error banner but

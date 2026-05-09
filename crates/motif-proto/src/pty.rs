@@ -34,6 +34,14 @@ pub struct ShellContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputScope {
+    /// Bytes that don't belong to any block segment: shell hasn't been
+    /// bootstrapped yet (pre-first-`133;A` welcome banner / MOTD), the
+    /// previous block has finished and the next prompt hasn't started
+    /// (between `133;D` and the next `133;A` — fish's window-title /
+    /// mode-toggle housekeeping), or shell-integration is disabled
+    /// entirely. `block_id` is always `null` for these. Frontend treats
+    /// them as raw passthrough (FloatTerm only, no `BlockTerm` routing).
+    Passthrough,
     /// `133;A..133;B` — shell-rendered PS1.
     Prompt,
     /// `133;B..133;C` — user-typed command echo (syntax highlight,

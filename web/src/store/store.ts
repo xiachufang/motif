@@ -186,12 +186,20 @@ export interface AppState {
   /// PtyTab finished serializing — replace the trailing `running` entry
   /// with `card`/`alt` and clear `pendingFinalize`. PtyTab is the only
   /// caller; serialization needs DOM access.
+  ///
+  /// `prompt_html_fallback`: BlockTerm computes this from the saved raw
+  /// prompt+command bytes (via the headless `serializeBytesToHtml`)
+  /// when its live xterm capture didn't run — typically because the
+  /// PTY tab was off-screen at command_started, leaving wrap.clientWidth
+  /// at 0 long enough for the command to finish before start() ever
+  /// succeeded. The fallback overrides the running block's empty
+  /// prompt_html so the card doesn't degrade to the `$ cmd` stub.
   finalizeRunningBlock:   (
     pty_id: string,
     id: BlockId,
     payload:
-      | { kind: "card"; html_body: string; exit_code: number | null; finished_at: number }
-      | { kind: "alt";  exit_code: number | null; finished_at: number },
+      | { kind: "card"; html_body: string; exit_code: number | null; finished_at: number; prompt_html_fallback?: string }
+      | { kind: "alt";  exit_code: number | null; finished_at: number; prompt_html_fallback?: string },
   ) => void;
   applyShellContext:      (pty_id: string, ctx: ShellContext) => void;
   /// Replace the per-PTY history with backfilled cards (called after
@@ -402,14 +410,20 @@ export const useApp = create<AppState>((set) => ({
       m.set(pty_id, { ...cur, pendingFinalize: null });
       return { ptyBlocks: m };
     }
+    // Live xterm capture is the primary source for prompt_html (best
+    // colour fidelity — same xterm the user already saw). When that
+    // capture never ran (race: command finished before BlockTerm got a
+    // non-zero clientWidth), BlockTerm hands us a headless-serialize
+    // fallback derived from the raw prompt+command bytes.
+    const promptHtml = last.prompt_html || payload.prompt_html_fallback || "";
     const finalized: BlockRender = payload.kind === "card"
       ? { kind: "card", id: last.id, cmd: last.cmd, cwd: last.cwd,
           started_at: last.started_at, finished_at: payload.finished_at,
           exit_code: payload.exit_code, html_body: payload.html_body,
-          prompt_html: last.prompt_html }
+          prompt_html: promptHtml }
       : { kind: "alt",  id: last.id, cmd: last.cmd, cwd: last.cwd,
           started_at: last.started_at, finished_at: payload.finished_at,
-          exit_code: payload.exit_code, prompt_html: last.prompt_html };
+          exit_code: payload.exit_code, prompt_html: promptHtml };
     const blocks = [...cur.blocks.slice(0, -1), finalized];
     // Cap history to last 200 entries to keep DOM bounded; matches old recent[] cap.
     const trimmed = blocks.length > 200 ? blocks.slice(blocks.length - 200) : blocks;

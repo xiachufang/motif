@@ -623,8 +623,9 @@ fn dispatch_shell_event(
             if changed {
                 let pty_id = pty.id.clone();
                 sess.publish_event(|seq| Event::PtyCwdChanged {
-                    pty_id, cwd, seq,
+                    pty_id: pty_id.clone(), cwd, seq,
                 });
+                sess.note_pty_cwd_changed(&pty_id);
             }
         }
     }
@@ -676,11 +677,13 @@ fn spawn_cwd_watcher(pty: Arc<Pty>, session: Option<Weak<Session>>) {
             if changed {
                 let pty_id = pty.id.clone();
                 let cwd_for_event = cwd.clone();
+                let pty_id_for_hook = pty_id.clone();
                 s.publish_event(|seq| Event::PtyCwdChanged {
                     pty_id,
                     cwd: cwd_for_event,
                     seq,
                 });
+                s.note_pty_cwd_changed(&pty_id_for_hook);
             }
         }
     });

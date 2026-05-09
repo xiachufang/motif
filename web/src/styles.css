@@ -463,6 +463,24 @@ button.icon-btn {
   flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* Per-block ULID tail. Pinned to the trailing edge with `margin-left: auto`
+   so it doesn't compete with cmd text for horizontal space; clicking it
+   selects (via header bubble), hovering reveals the full id via the
+   <span title>. The deliberately faint colour keeps it as debug-affordance,
+   not visual noise. */
+.block-id-chip {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 4px;
+  color: var(--muted);
+  opacity: 0.55;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  user-select: all;
+}
+.block-id-chip:hover { opacity: 0.9; }
+
 /* serializeAsHTML wraps content in a <div> per row. Multi-line PS1
    (e.g. starship two-line prompts) renders as one block element per
    row stacked vertically; the per-row background is dropped so the

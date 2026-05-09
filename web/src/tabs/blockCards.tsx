@@ -44,51 +44,12 @@ function fmtDuration(startedAt: number, finishedAt: number | null): string {
   return `${m}m${rs}s`;
 }
 
-function decodeHtmlEntities(s: string): string {
-  if (typeof document === "undefined") return s;
-  const el = document.createElement("textarea");
-  el.innerHTML = s;
-  return el.value;
-}
-
-function htmlText(html: string): string {
-  const text = html
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<[^>]+>/g, " ");
-  return decodeHtmlEntities(text).replace(/\s+/g, " ").trim();
-}
-
-function countText(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let idx = haystack.indexOf(needle);
-  while (idx !== -1) {
-    count++;
-    idx = haystack.indexOf(needle, idx + needle.length);
-  }
-  return count;
-}
-
-function shouldUsePromptHtml(html: string, cmd: string): boolean {
-  const needle = cmd.trim();
-  if (!needle) return true;
-  const text = htmlText(html);
-  // Fish and other rich prompts may redraw the editable command line as the
-  // user types, so a valid capture can contain the command more than once.
-  // Only reject captures that never mention the command at all.
-  if (countText(text, needle) < 1) return false;
-  // A healthy two-line prompt is only modestly longer than the command.
-  // Much larger captures usually mean replayed prompt redraws leaked in.
-  return text.length <= Math.max(needle.length + 240, needle.length * 3 + 120);
-}
-
 /** Render the sticky `$ cmd` line inside a block header. Prefers the
- *  serialized HTML (full ANSI colors of the original PS1 + typed command)
- *  when it matches the block's command; falls back to plain `$ cmd` if a
- *  replay/redraw race captured stale prompt rows. */
+ *  serialized HTML (full ANSI colors of the original PS1 + typed command);
+ *  falls back to plain `$ cmd` only when no HTML was captured (e.g.
+ *  backfilled history). */
 export function PromptLine({ html, cmd }: { html: string; cmd: string }) {
-  if (html && shouldUsePromptHtml(html, cmd)) {
+  if (html) {
     return <div className="prompt-html" dangerouslySetInnerHTML={{ __html: html }} />;
   }
   return (
@@ -97,6 +58,17 @@ export function PromptLine({ html, cmd }: { html: string; cmd: string }) {
       <span className="cmd">{cmd || "(no cmd text)"}</span>
     </>
   );
+}
+
+/** Small ULID-tail chip shown on every block header. Useful for
+ *  cross-referencing client logs with server BlockStore entries when
+ *  diagnosing rendering / state-machine issues. ULIDs are
+ *  timestamp-prefixed so the trailing chunk is what actually
+ *  disambiguates blocks recorded in the same millisecond. Hover shows
+ *  the full id. */
+export function BlockIdChip({ id }: { id: string }) {
+  const tail = id.length > 6 ? id.slice(-6) : id;
+  return <span className="block-id-chip" title={id}>{tail}</span>;
 }
 
 interface CardProps extends CommonProps {
@@ -118,6 +90,7 @@ export const BlockCard = memo(function BlockCard({ block, selected, onSelect }: 
         title={`exit ${block.exit_code ?? "?"} · ${fmtDuration(block.started_at, block.finished_at)}`}
       >
         <PromptLine html={block.prompt_html} cmd={block.cmd} />
+        <BlockIdChip id={block.id} />
       </header>
       {hasBody && (
         <div
@@ -143,6 +116,7 @@ export const AltStub = memo(function AltStub({ block, selected, onSelect }: AltP
       <header className="block-alt-header">
         <PromptLine html={block.prompt_html} cmd={block.cmd} />
         <span className="muted small">(interactive program)</span>
+        <BlockIdChip id={block.id} />
       </header>
     </article>
   );

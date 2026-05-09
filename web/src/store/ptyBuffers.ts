@@ -89,15 +89,21 @@ export function appendOutput(
     return;
   }
 
-  // scope=prompt|command. Always feed FloatTerm.
+  // scope=passthrough|prompt|command — all flow through FloatTerm.
+  // (passthrough = pre-bootstrap banners or between-block housekeeping;
+  //  prompt|command = inside a real block lifecycle.)
   b.promptChunks.push(chunk);
   const pls = promptListeners.get(ptyId);
   if (pls) pls.forEach(l => { try { l.data(chunk); } catch { /* ignore */ } });
 
   // Stash for the BlockTerm that will mount on `pty.command_started`.
-  // Un-bootstrapped PTYs (block_id=null) skip this — there's no shell
-  // integration to fire command_started, so no BlockTerm will ever consume.
-  if (blockId !== null) {
+  // - passthrough never has a block_id (pre-bootstrap / between blocks),
+  //   so nothing to stash.
+  // - prompt|command from un-bootstrapped PTYs would also have block_id
+  //   = null and similarly skip.
+  // - prompt|command with a block_id is the inside-of-cycle case; stash
+  //   for the upcoming BlockTerm mount.
+  if (scope !== 'passthrough' && blockId !== null) {
     getPreMount(b, blockId).prompt.push(chunk);
   }
 }

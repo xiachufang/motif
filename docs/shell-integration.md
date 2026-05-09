@@ -63,12 +63,10 @@ motif **复用** FinalTerm OSC 133，加一段私有号段 `7770-7779`。
 | `ESC ] 133 ; C ; cmdline_url=<percent> ST` | `133;C` | fish 4.x（每次 Enter） |
 | `ESC ] 133 ; D ; <exit> ; <key=val>... ST` | `133;D;<exit>` | iTerm2 / 各家扩展 |
 
-motif 当前只用 `<sub>` 字段做状态转移,`key=value` 列表整体忽略并随同 OSC
-一起从字节流剥离。`133;<未知子命令>`(`E` / `P` / ...)继续 passthrough,保
-留前向兼容。`133;C;cmdline_url=...` 的 cmdline 文本暂未消费;一旦消费,会
-作为 OSC 7770 之外的备用通道喂给 `pending_cmd`(优先级高于 7770,因为 fish
-4.x 的 cmdline_url 是 shell 内部的权威字符串,免受 abbr 展开 / 语法高亮 /
-PS2 拼接的影响)。
+motif 用 `<sub>` 字段做状态转移,`133;C` 上额外消费 `cmdline_url=<percent>`
+(优先级高于 OSC 7770 — 见 §3.2 step 3 的时序解释),其它 `key=value` 项忽略
+并随同 OSC 一起从字节流剥离。`133;<未知子命令>`(`E` / `P` / ...)继续
+passthrough,保留前向兼容。
 
 ---
 
@@ -106,10 +104,21 @@ PS2 拼接的影响)。
    gating,fish 4.x 上完全交给 native;fish 3.x 才发自家的。bash/zsh 不存在这
    问题,因为 bash-preexec 和 zsh `precmd_functions` 都暴露明确的 "PS1 之
    前/之后" 锚点,我们的 `133;A`/`133;B` 能精准夹住 PS1 paint。
-3. 在 preexec 里吐 `OSC 7770;<hex_cmd>` 和 `OSC 133;C`。fish 4.x 的 native
-   `133;C;cmdline_url=...` 在 preexec event 之后 fire,与 motif 的 `133;C` 重
-   叠 —— 状态机第二次见 `133;C` 走 idempotent fall-through(已是 Running
-   状态),不会重复发 CommandStarted。
+3. 在 preexec 里吐 `OSC 7770;<hex_cmd>` 和 `OSC 133;C`。**注意 fish 4.x 的
+   native `133;C;cmdline_url=<percent>` 在 `fish_preexec` event **之前**
+   fire**(见 fish-shell `reader/reader.rs:858-862`:`Osc133CommandStart`
+   先 write,然后 `event::fire_generic(... fish_preexec ...)`)。也就是说
+   motif 的 `__motif_preexec`(连同它发的 7770 + 133;C)**晚于** fish 的
+   native 133;C 到达字节流。状态机的处理:
+   - native 133;C(带 `cmdline_url`):`Composing → Running`,**优先用
+     cmdline_url 作为 cmd**,清空 `pending_cmd`,广播 CommandStarted。
+   - motif 的 7770:把 `pending_cmd` 设为 hex 解码值(状态已 Running,本周
+     期不再消费,作为 bash/zsh 等无 cmdline_url 的 shell 的兜底)。
+   - motif 的 bare 133;C:状态 Running → idempotent fall-through,不重复
+     广播。
+
+   在 bash / zsh 上没有 native `133;C;cmdline_url`,只有 motif 自己的 7770
+   + 133;C 顺序到达,走 `pending_cmd` 兜底路径,行为不变。
 4. 在 precmd 里吐 `OSC 133;D;<exit>` + `OSC 7771;<hex_json>` + `OSC 7;file://...`。
 5. 启用 bracketed paste（bash 的 `bind 'set enable-bracketed-paste on'` / zsh
    默认开 / fish 默认开），多行 paste 时不立刻执行。
@@ -128,10 +137,17 @@ PS2 拼接的影响)。
 ## 4. Server 状态机
 
 每个 PTY 一份 `BlockState`。`block_id` 在进入 `AtPrompt` 时分配，从此刻起
-所有该 PTY 的 `pty.output` 都带这个 id，直到下一次重新进入 AtPrompt
-（commit 完旧 block 或强制 finalize 后）才换新 id。fish 等 prompt 重绘
-**不**换 id —— 不论从 `AtPrompt` 还是 `Composing` 自循环,都视作 redraw,
-只清 prompt buffer。
+所有该 PTY 的 `pty.output` 都带这个 id —— 直到该 block `133;D` 进 BlockStore
+后状态降回 `Unknown`，下一次 `133;A` 再分配新 id。**不变量**:任何带非空
+`block_id` 的 `pty.output` 之前都已经广播过对应的 `pty.prompt_started`。
+fish 等 prompt 重绘**不**换 id —— 不论从 `AtPrompt` 还是 `Composing` 自循环
+都视作 redraw,只清 prompt buffer。
+
+`133;D` 之后到下一次 `133;A` 之间的 housekeeping 字节(fish 改窗口标题
+`OSC 0`、bracketed paste 模式开关、kitty kbd 协议握手等)以
+`block_id=null, scope=passthrough` 流给客户端 —— 跟 spawn 后到第一次
+`133;A` 之间的 fish welcome banner 以及 `MOTIF_SHELL_INTEGRATION=0`
+的纯透明 PTY 走同一条路径,不绑定到任何 block。
 
 ```rust
 enum BlockState {
@@ -140,9 +156,9 @@ enum BlockState {
     Composing  { block_id: BlockId, prompt_buf: Vec<u8>, command_buf: Vec<u8> },
     Running {
         block_id:           BlockId,
-        cmd:                String,        // OSC 7770
+        cmd:                String,        // OSC 133;C cmdline_url 优先,7770 兜底
         cwd:                PathBuf,
-        started_at:         Instant,
+        started_at:         Instant,       // 进入 Running(133;C)那一刻;不是 prompt paint 时间
         prompt:             Vec<u8>,       // 自 Composing.prompt_buf
         prompt_truncated:   bool,
         command:            Vec<u8>,       // 自 Composing.command_buf
@@ -163,10 +179,10 @@ OSC 转移规则：
 | `133;A` | `Running { id, ... }` | `AtPrompt { id: NEW, prompt_buf: [] }` | 旧 id 强制 finalize（`exit_code = None`），写入 BlockStore；广播 `pty.command_finished { block_id: id, exit_code: null }`；广播 `pty.prompt_started { block_id: NEW }` |
 | `133;B` | `AtPrompt { id, prompt_buf }` | `Composing { id, prompt_buf, command_buf: [] }` | 广播 `pty.prompt_ended { block_id: id }` |
 | `133;C` | `Composing { id, prompt_buf, command_buf }` | `Running { id, prompt: prompt_buf, command: command_buf, ... }` | 广播 `pty.command_started { block_id: id, text, cwd, ... }` |
-| `133;D;<exit>` | `Running { id, ... }` | `AtPrompt { id: NEW, prompt_buf: [] }` | 旧 id 写入 BlockStore；广播 `pty.command_finished { block_id: id, exit_code: <exit> }`；下一次 `133;A` 到来时按"重绘"处理（id 不变） |
+| `133;D;<exit>` | `Running { id, ... }` | `Unknown` | 旧 id 写入 BlockStore；广播 `pty.command_finished { block_id: id, exit_code: <exit> }`；下一次 `133;A` 走 `Unknown→AtPrompt` 分支分配新 id 并广播 `pty.prompt_started`,中间的 housekeeping 字节以 `block_id=null` 流走 |
 | `7771;<json>` | * | (不变) | 广播 `pty.shell_context` |
 | `7` (cwd) | * | (不变) | 广播 `pty.cwd_changed`（OSC 优先，pid watcher 退为 fallback） |
-| 字节 passthrough | `Unknown` | (不变) | 不缓冲；广播 `pty.output { block_id: null, scope: "prompt" }` |
+| 字节 passthrough | `Unknown` | (不变) | 不缓冲；广播 `pty.output { block_id: null, scope: "passthrough" }` |
 | 字节 passthrough | `AtPrompt { id }` | (不变) | 追加到 `prompt_buf`；广播 `pty.output { block_id: id, scope: "prompt" }` |
 | 字节 passthrough | `Composing { id }` | (不变) | 追加到 `command_buf`；广播 `pty.output { block_id: id, scope: "command" }` |
 | 字节 passthrough | `Running { id }` | (不变) | 追加到 `output`；广播 `pty.output { block_id: id, scope: "output" }` |
@@ -179,7 +195,8 @@ OSC 转移规则：
 
 - **每个 `133;A` 边界都广播 `pty.prompt_started`**（含重绘）；client 用它做
   "PS1 开始绘制，重置渲染器"信号。重绘时 block_id 与上一次相同；其它情况
-  block_id 是新 id（且通常前一条事件是 `pty.command_finished` 把旧 id 收尾）。
+  block_id 是新 id（前一条 `pty.command_finished` / `pty.shell_bootstrapped`
+  把旧 id 收尾,中间可能夹一段 `block_id=null` 的 housekeeping 字节）。
 - **空 Enter / Ctrl-C 取消编辑 / fish autosuggestion repaint 都走"redraw"
   路径**:server 视角看到的都是 `Composing → 133;A`,无法区分意图。统一保留
   block_id、清 prompt + command buffer、不广播任何 CommandStarted/Finished、

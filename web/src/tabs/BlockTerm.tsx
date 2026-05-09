@@ -30,7 +30,16 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 
 import { useApp, type BlockRender } from "../store/store";
 import { attachBlock } from "../store/ptyBuffers";
-import { PromptLine } from "./blockCards";
+import { PromptLine, BlockIdChip } from "./blockCards";
+import { serializeBytesToHtml } from "./serializeBlock";
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
 
 interface Props {
   ptyId:       string;
@@ -62,6 +71,13 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
   const disposedRef     = useRef<boolean>(false);
   const scheduleSizeRef = useRef<(() => void) | null>(null);
   const colsRef         = useRef<number>(cols);
+  // Saved at mount-time `attachBlock` so the finalize path can fall back
+  // to a headless serialize if the live xterm never managed to capture
+  // prompt_html (e.g. layout was 0×0 when the trailing block paint
+  // finished, or command finished before start() got a non-zero
+  // clientWidth). Without this fallback the card renders the `$ cmd`
+  // stub from blockCards.tsx for short-running commands.
+  const promptBytesRef  = useRef<Uint8Array[]>([]);
   // Sticky: did we ever enter alt-screen during this block? Decides
   // `card` vs `alt` payload at finalize.
   const altSeenRef      = useRef<boolean>(false);
@@ -164,13 +180,30 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
       next();
     };
 
-    let detachBuffer: (() => void) | null = null;
     let started = false;
     // Live bytes that arrive during the boot phase (rare — prompt|command
     // bytes drain before mount, output starts after) are deferred so they
     // don't interleave with the prompt-serialize/clear/reset dance.
+    // Pre-start: bytes arrive after attachBlock but before start()'s
+    // dimensions are ready; they're held here too and replayed once
+    // start() completes.
     let booting = true;
     const bootQueue: Uint8Array[] = [];
+
+    // Attach immediately on mount — independent of layout. This guarantees
+    // promptInitial bytes are captured (and saved to promptBytesRef) for
+    // the finalize fallback path even if start() never gets a non-zero
+    // clientWidth before the command finishes.
+    const att = attachBlock(ptyId, block.id, chunk => {
+      if (disposedRef.current) return;
+      if (!started || booting) bootQueue.push(chunk);
+      else term.write(chunk, () => {
+        if (!disposedRef.current) scheduleLiveSize();
+      });
+    });
+    const detachBuffer = att.detach;
+    promptBytesRef.current = att.promptInitial;
+    const outputInitial = att.outputInitial;
 
     const start = () => {
       if (started) return;
@@ -184,14 +217,6 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
         cellHeightRef.current = firstRow.clientHeight;
       }
       started = true;
-      const att = attachBlock(ptyId, block.id, chunk => {
-        if (disposedRef.current) return;
-        if (booting) bootQueue.push(chunk);
-        else term.write(chunk, () => {
-          if (!disposedRef.current) scheduleLiveSize();
-        });
-      });
-      detachBuffer = att.detach;
 
       // Boot phase: render PS1 + cmd into a fresh buffer, serialize the
       // rendered rows as prompt_html for the running block's sticky header,
@@ -216,7 +241,7 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
         // serialization reads from this line.
         startMarkerRef.current = term.registerMarker(0);
 
-        writeAll(att.outputInitial, () => {
+        writeAll(outputInitial, () => {
           if (disposedRef.current) return;
           booting = false;
           for (const c of bootQueue) {
@@ -308,11 +333,38 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
     const serialize = serializeRef.current;
     if (!term || !serialize) return;
 
-    term.write("", () => {
+    // Capture references that the async fallback path needs — `block.prompt_html`
+    // is read at write-callback time so a setRunningPromptHtml that
+    // landed mid-write is observed.
+    const livePromptHtmlAtDispatch = block.prompt_html;
+    const promptBytes = promptBytesRef.current;
+    const colsAtDispatch = colsRef.current;
+
+    term.write("", async () => {
       if (disposedRef.current) return;
       const startMarker = startMarkerRef.current;
       const endMarker   = term.registerMarker(0);
       const altSeen     = altSeenRef.current;
+
+      // If the live xterm never captured prompt_html (start() bailed on
+      // a 0-px wrap and the command finished before resize triggered it
+      // again), fall back to a headless serialize of the raw
+      // prompt+command bytes. This mirrors what PtyTab does for
+      // backfilled history, just driven from in-process bytes so we
+      // don't need a server round-trip. Skip when we already have html
+      // from the live path (its colours match the live xterm exactly).
+      let promptHtmlFallback: string | undefined;
+      if (!livePromptHtmlAtDispatch
+          && useApp.getState().ptyBlocks.get(ptyId)?.blocks.find(b => b.id === block.id)?.prompt_html === ""
+          && promptBytes.length > 0) {
+        try {
+          promptHtmlFallback = await serializeBytesToHtml(
+            concat(promptBytes),
+            { cols: colsAtDispatch },
+          );
+        } catch { /* leave undefined — store falls back to "" */ }
+        if (disposedRef.current) return;
+      }
 
       let payload: Parameters<typeof finalize>[2];
       if (altSeen) {
@@ -320,6 +372,7 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
           kind:        "alt",
           exit_code:   pendingFinalize.exit_code,
           finished_at: pendingFinalize.finished_at,
+          prompt_html_fallback: promptHtmlFallback,
         };
       } else {
         let html = "";
@@ -337,6 +390,7 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
           html_body:   html,
           exit_code:   pendingFinalize.exit_code,
           finished_at: pendingFinalize.finished_at,
+          prompt_html_fallback: promptHtmlFallback,
         };
       }
 
@@ -347,7 +401,7 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
         finalize(ptyId, pendingFinalize.id, payload);
       });
     });
-  }, [pendingFinalize, ptyId, block.id, finalize]);
+  }, [pendingFinalize, ptyId, block.id, block.prompt_html, finalize]);
 
   return (
     <article
@@ -360,6 +414,7 @@ export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAl
         title={`running since ${new Date(block.started_at).toLocaleTimeString()}`}
       >
         <PromptLine html={block.prompt_html} cmd={block.cmd} />
+        <BlockIdChip id={block.id} />
       </header>
       <div className="block-running-body">
         <div className="pty-host" ref={wrapRef} />

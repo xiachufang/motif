@@ -61,7 +61,7 @@ crossterm          = "0.29"
 vt100              = "0.16"
 tui-term           = "0.3"
 notify             = "8"
-notify-debouncer-mini = "0.7"
+notify-debouncer-full = "0.7"
 
 # M8 (Web) + M9 (Shell integration)
 rust-embed         = "8"

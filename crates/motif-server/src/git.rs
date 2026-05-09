@@ -8,6 +8,7 @@ use motif_proto::git::*;
 
 pub fn workdir_is_repo(workdir: &Path) -> bool {
     Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C").arg(workdir)
         .args(["rev-parse", "--is-inside-work-tree"])
         .stdout(Stdio::null()).stderr(Stdio::null())
@@ -28,7 +29,12 @@ pub fn status(workdir: &Path) -> Result<StatusResult, RpcError> {
     // `? path/` entry. Aligns the status list with what `git diff` produces
     // (which already shows per-file patches via `git ls-files --others`),
     // and gives the UI real file paths to click on / build a tree from.
+    // `--no-optional-locks` keeps git from rewriting `.git/index` during
+    // racy-stat refresh. Without it, every `git status` from this RPC bumps
+    // the index mtime, fswatch sees that as a tree change, fires
+    // `git.changed`, the client re-calls `git.status`, and we loop forever.
     let out = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C").arg(workdir)
         .args(["status", "--porcelain=v2", "--branch", "--untracked-files=all"])
         .output()
@@ -121,7 +127,7 @@ fn code_to_status(c: char) -> GitFileStatus {
 pub fn diff(workdir: &Path, p: &DiffParams) -> Result<DiffResult, RpcError> {
     ensure_repo(workdir)?;
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(workdir).arg("diff");
+    cmd.arg("--no-optional-locks").arg("-C").arg(workdir).arg("diff");
     if p.staged { cmd.arg("--staged"); }
     if let Some(path) = &p.path { cmd.arg("--").arg(path); }
     let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
@@ -153,7 +159,7 @@ pub fn diff(workdir: &Path, p: &DiffParams) -> Result<DiffResult, RpcError> {
 /// with spaces / non-utf8.
 fn list_untracked(workdir: &Path, path_filter: Option<&str>) -> Result<Vec<String>, RpcError> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(workdir)
+    cmd.arg("--no-optional-locks").arg("-C").arg(workdir)
        .args(["ls-files", "--others", "--exclude-standard", "-z"]);
     if let Some(p) = path_filter { cmd.arg("--").arg(p); }
     let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
@@ -177,6 +183,7 @@ fn list_untracked(workdir: &Path, path_filter: Option<&str>) -> Result<Vec<Strin
 /// produce a small "Binary files differ" note instead of a base85 blob.
 fn diff_untracked_file(workdir: &Path, rel: &str) -> Option<String> {
     let out = Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C").arg(workdir)
         .args(["diff", "--no-index", "--no-color", "--", "/dev/null", rel])
         .output().ok()?;
@@ -188,7 +195,7 @@ fn diff_untracked_file(workdir: &Path, rel: &str) -> Option<String> {
 pub fn diff_summary(workdir: &Path, p: &DiffParams) -> Result<DiffSummaryResult, RpcError> {
     ensure_repo(workdir)?;
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(workdir).arg("diff").arg("--numstat");
+    cmd.arg("--no-optional-locks").arg("-C").arg(workdir).arg("diff").arg("--numstat");
     if p.staged { cmd.arg("--staged"); }
     if let Some(path) = &p.path { cmd.arg("--").arg(path); }
     let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;

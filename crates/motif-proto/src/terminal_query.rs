@@ -69,8 +69,17 @@ pub enum QueryKind {
     Osc133PromptStart,
     /// `ESC ] 133 ; B ST` — prompt rendered, user input phase begins.
     Osc133PromptEnd,
-    /// `ESC ] 133 ; C ST` — command starting to execute (preexec).
-    Osc133CmdStart,
+    /// `ESC ] 133 ; C [;cmdline_url=<percent>] ST` — command starting to
+    /// execute. Fish 4.x's native marker carries the literal commandline
+    /// percent-encoded as `cmdline_url`; that's the *authoritative* cmd
+    /// text because fish writes this marker BEFORE firing the
+    /// `fish_preexec` event (see fish-shell `reader/reader.rs:858-862`),
+    /// which is when our bootstrap's OSC 7770 fallback emits — too late to
+    /// be consumed by the same cycle's `133;C` transition. State machine
+    /// prefers `cmdline_url` when present and falls back to pending OSC
+    /// 7770 otherwise. Percent-decoding mirrors fish's `EscapeStringStyle::Url`
+    /// (only `[A-Za-z0-9/.~_-]` left literal; everything else is `%HH`).
+    Osc133CmdStart { cmdline_url: Option<String> },
     /// `ESC ] 133 ; D [;<exit>] ST` — command finished, exit code is the
     /// `$?` shell observed on the *previous* command. `None` means the
     /// shell sent the terminator without a code (e.g., first prompt of a
@@ -126,7 +135,7 @@ impl QueryKind {
             Self::Osc7Cwd { .. }
             | Self::Osc133PromptStart
             | Self::Osc133PromptEnd
-            | Self::Osc133CmdStart
+            | Self::Osc133CmdStart { .. }
             | Self::Osc133CmdEnd { .. }
             | Self::Osc7770Cmd { .. }
             | Self::Osc7771Context { .. } => return None,
@@ -141,7 +150,7 @@ impl QueryKind {
             Self::Osc7Cwd { .. }
                 | Self::Osc133PromptStart
                 | Self::Osc133PromptEnd
-                | Self::Osc133CmdStart
+                | Self::Osc133CmdStart { .. }
                 | Self::Osc133CmdEnd { .. }
                 | Self::Osc7770Cmd { .. }
                 | Self::Osc7771Context { .. }
@@ -171,19 +180,11 @@ fn decode_hex(s: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decode a `file://[host]/path` URL into a PathBuf. Hex-encoded bytes
-/// (`%20` etc.) are unescaped. Anything that doesn't start with `file://`
-/// is taken as a literal path — a few shells emit just the path.
-fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
-    let bytes = if s.starts_with(b"file://") {
-        // Skip past the host segment (between `//` and the first `/` of
-        // the path). For `file:///abs` the host is empty.
-        let after_scheme = &s[b"file://".len()..];
-        let path_start = after_scheme.iter().position(|&b| b == b'/')?;
-        &after_scheme[path_start..]
-    } else {
-        s
-    };
+/// Percent-decode (`%HH` → byte) the input. Non-`%` bytes pass through;
+/// malformed escapes (`%` near end of input or `%XY` where X/Y aren't hex)
+/// are left literal so downstream code sees the original bytes rather than
+/// silently corrupted output.
+fn percent_decode(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -197,7 +198,23 @@ fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
         out.push(bytes[i]);
         i += 1;
     }
-    Some(std::path::PathBuf::from(String::from_utf8(out).ok()?))
+    out
+}
+
+/// Decode a `file://[host]/path` URL into a PathBuf. Hex-encoded bytes
+/// (`%20` etc.) are unescaped. Anything that doesn't start with `file://`
+/// is taken as a literal path — a few shells emit just the path.
+fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
+    let bytes = if s.starts_with(b"file://") {
+        // Skip past the host segment (between `//` and the first `/` of
+        // the path). For `file:///abs` the host is empty.
+        let after_scheme = &s[b"file://".len()..];
+        let path_start = after_scheme.iter().position(|&b| b == b'/')?;
+        &after_scheme[path_start..]
+    } else {
+        s
+    };
+    Some(std::path::PathBuf::from(String::from_utf8(percent_decode(bytes)).ok()?))
 }
 
 /// One element of the time-ordered scan output. Use this when the
@@ -406,15 +423,16 @@ impl QueryScanner {
         //   - fish 4.x:  133;A;click_events=1, 133;C;cmdline_url=<percent>
         //   - iTerm2:    133;A;aid=<n>,        133;D;<exit>;err=<msg>
         //
-        // We don't currently consume those params, but the edge MUST be
-        // recognized — otherwise the block state machine never advances
-        // past the first cycle (every redraw becomes a no-op and 133;C
-        // never fires CommandStarted, leaving prompt_html empty).
+        // We extract `cmdline_url` from `133;C` (fish writes the literal
+        // commandline there) and the exit code from `133;D`. Other params
+        // are recognized but discarded — the edge still MUST be parsed,
+        // otherwise the block state machine never advances past the first
+        // cycle and the prompt ends up empty.
         if let Some(rest) = body.strip_prefix(b"133;") {
             return match rest {
                 b"A" => Decision::Match(QueryKind::Osc133PromptStart),
                 b"B" => Decision::Match(QueryKind::Osc133PromptEnd),
-                b"C" => Decision::Match(QueryKind::Osc133CmdStart),
+                b"C" => Decision::Match(QueryKind::Osc133CmdStart { cmdline_url: None }),
                 b"D" => Decision::Match(QueryKind::Osc133CmdEnd { exit: None }),
                 _ => {
                     // Subcommand with parameter list: `<sub>;<rest>`.
@@ -428,7 +446,17 @@ impl QueryScanner {
                     match rest.first() {
                         Some(b'A') => Decision::Match(QueryKind::Osc133PromptStart),
                         Some(b'B') => Decision::Match(QueryKind::Osc133PromptEnd),
-                        Some(b'C') => Decision::Match(QueryKind::Osc133CmdStart),
+                        Some(b'C') => {
+                            // Walk `;`-separated params for `cmdline_url=<percent>`.
+                            // First match wins; missing or undecodable values
+                            // fall back to None (state machine then uses pending
+                            // OSC 7770 from our bootstrap).
+                            let cmdline_url = after_sub
+                                .split(|&b| b == b';')
+                                .find_map(|p| p.strip_prefix(b"cmdline_url="))
+                                .and_then(|v| String::from_utf8(percent_decode(v)).ok());
+                            Decision::Match(QueryKind::Osc133CmdStart { cmdline_url })
+                        }
                         Some(b'D') => {
                             // `D;<exit>[;<extras>]` — first field is the
                             // exit code; everything after is ignored.
@@ -673,7 +701,10 @@ mod tests {
         for (bytes, kind) in [
             (&b"\x1b]133;A\x07"[..], QueryKind::Osc133PromptStart),
             (&b"\x1b]133;B\x07"[..], QueryKind::Osc133PromptEnd),
-            (&b"\x1b]133;C\x07"[..], QueryKind::Osc133CmdStart),
+            (
+                &b"\x1b]133;C\x07"[..],
+                QueryKind::Osc133CmdStart { cmdline_url: None },
+            ),
             (
                 &b"\x1b]133;D\x07"[..],
                 QueryKind::Osc133CmdEnd { exit: None },
@@ -724,7 +755,46 @@ mod tests {
             ),
             (
                 &b"\x1b]133;C;cmdline_url=false\x07"[..],
-                QueryKind::Osc133CmdStart,
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some("false".into()),
+                },
+            ),
+            (
+                // Percent-decoded: spaces and special chars round-trip.
+                // fish encodes `ls -la "x y"` → `ls%20-la%20%22x%20y%22`.
+                &b"\x1b]133;C;cmdline_url=ls%20-la%20%22x%20y%22\x07"[..],
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some(r#"ls -la "x y""#.into()),
+                },
+            ),
+            (
+                // Non-ASCII bytes via percent-encoded UTF-8: `❯` = E2 9D AF.
+                &b"\x1b]133;C;cmdline_url=echo%20%E2%9D%AF\x07"[..],
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some("echo ❯".into()),
+                },
+            ),
+            (
+                // ST-terminated form: same content via different terminator.
+                &b"\x1b]133;C;cmdline_url=ls\x1b\\"[..],
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some("ls".into()),
+                },
+            ),
+            (
+                // Other params before / after cmdline_url shouldn't matter.
+                &b"\x1b]133;C;aid=7;cmdline_url=ls;trailing=x\x07"[..],
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some("ls".into()),
+                },
+            ),
+            (
+                // Empty value parses to empty string (not None) — distinguishes
+                // "shell sent the param explicitly empty" from "no param".
+                &b"\x1b]133;C;cmdline_url=\x07"[..],
+                QueryKind::Osc133CmdStart {
+                    cmdline_url: Some(String::new()),
+                },
             ),
             (
                 &b"\x1b]133;D;0;err=ok\x07"[..],
@@ -832,7 +902,8 @@ mod tests {
         for kind in [
             QueryKind::Osc133PromptStart,
             QueryKind::Osc133PromptEnd,
-            QueryKind::Osc133CmdStart,
+            QueryKind::Osc133CmdStart { cmdline_url: None },
+            QueryKind::Osc133CmdStart { cmdline_url: Some("ls".into()) },
             QueryKind::Osc133CmdEnd { exit: Some(0) },
             QueryKind::Osc7Cwd { path: "/x".into() },
             QueryKind::Osc7770Cmd { text: "x".into() },
@@ -884,7 +955,10 @@ mod tests {
             QueryKind::Osc7770Cmd { text } => assert_eq!(text, "ls -la"),
             other => panic!("expected Osc7770Cmd, got {other:?}"),
         }
-        assert!(matches!(r.queries[5], QueryKind::Osc133CmdStart));
+        assert!(matches!(
+            r.queries[5],
+            QueryKind::Osc133CmdStart { cmdline_url: None }
+        ));
     }
 
     #[test]

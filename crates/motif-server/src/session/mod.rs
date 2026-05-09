@@ -21,14 +21,25 @@ use crate::pty::PtyPool;
 const RING_CAPACITY: usize = 4096; // events buffered for replay
 const BROADCAST_CAPACITY: usize = 4096;
 
+struct PublishState {
+    seq:  Seq,
+    ring: VecDeque<Arc<Event>>,
+}
+
 pub struct Session {
     pub id:         SessionId,
     pub name:       String,
     pub workdir:    PathBuf,
     pub created_at: UnixMs,
 
-    seq:     Mutex<Seq>,
-    ring:    Mutex<VecDeque<Arc<Event>>>,
+    /// Seq counter and replay ring share one mutex so `publish_event` can
+    /// allocate a seq, push to the ring, and broadcast under a single
+    /// critical section. With separate locks two concurrent publishers
+    /// (PTY reader threads, RPC handlers, fswatch forwarder) could
+    /// interleave seq allocation with ring/broadcast pushes — leaving the
+    /// ring out of seq order, which corrupts replay-after-reconnect
+    /// (`session.attach { last_seq }` slices the ring by seq position).
+    publish: Mutex<PublishState>,
     clients: Mutex<Vec<ClientInfo>>,
     tx:      broadcast::Sender<Arc<Event>>,
 
@@ -62,8 +73,10 @@ impl Session {
             name:       name.into(),
             workdir,
             created_at: now_ms(),
-            seq:        Mutex::new(0),
-            ring:       Mutex::new(VecDeque::with_capacity(RING_CAPACITY)),
+            publish:    Mutex::new(PublishState {
+                seq:  0,
+                ring: VecDeque::with_capacity(RING_CAPACITY),
+            }),
             clients:    Mutex::new(Vec::new()),
             tx,
             pty_pool:   PtyPool::new(),
@@ -100,7 +113,7 @@ impl Session {
         self.clients.lock().clone()
     }
 
-    pub fn last_seq(&self) -> Seq { *self.seq.lock() }
+    pub fn last_seq(&self) -> Seq { self.publish.lock().seq }
 
     /// Stash the client-reported terminal palette. `None` for either field
     /// keeps the existing value, so a client that can detect only one of
@@ -150,7 +163,7 @@ impl Session {
     /// fell behind past the ring window, they get only what we still have —
     /// they're expected to be idempotent against duplicate frames.
     pub fn replay_since(&self, after: Seq) -> Vec<Arc<Event>> {
-        self.ring.lock().iter().filter(|e| e.seq() > after).cloned().collect()
+        self.publish.lock().ring.iter().filter(|e| e.seq() > after).cloned().collect()
     }
 
     pub fn attach_client(&self, client_id: ClientId) -> AttachOutcome {
@@ -235,6 +248,7 @@ impl Session {
             *self.active_view.lock() = next_active.clone();
             let nv = next_active.clone();
             self.publish_event(|seq| Event::ViewActiveChanged { view_id: nv, seq });
+            self.sync_watch_to_active();
         }
         Some(removed)
     }
@@ -288,24 +302,61 @@ impl Session {
             *av = view_id.clone();
         }
         self.publish_event(|seq| Event::ViewActiveChanged { view_id, seq });
+        self.sync_watch_to_active();
+    }
+
+    /// Called by the PTY reader after publishing `pty.cwd_changed`. Re-points
+    /// the fswatcher only if the changed PTY is the currently-active one
+    /// (cwd of background tabs doesn't affect what the file tree shows).
+    pub fn note_pty_cwd_changed(&self, pty_id: &str) {
+        let active_pty = self.active_view.lock().clone()
+            .and_then(|vid| self.pty_id_of_view(&vid));
+        if active_pty.as_deref() != Some(pty_id) { return; }
+        self.sync_watch_to_active();
+    }
+
+    /// Recompute the desired watch root from the currently-active view and
+    /// update the fswatcher if it differs. Idempotent — safe to call from
+    /// any of the activation / cwd hooks.
+    fn sync_watch_to_active(&self) {
+        let target = self.desired_watch_root();
+        let mut guard = self.fswatcher.lock();
+        let Some(w) = guard.as_mut() else { return };
+        if w.root() == target { return; }
+        if let Err(e) = w.swap_root(target.clone()) {
+            tracing::warn!(target = %target.display(), error = %e, "swap watch root");
+        }
+    }
+
+    /// "Where should we watch right now?" — the active PTY's latest known
+    /// cwd if there is one, otherwise the session's workdir as a stable
+    /// fallback (used when the active view is non-PTY, or no view at all).
+    fn desired_watch_root(&self) -> PathBuf {
+        let pty_id = self.active_view.lock().clone()
+            .and_then(|vid| self.pty_id_of_view(&vid));
+        pty_id
+            .and_then(|pid| self.pty_pool.get(&pid))
+            .map(|pty| pty.info().cwd)
+            .unwrap_or_else(|| self.workdir.clone())
     }
 
     /// Atomic seq-allocate + ring-record + broadcast. Returns the seq used.
+    ///
+    /// Holds `publish` across all three steps so two concurrent publishers
+    /// can't end up with ring or broadcast deliveries out of seq order. The
+    /// `tx.send` itself only enqueues into the broadcast channel (it
+    /// returns once subscribers' bounded buffers have a slot or the slowest
+    /// is dropped), so holding the lock across it doesn't block on slow
+    /// receivers.
     pub fn publish_event<F>(&self, build: F) -> Seq
     where F: FnOnce(Seq) -> Event,
     {
-        let mut s = self.seq.lock();
-        *s += 1;
-        let seq = *s;
-        drop(s);
-
-        let event = build(seq);
-        let arc   = Arc::new(event);
-        {
-            let mut ring = self.ring.lock();
-            if ring.len() == RING_CAPACITY { ring.pop_front(); }
-            ring.push_back(arc.clone());
-        }
+        let mut p = self.publish.lock();
+        p.seq += 1;
+        let seq = p.seq;
+        let arc = Arc::new(build(seq));
+        if p.ring.len() == RING_CAPACITY { p.ring.pop_front(); }
+        p.ring.push_back(arc.clone());
         let _ = self.tx.send(arc);
         seq
     }
@@ -321,4 +372,56 @@ fn now_ms() -> UnixMs {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    /// Concurrent publishers must observe seq monotonic in the ring.
+    /// Pre-fix this would fail with extremely high probability under
+    /// MIRI-like scheduling: T1 allocates seq=N and is preempted before
+    /// pushing; T2 allocates seq=N+1 and pushes first; ring becomes
+    /// [..., N+1, N]. `replay_since(0)` would then return events with
+    /// non-monotonic seq, and `session.attach { last_seq }` slicing would
+    /// either skip events or replay duplicates depending on the cutoff.
+    #[test]
+    fn publish_event_keeps_ring_monotonic_under_contention() {
+        let s = Session::new("test", PathBuf::from("/tmp"));
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 500;
+
+        let mut handles = Vec::with_capacity(THREADS);
+        for _ in 0..THREADS {
+            let s = s.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..PER_THREAD {
+                    s.publish_event(|seq| Event::GitChanged { seq });
+                }
+            }));
+        }
+        for h in handles { h.join().unwrap(); }
+
+        let total = THREADS * PER_THREAD;
+        let events = s.replay_since(0);
+        assert_eq!(events.len(), total, "lost or duplicated events under contention");
+
+        // Seqs must be strictly increasing in ring order. (Not just unique
+        // — `replay_since` slices by seq position, so the slice must equal
+        // the dense [k+1..N] range for every cutoff k.)
+        let mut prev = 0;
+        for e in &events {
+            let cur = e.seq();
+            assert!(cur > prev, "seq order broken: {prev} → {cur}");
+            prev = cur;
+        }
+        assert_eq!(prev, total as Seq);
+
+        // Spot-check the slicing invariant attach relies on.
+        let mid = (total / 2) as Seq;
+        let after_mid = s.replay_since(mid);
+        assert_eq!(after_mid.len(), total - mid as usize);
+        assert_eq!(after_mid.first().unwrap().seq(), mid + 1);
+    }
 }

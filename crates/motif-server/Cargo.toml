@@ -33,7 +33,7 @@ portable-pty       = { workspace = true }
 walkdir            = { workspace = true }
 mime_guess         = { workspace = true }
 notify             = { workspace = true }
-notify-debouncer-mini = { workspace = true }
+notify-debouncer-full = { workspace = true }
 
 sha2               = { workspace = true }
 hex                = { workspace = true }

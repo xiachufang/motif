@@ -139,12 +139,16 @@ impl ShellState {
         }
     }
 
-    /// `OutputScope` for the current state. `Unknown` defaults to
-    /// `Prompt` (treated as a raw terminal stream by clients).
+    /// `OutputScope` for the current state. `Unknown` reports
+    /// `Passthrough` so housekeeping bytes (pre-bootstrap banners,
+    /// between-block window-title sets / mode toggles, or shells with
+    /// integration disabled) are visibly distinct from real prompt-zone
+    /// bytes — and so client-side routing can fast-path them away from
+    /// any block-segment buffers.
     pub fn active_scope(&self) -> OutputScope {
         match &self.state {
-            BlockState::Unknown
-            | BlockState::AtPrompt { .. } => OutputScope::Prompt,
+            BlockState::Unknown           => OutputScope::Passthrough,
+            BlockState::AtPrompt { .. }   => OutputScope::Prompt,
             BlockState::Composing { .. }  => OutputScope::Command,
             BlockState::Running   { .. }  => OutputScope::Output,
         }
@@ -283,16 +287,43 @@ impl ShellState {
                 self.first_osc_seen(&mut out);
                 self.pending_cmd = Some(text.clone());
             }
-            QueryKind::Osc133CmdStart => {
+            QueryKind::Osc133CmdStart { cmdline_url } => {
                 self.first_osc_seen(&mut out);
                 let prev = std::mem::replace(&mut self.state, BlockState::Unknown);
                 match prev {
                     BlockState::Composing {
                         block_id, prompt_buf, prompt_truncated,
                         command_buf, command_truncated,
-                        cwd, started_at,
+                        cwd, started_at: _at_prompt,
                     } => {
-                        let cmd = self.pending_cmd.take().unwrap_or_default();
+                        // `cmdline_url` is fish 4.x's authoritative
+                        // commandline (written next to its native 133;C
+                        // BEFORE the `fish_preexec` event fires — see
+                        // fish-shell `reader/reader.rs:858-862`). Our
+                        // bootstrap's OSC 7770 fallback fires inside the
+                        // event handler, which means it lands AFTER this
+                        // transition and would otherwise leak into the
+                        // next cycle. Prefer cmdline_url when present;
+                        // fall back to pending_cmd for shells without
+                        // native cmdline_url support (bash/zsh + our
+                        // bootstrap, where 7770 lands before our 133;C).
+                        let cmd = cmdline_url.clone()
+                            .or_else(|| self.pending_cmd.take())
+                            .unwrap_or_default();
+                        // Always clear pending_cmd so a stale value can't
+                        // feed the next cycle even if `cmdline_url` was
+                        // used here. (Without this, a 7770 emitted by our
+                        // bootstrap during this cycle would survive into
+                        // the next `Composing → Running` transition.)
+                        self.pending_cmd = None;
+                        // `started_at` carried in `AtPrompt`/`Composing`
+                        // is the *prompt-paint* time. Re-anchor it to NOW
+                        // for the Running block so block.duration =
+                        // execution time, not (think + execution). Without
+                        // this the UI overstates duration by however long
+                        // the user sat at the prompt before pressing
+                        // Enter — sometimes minutes.
+                        let started_at = SystemTime::now();
                         out.push(ShellEvent::CommandStarted {
                             id:         block_id.clone(),
                             text:       cmd.clone(),
@@ -313,13 +344,21 @@ impl ShellState {
                         };
                     }
                     // 133;C while not Composing — restore prior state.
-                    // (Some shells emit C twice on retried input;
-                    // idempotent on Running.)
+                    // (fish 4.x emits 133;C twice per cycle: native first
+                    // with cmdline_url, then our bootstrap's bare 133;C
+                    // from inside fish_preexec. The second one lands on
+                    // Running and goes idempotent here.)
                     other => { self.state = other; }
                 }
             }
             QueryKind::Osc133CmdEnd { exit } => {
                 self.first_osc_seen(&mut out);
+                // Belt-and-suspenders: any pending OSC 7770 left here
+                // (e.g. our bootstrap fired 7770 mid-cycle but native
+                // 133;C had already consumed cmdline_url) must not leak
+                // across the block boundary into the next cycle's
+                // `Composing → Running` transition.
+                self.pending_cmd = None;
                 let prev = std::mem::replace(&mut self.state, BlockState::Unknown);
                 match prev {
                     BlockState::Running {
@@ -342,20 +381,19 @@ impl ShellState {
                             output,
                             output_truncated,
                         });
-                        // Allocate the next prompt-cycle id immediately
-                        // so any bytes between 133;D and the next 133;A
-                        // (rare housekeeping) can still be tagged. The
-                        // shell's subsequent 133;A is then a redraw
-                        // (id-preserving) on this fresh AtPrompt slot.
-                        let new_id = Ulid::new().to_string();
-                        self.state = BlockState::AtPrompt {
-                            block_id:         new_id,
-                            prompt_buf:       Vec::new(),
-                            prompt_truncated: false,
-                            cwd:              self.current_cwd.clone()
-                                                  .unwrap_or_else(|| PathBuf::from("/")),
-                            started_at:       SystemTime::now(),
-                        };
+                        // Drop back to Unknown so any housekeeping bytes
+                        // between this 133;D and the next 133;A (fish's
+                        // window-title `OSC 0`, bracketed-paste mode-set,
+                        // etc.) flow as `block_id=null, scope=prompt`
+                        // instead of being tagged with a pre-allocated
+                        // id that has no `prompt_started` yet. The next
+                        // 133;A goes through the `Unknown → AtPrompt`
+                        // branch above, allocating a fresh id and
+                        // broadcasting `PromptStarted` *before* any
+                        // bytes reference it. `bootstrap_announced`
+                        // stays latched, so `Bootstrapped` doesn't
+                        // re-fire.
+                        self.state = BlockState::Unknown;
                     }
                     other => { self.state = other; }
                 }
@@ -473,7 +511,7 @@ mod tests {
         assert_eq!(s.active_block_id(), Some(&id_after_a), "B keeps id");
         s.record_output(b"echo hi");
         s.on_osc(&QueryKind::Osc7770Cmd { text: "echo hi".into() });
-        let evs = s.on_osc(&QueryKind::Osc133CmdStart);
+        let evs = s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         let cs = evs.iter().find_map(|e| match e {
             ShellEvent::CommandStarted { id, text, .. } => Some((id.clone(), text.clone())),
             _ => None,
@@ -492,9 +530,19 @@ mod tests {
         assert_eq!(f.2, b"$ ");
         assert_eq!(f.3, b"echo hi");
         assert_eq!(f.4, b"hi\n");
-        // After 133;D, a fresh id should be allocated.
-        let id_after_d = s.active_block_id().cloned().expect("AtPrompt after D");
-        assert_ne!(id_after_d, id_after_a);
+        // After 133;D the state machine drops to Unknown so housekeeping
+        // bytes (window-title set, mode toggles) before the next prompt
+        // flow as block_id=null. The next 133;A allocates a fresh id and
+        // broadcasts PromptStarted before any bytes can reference it.
+        assert!(s.active_block_id().is_none(), "no block id between 133;D and next 133;A");
+        s.record_output(b"\x1b]0;title\x07"); // housekeeping byte; not buffered (Unknown drops it).
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        let id_next = evs.iter().find_map(|e| match e {
+            ShellEvent::PromptStarted { block_id } => Some(block_id.clone()),
+            _ => None,
+        }).expect("PromptStarted after 133;D → Unknown → 133;A");
+        assert_ne!(id_next, id_after_a, "next prompt cycle gets a fresh id");
+        assert_eq!(s.active_block_id(), Some(&id_next));
     }
 
     #[test]
@@ -513,7 +561,7 @@ mod tests {
         s.record_output(b"new prompt");
         s.on_osc(&QueryKind::Osc133PromptEnd);
         s.on_osc(&QueryKind::Osc7770Cmd { text: "x".into() });
-        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         let evs = s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
         let prompt = evs.iter().find_map(|e| match e {
             ShellEvent::CommandFinished { prompt, .. } => Some(prompt.clone()),
@@ -563,7 +611,7 @@ mod tests {
         s.on_osc(&QueryKind::Osc133PromptEnd);
         s.record_output(b"echo hi");
         s.on_osc(&QueryKind::Osc7770Cmd { text: "echo hi".into() });
-        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         let evs = s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
         let (id, prompt, command) = evs.iter().find_map(|e| match e {
             ShellEvent::CommandFinished { id, prompt, command, .. } =>
@@ -581,7 +629,7 @@ mod tests {
         s.on_osc(&QueryKind::Osc133PromptStart);
         s.on_osc(&QueryKind::Osc133PromptEnd);
         s.on_osc(&QueryKind::Osc7770Cmd { text: "sleep 30".into() });
-        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         let id_running = s.active_block_id().cloned().unwrap();
         let evs = s.on_osc(&QueryKind::Osc133PromptStart);
         let cf = evs.iter().find_map(|e| match e {
@@ -600,7 +648,7 @@ mod tests {
         s.on_osc(&QueryKind::Osc133PromptStart);
         s.on_osc(&QueryKind::Osc133PromptEnd);
         s.on_osc(&QueryKind::Osc7770Cmd { text: "noisy".into() });
-        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         let big = vec![b'x'; SEGMENT_MAX_BYTES + 500_000];
         s.record_output(&big);
         let evs = s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
@@ -646,7 +694,7 @@ mod tests {
         s.on_osc(&QueryKind::Osc133PromptEnd);
         s.record_output(b"cmd-typed");
         s.on_osc(&QueryKind::Osc7770Cmd { text: "x".into() });
-        s.on_osc(&QueryKind::Osc133CmdStart);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
         s.record_output(b"out");
         let evs = s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
         let (p, c, o) = evs.iter().find_map(|e| match e {
@@ -663,5 +711,164 @@ mod tests {
     fn active_block_id_none_until_first_133a() {
         let s = new_state();
         assert!(s.active_block_id().is_none());
+    }
+
+    #[test]
+    fn cmdline_url_takes_priority_over_pending_cmd() {
+        // fish 4.x ordering: native `133;C;cmdline_url=…` fires BEFORE
+        // `fish_preexec`, our bootstrap's OSC 7770 fires INSIDE the event
+        // (so it lands AFTER native 133;C in the byte stream).
+        // cmdline_url must win, otherwise pending_cmd would be empty for
+        // the first cycle and stale-from-previous for every cycle after
+        // (the off-by-one we hit in production: block N's text === block
+        // N-1's command).
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        // Native 133;C arrives first with the authoritative cmd.
+        let evs = s.on_osc(&QueryKind::Osc133CmdStart {
+            cmdline_url: Some("ls".into()),
+        });
+        let cs = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandStarted { text, .. } => Some(text.clone()),
+            _ => None,
+        }).expect("CommandStarted");
+        assert_eq!(cs, "ls", "cmdline_url is the cmd source");
+        // Bootstrap's 7770 + bare 133;C arrive AFTER, while we're already
+        // Running. They must be fully idempotent — and crucially, must
+        // NOT leave a leftover pending_cmd that the next cycle would
+        // mis-attribute.
+        s.on_osc(&QueryKind::Osc7770Cmd { text: "ls".into() });
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
+        s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
+        assert!(s.pending_cmd.is_none(), "pending_cmd cleared at 133;D");
+
+        // Next cycle: another fish-style sequence. After 133;D the state
+        // machine sits at Unknown; 133;A allocates a fresh id, then 133;B
+        // → Composing → 133;C with new cmdline_url. The cmd attached to
+        // the new block must come from THIS cycle's cmdline_url, not from
+        // any pending_cmd left over from the previous cycle.
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        let evs = s.on_osc(&QueryKind::Osc133CmdStart {
+            cmdline_url: Some("e".into()),
+        });
+        let cs = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandStarted { text, .. } => Some(text.clone()),
+            _ => None,
+        }).expect("CommandStarted (second cycle)");
+        assert_eq!(cs, "e", "second block sees its own cmd, not previous");
+    }
+
+    #[test]
+    fn started_at_anchored_at_133c_not_133a() {
+        // block.started_at must reflect when the command actually started
+        // executing (133;C), not when the prompt first painted (133;A).
+        // Otherwise duration shown in the UI = think-time + execution,
+        // which can be minutes off when the user sat reading the prompt.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        // Simulate user reading the prompt for a perceptible time before
+        // pressing Enter.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        let pre_c = system_time_to_ms(SystemTime::now());
+        let evs = s.on_osc(&QueryKind::Osc133CmdStart {
+            cmdline_url: Some("ls".into()),
+        });
+        let cs_at = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandStarted { started_at, .. } => Some(*started_at),
+            _ => None,
+        }).expect("CommandStarted");
+        assert!(
+            cs_at >= pre_c - 5,
+            "started_at ({cs_at}) must be at-or-after the 133;C boundary ({pre_c})"
+        );
+        let evs = s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
+        let cf_at = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandFinished { started_at, .. } => Some(*started_at),
+            _ => None,
+        }).expect("CommandFinished");
+        assert_eq!(cs_at, cf_at, "started_at carries through finalize");
+    }
+
+    #[test]
+    fn unknown_state_reports_passthrough_scope_in_all_three_subcases() {
+        // (1) Pre-bootstrap: state machine starts in Unknown before any
+        //     OSC 133 fires (fish welcome banner / SSH MOTD lands here).
+        let mut s = new_state();
+        assert!(matches!(s.state, BlockState::Unknown));
+        assert_eq!(s.active_scope(), OutputScope::Passthrough);
+
+        // (2) Between blocks: a 133;D drops state back to Unknown until
+        //     the next 133;A arrives (window-title set, mode toggles).
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: Some("ls".into()) });
+        s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
+        assert!(matches!(s.state, BlockState::Unknown));
+        assert_eq!(s.active_scope(), OutputScope::Passthrough);
+
+        // (3) Bootstrap-timeout (shell-integration disabled or unsupported
+        //     shell): the timeout latches kind=Unknown and the state
+        //     stays Unknown forever — every byte is passthrough.
+        let mut s2 = ShellState::new(ShellKind::Bash, Instant::now(), None);
+        s2.note_bootstrap_timeout();
+        assert!(matches!(s2.state, BlockState::Unknown));
+        assert_eq!(s2.active_scope(), OutputScope::Passthrough);
+    }
+
+    #[test]
+    fn no_block_id_between_133d_and_next_133a() {
+        // Housekeeping bytes the shell emits after a command finishes but
+        // before painting the next prompt — `OSC 0` (window title), mode
+        // toggles, etc. — must NOT be tagged with a block_id, because no
+        // `prompt_started` has been broadcast yet for the next block.
+        // Previously the state machine pre-allocated the next id at 133;D
+        // and tagged these bytes with it, leaving the client with
+        // `pty.output` events that referenced a block_id it had never
+        // heard of.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        let id_first = s.active_block_id().cloned().unwrap();
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: Some("ls".into()) });
+        s.on_osc(&QueryKind::Osc133CmdEnd { exit: Some(0) });
+
+        // Between 133;D and the next 133;A: no active block; scope is
+        // Passthrough so housekeeping bytes are visibly distinct from
+        // real PS1 paint bytes.
+        assert!(s.active_block_id().is_none());
+        assert!(matches!(s.state, BlockState::Unknown));
+        assert_eq!(s.active_scope(), OutputScope::Passthrough);
+
+        // Next 133;A: fresh id, broadcasts PromptStarted before any bytes
+        // can reference it.
+        let evs = s.on_osc(&QueryKind::Osc133PromptStart);
+        let id_second = evs.iter().find_map(|e| match e {
+            ShellEvent::PromptStarted { block_id } => Some(block_id.clone()),
+            _ => None,
+        }).expect("PromptStarted");
+        assert_ne!(id_second, id_first);
+        // bootstrap_announced is latched, so the second cycle does NOT
+        // re-broadcast Bootstrapped.
+        assert!(!evs.iter().any(|e| matches!(e, ShellEvent::Bootstrapped)));
+    }
+
+    #[test]
+    fn pending_cmd_falls_back_when_cmdline_url_absent() {
+        // bash/zsh + our bootstrap: there's no native 133;C; we emit OSC
+        // 7770 then bare 133;C from inside preexec. The state machine
+        // must still pick up the cmd from pending_cmd in that case.
+        let mut s = new_state();
+        s.on_osc(&QueryKind::Osc133PromptStart);
+        s.on_osc(&QueryKind::Osc133PromptEnd);
+        s.on_osc(&QueryKind::Osc7770Cmd { text: "echo hi".into() });
+        let evs = s.on_osc(&QueryKind::Osc133CmdStart { cmdline_url: None });
+        let cs = evs.iter().find_map(|e| match e {
+            ShellEvent::CommandStarted { text, .. } => Some(text.clone()),
+            _ => None,
+        }).expect("CommandStarted");
+        assert_eq!(cs, "echo hi");
     }
 }
