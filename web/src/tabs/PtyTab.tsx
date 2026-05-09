@@ -1,26 +1,21 @@
-// Layout shell for a PTY tab. Two stacked panes:
-//   .pty-stack — finalized BlockCard / AltStub history + the trailing
-//                BlockTerm if a command is currently running.
-//   .pty-float — always-visible FloatTerm hosting PS1 + user input + PS2.
+// Layout shell for a PTY tab. Two slots host the SAME xterm instance:
+//   .pty-stack — finalized BlockCard / AltStub history + (when a command is
+//                running) a `.pty-live-slot` containing a sticky header and
+//                the xterm host element.
+//   .pty-float — when idle, hosts the same xterm element. Bottom-pinned.
 //
-// All xterm work lives in FloatTerm / BlockTerm; PtyTab only does:
-//   - block backfill on mount (pty.list_blocks → SerializeAddon → store)
-//   - selectedBlock scrollIntoView
-//   - auto-pin to bottom on block-list changes
-//   - publish FloatTerm's cols to the BlockTerm so they stay aligned
-//
-// FloatTerm owns pty.resize (cols + viewport-derived rows). BlockTerm
-// mirrors cols only.
+// usePtyTerminal owns the Terminal, addons, and event listeners. PtyTab
+// only re-parents `hostEl` between the two slots and triggers the
+// running/idle mode transitions on store edges.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 import { useApp, type BlockRender } from "../store/store";
 import {
   bytesEnteredAltScreen, serializeBytesToHtml,
 } from "./serializeBlock";
-import { AltStub, BlockCard } from "./blockCards";
-import FloatTerm from "./FloatTerm";
-import BlockTerm from "./BlockTerm";
+import { AltStub, BlockCard, BlockIdChip, PromptLine } from "./blockCards";
+import { usePtyTerminal } from "./usePtyTerminal";
 import type { BlockId, BlockSummary, GetBlockOutputResult } from "../proto/types";
 
 interface Props { ptyId: string; active: boolean }
@@ -48,45 +43,74 @@ export default function PtyTab({ ptyId, active }: Props) {
   const ptyInfo           = useApp(s => s.ptyInfos.get(ptyId));
   const blocks            = useApp(s => s.ptyBlocks.get(ptyId)?.blocks ?? EMPTY_BLOCKS);
   const backfilledInStore = useApp(s => s.ptyBlocks.get(ptyId)?.backfilled ?? false);
+  const pendingFinalize   = useApp(s => s.ptyBlocks.get(ptyId)?.pendingFinalize ?? null);
   const selectedBlock     = useApp(s => s.selectedBlock);
   const setBackfilled     = useApp(s => s.setBackfilledBlocks);
   const setSelectedBlock  = useApp(s => s.setSelectedBlock);
 
   const stackRef          = useRef<HTMLDivElement | null>(null);
+  const liveHeaderRef     = useRef<HTMLElement | null>(null);
+  const liveHostRef       = useRef<HTMLDivElement | null>(null);
+  const floatHostRef      = useRef<HTMLDivElement | null>(null);
   const wasAtBottomRef    = useRef<boolean>(true);
-  // Mirror FloatTerm's chosen cols so BlockTerm stays in sync. Seeded
-  // from the server-known PtyInfo.cols (matters for re-attach where a
-  // running block already exists and BlockTerm mounts before FloatTerm
-  // has fit/published a value); FloatTerm overwrites this on first fit.
-  const [floatCols, setFloatCols] = useState<number>(ptyInfo?.cols ?? 80);
 
-  // Trailing entry, if running, is hoisted into BlockTerm in the stack.
+  const term = usePtyTerminal(ptyId);
+
+  // Trailing entry, if running, is hoisted into the live slot.
   const trailing = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const runningBlock = trailing?.kind === "running" ? trailing : null;
   const finalizedBlocks = runningBlock ? blocks.slice(0, -1) : blocks;
+  const running = !!runningBlock;
+  const altActive = term.altActive;
 
-  // Lifted from BlockTerm: when an alt-screen app is running we collapse
-  // the surrounding chrome (.pty-meta, finalized blocks, FloatTerm) via a
-  // class on .pty-tab so vim/htop get the full tab area.
-  const [altActive, setAltActive] = useState(false);
-  // Belt-and-braces: if the running block goes away (finalize, unmount)
-  // and BlockTerm's own cleanup didn't fire (defensive), force false.
-  useEffect(() => {
-    if (!runningBlock) setAltActive(false);
-  }, [runningBlock]);
-
+  // ─────────────────────── slot re-parenting + mode transitions ───────────────────────
   const prevRunningIdRef = useRef<BlockId | null>(null);
   useLayoutEffect(() => {
-    const id = runningBlock?.id ?? null;
-    if (id && id !== prevRunningIdRef.current) {
-      const stack = stackRef.current;
-      if (stack) {
-        stack.scrollTop = stack.scrollHeight;
-        wasAtBottomRef.current = true;
-      }
+    const newId   = runningBlock?.id ?? null;
+    const prevId  = prevRunningIdRef.current;
+    prevRunningIdRef.current = newId;
+
+    // Always keep the hook's DOM measurement refs in sync.
+    term.setStackEl(stackRef.current);
+    term.setHeaderEl(liveHeaderRef.current);
+
+    if (newId && newId !== prevId) {
+      // Entering running mode for `newId`. Snapshot the rendered prompt
+      // BEFORE clearing or re-parenting; the slot move happens in the
+      // beginRunning callback so the snapshot sees the prompt content
+      // intact.
+      term.beginRunning(newId, () => {
+        term.attachToSlot(liveHostRef.current);
+        term.setMode("running");
+        const stack = stackRef.current;
+        if (stack) { stack.scrollTop = stack.scrollHeight; wasAtBottomRef.current = true; }
+      });
+    } else if (!newId && prevId) {
+      // Leaving running mode. endRunning has already done the
+      // serialize+clear; now re-parent back to the float slot.
+      term.attachToSlot(floatHostRef.current);
+      term.setMode("idle");
+    } else {
+      // Same state (initial mount, or re-render with stable runningBlock).
+      const slot = newId ? liveHostRef.current : floatHostRef.current;
+      term.attachToSlot(slot);
+      term.setMode(newId ? "running" : "idle");
     }
-    prevRunningIdRef.current = id;
-  }, [runningBlock?.id]);
+  }, [runningBlock?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─────────────────────── command_finished → endRunning ───────────────────────
+  useEffect(() => {
+    if (!pendingFinalize) return;
+    if (!runningBlock || runningBlock.id !== pendingFinalize.id) return;
+    term.endRunning(pendingFinalize.id, pendingFinalize.exit_code, pendingFinalize.finished_at);
+  }, [pendingFinalize, runningBlock?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─────────────────────── focus management ───────────────────────
+  useEffect(() => {
+    if (!active) return;
+    const id = requestAnimationFrame(() => term.focus());
+    return () => cancelAnimationFrame(id);
+  }, [active, running]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─────────────────────── selected-block scroll ───────────────────────
   useEffect(() => {
@@ -115,6 +139,7 @@ export default function PtyTab({ ptyId, active }: Props) {
           pty_id: ptyId, limit: 50,
         });
         if (cancelled) return;
+        const cols = term.getCols() || ptyInfo?.cols || 80;
         // Server returns newest-first; flip so we render oldest-at-top.
         const summaries = [...r.blocks].reverse();
         const rendered = await Promise.all(summaries.map(async (s): Promise<BlockRender | null> => {
@@ -125,11 +150,9 @@ export default function PtyTab({ ptyId, active }: Props) {
             const promptBytes  = decodeB64(out.prompt_b64);
             const commandBytes = decodeB64(out.command_b64);
             const outputBytes  = decodeB64(out.output_b64);
-            // Alt-screen detection runs over the output segment — the
-            // prompt/command segments can't enter alt mode by definition.
             if (bytesEnteredAltScreen(outputBytes)) {
               const promptHtml = await serializeBytesToHtml(
-                concat(promptBytes, commandBytes), { cols: floatCols });
+                concat(promptBytes, commandBytes), { cols });
               return {
                 kind:        "alt",
                 id:          s.id,
@@ -141,12 +164,9 @@ export default function PtyTab({ ptyId, active }: Props) {
                 prompt_html: promptHtml,
               };
             }
-            // Header gets prompt+command rendered together (mirrors
-            // what the live FloatTerm captures from its xterm); body
-            // gets the output segment alone.
             const [promptHtml, bodyHtml] = await Promise.all([
-              serializeBytesToHtml(concat(promptBytes, commandBytes), { cols: floatCols }),
-              serializeBytesToHtml(outputBytes, { cols: floatCols }),
+              serializeBytesToHtml(concat(promptBytes, commandBytes), { cols }),
+              serializeBytesToHtml(outputBytes, { cols }),
             ]);
             return {
               kind:        "card",
@@ -167,14 +187,10 @@ export default function PtyTab({ ptyId, active }: Props) {
         const cards = rendered.filter((b): b is BlockRender => b !== null);
         setBackfilled(ptyId, cards);
       } catch {
-        // Server may not support list_blocks (older build) or the call
-        // failed transiently — flip the flag anyway so we don't busy-loop.
         if (!cancelled) setBackfilled(ptyId, []);
       }
     })();
     return () => { cancelled = true; };
-    // floatCols intentionally omitted — backfill runs once at mount; later
-    // cols changes don't re-render history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, ptyId, backfilledInStore, setBackfilled]);
 
@@ -191,14 +207,8 @@ export default function PtyTab({ ptyId, active }: Props) {
     return () => stack.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Exiting alt-screen mode is the trickiest case: we hide block cards via
-  // CSS (display:none) while .alt-active is on, which means scrollHeight
-  // shrinks without firing a scroll event. When the class drops on
-  // alt-exit the cards reappear, scrollHeight jumps, and the browser
-  // gives no scroll event either — wasAtBottomRef stays at its pre-alt
-  // value but scrollTop is now stuck near the top. We track the alt
-  // transition explicitly and force the scroll synchronously at commit
-  // time (useLayoutEffect — avoids a paint flash that rAF would cause).
+  // alt-screen exit reveals previously-hidden cards; force scroll-to-bottom
+  // sync because the layout jump fires no scroll event.
   const prevAltRef = useRef<boolean>(false);
   useLayoutEffect(() => {
     const stack = stackRef.current;
@@ -206,15 +216,11 @@ export default function PtyTab({ ptyId, active }: Props) {
     const wasAlt   = prevAltRef.current;
     const isAlt    = altActive;
     prevAltRef.current = isAlt;
-    // alt → non-alt: previously-hidden cards just reappeared.
     if (wasAlt && !isAlt) {
       stack.scrollTop = stack.scrollHeight;
       wasAtBottomRef.current = true;
       return;
     }
-    // Normal block-list change: stick to the bottom if we were already
-    // there. Done in the same layout effect so the new content + scroll
-    // commit in one frame, no flash.
     if (!wasAtBottomRef.current) return;
     stack.scrollTop = stack.scrollHeight;
   }, [blocks, altActive]);
@@ -229,13 +235,6 @@ export default function PtyTab({ ptyId, active }: Props) {
     }
   }, [ptyId, setSelectedBlock]);
 
-  // While a command is executing the BlockTerm owns the terminal: it
-  // focuses itself, and FloatTerm collapses to height 0 (.running class).
-  // .alt-active is the stricter subset for full-takeover apps (vim/htop)
-  // — it additionally hides meta strip, prior block cards, and the
-  // running header.
-  const running = !!runningBlock;
-
   return (
     <div className={`pty-tab${running ? " running" : ""}${altActive ? " alt-active" : ""}`}>
       <div className="pty-meta muted small">
@@ -249,46 +248,37 @@ export default function PtyTab({ ptyId, active }: Props) {
             && selectedBlock.blockId === b.id;
           if (b.kind === "card") {
             return (
-              <BlockCard
-                key={b.id}
-                block={b}
-                selected={sel}
-                onSelect={() => onBlockSelect(b.id)}
-              />
+              <BlockCard key={b.id} block={b} selected={sel} onSelect={() => onBlockSelect(b.id)} />
             );
           }
           if (b.kind === "alt") {
             return (
-              <AltStub
-                key={b.id}
-                block={b}
-                selected={sel}
-                onSelect={() => onBlockSelect(b.id)}
-              />
+              <AltStub key={b.id} block={b} selected={sel} onSelect={() => onBlockSelect(b.id)} />
             );
           }
           return null;
         })}
         {runningBlock && (
-          <BlockTerm
-            key={runningBlock.id}
-            ptyId={ptyId}
-            active={active}
-            block={runningBlock}
-            cols={floatCols}
-            stackElRef={stackRef}
-            onAltChange={setAltActive}
-          />
+          <article
+            className={`block-running ${altActive ? "alt" : ""}`}
+            data-block-id={runningBlock.id}
+          >
+            <header
+              className="block-running-header"
+              ref={liveHeaderRef}
+              title={`running since ${new Date(runningBlock.started_at).toLocaleTimeString()}`}
+            >
+              <PromptLine html={runningBlock.prompt_html} cmd={runningBlock.cmd} />
+              <BlockIdChip id={runningBlock.id} />
+            </header>
+            <div className="block-running-body">
+              <div className="pty-live-slot" ref={liveHostRef} />
+            </div>
+          </article>
         )}
       </div>
       <div className="pty-float">
-        <FloatTerm
-          ptyId={ptyId}
-          active={active}
-          running={running}
-          stackElRef={stackRef}
-          onColsChange={setFloatCols}
-        />
+        <div className="pty-float-host" ref={floatHostRef} />
       </div>
     </div>
   );

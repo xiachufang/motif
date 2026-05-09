@@ -14,6 +14,9 @@ import {
   appendOutput, clearPty, clearAll,
   markPromptStarted,
 } from "../store/ptyBuffers";
+import {
+  disposePtyTerminal, disposeAllPtyTerminals,
+} from "../tabs/usePtyTerminal";
 
 function loadBool(key: string, fallback: boolean): boolean {
   try {
@@ -131,6 +134,7 @@ export default function Workspace({ sessionName }: Props) {
     // PtyId from the previous session can collide with a fresh one here and
     // leak its old bytes into the new tab. Clear on entry and exit.
     clearAll();
+    disposeAllPtyTerminals();
     seenSeqRef.current.clear();
     seenSeqOrderRef.current = [];
     lastSeqRef.current = 0;
@@ -165,6 +169,7 @@ export default function Workspace({ sessionName }: Props) {
       // immediately rather than waiting for the WS to actually close.
       client.call("session.detach", {}).catch(() => { /* ignore — may not be attached yet */ });
       clearAll();
+    disposeAllPtyTerminals();
     };
   }, [client, sessionName, hydrate, setPage, setStatus]);
 
@@ -214,7 +219,7 @@ export default function Workspace({ sessionName }: Props) {
         case "client.joined": clientJoined({ id: e.params.client_id, since: e.params.since }); break;
         case "client.left":   clientLeft(e.params.client_id); break;
         case "pty.created":   registerPty(e.params.info); break;
-        case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
+        case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); disposePtyTerminal(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
         case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64), e.params.block_id ?? null, e.params.scope); break;
         case "pty.cwd_changed": updatePtyCwd(e.params.pty_id, e.params.cwd); break;
 
@@ -224,16 +229,15 @@ export default function Workspace({ sessionName }: Props) {
           applyShellBootstrapped(e.params.pty_id, e.params.shell);
           break;
         case "pty.prompt_started":
-          // PS1 about to (re)paint. Drives FloatTerm's synchronous reset
-          // via the prompt-listener `boundary` callback, and clears the
-          // pre-mount prompt slot for this block so a same-cycle 133;A
-          // redraw doesn't leave the prior wave's bytes behind.
+          // PS1 about to (re)paint. Drives the single xterm's synchronous
+          // clear+reset via the listener `boundary` callback (only while
+          // idle — running blocks ignore the boundary).
           markPromptStarted(e.params.pty_id, e.params.block_id);
           break;
         case "pty.prompt_ended":
-          // No client-side state to flip; routing is scope-driven. The
-          // event is kept on the wire as a phase notification for any
-          // future UI that wants the boundary signal.
+          // No client-side state to flip — kept on the wire as a phase
+          // notification for any future UI that wants the boundary
+          // signal.
           break;
         case "pty.command_started":
           applyCommandStarted(e.params.pty_id, e.params.block_id, e.params.text, e.params.cwd, e.params.started_at);

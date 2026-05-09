@@ -390,8 +390,12 @@ button.icon-btn {
 
 .pty-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-/* The block stack scrolls finalized cards + the running BlockTerm. The
-   FloatTerm input pane sits below as a sibling, always visible. */
+/* The block stack scrolls finalized cards + the live slot. The float
+   pane sits below as a sibling, always visible. The xterm DOM (a single
+   instance per PTY managed by usePtyTerminal) is re-parented between
+   `.pty-stack > .block-running > .block-running-body > .pty-live-slot`
+   and `.pty-float > .pty-float-host` depending on whether a command is
+   running. */
 .pty-stack {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -405,10 +409,11 @@ button.icon-btn {
 }
 
 /* ── block stack (v2: minimal sticky-header rendering) ──
-   All three flavors — finalized card, alt-stub, running BlockTerm — share
-   the same outer shell so the stack reads as one continuous flow. No card
-   borders, no status colors, no gutter strip. The only "decoration" is a
-   sticky `$ cmd` header per block; the body is just the command's output. */
+   All three flavors — finalized card, alt-stub, running block — share
+   the same outer shell so the stack reads as one continuous flow. No
+   card borders, no status colors, no gutter strip. The only "decoration"
+   is a sticky `$ cmd` header per block; the body is just the command's
+   output. */
 
 .block-card,
 .block-alt,
@@ -421,10 +426,10 @@ button.icon-btn {
   padding: 0;
 }
 
-/* When an alt-screen app (vim/htop) is running, the BlockTerm container
-   expands to fill the whole .pty-stack viewport so the program has a full
-   canvas. The height comes from JS (rows × cellHeight). Auto-scroll keeps
-   the block in view when it grows. */
+/* When an alt-screen app (vim/htop) is running, the live slot expands
+   to fill the whole .pty-stack viewport so the program has a full
+   canvas. The height comes from JS (rows × cellHeight). Auto-scroll
+   keeps the block in view when it grows. */
 
 .block-card.selected,
 .block-alt.selected { background: rgba(212, 160, 0, 0.06); }
@@ -505,15 +510,34 @@ button.icon-btn {
   word-break: break-all;
 }
 
-/* BlockTerm host — natural height, fed by JS (rows × cellHeight on
-   the inner .pty-host). */
-.block-running-body .xterm { height: 100%; }
-.block-running-body .xterm .xterm-viewport { background: transparent; }
-.block-running-body .pty-host { /* height is set inline */ flex: 0 0 auto; }
+/* xterm host (the single instance's DOM root) — natural height, fed by
+   JS (visiblePx on the inline `style.height`). Same `.pty-host` lives in
+   either slot at any time. `overflow: hidden` is what makes the inline
+   height actually clip; without it, xterm's internal grid (FLOAT_MAX_ROWS
+   in idle, protoRows in running) renders at its natural pixel size and
+   the block looks like full viewport even when only a few rows of
+   content have streamed in. */
+.block-running-body .xterm,
+.pty-float .xterm { height: 100%; }
+.block-running-body .xterm .xterm-viewport,
+.pty-float .xterm .xterm-viewport { background: transparent; }
+.pty-host {
+  /* height is set inline by usePtyTerminal */
+  flex: 0 0 auto;
+  overflow: hidden;
+}
 
-/* ── float pane (FloatTerm) ──
-   Sibling of .pty-stack. Always visible at the bottom; height grows with
-   PS2 / multi-line input up to a small cap (FloatTerm enforces). */
+/* ── live slot (running) ──
+   Inside `.block-running-body`; receives the xterm DOM via appendChild
+   while a command is running. Full-width block so xterm's FitAddon can
+   read a non-zero clientWidth from the host's parent. */
+.pty-live-slot { display: block; width: 100%; min-height: 0; }
+
+/* ── float pane (idle) ──
+   Sibling of .pty-stack. Always visible at the bottom; height grows
+   with the cursor row up to FLOAT_MAX_ROWS (the xterm host has
+   `overflow: hidden` so unused trailing rows of the pinned grid are
+   clipped). */
 .pty-float {
   flex: 0 0 auto;
   border-top: 1px solid var(--border);
@@ -521,20 +545,13 @@ button.icon-btn {
   padding: 2px 8px;
   font-family: var(--mono);
 }
-.pty-float .xterm { height: 100%; }
-.pty-float .xterm .xterm-viewport { background: transparent; }
-/* Crop the xterm grid to the live `wrap.style.height`. FloatTerm pins
-   the grid at FLOAT_MAX_ROWS so multi-line PS1 has room to render; the
-   cursor-row anchor + clipping make only the live rows visible. */
-.pty-float .pty-float-host { overflow: hidden; /* height is set inline */ }
+.pty-float-host { display: block; width: 100%; }
 
 /* ── command running ──
-   While a command is executing, BlockTerm owns the terminal. PtyTab
-   adds .running and FloatTerm collapses to height 0 (kept in the DOM
-   so it doesn't remount when the command finishes). Focus is on
-   BlockTerm; onData → pty.write routes user keystrokes (including
-   stdin to long-running commands) straight to the program. FloatTerm
-   refocuses when .running flips off. */
+   While a command is executing the xterm has been re-parented into the
+   live slot inside `.pty-stack`; the float pane collapses to height 0
+   (kept in the DOM so its slot ref stays valid for the eventual move
+   back). */
 .pty-tab.running .pty-float {
   flex: 0 0 0;
   height: 0;
@@ -544,7 +561,7 @@ button.icon-btn {
 }
 
 /* ── alt-screen fullscreen (vim/htop/less) ──
-   Stricter subset of .running: when BlockTerm flips into the alternate
+   Stricter subset of .running: when the xterm flips into the alternate
    buffer we hide the meta strip, prior block cards/alt-stubs, and the
    running header so vim/htop get the full pty-tab area. */
 .pty-tab.alt-active .pty-meta { display: none; }

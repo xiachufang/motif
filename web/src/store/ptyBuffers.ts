@@ -1,152 +1,84 @@
-// Per-PTY byte fanout, scope-driven. The server tags every `pty.output`
-// event with `(block_id, scope)` (see docs/rpc.md §6). Routing rules:
+// Per-PTY byte fanout. Single listener model: one xterm.js instance per
+// PTY (managed by usePtyTerminal) attaches once and consumes all bytes —
+// `scope` no longer drives routing. The xterm processes prompt, command,
+// and output bytes in arrival order; its own buffer state is the source
+// of truth for what's on screen.
 //
-//   scope=prompt | scope=command
-//     → FloatTerm prompt listener (live render of input pane).
-//     → If block_id is non-null (PTY is bootstrapped), ALSO stashed under
-//       preMountByBlock[blockId].prompt so the matching BlockTerm can
-//       replay them on mount and serialize the prompt_html itself.
-//   scope=output
-//     → BlockTerm listener for that block_id (live), or queued under
-//       preMountByBlock[blockId].output if BlockTerm hasn't mounted yet.
+// `pending` holds bytes that arrived before any listener attached. As soon
+// as the xterm attaches, `pending` is drained and future bytes flow live.
+// `markPromptStarted` clears `pending` and fires `boundary()` on attached
+// listeners — the xterm responds with `term.clear()+reset()` so the next
+// PS1 paints on a fresh grid.
 //
-// Two storage shapes:
-//
-//   promptChunks[ptyId] — prompt-zone bytes since the last `prompt_started`,
-//     replayed to a (re)mounting FloatTerm. Cleared at every prompt
-//     boundary so long sessions don't accumulate.
-//
-//   preMountByBlock[ptyId][blockId] — { prompt, output } byte queues for
-//     bytes that arrived before BlockTerm mounted. Drained and deleted on
-//     `attachBlock`. Once a BlockTerm listener is attached, future output
-//     bytes flow straight through; prompt|command bytes for that block_id
-//     don't continue to arrive in steady state (they fully drain before
-//     `pty.command_started` fires the BlockTerm mount).
-//
-// State is module-global on purpose: it survives PtyTab unmount/remount
-// (StrictMode double-mount, tab switches).
+// State is module-global so it survives PtyTab unmount/remount (StrictMode
+// double-mount, tab switches).
 
-import type { BlockId, OutputScope } from "../proto/types";
-
-type DataListener = (chunk: Uint8Array) => void;
+import type { BlockId } from "../proto/types";
 
 export interface PromptListener {
-  data:     DataListener;
-  /** Fired synchronously on every `pty.prompt_started`. FloatTerm uses this
-   *  to `term.clear() + term.reset()` so the next PS1 paints on a fresh
-   *  grid. */
+  data:     (chunk: Uint8Array) => void;
+  /** Fired synchronously on every `pty.prompt_started`. Hook uses this to
+   *  `term.clear() + term.reset()` so the next PS1 paints fresh. */
   boundary: () => void;
 }
 
-interface PreMount {
-  prompt: Uint8Array[];
-  output: Uint8Array[];
-}
-
 interface PtyBuf {
-  promptChunks:    Uint8Array[];
-  preMountByBlock: Map<BlockId, PreMount>;
+  /** Bytes accumulated while no listener was attached. Drained on attach
+   *  and cleared at every `prompt_started` (the previous wave is
+   *  unreachable past the boundary anyway). */
+  pending: Uint8Array[];
 }
 
-const buffers         = new Map<string, PtyBuf>();
-const promptListeners = new Map<string, Set<PromptListener>>();
-const blockListeners  = new Map<string, Map<BlockId, Set<DataListener>>>();
+const buffers   = new Map<string, PtyBuf>();
+const listeners = new Map<string, Set<PromptListener>>();
 
 function getBuf(ptyId: string): PtyBuf {
   let b = buffers.get(ptyId);
-  if (!b) {
-    b = { promptChunks: [], preMountByBlock: new Map() };
-    buffers.set(ptyId, b);
-  }
+  if (!b) { b = { pending: [] }; buffers.set(ptyId, b); }
   return b;
 }
 
-function getPreMount(b: PtyBuf, blockId: BlockId): PreMount {
-  let pm = b.preMountByBlock.get(blockId);
-  if (!pm) { pm = { prompt: [], output: [] }; b.preMountByBlock.set(blockId, pm); }
-  return pm;
-}
-
-/** Workspace dispatcher → for every `pty.output` event from the server. */
+/** Workspace dispatcher → for every `pty.output` event from the server.
+ *  `block_id` and `scope` are accepted for protocol compatibility but no
+ *  longer drive routing — the single xterm consumes everything. */
 export function appendOutput(
   ptyId:   string,
   chunk:   Uint8Array,
-  blockId: BlockId | null,
-  scope:   OutputScope,
+  _blockId: BlockId | null,
+  _scope:   string,
 ): void {
-  const b = getBuf(ptyId);
-
-  if (scope === 'output') {
-    // Output bytes always carry a block_id by protocol invariant.
-    if (blockId === null) return;
-    const ls = blockListeners.get(ptyId)?.get(blockId);
-    if (ls && ls.size > 0) {
-      ls.forEach(l => { try { l(chunk); } catch { /* ignore */ } });
-      return;
-    }
-    // No BlockTerm attached yet — queue until it mounts.
-    getPreMount(b, blockId).output.push(chunk);
+  const ls = listeners.get(ptyId);
+  if (ls && ls.size > 0) {
+    ls.forEach(l => { try { l.data(chunk); } catch { /* ignore */ } });
     return;
   }
-
-  // scope=passthrough|prompt|command — all flow through FloatTerm.
-  // (passthrough = pre-bootstrap banners or between-block housekeeping;
-  //  prompt|command = inside a real block lifecycle.)
-  b.promptChunks.push(chunk);
-  const pls = promptListeners.get(ptyId);
-  if (pls) pls.forEach(l => { try { l.data(chunk); } catch { /* ignore */ } });
-
-  // Stash for the BlockTerm that will mount on `pty.command_started`.
-  // - passthrough never has a block_id (pre-bootstrap / between blocks),
-  //   so nothing to stash.
-  // - prompt|command from un-bootstrapped PTYs would also have block_id
-  //   = null and similarly skip.
-  // - prompt|command with a block_id is the inside-of-cycle case; stash
-  //   for the upcoming BlockTerm mount.
-  if (scope !== 'passthrough' && blockId !== null) {
-    getPreMount(b, blockId).prompt.push(chunk);
-  }
+  getBuf(ptyId).pending.push(chunk);
 }
 
-/** Workspace → on `pty.prompt_started`. Fires every prompt listener's
- *  `boundary` callback synchronously, then drops the previous cycle's
- *  prompt-zone bytes (FloatTerm's `promptChunks` and the named block's
- *  pre-mount prompt slot — for same-cycle 133;A redraws the previous
- *  wave is unreachable past this boundary). */
-export function markPromptStarted(ptyId: string, blockId: BlockId): void {
-  const b = getBuf(ptyId);
-  b.promptChunks = [];
-  const pm = b.preMountByBlock.get(blockId);
-  if (pm) pm.prompt = [];
-  const ls = promptListeners.get(ptyId);
+/** Workspace → on `pty.prompt_started`. Drops any bytes accumulated since
+ *  the last boundary (a not-yet-attached listener can't reach them after
+ *  the boundary clears the grid) and fires every listener's `boundary`. */
+export function markPromptStarted(ptyId: string, _blockId: BlockId): void {
+  getBuf(ptyId).pending = [];
+  const ls = listeners.get(ptyId);
   if (ls) ls.forEach(l => { try { l.boundary(); } catch { /* ignore */ } });
 }
 
-export interface PromptAttachment {
-  /// Prompt-zone bytes since the last `prompt_started`. The float xterm
-  /// should write these to reach steady state.
+export interface PtyAttachment {
+  /** Bytes that landed before this listener attached, in arrival order. */
   initial: Uint8Array[];
   detach:  () => void;
 }
 
-export interface BlockAttachment {
-  /// Prompt-zone bytes (PS1 + cmd) for this block, in arrival order.
-  /// BlockTerm should write these first, serialize prompt_html, then
-  /// `term.clear()` before processing outputInitial.
-  promptInitial: Uint8Array[];
-  /// Output-zone bytes that arrived for this block_id before mount.
-  outputInitial: Uint8Array[];
-  detach:        () => void;
-}
-
-/** FloatTerm calls this on mount: returns prompt-zone bytes since the last
- *  `prompt_started`, AND starts delivering future ones to `listener.data`.
- *  Boundary edges fire `listener.boundary`. */
-export function attachPrompt(ptyId: string, listener: PromptListener): PromptAttachment {
+/** Hook calls this on first slot attach: returns any pre-mount bytes and
+ *  starts delivering future ones to `listener.data`. Boundary edges fire
+ *  `listener.boundary`. */
+export function attachPty(ptyId: string, listener: PromptListener): PtyAttachment {
   const b = getBuf(ptyId);
-  const initial = b.promptChunks.slice();
-  let ls = promptListeners.get(ptyId);
-  if (!ls) { ls = new Set(); promptListeners.set(ptyId, ls); }
+  const initial = b.pending.slice();
+  b.pending = [];
+  let ls = listeners.get(ptyId);
+  if (!ls) { ls = new Set(); listeners.set(ptyId, ls); }
   ls.add(listener);
   return {
     initial,
@@ -154,42 +86,14 @@ export function attachPrompt(ptyId: string, listener: PromptListener): PromptAtt
   };
 }
 
-/** BlockTerm calls this on mount: drains any prompt+output bytes that
- *  queued up before mount, AND starts delivering future output bytes to
- *  `listener`. Once a listener is attached, output bytes flow straight
- *  through and are no longer stored. */
-export function attachBlock(ptyId: string, blockId: BlockId, listener: DataListener): BlockAttachment {
-  const b = getBuf(ptyId);
-  const pm = b.preMountByBlock.get(blockId);
-  const promptInitial = pm ? pm.prompt.slice() : [];
-  const outputInitial = pm ? pm.output.slice() : [];
-  b.preMountByBlock.delete(blockId);
-
-  let byBlock = blockListeners.get(ptyId);
-  if (!byBlock) { byBlock = new Map(); blockListeners.set(ptyId, byBlock); }
-  let ls = byBlock.get(blockId);
-  if (!ls) { ls = new Set(); byBlock.set(blockId, ls); }
-  ls.add(listener);
-  return {
-    promptInitial,
-    outputInitial,
-    detach: () => {
-      ls!.delete(listener);
-      if (ls!.size === 0) byBlock!.delete(blockId);
-    }
-  };
-}
-
 /** Drop a PTY's buffer + listeners (call on `pty.exited` / session detach). */
 export function clearPty(ptyId: string): void {
   buffers.delete(ptyId);
-  promptListeners.delete(ptyId);
-  blockListeners.delete(ptyId);
+  listeners.delete(ptyId);
 }
 
 /** Drop everything (call on session detach / logout). */
 export function clearAll(): void {
   buffers.clear();
-  promptListeners.clear();
-  blockListeners.clear();
+  listeners.clear();
 }
