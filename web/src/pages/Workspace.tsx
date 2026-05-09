@@ -12,7 +12,7 @@ import { useDragSize } from "../hooks/useDragSize";
 import { useApp } from "../store/store";
 import {
   appendOutput, clearPty, clearAll,
-  markPromptStarted, markPromptEnded, markCommandStarted, markCommandFinished,
+  markPromptStarted,
 } from "../store/ptyBuffers";
 
 function loadBool(key: string, fallback: boolean): boolean {
@@ -44,6 +44,43 @@ function decodeB64(b64: string): Uint8Array {
   return u8;
 }
 
+function isImagePath(path: string): boolean {
+  return /\.(avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i.test(path);
+}
+
+/** Pick the active PTY's cwd (if any) for the initial fs.tree/git.status
+ *  fetch — saves a round-trip vs. fetching for session.workdir and then
+ *  immediately re-fetching for the active cwd. */
+function pickInitialCwd(a: AttachResult): string | null {
+  const v = a.views.find(x => x.id === a.active_view);
+  const spec = v?.spec;
+  if (spec?.kind === "pty") {
+    return a.ptys.find(p => p.id === spec.pty_id)?.cwd ?? null;
+  }
+  return a.ptys.find(p => p.alive)?.cwd ?? a.ptys[0]?.cwd ?? null;
+}
+
+/** Map `tree.changed` paths to the cached directories that need refresh.
+ *  A cached dir D needs refresh if some changed path P is a direct child
+ *  of D, or P === D itself (the dir was renamed/removed). We only return
+ *  dirs we've actually cached (in `dirChildren`); refetching dirs the
+ *  user hasn't expanded would be wasted work. */
+function affectedDirs(paths: string[], cached: Map<string, unknown>): string[] {
+  if (paths.length === 0 || cached.size === 0) return [];
+  const out = new Set<string>();
+  for (const p of paths) {
+    if (cached.has(p)) out.add(p);
+    const slash = p.lastIndexOf("/");
+    if (slash > 0) {
+      const parent = p.slice(0, slash);
+      if (cached.has(parent)) out.add(parent);
+    } else if (slash === 0 && cached.has("/")) {
+      out.add("/");
+    }
+  }
+  return [...out];
+}
+
 export default function Workspace({ sessionName }: Props) {
   const client       = useApp(s => s.client);
   const session      = useApp(s => s.session);
@@ -71,6 +108,21 @@ export default function Workspace({ sessionName }: Props) {
   const applyViewActiveChanged = useApp(s => s.applyViewActiveChanged);
   const applyViewMoved         = useApp(s => s.applyViewMoved);
   const setViewCache           = useApp(s => s.setViewCache);
+  const rehydrateOnReconnect   = useApp(s => s.rehydrateOnReconnect);
+
+  // Highest `seq` we've processed. Sent as `last_seq` on reconnect so the
+  // server replays missed notifications. A ref (not store) to avoid a
+  // re-render on every event.
+  const lastSeqRef = useRef<number>(0);
+  // Event delivery is at-least-once across replay/re-attach edges. Keep a
+  // bounded de-dupe window so repeated notifications don't double-write xterm
+  // buffers or issue duplicate follow-up RPCs.
+  const seenSeqRef = useRef<Set<number>>(new Set());
+  const seenSeqOrderRef = useRef<number[]>([]);
+  // Last cwd we already pulled `fs.tree` + `git.status` for. Seeded by the
+  // attach effect so the cwd-follow effect below won't re-fetch the very
+  // same path on first mount.
+  const lastFetchedCwdRef = useRef<string | null>(null);
 
   // ── attach + initial fetch ──
   useEffect(() => {
@@ -79,41 +131,91 @@ export default function Workspace({ sessionName }: Props) {
     // PtyId from the previous session can collide with a fresh one here and
     // leak its old bytes into the new tab. Clear on entry and exit.
     clearAll();
+    seenSeqRef.current.clear();
+    seenSeqOrderRef.current = [];
+    lastSeqRef.current = 0;
     let cancelled = false;
     (async () => {
       try {
         const a = await client.call<AttachResult>("session.attach", { name: sessionName });
-        // Initial tree root is the session's workdir; the cwd-tracking effect
-        // below will retarget it once the active PTY surfaces its cwd.
-        const tree = await client.call<TreeResult>("fs.tree", { path: a.session.workdir, depth: 1 })
-          .catch(() => ({ path: a.session.workdir, entries: [] } as TreeResult));
-        const git  = await client.call<StatusResult>("git.status", { cwd: a.session.workdir }).catch(() => null);
+        lastSeqRef.current = a.last_seq;
+        // Pick the active PTY's cwd if any so we don't fetch tree/git for
+        // session.workdir and then immediately re-fetch for the active cwd
+        // (which the cwd-follow effect would do).
+        const initialCwd = pickInitialCwd(a) ?? a.session.workdir;
+        const tree = await client.call<TreeResult>("fs.tree", { path: initialCwd, depth: 1 })
+          .catch(() => ({ path: initialCwd, entries: [] } as TreeResult));
+        const git  = await client.call<StatusResult>("git.status", { cwd: initialCwd }).catch(() => null);
         if (cancelled) return;
         hydrate(
           a.session, a.client_id, a.clients,
           a.ptys, a.views, a.active_view,
-          a.session.workdir, tree.entries,
+          initialCwd, tree.entries,
           git ? { branch: git.branch ?? null, files: git.files } : null,
         );
+        lastFetchedCwdRef.current = initialCwd;
       } catch (e) {
         setStatus(`attach failed: ${e instanceof Error ? e.message : String(e)}`);
         setPage({ kind: "sessions" });
       }
     })();
-    return () => { cancelled = true; clearAll(); };
+    return () => {
+      cancelled = true;
+      // Tell the server we're leaving so other clients see `client.left`
+      // immediately rather than waiting for the WS to actually close.
+      client.call("session.detach", {}).catch(() => { /* ignore — may not be attached yet */ });
+      clearAll();
+    };
   }, [client, sessionName, hydrate, setPage, setStatus]);
+
+  // Re-attach on transparent WS reconnect. Server replays events from
+  // last_seq+1 (if the ring still has them); we soft-rehydrate the
+  // server-authoritative bits and let those events bring blocks current.
+  useEffect(() => {
+    if (!client) return;
+    client.onReconnect = async () => {
+      try {
+        const a = await client.call<AttachResult>("session.attach", {
+          name:     sessionName,
+          last_seq: lastSeqRef.current,
+        });
+        rehydrateOnReconnect(
+          a.session, a.client_id, a.clients,
+          a.ptys, a.views, a.active_view,
+        );
+        lastSeqRef.current = a.last_seq;
+        setStatus("reconnected");
+      } catch (e) {
+        setStatus(`reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
+        setPage({ kind: "sessions" });
+      }
+    };
+    return () => { client.onReconnect = null; };
+  }, [client, sessionName, rehydrateOnReconnect, setPage, setStatus]);
 
   // ── event subscription ──
   useEffect(() => {
     if (!client) return;
     return client.on(async ev => {
       const e = ev as Event;
+      const seq = (e.params as { seq?: number } | undefined)?.seq;
+      if (typeof seq === "number" && seq > 0) {
+        const seen = seenSeqRef.current;
+        if (seen.has(seq)) return;
+        seen.add(seq);
+        seenSeqOrderRef.current.push(seq);
+        while (seenSeqOrderRef.current.length > 8192) {
+          const old = seenSeqOrderRef.current.shift();
+          if (old !== undefined) seen.delete(old);
+        }
+        if (seq > lastSeqRef.current) lastSeqRef.current = seq;
+      }
       switch (e.method) {
         case "client.joined": clientJoined({ id: e.params.client_id, since: e.params.since }); break;
         case "client.left":   clientLeft(e.params.client_id); break;
         case "pty.created":   registerPty(e.params.info); break;
         case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
-        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64), e.params.block_id ?? null); break;
+        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64), e.params.block_id ?? null, e.params.scope); break;
         case "pty.cwd_changed": updatePtyCwd(e.params.pty_id, e.params.cwd); break;
 
         // v2 shell-integration: command-edge events drive the topbar
@@ -122,23 +224,21 @@ export default function Workspace({ sessionName }: Props) {
           applyShellBootstrapped(e.params.pty_id, e.params.shell);
           break;
         case "pty.prompt_started":
-          // Phase boundary: PS1 about to (re)paint. Drives FloatTerm's
-          // synchronous reset via the prompt-listener `boundary` callback.
-          markPromptStarted(e.params.pty_id);
+          // PS1 about to (re)paint. Drives FloatTerm's synchronous reset
+          // via the prompt-listener `boundary` callback, and clears the
+          // pre-mount prompt slot for this block so a same-cycle 133;A
+          // redraw doesn't leave the prior wave's bytes behind.
+          markPromptStarted(e.params.pty_id, e.params.block_id);
           break;
         case "pty.prompt_ended":
-          markPromptEnded(e.params.pty_id);
+          // No client-side state to flip; routing is scope-driven. The
+          // event is kept on the wire as a phase notification for any
+          // future UI that wants the boundary signal.
           break;
         case "pty.command_started":
-          // Phase → output: subsequent block_id-tagged bytes flow to BlockTerm.
-          markCommandStarted(e.params.pty_id);
           applyCommandStarted(e.params.pty_id, e.params.block_id, e.params.text, e.params.cwd, e.params.started_at);
           break;
         case "pty.command_finished":
-          // Phase → post-output: drop server-side repaint preamble until
-          // the next 133;A. Without this, fish's missing-newline marker
-          // and mode resets leak into FloatTerm and pollute its scrollback.
-          markCommandFinished(e.params.pty_id);
           requestFinalizeBlock(e.params.pty_id, e.params.block_id, e.params.exit_code ?? null, e.params.finished_at);
           break;
         case "pty.shell_context":
@@ -152,9 +252,19 @@ export default function Workspace({ sessionName }: Props) {
 
         case "tree.changed":  setStatus("tree changed");
                               {
-                                const root = useApp.getState().currentPath;
-                                if (root) {
-                                  try { const t = await client.call<TreeResult>("fs.tree", { path: root, depth: 1 }); setDirChildren(root, t.entries); } catch {/*ignore*/}
+                                // Honor `paths`: only refetch dirs we've cached
+                                // that are actually affected (== parent of a
+                                // changed path, or the changed path itself if
+                                // it's a directory we listed). Without this,
+                                // any unrelated `fs.write` triggers a refetch
+                                // of the active root.
+                                const cached = useApp.getState().dirChildren;
+                                const affected = affectedDirs(e.params.paths ?? [], cached);
+                                for (const dir of affected) {
+                                  try {
+                                    const t = await client.call<TreeResult>("fs.tree", { path: dir, depth: 1 });
+                                    setDirChildren(dir, t.entries);
+                                  } catch { /* ignore */ }
                                 }
                               }
                               break;
@@ -179,6 +289,11 @@ export default function Workspace({ sessionName }: Props) {
   useEffect(() => {
     if (!client || !session || !activeCwd) return;
     setCurrentPath(activeCwd);
+    // Skip the fetch if attach already loaded this exact cwd. Without this,
+    // the very first activation would fire fs.tree + git.status a second
+    // time for the same path the attach effect just hydrated.
+    if (lastFetchedCwdRef.current === activeCwd) return;
+    lastFetchedCwdRef.current = activeCwd;
     (async () => {
       try {
         const t = await client.call<TreeResult>("fs.tree", { path: activeCwd, depth: 1 });
@@ -236,7 +351,7 @@ export default function Workspace({ sessionName }: Props) {
       // Server creates the view (broadcast) and we'll pick it up via the
       // view.opened event; cache content on our client.
       await client.call("view.open", {
-        spec: { kind: "preview", path } as ViewSpec,
+        spec: { kind: isImagePath(path) ? "image" : "preview", path } as ViewSpec,
         activate: true,
       });
     } catch (e) {
@@ -365,7 +480,7 @@ export default function Workspace({ sessionName }: Props) {
                       <PtyTab ptyId={view.spec.pty_id} active={active} />
                     )}
                     {view.spec.kind === "preview" && cache?.kind === "preview" && (
-                      <FilePreviewTab content={cache.content} mime={cache.mime} binary={cache.binary} />
+                      <FilePreviewTab path={view.spec.path} content={cache.content} mime={cache.mime} binary={cache.binary} />
                     )}
                     {view.spec.kind === "preview" && !cache && (
                       <div className="muted center">loading…</div>
@@ -377,7 +492,7 @@ export default function Workspace({ sessionName }: Props) {
                       <div className="muted center">loading diff…</div>
                     )}
                     {view.spec.kind === "image" && (
-                      <ImageTab transferId={view.id /* unused; ImageTab fetches by path */} mime="" />
+                      <ImageTab path={view.spec.path} />
                     )}
                   </Suspense>
                 </div>

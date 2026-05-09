@@ -77,6 +77,12 @@ export interface PtyRenderUi {
    *  this lets Workspace stay store-only while DOM-aware work lives in
    *  PtyTab. */
   pendingFinalize: { id: BlockId; exit_code: number | null; finished_at: number } | null;
+  /** True once `pty.list_blocks` + `pty.get_block_output` finished for
+   *  this PTY. Lets PtyTab skip backfill on remount (tab switch /
+   *  StrictMode double-mount) and avoid re-issuing 50 RPCs.
+   *  Survives transparent WS reconnect — the server replays missed
+   *  events, so we don't re-backfill. */
+  backfilled: boolean;
 }
 
 export type Page =
@@ -129,6 +135,15 @@ export interface AppState {
     ptys: PtyInfo[], views: ViewInfo[], activeView: ViewId | null,
     rootPath: string, rootEntries: TreeEntry[],
     git: { branch: string | null; files: GitFile[] } | null,
+  ) => void;
+
+  /// After a transparent WS reconnect + session.attach, refresh the
+  /// server-authoritative bits (session/clients/ptys/views) but keep
+  /// local-only state (ptyBlocks, viewCache, dirChildren, expandedDirs)
+  /// — the server replays missed events to bring blocks current.
+  rehydrateOnReconnect: (
+    s: SessionInfo, me: string, others: ClientInfo[],
+    ptys: PtyInfo[], views: ViewInfo[], activeView: ViewId | null,
   ) => void;
 
   setGit:        (branch: string | null, files: GitFile[]) => void;
@@ -216,7 +231,7 @@ const initial = (): Pick<AppState,
   status:        "",
 });
 
-const emptyBlockUi = (): PtyRenderUi => ({ shell: null, blocks: [], ctx: null, pendingFinalize: null });
+const emptyBlockUi = (): PtyRenderUi => ({ shell: null, blocks: [], ctx: null, pendingFinalize: null, backfilled: false });
 
 function loadToken(): string | null {
   return localStorage.getItem("motif.token") ?? sessionStorage.getItem("motif.token");
@@ -248,6 +263,32 @@ export const useApp = create<AppState>((set) => ({
       currentPath:  rootPath,
       dirChildren,
       expandedDirs: new Set<string>(),
+    };
+  }),
+
+  rehydrateOnReconnect: (session, me, others, ptys, views, activeView) => set(s => {
+    // Drop ptyInfos / ptyBlocks entries for PTYs the server no longer
+    // knows about (died during the gap and was reaped past the ring).
+    const knownPtyIds = new Set(ptys.map(p => p.id));
+    const ptyBlocks = new Map<string, PtyRenderUi>();
+    for (const [id, ui] of s.ptyBlocks) {
+      if (knownPtyIds.has(id)) ptyBlocks.set(id, ui);
+    }
+    // Drop view caches for views that no longer exist.
+    const viewIds = new Set(views.map(v => v.id));
+    const viewCache = new Map<ViewId, ViewCache>();
+    for (const [id, c] of s.viewCache) {
+      if (viewIds.has(id)) viewCache.set(id, c);
+    }
+    return {
+      session,
+      myClientId:   me,
+      otherClients: others,
+      ptyInfos:     new Map(ptys.map(p => [p.id, p])),
+      views,
+      activeView,
+      ptyBlocks,
+      viewCache,
     };
   }),
 
@@ -322,11 +363,13 @@ export const useApp = create<AppState>((set) => ({
   applyCommandStarted: (pty_id, id, text, cwd, started_at) => set(s => {
     const m = new Map(s.ptyBlocks);
     const cur = m.get(pty_id) ?? emptyBlockUi();
-    // If a stale `running` is still trailing (e.g. server restarted mid-block),
-    // drop it — only one running block at a time.
-    const head = cur.blocks.length > 0 && cur.blocks[cur.blocks.length - 1].kind === "running"
-      ? cur.blocks.slice(0, -1)
-      : cur.blocks;
+    // The broadcast stream is at-least-once around replay/re-attach edges.
+    // Drop any prior copy of this block id before appending the live one, and
+    // still enforce "only one trailing running block".
+    const withoutSame = cur.blocks.filter(b => b.id !== id);
+    const head = withoutSame.length > 0 && withoutSame[withoutSame.length - 1].kind === "running"
+      ? withoutSame.slice(0, -1)
+      : withoutSame;
     const next: BlockRender = { kind: "running", id, cmd: text, cwd, started_at, prompt_html: "" };
     m.set(pty_id, { ...cur, blocks: [...head, next] });
     return { ptyBlocks: m };
@@ -382,12 +425,21 @@ export const useApp = create<AppState>((set) => ({
   setBackfilledBlocks: (pty_id, blocks) => set(s => {
     const m = new Map(s.ptyBlocks);
     const cur = m.get(pty_id) ?? emptyBlockUi();
-    // Preserve a trailing `running` block (live state) on top of backfilled history.
-    const trailing = cur.blocks.length > 0 && cur.blocks[cur.blocks.length - 1].kind === "running"
-      ? cur.blocks[cur.blocks.length - 1]
-      : null;
-    const next = trailing ? [...blocks, trailing] : blocks;
-    m.set(pty_id, { ...cur, blocks: next });
+    // Merge by id: any blocks already in `cur.blocks` came in via live
+    // events while backfill was loading — keep those (their HTML was
+    // serialized from the live xterm and is more authoritative than a
+    // re-render from server-stored bytes). Only adopt backfill entries
+    // for ids `cur` doesn't have. Order: ULID-sorted ascending so
+    // chronology is correct; any trailing `running` naturally lands
+    // last because its id is the newest.
+    const have = new Map(cur.blocks.map(b => [b.id, b] as const));
+    for (const b of blocks) {
+      if (!have.has(b.id)) have.set(b.id, b);
+    }
+    const merged = [...have.values()].sort((a, b) =>
+      a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    );
+    m.set(pty_id, { ...cur, blocks: merged, backfilled: true });
     return { ptyBlocks: m };
   }),
   setSelectedBlock: (pty_id, block_id) => set(() => ({

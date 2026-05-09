@@ -1,0 +1,3 @@
+motifd: cargo watch -w crates/motif-server -w crates/motif-proto -w crates/motif-tailscale -x "run -q -p motif-server --bin motifd -- --listen ${MOTIFD_LISTEN} --token-file ${TOKEN_FILE}"
+web: cargo watch -w crates/motif-web -w crates/motif-proto -x "run -q -p motif-web --bin motif-web -- --listen ${WEB_LISTEN} --motifd-url ${MOTIFD_URL} --motifd-token-file ${TOKEN_FILE} --browser-token-file ${TOKEN_FILE}"
+vite: cd web && pnpm dev --host ${WEB_HOST} --port ${VITE_PORT}

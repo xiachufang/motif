@@ -37,32 +37,38 @@ fn unique_tmpdir(tag: &str) -> PathBuf {
     p
 }
 
-/// Spawn the default shell, switch the PTY into raw + no-echo, then exec
-/// into `cat` so subsequent writes to the master are echoed back through
-/// the broadcast unmodified. This is the byte-faithful test scaffold for
-/// query→answer round trips: without it, the PTY's default cooked mode
-/// turns `\x1b]11;?\x07` into the visible string `^[]11;?^G` before the
-/// reader_loop sees it.
+/// Spawn `/bin/sh`, switch the PTY into raw + no-echo, then exec into `cat`
+/// so subsequent writes to the master are echoed back through the broadcast
+/// unmodified. This is the byte-faithful test scaffold for query→answer round
+/// trips: without it, the PTY's default cooked mode turns `\x1b]11;?\x07`
+/// into the visible string `^[]11;?^G` before the reader_loop sees it.
 async fn spawn_passthrough_pty(session: &Arc<Session>) -> Arc<Pty> {
-    let pty = session.pty_pool.create(
-        PtyCreateParams {
-            cmd:  None,
-            cwd:  None,
-            env:  vec![],
-            cols: 80,
-            rows: 24,
-        },
-        ClientId::from("test-client"),
-        &session.workdir,
-    ).expect("spawn pty");
+    let mut rx = session.subscribe();
+    let pty = session
+        .pty_pool
+        .create(
+            PtyCreateParams {
+                cmd: Some("/bin/sh".into()),
+                cwd: None,
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            },
+            ClientId::from("test-client"),
+            &session.workdir,
+        )
+        .expect("spawn pty");
 
-    // Let the shell come up far enough to read a command.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    drain(&mut rx);
+    pty.write_bytes(b"stty raw -echo; exec cat\n")
+        .expect("setup write");
 
-    pty.write_bytes(b"stty raw -echo; exec cat\n").expect("setup write");
-
-    // Give `stty` + `exec` time to take effect; cat should now be reading.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Do not rely on a fixed sleep here. The default cooked PTY line
+    // discipline echoes control bytes as caret notation, so use a raw OSC 9
+    // passthrough probe and wait until `cat` echoes the exact bytes back.
+    let probe = format!("\x1b]9;motif-ready-{}\x07", ulid::Ulid::new());
+    pty.write_bytes(probe.as_bytes()).expect("probe write");
+    wait_for_bytes(&mut rx, probe.as_bytes(), Duration::from_secs(5)).await;
 
     pty
 }
@@ -73,10 +79,34 @@ fn drain(rx: &mut Receiver<Arc<Event>>) {
     while rx.try_recv().is_ok() {}
 }
 
-async fn collect_for(
-    rx: &mut Receiver<Arc<Event>>,
-    duration: Duration,
-) -> Vec<u8> {
+async fn wait_for_bytes(rx: &mut Receiver<Arc<Event>>, needle: &[u8], duration: Duration) {
+    let mut out = Vec::new();
+    let deadline = tokio::time::Instant::now() + duration;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(ev)) => {
+                if let Event::PtyOutput { data_b64, .. } = ev.as_ref() {
+                    out.extend(BASE64.decode(data_b64).unwrap_or_default());
+                    if out.windows(needle.len()).any(|w| w == needle) {
+                        return;
+                    }
+                    let keep_from = out.len().saturating_sub(16 * 1024);
+                    if keep_from > 0 {
+                        out.drain(..keep_from);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+    panic!(
+        "passthrough PTY did not echo raw probe; needle={:?}, collected={:?}",
+        needle, out,
+    );
+}
+
+async fn collect_for(rx: &mut Receiver<Arc<Event>>, duration: Duration) -> Vec<u8> {
     let mut out = Vec::new();
     let deadline = tokio::time::Instant::now() + duration;
     while tokio::time::Instant::now() < deadline {
@@ -95,9 +125,11 @@ async fn collect_for(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn osc11_falls_back_to_canonical_when_no_palette() {
-    let raw     = unique_tmpdir("osc11-default");
-    let mgr     = SessionManager::new();
-    let session = mgr.create("osc11-default".into(), raw.clone()).expect("create session");
+    let raw = unique_tmpdir("osc11-default");
+    let mgr = SessionManager::new();
+    let session = mgr
+        .create("osc11-default".into(), raw.clone())
+        .expect("create session");
 
     let pty = spawn_passthrough_pty(&session).await;
     let mut rx = session.subscribe();
@@ -119,15 +151,14 @@ async fn osc11_falls_back_to_canonical_when_no_palette() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn osc11_uses_client_reported_palette_when_set() {
-    let raw     = unique_tmpdir("osc11-custom");
-    let mgr     = SessionManager::new();
-    let session = mgr.create("osc11-custom".into(), raw.clone()).expect("create session");
+    let raw = unique_tmpdir("osc11-custom");
+    let mgr = SessionManager::new();
+    let session = mgr
+        .create("osc11-custom".into(), raw.clone())
+        .expect("create session");
 
     // Pretend a TUI client reported its terminal palette on attach.
-    session.set_terminal_palette(
-        Some("ffff/eeee/dddd".into()),
-        Some("1111/2222/3333".into()),
-    );
+    session.set_terminal_palette(Some("ffff/eeee/dddd".into()), Some("1111/2222/3333".into()));
 
     let pty = spawn_passthrough_pty(&session).await;
     let mut rx = session.subscribe();
@@ -156,14 +187,13 @@ async fn osc11_uses_client_reported_palette_when_set() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn osc10_uses_client_reported_foreground() {
-    let raw     = unique_tmpdir("osc10-custom");
-    let mgr     = SessionManager::new();
-    let session = mgr.create("osc10-custom".into(), raw.clone()).expect("create session");
+    let raw = unique_tmpdir("osc10-custom");
+    let mgr = SessionManager::new();
+    let session = mgr
+        .create("osc10-custom".into(), raw.clone())
+        .expect("create session");
 
-    session.set_terminal_palette(
-        Some("aaaa/bbbb/cccc".into()),
-        Some("0000/0000/0000".into()),
-    );
+    session.set_terminal_palette(Some("aaaa/bbbb/cccc".into()), Some("0000/0000/0000".into()));
 
     let pty = spawn_passthrough_pty(&session).await;
     let mut rx = session.subscribe();
@@ -188,15 +218,14 @@ async fn da1_always_gets_canonical_answer() {
     // DA1 is a "what terminal are you" query — it's not client-specific,
     // so the answer is always the canonical VT102 reply regardless of
     // whether a palette has been set.
-    let raw     = unique_tmpdir("da1");
-    let mgr     = SessionManager::new();
-    let session = mgr.create("da1".into(), raw.clone()).expect("create session");
+    let raw = unique_tmpdir("da1");
+    let mgr = SessionManager::new();
+    let session = mgr
+        .create("da1".into(), raw.clone())
+        .expect("create session");
 
     // Set a palette — DA1 must still ignore it.
-    session.set_terminal_palette(
-        Some("ffff/eeee/dddd".into()),
-        Some("1111/2222/3333".into()),
-    );
+    session.set_terminal_palette(Some("ffff/eeee/dddd".into()), Some("1111/2222/3333".into()));
 
     let pty = spawn_passthrough_pty(&session).await;
     let mut rx = session.subscribe();

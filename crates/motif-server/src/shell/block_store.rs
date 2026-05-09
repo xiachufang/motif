@@ -17,28 +17,43 @@ pub const DEFAULT_CAP_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub id:               BlockId,
-    pub cwd:              PathBuf,
-    pub cmd:              String,
-    pub started_at:       u64,
-    pub finished_at:      u64,
-    pub exit_code:        Option<i32>,
-    pub output:           Vec<u8>,
-    pub output_truncated: bool,
+    pub id:                BlockId,
+    pub cwd:               PathBuf,
+    pub cmd:               String,
+    pub started_at:        u64,
+    pub finished_at:       u64,
+    pub exit_code:         Option<i32>,
+
+    pub prompt:            Vec<u8>,
+    pub prompt_truncated:  bool,
+    pub command:           Vec<u8>,
+    pub command_truncated: bool,
+    pub output:            Vec<u8>,
+    pub output_truncated:  bool,
 }
 
 impl Block {
     pub fn summary(&self) -> BlockSummary {
         BlockSummary {
-            id:               self.id.clone(),
-            cwd:              self.cwd.clone(),
-            cmd:              self.cmd.clone(),
-            started_at:       self.started_at,
-            finished_at:      Some(self.finished_at),
-            exit_code:        self.exit_code,
-            output_size:      self.output.len() as u64,
-            output_truncated: self.output_truncated,
+            id:                self.id.clone(),
+            cwd:               self.cwd.clone(),
+            cmd:                self.cmd.clone(),
+            started_at:        self.started_at,
+            finished_at:       Some(self.finished_at),
+            exit_code:         self.exit_code,
+            prompt_size:       self.prompt.len()  as u64,
+            prompt_truncated:  self.prompt_truncated,
+            command_size:      self.command.len() as u64,
+            command_truncated: self.command_truncated,
+            output_size:       self.output.len()  as u64,
+            output_truncated:  self.output_truncated,
         }
+    }
+
+    /// Total bytes across all three segments — used for the BlockStore
+    /// total-bytes cap.
+    pub fn total_bytes(&self) -> u64 {
+        (self.prompt.len() + self.command.len() + self.output.len()) as u64
     }
 }
 
@@ -63,13 +78,13 @@ impl BlockStore {
     /// Push a block onto the back, evicting oldest blocks until both
     /// caps are respected.
     pub fn append(&mut self, block: Block) {
-        self.total_bytes += block.output.len() as u64;
+        self.total_bytes += block.total_bytes();
         self.blocks.push_back(block);
         while self.blocks.len() > self.cap_count
             || self.total_bytes > self.cap_total_bytes
         {
             let Some(b) = self.blocks.pop_front() else { break };
-            self.total_bytes = self.total_bytes.saturating_sub(b.output.len() as u64);
+            self.total_bytes = self.total_bytes.saturating_sub(b.total_bytes());
         }
     }
 
@@ -106,8 +121,12 @@ mod tests {
             started_at: 0,
             finished_at: 0,
             exit_code: Some(0),
+            prompt:            Vec::new(),
+            prompt_truncated:  false,
+            command:           Vec::new(),
+            command_truncated: false,
             output,
-            output_truncated: false,
+            output_truncated:  false,
         }
     }
 

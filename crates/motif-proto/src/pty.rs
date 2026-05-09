@@ -29,20 +29,43 @@ pub struct ShellContext {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub node:   Option<String>,
 }
 
-/// One entry in `pty.list_blocks`. The full output is fetched separately
-/// via `pty.get_block_output(block_id)`.
+/// Which segment of a block a chunk of bytes belongs to. See
+/// `docs/rpc.md` §6 for the lifecycle that produces these segments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputScope {
+    /// `133;A..133;B` — shell-rendered PS1.
+    Prompt,
+    /// `133;B..133;C` — user-typed command echo (syntax highlight,
+    /// autosuggest, PS2 continuation).
+    Command,
+    /// `133;C..133;D` — command stdout/stderr.
+    Output,
+}
+
+/// One entry in `pty.list_blocks`. The full segment bytes are fetched
+/// separately via `pty.get_block_output(block_id)`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockSummary {
-    pub id:               BlockId,
-    pub cwd:              PathBuf,
-    pub cmd:              String,
-    pub started_at:       UnixMs,
+    pub id:                BlockId,
+    pub cwd:               PathBuf,
+    /// Logical command text from OSC 7770. Empty string for synthesized
+    /// blocks (bare-Enter or Ctrl-C cancel).
+    pub cmd:               String,
+    pub started_at:        UnixMs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at:      Option<UnixMs>,
+    pub finished_at:       Option<UnixMs>,
+    /// `None` for force-finalized blocks (e.g. SIGINT). `Some(0)` for
+    /// synthesized empty-command blocks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exit_code:        Option<i32>,
-    pub output_size:      u64,
-    pub output_truncated: bool,
+    pub exit_code:         Option<i32>,
+
+    pub prompt_size:       u64,
+    pub prompt_truncated:  bool,
+    pub command_size:      u64,
+    pub command_truncated: bool,
+    pub output_size:       u64,
+    pub output_truncated:  bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,8 +91,12 @@ pub struct GetBlockOutputParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBlockOutputResult {
-    pub data_b64:  String,
-    pub truncated: bool,
+    pub prompt_b64:        String,
+    pub prompt_truncated:  bool,
+    pub command_b64:       String,
+    pub command_truncated: bool,
+    pub output_b64:        String,
+    pub output_truncated:  bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

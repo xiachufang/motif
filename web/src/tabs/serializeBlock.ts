@@ -48,10 +48,24 @@ export async function serializeBytesToHtml(
   term.loadAddon(addon);
 
   try {
+    // Anchor a marker at line 0 before any writes so the start of the
+    // serialize range survives potential scrollback growth.
+    const startMarker = term.registerMarker(0);
     await new Promise<void>(resolve => term.write(bytes, () => resolve()));
+    // Without a range, serializeAsHTML emits every row of the headless
+    // terminal's viewport (rows: 24) — padding short outputs with up to
+    // 23 empty lines. Bound the range to actual used lines, mirroring
+    // BlockTerm's live finalize path.
+    const endMarker = term.registerMarker(0);
+    const startLine = startMarker?.line ?? 0;
+    const endLine   = endMarker?.line   ?? startLine;
     // includeGlobalBackground: true makes the wrapper read fg/bg from the
     // theme above. With `false` the addon hard-codes black-on-white.
-    return addon.serializeAsHTML({ includeGlobalBackground: true });
+    if (endLine < startLine) return "";
+    return addon.serializeAsHTML({
+      range: { startLine, endLine, startCol: 0 },
+      includeGlobalBackground: true,
+    });
   } finally {
     addon.dispose();
     term.dispose();

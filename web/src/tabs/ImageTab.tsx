@@ -4,13 +4,14 @@
 
 import { useEffect, useState } from "react";
 import { useApp } from "../store/store";
+import type { OpenBlobResult } from "../proto/types";
 
 interface Props {
-  transferId: string;
-  mime:       string;
+  path: string;
 }
 
-export default function ImageTab({ transferId }: Props) {
+export default function ImageTab({ path }: Props) {
+  const client = useApp(s => s.client);
   const token = useApp(s => s.token) ?? "";
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -18,7 +19,21 @@ export default function ImageTab({ transferId }: Props) {
   useEffect(() => {
     let revoke: string | null = null;
     let cancelled = false;
-    fetch(`/blob/${transferId}`, { headers: { Authorization: `Bearer ${token}` } })
+    const ac = new AbortController();
+
+    setSrc(null);
+    setErr(null);
+
+    if (!client) {
+      setErr("not connected");
+      return () => { cancelled = true; ac.abort(); };
+    }
+
+    client.call<OpenBlobResult>("fs.openBlob", { path, mode: "read" })
+      .then(r => fetch(r.blob_path, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: ac.signal,
+      }))
       .then(async r => {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
         return r.blob();
@@ -28,12 +43,16 @@ export default function ImageTab({ transferId }: Props) {
         revoke = URL.createObjectURL(b);
         setSrc(revoke);
       })
-      .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : String(e)); });
+      .catch(e => {
+        if (cancelled || (e instanceof DOMException && e.name === "AbortError")) return;
+        setErr(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       cancelled = true;
+      ac.abort();
       if (revoke) URL.revokeObjectURL(revoke);
     };
-  }, [transferId, token]);
+  }, [client, path, token]);
 
   if (err) return <div className="error">image load failed: {err}</div>;
   if (!src) return <div className="muted center">loading…</div>;

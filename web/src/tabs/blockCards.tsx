@@ -44,12 +44,53 @@ function fmtDuration(startedAt: number, finishedAt: number | null): string {
   return `${m}m${rs}s`;
 }
 
+function decodeHtmlEntities(s: string): string {
+  if (typeof document === "undefined") return s;
+  const el = document.createElement("textarea");
+  el.innerHTML = s;
+  return el.value;
+}
+
+function htmlText(html: string): string {
+  const text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
+  return decodeHtmlEntities(text).replace(/\s+/g, " ").trim();
+}
+
+function countText(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let idx = haystack.indexOf(needle);
+  while (idx !== -1) {
+    count++;
+    idx = haystack.indexOf(needle, idx + needle.length);
+  }
+  return count;
+}
+
+function shouldUsePromptHtml(html: string, cmd: string): boolean {
+  const needle = cmd.trim();
+  if (!needle) return true;
+  const text = htmlText(html);
+  // Fish and other rich prompts may redraw the editable command line as the
+  // user types, so a valid capture can contain the command more than once.
+  // Only reject captures that never mention the command at all.
+  if (countText(text, needle) < 1) return false;
+  // A healthy two-line prompt is only modestly longer than the command.
+  // Much larger captures usually mean replayed prompt redraws leaked in.
+  return text.length <= Math.max(needle.length + 240, needle.length * 3 + 120);
+}
+
 /** Render the sticky `$ cmd` line inside a block header. Prefers the
  *  serialized HTML (full ANSI colors of the original PS1 + typed command)
- *  when available; falls back to plain `$ cmd` text otherwise (e.g. for
- *  backfilled history where we never captured the prompt bytes). */
+ *  when it matches the block's command; falls back to plain `$ cmd` if a
+ *  replay/redraw race captured stale prompt rows. */
 export function PromptLine({ html, cmd }: { html: string; cmd: string }) {
-  if (html) return <div className="prompt-html" dangerouslySetInnerHTML={{ __html: html }} />;
+  if (html && shouldUsePromptHtml(html, cmd)) {
+    return <div className="prompt-html" dangerouslySetInnerHTML={{ __html: html }} />;
+  }
   return (
     <>
       <span className="prompt">$</span>

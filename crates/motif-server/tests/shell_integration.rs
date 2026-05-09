@@ -104,10 +104,10 @@ async fn bash_emits_block_lifecycle_events() {
     assert_eq!(summary.exit_code, Some(0));
     assert!(summary.output_size > 0);
 
-    let (bytes, truncated) = pty.get_block_output(&id)
+    let seg = pty.get_block_output(&id)
         .expect("get_block_output: block not found");
-    assert!(!truncated, "tiny output should not be truncated");
-    let utf = String::from_utf8_lossy(&bytes);
+    assert!(!seg.output_truncated, "tiny output should not be truncated");
+    let utf = String::from_utf8_lossy(&seg.output);
     assert!(utf.contains("motif-hi"),
         "block output should contain `motif-hi`; got: {utf:?}");
 

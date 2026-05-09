@@ -1,21 +1,26 @@
-// Per-running-block xterm. Lives inside `.block-running` in the stack
-// while a command is executing; receives only that block's bytes
-// (server tags `pty.output.block_id`), so streaming output appears in
-// place without competing with the FloatTerm's prompt rendering.
+// Per-running-block xterm. Lives inside `.block-running` in the stack while a
+// command is executing; receives only that block's bytes (server tags
+// `pty.output.block_id`), so streaming output appears in place without
+// competing with FloatTerm's prompt rendering.
 //
-// On `pty.command_finished` (observed via `pendingFinalize` in the
-// store) we drain pending writes, serialize the block's rows to HTML,
-// dispatch `finalizeRunningBlock`, drop the buffered bytes, and let
-// PtyTab unmount us by no longer rendering this BlockTerm (the trailing
-// store entry has flipped from `running` → `card`/`alt`).
+// On `pty.command_finished` (observed via `pendingFinalize` in the store) we
+// drain pending writes, serialize the block's rows to HTML, dispatch
+// `finalizeRunningBlock`, and let PtyTab unmount us by no longer rendering
+// this BlockTerm (the trailing store entry has flipped from `running` →
+// `card`/`alt`).
 //
 // Sizing:
 //   - normal: rows = (cursorY + 1), capped at the stack viewport
 //   - alt-screen (vim/htop/less): full viewport
 //
-// `cols` is mirrored from FloatTerm via the parent. We do NOT call
-// pty.resize from here — FloatTerm owns the protocol resize so there's
-// one writer.
+// `cols` is mirrored from FloatTerm via the parent. We do NOT call pty.resize
+// from here — FloatTerm owns the protocol resize so there's one writer.
+//
+// Input: while a command is running (this component is mounted) we hold
+// keyboard focus. Keystrokes route through onData → pty.write so they reach
+// the running program (vim, htop, or just the shell's stdin). FloatTerm is
+// collapsed to height 0 by CSS during this window and refocuses itself when
+// we unmount.
 
 import { useEffect, useRef, useState } from "react";
 import { Terminal, type IMarker } from "@xterm/xterm";
@@ -24,25 +29,29 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { SerializeAddon } from "@xterm/addon-serialize";
 
 import { useApp, type BlockRender } from "../store/store";
-import { attachBlock, dropBlockBytes } from "../store/ptyBuffers";
-import type { BlockId } from "../proto/types";
+import { attachBlock } from "../store/ptyBuffers";
 import { PromptLine } from "./blockCards";
 
 interface Props {
   ptyId:       string;
+  /** Whether this block's PTY tab is currently visible. When the user flips
+   *  back to a tab whose command is still running we re-grab focus so typed
+   *  keystrokes land on the running program. */
+  active:      boolean;
   block:       Extract<BlockRender, { kind: "running" }>;
   cols:        number;
   /** Read .clientHeight at any time to compute max rows. */
   stackElRef:  React.MutableRefObject<HTMLDivElement | null>;
-  /** Notify parent when the terminal flips into / out of alt-screen
-   *  mode so the surrounding layout can collapse chrome (PtyTab uses
-   *  this to fullscreen vim/htop). */
+  /** Notify parent when the terminal flips into / out of alt-screen mode so
+   *  the surrounding layout can collapse chrome (PtyTab uses this to
+   *  fullscreen vim/htop). */
   onAltChange?: (alt: boolean) => void;
 }
 
-export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange }: Props) {
-  const pendingFinalize = useApp(s => s.ptyBlocks.get(ptyId)?.pendingFinalize ?? null);
-  const finalize        = useApp(s => s.finalizeRunningBlock);
+export default function BlockTerm({ ptyId, active, block, cols, stackElRef, onAltChange }: Props) {
+  const pendingFinalize    = useApp(s => s.ptyBlocks.get(ptyId)?.pendingFinalize ?? null);
+  const finalize           = useApp(s => s.finalizeRunningBlock);
+  const setRunningPromptHtml = useApp(s => s.setRunningPromptHtml);
 
   const wrapRef         = useRef<HTMLDivElement | null>(null);
   const headerRef       = useRef<HTMLElement | null>(null);
@@ -50,25 +59,28 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
   const fitRef          = useRef<FitAddon | null>(null);
   const serializeRef    = useRef<SerializeAddon | null>(null);
   const startMarkerRef  = useRef<IMarker | null>(null);
+  const disposedRef     = useRef<boolean>(false);
+  const scheduleSizeRef = useRef<(() => void) | null>(null);
+  const colsRef         = useRef<number>(cols);
+  // Sticky: did we ever enter alt-screen during this block? Decides
+  // `card` vs `alt` payload at finalize.
   const altSeenRef      = useRef<boolean>(false);
-  const altActiveRef    = useRef<boolean>(false);
   const cellHeightRef   = useRef<number>(16);
   const rafSizeRef      = useRef<number | null>(null);
-  const finalizingRef   = useRef<boolean>(false);
-  const consumedFinalizeRef = useRef<BlockId | null>(null);
-  const postFinalizeQueue   = useRef<Uint8Array[]>([]);
+  const rafFinalizeRef  = useRef<number | null>(null);
 
   const [altActive, setAltActive] = useState(false);
+  colsRef.current = cols;
 
   // ─────────────────────── mount ───────────────────────
   useEffect(() => {
     if (!wrapRef.current) return;
+    disposedRef.current = false;
     const wrap = wrapRef.current;
     const term = new Terminal({
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
       fontSize:   13,
-      cursorBlink: false,
-      disableStdin: true,
+      cursorBlink: true,
       scrollback: 5000,
       theme: { background: "#0e0e0e", foreground: "#e6e6e6" },
       allowProposedApi: true,
@@ -83,21 +95,27 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
     fitRef.current       = fit;
     serializeRef.current = serialize;
 
-    // Anchor a start marker at the top of the buffer for serialization
-    // range. line == 0 since we just opened a fresh xterm.
-    startMarkerRef.current = term.registerMarker(0);
+    // startMarkerRef is registered later in start(), AFTER the boot phase
+    // has serialized the prompt+cmd rows and reset the buffer — `reset()`
+    // would invalidate any marker registered now anyway.
 
     const offBuf = term.buffer.onBufferChange(() => {
+      if (disposedRef.current) return;
       const isAlt = term.buffer.active.type === "alternate";
       if (isAlt) altSeenRef.current = true;
-      altActiveRef.current = isAlt;
       setAltActive(isAlt);
       onAltChange?.(isAlt);
+      // Take focus when entering alt mode so vim/htop sees a focused
+      // (solid) cursor and our onData handler routes keystrokes.
+      if (isAlt) {
+        requestAnimationFrame(() => termRef.current?.focus());
+      }
       scheduleLiveSize();
     });
 
     const updateLiveSize = () => {
       rafSizeRef.current = null;
+      if (disposedRef.current) return;
       const t = termRef.current;
       if (!t) return;
       const cellH = cellHeightRef.current;
@@ -106,8 +124,9 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
       const headerH = headerRef.current?.offsetHeight ?? 0;
       const maxRows = Math.max(8, Math.floor((stackH - headerH) / cellH));
 
+      const isAlt = t.buffer.active.type === "alternate";
       let rows: number;
-      if (altActiveRef.current) {
+      if (isAlt) {
         rows = maxRows;
       } else {
         const buf = t.buffer.active;
@@ -116,21 +135,46 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
       }
 
       // Mirror `cols` prop; if it changed, propagate to xterm.
-      if (t.cols !== cols || t.rows !== rows) {
-        try { t.resize(cols, rows); } catch { /* ignore */ }
+      const liveCols = colsRef.current;
+      if (t.cols !== liveCols || t.rows !== rows) {
+        try { t.resize(liveCols, rows); } catch { /* ignore */ }
       }
-      const px = rows * cellH;
-      wrap.style.height = `${px}px`;
+      wrap.style.height = `${rows * cellH}px`;
     };
     const scheduleLiveSize = () => {
       if (rafSizeRef.current != null) return;
       rafSizeRef.current = requestAnimationFrame(updateLiveSize);
     };
+    scheduleSizeRef.current = scheduleLiveSize;
+
+    // Sequential write helper: respects xterm's parser drain order so the
+    // buffer state is fully settled before the callback fires.
+    const writeAll = (parts: Uint8Array[], cb: () => void) => {
+      if (disposedRef.current) return;
+      if (parts.length === 0) { cb(); return; }
+      let i = 0;
+      const next = () => {
+        if (disposedRef.current) return;
+        if (i >= parts.length) { cb(); return; }
+        term.write(parts[i++], () => {
+          if (disposedRef.current) return;
+          next();
+        });
+      };
+      next();
+    };
 
     let detachBuffer: (() => void) | null = null;
     let started = false;
+    // Live bytes that arrive during the boot phase (rare — prompt|command
+    // bytes drain before mount, output starts after) are deferred so they
+    // don't interleave with the prompt-serialize/clear/reset dance.
+    let booting = true;
+    const bootQueue: Uint8Array[] = [];
+
     const start = () => {
       if (started) return;
+      if (disposedRef.current) return;
       if (wrap.clientWidth === 0) return;
       if (wrap.clientHeight === 0) wrap.style.height = "20px";
       try { fit.fit(); } catch { return; }
@@ -139,23 +183,57 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
       if (firstRow && firstRow.clientHeight > 0) {
         cellHeightRef.current = firstRow.clientHeight;
       }
-      // Force initial cols to match prop (fit picks max-fit but we want to
-      // match the float's chosen cols).
-      try { term.resize(cols, term.rows); } catch { /* ignore */ }
       started = true;
       const att = attachBlock(ptyId, block.id, chunk => {
-        if (finalizingRef.current) postFinalizeQueue.current.push(chunk);
-        else term.write(chunk, () => scheduleLiveSize());
+        if (disposedRef.current) return;
+        if (booting) bootQueue.push(chunk);
+        else term.write(chunk, () => {
+          if (!disposedRef.current) scheduleLiveSize();
+        });
       });
-      for (const c of att.initial) {
-        if (finalizingRef.current) postFinalizeQueue.current.push(c);
-        else term.write(c, () => scheduleLiveSize());
-      }
       detachBuffer = att.detach;
+
+      // Boot phase: render PS1 + cmd into a fresh buffer, serialize the
+      // rendered rows as prompt_html for the running block's sticky header,
+      // then wipe the visible content so output streams onto a clean grid.
+      writeAll(att.promptInitial, () => {
+        if (disposedRef.current) return;
+        const buf = term.buffer.active;
+        const endAbs = buf.viewportY + buf.cursorY - 1;
+        if (endAbs >= 0) {
+          try {
+            const html = serialize.serializeAsHTML({
+              range: { startLine: 0, endLine: endAbs, startCol: 0 },
+              includeGlobalBackground: true,
+            });
+            if (html) setRunningPromptHtml(ptyId, block.id, html);
+          } catch { /* ignore */ }
+        }
+        term.clear();
+        term.reset();
+        // After reset(), markers registered earlier (none in our case) are
+        // invalid. Anchor the body's start marker now — the finalize range
+        // serialization reads from this line.
+        startMarkerRef.current = term.registerMarker(0);
+
+        writeAll(att.outputInitial, () => {
+          if (disposedRef.current) return;
+          booting = false;
+          for (const c of bootQueue) {
+            term.write(c, () => {
+              if (!disposedRef.current) scheduleLiveSize();
+            });
+          }
+          bootQueue.length = 0;
+          scheduleLiveSize();
+        });
+      });
+
       scheduleLiveSize();
     };
 
     const ro = new ResizeObserver(() => {
+      if (disposedRef.current) return;
       if (!started) start();
       else scheduleLiveSize();
     });
@@ -167,53 +245,71 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
     const offScroll   = term.onScroll(() => scheduleLiveSize());
     const offLineFeed = term.onLineFeed(() => scheduleLiveSize());
 
+    // Route keystrokes from this xterm straight to pty.write. We pull `client`
+    // from the store at fire time so the effect doesn't need to redo on
+    // re-connects.
+    const offData = term.onData(data => {
+      const c = useApp.getState().client;
+      if (!c) return;
+      const u8 = new TextEncoder().encode(data);
+      let bin = "";
+      for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+      const b64 = btoa(bin);
+      c.call("pty.write", { pty_id: ptyId, data_b64: b64 }).catch(() => { /* ignore */ });
+    });
+
     return () => {
+      disposedRef.current = true;
       if (rafSizeRef.current != null) cancelAnimationFrame(rafSizeRef.current);
       rafSizeRef.current = null;
+      if (rafFinalizeRef.current != null) cancelAnimationFrame(rafFinalizeRef.current);
+      rafFinalizeRef.current = null;
+      scheduleSizeRef.current = null;
       ro.disconnect();
       offBuf.dispose();
       offCursor.dispose();
       offScroll.dispose();
       offLineFeed.dispose();
+      offData.dispose();
       detachBuffer?.();
-      term.dispose();
       termRef.current      = null;
       fitRef.current       = null;
       serializeRef.current = null;
       startMarkerRef.current = null;
-      // If we go away while in alt mode (block finalize / unmount),
-      // clear the parent's alt flag so layout chrome reappears.
-      if (altActiveRef.current) onAltChange?.(false);
+      requestAnimationFrame(() => {
+        try { term.dispose(); } catch { /* ignore */ }
+      });
     };
-    // We intentionally don't redo mount on `cols` change — the cols
-    // effect below handles in-place resize.
+    // The cols mirror happens inside scheduleLiveSize, so we don't need to
+    // re-mount on cols change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ptyId, block.id]);
 
-  // Mirror cols changes.
   useEffect(() => {
-    const t = termRef.current;
-    if (!t) return;
-    if (t.cols === cols) return;
-    try { t.resize(cols, t.rows); } catch { /* ignore */ }
+    scheduleSizeRef.current?.();
   }, [cols]);
 
+  // Hold focus while we're the visible tab. Re-grab on tab-switch back
+  // (a hidden tab is display:none, which drops focus from the textarea).
+  useEffect(() => {
+    if (!active) return;
+    const id = requestAnimationFrame(() => termRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [active]);
+
   // ─────────────────────── command_finished ───────────────────────
-  // Drain → serialize → finalize → drop bytes. Once finalize commits to
-  // the store the trailing block transitions from `running` → `card`/`alt`
-  // and PtyTab stops rendering this BlockTerm (component unmounts).
+  // Drain → serialize → finalize. Once finalize commits to the store the
+  // trailing block transitions from `running` → `card`/`alt` and PtyTab
+  // stops rendering this BlockTerm (component unmounts).
   useEffect(() => {
     if (!pendingFinalize) return;
     if (pendingFinalize.id !== block.id) return;
-    if (consumedFinalizeRef.current === pendingFinalize.id) return;
     const term = termRef.current;
     const serialize = serializeRef.current;
     if (!term || !serialize) return;
 
-    consumedFinalizeRef.current = pendingFinalize.id;
-    finalizingRef.current = true;
-
     term.write("", () => {
+      if (disposedRef.current) return;
       const startMarker = startMarkerRef.current;
       const endMarker   = term.registerMarker(0);
       const altSeen     = altSeenRef.current;
@@ -244,17 +340,12 @@ export default function BlockTerm({ ptyId, block, cols, stackElRef, onAltChange 
         };
       }
 
-      finalize(ptyId, pendingFinalize.id, payload);
       endMarker?.dispose();
-      // Drop this block's buffered bytes — they're now committed in the
-      // serialized HTML and won't be re-attached (BlockTerm is about to
-      // unmount).
-      dropBlockBytes(ptyId, block.id);
-      finalizingRef.current = false;
-      // Any post-finalize queued chunks belong to the next prompt
-      // (block_id null, so they wouldn't actually have landed here) —
-      // safety: drop them.
-      postFinalizeQueue.current = [];
+      rafFinalizeRef.current = requestAnimationFrame(() => {
+        rafFinalizeRef.current = null;
+        if (disposedRef.current) return;
+        finalize(ptyId, pendingFinalize.id, payload);
+      });
     });
   }, [pendingFinalize, ptyId, block.id, finalize]);
 

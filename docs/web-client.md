@@ -2,7 +2,7 @@
 
 > 本文档是 [`prd.md`](./prd.md) 的延伸。v1 完成核心 server + TUI client 后，v1.5 引入两块新组件：浏览器前端 + 独立的桥接二进制 `motif-web`。**核心 `motifd` 不变**。
 >
-> 阅读前提：已熟悉 `prd.md` §3（架构）、§4（核心功能）、§5（JSON-RPC 协议）、§14（`motif-proto` 类型定义）。
+> 阅读前提：已熟悉 [`prd.md`](./prd.md) §3（架构）、§4（核心功能），以及 [`rpc.md`](./rpc.md)（JSON-RPC 协议与类型）。
 
 ---
 

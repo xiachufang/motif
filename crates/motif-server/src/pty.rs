@@ -158,16 +158,35 @@ impl Pty {
         self.state.lock().block_store.list(before, limit)
     }
 
-    /// Fetch full output bytes for a recorded block. `None` means the
-    /// block id is not in this PTY's BlockStore (rolled out, or never
-    /// existed).
+    /// Fetch all three byte segments (prompt + command + output) plus
+    /// per-segment truncated flags for a recorded block. `None` means
+    /// the block id is not in this PTY's BlockStore (rolled out, or
+    /// never existed).
     pub fn get_block_output(
         &self,
         id: &motif_proto::common::BlockId,
-    ) -> Option<(Vec<u8>, bool)> {
-        self.state.lock().block_store.get(id)
-            .map(|b| (b.output.clone(), b.output_truncated))
+    ) -> Option<BlockSegments> {
+        self.state.lock().block_store.get(id).map(|b| BlockSegments {
+            prompt:            b.prompt.clone(),
+            prompt_truncated:  b.prompt_truncated,
+            command:           b.command.clone(),
+            command_truncated: b.command_truncated,
+            output:            b.output.clone(),
+            output_truncated:  b.output_truncated,
+        })
     }
+}
+
+/// Three-segment view of a finalized block; returned from
+/// `Pty::get_block_output` and serialized into
+/// `motif_proto::pty::GetBlockOutputResult` by the RPC handler.
+pub struct BlockSegments {
+    pub prompt:            Vec<u8>,
+    pub prompt_truncated:  bool,
+    pub command:           Vec<u8>,
+    pub command_truncated: bool,
+    pub output:            Vec<u8>,
+    pub output_truncated:  bool,
 }
 
 /// Pick the master size: primary's preference if known, else the largest
@@ -453,20 +472,20 @@ fn reader_loop(
                             }
                         }
                         ScanItem::Bytes(bytes) => {
-                            let block_id = {
+                            let (block_id, scope) = {
                                 let mut s = pty.state.lock();
                                 let drop_n = (s.ring.len() + bytes.len()).saturating_sub(RING_BYTES);
                                 for _ in 0..drop_n { s.ring.pop_front(); }
                                 s.ring.extend(&bytes);
                                 s.shell.record_output(&bytes);
-                                s.shell.block_id_in_progress().cloned()
+                                (s.shell.active_block_id().cloned(), s.shell.active_scope())
                             };
                             let chunk = BASE64.encode(&bytes);
                             if let Some(ref weak) = session {
                                 if let Some(sess) = weak.upgrade() {
                                     let pid = pty_id.clone();
                                     sess.publish_event(|seq| Event::PtyOutput {
-                                        pty_id: pid, data_b64: chunk, block_id, seq,
+                                        pty_id: pid, data_b64: chunk, block_id, scope, seq,
                                     });
                                 }
                             }
@@ -545,13 +564,13 @@ fn dispatch_shell_event(
                 pty_id, shell: kind, seq,
             });
         }
-        ShellEvent::PromptStarted => {
+        ShellEvent::PromptStarted { block_id } => {
             let pty_id = pty.id.clone();
-            sess.publish_event(|seq| Event::PtyPromptStarted { pty_id, seq });
+            sess.publish_event(|seq| Event::PtyPromptStarted { pty_id, block_id, seq });
         }
-        ShellEvent::PromptEnded => {
+        ShellEvent::PromptEnded { block_id } => {
             let pty_id = pty.id.clone();
-            sess.publish_event(|seq| Event::PtyPromptEnded { pty_id, seq });
+            sess.publish_event(|seq| Event::PtyPromptEnded { pty_id, block_id, seq });
         }
         ShellEvent::CommandStarted { id, text, cwd, started_at } => {
             let pty_id = pty.id.clone();
@@ -560,7 +579,10 @@ fn dispatch_shell_event(
             });
         }
         ShellEvent::CommandFinished {
-            id, cmd, cwd, started_at, finished_at, exit, output, output_truncated,
+            id, cmd, cwd, started_at, finished_at, exit,
+            prompt, prompt_truncated,
+            command, command_truncated,
+            output, output_truncated,
         } => {
             // Broadcast first (clients refresh UI immediately), then
             // append to the BlockStore for backfill RPCs. Order matters
@@ -576,7 +598,10 @@ fn dispatch_shell_event(
             let mut s = pty.state.lock();
             s.block_store.append(crate::shell::Block {
                 id, cwd, cmd, started_at, finished_at,
-                exit_code: exit, output, output_truncated,
+                exit_code: exit,
+                prompt,  prompt_truncated,
+                command, command_truncated,
+                output,  output_truncated,
             });
         }
         ShellEvent::Context { ctx } => {

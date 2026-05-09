@@ -10,6 +10,23 @@ if set -q __motif_loaded
 end
 set -g __motif_loaded 1
 
+# fish 4.0+ emits OSC 133;A/B around its prompt natively (with
+# `;click_events=1` etc.). If we ALSO emit 133;A/B from our
+# fish_prompt handler, our pair fires BEFORE fish writes the actual
+# PS1 — leaving the server's BlockState in `Composing` when PS1
+# bytes flow, which routes them to command_buf instead of prompt_buf
+# and breaks block backfill + (under partial-redraw races) live
+# prompt_html capture too. Detect once and skip our 133;A/B on 4.x.
+#
+# 133;C / 133;D are still emitted from preexec/postexec — those are
+# idempotent with fish's native ones and ensure motif's state
+# machine advances even on shells where the native 133 emission is
+# disabled (e.g. via `set -e fish_term_features`).
+set -g __motif_fish_native_133 0
+if string match -qr '^([4-9]|[1-9][0-9]+)\.' -- "$FISH_VERSION"
+    set -g __motif_fish_native_133 1
+end
+
 # ── helpers ──────────────────────────────────────────────────────────
 
 function __motif_hex
@@ -69,10 +86,18 @@ function __motif_postexec --on-event fish_postexec
 end
 
 function __motif_prompt --on-event fish_prompt
-    printf '\e]133;A\a'
+    # On fish 4.x leave 133;A/B to the native emission so they land at
+    # the correct lifecycle points (after PS1 paint for B, before for A).
+    # We still emit OSC 7 (cwd, in case PWD didn't change between cycles)
+    # and OSC 7771 (motif-specific shell context) every cycle.
+    if test "$__motif_fish_native_133" = 0
+        printf '\e]133;A\a'
+    end
     __motif_emit_osc 7    "file://"(hostname)"$PWD"
     __motif_emit_osc 7771 (__motif_hex (__motif_build_context_json))
-    printf '\e]133;B\a'
+    if test "$__motif_fish_native_133" = 0
+        printf '\e]133;B\a'
+    end
 end
 
 # fish doesn't have a chpwd hook by name, but PWD is a tracked variable

@@ -19,15 +19,31 @@ export interface ShellContext {
   node?:   string | null;
 }
 
+/** Which segment of a block a chunk of bytes belongs to. */
+export type OutputScope = "prompt" | "command" | "output";
+
 export interface BlockSummary {
-  id:               BlockId;
-  cwd:              string;
-  cmd:              string;
-  started_at:       number;
-  finished_at?:     number | null;
-  exit_code?:       number | null;
-  output_size:      number;
-  output_truncated: boolean;
+  id:                BlockId;
+  cwd:               string;
+  cmd:               string;
+  started_at:        number;
+  finished_at?:      number | null;
+  exit_code?:        number | null;
+  prompt_size:       number;
+  prompt_truncated:  boolean;
+  command_size:      number;
+  command_truncated: boolean;
+  output_size:       number;
+  output_truncated:  boolean;
+}
+
+export interface GetBlockOutputResult {
+  prompt_b64:        string;
+  prompt_truncated:  boolean;
+  command_b64:       string;
+  command_truncated: boolean;
+  output_b64:        string;
+  output_truncated:  boolean;
 }
 
 export interface SessionInfo {
@@ -97,7 +113,7 @@ export interface PtyInfo {
 
 export type Event =
   | { method: "tree.changed";   params: { paths: string[]; seq: Seq } }
-  | { method: "pty.output";     params: { pty_id: PtyId; data_b64: string; block_id?: BlockId | null; seq: Seq } }
+  | { method: "pty.output";     params: { pty_id: PtyId; data_b64: string; block_id?: BlockId | null; scope: OutputScope; seq: Seq } }
   | { method: "pty.resize";     params: { pty_id: PtyId; cols: number; rows: number; seq: Seq } }
   | { method: "pty.created";    params: { info: PtyInfo; seq: Seq } }
   | { method: "pty.exited";     params: { pty_id: PtyId; exit_code: number | null; seq: Seq } }
@@ -111,8 +127,8 @@ export type Event =
   | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } }
   // ── v2 shell-integration ──
   | { method: "pty.shell_bootstrapped"; params: { pty_id: PtyId; shell: ShellKind; seq: Seq } }
-  | { method: "pty.prompt_started";     params: { pty_id: PtyId; seq: Seq } }
-  | { method: "pty.prompt_ended";       params: { pty_id: PtyId; seq: Seq } }
+  | { method: "pty.prompt_started";     params: { pty_id: PtyId; block_id: BlockId; seq: Seq } }
+  | { method: "pty.prompt_ended";       params: { pty_id: PtyId; block_id: BlockId; seq: Seq } }
   | { method: "pty.command_started";    params: { pty_id: PtyId; block_id: BlockId; text: string; cwd: string; started_at: number; seq: Seq } }
   | { method: "pty.command_finished";   params: { pty_id: PtyId; block_id: BlockId; exit_code?: number | null; finished_at: number; seq: Seq } }
   | { method: "pty.shell_context";      params: { pty_id: PtyId; ctx: ShellContext; seq: Seq } };

@@ -98,7 +98,12 @@ a { color: var(--accent); }
   gap: 0.9rem;
 }
 .card h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
-.card.login input { width: 100%; }
+.card.login input:not([type="checkbox"]) { width: 100%; }
+.card.login label.row { align-self: flex-start; }
+.card.login input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
 .card.sessions header { display: flex; justify-content: space-between; align-items: center; }
 .session-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .session-list li {
@@ -109,6 +114,16 @@ a { color: var(--accent); }
   cursor: pointer;
 }
 .session-list li:hover { border-color: var(--accent); }
+.session-list .destroy {
+  margin-left: auto;
+  padding: 0 0.5em;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.session-list .destroy:hover:not(:disabled) {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
 .create input { flex: 1; }
 
 /* ── workspace ── */
@@ -202,6 +217,12 @@ a { color: var(--accent); }
   background: var(--accent-bg);
   outline: 1px solid var(--accent);
 }
+.tree-status {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
 .chevron {
   display: inline-block;
   width: 1em;
@@ -292,6 +313,15 @@ button.icon-btn {
   white-space: nowrap;
   background: transparent;
   transition: background-color 90ms ease;
+  min-width: 0;
+  max-width: min(360px, 45vw);
+}
+.tab-kind,
+.tab-close { flex: 0 0 auto; }
+.tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tab:not(.active):hover { background: rgba(255, 255, 255, 0.05); }
 .tab.active { background: var(--accent-bg); }
@@ -403,7 +433,7 @@ button.icon-btn {
 .block-alt-header,
 .block-running-header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 6px;
   padding: 2px 8px;
   font-family: var(--mono);
@@ -433,17 +463,16 @@ button.icon-btn {
   flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* serializeAsHTML wraps content in a <div> per row; inline it so the
-   prompt+cmd reads as a single header line (no row break, no own bg —
-   we want the header's solid bg so sticky still reads against scrolled
-   content). */
+/* serializeAsHTML wraps content in a <div> per row. Multi-line PS1
+   (e.g. starship two-line prompts) renders as one block element per
+   row stacked vertically; the per-row background is dropped so the
+   header's solid bg shows through and sticky reads correctly against
+   scrolled content. */
 .prompt-html {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
 }
-.prompt-html > div { display: inline; background: transparent !important; }
+.prompt-html > div { display: block; background: transparent !important; }
 
 .block-card-body,
 .block-running-body {
@@ -476,27 +505,34 @@ button.icon-btn {
 }
 .pty-float .xterm { height: 100%; }
 .pty-float .xterm .xterm-viewport { background: transparent; }
-.pty-float .pty-float-host { /* height is set inline */ }
+/* Crop the xterm grid to the live `wrap.style.height`. FloatTerm pins
+   the grid at FLOAT_MAX_ROWS so multi-line PS1 has room to render; the
+   cursor-row anchor + clipping make only the live rows visible. */
+.pty-float .pty-float-host { overflow: hidden; /* height is set inline */ }
 
-/* ── alt-screen fullscreen (vim/htop/less) ──
-   BlockTerm reports its xterm flipped to the alternate buffer; PtyTab
-   adds .alt-active so we collapse everything except the running block:
-   meta strip, prior block cards, and the running header all hide;
-   FloatTerm collapses to height 0 but stays in the DOM with
-   overflow:hidden so its xterm textarea keeps keyboard focus — typed
-   keystrokes still route through FloatTerm → pty.write into the
-   alt-screen app. */
-.pty-tab.alt-active .pty-meta { display: none; }
-.pty-tab.alt-active .pty-stack > .block-card,
-.pty-tab.alt-active .pty-stack > .block-alt { display: none; }
-.pty-tab.alt-active .block-running-header { display: none; }
-.pty-tab.alt-active .pty-float {
+/* ── command running ──
+   While a command is executing, BlockTerm owns the terminal. PtyTab
+   adds .running and FloatTerm collapses to height 0 (kept in the DOM
+   so it doesn't remount when the command finishes). Focus is on
+   BlockTerm; onData → pty.write routes user keystrokes (including
+   stdin to long-running commands) straight to the program. FloatTerm
+   refocuses when .running flips off. */
+.pty-tab.running .pty-float {
   flex: 0 0 0;
   height: 0;
   padding: 0;
   border-top: none;
   overflow: hidden;
 }
+
+/* ── alt-screen fullscreen (vim/htop/less) ──
+   Stricter subset of .running: when BlockTerm flips into the alternate
+   buffer we hide the meta strip, prior block cards/alt-stubs, and the
+   running header so vim/htop get the full pty-tab area. */
+.pty-tab.alt-active .pty-meta { display: none; }
+.pty-tab.alt-active .pty-stack > .block-card,
+.pty-tab.alt-active .pty-stack > .block-alt { display: none; }
+.pty-tab.alt-active .block-running-header { display: none; }
 .pty-tab.alt-active .pty-stack { padding: 0; }
 .pty-tab.alt-active .block-running-body { padding: 0; }
 
@@ -759,4 +795,3 @@ button.icon-btn {
 .pill.success { background: rgba(0,  180, 0, 0.18); border-color: #2e8b2e; }
 .pill.failure { background: rgba(220, 50, 50, 0.20); border-color: #a04040; }
 .pill.neutral { background: var(--muted-bg); }
-

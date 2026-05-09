@@ -162,8 +162,8 @@ function glyph(v: ViewInfo): string {
 function label(v: ViewInfo, ptyOrdinal: number | null, pty: PtyInfo | null): string {
   switch (v.spec.kind) {
     case "pty":     return ptyLabel(pty, ptyOrdinal);
-    case "preview": return v.spec.path;
-    case "image":   return v.spec.path;
+    case "preview": return basename(v.spec.path);
+    case "image":   return basename(v.spec.path);
     case "diff": {
       const base = v.spec.staged ? "diff(staged)" : "diff";
       if (v.spec.path) {

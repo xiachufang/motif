@@ -2,7 +2,7 @@
 
 > 大文件 / 二进制内容（图片、PDF、归档、模型权重等）通过**独立 WS 连接**传输，不挤占主 JSON-RPC 通道。motif-tui 与 motif-web 都支持上传 / 下载。
 >
-> 阅读前提：[`prd.md`](./prd.md) §4（核心功能）、§5（JSON-RPC 协议）、§14（`motif-proto` 类型）、[`web-client.md`](./web-client.md) §3（桥接架构）。
+> 阅读前提：[`prd.md`](./prd.md) §4（核心功能）、[`rpc.md`](./rpc.md)（JSON-RPC 协议与类型）、[`web-client.md`](./web-client.md) §3（桥接架构）。
 
 ---
 

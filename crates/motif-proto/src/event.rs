@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::common::{BlockId, ClientId, PtyId, Seq, UnixMs};
-use crate::pty::{PtyInfo, ShellContext, ShellKind};
+use crate::pty::{OutputScope, PtyInfo, ShellContext, ShellKind};
 use crate::view::{ViewId, ViewInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,12 +20,16 @@ pub enum Event {
         pty_id:   PtyId,
         /// Base64-encoded raw bytes from the pseudo-tty.
         data_b64: String,
-        /// v2 shell-integration: when the PTY's BlockState is `Running`,
-        /// this carries the active block id so clients can fold output
-        /// into the block card. `None` outside a running command (prompt
-        /// rendering, idle compose, un-bootstrapped PTY).
+        /// Active block id. `None` only when the PTY is in `Unknown`
+        /// state (un-bootstrapped or shell-integration disabled).
+        /// Allocated at the `133;A` boundary; stable across a whole
+        /// prompt cycle (prompt → command → output).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         block_id: Option<BlockId>,
+        /// Which segment of the block these bytes belong to. Always
+        /// `Prompt` when `block_id` is `None` (treat as raw terminal
+        /// stream).
+        scope:    OutputScope,
         seq:      Seq,
     },
 
@@ -90,15 +94,21 @@ pub enum Event {
     /// syntax highlighting and each redraw is its own `prompt_started`.
     /// Clients use this as the boundary to clear their PS1 renderer so
     /// the next prompt paints on a fresh grid.
+    ///
+    /// `block_id` is the id allocated for this prompt cycle. On a pure
+    /// redraw (AtPrompt → AtPrompt) the id is the same as the previous
+    /// `prompt_started` for this PTY; on a fresh cycle (after a
+    /// command_finished or a forced finalize) it's a new ULID.
     #[serde(rename = "pty.prompt_started")]
-    PtyPromptStarted { pty_id: PtyId, seq: Seq },
+    PtyPromptStarted { pty_id: PtyId, block_id: BlockId, seq: Seq },
 
     /// OSC 133;B observed: prompt is done, user is now composing input.
     /// Only emitted on the AtPrompt → Composing transition (not on
     /// pure redraws), so clients can use it to freeze the PS1 + user
-    /// input row for the eventual BlockCard header.
+    /// input row for the eventual BlockCard header. `block_id` matches
+    /// the same prompt cycle's `prompt_started`.
     #[serde(rename = "pty.prompt_ended")]
-    PtyPromptEnded { pty_id: PtyId, seq: Seq },
+    PtyPromptEnded { pty_id: PtyId, block_id: BlockId, seq: Seq },
 
     /// User pressed Enter; shell is about to run a command. Allocates a
     /// `block_id` that subsequent `pty.output` events carry.

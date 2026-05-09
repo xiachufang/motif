@@ -2,33 +2,31 @@
 // PS1, the user's typed command, and any PS2 continuation lines.
 //
 // Routing & lifecycle (driven by ptyBuffers.attachPrompt):
-//   - prompt + compose-zone bytes flow in via the `data` callback and
+//   - prompt + command-zone bytes flow in via the `data` callback and
 //     are written straight to xterm.
-//   - PromptStarted edges fire the `boundary` callback synchronously.
-//     We use that edge to (a) capture the just-finished PS1+typed-cmd
-//     row as `prompt_html` for the running BlockCard header, and
-//     (b) `term.clear() + term.reset()` so the next PS1 paints on a
-//     fresh grid. Doing this inline in the dispatcher (not a React
-//     effect) sidesteps the previous race where post-output bytes
-//     leaked into the xterm before reset ran.
+//   - PromptStarted edges fire the `boundary` callback synchronously,
+//     which `term.clear() + term.reset()`s the grid so the next PS1
+//     paints fresh.
 //   - output-zone bytes never reach this terminal; they're filtered by
 //     ptyBuffers and routed to the running BlockTerm instead.
+//   - prompt_html capture is BlockTerm's job (it sees the same prompt
+//     bytes via attachBlock.promptInitial and serializes them itself);
+//     FloatTerm is a pure renderer.
 //
 // Sizing dimensions:
 //   - **Visual height** of this pane: cursorY+1 rows, capped at FLOAT_MAX_ROWS
 //     so a long PS2 paste doesn't eat the tab. With phase-driven reset the
 //     buffer is never polluted with stale rows, so cursorY alone is enough —
 //     no need to add viewportY.
-//   - **PTY protocol rows**: the FULL stack viewport (read from stackHeightRef).
-//     The shell needs this so alt-screen apps in BlockTerm get a real-sized
-//     canvas; we only resize the PTY here because FloatTerm is the only
-//     component that always exists.
+//   - **PTY protocol rows**: the stack viewport minus the running block's
+//     sticky header (when present). The shell needs this so alt-screen
+//     apps in BlockTerm get a real-sized canvas; FloatTerm is the only
+//     component that always exists, so it owns the resize call.
 
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { SerializeAddon } from "@xterm/addon-serialize";
 import "@xterm/xterm/css/xterm.css";
 
 import { useApp } from "../store/store";
@@ -40,6 +38,11 @@ const FLOAT_MAX_ROWS = 12;
 interface Props {
   ptyId:           string;
   active:          boolean;
+  /** True while a BlockTerm exists for this PTY (i.e. a command is
+   *  executing). When set, FloatTerm yields focus so BlockTerm owns
+   *  input, and CSS collapses our height to 0. We take focus back when
+   *  it flips false. */
+  running:         boolean;
   /** PtyTab-owned ref to the .pty-stack element. We read its
    *  `clientHeight` to compute the PTY protocol rows so alt-screen apps
    *  in BlockTerm get a real canvas size. */
@@ -50,20 +53,20 @@ interface Props {
   onColsChange:    (cols: number) => void;
 }
 
-export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: Props) {
-  const client           = useApp(s => s.client);
-  const setRunningPrompt = useApp(s => s.setRunningPromptHtml);
+export default function FloatTerm({ ptyId, active, running, stackElRef, onColsChange }: Props) {
+  const client        = useApp(s => s.client);
 
-  const wrapRef          = useRef<HTMLDivElement | null>(null);
-  const termRef          = useRef<Terminal | null>(null);
-  const fitRef           = useRef<FitAddon | null>(null);
-  const serializeRef     = useRef<SerializeAddon | null>(null);
-  const cellHeightRef    = useRef<number>(16);
-  const rafSizeRef       = useRef<number | null>(null);
+  const wrapRef       = useRef<HTMLDivElement | null>(null);
+  const termRef       = useRef<Terminal | null>(null);
+  const fitRef        = useRef<FitAddon | null>(null);
+  const disposedRef   = useRef<boolean>(false);
+  const cellHeightRef = useRef<number>(16);
+  const rafSizeRef    = useRef<number | null>(null);
 
   // ─────────────────────── mount ───────────────────────
   useEffect(() => {
     if (!wrapRef.current) return;
+    disposedRef.current = false;
     const wrap = wrapRef.current;
     const term = new Terminal({
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
@@ -73,42 +76,50 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
       theme: { background: "#0e0e0e", foreground: "#e6e6e6" },
       allowProposedApi: true,
     });
-    const fit       = new FitAddon();
-    const serialize = new SerializeAddon();
+    const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
-    term.loadAddon(serialize);
     term.open(wrap);
-    termRef.current      = term;
-    fitRef.current       = fit;
-    serializeRef.current = serialize;
+    termRef.current = term;
+    fitRef.current  = fit;
 
-    // Compute PTY protocol rows from the stack viewport — NOT from this
-    // term's visual rows. Alt-screen apps in BlockTerm need the full
-    // viewport size to paint correctly.
+    // Compute PTY protocol rows from the stack viewport minus the running
+    // block's sticky header height (when present) — alt-screen apps in
+    // BlockTerm need the full *renderable* viewport, not the raw stack
+    // height. With multi-line PS1 the header can occupy 2-3 rows; without
+    // this subtraction the shell would think it has more rows than
+    // BlockTerm actually paints, and bottom rows would be clipped.
+    // alt-active flips the header to display:none, so offsetHeight is 0
+    // and vim/htop get the full stack — same behavior as before.
     const measureViewportRows = (): number => {
       const cellH = cellHeightRef.current || 16;
       const stackEl = stackElRef.current;
       const stackPx = stackEl?.clientHeight ?? 480;
-      return Math.max(8, Math.floor(stackPx / cellH));
+      const headerEl = stackEl?.querySelector(".block-running-header") as HTMLElement | null;
+      const headerPx = headerEl?.offsetHeight ?? 0;
+      return Math.max(8, Math.floor((stackPx - headerPx) / cellH));
     };
 
     const updateLiveSize = () => {
       rafSizeRef.current = null;
+      if (disposedRef.current) return;
       const t = termRef.current;
       if (!t) return;
       const dims = fit.proposeDimensions();
       if (!dims || !dims.cols) return;
-      // Phase-driven reset keeps the buffer clean — cursor never
-      // overflows into scrollback during steady-state, so cursorY+1
-      // is the true content height. Don't add viewportY: that would
-      // count any incidental scrollback (e.g. backfilled prompts) into
-      // wantRows and trigger xterm to pull them back into view.
+      // Keep the xterm grid pinned at FLOAT_MAX_ROWS so multi-line PS1
+      // (e.g. starship two-line prompts) has room to render without
+      // scrolling content off the top — shrinking the grid to cursorY+1
+      // rows would force \r\n in the PS1 stream to scroll the upper rows
+      // out before they're ever displayed. The visible height of the
+      // pane is the wrap's inline `height`; `.pty-float-host` has
+      // `overflow: hidden`, so unused trailing rows of the grid are
+      // simply clipped.
       const buf = t.buffer.active;
       const wantRows = Math.max(FLOAT_MIN_ROWS, Math.min(FLOAT_MAX_ROWS, buf.cursorY + 1));
 
-      if (t.cols !== dims.cols || t.rows !== wantRows) {
-        try { t.resize(dims.cols, wantRows); } catch { /* ignore */ }
+      if (t.cols !== dims.cols || t.rows !== FLOAT_MAX_ROWS) {
+        try { t.resize(dims.cols, FLOAT_MAX_ROWS); } catch { /* ignore */ }
       }
       const cellH = cellHeightRef.current;
       wrap.style.height = `${wantRows * cellH}px`;
@@ -118,48 +129,15 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
       rafSizeRef.current = requestAnimationFrame(updateLiveSize);
     };
 
-    // PromptStarted boundary handler. Runs synchronously from the
-    // ws dispatcher. At this moment the buffer holds the PS1 + user
-    // input from the just-submitted command (post-output bytes were
-    // dropped by ptyBuffers, so the buffer didn't get polluted between
-    // command_finished and prompt_started). We capture that row as
-    // prompt_html for the running block, then reset for the next PS1.
+    // PromptStarted boundary: clear+reset the grid so the next PS1 paints
+    // fresh. Runs synchronously from the ws dispatcher.
     const onBoundary = () => {
       const t = termRef.current;
+      if (disposedRef.current) return;
       if (!t) return;
-      // Drain pending writes so cursor sits at its post-Enter resting
-      // row before we register the marker.
       t.write("", () => {
         const live = termRef.current;
-        const liveSer = serializeRef.current;
         if (!live) return;
-
-        if (liveSer) {
-          // Find a trailing running block whose prompt_html hasn't been
-          // captured yet. Reading store state here (not via subscription)
-          // is intentional: this callback runs synchronously during
-          // dispatch, before React commits any pending requestFinalize,
-          // so the trailing block is still in `running` state.
-          const ui = useApp.getState().ptyBlocks.get(ptyId);
-          const last = ui?.blocks[ui.blocks.length - 1];
-          const captureFor =
-            last && last.kind === "running" && last.prompt_html === ""
-              ? last.id
-              : null;
-          if (captureFor) {
-            const m = live.registerMarker(-1);
-            if (m && m.line >= 0) {
-              try {
-                const html = liveSer.serializeAsHTML({
-                  range: { startLine: m.line, endLine: m.line, startCol: 0 },
-                  includeGlobalBackground: true,
-                });
-                if (html) setRunningPrompt(ptyId, captureFor, html);
-              } catch { /* ignore */ }
-              m.dispose();
-            }
-          }
-        }
         live.clear();
         live.reset();
         scheduleLiveSize();
@@ -170,6 +148,7 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
     let started = false;
     const start = () => {
       if (started) return;
+      if (disposedRef.current) return;
       if (wrap.clientWidth === 0) return;
       if (wrap.clientHeight === 0) wrap.style.height = "20px";
       try { fit.fit(); } catch { return; }
@@ -180,10 +159,19 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
       }
       started = true;
       const att = attachPrompt(ptyId, {
-        data: chunk => { term.write(chunk, () => scheduleLiveSize()); },
+        data:     chunk => {
+          if (disposedRef.current) return;
+          term.write(chunk, () => {
+            if (!disposedRef.current) scheduleLiveSize();
+          });
+        },
         boundary: onBoundary,
       });
-      for (const c of att.initial) term.write(c, () => scheduleLiveSize());
+      for (const c of att.initial) {
+        term.write(c, () => {
+          if (!disposedRef.current) scheduleLiveSize();
+        });
+      }
       detachBuffer = att.detach;
       scheduleLiveSize();
 
@@ -201,6 +189,7 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
     };
 
     const ro = new ResizeObserver(() => {
+      if (disposedRef.current) return;
       if (!started) {
         start();
       } else {
@@ -240,6 +229,7 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
     });
 
     return () => {
+      disposedRef.current = true;
       if (rafSizeRef.current != null) cancelAnimationFrame(rafSizeRef.current);
       rafSizeRef.current = null;
       ro.disconnect();
@@ -249,20 +239,24 @@ export default function FloatTerm({ ptyId, active, stackElRef, onColsChange }: P
       offData.dispose();
       offResize.dispose();
       detachBuffer?.();
-      term.dispose();
-      termRef.current      = null;
-      fitRef.current       = null;
-      serializeRef.current = null;
+      termRef.current = null;
+      fitRef.current  = null;
+      requestAnimationFrame(() => {
+        try { term.dispose(); } catch { /* ignore */ }
+      });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ptyId]);
 
-  // Refocus on becoming active.
+  // Refocus on becoming active or when a running command finishes.
+  // While `running`, BlockTerm holds focus and we are visually
+  // collapsed (height 0).
   useEffect(() => {
     if (!active) return;
+    if (running) return;
     const id = requestAnimationFrame(() => termRef.current?.focus());
     return () => cancelAnimationFrame(id);
-  }, [active]);
+  }, [active, running]);
 
   return <div className="pty-float-host" ref={wrapRef} />;
 }

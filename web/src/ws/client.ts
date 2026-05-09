@@ -1,6 +1,13 @@
 // JSON-RPC 2.0 over a single WebSocket. Designed for the motif-web bridge:
 // the first frame is `auth.login`, the bridge replies with a synthetic
 // success, and from then on frames flow transparently to/from motifd.
+//
+// Auto-reconnect: on unexpected close, the client opens a fresh WS,
+// re-runs `auth.login` with the cached token, then fires `onReconnect`
+// so the workspace can call `session.attach { last_seq }` to replay
+// missed events. Pending requests issued on the dead socket are
+// rejected; new calls during the gap also reject (caller should retry
+// after onReconnect). Explicit `close()` disables reconnect.
 
 import type { Event } from "../proto/types";
 
@@ -11,41 +18,97 @@ interface PendingCall {
 
 export type EventHandler = (ev: Event) => void;
 
+const RECONNECT_MIN_MS = 500;
+const RECONNECT_MAX_MS = 15_000;
+
 export class RpcClient {
-  private ws:        WebSocket;
+  private ws:        WebSocket | null = null;
+  private token:     string;
   private nextId   = 1;
   private pending  = new Map<number, PendingCall>();
   private handlers = new Set<EventHandler>();
   private closed   = false;
-  public  onClose: (() => void) | null = null;
+  private reconnectDelay = RECONNECT_MIN_MS;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires after a transparent reconnect + auth.login succeed. The
+   *  workspace uses this to call `session.attach` with the last seen
+   *  `seq` so the server can replay missed events. */
+  public  onReconnect: (() => void | Promise<void>) | null = null;
+  /** Fires only on explicit close() or when reconnect is permanently
+   *  given up (auth.login fails — token revoked). */
+  public  onClose:     (() => void) | null = null;
 
-  constructor(ws: WebSocket) {
-    this.ws = ws;
-    ws.addEventListener("message", e => this.onMessage(e.data));
-    ws.addEventListener("close",   ()  => { this.closed = true; this.onClose?.(); });
-    ws.addEventListener("error",   ()  => { /* surface via close */ });
+  private constructor(token: string) {
+    this.token = token;
   }
 
   /** Open a connection, perform auth.login, return a ready RpcClient. */
   static async connect(token: string): Promise<RpcClient> {
+    const c = new RpcClient(token);
+    await c.openSocket();
+    return c;
+  }
+
+  private async openSocket(): Promise<void> {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url   = `${proto}://${location.host}/ws`;
     const ws    = new WebSocket(url);
     await new Promise<void>((res, rej) => {
-      ws.addEventListener("open",  () => res(),         { once: true });
-      ws.addEventListener("error", () => rej(new Error("connection failed")), { once: true });
+      ws.addEventListener("open",  () => res(),                                  { once: true });
+      ws.addEventListener("error", () => rej(new Error("connection failed")),    { once: true });
     });
-    const c = new RpcClient(ws);
-    await c.call("auth.login", { token });
-    return c;
+    this.ws = ws;
+    ws.addEventListener("message", e => this.onMessage(e.data));
+    ws.addEventListener("close",   () => this.handleSocketClose());
+    ws.addEventListener("error",   () => { /* surface via close */ });
+    await this.sendCall("auth.login", { token: this.token });
+    this.reconnectDelay = RECONNECT_MIN_MS;
+  }
+
+  private handleSocketClose() {
+    this.ws = null;
+    // Reject every in-flight call — they were sent on a dead socket and
+    // the server won't respond.
+    if (this.pending.size > 0) {
+      const dead = this.pending;
+      this.pending = new Map();
+      for (const p of dead.values()) p.reject(new Error("disconnected"));
+    }
+    if (this.closed) return;
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect() {
+    if (this.reconnectTimer) return;
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.closed) return;
+      try {
+        await this.openSocket();
+      } catch {
+        if (!this.closed) this.scheduleReconnect();
+        return;
+      }
+      try { await this.onReconnect?.(); } catch { /* surfaced by caller */ }
+    }, delay);
   }
 
   call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     if (this.closed) return Promise.reject(new Error("closed"));
+    return this.sendCall(method, params) as Promise<T>;
+  }
+
+  private sendCall(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("disconnected"));
+    }
     const id = this.nextId++;
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
   }
 
@@ -54,7 +117,18 @@ export class RpcClient {
     return () => this.handlers.delete(h);
   }
 
-  close() { this.ws.close(); }
+  /** Permanently close. No more reconnects, no more events. */
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
+    this.ws = null;
+    this.onClose?.();
+  }
 
   private onMessage(raw: unknown) {
     const text = typeof raw === "string" ? raw : "";

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../store/store";
 import { RpcClient } from "../ws/client";
 
@@ -11,16 +11,19 @@ export default function Login() {
   const [remember, setR]      = useState(true);
   const [busy,     setBusy]   = useState(false);
   const [err,      setErr]    = useState<string | null>(null);
+  const autoTried = useRef(false);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!token.trim()) return;
+  async function connect(rawToken: string, persist: boolean) {
+    const nextToken = rawToken.trim();
+    if (!nextToken) return;
     setBusy(true); setErr(null);
     try {
-      const c = await RpcClient.connect(token.trim());
-      const storage = remember ? localStorage : sessionStorage;
-      storage.setItem("motif.token", token.trim());
-      setToken(token.trim());
+      const c = await RpcClient.connect(nextToken);
+      if (persist) {
+        const storage = remember ? localStorage : sessionStorage;
+        storage.setItem("motif.token", nextToken);
+      }
+      setToken(nextToken);
       setClient(c);
       c.onClose = () => {
         setClient(null);
@@ -32,6 +35,19 @@ export default function Login() {
     } finally {
       setBusy(false);
     }
+  }
+
+  useEffect(() => {
+    if (!initial || autoTried.current) return;
+    autoTried.current = true;
+    connect(initial, false);
+    // `connect` intentionally closes over the current store setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    await connect(token, true);
   }
 
   return (

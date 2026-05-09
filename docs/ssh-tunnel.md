@@ -89,7 +89,7 @@ ssh -N \
 
 1. 启动子进程后等待 100~500ms 让端口 ready（带超时上限 10s）
 2. 持续探测 `127.0.0.1:<random-local-port>` 是否可连接
-3. 端口可用 → 把 motif WS URL 替换为 `wss://127.0.0.1:<random-local-port>/`，正常走 [`prd.md`](./prd.md) §5 的协议握手
+3. 端口可用 → 把 motif WS URL 替换为 `wss://127.0.0.1:<random-local-port>/`，正常走 [`rpc.md`](./rpc.md) §1 的协议握手
 4. motif-tui 退出（正常 / Ctrl-C / panic）→ `Drop` 触发 `kill(child, SIGTERM)`，SSH 子进程清理
 
 ### 3.3 端口选择

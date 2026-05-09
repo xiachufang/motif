@@ -60,6 +60,26 @@ export default function Sessions() {
     }
   }
 
+  async function destroy(s: SessionInfo) {
+    if (!client) return;
+    const msg =
+      `Destroy session "${s.name}"?\n\n` +
+      `This kills every PTY in it and disconnects ` +
+      `${s.client_count} attached client${s.client_count === 1 ? "" : "s"}.`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      await client.call("session.destroy", { name: s.name });
+      // Don't auto-create a default home if the user just nuked the only
+      // session — they're clearly not done managing the list.
+      refresh(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function attach(s: SessionInfo) {
     setPage({ kind: "workspace", sessionName: s.name });
   }
@@ -91,6 +111,14 @@ export default function Sessions() {
               <div className="row tight">
                 <strong>{s.name}</strong>
                 <span className="pill">{s.client_count} attached</span>
+                <button
+                  className="ghost small destroy"
+                  title="Destroy session (kills all PTYs)"
+                  disabled={busy}
+                  onClick={e => { e.stopPropagation(); destroy(s); }}
+                >
+                  ×
+                </button>
               </div>
               <div className="muted small">{s.workdir}</div>
               <div className="muted small">id: {s.id}</div>

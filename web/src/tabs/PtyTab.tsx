@@ -21,13 +21,11 @@ import {
 import { AltStub, BlockCard } from "./blockCards";
 import FloatTerm from "./FloatTerm";
 import BlockTerm from "./BlockTerm";
-import type { BlockId, BlockSummary } from "../proto/types";
+import type { BlockId, BlockSummary, GetBlockOutputResult } from "../proto/types";
 
 interface Props { ptyId: string; active: boolean }
 
 interface ListBlocksResult { blocks: BlockSummary[] }
-
-interface GetBlockOutputResult { data_b64: string; truncated: boolean }
 
 function decodeB64(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -36,10 +34,20 @@ function decodeB64(b64: string): Uint8Array {
   return u8;
 }
 
+function concat(...parts: Uint8Array[]): Uint8Array {
+  let len = 0;
+  for (const p of parts) len += p.length;
+  const out = new Uint8Array(len);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
 export default function PtyTab({ ptyId, active }: Props) {
   const client            = useApp(s => s.client);
   const ptyInfo           = useApp(s => s.ptyInfos.get(ptyId));
   const blocks            = useApp(s => s.ptyBlocks.get(ptyId)?.blocks ?? EMPTY_BLOCKS);
+  const backfilledInStore = useApp(s => s.ptyBlocks.get(ptyId)?.backfilled ?? false);
   const selectedBlock     = useApp(s => s.selectedBlock);
   const setBackfilled     = useApp(s => s.setBackfilledBlocks);
   const setSelectedBlock  = useApp(s => s.setSelectedBlock);
@@ -67,6 +75,19 @@ export default function PtyTab({ ptyId, active }: Props) {
     if (!runningBlock) setAltActive(false);
   }, [runningBlock]);
 
+  const prevRunningIdRef = useRef<BlockId | null>(null);
+  useLayoutEffect(() => {
+    const id = runningBlock?.id ?? null;
+    if (id && id !== prevRunningIdRef.current) {
+      const stack = stackRef.current;
+      if (stack) {
+        stack.scrollTop = stack.scrollHeight;
+        wasAtBottomRef.current = true;
+      }
+    }
+    prevRunningIdRef.current = id;
+  }, [runningBlock?.id]);
+
   // ─────────────────────── selected-block scroll ───────────────────────
   useEffect(() => {
     if (!selectedBlock || selectedBlock.ptyId !== ptyId) return;
@@ -79,11 +100,14 @@ export default function PtyTab({ ptyId, active }: Props) {
   }, [selectedBlock, ptyId]);
 
   // ─────────────────────── backfill ───────────────────────
-  // On mount, pull the last 50 finished blocks and pre-render their HTML.
-  const [backfilled, setBackfilledFlag] = useState(false);
+  // On first mount per PTY (across the whole session — not per component),
+  // pull the last 50 finished blocks and pre-render their HTML. The flag
+  // lives in the store so tab-switch / StrictMode remount doesn't redo the
+  // 50-RPC fetch, and so it survives transparent WS reconnect (the server
+  // replays missed events to keep blocks current).
   useEffect(() => {
     if (!client) return;
-    if (backfilled) return;
+    if (backfilledInStore) return;
     let cancelled = false;
     (async () => {
       try {
@@ -98,8 +122,14 @@ export default function PtyTab({ ptyId, active }: Props) {
             const out = await client.call<GetBlockOutputResult>("pty.get_block_output", {
               pty_id: ptyId, block_id: s.id,
             });
-            const bytes = decodeB64(out.data_b64);
-            if (bytesEnteredAltScreen(bytes)) {
+            const promptBytes  = decodeB64(out.prompt_b64);
+            const commandBytes = decodeB64(out.command_b64);
+            const outputBytes  = decodeB64(out.output_b64);
+            // Alt-screen detection runs over the output segment — the
+            // prompt/command segments can't enter alt mode by definition.
+            if (bytesEnteredAltScreen(outputBytes)) {
+              const promptHtml = await serializeBytesToHtml(
+                concat(promptBytes, commandBytes), { cols: floatCols });
               return {
                 kind:        "alt",
                 id:          s.id,
@@ -108,10 +138,16 @@ export default function PtyTab({ ptyId, active }: Props) {
                 exit_code:   s.exit_code ?? null,
                 started_at:  s.started_at,
                 finished_at: s.finished_at ?? s.started_at,
-                prompt_html: "",
+                prompt_html: promptHtml,
               };
             }
-            const html = await serializeBytesToHtml(bytes, { cols: floatCols });
+            // Header gets prompt+command rendered together (mirrors
+            // what the live FloatTerm captures from its xterm); body
+            // gets the output segment alone.
+            const [promptHtml, bodyHtml] = await Promise.all([
+              serializeBytesToHtml(concat(promptBytes, commandBytes), { cols: floatCols }),
+              serializeBytesToHtml(outputBytes, { cols: floatCols }),
+            ]);
             return {
               kind:        "card",
               id:          s.id,
@@ -120,8 +156,8 @@ export default function PtyTab({ ptyId, active }: Props) {
               exit_code:   s.exit_code ?? null,
               started_at:  s.started_at,
               finished_at: s.finished_at ?? s.started_at,
-              html_body:   html,
-              prompt_html: "",
+              html_body:   bodyHtml,
+              prompt_html: promptHtml,
             };
           } catch {
             return null;
@@ -131,16 +167,16 @@ export default function PtyTab({ ptyId, active }: Props) {
         const cards = rendered.filter((b): b is BlockRender => b !== null);
         setBackfilled(ptyId, cards);
       } catch {
-        // Server may not support list_blocks (older build) — silently skip.
-      } finally {
-        if (!cancelled) setBackfilledFlag(true);
+        // Server may not support list_blocks (older build) or the call
+        // failed transiently — flip the flag anyway so we don't busy-loop.
+        if (!cancelled) setBackfilled(ptyId, []);
       }
     })();
     return () => { cancelled = true; };
     // floatCols intentionally omitted — backfill runs once at mount; later
     // cols changes don't re-render history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, ptyId, backfilled, setBackfilled]);
+  }, [client, ptyId, backfilledInStore, setBackfilled]);
 
   // ─────────────────────── auto-scroll ───────────────────────
   useEffect(() => {
@@ -193,8 +229,15 @@ export default function PtyTab({ ptyId, active }: Props) {
     }
   }, [ptyId, setSelectedBlock]);
 
+  // While a command is executing the BlockTerm owns the terminal: it
+  // focuses itself, and FloatTerm collapses to height 0 (.running class).
+  // .alt-active is the stricter subset for full-takeover apps (vim/htop)
+  // — it additionally hides meta strip, prior block cards, and the
+  // running header.
+  const running = !!runningBlock;
+
   return (
-    <div className={`pty-tab${altActive ? " alt-active" : ""}`}>
+    <div className={`pty-tab${running ? " running" : ""}${altActive ? " alt-active" : ""}`}>
       <div className="pty-meta muted small">
         {ptyInfo ? `${ptyInfo.cmd} · ${ptyInfo.cols}×${ptyInfo.rows}` : "(loading…)"}
       </div>
@@ -230,6 +273,7 @@ export default function PtyTab({ ptyId, active }: Props) {
           <BlockTerm
             key={runningBlock.id}
             ptyId={ptyId}
+            active={active}
             block={runningBlock}
             cols={floatCols}
             stackElRef={stackRef}
@@ -241,6 +285,7 @@ export default function PtyTab({ ptyId, active }: Props) {
         <FloatTerm
           ptyId={ptyId}
           active={active}
+          running={running}
           stackElRef={stackRef}
           onColsChange={setFloatCols}
         />

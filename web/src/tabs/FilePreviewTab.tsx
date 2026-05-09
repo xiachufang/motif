@@ -16,6 +16,7 @@ import go         from "highlight.js/lib/languages/go";
 import c          from "highlight.js/lib/languages/c";
 import cpp        from "highlight.js/lib/languages/cpp";
 import bash       from "highlight.js/lib/languages/bash";
+import ini        from "highlight.js/lib/languages/ini";
 import markdown   from "highlight.js/lib/languages/markdown";
 import xml        from "highlight.js/lib/languages/xml";
 import css        from "highlight.js/lib/languages/css";
@@ -30,15 +31,51 @@ hljs.registerLanguage("go",         go);
 hljs.registerLanguage("c",          c);
 hljs.registerLanguage("cpp",        cpp);
 hljs.registerLanguage("bash",       bash);
+hljs.registerLanguage("ini",        ini);
 hljs.registerLanguage("markdown",   markdown);
 hljs.registerLanguage("html",       xml);   // hljs ships HTML inside xml.js
 hljs.registerLanguage("css",        css);
 
 interface Props {
+  path:    string;
   content: string;
   mime:    string | null;
   binary:  boolean;
 }
+
+const EXT_HINT: Record<string, string> = {
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  json: "json",
+  jsonc: "json",
+  rs: "rust",
+  py: "python",
+  go: "go",
+  c: "c",
+  h: "c",
+  cc: "cpp",
+  cpp: "cpp",
+  cxx: "cpp",
+  hpp: "cpp",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  fish: "bash",
+  toml: "ini",
+  lock: "ini",
+  ini: "ini",
+  md: "markdown",
+  markdown: "markdown",
+  html: "html",
+  htm: "html",
+  xml: "html",
+  svg: "html",
+  css: "css",
+};
 
 const LANG_HINT: Record<string, string> = {
   "application/javascript": "javascript",
@@ -55,18 +92,33 @@ const LANG_HINT: Record<string, string> = {
   "text/css":               "css",
 };
 
-export default function FilePreviewTab({ content, mime, binary }: Props) {
+function extOf(path: string): string {
+  const safePath = path || "";
+  const base = safePath.split(/[\\/]/).pop() ?? safePath;
+  const i = base.lastIndexOf(".");
+  return i < 0 ? "" : base.slice(i + 1).toLowerCase();
+}
+
+function languageFor(path: string, mime: string | null): string | undefined {
+  const ext = extOf(path);
+  if (ext && EXT_HINT[ext]) return EXT_HINT[ext];
+  if (mime && LANG_HINT[mime]) return LANG_HINT[mime];
+  return undefined;
+}
+
+export default function FilePreviewTab({ path = "", content, mime, binary }: Props) {
   const ref = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
     if (binary || !ref.current) return;
-    const lang = mime ? LANG_HINT[mime] : undefined;
+    const lang = languageFor(path, mime);
     const code = ref.current.querySelector("code");
     if (!code) return;
     code.removeAttribute("data-highlighted");
+    code.textContent = content;
     code.className = lang ? `language-${lang}` : "";
     try { hljs.highlightElement(code as HTMLElement); } catch { /* ignore */ }
-  }, [content, mime, binary]);
+  }, [path, content, mime, binary]);
 
   if (binary) {
     return <div className="muted preview-binary">{content}</div>;

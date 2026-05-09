@@ -6,7 +6,8 @@
 // first expand of a given directory triggers a lazy `fs.tree` fetch via the
 // parent; the store `dirChildren` map is keyed by absolute paths.
 
-import type { TreeEntry } from "../proto/types";
+import { useMemo } from "react";
+import type { GitFile, GitFileStatus, TreeEntry } from "../proto/types";
 import { useApp } from "../store/store";
 
 interface Props {
@@ -26,13 +27,101 @@ function lastSegment(abs: string): string {
   return idx < 0 ? stripped : stripped.slice(idx + 1) || "/";
 }
 
+const SHORT: Record<GitFileStatus, string> = {
+  unmodified: "", modified: "M", added: "A", deleted: "D", renamed: "R",
+  copied: "C", untracked: "?", ignored: "!", conflicted: "U",
+};
+
+const RANK: Record<GitFileStatus, number> = {
+  unmodified: 0,
+  ignored: 1,
+  untracked: 2,
+  copied: 3,
+  renamed: 4,
+  added: 5,
+  modified: 6,
+  deleted: 7,
+  conflicted: 8,
+};
+
+function strongest(a: GitFileStatus | null | undefined, b: GitFileStatus): GitFileStatus {
+  if (!a) return b;
+  return RANK[b] > RANK[a] ? b : a;
+}
+
+function fileStatus(f: GitFile): GitFileStatus | null {
+  if (f.unstaged !== "unmodified") return f.unstaged;
+  if (f.staged   !== "unmodified") return f.staged;
+  return null;
+}
+
+function normalizePath(path: string): string {
+  const absolute = path.startsWith("/");
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length > 0) parts.pop();
+      else if (!absolute) parts.push(part);
+    } else {
+      parts.push(part);
+    }
+  }
+  const normalized = parts.join("/");
+  return absolute ? `/${normalized}` : normalized;
+}
+
+function dirname(path: string): string {
+  const p = normalizePath(path).replace(/\/+$/, "");
+  if (!p || p === "/") return "/";
+  const i = p.lastIndexOf("/");
+  return i <= 0 ? "/" : p.slice(0, i);
+}
+
+function isInside(path: string, root: string): boolean {
+  const p = normalizePath(path);
+  const r = normalizePath(root).replace(/\/+$/, "") || "/";
+  return p === r || p.startsWith(r.endsWith("/") ? r : `${r}/`);
+}
+
+function statusMapFor(root: string, files: GitFile[]): Map<string, GitFileStatus> {
+  const out = new Map<string, GitFileStatus>();
+  if (!root) return out;
+
+  const merge = (path: string, status: GitFileStatus) => {
+    const key = normalizePath(path);
+    out.set(key, strongest(out.get(key), status));
+  };
+
+  for (const f of files) {
+    const status = fileStatus(f);
+    if (!status) continue;
+    const abs = normalizePath(joinPath(root, f.path));
+    if (!isInside(abs, root)) continue;
+    merge(abs, status);
+
+    let parent = dirname(abs);
+    while (parent !== "/" && isInside(parent, root)) {
+      merge(parent, status);
+      if (parent === normalizePath(root)) break;
+      parent = dirname(parent);
+    }
+  }
+  return out;
+}
+
 export default function FileTree({ onOpen, onExpand }: Props) {
   const dirChildren = useApp(s => s.dirChildren);
   const expanded    = useApp(s => s.expandedDirs);
   const currentPath = useApp(s => s.currentPath);
+  const gitFiles    = useApp(s => s.gitFiles);
   const toggleDir   = useApp(s => s.toggleDir);
 
   const rootEntries = currentPath ? (dirChildren.get(currentPath) ?? null) : null;
+  const gitStatusByPath = useMemo(
+    () => statusMapFor(currentPath, gitFiles),
+    [currentPath, gitFiles],
+  );
 
   function handleDirClick(path: string) {
     if (!expanded.has(path)) onExpand(path);
@@ -41,6 +130,8 @@ export default function FileTree({ onOpen, onExpand }: Props) {
 
   function renderEntry(parent: string, e: TreeEntry, depth: number) {
     const path = joinPath(parent, e.name);
+    const status = gitStatusByPath.get(path) ?? e.git_status ?? null;
+    const glyph = status ? SHORT[status] : "";
     if (e.type === "dir") {
       const open = expanded.has(path);
       const children = dirChildren.get(path);
@@ -53,6 +144,7 @@ export default function FileTree({ onOpen, onExpand }: Props) {
           >
             <span className="chevron">{open ? "▾" : "▸"}</span>
             <span>{e.name}/</span>
+            {glyph && <span className="tree-status">{glyph}</span>}
           </div>
           {open && children && (
             <ul className="subtree">
@@ -78,7 +170,8 @@ export default function FileTree({ onOpen, onExpand }: Props) {
           onClick={() => onOpen(path)}
           title={`${e.size} bytes`}
         >
-          {e.name}
+          <span>{e.name}</span>
+          {glyph && <span className="tree-status">{glyph}</span>}
         </div>
       </li>
     );
