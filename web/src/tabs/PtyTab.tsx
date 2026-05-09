@@ -14,7 +14,8 @@ import { useApp, type BlockRender } from "../store/store";
 import {
   bytesEnteredAltScreen, serializeBytesToHtml,
 } from "./serializeBlock";
-import { AltStub, BlockCard, BlockIdChip, PromptLine } from "./blockCards";
+import { BlockIdChip, PromptLine } from "./blockCards";
+import BlockList, { type BlockListHandle } from "./BlockList";
 import { usePtyTerminal } from "./usePtyTerminal";
 import type { BlockId, BlockSummary, GetBlockOutputResult } from "../proto/types";
 
@@ -52,6 +53,7 @@ export default function PtyTab({ ptyId, active }: Props) {
   const liveHeaderRef     = useRef<HTMLElement | null>(null);
   const liveHostRef       = useRef<HTMLDivElement | null>(null);
   const floatHostRef      = useRef<HTMLDivElement | null>(null);
+  const blockListRef      = useRef<BlockListHandle | null>(null);
   const wasAtBottomRef    = useRef<boolean>(true);
 
   const term = usePtyTerminal(ptyId);
@@ -60,6 +62,11 @@ export default function PtyTab({ ptyId, active }: Props) {
   const trailing = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const runningBlock = trailing?.kind === "running" ? trailing : null;
   const finalizedBlocks = runningBlock ? blocks.slice(0, -1) : blocks;
+  // BlockList only handles card | alt — running is rendered by PtyTab
+  // separately so the xterm host stays mounted across virtualization.
+  const finalizedNonRunning = finalizedBlocks as Array<
+    Extract<BlockRender, { kind: "card" | "alt" }>
+  >;
   const running = !!runningBlock;
   const altActive = term.altActive;
 
@@ -115,6 +122,12 @@ export default function PtyTab({ ptyId, active }: Props) {
   // ─────────────────────── selected-block scroll ───────────────────────
   useEffect(() => {
     if (!selectedBlock || selectedBlock.ptyId !== ptyId) return;
+    // BlockList handles finalized blocks (even ones virtualized off
+    // screen — it'll mount the row before scrolling). The running block
+    // isn't in BlockList; for it fall back to a DOM query, since it's
+    // always mounted right below the virtualizer.
+    const handled = blockListRef.current?.scrollToBlock(selectedBlock.blockId, { align: "center" });
+    if (handled) return;
     const stack = stackRef.current;
     if (!stack) return;
     const el = stack.querySelector(`[data-block-id="${cssEscape(selectedBlock.blockId)}"]`);
@@ -241,23 +254,14 @@ export default function PtyTab({ ptyId, active }: Props) {
         {ptyInfo ? `${ptyInfo.cmd} · ${ptyInfo.cols}×${ptyInfo.rows}` : "(loading…)"}
       </div>
       <div className="pty-stack" ref={stackRef}>
-        {finalizedBlocks.map(b => {
-          const sel =
-            !!selectedBlock
-            && selectedBlock.ptyId === ptyId
-            && selectedBlock.blockId === b.id;
-          if (b.kind === "card") {
-            return (
-              <BlockCard key={b.id} block={b} selected={sel} onSelect={() => onBlockSelect(b.id)} />
-            );
-          }
-          if (b.kind === "alt") {
-            return (
-              <AltStub key={b.id} block={b} selected={sel} onSelect={() => onBlockSelect(b.id)} />
-            );
-          }
-          return null;
-        })}
+        <BlockList
+          ref={blockListRef}
+          blocks={finalizedNonRunning}
+          selectedId={selectedBlock?.blockId ?? null}
+          selectedIsHere={selectedBlock?.ptyId === ptyId}
+          onBlockSelect={onBlockSelect}
+          parentRef={stackRef}
+        />
         {runningBlock && (
           <article
             className={`block-running ${altActive ? "alt" : ""}`}

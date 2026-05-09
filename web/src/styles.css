@@ -565,8 +565,11 @@ button.icon-btn {
    buffer we hide the meta strip, prior block cards/alt-stubs, and the
    running header so vim/htop get the full pty-tab area. */
 .pty-tab.alt-active .pty-meta { display: none; }
-.pty-tab.alt-active .pty-stack > .block-card,
-.pty-tab.alt-active .pty-stack > .block-alt { display: none; }
+/* Hide the entire virtualized list (its block-list-host wrapper) so
+   spacer divs collapse along with the cards. When alt-active flips off
+   the host comes back, the virtualizer's ResizeObserver re-fires, and
+   measurements pick up. */
+.pty-tab.alt-active .pty-stack > .block-list-host { display: none; }
 .pty-tab.alt-active .block-running-header { display: none; }
 .pty-tab.alt-active .pty-stack { padding: 0; }
 .pty-tab.alt-active .block-running-body { padding: 0; }
