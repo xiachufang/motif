@@ -1,8 +1,22 @@
 import SwiftUI
-import AuthenticationServices
+import UIKit
 import OSLog
 
 private let settingsLog = Logger(subsystem: "io.allsunday.motif", category: "SettingsView")
+
+/// Open a Tailscale login URL in the system browser. Tailscale's auth flow
+/// doesn't redirect back to a custom scheme, so `ASWebAuthenticationSession`
+/// (which waits for a callback URL) is the wrong API — we just use
+/// `UIApplication.open`. tsnet completes the login on its own once the user
+/// finishes signing in; the IPN bus surfaces State == .Running and the
+/// manager updates UI accordingly.
+@MainActor
+private func openTailscaleLoginURL(_ url: URL) async {
+    let opened = await UIApplication.shared.open(url)
+    if !opened {
+        settingsLog.error("UIApplication.open(\(url.absoluteString, privacy: .public)) returned false")
+    }
+}
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
@@ -11,6 +25,9 @@ struct SettingsView: View {
     @State private var authKey: String = ""
     @State private var motifdAddressDraft: String = ""
     @State private var showingError: String?
+    /// The auth URL we've already auto-opened in the browser, so a second
+    /// re-render or repeated Notify doesn't repeatedly bounce out to Safari.
+    @State private var openedAuthURL: URL?
 
     var body: some View {
         NavigationStack {
@@ -67,6 +84,18 @@ struct SettingsView: View {
             } message: { msg in Text(msg) }
             .onAppear {
                 motifdAddressDraft = appState.motifdAddress
+            }
+            .onChange(of: appState.tailscale.state) { _, newState in
+                // Auto-open the browser as soon as Tailscale publishes a
+                // login URL on the bus. We only auto-open each URL once;
+                // user can manually re-open via the button below.
+                if case .needsAuth(let url) = newState, openedAuthURL != url {
+                    openedAuthURL = url
+                    Task { await openTailscaleLoginURL(url) }
+                }
+                if case .running = newState {
+                    openedAuthURL = nil
+                }
             }
         }
     }
@@ -135,28 +164,18 @@ private struct TailscaleStatusRow: View {
 private struct AuthLinkButton: View {
     let url: URL
     @Binding var isLoading: Bool
-    @Environment(\.webAuthenticationSession) private var webAuth
 
     var body: some View {
         Button {
             Task {
                 isLoading = true
                 defer { isLoading = false }
-                do {
-                    _ = try await webAuth.authenticate(
-                        using: url,
-                        callbackURLScheme: "tailscale-callback"
-                    )
-                } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
-                    settingsLog.debug("ASWebAuthenticationSession cancelled by user")
-                } catch {
-                    settingsLog.error("ASWebAuthenticationSession failed: \(String(describing: error), privacy: .public)")
-                }
+                await openTailscaleLoginURL(url)
             }
         } label: {
             HStack {
                 if isLoading { ProgressView().controlSize(.small) }
-                Text("Open Tailscale login")
+                Text("Reopen Tailscale login")
             }
         }
     }
