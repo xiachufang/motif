@@ -13,3 +13,16 @@ motif-rpc.log
 # IDE
 .vscode/
 .idea/
+
+# Xcode / iOS build artifacts
+ios/build/
+ios/DerivedData/
+ios/.swiftpm/
+ios/**/*.xcuserstate
+ios/**/xcuserdata/
+ios/**/xcshareddata/IDEWorkspaceChecks.plist
+ios/Motif.xcodeproj/
+ios/Motif/Resources/web/
+ios/vendor/*.xcframework/
+ios/vendor/libtailscale/
+ios/vendor/opus/
