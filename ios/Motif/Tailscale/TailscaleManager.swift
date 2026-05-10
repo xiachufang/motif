@@ -69,7 +69,7 @@ final class TailscaleManager {
         )
 
         do {
-            let node = try TailscaleNode(config: config, logger: nil)
+            let node = try TailscaleNode(config: config, logger: TsnetFileLogger())
             self.node = node
 
             // Spawn the IPN bus watcher BEFORE up() so we don't miss the first
@@ -204,19 +204,26 @@ final class TailscaleManager {
     /// the TailscaleKit MessageConsumer protocol. It hops back to MainActor
     /// to mutate `state` on the manager.
     fileprivate func busDidReceive(notify: Ipn.Notify) {
-        // tsnet emits NeedsLogin and BrowseToURL as separate Notify messages
-        // and the order between them is not guaranteed: sometimes the State
-        // change lands first, sometimes the URL does. We handle whichever
-        // arrives, and stay in `.starting` until BrowseToURL surfaces a real
-        // URL — never transition to `.failed` purely on NeedsLogin, because
-        // the URL is still on its way and erasing the state would also drop
-        // any URL that comes after.
+        // Diagnostic: log every Notify field present so we can see exactly
+        // what tsnet on iOS emits during the handshake. Trim down once the
+        // login flow is verified working end-to-end.
+        // Diagnostic breadcrumb: log just the high-signal fields. Engine
+        // notifications fire every ~3s during normal operation so we keep
+        // them quiet (the .Engine path below uses .debug).
+        if notify.State != nil || notify.BrowseToURL != nil || notify.LoginFinished != nil || notify.ErrMessage != nil {
+            var fields: [String] = []
+            if let s = notify.State        { fields.append("state=\(s)") }
+            if notify.BrowseToURL != nil   { fields.append("BrowseToURL=set") }
+            if notify.LoginFinished != nil { fields.append("LoginFinished") }
+            if let e = notify.ErrMessage   { fields.append("ErrMessage=\(e)") }
+            log.notice("Notify: \(fields.joined(separator: ", "), privacy: .public)")
+        }
+
         if let urlString = notify.BrowseToURL, let url = URL(string: urlString) {
             log.notice("BrowseToURL: \(urlString, privacy: .public)")
             state = .needsAuth(url: url)
         }
         if let ipnState = notify.State {
-            log.notice("ipn state: \(String(describing: ipnState), privacy: .public)")
             switch ipnState {
             case .Running:
                 Task { await self.refreshAddresses() }
@@ -236,13 +243,40 @@ final class TailscaleManager {
     }
 }
 
-// MARK: - SilentLogger
+// MARK: - Loggers
 
 /// LogSink that drops everything. (BlackholeLogger has an internal-only init,
 /// so we ship our own equivalent.)
 private struct SilentLogger: LogSink {
     var logFileHandle: Int32? { nil }
     func log(_ message: String) {}
+}
+
+/// LogSink that routes tsnet's internal Go logs to a file under Documents/.
+/// stderr from the simulator is unreliable to capture, so we open a real
+/// fd and read the file out of band.
+private final class TsnetFileLogger: LogSink {
+    let logFileHandle: Int32?
+    private static let logURL: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return docs.appendingPathComponent("tsnet.log", isDirectory: false)
+    }()
+
+    init() {
+        // Truncate previous run, then open for writing.
+        FileManager.default.createFile(atPath: Self.logURL.path, contents: nil)
+        let path = Self.logURL.path
+        let fd = path.withCString { cstr in
+            Darwin.open(cstr, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        }
+        self.logFileHandle = fd >= 0 ? fd : nil
+        Logger(subsystem: "io.allsunday.motif", category: "tsnet")
+            .notice("tsnet log file opened at \(path, privacy: .public) fd=\(fd, privacy: .public)")
+    }
+
+    func log(_ message: String) {
+        Logger(subsystem: "io.allsunday.motif", category: "tsnet").notice("\(message, privacy: .public)")
+    }
 }
 
 // MARK: - BusConsumer
