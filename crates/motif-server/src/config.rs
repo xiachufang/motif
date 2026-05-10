@@ -13,7 +13,10 @@ pub struct ServerConfig {
     /// Embedded-Tailscale listener. Independently optional from `listen`;
     /// at least one must be set.
     pub tailscale: Option<TailscaleListenConfig>,
-    pub token:     String,
+    /// Bearer token expected on `/ws` and `/blob/*` upgrades. `None` disables
+    /// auth — only allowed when no public TCP surface is exposed (loopback or
+    /// tailscale-only); see `validate`.
+    pub token:     Option<String>,
     pub cert:      Option<PathBuf>,
     pub key:       Option<PathBuf>,
 }
@@ -23,6 +26,9 @@ impl ServerConfig {
     /// - At least one of `listen` / `tailscale` must be set.
     /// - Non-loopback TCP requires TLS (defense in depth).
     /// - `--cert` and `--key` must come together.
+    /// - Token-less mode is rejected on non-loopback TCP (TLS without auth
+    ///   still leaves the port open to anyone on the network). Loopback or
+    ///   tailscale-only is fine: tailnet membership is the auth boundary.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.listen.is_none() && self.tailscale.is_none() {
             anyhow::bail!("must specify at least one of --listen / --tailscale-hostname");
@@ -33,6 +39,13 @@ impl ServerConfig {
             if !is_loopback && !has_tls {
                 anyhow::bail!(
                     "refusing to listen on non-loopback address {} without --cert/--key",
+                    addr
+                );
+            }
+            if !is_loopback && self.token.is_none() {
+                anyhow::bail!(
+                    "refusing to listen on non-loopback address {} without --token-file \
+                     (TLS alone is not auth)",
                     addr
                 );
             }

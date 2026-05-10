@@ -74,11 +74,21 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
         anyhow::bail!("TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7");
     }
 
-    let token   = cfg.token.clone();
+    let token_store = match cfg.token.clone() {
+        Some(t) => auth::TokenStore::required(t),
+        None    => {
+            tracing::warn!(
+                "no --token-file configured: motifd will accept WebSocket upgrades without \
+                 a Bearer token. Make sure access to this listener is gated elsewhere \
+                 (loopback only / tailnet ACLs)."
+            );
+            auth::TokenStore::disabled()
+        }
+    };
     let manager = session::manager::SessionManager::new();
     let state   = ws::AppState {
         manager: manager.clone(),
-        auth:    Arc::new(auth::TokenStore::new(token)),
+        auth:    Arc::new(token_store),
     };
     let app = ws::router(state);
 
