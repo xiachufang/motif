@@ -1,0 +1,24 @@
+[package]
+name        = "motif-net"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Motif transport abstraction (plain TCP today, embedded Tailscale tomorrow) shared by motifd and the client crates"
+
+[features]
+default   = []
+# Pulls motif-tailscale (stub by default — no Go toolchain needed). Enable
+# motif-tailscale's `bundled` or `prebuilt` feature at the binary level to get
+# the real FFI link.
+tailscale = ["dep:motif-tailscale"]
+
+[dependencies]
+tokio              = { workspace = true }
+axum               = { workspace = true }
+pin-project-lite   = { workspace = true }
+url                = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+
+motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false, features = ["stub"] }

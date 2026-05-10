@@ -106,7 +106,7 @@ struct Run {
 
 async fn run(r: Run) -> anyhow::Result<()> {
     let tr = transport::connect(&r.url, &r.token, r.via.as_deref(), r.ssh_remote_port).await?;
-    let transport::Connected { mut client, _tunnel } = tr;
+    let transport::Connected { mut client, _keepalive } = tr;
 
     // 1. session.create — owns the name from here on. Failure to create →
     //    no guard needed, just bail.

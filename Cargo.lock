@@ -1378,6 +1378,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "libc",
+ "motif-net",
  "motif-proto",
  "serde",
  "serde_json",
@@ -1387,6 +1388,19 @@ dependencies = [
  "tracing",
  "url",
  "which",
+]
+
+[[package]]
+name = "motif-net"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "motif-tailscale",
+ "pin-project-lite",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1412,7 +1426,9 @@ dependencies = [
  "dashmap",
  "futures-util",
  "hex",
+ "libc",
  "mime_guess",
+ "motif-net",
  "motif-proto",
  "notify",
  "notify-debouncer-full",
@@ -1440,6 +1456,7 @@ name = "motif-tailscale"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -1455,7 +1472,6 @@ dependencies = [
  "futures-util",
  "motif-client",
  "motif-proto",
- "motif-tailscale",
  "ratatui",
  "serde",
  "serde_json",

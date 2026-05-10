@@ -34,8 +34,9 @@ thiserror          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false, features = ["stub"] }
-
 [features]
 default   = []
-tailscale = ["dep:motif-tailscale"]
+# Pass-through: motif-client owns the optional motif-net (with tailscale)
+# dep tree. Build motif-tui with --features tailscale to enable
+# `--via tailscale://hostname[:port]`.
+tailscale = ["motif-client/tailscale"]
