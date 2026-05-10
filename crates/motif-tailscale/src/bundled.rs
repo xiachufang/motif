@@ -212,8 +212,51 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
     let body_start = buf.windows(4).position(|w| w == b"\r\n\r\n")
         .map(|i| i + 4)
         .ok_or_else(|| TsError::Native("LocalAPI: no header/body separator".into()))?;
-    eprintln!("[fetch_localapi] body_start={body_start} body_len={}", buf.len() - body_start);
-    Ok(buf[body_start..].to_vec())
+    let headers = &buf[..body_start];
+    let body    = &buf[body_start..];
+
+    // tsnet's net/http defaults to chunked transfer encoding for
+    // unknown-length responses; decode if so. Header match is
+    // case-insensitive per RFC 7230.
+    let chunked = headers
+        .windows(b"transfer-encoding".len())
+        .any(|w| w.eq_ignore_ascii_case(b"transfer-encoding"))
+        && headers
+            .windows(b"chunked".len())
+            .any(|w| w.eq_ignore_ascii_case(b"chunked"));
+
+    let body = if chunked { decode_chunked(body)? } else { body.to_vec() };
+    eprintln!("[fetch_localapi] body_start={body_start} chunked={chunked} body_len={}", body.len());
+    Ok(body)
+}
+
+/// Decode HTTP/1.1 Transfer-Encoding: chunked. Format: each chunk is
+/// `<size in hex>\r\n<data>\r\n`, terminated by a chunk of size 0
+/// followed by an optional trailer + final `\r\n`.
+fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, TsError> {
+    let mut out = Vec::with_capacity(input.len());
+    loop {
+        // Find the size line terminator.
+        let crlf = input.windows(2).position(|w| w == b"\r\n")
+            .ok_or_else(|| TsError::Native("chunked: missing size CRLF".into()))?;
+        let size_str = std::str::from_utf8(&input[..crlf])
+            .map_err(|_| TsError::Native("chunked: non-utf8 size line".into()))?
+            .split(';').next().unwrap_or("").trim();    // strip chunk-extensions if any
+        let size = usize::from_str_radix(size_str, 16)
+            .map_err(|e| TsError::Native(format!("chunked: bad size {size_str:?}: {e}")))?;
+        input = &input[crlf + 2..];
+        if size == 0 { break; }
+        if input.len() < size + 2 {
+            return Err(TsError::Native("chunked: short chunk data".into()));
+        }
+        out.extend_from_slice(&input[..size]);
+        // Expect trailing CRLF after the chunk data.
+        if &input[size..size + 2] != b"\r\n" {
+            return Err(TsError::Native("chunked: missing trailing CRLF".into()));
+        }
+        input = &input[size + 2..];
+    }
+    Ok(out)
 }
 
 #[derive(serde::Deserialize)]
