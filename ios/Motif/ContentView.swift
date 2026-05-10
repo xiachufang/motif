@@ -28,9 +28,13 @@ struct ContentView: View {
                         .padding(.horizontal, 32)
                 }
             case .running(let port):
-                WebViewContainer(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
-                    .id(appState.webViewReloadKey)
-                    .ignoresSafeArea(.container, edges: [.top, .horizontal])
+                if appState.servers.activeServer == nil {
+                    WelcomeView()
+                } else {
+                    WebViewContainer(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
+                        .id(appState.webViewReloadKey)
+                        .ignoresSafeArea(.container, edges: [.top, .horizontal])
+                }
             }
 
             VStack {

@@ -191,7 +191,7 @@ struct SettingsView: View {
 
 // MARK: - Server list row + edit sheet
 
-private struct ServerRow: View {
+struct ServerRow: View {
     let server: MotifServer
     let isActive: Bool
     let onTap: () -> Void
@@ -241,7 +241,7 @@ enum ServerEdit: Identifiable {
     }
 }
 
-private struct ServerEditSheet: View {
+struct ServerEditSheet: View {
     let target: ServerEdit
     let onSave: (MotifServer) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -449,7 +449,7 @@ private struct ServerEditSheet: View {
     }
 }
 
-private struct TailscaleStatusRow: View {
+struct TailscaleStatusRow: View {
     let state: TailscaleManager.State
 
     var body: some View {
