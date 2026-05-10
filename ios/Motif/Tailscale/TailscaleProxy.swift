@@ -15,19 +15,20 @@ import OSLog
 actor TailscaleProxy {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "TailscaleProxy")
     private weak var manager: TailscaleManager?
-    private let addressProvider: @Sendable () -> String
+    private let serverProvider: @Sendable () async -> MotifServer?
 
-    init(manager: TailscaleManager, addressProvider: @escaping @Sendable () -> String) {
+    init(manager: TailscaleManager, serverProvider: @escaping @Sendable () async -> MotifServer?) {
         self.manager = manager
-        self.addressProvider = addressProvider
+        self.serverProvider = serverProvider
     }
 
-    /// Take ownership of `connection`, dial motifd via tsnet, replay the
-    /// bytes already read, then pump bidirectionally until either side EOFs.
+    /// Take ownership of `connection`, dial the active motifd via tsnet,
+    /// inject an `Authorization: Bearer <token>` header into the request
+    /// head, send it upstream, then pump bidirectionally until either side
+    /// EOFs.
     func handle(connection: NWConnection, pendingHead: Data) async {
-        let motifdAddress = addressProvider().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !motifdAddress.isEmpty else {
-            sendErrorAndClose(connection, status: 503, body: "motifd address not configured (Settings → motifd 地址)")
+        guard let server = await serverProvider() else {
+            sendErrorAndClose(connection, status: 503, body: "no active motif server (Settings → Servers)")
             return
         }
 
@@ -36,28 +37,36 @@ actor TailscaleProxy {
             return
         }
 
-        // tailscale_dial blocks until the conn is established; do it on a
-        // background queue so we don't stall the listener queue.
+        // Inject Authorization: Bearer <token> into the inbound HTTP head.
+        // motifd verifies this on the WS upgrade — it doesn't accept the
+        // motif-web style `auth.login` first-frame, so the iOS WebView
+        // (which can't set headers itself) relies on us doing it here.
+        let outbound: Data
+        do {
+            outbound = try Self.injectAuthorization(into: pendingHead, token: server.token)
+        } catch {
+            log.error("inject Authorization: \(String(describing: error), privacy: .public)")
+            sendErrorAndClose(connection, status: 400, body: "malformed request head")
+            return
+        }
+
+        let address = server.endpoint
         let fd: Int32
         do {
-            fd = try await Self.dial(handle: handle, address: motifdAddress)
+            fd = try await Self.dial(handle: handle, address: address)
         } catch {
-            log.error("dial \(motifdAddress, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            log.error("dial \(address, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             sendErrorAndClose(connection, status: 502, body: "tsnet dial failed: \(error)")
             return
         }
 
-        log.notice("proxy: \(motifdAddress, privacy: .public) (fd \(fd, privacy: .public)) — \(pendingHead.count, privacy: .public)B head")
+        log.notice("proxy: \(server.name, privacy: .public)@\(address, privacy: .public) (fd \(fd, privacy: .public)) — \(outbound.count, privacy: .public)B head")
 
-        // Replay the bytes we already read off the inbound connection so
-        // motifd sees the full request.
-        if !pendingHead.isEmpty {
-            if !Self.writeAll(fd: fd, data: pendingHead) {
-                log.error("replaying head failed")
-                Darwin.close(fd)
-                connection.cancel()
-                return
-            }
+        if !Self.writeAll(fd: fd, data: outbound) {
+            log.error("replaying head failed")
+            Darwin.close(fd)
+            connection.cancel()
+            return
         }
 
         // Now pump bidirectionally. NWConnection delivers events on a queue;
@@ -88,6 +97,33 @@ actor TailscaleProxy {
         connection.send(content: packet, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+
+    /// Replace (or insert) the `Authorization` header in an HTTP/1.x request
+    /// head. The input must contain a complete header section terminated by
+    /// `\r\n\r\n`; LocalHTTPServer guarantees this for the bytes it hands us.
+    /// Anything after the terminator is preserved as a request body prefix.
+    static func injectAuthorization(into pendingHead: Data, token: String) throws -> Data {
+        guard let split = pendingHead.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) else {
+            throw ProxyError.malformedHead
+        }
+        let head = pendingHead[..<split.lowerBound]
+        let body = pendingHead[split.upperBound...]
+        guard let headStr = String(data: head, encoding: .utf8) else {
+            throw ProxyError.malformedHead
+        }
+        var lines = headStr.components(separatedBy: "\r\n")
+        guard !lines.isEmpty else { throw ProxyError.malformedHead }
+        // Drop any pre-existing Authorization header (case-insensitive).
+        // Keep the request line at index 0 untouched.
+        lines = [lines[0]] + lines.dropFirst().filter {
+            !$0.lowercased().hasPrefix("authorization:")
+        }
+        lines.append("Authorization: Bearer \(token)")
+        var rebuilt = Data(lines.joined(separator: "\r\n").utf8)
+        rebuilt.append(contentsOf: [0x0D, 0x0A, 0x0D, 0x0A])
+        rebuilt.append(body)
+        return rebuilt
     }
 
     /// Synchronous tailscale_dial executed off the listener queue.
@@ -219,9 +255,11 @@ actor TailscaleProxy {
 
     enum ProxyError: Error, CustomStringConvertible {
         case dialFailed(rc: Int32)
+        case malformedHead
         var description: String {
             switch self {
             case .dialFailed(let rc): return "tailscale_dial returned \(rc)"
+            case .malformedHead:      return "malformed HTTP head (no \\r\\n\\r\\n)"
             }
         }
     }

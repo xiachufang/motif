@@ -29,6 +29,7 @@ struct ContentView: View {
                 }
             case .running(let port):
                 WebViewContainer(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
+                    .id(appState.webViewReloadKey)
                     .ignoresSafeArea(.container, edges: [.top, .horizontal])
             }
 

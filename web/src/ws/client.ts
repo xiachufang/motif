@@ -11,6 +11,15 @@
 
 import type { Event } from "../proto/types";
 
+/// True when the page is running inside the Motif iOS App. In native mode
+/// the WS upgrade Authorization header is injected at the local proxy
+/// layer, so the JS-side auth.login dance is unnecessary (and harmful —
+/// motifd has no auth.login method).
+function isRunningNative(): boolean {
+  const w = window as unknown as { motifNative?: { isNative?: boolean } };
+  return w.motifNative?.isNative === true;
+}
+
 interface PendingCall {
   resolve: (v: unknown) => void;
   reject:  (e: Error) => void;
@@ -79,7 +88,15 @@ export class RpcClient {
     ws.addEventListener("message", e => this.onMessage(e.data));
     ws.addEventListener("close",   () => this.handleSocketClose());
     ws.addEventListener("error",   () => { /* surface via close */ });
-    await this.sendCall("auth.login", { token: this.token });
+    // motifd uses Bearer auth on the WS upgrade. The motif-web bridge
+    // expected an `auth.login` first frame instead because browsers can't
+    // set request headers on a WebSocket open. The iOS App injects the
+    // Authorization header at the local proxy, so when running natively
+    // we skip the legacy first-frame dance entirely — sending it would
+    // make motifd reject the connection (unknown method).
+    if (!isRunningNative()) {
+        await this.sendCall("auth.login", { token: this.token });
+    }
     this.reconnectDelay = RECONNECT_MIN_MS;
   }
 

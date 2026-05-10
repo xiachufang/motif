@@ -31,8 +31,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var authKey: String = ""
-    @State private var motifdAddressDraft: String = ""
     @State private var showingError: String?
+    @State private var serverEditTarget: ServerEdit?
     /// Driving value for the in-app Safari sheet. Setting non-nil shows the
     /// sheet; when the IPN bus reports .running we set it back to nil so
     /// the sheet auto-dismisses.
@@ -66,16 +66,42 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("motifd 地址") {
-                    TextField("hostname:port", text: $motifdAddressDraft)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .onSubmit { commitMotifdAddress() }
-                    Button("Save") { commitMotifdAddress() }
-                        .disabled(motifdAddressDraft == appState.motifdAddress)
-                    if !appState.motifdAddress.isEmpty {
-                        Text("当前：\(appState.motifdAddress)").font(.footnote).foregroundStyle(.secondary)
+                Section {
+                    if appState.servers.servers.isEmpty {
+                        Text("No servers configured. Tap + to add one.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(appState.servers.servers) { server in
+                            ServerRow(server: server,
+                                      isActive: appState.servers.activeID == server.id,
+                                      onTap: {
+                                          if appState.servers.activeID != server.id {
+                                              appState.servers.setActive(id: server.id)
+                                              appState.bumpWebViewReload()
+                                          }
+                                      },
+                                      onEdit: {
+                                          serverEditTarget = .existing(server)
+                                      })
+                        }
+                        .onDelete { indexSet in
+                            for idx in indexSet {
+                                let id = appState.servers.servers[idx].id
+                                appState.servers.delete(id: id)
+                            }
+                            appState.bumpWebViewReload()
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Servers")
+                        Spacer()
+                        Button {
+                            serverEditTarget = .new
+                        } label: {
+                            Image(systemName: "plus")
+                        }
                     }
                 }
 
@@ -99,8 +125,19 @@ struct SettingsView: View {
             .alert("Error", isPresented: .constant(showingError != nil), presenting: showingError) { _ in
                 Button("OK") { showingError = nil }
             } message: { msg in Text(msg) }
-            .onAppear {
-                motifdAddressDraft = appState.motifdAddress
+            .sheet(item: $serverEditTarget) { target in
+                ServerEditSheet(target: target) { updated in
+                    switch target {
+                    case .new:
+                        appState.servers.add(updated)
+                        appState.bumpWebViewReload()
+                    case .existing:
+                        appState.servers.update(updated)
+                        if appState.servers.activeID == updated.id {
+                            appState.bumpWebViewReload()
+                        }
+                    }
+                }
             }
             .onChange(of: appState.tailscale.state) { _, newState in
                 // Auto-open the in-app Safari sheet on each new login URL.
@@ -150,9 +187,141 @@ struct SettingsView: View {
             // BrowseToURL notification arrives. We pick that up below.
         }
     }
+}
 
-    private func commitMotifdAddress() {
-        appState.motifdAddress = motifdAddressDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+// MARK: - Server list row + edit sheet
+
+private struct ServerRow: View {
+    let server: MotifServer
+    let isActive: Bool
+    let onTap: () -> Void
+    let onEdit: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        if isActive {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(server.name)
+                            .foregroundStyle(.primary)
+                    }
+                    Text(server.endpoint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { onEdit() } label: {
+                    Image(systemName: "pencil")
+                        .foregroundStyle(.tint)
+                }
+                .buttonStyle(.borderless)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+enum ServerEdit: Identifiable {
+    case new
+    case existing(MotifServer)
+
+    var id: String {
+        switch self {
+        case .new: return "__new__"
+        case .existing(let s): return s.id.uuidString
+        }
+    }
+}
+
+private struct ServerEditSheet: View {
+    let target: ServerEdit
+    let onSave: (MotifServer) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String = ""
+    @State private var host: String = ""
+    @State private var portText: String = "7777"
+    @State private var token: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("e.g. Dev box", text: $name)
+                        .autocorrectionDisabled()
+                }
+                Section("motifd address") {
+                    TextField("hostname (e.g. dev.tail-xxxx.ts.net)", text: $host)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("port", text: $portText)
+                        .keyboardType(.numberPad)
+                }
+                Section("Token") {
+                    SecureField("motifd token", text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+            .navigationTitle(isNew ? "Add Server" : "Edit Server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { save() }
+                        .disabled(!isValid)
+                }
+            }
+            .onAppear { hydrate() }
+        }
+    }
+
+    private var isNew: Bool {
+        if case .new = target { return true }
+        return false
+    }
+
+    private var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !host.trimmingCharacters(in: .whitespaces).isEmpty &&
+        UInt16(portText) != nil &&
+        !token.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func hydrate() {
+        if case .existing(let s) = target {
+            name = s.name
+            host = s.host
+            portText = String(s.port)
+            token = s.token
+        }
+    }
+
+    private func save() {
+        guard let port = UInt16(portText) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedHost = host.trimmingCharacters(in: .whitespaces)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let server: MotifServer
+        switch target {
+        case .new:
+            server = MotifServer(name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+        case .existing(let existing):
+            server = MotifServer(id: existing.id, name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+        }
+        onSave(server)
+        dismiss()
     }
 }
 
