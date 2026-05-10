@@ -115,21 +115,9 @@ impl TsServer {
     pub async fn list_peers(&self) -> Result<Vec<TsPeer>, TsError> {
         let lb = self.loopback.as_ref()
             .ok_or_else(|| TsError::Native("up() must be called before list_peers".into()))?;
-        eprintln!("[list_peers] calling fetch_localapi");
         let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
-        eprintln!("[list_peers] fetch ok body_len={}", raw.len());
-        // Dump body for offline inspection.
-        let _ = std::fs::write("/tmp/motif-localapi-body.json", &raw);
-        eprintln!("[list_peers] body dumped to /tmp/motif-localapi-body.json");
-        let status: StatusJson = match serde_json::from_slice(&raw) {
-            Ok(s) => { eprintln!("[list_peers] json ok"); s }
-            Err(e) => {
-                eprintln!("[list_peers] json ERR: {e}");
-                return Err(TsError::Native(format!("LocalAPI status JSON: {e}")));
-            }
-        };
-        eprintln!("[list_peers] json parsed peer_count={}",
-            status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
+        let status: StatusJson = serde_json::from_slice(&raw)
+            .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))?;
         let mut peers = Vec::with_capacity(status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
         if let Some(m) = status.peer {
             for (_pubkey, p) in m {
@@ -170,11 +158,8 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
          \r\n",
     );
 
-    eprintln!("[fetch_localapi] connecting addr={addr}");
     let mut s = tokio::net::TcpStream::connect(addr).await?;
-    eprintln!("[fetch_localapi] connected, writing {} bytes", req.len());
     s.write_all(req.as_bytes()).await?;
-    eprintln!("[fetch_localapi] wrote, awaiting response");
     // Don't half-close the write side — tsnet's loopback server does
     // protocol detection between SOCKS5 and HTTP, and a write-FIN before
     // the server has identified the protocol can confuse it (observed:
@@ -188,23 +173,18 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
     let mut chunk = [0u8; 8 * 1024];
     loop {
         let n = s.read(&mut chunk).await?;
-        eprintln!("[fetch_localapi] read n={n}");
         if n == 0 { break; }
         if buf.len() + n > CAP {
             return Err(TsError::Native("LocalAPI response exceeded 1 MiB cap".into()));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
-    eprintln!("[fetch_localapi] EOF, total={} bytes", buf.len());
-    eprintln!("[fetch_localapi] head={:?}",
-        std::str::from_utf8(&buf[..buf.len().min(200)]).unwrap_or("<non-utf8>"));
 
     // Quick status-line check — if it's not 200, surface the line as the
     // error so misconfig is obvious.
     let line_end = buf.iter().position(|&b| b == b'\r').unwrap_or(buf.len());
     let status_line = std::str::from_utf8(&buf[..line_end])
         .map_err(|_| TsError::Native("LocalAPI status line not utf-8".into()))?;
-    eprintln!("[fetch_localapi] status_line={status_line:?}");
     if !status_line.contains(" 200 ") {
         return Err(TsError::Native(format!("LocalAPI: {status_line}")));
     }
@@ -226,7 +206,6 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
             .any(|w| w.eq_ignore_ascii_case(b"chunked"));
 
     let body = if chunked { decode_chunked(body)? } else { body.to_vec() };
-    eprintln!("[fetch_localapi] body_start={body_start} chunked={chunked} body_len={}", body.len());
     Ok(body)
 }
 

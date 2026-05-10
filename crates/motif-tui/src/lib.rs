@@ -176,13 +176,9 @@ pub async fn cmd_list_servers(prefix: &str) -> anyhow::Result<()> {
     use motif_client::transport::default_client_ts_options;
 
     let opts = default_client_ts_options();
-    eprintln!("[list-servers] phase=new opts.ephemeral={}", opts.ephemeral);
     let mut server = TsServer::new(opts).context("tsnet init")?;
-    eprintln!("[list-servers] phase=new ok");
     server.up().await.context("tsnet up")?;
-    eprintln!("[list-servers] phase=up ok");
     let mut peers = server.list_peers().await.context("tsnet LocalAPI status")?;
-    eprintln!("[list-servers] phase=list_peers ok len={}", peers.len());
     peers.retain(|p| p.hostname.starts_with(prefix));
     if peers.is_empty() {
         println!("No peers matching {prefix:?} found in this tailnet.");
