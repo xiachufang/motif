@@ -79,20 +79,59 @@ final class TailscaleManager {
             let consumer = BusConsumer(manager: self)
             self.busConsumer = consumer
             self.busProcessor = try await api.watchIPNBus(
-                mask: [.initialState, .prefs, .netmap, .rateLimitNetmaps],
+                mask: [.initialState, .engineUpdates, .prefs, .netmap, .rateLimitNetmaps],
                 consumer: consumer
             )
+            log.notice("IPN bus subscribed")
 
-            try await node.up()
-            // Once `up()` completes the node is connected (or we'll get
-            // BrowseToURL through the bus first; either way the consumer
-            // updates `state`).
-            await refreshAddresses()
-            log.notice("Tailscale node started")
+            // For interactive (no auth-key) flow, explicitly kick off the
+            // login state machine. Without this the bus stays quiet because
+            // tsnet has no reason to start the auth dance — it'll only do so
+            // on the first listen/dial call.
+            if authKey == nil {
+                do {
+                    try await api.startLoginInteractive()
+                    log.notice("startLoginInteractive ok")
+                } catch {
+                    log.error("startLoginInteractive: \(String(describing: error), privacy: .public)")
+                    // Not fatal — the bus may still surface a URL once tsnet
+                    // realises it needs login on its own.
+                }
+            }
+
+            // Run `up()` in the background — it blocks until the node is
+            // usable (which for interactive flow means the user has finished
+            // signing in). Don't make `start()` await on it; the bus is the
+            // primary state driver and we want the UI to reflect .needsAuth
+            // / .running as the bus reports them.
+            Task { [weak self] in
+                do {
+                    try await node.up()
+                    await self?.refreshAddresses()
+                    await self?.log.notice("node.up returned (connected)")
+                } catch {
+                    await self?.log.error("node.up: \(String(describing: error), privacy: .public)")
+                    await self?.handleUpFailure(error)
+                }
+            }
+            log.notice("Tailscale start kicked off (authKey=\(authKey == nil ? "no" : "yes", privacy: .public))")
         } catch {
             log.error("start failed: \(String(describing: error), privacy: .public)")
             state = .failed(message: String(describing: error))
             await teardown()
+        }
+    }
+
+    /// Surface a `node.up()` failure as a UI-visible error, but only when we
+    /// don't already have something more specific (e.g. needsAuth).
+    private func handleUpFailure(_ error: Error) {
+        switch state {
+        case .needsAuth, .running:
+            // node.up() races with the bus. If the bus already published a
+            // useful state, don't clobber it.
+            break
+        default:
+            state = .failed(message: String(describing: error))
         }
     }
 
@@ -165,19 +204,25 @@ final class TailscaleManager {
     /// the TailscaleKit MessageConsumer protocol. It hops back to MainActor
     /// to mutate `state` on the manager.
     fileprivate func busDidReceive(notify: Ipn.Notify) {
+        // tsnet emits NeedsLogin and BrowseToURL as separate Notify messages
+        // and the order between them is not guaranteed: sometimes the State
+        // change lands first, sometimes the URL does. We handle whichever
+        // arrives, and stay in `.starting` until BrowseToURL surfaces a real
+        // URL — never transition to `.failed` purely on NeedsLogin, because
+        // the URL is still on its way and erasing the state would also drop
+        // any URL that comes after.
         if let urlString = notify.BrowseToURL, let url = URL(string: urlString) {
             log.notice("BrowseToURL: \(urlString, privacy: .public)")
             state = .needsAuth(url: url)
         }
         if let ipnState = notify.State {
+            log.notice("ipn state: \(String(describing: ipnState), privacy: .public)")
             switch ipnState {
             case .Running:
                 Task { await self.refreshAddresses() }
             case .NeedsLogin:
-                // Already surfaced via BrowseToURL above; if we got here without
-                // a URL, fall through to a generic prompt.
-                if case .needsAuth = state { /* keep */ }
-                else { state = .failed(message: "needs login (no auth URL yet)") }
+                // Stay in .starting / .needsAuth; BrowseToURL drives the UI.
+                break
             case .Stopped:
                 state = .stopped
             default:
