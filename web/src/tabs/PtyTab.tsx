@@ -58,6 +58,29 @@ export default function PtyTab({ ptyId, active }: Props) {
 
   const term = usePtyTerminal(ptyId);
 
+  // Synchronous `scrollTop = scrollHeight` is one frame too early in
+  // several edges: the live xterm's host height is set by `applyResize`
+  // on the next rAF; the virtualizer's ResizeObserver corrects estimated
+  // card heights after first paint; and `beginRunning`'s drain re-renders
+  // the running header with the real prompt_html. Re-pin to bottom for a
+  // few frames so layout settles before we stop chasing it. Bails as
+  // soon as the user scrolls up.
+  const pinToBottom = useCallback(() => {
+    const stack = stackRef.current;
+    if (!stack) return;
+    stack.scrollTop = stack.scrollHeight;
+    let remaining = 4;
+    const tick = () => {
+      if (remaining-- <= 0) return;
+      if (!wasAtBottomRef.current) return;
+      const s = stackRef.current;
+      if (!s) return;
+      s.scrollTop = s.scrollHeight;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, []);
+
   // Trailing entry, if running, is hoisted into the live slot.
   const trailing = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const runningBlock = trailing?.kind === "running" ? trailing : null;
@@ -89,8 +112,8 @@ export default function PtyTab({ ptyId, active }: Props) {
       term.beginRunning(newId, () => {
         term.attachToSlot(liveHostRef.current);
         term.setMode("running");
-        const stack = stackRef.current;
-        if (stack) { stack.scrollTop = stack.scrollHeight; wasAtBottomRef.current = true; }
+        wasAtBottomRef.current = true;
+        pinToBottom();
       });
     } else if (!newId && prevId) {
       // Leaving running mode. endRunning has already done the
@@ -113,10 +136,39 @@ export default function PtyTab({ ptyId, active }: Props) {
   }, [pendingFinalize, runningBlock?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─────────────────────── focus management ───────────────────────
+  // While the tab is selected, the xterm should hold DOM focus — clicks on
+  // a block card, the meta strip, or anywhere in the chrome that doesn't
+  // own a real input shouldn't strip the cursor of focus. We do two things:
+  //   (1) focus on activate / running edge (initial grab),
+  //   (2) when focus leaves hostEl, re-grab on the next frame unless the
+  //       new target is a real input (so global text inputs still work).
   useEffect(() => {
     if (!active) return;
     const id = requestAnimationFrame(() => term.focus());
-    return () => cancelAnimationFrame(id);
+
+    const hostEl = term.hostEl;
+    const onFocusOut = (e: FocusEvent) => {
+      const next = e.relatedTarget as HTMLElement | null;
+      // Focus moving between sub-elements of hostEl (xterm's helpers): no-op.
+      if (next && hostEl.contains(next)) return;
+      // Yield real input fields the focus they explicitly want.
+      if (next && (next.tagName === "INPUT" || next.tagName === "TEXTAREA"
+                   || next.isContentEditable)) return;
+      requestAnimationFrame(() => {
+        // The tab might have been deactivated between the focusout and rAF
+        // (e.g. user clicked a different tab); only re-grab if we're still
+        // the selected pane. Reading from the store keeps this independent
+        // of stale closure values.
+        if (!active) return;
+        term.focus();
+      });
+    };
+    hostEl.addEventListener("focusout", onFocusOut);
+
+    return () => {
+      cancelAnimationFrame(id);
+      hostEl.removeEventListener("focusout", onFocusOut);
+    };
   }, [active, running]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─────────────────────── selected-block scroll ───────────────────────
@@ -230,13 +282,13 @@ export default function PtyTab({ ptyId, active }: Props) {
     const isAlt    = altActive;
     prevAltRef.current = isAlt;
     if (wasAlt && !isAlt) {
-      stack.scrollTop = stack.scrollHeight;
       wasAtBottomRef.current = true;
+      pinToBottom();
       return;
     }
     if (!wasAtBottomRef.current) return;
-    stack.scrollTop = stack.scrollHeight;
-  }, [blocks, altActive]);
+    pinToBottom();
+  }, [blocks, altActive, pinToBottom]);
 
   // ─────────────────────── render ───────────────────────
   const onBlockSelect = useCallback((id: BlockId) => {

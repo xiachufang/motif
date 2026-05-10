@@ -10,6 +10,8 @@
 import { Terminal } from "@xterm/xterm";
 import { SerializeAddon } from "@xterm/addon-serialize";
 
+import { TERM_FONT_FAMILY, TERM_FONT_SIZE } from "./usePtyTerminal";
+
 export interface SerializeOptions {
   /** Terminal width to write under. Should match the live terminal so
    *  wrapping aligns with what the user originally saw. */
@@ -38,6 +40,12 @@ export async function serializeBytesToHtml(
     rows:       opts.rows ?? 24,
     scrollback: opts.scrollback ?? 20_000,
     allowProposedApi: true,
+    // Match the live xterm's font — SerializeAddon stamps fontFamily and
+    // fontSize into the generated HTML's wrapper <div>, so a mismatch here
+    // makes backfilled blocks render with different glyph metrics than
+    // the just-finalized blocks (which serialize off the live terminal).
+    fontFamily: TERM_FONT_FAMILY,
+    fontSize:   TERM_FONT_SIZE,
     // Use page bg (--bg) — the live xterm uses the same value, and finalized
     // cards sit directly on the page bg too (no panel surround in the new
     // gutter layout). Matching backgrounds removes the visual seam between

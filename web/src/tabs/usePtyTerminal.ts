@@ -55,6 +55,14 @@ const FLOAT_MIN_ROWS  = 1;
  *  height never reaches this — it tracks the bottom-most used row. */
 const FLOAT_MAX_ROWS  = 24;
 
+/** Font settings shared between the live xterm and the headless xterm in
+ *  serializeBlock. SerializeAddon writes both into the generated HTML's
+ *  wrapper `<div>` style; if the two terminals disagree, finalized live
+ *  blocks and backfilled blocks will render with different glyph metrics
+ *  (xterm's default is `courier-new, courier, monospace` 15px). */
+export const TERM_FONT_FAMILY = "ui-monospace, Menlo, Consolas, monospace";
+export const TERM_FONT_SIZE   = 13;
+
 const DEBUG = true;
 function dlog(tag: string, msg: string, data?: Record<string, unknown>) {
   if (!DEBUG) return;
@@ -120,8 +128,8 @@ function getOrCreate(ptyId: string): PtyTermInst {
   if (existing) return existing;
 
   const term = new Terminal({
-    fontFamily: "ui-monospace, Menlo, Consolas, monospace",
-    fontSize:   13,
+    fontFamily: TERM_FONT_FAMILY,
+    fontSize:   TERM_FONT_SIZE,
     cursorBlink: true,
     scrollback: SCROLLBACK_ROWS,
     theme: { background: "#0e0e0e", foreground: "#e6e6e6" },
