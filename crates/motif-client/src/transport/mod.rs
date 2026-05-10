@@ -73,22 +73,36 @@ async fn connect_ssh(
     })
 }
 
-/// Build a `TsOptions` for a client-side tsnet node using the conventional
-/// defaults (state dir `~/.cache/motif/tsnet`, per-process hostname so two
-/// concurrent client invocations don't collide on the same tailnet device
-/// entry, ephemeral so the entry self-removes when the process exits).
-/// Env overrides: `MOTIF_TS_{STATE_DIR,HOSTNAME,AUTHKEY,CONTROL_URL}`.
+/// Build a `TsOptions` for a client-side tsnet node.
+///
+/// State dir defaults to `~/.cache/motif/tsnet`; hostname defaults to
+/// `motif-client` (stable, so successive invocations reuse one tailnet
+/// device entry rather than littering admin/machines with fresh
+/// per-PID names).
+///
+/// `ephemeral: false` matches what iOS's TailscaleManager does. The
+/// `ephemeral=true` path appears to interact badly with tsnet 1.94's
+/// internal Loopback() — auth completes, state goes Running, then a
+/// /serve-config POST inside Loopback() triggers an EditPrefs
+/// `WantRunning=false LoggedOut=true` and the node tears itself down a
+/// few ms after coming up. With `ephemeral=false` the node persists,
+/// state_dir caches the identity, and re-runs are zero-interaction.
+///
+/// Env overrides: `MOTIF_TS_{STATE_DIR,HOSTNAME,AUTHKEY,CONTROL_URL,EPHEMERAL}`.
 #[cfg(feature = "tailscale")]
 pub fn default_client_ts_options() -> motif_net::motif_tailscale::TsOptions {
     motif_net::motif_tailscale::TsOptions {
         hostname: std::env::var("MOTIF_TS_HOSTNAME")
-            .unwrap_or_else(|_| format!("motif-client-{}", std::process::id())),
+            .unwrap_or_else(|_| "motif-client".to_string()),
         state_dir: std::env::var_os("MOTIF_TS_STATE_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(default_state_dir),
         authkey:     std::env::var("MOTIF_TS_AUTHKEY").ok(),
         control_url: std::env::var("MOTIF_TS_CONTROL_URL").ok(),
-        ephemeral:   true,
+        ephemeral:   std::env::var("MOTIF_TS_EPHEMERAL")
+            .ok()
+            .and_then(|v| match v.as_str() { "1" | "true" | "yes" => Some(true), _ => Some(false) })
+            .unwrap_or(false),
     }
 }
 
