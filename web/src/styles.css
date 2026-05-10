@@ -113,16 +113,27 @@ a { color: var(--accent); }
   border-radius: 6px;
   cursor: pointer;
 }
-.session-list li:hover { border-color: var(--accent); }
+@media (hover: hover) {
+  .session-list li:hover { border-color: var(--accent); }
+}
 .session-list .destroy {
   margin-left: auto;
   padding: 0 0.5em;
   line-height: 1.4;
   color: var(--muted);
 }
-.session-list .destroy:hover:not(:disabled) {
-  color: #ff6b6b;
-  border-color: #ff6b6b;
+@media (hover: hover) {
+  .session-list .destroy:hover:not(:disabled) {
+    color: #ff6b6b;
+    border-color: #ff6b6b;
+  }
+}
+.session-list .destroy {
+  min-width: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .create input { flex: 1; }
 
@@ -137,7 +148,23 @@ a { color: var(--accent); }
   align-items: center;
   justify-content: space-between;
   gap: 0.7em;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
+.topbar > .row { flex-wrap: nowrap; min-width: 0; }
+/* Left side (session name + cwd) takes all remaining space and truncates,
+   so the toggle buttons + client pill on the right always stay visible. */
+.topbar > .row:first-child { flex: 1 1 auto; overflow: hidden; }
+.topbar > .row:first-child > strong { flex: 0 0 auto; }
+.topbar .topbar-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+.topbar .topbar-path::before { content: "📂 "; }
 .topbar .status {
   background: var(--muted-bg);
   border: 1px solid var(--border);
@@ -146,7 +173,7 @@ a { color: var(--accent); }
   color: var(--muted);
   border-radius: 3px;
 }
-.layout { display: flex; flex: 1 1 auto; min-height: 0; }
+.layout { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
 .sidebar {
   /* width is set inline by Workspace via useDragSize */
   flex: 0 0 auto;
@@ -211,7 +238,9 @@ a { color: var(--accent); }
   gap: 0.3em;
   white-space: nowrap;
 }
-.row-tree:hover { background: var(--muted-bg); }
+@media (hover: hover) {
+  .row-tree:hover { background: var(--muted-bg); }
+}
 .row-tree.dir { color: var(--accent); }
 .file-tree .row-tree.focused {
   background: var(--accent-bg);
@@ -236,7 +265,9 @@ a { color: var(--accent); }
   white-space: nowrap;
 }
 .git-status .git-file { cursor: pointer; }
-.git-status .git-file:hover { background: var(--muted-bg); }
+@media (hover: hover) {
+  .git-status .git-file:hover { background: var(--muted-bg); }
+}
 .git-status .row-tree.git-file .git-file-name {
   white-space: nowrap;
 }
@@ -276,14 +307,34 @@ button.icon-btn {
   cursor: row-resize;
   align-self: stretch;
 }
+/* Wider hit target so the cursor change feels snappy and finger drags
+   don't need pixel-perfect accuracy. */
+.resizer-x::before,
+.resizer-y::before {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+.resizer-y::before { inset: 0 -6px; }
 .resizer:hover  { background: var(--accent); }
 .resizer:active { background: var(--accent); }
+/* Touch devices can't drag a 4px seam reliably, and the layout uses
+   matchMedia-driven drawer mode at narrow widths so resizing isn't
+   needed there anyway. */
+@media (hover: none) {
+  .resizer { display: none; }
+}
 
 /* Topbar visibility toggles. */
 .panel-toggle {
   font-size: 14px;
   padding: 0.15em 0.5em;
   line-height: 1;
+  min-width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .panel-toggle.off { opacity: 0.4; }
 .panel-toggle.on  { color: var(--fg); }
@@ -323,7 +374,9 @@ button.icon-btn {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tab:not(.active):hover { background: rgba(255, 255, 255, 0.05); }
+@media (hover: hover) {
+  .tab:not(.active):hover { background: rgba(255, 255, 255, 0.05); }
+}
 .tab.active { background: var(--accent-bg); }
 .tab.dragging { opacity: 0.5; }
 /* Drop-target indicator: a 2px accent line on the leading edge of the tab
@@ -357,18 +410,31 @@ button.icon-btn {
   color: var(--muted);
   cursor: pointer;
   font: inherit;
+  font-size: 16px;
   line-height: 1;
   margin-left: 0.3em;
-  padding: 0 4px;
+  padding: 0;
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 3px;
   /* Reserve the space so the tab box isn't reflowed when the button shows up,
      and make the swap smooth so hovering doesn't read as flicker. */
   opacity: 0;
   transition: opacity 90ms ease, background-color 90ms ease, color 90ms ease;
 }
-.tab:hover .tab-close { opacity: 1; }
+@media (hover: hover) {
+  .tab:hover .tab-close { opacity: 1; }
+  .tab-close:hover { background: #444; color: var(--fg); opacity: 1; }
+}
 .tab.active .tab-close { opacity: 0.65; }
-.tab-close:hover { background: #444; color: var(--fg); opacity: 1; }
+/* Touch devices have no hover; the close button must be always reachable. */
+@media (hover: none) {
+  .tab-close { opacity: 0.7; min-width: 28px; height: 28px; }
+  .tab-close:active { background: #444; color: var(--fg); }
+}
 .tab-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -390,189 +456,18 @@ button.icon-btn {
 
 .pty-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
-/* The block stack scrolls finalized cards + the live slot. The float
-   pane sits below as a sibling, always visible. The xterm DOM (a single
-   instance per PTY managed by usePtyTerminal) is re-parented between
-   `.pty-stack > .block-running > .block-running-body > .pty-live-slot`
-   and `.pty-float > .pty-float-host` depending on whether a command is
-   running. */
-.pty-stack {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  background: var(--bg);
-  min-height: 0;
-}
 
-/* ── block stack (v2: minimal sticky-header rendering) ──
-   All three flavors — finalized card, alt-stub, running block — share
-   the same outer shell so the stack reads as one continuous flow. No
-   card borders, no status colors, no gutter strip. The only "decoration"
-   is a sticky `$ cmd` header per block; the body is just the command's
-   output. */
-
-.block-card,
-.block-alt,
-.block-running {
-  flex: 0 0 auto;
-  position: relative;
-  background: transparent;
-  border: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* When an alt-screen app (vim/htop) is running, the live slot expands
-   to fill the whole .pty-stack viewport so the program has a full
-   canvas. The height comes from JS (rows × cellHeight). Auto-scroll
-   keeps the block in view when it grows. */
-
-.block-card.selected,
-.block-alt.selected { background: rgba(212, 160, 0, 0.06); }
-
-.block-card-header,
-.block-alt-header,
-.block-running-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 2px 8px;
-  font-family: var(--mono);
-  font-size: 12px;
-  cursor: pointer;
-  /* Headers are click-to-select for the block, but we keep text selection
-     enabled so users can drag-highlight cmd text to copy. The click
-     handler bails when a non-empty selection exists so a drag-release
-     doesn't toggle block selection. */
-  user-select: text;
-  /* Stick to the top of the .pty-stack so the `$ cmd` is always visible
-     while the body scrolls under it. A solid bg is required for sticky to
-     read against the scrolled content. */
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--bg);
-}
-.block-running-header { cursor: default; }
-
-.block-card-header .prompt,
-.block-alt-header  .prompt,
-.block-running-header .prompt { color: var(--muted); flex: 0 0 auto; }
-.block-card-header .cmd,
-.block-alt-header  .cmd,
-.block-running-header .cmd {
-  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* Per-block ULID tail. Pinned to the trailing edge with `margin-left: auto`
-   so it doesn't compete with cmd text for horizontal space; clicking it
-   selects (via header bubble), hovering reveals the full id via the
-   <span title>. The deliberately faint colour keeps it as debug-affordance,
-   not visual noise. */
-.block-id-chip {
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding: 0 4px;
-  color: var(--muted);
-  opacity: 0.55;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  user-select: all;
-}
-.block-id-chip:hover { opacity: 0.9; }
-
-/* serializeAsHTML wraps content in a <div> per row. Multi-line PS1
-   (e.g. starship two-line prompts) renders as one block element per
-   row stacked vertically; the per-row background is dropped so the
-   header's solid bg shows through and sticky reads correctly against
-   scrolled content. */
-.prompt-html {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.prompt-html > div { display: block; background: transparent !important; }
-
-.block-card-body,
-.block-running-body {
-  padding: 0 8px 2px 8px;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.2;
-}
-.block-card-body {
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-/* xterm host (the single instance's DOM root) — natural height, fed by
-   JS (visiblePx on the inline `style.height`). Same `.pty-host` lives in
-   either slot at any time. `overflow: hidden` is what makes the inline
-   height actually clip; without it, xterm's internal grid (FLOAT_MAX_ROWS
-   in idle, protoRows in running) renders at its natural pixel size and
-   the block looks like full viewport even when only a few rows of
-   content have streamed in. */
-.block-running-body .xterm,
-.pty-float .xterm { height: 100%; }
-.block-running-body .xterm .xterm-viewport,
-.pty-float .xterm .xterm-viewport { background: transparent; }
+/* xterm host: fills the remaining tab area. FitAddon reads clientWidth
+   off this element to derive cols/rows; ResizeObserver in PtyTab
+   keeps the PTY's cols/rows in sync. */
 .pty-host {
-  /* height is set inline by usePtyTerminal */
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
-}
-
-/* ── live slot (running) ──
-   Inside `.block-running-body`; receives the xterm DOM via appendChild
-   while a command is running. Full-width block so xterm's FitAddon can
-   read a non-zero clientWidth from the host's parent. */
-.pty-live-slot { display: block; width: 100%; min-height: 0; }
-
-/* ── float pane (idle) ──
-   Sibling of .pty-stack. Always visible at the bottom; height grows
-   with the cursor row up to FLOAT_MAX_ROWS (the xterm host has
-   `overflow: hidden` so unused trailing rows of the pinned grid are
-   clipped). */
-.pty-float {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
   background: var(--bg);
-  padding: 2px 8px;
-  font-family: var(--mono);
 }
-.pty-float-host { display: block; width: 100%; }
-
-/* ── command running ──
-   While a command is executing the xterm has been re-parented into the
-   live slot inside `.pty-stack`; the float pane collapses to height 0
-   (kept in the DOM so its slot ref stays valid for the eventual move
-   back). */
-.pty-tab.running .pty-float {
-  flex: 0 0 0;
-  height: 0;
-  padding: 0;
-  border-top: none;
-  overflow: hidden;
-}
-
-/* ── alt-screen fullscreen (vim/htop/less) ──
-   Stricter subset of .running: when the xterm flips into the alternate
-   buffer we hide the meta strip, prior block cards/alt-stubs, and the
-   running header so vim/htop get the full pty-tab area. */
-.pty-tab.alt-active .pty-meta { display: none; }
-/* Hide the entire virtualized list (its block-list-host wrapper) so
-   spacer divs collapse along with the cards. When alt-active flips off
-   the host comes back, the virtualizer's ResizeObserver re-fires, and
-   measurements pick up. */
-.pty-tab.alt-active .pty-stack > .block-list-host { display: none; }
-.pty-tab.alt-active .block-running-header { display: none; }
-.pty-tab.alt-active .pty-stack { padding: 0; }
-.pty-tab.alt-active .block-running-body { padding: 0; }
+.pty-host .xterm { height: 100%; }
+.pty-host .xterm .xterm-viewport { background: transparent; }
 
 .preview {
   margin: 0;
@@ -628,7 +523,9 @@ button.icon-btn {
   color: var(--muted);
 }
 .seg button + button { border-left: 1px solid var(--border); }
-.seg button:hover:not(.on) { background: rgba(255,255,255,0.04); color: var(--fg); }
+@media (hover: hover) {
+  .seg button:hover:not(.on) { background: rgba(255,255,255,0.04); color: var(--fg); }
+}
 .seg button.on {
   background: var(--accent-bg);
   color: var(--fg);
@@ -684,7 +581,9 @@ button.icon-btn {
   border-left: 2px solid transparent;
   white-space: nowrap;
 }
-.diff-file-item:hover { background: rgba(255,255,255,0.03); }
+@media (hover: hover) {
+  .diff-file-item:hover { background: rgba(255,255,255,0.03); }
+}
 .diff-file-item.active {
   background: var(--accent-bg);
   border-left-color: var(--accent);
@@ -709,7 +608,9 @@ button.icon-btn {
   white-space: nowrap;
   border-left: 2px solid transparent;
 }
-.diff-tree-row:hover { background: rgba(255,255,255,0.03); }
+@media (hover: hover) {
+  .diff-tree-row:hover { background: rgba(255,255,255,0.03); }
+}
 .diff-tree-row.dir { color: var(--accent); }
 .diff-tree-row.file.active {
   background: var(--accent-bg);
@@ -798,7 +699,9 @@ button.icon-btn {
   color: var(--muted);
   cursor: pointer;
 }
-.diff-collapse:hover { color: var(--fg); background: transparent; }
+@media (hover: hover) {
+  .diff-collapse:hover { color: var(--fg); background: transparent; }
+}
 
 .diff-file-body { background: var(--bg); }
 .diff-binary { padding: 0.9em 1em; font-family: var(--mono); font-size: 12px; }
@@ -814,7 +717,20 @@ button.icon-btn {
 .diff-file-body .d2h-files-diff,
 .diff-file-body .d2h-file-side-diff { background: var(--bg); }
 .diff-file-body .d2h-code-line,
-.diff-file-body .d2h-code-side-line { font-family: var(--mono); font-size: 12px; }
+.diff-file-body .d2h-code-side-line,
+.diff-file-body .d2h-code-linenumber,
+.diff-file-body .d2h-code-side-linenumber { font-family: var(--mono); font-size: 12px; }
+/* Pin the line-number column on horizontal scroll so the user can pan
+   long lines without losing context. inherit the row's background so the
+   ins/del/normal coloring stays consistent. */
+.diff-file-body .d2h-code-linenumber,
+.diff-file-body .d2h-code-side-linenumber {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background-color: inherit;
+}
+.diff-file-body tr { background-clip: padding-box; }
 .diff-file-body .d2h-file-wrapper {
   border: none;
   margin: 0;
@@ -826,6 +742,327 @@ button.icon-btn {
   height: 100%; padding: 1em; overflow: auto;
 }
 .image-tab img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
+
+/* ── mobile input dock ─────────────────────────────────────────────── */
+
+.mdock {
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  /* Sit above the active tab body but never steal space from xterm at
+     resize time — the .tab-body above already shrinks to fit. */
+  z-index: 2;
+}
+
+.mdock-empty {
+  text-align: center;
+  padding: 10px;
+}
+
+.mdock-cmds {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.mdock-cmds-scroll {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px 2px 4px;
+}
+.mdock-cmds-scroll::-webkit-scrollbar { height: 4px; }
+.mdock-cmds-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 2px;
+}
+.mdock-chip {
+  flex: 0 0 auto;
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+/* Only show the hover state on devices that actually hover. On touch the
+   hover sticks after tap, which the user reads as a stuck highlight. */
+@media (hover: hover) {
+  .mdock-chip:hover:not(:disabled) { background: #2a2a2a; border-color: var(--accent); }
+}
+.mdock-chip:focus { outline: none; }
+.mdock-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.mdock-chip:active { transform: translateY(1px); }
+.mdock-mgr-btn {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.mdock-input {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+.mdock-mode {
+  flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 10px;
+  min-width: 38px;
+}
+.mdock-mode.on {
+  background: var(--accent-bg);
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.mdock-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.mdock-send {
+  flex: 0 0 auto;
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--fg);
+  font-weight: 600;
+  padding: 0 14px;
+}
+.mdock-send:disabled { opacity: 0.5; }
+
+.mdock-mic {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--muted-bg);
+  border: 1px dashed var(--border);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  border-radius: 4px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+.mdock-mic.recording {
+  border-style: solid;
+  border-color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.10);
+  color: #ffb0b0;
+  animation: mdock-pulse 1.4s ease-in-out infinite;
+}
+.mdock-mic:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@keyframes mdock-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.35); }
+  50%      { box-shadow: 0 0 0 6px rgba(255, 107, 107, 0); }
+}
+
+/* ── quick-commands manager modal ──────────────────────────────────── */
+
+.mdock-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 50;
+}
+.mdock-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  overflow: hidden;
+}
+.mdock-mgr-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.mdock-mgr-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.4em 0.55em;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.mdock-mgr-row:last-child { border-bottom: none; }
+.mdock-mgr-row.dragging {
+  opacity: 0.45;
+  background: var(--muted-bg);
+}
+.mdock-mgr-handle {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: grab;
+  /* Stops the modal's vertical scroll from stealing the touch gesture. */
+  touch-action: none;
+  user-select: none;
+}
+.mdock-mgr-handle:hover { color: var(--fg); border-color: var(--border); }
+.mdock-mgr-handle:active { cursor: grabbing; }
+.mdock-drop-line {
+  list-style: none;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 2px solid var(--accent);
+  pointer-events: none;
+}
+.mdock-mgr-label {
+  flex: 0 0 auto;
+  min-width: 4em;
+  font-weight: 600;
+}
+.mdock-mgr-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdock-mgr-add {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 0.6em 0.7em;
+  margin: 0;
+}
+.mdock-mgr-add legend { padding: 0 0.4em; }
+
+/* ── workspace sidebar drawer (mobile) ─────────────────────────────── */
+
+.sidebar-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 25;
+  /* Tap should land on the backdrop, not the underlying tab body. */
+  touch-action: none;
+}
+.sidebar.sidebar-drawer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(86vw, 340px);
+  z-index: 30;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.45);
+}
+
+/* ── diff: file list as drawer on mobile ───────────────────────────── */
+
+.diff-viewer.is-mobile .diff-body { position: relative; }
+.diff-files-drawer {
+  position: absolute !important;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(86vw, 340px) !important;
+  z-index: 30;
+  box-shadow: 4px 0 20px rgba(0, 0, 0, 0.45);
+  /* Override the inline `width: <px>` style that desktop sets. */
+}
+.diff-files-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 25;
+}
+.diff-files-toggle {
+  font-size: 14px;
+  padding: 0.25em 0.7em;
+  min-height: 30px;
+}
+
+/* ── narrow-viewport tweaks ────────────────────────────────────────── */
+
+@media (max-width: 540px) {
+  /* iOS auto-zooms any input < 16px on focus. Apply globally here so card
+     forms (login / sessions / dock manager) all dodge the jump. */
+  input[type="text"], input[type="password"], input:not([type]),
+  .mdock-text {
+    font-size: 16px;
+  }
+
+  .topbar { padding: 0.4em 0.6em; gap: 0.4em; }
+  .topbar .row.tight { gap: 0.3em; }
+  /* Compact path glyph on phones — the directory itself is what matters,
+     and the leading 📂 emoji wastes precious horizontal space. */
+  .topbar .topbar-path::before { content: ""; }
+
+  /* File-tree / git rows: ellipsis instead of horizontal scroll. The
+     surrounding scroll container still allows horizontal panning when
+     the user really wants the full path. */
+  .sidebar > section,
+  .sidebar-section > section {
+    padding: 0.5em 0.7em;
+  }
+  .row-tree, .git-status .row-tree {
+    overflow: hidden;
+  }
+
+  /* Diff toolbar: stack the controls below the summary so neither line
+     overflows. */
+  .diff-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.4em;
+  }
+  .diff-summary { flex-wrap: wrap; }
+  .diff-controls { justify-content: flex-end; }
+
+  /* Diff per-file body: dial down the per-line padding diff2html ships
+     with so a unified diff doesn't push beyond the viewport. */
+  .diff-content { padding: 0.4em 0.4em; }
+  .diff-file-body .d2h-code-line,
+  .diff-file-body .d2h-code-side-line,
+  .diff-file-body .d2h-code-linenumber,
+  .diff-file-body .d2h-code-side-linenumber {
+    font-size: 11px;
+  }
+
+  /* Sessions card: tighten padding and let the create form stack. */
+  .card { padding: 1rem 0.9rem; }
+  .card.sessions header { flex-direction: column; align-items: flex-start; gap: 0.5em; }
+  .card.sessions .row.create { flex-direction: column; align-items: stretch; }
+  .card.sessions .row.create input,
+  .card.sessions .row.create button { width: 100%; }
+}
 
 /* ── v2 shell-integration UI ─────────────────────────────────────── */
 

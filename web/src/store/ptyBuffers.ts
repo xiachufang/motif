@@ -1,36 +1,20 @@
-// Per-PTY byte fanout. Single listener model: one xterm.js instance per
-// PTY (managed by usePtyTerminal) attaches once and consumes all bytes —
-// `scope` no longer drives routing. The xterm processes prompt, command,
-// and output bytes in arrival order; its own buffer state is the source
-// of truth for what's on screen.
-//
-// `pending` holds bytes that arrived before any listener attached. As soon
-// as the xterm attaches, `pending` is drained and future bytes flow live.
-// `markPromptStarted` clears `pending` and fires `boundary()` on attached
-// listeners — the xterm responds with `term.clear()+reset()` so the next
-// PS1 paints on a fresh grid.
+// Per-PTY byte fanout. PtyTab attaches one listener per mount; this
+// module buffers bytes that land before any listener attaches and flushes
+// them on attach.
 //
 // State is module-global so it survives PtyTab unmount/remount (StrictMode
-// double-mount, tab switches).
+// double-mount, tab switches via display:none don't unmount, but we still
+// keep the buffer in case the listener hasn't run its first effect yet).
 
-import type { BlockId } from "../proto/types";
-
-export interface PromptListener {
-  data:     (chunk: Uint8Array) => void;
-  /** Fired synchronously on every `pty.prompt_started`. Hook uses this to
-   *  `term.clear() + term.reset()` so the next PS1 paints fresh. */
-  boundary: () => void;
-}
+export type PtyDataListener = (chunk: Uint8Array) => void;
 
 interface PtyBuf {
-  /** Bytes accumulated while no listener was attached. Drained on attach
-   *  and cleared at every `prompt_started` (the previous wave is
-   *  unreachable past the boundary anyway). */
+  /** Bytes accumulated while no listener was attached. Drained on attach. */
   pending: Uint8Array[];
 }
 
 const buffers   = new Map<string, PtyBuf>();
-const listeners = new Map<string, Set<PromptListener>>();
+const listeners = new Map<string, Set<PtyDataListener>>();
 
 function getBuf(ptyId: string): PtyBuf {
   let b = buffers.get(ptyId);
@@ -38,30 +22,14 @@ function getBuf(ptyId: string): PtyBuf {
   return b;
 }
 
-/** Workspace dispatcher → for every `pty.output` event from the server.
- *  `block_id` and `scope` are accepted for protocol compatibility but no
- *  longer drive routing — the single xterm consumes everything. */
-export function appendOutput(
-  ptyId:   string,
-  chunk:   Uint8Array,
-  _blockId: BlockId | null,
-  _scope:   string,
-): void {
+/** Workspace dispatcher → for every `pty.output` event from the server. */
+export function appendOutput(ptyId: string, chunk: Uint8Array): void {
   const ls = listeners.get(ptyId);
   if (ls && ls.size > 0) {
-    ls.forEach(l => { try { l.data(chunk); } catch { /* ignore */ } });
+    ls.forEach(l => { try { l(chunk); } catch { /* ignore */ } });
     return;
   }
   getBuf(ptyId).pending.push(chunk);
-}
-
-/** Workspace → on `pty.prompt_started`. Drops any bytes accumulated since
- *  the last boundary (a not-yet-attached listener can't reach them after
- *  the boundary clears the grid) and fires every listener's `boundary`. */
-export function markPromptStarted(ptyId: string, _blockId: BlockId): void {
-  getBuf(ptyId).pending = [];
-  const ls = listeners.get(ptyId);
-  if (ls) ls.forEach(l => { try { l.boundary(); } catch { /* ignore */ } });
 }
 
 export interface PtyAttachment {
@@ -70,10 +38,9 @@ export interface PtyAttachment {
   detach:  () => void;
 }
 
-/** Hook calls this on first slot attach: returns any pre-mount bytes and
- *  starts delivering future ones to `listener.data`. Boundary edges fire
- *  `listener.boundary`. */
-export function attachPty(ptyId: string, listener: PromptListener): PtyAttachment {
+/** Hook calls this on mount: returns any pre-mount bytes and starts
+ *  delivering future ones to `listener`. */
+export function attachPty(ptyId: string, listener: PtyDataListener): PtyAttachment {
   const b = getBuf(ptyId);
   const initial = b.pending.slice();
   b.pending = [];

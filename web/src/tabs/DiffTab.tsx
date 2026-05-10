@@ -14,6 +14,7 @@ import "diff2html/bundles/css/diff2html.min.css";
 import { parseUnifiedDiff, type FileDiff, type FileStatus } from "./diffParse";
 import Resizer from "../panels/Resizer";
 import { useDragSize } from "../hooks/useDragSize";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 interface Props { patch: string }
 
@@ -48,6 +49,7 @@ const STATUS_BADGE: Record<FileStatus, { glyph: string; label: string }> = {
 
 export default function DiffTab({ patch }: Props) {
   const files = useMemo(() => parseUnifiedDiff(patch), [patch]);
+  const isMobile = useIsMobile();
 
   const [layout, setLayout] = useState<Layout>(() =>
     loadPref<Layout>(LS_LAYOUT, "byfile", ["byfile", "all"] as const));
@@ -56,6 +58,13 @@ export default function DiffTab({ patch }: Props) {
   const [fileMode, setFileMode] = useState<FileMode>(() =>
     loadPref<FileMode>(LS_FILEMODE, "list", ["list", "tree"] as const));
   const [selected, setSelected] = useState(0);
+  // Mobile-only: file list is a toggleable drawer rather than an inline
+  // column. Collapsed by default so the diff content gets the full width.
+  const [filesDrawerOpen, setFilesDrawerOpen] = useState(false);
+  // Mobile-only: force "Unified" since side-by-side wraps awkwardly on
+  // narrow viewports. We only force it during render — the user's saved
+  // preference is preserved for desktop.
+  const effectiveFormat: Format = isMobile ? "line-by-line" : format;
 
   useEffect(() => savePref(LS_LAYOUT, layout), [layout]);
   useEffect(() => savePref(LS_FORMAT, format), [format]);
@@ -100,6 +109,8 @@ export default function DiffTab({ patch }: Props) {
         container.scrollTo({ top, behavior: "smooth" });
       }
     }
+    // Auto-close the drawer so the freshly-selected file is fully visible.
+    setFilesDrawerOpen(false);
   }, [layout]);
 
   // Tree of files for "tree" file-mode (memoized; cheap, but skip when unused).
@@ -129,10 +140,28 @@ export default function DiffTab({ patch }: Props) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
 
+  // On mobile the file pane is positioned as an absolute drawer, so don't
+  // apply an inline width (the CSS rule sets the drawer width directly).
+  const filesPaneStyle = isMobile ? undefined : { width: filesPane.size };
+  // Show the file pane on desktop always; on mobile only when the user has
+  // opened the drawer.
+  const filesPaneShown = !isMobile || filesDrawerOpen;
+
   return (
-    <div className="diff-viewer">
+    <div className={"diff-viewer" + (isMobile ? " is-mobile" : "")}>
       <div className="diff-toolbar">
         <div className="diff-summary">
+          {isMobile && (
+            <button
+              className="ghost small diff-files-toggle"
+              onClick={() => setFilesDrawerOpen(v => !v)}
+              aria-expanded={filesDrawerOpen}
+              aria-label="Toggle file list"
+              title="Files"
+            >
+              ☰ {files.length}
+            </button>
+          )}
           <span className="pill">{files.length} file{files.length === 1 ? "" : "s"}</span>
           <span className="diff-add">+{totalAdd}</span>
           <span className="diff-del">−{totalDel}</span>
@@ -150,70 +179,95 @@ export default function DiffTab({ patch }: Props) {
               title="View all files in a single scrolling list"
             >All</button>
           </div>
-          <div className="seg" role="group" aria-label="Format">
-            <button
-              className={format === "line-by-line" ? "on" : ""}
-              onClick={() => setFormat("line-by-line")}
-              title="Unified (single column)"
-            >Unified</button>
-            <button
-              className={format === "side-by-side" ? "on" : ""}
-              onClick={() => setFormat("side-by-side")}
-              title="Side-by-side (two columns)"
-            >Split</button>
-          </div>
+          {/* Side-by-side wraps badly on phones; hide the format toggle there
+              and force unified at render time. */}
+          {!isMobile && (
+            <div className="seg" role="group" aria-label="Format">
+              <button
+                className={format === "line-by-line" ? "on" : ""}
+                onClick={() => setFormat("line-by-line")}
+                title="Unified (single column)"
+              >Unified</button>
+              <button
+                className={format === "side-by-side" ? "on" : ""}
+                onClick={() => setFormat("side-by-side")}
+                title="Side-by-side (two columns)"
+              >Split</button>
+            </div>
+          )}
         </div>
       </div>
 
       <div className="diff-body" ref={bodyRef}>
-        <aside className="diff-files" style={{ width: filesPane.size }}>
-          <div className="diff-files-header">
-            <div className="seg" role="group" aria-label="File list view">
-              <button
-                className={fileMode === "list" ? "on" : ""}
-                onClick={() => setFileMode("list")}
-                title="Flat list"
-              >List</button>
-              <button
-                className={fileMode === "tree" ? "on" : ""}
-                onClick={() => setFileMode("tree")}
-                title="Directory tree"
-              >Tree</button>
+        {filesPaneShown && (
+          <aside
+            className={"diff-files" + (isMobile ? " diff-files-drawer" : "")}
+            style={filesPaneStyle}
+          >
+            <div className="diff-files-header">
+              <div className="seg" role="group" aria-label="File list view">
+                <button
+                  className={fileMode === "list" ? "on" : ""}
+                  onClick={() => setFileMode("list")}
+                  title="Flat list"
+                >List</button>
+                <button
+                  className={fileMode === "tree" ? "on" : ""}
+                  onClick={() => setFileMode("tree")}
+                  title="Directory tree"
+                >Tree</button>
+              </div>
+              {fileMode === "tree" && dirPaths.length > 0 && (
+                collapsed.size === 0 ? (
+                  <button
+                    className="ghost small icon-btn"
+                    onClick={collapseAll}
+                    title="Collapse all"
+                    aria-label="Collapse all"
+                  >▸▸</button>
+                ) : (
+                  <button
+                    className="ghost small icon-btn"
+                    onClick={expandAll}
+                    title="Expand all"
+                    aria-label="Expand all"
+                  >▾▾</button>
+                )
+              )}
+              {isMobile && (
+                <button
+                  className="ghost small"
+                  onClick={() => setFilesDrawerOpen(false)}
+                  aria-label="Close file list"
+                  title="Close"
+                  style={{ marginLeft: "auto" }}
+                >✕</button>
+              )}
             </div>
-            {fileMode === "tree" && dirPaths.length > 0 && (
-              collapsed.size === 0 ? (
-                <button
-                  className="ghost small icon-btn"
-                  onClick={collapseAll}
-                  title="Collapse all"
-                  aria-label="Collapse all"
-                >▸▸</button>
+            <div className="diff-files-body">
+              {fileMode === "list" ? (
+                <FileList files={files} selected={selected} onSelect={onSelectFile} />
               ) : (
-                <button
-                  className="ghost small icon-btn"
-                  onClick={expandAll}
-                  title="Expand all"
-                  aria-label="Expand all"
-                >▾▾</button>
-              )
-            )}
-          </div>
-          <div className="diff-files-body">
-            {fileMode === "list" ? (
-              <FileList files={files} selected={selected} onSelect={onSelectFile} />
-            ) : (
-              <FileTreeView
-                root={tree}
-                files={files}
-                selected={selected}
-                collapsed={collapsed}
-                onToggleDir={toggleDir}
-                onSelect={onSelectFile}
-              />
-            )}
-          </div>
-        </aside>
-        <Resizer axis="x" onPointerDown={filesPane.onPointerDown} />
+                <FileTreeView
+                  root={tree}
+                  files={files}
+                  selected={selected}
+                  collapsed={collapsed}
+                  onToggleDir={toggleDir}
+                  onSelect={onSelectFile}
+                />
+              )}
+            </div>
+          </aside>
+        )}
+        {!isMobile && <Resizer axis="x" onPointerDown={filesPane.onPointerDown} />}
+        {isMobile && filesDrawerOpen && (
+          <div
+            className="diff-files-backdrop"
+            onClick={() => setFilesDrawerOpen(false)}
+            aria-hidden
+          />
+        )}
         <div
           ref={contentRef}
           className={"diff-content " + (layout === "all" ? "scroll-all" : "single")}
@@ -223,7 +277,7 @@ export default function DiffTab({ patch }: Props) {
               <FileBlock
                 key={files[selected].path + ":" + selected}
                 file={files[selected]}
-                format={format}
+                format={effectiveFormat}
                 collapsible={false}
               />
             )
@@ -234,7 +288,7 @@ export default function DiffTab({ patch }: Props) {
                 ref={el => setBlockRef(i, el)}
                 data-file-idx={i}
               >
-                <FileBlock file={f} format={format} collapsible={true} />
+                <FileBlock file={f} format={effectiveFormat} collapsible={true} />
               </div>
             ))
           )}

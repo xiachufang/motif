@@ -9,14 +9,11 @@ import TabBar     from "../panels/TabBar";
 import Topbar     from "../panels/Topbar";
 import Resizer    from "../panels/Resizer";
 import { useDragSize } from "../hooks/useDragSize";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { useApp } from "../store/store";
 import {
   appendOutput, clearPty, clearAll,
-  markPromptStarted,
 } from "../store/ptyBuffers";
-import {
-  disposePtyTerminal, disposeAllPtyTerminals,
-} from "../tabs/usePtyTerminal";
 
 function loadBool(key: string, fallback: boolean): boolean {
   try {
@@ -37,6 +34,7 @@ const PtyTab         = lazy(() => import("../tabs/PtyTab"));
 const DiffTab        = lazy(() => import("../tabs/DiffTab"));
 const FilePreviewTab = lazy(() => import("../tabs/FilePreviewTab"));
 const ImageTab       = lazy(() => import("../tabs/ImageTab"));
+const MobileInputDock = lazy(() => import("../panels/MobileInputDock"));
 
 interface Props { sessionName: string }
 
@@ -102,10 +100,6 @@ export default function Workspace({ sessionName }: Props) {
   const clientJoined   = useApp(s => s.clientJoined);
   const clientLeft     = useApp(s => s.clientLeft);
   const setStatus      = useApp(s => s.setStatus);
-  const applyShellBootstrapped = useApp(s => s.applyShellBootstrapped);
-  const applyCommandStarted    = useApp(s => s.applyCommandStarted);
-  const requestFinalizeBlock   = useApp(s => s.requestFinalizeBlock);
-  const applyShellContext      = useApp(s => s.applyShellContext);
   const applyViewOpened        = useApp(s => s.applyViewOpened);
   const applyViewClosed        = useApp(s => s.applyViewClosed);
   const applyViewActiveChanged = useApp(s => s.applyViewActiveChanged);
@@ -134,7 +128,6 @@ export default function Workspace({ sessionName }: Props) {
     // PtyId from the previous session can collide with a fresh one here and
     // leak its old bytes into the new tab. Clear on entry and exit.
     clearAll();
-    disposeAllPtyTerminals();
     seenSeqRef.current.clear();
     seenSeqOrderRef.current = [];
     lastSeqRef.current = 0;
@@ -169,7 +162,6 @@ export default function Workspace({ sessionName }: Props) {
       // immediately rather than waiting for the WS to actually close.
       client.call("session.detach", {}).catch(() => { /* ignore — may not be attached yet */ });
       clearAll();
-    disposeAllPtyTerminals();
     };
   }, [client, sessionName, hydrate, setPage, setStatus]);
 
@@ -219,34 +211,18 @@ export default function Workspace({ sessionName }: Props) {
         case "client.joined": clientJoined({ id: e.params.client_id, since: e.params.since }); break;
         case "client.left":   clientLeft(e.params.client_id); break;
         case "pty.created":   registerPty(e.params.info); break;
-        case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); disposePtyTerminal(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
-        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64), e.params.block_id ?? null, e.params.scope); break;
+        case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
+        case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64)); break;
         case "pty.cwd_changed": updatePtyCwd(e.params.pty_id, e.params.cwd); break;
 
-        // v2 shell-integration: command-edge events drive the topbar
-        // chip + tab-label fg suffix.
+        // v2 shell-integration events still arrive on the wire but the
+        // web UI no longer renders blocks/chips, so we ignore them.
         case "pty.shell_bootstrapped":
-          applyShellBootstrapped(e.params.pty_id, e.params.shell);
-          break;
         case "pty.prompt_started":
-          // PS1 about to (re)paint. Drives the single xterm's synchronous
-          // clear+reset via the listener `boundary` callback (only while
-          // idle — running blocks ignore the boundary).
-          markPromptStarted(e.params.pty_id, e.params.block_id);
-          break;
         case "pty.prompt_ended":
-          // No client-side state to flip — kept on the wire as a phase
-          // notification for any future UI that wants the boundary
-          // signal.
-          break;
         case "pty.command_started":
-          applyCommandStarted(e.params.pty_id, e.params.block_id, e.params.text, e.params.cwd, e.params.started_at);
-          break;
         case "pty.command_finished":
-          requestFinalizeBlock(e.params.pty_id, e.params.block_id, e.params.exit_code ?? null, e.params.finished_at);
-          break;
         case "pty.shell_context":
-          applyShellContext(e.params.pty_id, e.params.ctx);
           break;
 
         case "view.opened":         applyViewOpened(e.params.view); break;
@@ -282,7 +258,6 @@ export default function Workspace({ sessionName }: Props) {
       }
     });
   }, [client, clientJoined, clientLeft, registerPty, removePty, updatePtyCwd,
-      applyShellBootstrapped, applyCommandStarted, requestFinalizeBlock, applyShellContext,
       applyViewOpened, applyViewClosed, applyViewActiveChanged, applyViewMoved,
       setDirChildren, setGit, setStatus]);
 
@@ -348,6 +323,10 @@ export default function Workspace({ sessionName }: Props) {
     })();
   }, [client, activeViewObj, session, viewCache, setViewCache, setStatus]);
 
+  // Pulled out so openFile/openDiff can call it without depending on the
+  // mobile flag at definition time.
+  const isMobileRef = useRef(false);
+
   // ── actions ──
   const openFile = useCallback(async (path: string) => {
     if (!client) return;
@@ -358,6 +337,11 @@ export default function Workspace({ sessionName }: Props) {
         spec: { kind: isImagePath(path) ? "image" : "preview", path } as ViewSpec,
         activate: true,
       });
+      // Auto-collapse the drawer so the freshly-opened tab is fully visible.
+      if (isMobileRef.current) {
+        setFileTreeVisible(false);
+        setGitStatusVisible(false);
+      }
     } catch (e) {
       setStatus(`open failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -375,12 +359,16 @@ export default function Workspace({ sessionName }: Props) {
       );
       if (existing) {
         await client.call("view.activate", { view_id: existing.id });
-        return;
+      } else {
+        await client.call("view.open", {
+          spec: { kind: "diff", staged: false, path: path ?? null } as ViewSpec,
+          activate: true,
+        });
       }
-      await client.call("view.open", {
-        spec: { kind: "diff", staged: false, path: path ?? null } as ViewSpec,
-        activate: true,
-      });
+      if (isMobileRef.current) {
+        setFileTreeVisible(false);
+        setGitStatusVisible(false);
+      }
     } catch (e) {
       setStatus(`diff failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -422,38 +410,70 @@ export default function Workspace({ sessionName }: Props) {
     storageKey: "motif.layout.fileTreeHeight",
   });
 
-  const [sidebarVisible,   setSidebarVisible]   = useState(() => loadBool("motif.layout.sidebarVisible",   true));
+  const isMobile = useIsMobile();
+  useEffect(() => { isMobileRef.current = isMobile; }, [isMobile]);
+
   const [fileTreeVisible,  setFileTreeVisible]  = useState(() => loadBool("motif.layout.fileTreeVisible",  true));
   const [gitStatusVisible, setGitStatusVisible] = useState(() => loadBool("motif.layout.gitStatusVisible", true));
-  useEffect(() => saveBool("motif.layout.sidebarVisible",   sidebarVisible),   [sidebarVisible]);
+  // Sidebar is shown whenever at least one of its sections (file tree, git
+  // status) is visible. There's no separate sidebar toggle anymore — hide
+  // both child panels to hide the sidebar. On mobile the sidebar is collapsed
+  // by default — opening it would obscure the whole content area on first
+  // visit, which surprises new users; the topbar buttons re-open it.
+  const sidebarVisible = fileTreeVisible || gitStatusVisible;
+  useEffect(() => {
+    if (!isMobile) return;
+    setFileTreeVisible(false);
+    setGitStatusVisible(false);
+    // Run once when we cross into mobile (matchMedia change). Stable ids
+    // for setters are React-guaranteed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
+
+  const closeSidebar = useCallback(() => {
+    setFileTreeVisible(false);
+    setGitStatusVisible(false);
+  }, []);
+  // Mobile input dock: visible by default; user can hide via the 📱 topbar
+  // toggle. Choice is persisted to localStorage.
+  const [mobileDockVisible, setMobileDockVisible] = useState(() =>
+    loadBool("motif.layout.mobileDockVisible", true));
   useEffect(() => saveBool("motif.layout.fileTreeVisible",  fileTreeVisible),  [fileTreeVisible]);
   useEffect(() => saveBool("motif.layout.gitStatusVisible", gitStatusVisible), [gitStatusVisible]);
+  useEffect(() => saveBool("motif.layout.mobileDockVisible", mobileDockVisible), [mobileDockVisible]);
+
+  // On mobile we render the sidebar as an absolute overlay drawer (fixed
+  // width, slides in from the left, with a tap-to-dismiss backdrop). On
+  // desktop it stays an inline flex column whose width is drag-resizable.
+  const sidebarStyle = isMobile ? undefined : { width: sidebar.size };
 
   return (
-    <div className="workspace">
+    <div className={"workspace" + (isMobile ? " is-mobile" : "")}>
       <Topbar
         sessionName={sessionName}
-        sidebar={{   visible: sidebarVisible,   toggle: () => setSidebarVisible(v => !v) }}
-        fileTree={{  visible: fileTreeVisible,  toggle: () => setFileTreeVisible(v => !v) }}
-        gitStatus={{ visible: gitStatusVisible, toggle: () => setGitStatusVisible(v => !v) }}
+        fileTree={{   visible: fileTreeVisible,   toggle: () => setFileTreeVisible(v => !v) }}
+        gitStatus={{  visible: gitStatusVisible,  toggle: () => setGitStatusVisible(v => !v) }}
+        mobileDock={{ visible: mobileDockVisible, toggle: () => setMobileDockVisible(v => !v) }}
       />
       <div className="layout">
         {sidebarVisible && (
           <>
             <aside
               ref={sidebarRef}
-              className="sidebar"
-              style={{ width: sidebar.size }}
+              className={"sidebar" + (isMobile ? " sidebar-drawer" : "")}
+              style={sidebarStyle}
             >
               {fileTreeVisible && (
                 <div
                   className="sidebar-section"
-                  style={gitStatusVisible ? { height: fileTreeH.size, flex: "0 0 auto" } : { flex: "1 1 auto" }}
+                  style={!isMobile && gitStatusVisible
+                    ? { height: fileTreeH.size, flex: "0 0 auto" }
+                    : { flex: "1 1 auto" }}
                 >
                   <FileTree onOpen={openFile} onExpand={onExpandDir} />
                 </div>
               )}
-              {fileTreeVisible && gitStatusVisible && (
+              {!isMobile && fileTreeVisible && gitStatusVisible && (
                 <Resizer axis="y" onPointerDown={fileTreeH.onPointerDown} />
               )}
               {gitStatusVisible && (
@@ -465,7 +485,14 @@ export default function Workspace({ sessionName }: Props) {
                 </div>
               )}
             </aside>
-            <Resizer axis="x" onPointerDown={sidebar.onPointerDown} />
+            {!isMobile && <Resizer axis="x" onPointerDown={sidebar.onPointerDown} />}
+            {isMobile && (
+              <div
+                className="sidebar-backdrop"
+                onClick={closeSidebar}
+                aria-hidden
+              />
+            )}
           </>
         )}
         <main className="content">
@@ -503,6 +530,17 @@ export default function Workspace({ sessionName }: Props) {
               );
             })}
           </div>
+          {mobileDockVisible && (
+            activePtyId ? (
+              <Suspense fallback={null}>
+                <MobileInputDock ptyId={activePtyId} />
+              </Suspense>
+            ) : (
+              <div className="mdock mdock-empty muted small">
+                open a PTY tab to use the mobile input dock
+              </div>
+            )
+          )}
         </main>
       </div>
     </div>
