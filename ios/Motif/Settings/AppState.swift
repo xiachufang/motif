@@ -26,14 +26,22 @@ final class AppState {
     private var server: LocalHTTPServer?
 
     init() {
-        self.tailscale = TailscaleManager()
+        let ts = TailscaleManager()
+        self.tailscale = ts
+        // The proxy reads the motifd target lazily on each request, so the
+        // user can change it in Settings without restarting the server.
+        self.proxy = TailscaleProxy(manager: ts) {
+            UserDefaults.standard.string(forKey: "motifdAddress") ?? ""
+        }
     }
+
+    private let proxy: TailscaleProxy
 
     func startServerIfNeeded() async {
         if case .running = serverState { return }
         if server != nil { return }
 
-        let s = LocalHTTPServer()
+        let s = LocalHTTPServer(proxy: proxy)
         server = s
         do {
             let port = try await s.start()

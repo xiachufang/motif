@@ -139,6 +139,12 @@ final class TailscaleManager {
         return conn
     }
 
+    /// Internal helper for TailscaleProxy to grab the C handle for direct
+    /// `tailscale_dial` use (we need the raw fd for bidi byte pumping).
+    func currentTailscaleHandle() async -> Int32? {
+        await node?.tailscale
+    }
+
     enum DialError: Error, CustomStringConvertible {
         case notRunning
         var description: String { "Tailscale node not running" }

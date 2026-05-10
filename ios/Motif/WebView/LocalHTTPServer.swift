@@ -15,6 +15,7 @@ actor LocalHTTPServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "io.allsunday.motif.localhttp")
     private let webRoot: URL
+    private let proxy: TailscaleProxy?
 
     enum ServerError: Error, CustomStringConvertible {
         case missingWebBundle
@@ -30,7 +31,8 @@ actor LocalHTTPServer {
         }
     }
 
-    init() {
+    init(proxy: TailscaleProxy? = nil) {
+        self.proxy = proxy
         if let url = Bundle.main.url(forResource: "web", withExtension: nil) {
             self.webRoot = url
         } else {
@@ -142,7 +144,15 @@ actor LocalHTTPServer {
 
         let path = pathOnly(from: target)
         if isProxyPath(path) {
-            sendProxyPlaceholder(connection: connection)
+            if let proxy {
+                // Hand the connection off to the tsnet proxy along with the
+                // bytes we already read (request head + maybe partial body).
+                Task.detached {
+                    await proxy.handle(connection: connection, pendingHead: buffer)
+                }
+            } else {
+                sendProxyPlaceholder(connection: connection)
+            }
             return
         }
 
