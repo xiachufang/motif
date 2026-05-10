@@ -5,3 +5,8 @@ pub mod client;
 pub mod palette;
 pub mod raw_pty;
 pub mod transport;
+
+/// Re-exported so callers (motif-tui, motif-cast) can reach
+/// `motif_net::motif_tailscale::*` for tsnet-aware commands without
+/// adding a separate Cargo dependency.
+pub use motif_net;

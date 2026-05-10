@@ -37,6 +37,9 @@ tracing-subscriber = { workspace = true }
 [features]
 default   = []
 # Pass-through: motif-client owns the optional motif-net (with tailscale)
-# dep tree. Build motif-tui with --features tailscale to enable
-# `--via tailscale://hostname[:port]`.
-tailscale = ["motif-client/tailscale"]
+# dep tree.
+tailscale         = ["motif-client/tailscale"]
+# `tailscale-bundled`: real tsnet — needed for `motif-tui list-servers`
+# (LocalAPI-driven discovery) and any actual `--via tailscale://...`
+# traffic. Requires Go on the build host.
+tailscale-bundled = ["tailscale", "motif-client/tailscale-bundled"]
