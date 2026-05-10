@@ -189,27 +189,37 @@ final class TailscaleManager {
         await node?.tailscale
     }
 
-    /// Build a URLSession that routes all traffic through this tsnet node's
-    /// HTTP CONNECT loopback proxy. tsnet's loopback listener serves both
-    /// SOCKS5 and HTTP CONNECT on the same port. Going via CONNECT (not
-    /// SOCKS5) means URLSession passes the hostname through to the proxy
-    /// instead of trying to resolve it locally — so MagicDNS names like
-    /// `*.ts.net` resolve correctly inside tsnet and we don't need to
-    /// pre-substitute the IP ourselves.
-    func makeURLSession() async throws -> URLSession {
+    /// Build a URLSessionConfiguration that routes all traffic through this
+    /// tsnet node's HTTP CONNECT loopback proxy. tsnet's loopback listener
+    /// serves both SOCKS5 and HTTP CONNECT on the same port. Going via
+    /// CONNECT (not SOCKS5) means URLSession passes the hostname through to
+    /// the proxy instead of resolving it locally — so MagicDNS names like
+    /// `*.ts.net` resolve correctly inside tsnet.
+    ///
+    /// Returns a configuration so the caller can build a URLSession with
+    /// its own delegate (URLSession's delegate is read-only after init).
+    func makeURLSessionConfiguration() async throws -> URLSessionConfiguration {
         guard let node else { throw DialError.notRunning }
         let loopback = try await node.loopback()
         guard let ipStr = loopback.ip,
               let port = loopback.port,
               let portU16 = UInt16(exactly: port) else {
+            log.error("loopback returned bad address: \(String(describing: loopback), privacy: .public)")
             throw DialError.notRunning
         }
+        log.notice("tsnet loopback proxy at \(ipStr, privacy: .public):\(portU16, privacy: .public) (cred=\(loopback.proxyCredential.prefix(6), privacy: .public)…)")
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ipStr),
                                             port: NWEndpoint.Port(rawValue: portU16)!)
         let proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
         proxy.applyCredential(username: "tsnet", password: loopback.proxyCredential)
         let config = URLSessionConfiguration.default
         config.proxyConfigurations = [proxy]
+        return config
+    }
+
+    /// Convenience wrapper for callers that don't need a URLSessionDelegate.
+    func makeURLSession() async throws -> URLSession {
+        let config = try await makeURLSessionConfiguration()
         return URLSession(configuration: config)
     }
 

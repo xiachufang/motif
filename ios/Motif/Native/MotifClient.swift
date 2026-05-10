@@ -32,6 +32,9 @@ final class MotifClient {
 
     private var rpc: RpcClient?
     private var eventTask: Task<Void, Never>?
+    /// Strong reference so the URLSession delegate stays alive for the
+    /// lifetime of the connection.
+    private var wsDelegate: WSLogDelegate?
     /// Per-PTY output multiplexer. One AsyncStream per pty_id, fed from
     /// the central event task.
     private var outputStreams: [String: (AsyncStream<Data>, AsyncStream<Data>.Continuation)] = [:]
@@ -41,17 +44,22 @@ final class MotifClient {
         if case .attached = state { return }
         state = .connecting
 
-        // Build a URLSession that proxies through tsnet's SOCKS5 loopback,
-        // then dial motifd's WS endpoint directly. The Authorization
-        // header carries the per-server Bearer token motifd expects on
-        // the upgrade.
-        let urlSession: URLSession
+        // Build a URLSession config that proxies through tsnet's HTTP
+        // CONNECT loopback, then dial motifd's WS endpoint directly. The
+        // Authorization header carries the per-server Bearer token motifd
+        // expects on the upgrade. We attach a WSLogDelegate so we can see
+        // the upgrade response code, headers, and any close reasons.
+        let urlSessionConfig: URLSessionConfiguration
         do {
-            urlSession = try await tailscale.makeURLSession()
+            urlSessionConfig = try await tailscale.makeURLSessionConfiguration()
         } catch {
+            log.error("tsnet not ready: \(String(describing: error), privacy: .public)")
             state = .failed(message: "tsnet not ready: \(error)")
             return
         }
+        let delegate = WSLogDelegate()
+        self.wsDelegate = delegate
+        let urlSession = URLSession(configuration: urlSessionConfig, delegate: delegate, delegateQueue: nil)
 
         // tsnet's HTTP CONNECT proxy passes hostnames through, so MagicDNS
         // (`*.ts.net`) resolves on the proxy side. As a safety net for any
@@ -63,9 +71,11 @@ final class MotifClient {
         }
 
         guard let url = URL(string: "ws://\(resolvedHost):\(server.port)/ws") else {
+            log.error("bad server URL: \(resolvedHost, privacy: .public):\(server.port, privacy: .public)")
             state = .failed(message: "bad server URL: \(resolvedHost):\(server.port)")
             return
         }
+        log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
         var request = URLRequest(url: url)
         request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
 
@@ -73,11 +83,13 @@ final class MotifClient {
         do {
             try await rpc.connect(urlSession: urlSession, request: request)
         } catch {
+            log.error("ws connect: \(String(describing: error), privacy: .public)")
             state = .failed(message: "ws connect: \(error)")
             return
         }
         self.rpc = rpc
         state = .connected
+        log.notice("connected to motifd as \(server.name, privacy: .public)")
         eventTask = Task { [weak self] in
             guard let stream = self?.rpc?.events else { return }
             for await event in stream {

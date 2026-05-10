@@ -23,6 +23,42 @@ private struct RpcEnvelope<P: Encodable>: Encodable {
 
 private struct RpcEmpty: Encodable {}
 
+/// URLSession delegate that captures WebSocket lifecycle events and
+/// surfaces them via OSLog. URLSession owns this strongly while it's
+/// active, so we don't need to retain it ourselves once it's installed.
+final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+    private let log = Logger(subsystem: "io.allsunday.motif", category: "RpcClient.ws")
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol proto: String?
+    ) {
+        log.notice("ws didOpen (protocol=\(proto ?? "(none)", privacy: .public))")
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "(none)"
+        log.error("ws didClose code=\(closeCode.rawValue, privacy: .public) reason=\(reasonStr, privacy: .public)")
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            log.error("ws task didComplete error: \(String(describing: error), privacy: .public)")
+        } else {
+            log.notice("ws task didComplete (no error)")
+        }
+        if let resp = task.response as? HTTPURLResponse {
+            log.notice("ws upgrade response: HTTP \(resp.statusCode, privacy: .public); headers=\(resp.allHeaderFields.description, privacy: .public)")
+        }
+    }
+}
+
 actor RpcClient {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "RpcClient")
 
@@ -64,14 +100,22 @@ actor RpcClient {
     }
 
     /// Open a WebSocket. The caller supplies a configured URLSession (so the
-    /// caller can route through tsnet's SOCKS5 proxy) and a URLRequest with
-    /// any pre-set headers (Authorization etc).
+    /// caller can route through tsnet's HTTP CONNECT proxy) and a URLRequest
+    /// with any pre-set headers (Authorization etc).
     func connect(urlSession: URLSession, request: URLRequest) async throws {
+        let headerDigest = (request.allHTTPHeaderFields ?? [:])
+            .map { "\($0.key)=\($0.value.prefix(40))" }
+            .joined(separator: " | ")
+        log.notice("ws.opening \(request.url?.absoluteString ?? "?", privacy: .public) headers={\(headerDigest, privacy: .public)}")
+        if let proxy = urlSession.configuration.proxyConfigurations.first {
+            log.notice("ws.proxy=\(String(describing: proxy), privacy: .public)")
+        } else {
+            log.notice("ws.proxy=(none)")
+        }
         let task = urlSession.webSocketTask(with: request)
         self.task = task
         task.resume()
         receiveTask = Task { await self.receiveLoop() }
-        log.notice("rpc connected: \(request.url?.absoluteString ?? "?", privacy: .public)")
     }
 
     func close() {
@@ -101,12 +145,14 @@ actor RpcClient {
             throw RpcError.decode("encode: \(error)")
         }
 
+        log.debug("rpc.send #\(id, privacy: .public) \(method, privacy: .public) (\(data.count, privacy: .public)B)")
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             self.pending[id] = cont
-            Task { [weak self] in
+            Task { [weak self, log] in
                 do {
                     try await task.send(.string(String(data: data, encoding: .utf8) ?? ""))
                 } catch {
+                    log.error("rpc.send #\(id, privacy: .public) \(method, privacy: .public) failed: \(String(describing: error), privacy: .public)")
                     if let self {
                         await self.fail(id: id, error: RpcError.transport("send: \(error)"))
                     }
@@ -153,19 +199,22 @@ actor RpcClient {
 
     private func receiveLoop() async {
         guard let task else { return }
+        log.notice("rpc.recvLoop started")
         while !Task.isCancelled {
             do {
                 let message = try await task.receive()
                 switch message {
                 case .string(let s):
+                    log.debug("rpc.recv text \(s.count, privacy: .public) chars")
                     if let d = s.data(using: .utf8) { handleFrame(d) }
                 case .data(let d):
+                    log.debug("rpc.recv bin \(d.count, privacy: .public)B")
                     handleFrame(d)
                 @unknown default: continue
                 }
             } catch {
-                if Task.isCancelled { return }
-                log.error("rpc recv: \(String(describing: error), privacy: .public)")
+                if Task.isCancelled { log.notice("rpc.recvLoop cancelled"); return }
+                log.error("rpc.recvLoop error: \(String(describing: error), privacy: .public)")
                 // Cascade-reject everything in flight, finish event stream.
                 for cont in pending.values { cont.resume(throwing: RpcError.transport("\(error)")) }
                 pending.removeAll()
@@ -174,6 +223,7 @@ actor RpcClient {
                 return
             }
         }
+        log.notice("rpc.recvLoop exited")
     }
 
     private func handleFrame(_ data: Data) {
