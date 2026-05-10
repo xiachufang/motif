@@ -8,8 +8,6 @@ struct MotifApp: App {
         WindowGroup {
             ContentView()
                 .environment(appState)
-                .preferredColorScheme(.dark)
-                .ignoresSafeArea(.keyboard, edges: .bottom)
         }
     }
 }

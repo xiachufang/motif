@@ -51,9 +51,9 @@ final class MotifClient {
         self.rpc = rpc
         state = .connected
         eventTask = Task { [weak self] in
-            guard let stream = await self?.rpc?.events else { return }
+            guard let stream = self?.rpc?.events else { return }
             for await event in stream {
-                await self?.handleEvent(event)
+                self?.handleEvent(event)
             }
         }
     }

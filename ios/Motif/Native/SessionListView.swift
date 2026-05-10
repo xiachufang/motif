@@ -1,9 +1,11 @@
 import SwiftUI
+import TalkerCommonRouter
 
-/// Browse / create / attach to motif sessions. After attach, the parent
-/// SessionView takes over and shows the PTY surface.
+/// Browse / create / attach to motif sessions. After attach, push the
+/// /session route so SessionView takes over.
 struct SessionListView: View {
     @Environment(MotifClient.self) private var motif
+    @Environment(CmRouter.self) private var router
 
     @State private var loading: Bool = false
     @State private var error: String?
@@ -89,6 +91,7 @@ struct SessionListView: View {
         defer { attaching = nil }
         do {
             try await motif.attach(sessionName: name)
+            router.push(CmRouterPath("/session", ["name": name]))
         } catch {
             self.error = "attach \(name): \(error)"
         }
@@ -103,6 +106,7 @@ struct SessionListView: View {
             _ = try await motif.createSession(name: name, workdir: nil)
             try await motif.attach(sessionName: name)
             creatingName = ""
+            router.push(CmRouterPath("/session", ["name": name]))
         } catch {
             self.error = "create \(name): \(error)"
         }
