@@ -244,12 +244,17 @@ final class TailscaleManager {
 
     private static func toDiscovered(_ p: IpnState.PeerStatus) -> DiscoveredPeer {
         let ipv4 = p.TailscaleIPs?.first(where: { $0.contains(".") })
+        // motif-server names itself `motifd-<sanitized hostname>` (or just
+        // `motifd`) by default — see default_ts_hostname() in
+        // crates/motif-server/src/main.rs. Anything else (including this
+        // iOS app's own `motif-ios` hostname) shouldn't surface as a
+        // motifd target.
         let lower = p.HostName.lowercased()
         return DiscoveredPeer(
             hostname: p.HostName,
             dnsName: p.DNSName,
             primaryIP: ipv4,
-            isLikelyMotifd: lower.hasPrefix("motifd") || lower.contains("motif"),
+            isLikelyMotifd: lower == "motifd" || lower.hasPrefix("motifd-"),
             isOnline: p.Online
         )
     }
