@@ -76,6 +76,7 @@ final class MotifClient {
             return
         }
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
+        FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
         var request = URLRequest(url: url)
         request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
 
@@ -84,12 +85,14 @@ final class MotifClient {
             try await rpc.connect(urlSession: urlSession, request: request)
         } catch {
             log.error("ws connect: \(String(describing: error), privacy: .public)")
+            FileLog.note("MotifClient", "ws connect failed: \(error)")
             state = .failed(message: "ws connect: \(error)")
             return
         }
         self.rpc = rpc
         state = .connected
         log.notice("connected to motifd as \(server.name, privacy: .public)")
+        FileLog.note("MotifClient", "ws task resumed (state=connected)")
         eventTask = Task { [weak self] in
             guard let stream = self?.rpc?.events else { return }
             for await event in stream {

@@ -163,8 +163,10 @@ final class TailscaleManager {
         do {
             let ips = try await node.addrs()
             state = .running(ipv4: ips.ip4, ipv6: ips.ip6)
+            FileLog.note("Tailscale", "running ipv4=\(ips.ip4 ?? "nil") ipv6=\(ips.ip6 ?? "nil")")
         } catch {
             log.error("addrs failed: \(String(describing: error), privacy: .public)")
+            FileLog.note("Tailscale", "addrs failed: \(error)")
         }
     }
 
@@ -194,14 +196,12 @@ final class TailscaleManager {
     }
 
     /// Build a URLSessionConfiguration that routes all traffic through this
-    /// tsnet node's HTTP CONNECT loopback proxy. tsnet's loopback listener
-    /// serves both SOCKS5 and HTTP CONNECT on the same port. Going via
-    /// CONNECT (not SOCKS5) means URLSession passes the hostname through to
-    /// the proxy instead of resolving it locally — so MagicDNS names like
-    /// `*.ts.net` resolve correctly inside tsnet.
-    ///
-    /// Returns a configuration so the caller can build a URLSession with
-    /// its own delegate (URLSession's delegate is read-only after init).
+    /// tsnet node's loopback SOCKS5 proxy. URLSession's CONNECT-proxy path
+    /// turns out to swallow plain `ws://` targets with no upgrade response
+    /// (CONNECT historically tunnels TLS); SOCKS5 has neither restriction.
+    /// We pair this with `resolveTailnetHost` so MagicDNS names get
+    /// rewritten to a 100.x IP before the SOCKS5 dial — URLSession resolves
+    /// hostnames locally for SOCKS5.
     func makeURLSessionConfiguration() async throws -> URLSessionConfiguration {
         guard let node else { throw DialError.notRunning }
         let loopback = try await node.loopback()
@@ -212,9 +212,10 @@ final class TailscaleManager {
             throw DialError.notRunning
         }
         log.notice("tsnet loopback proxy at \(ipStr, privacy: .public):\(portU16, privacy: .public) (cred=\(loopback.proxyCredential.prefix(6), privacy: .public)…)")
+        FileLog.note("Tailscale", "loopback socks5 \(ipStr):\(portU16) cred=\(loopback.proxyCredential.prefix(6))…")
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ipStr),
                                             port: NWEndpoint.Port(rawValue: portU16)!)
-        let proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
+        let proxy = ProxyConfiguration(socksv5Proxy: endpoint)
         proxy.applyCredential(username: "tsnet", password: loopback.proxyCredential)
         let config = URLSessionConfiguration.default
         config.proxyConfigurations = [proxy]
@@ -342,6 +343,9 @@ final class TailscaleManager {
     /// the TailscaleKit MessageConsumer protocol. It hops back to MainActor
     /// to mutate `state` on the manager.
     fileprivate func busDidReceive(notify: Ipn.Notify) {
+        if let s = notify.State {
+            FileLog.note("Tailscale", "ipn=\(s) self=\(state)")
+        }
         // Diagnostic: log every Notify field present so we can see exactly
         // what tsnet on iOS emits during the handshake. Trim down once the
         // login flow is verified working end-to-end.

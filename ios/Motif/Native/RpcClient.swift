@@ -35,6 +35,7 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
         didOpenWithProtocol proto: String?
     ) {
         log.notice("ws didOpen (protocol=\(proto ?? "(none)", privacy: .public))")
+        FileLog.note("ws", "didOpen protocol=\(proto ?? "(none)")")
     }
 
     func urlSession(
@@ -45,16 +46,24 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
     ) {
         let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "(none)"
         log.error("ws didClose code=\(closeCode.rawValue, privacy: .public) reason=\(reasonStr, privacy: .public)")
+        FileLog.note("ws", "didClose code=\(closeCode.rawValue) reason=\(reasonStr)")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
             log.error("ws task didComplete error: \(String(describing: error), privacy: .public)")
+            FileLog.note("ws", "didComplete error=\(error)")
         } else {
             log.notice("ws task didComplete (no error)")
+            FileLog.note("ws", "didComplete (no error)")
         }
         if let resp = task.response as? HTTPURLResponse {
             log.notice("ws upgrade response: HTTP \(resp.statusCode, privacy: .public); headers=\(resp.allHeaderFields.description, privacy: .public)")
+            FileLog.note("ws", "upgrade HTTP \(resp.statusCode); headers=\(resp.allHeaderFields)")
+        } else if let r = task.response {
+            FileLog.note("ws", "upgrade non-HTTP response: \(r)")
+        } else {
+            FileLog.note("ws", "no upgrade response on task")
         }
     }
 }
@@ -107,6 +116,7 @@ actor RpcClient {
             .map { "\($0.key)=\($0.value.prefix(40))" }
             .joined(separator: " | ")
         log.notice("ws.opening \(request.url?.absoluteString ?? "?", privacy: .public) headers={\(headerDigest, privacy: .public)}")
+        FileLog.note("RpcClient", "ws.opening \(request.url?.absoluteString ?? "?") headers={\(headerDigest)}")
         if let proxy = urlSession.configuration.proxyConfigurations.first {
             log.notice("ws.proxy=\(String(describing: proxy), privacy: .public)")
         } else {
@@ -153,6 +163,7 @@ actor RpcClient {
                     try await task.send(.string(String(data: data, encoding: .utf8) ?? ""))
                 } catch {
                     log.error("rpc.send #\(id, privacy: .public) \(method, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                    FileLog.note("RpcClient", "send #\(id) \(method) failed: \(error)")
                     if let self {
                         await self.fail(id: id, error: RpcError.transport("send: \(error)"))
                     }
