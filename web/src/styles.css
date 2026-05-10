@@ -84,7 +84,11 @@ a { color: var(--accent); }
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 2rem 1rem;
+  padding:
+    calc(2rem + env(safe-area-inset-top, 0px))
+    calc(1rem + env(safe-area-inset-right, 0px))
+    calc(2rem + env(safe-area-inset-bottom, 0px))
+    calc(1rem + env(safe-area-inset-left, 0px));
 }
 .card {
   background: var(--panel);
@@ -143,7 +147,11 @@ a { color: var(--accent); }
 .topbar {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  padding: 0.5em 0.9em;
+  padding:
+    calc(0.5em + env(safe-area-inset-top, 0px))
+    calc(0.9em + env(safe-area-inset-right, 0px))
+    0.5em
+    calc(0.9em + env(safe-area-inset-left, 0px));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -173,7 +181,18 @@ a { color: var(--accent); }
   color: var(--muted);
   border-radius: 3px;
 }
-.layout { display: flex; flex: 1 1 auto; min-height: 0; position: relative; }
+.layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  /* Push sidebar/content past horizontal safe-area (landscape notch) — the
+     drawer below is `position: absolute; left: 0`, which on a padded
+     containing block resolves to the inner padding edge, so the drawer
+     also lands clear of the notch. */
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
 .sidebar {
   /* width is set inline by Workspace via useDragSize */
   flex: 0 0 auto;
@@ -879,7 +898,11 @@ button.icon-btn {
   background: rgba(0, 0, 0, 0.55);
   display: grid;
   place-items: center;
-  padding: 1rem;
+  padding:
+    calc(1rem + env(safe-area-inset-top, 0px))
+    calc(1rem + env(safe-area-inset-right, 0px))
+    calc(1rem + env(safe-area-inset-bottom, 0px))
+    calc(1rem + env(safe-area-inset-left, 0px));
   z-index: 50;
 }
 .mdock-modal {
@@ -1019,7 +1042,14 @@ button.icon-btn {
     font-size: 16px;
   }
 
-  .topbar { padding: 0.4em 0.6em; gap: 0.4em; }
+  .topbar {
+    padding:
+      calc(0.4em + env(safe-area-inset-top, 0px))
+      calc(0.6em + env(safe-area-inset-right, 0px))
+      0.4em
+      calc(0.6em + env(safe-area-inset-left, 0px));
+    gap: 0.4em;
+  }
   .topbar .row.tight { gap: 0.3em; }
   /* Compact path glyph on phones — the directory itself is what matters,
      and the leading 📂 emoji wastes precious horizontal space. */
