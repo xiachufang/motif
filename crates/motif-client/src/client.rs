@@ -1,4 +1,4 @@
-//! WebSocket + JSON-RPC client used by all `motif-tui` subcommands.
+//! WebSocket + JSON-RPC client shared by `motif-tui` and `motif-cast`.
 //!
 //! Single-reader architecture: a dedicated tokio task drives `ws.next()`,
 //! routes Response frames to per-call `oneshot` channels by id, and pushes
@@ -43,7 +43,13 @@ pub struct Client {
     ws_tx:    WsSink,
     next_id:  AtomicU64,
     pending:  PendingMap,
-    notif_rx: mpsc::UnboundedReceiver<Notification>,
+    /// `None` once the caller has taken the notification stream out via
+    /// [`Client::take_notifications`]. Lets `motif-cast` move the receiver
+    /// into its own select loop while keeping the rest of `Client` available
+    /// (under `Arc<Mutex<…>>`) for `pty.write` / `pty.resize` / `session.*`
+    /// calls. In-place users (`motif-tui`) just keep calling
+    /// [`Client::recv_notification`] and never touch this branch.
+    notif_rx: Option<mpsc::UnboundedReceiver<Notification>>,
     reader:   JoinHandle<()>,
 }
 
@@ -77,9 +83,17 @@ impl Client {
             ws_tx,
             next_id: AtomicU64::new(1),
             pending,
-            notif_rx,
+            notif_rx: Some(notif_rx),
             reader,
         })
+    }
+
+    /// Move the notification stream out so it can be polled independently of
+    /// the rest of the `Client` (which the caller might want to put behind a
+    /// shared `Arc<Mutex<…>>` for `call`s). After this returns `Some`,
+    /// [`Client::recv_notification`] yields `None` immediately.
+    pub fn take_notifications(&mut self) -> Option<mpsc::UnboundedReceiver<Notification>> {
+        self.notif_rx.take()
     }
 
     /// Send a request, await its response. While we wait, server-pushed
@@ -116,9 +130,13 @@ impl Client {
     }
 
     /// Wait for the next server-pushed notification. Returns `None` once the
-    /// connection has closed *and* the queue has drained.
+    /// connection has closed *and* the queue has drained, or immediately if
+    /// the receiver has been moved out via [`Client::take_notifications`].
     pub async fn recv_notification(&mut self) -> Option<Notification> {
-        self.notif_rx.recv().await
+        match self.notif_rx.as_mut() {
+            Some(rx) => rx.recv().await,
+            None     => None,
+        }
     }
 }
 

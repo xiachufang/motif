@@ -1,0 +1,23 @@
+[package]
+name        = "motif-cast"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Share a local terminal session with motifd (one-shot host CLI)"
+
+[[bin]]
+name = "motif-cast"
+path = "src/main.rs"
+
+[dependencies]
+motif-proto        = { path = "../motif-proto" }
+motif-client       = { path = "../motif-client" }
+
+tokio              = { workspace = true }
+serde_json         = { workspace = true }
+
+clap               = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }

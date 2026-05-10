@@ -1356,6 +1356,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "motif-cast"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "motif-client",
+ "motif-proto",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "motif-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "crossterm",
+ "futures-util",
+ "libc",
+ "motif-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "which",
+]
+
+[[package]]
 name = "motif-proto"
 version = "0.1.0"
 dependencies = [
@@ -1419,7 +1453,7 @@ dependencies = [
  "clap",
  "crossterm",
  "futures-util",
- "libc",
+ "motif-client",
  "motif-proto",
  "motif-tailscale",
  "ratatui",
@@ -1427,13 +1461,10 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "tui-term",
- "url",
  "vt100",
- "which",
 ]
 
 [[package]]

@@ -1,10 +1,9 @@
 //! Motif TUI client library.
 
-pub mod client;
-pub mod palette;
 pub mod pty_view;
-pub mod transport;
 pub mod ui;
+
+pub use motif_client::{client, palette, transport};
 
 use std::path::{Path, PathBuf};
 
