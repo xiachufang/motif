@@ -174,6 +174,7 @@ pub async fn cmd_attach(
 pub async fn cmd_list_servers(prefix: &str) -> anyhow::Result<()> {
     use motif_client::motif_net::motif_tailscale::TsServer;
     use motif_client::transport::default_client_ts_options;
+    use std::io::Write;
 
     let opts = default_client_ts_options();
     let mut server = TsServer::new(opts).context("tsnet init")?;
@@ -182,20 +183,39 @@ pub async fn cmd_list_servers(prefix: &str) -> anyhow::Result<()> {
     peers.retain(|p| p.hostname.starts_with(prefix));
     if peers.is_empty() {
         println!("No peers matching {prefix:?} found in this tailnet.");
-        return Ok(());
+    } else {
+        peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+        println!("{:<40} {:<18} {:<7} {}", "HOSTNAME", "TAILNET IP", "ONLINE", "OS");
+        for p in peers {
+            println!(
+                "{:<40} {:<18} {:<7} {}",
+                p.hostname,
+                p.ip,
+                if p.online { "yes" } else { "no" },
+                p.os,
+            );
+        }
     }
-    peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
-    println!("{:<40} {:<18} {:<7} {}", "HOSTNAME", "TAILNET IP", "ONLINE", "OS");
-    for p in peers {
-        println!(
-            "{:<40} {:<18} {:<7} {}",
-            p.hostname,
-            p.ip,
-            if p.online { "yes" } else { "no" },
-            p.os,
-        );
-    }
-    Ok(())
+
+    // Bypass the tokio runtime + libtailscale Drop dance on shutdown.
+    // - The log-capture spawn_blocking task is parked on a pipe `read`
+    //   that only EOFs once libtailscale closes its logfd, which only
+    //   happens during `tailscale_close`.
+    // - `tailscale_close` is a synchronous Go-side teardown that can
+    //   block for tens of seconds (especially with non-ephemeral state
+    //   on a flaky network).
+    // - tokio's multi-threaded runtime drop waits for spawn_blocking
+    //   tasks to finish, so the two together can keep the process alive
+    //   well past when we have the user's answer.
+    //
+    // This is a one-shot CLI flow: tsnet's persistent state was already
+    // synced to disk during `up()`, the netmap snapshot we needed is
+    // printed, and the OS will reclaim fds + memory on exit. Skipping
+    // graceful close here matches the typical Rust+Go CGo pattern for
+    // short-lived tools.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(0);
 }
 
 #[cfg(not(feature = "tailscale-bundled"))]
