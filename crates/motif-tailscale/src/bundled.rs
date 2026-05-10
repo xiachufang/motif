@@ -115,9 +115,13 @@ impl TsServer {
     pub async fn list_peers(&self) -> Result<Vec<TsPeer>, TsError> {
         let lb = self.loopback.as_ref()
             .ok_or_else(|| TsError::Native("up() must be called before list_peers".into()))?;
+        eprintln!("[list_peers] calling fetch_localapi");
         let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
+        eprintln!("[list_peers] fetch ok body_len={}", raw.len());
         let status: StatusJson = serde_json::from_slice(&raw)
             .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))?;
+        eprintln!("[list_peers] json parsed peer_count={}",
+            status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
         let mut peers = Vec::with_capacity(status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
         if let Some(m) = status.peer {
             for (_pubkey, p) in m {
@@ -200,6 +204,7 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
     let body_start = buf.windows(4).position(|w| w == b"\r\n\r\n")
         .map(|i| i + 4)
         .ok_or_else(|| TsError::Native("LocalAPI: no header/body separator".into()))?;
+    eprintln!("[fetch_localapi] body_start={body_start} body_len={}", buf.len() - body_start);
     Ok(buf[body_start..].to_vec())
 }
 
