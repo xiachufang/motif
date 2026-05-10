@@ -180,10 +180,15 @@ struct ServerEditSheet: View {
                     TextField("port", text: $portText)
                         .keyboardType(.numberPad)
                 }
-                Section("Token") {
-                    SecureField("motifd token", text: $token)
+                Section {
+                    SecureField("motifd token (optional)", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Token")
+                } footer: {
+                    Text("Required only if motifd was started with a non-empty token. Leave blank for an unauthenticated server.")
+                        .font(.caption2)
                 }
             }
             .navigationTitle(isNew ? "Add Server" : "Edit Server")
@@ -319,8 +324,7 @@ struct ServerEditSheet: View {
     private var isValid: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty &&
         !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-        UInt16(portText) != nil &&
-        !token.trimmingCharacters(in: .whitespaces).isEmpty
+        UInt16(portText) != nil
     }
 
     private func hydrate() {
