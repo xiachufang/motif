@@ -16,6 +16,7 @@ final class AppState {
     private(set) var serverState: ServerState = .starting
     let tailscale: TailscaleManager
     let servers: MotifServerStore
+    let motif: MotifClient = MotifClient()
 
     /// Show the Settings sheet on the WebView.
     var isShowingSettings: Bool = false

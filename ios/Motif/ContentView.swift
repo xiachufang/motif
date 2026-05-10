@@ -31,9 +31,9 @@ struct ContentView: View {
                 if appState.servers.activeServer == nil {
                     WelcomeView()
                 } else {
-                    WebViewContainer(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
+                    NativeRoot(localPort: port)
                         .id(appState.webViewReloadKey)
-                        .ignoresSafeArea(.container, edges: [.top, .horizontal])
+                        .environment(appState.motif)
                 }
             }
 
