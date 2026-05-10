@@ -245,15 +245,28 @@ private struct ServerEditSheet: View {
     let target: ServerEdit
     let onSave: (MotifServer) -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
 
     @State private var name: String = ""
     @State private var host: String = ""
     @State private var portText: String = "7777"
     @State private var token: String = ""
+    @State private var discovered: [TailscaleManager.DiscoveredPeer] = []
+    @State private var discoveryState: DiscoveryState = .idle
+
+    enum DiscoveryState: Equatable {
+        case idle
+        case loading
+        case loaded(count: Int)
+        case unavailable(reason: String)
+    }
 
     var body: some View {
         NavigationStack {
             Form {
+                if isNew {
+                    discoverySection
+                }
                 Section("Name") {
                     TextField("e.g. Dev box", text: $name)
                         .autocorrectionDisabled()
@@ -284,7 +297,96 @@ private struct ServerEditSheet: View {
                 }
             }
             .onAppear { hydrate() }
+            .task(id: isNew) {
+                if isNew { await loadDiscovery() }
+            }
         }
+    }
+
+    @ViewBuilder
+    private var discoverySection: some View {
+        Section {
+            switch discoveryState {
+            case .idle, .loading:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning tailnet…").foregroundStyle(.secondary).font(.footnote)
+                }
+            case .unavailable(let reason):
+                Text(reason).font(.footnote).foregroundStyle(.secondary)
+            case .loaded(let count):
+                if count == 0 {
+                    Text("No peers visible on the tailnet.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(discovered) { peer in
+                        Button {
+                            apply(peer)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: peer.isOnline ? "circle.fill" : "circle")
+                                            .font(.system(size: 8))
+                                            .foregroundStyle(peer.isOnline ? .green : .secondary)
+                                        Text(peer.hostname).foregroundStyle(.primary)
+                                        if peer.isLikelyMotifd {
+                                            Text("motifd")
+                                                .font(.caption2)
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(.tint.opacity(0.18), in: Capsule())
+                                        }
+                                    }
+                                    Text(peer.preferredAddress)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.right.circle")
+                                    .foregroundStyle(.tint)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text("Discovered on tailnet")
+                Spacer()
+                Button {
+                    Task { await loadDiscovery() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.footnote)
+                }
+            }
+        } footer: {
+            Text("Tap a peer to fill in the address. Token still has to be entered manually.")
+                .font(.caption2)
+        }
+    }
+
+    private func apply(_ peer: TailscaleManager.DiscoveredPeer) {
+        host = peer.preferredAddress
+        if name.isEmpty { name = peer.hostname }
+    }
+
+    private func loadDiscovery() async {
+        discoveryState = .loading
+        // If Tailscale isn't connected we can't enumerate — say so cleanly.
+        if case .running = appState.tailscale.state {
+            // proceed
+        } else {
+            discoveryState = .unavailable(reason: "Connect Tailscale first to scan the tailnet.")
+            return
+        }
+        let peers = await appState.tailscale.discoverPeers()
+        discovered = peers
+        discoveryState = .loaded(count: peers.count)
     }
 
     private var isNew: Bool {

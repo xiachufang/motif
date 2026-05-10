@@ -193,6 +193,72 @@ final class TailscaleManager {
         await node?.tailscale
     }
 
+    // MARK: - Discovery
+
+    /// A tailnet peer that looks like a candidate motifd target. Hostnames
+    /// matching `motifd*` (motif-server's default) bubble to the top, but
+    /// we still surface every online peer so the user can pick a non-default
+    /// host they renamed.
+    struct DiscoveredPeer: Identifiable, Hashable, Sendable {
+        var id: String { dnsName.isEmpty ? hostname : dnsName }
+        var hostname: String
+        var dnsName: String
+        var primaryIP: String?
+        var isLikelyMotifd: Bool
+        var isOnline: Bool
+
+        /// Best string to put in MotifServer.host: prefer the short MagicDNS
+        /// name (without trailing dot), fall back to the v4 IP.
+        var preferredAddress: String {
+            if !dnsName.isEmpty {
+                let trimmed = dnsName.hasSuffix(".") ? String(dnsName.dropLast()) : dnsName
+                return trimmed
+            }
+            return primaryIP ?? hostname
+        }
+    }
+
+    /// Pull the current tailnet peer list from the local API. Empty when
+    /// not connected. Online peers come first, motifd-named hosts come
+    /// before anything else within each group.
+    func discoverPeers() async -> [DiscoveredPeer] {
+        guard let api = apiClient else { return [] }
+        let status: IpnState.Status
+        do {
+            status = try await api.backendStatus()
+        } catch {
+            log.error("backendStatus: \(String(describing: error), privacy: .public)")
+            return []
+        }
+
+        var peers: [DiscoveredPeer] = []
+        if let me = status.SelfStatus {
+            peers.append(Self.toDiscovered(me))
+        }
+        if let table = status.Peer {
+            peers.append(contentsOf: table.values.map(Self.toDiscovered))
+        }
+        // Sort: online motifd-* > other online > offline. Stable name-sort
+        // within each bucket.
+        return peers.sorted { a, b in
+            if a.isOnline != b.isOnline { return a.isOnline && !b.isOnline }
+            if a.isLikelyMotifd != b.isLikelyMotifd { return a.isLikelyMotifd && !b.isLikelyMotifd }
+            return a.hostname.localizedCaseInsensitiveCompare(b.hostname) == .orderedAscending
+        }
+    }
+
+    private static func toDiscovered(_ p: IpnState.PeerStatus) -> DiscoveredPeer {
+        let ipv4 = p.TailscaleIPs?.first(where: { $0.contains(".") })
+        let lower = p.HostName.lowercased()
+        return DiscoveredPeer(
+            hostname: p.HostName,
+            dnsName: p.DNSName,
+            primaryIP: ipv4,
+            isLikelyMotifd: lower.hasPrefix("motifd") || lower.contains("motif"),
+            isOnline: p.Online
+        )
+    }
+
     enum DialError: Error, CustomStringConvertible {
         case notRunning
         var description: String { "Tailscale node not running" }
