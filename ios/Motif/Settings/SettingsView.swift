@@ -1,21 +1,29 @@
 import SwiftUI
 import UIKit
+import SafariServices
 import OSLog
 
 private let settingsLog = Logger(subsystem: "io.allsunday.motif", category: "SettingsView")
 
-/// Open a Tailscale login URL in the system browser. Tailscale's auth flow
-/// doesn't redirect back to a custom scheme, so `ASWebAuthenticationSession`
-/// (which waits for a callback URL) is the wrong API — we just use
-/// `UIApplication.open`. tsnet completes the login on its own once the user
-/// finishes signing in; the IPN bus surfaces State == .Running and the
-/// manager updates UI accordingly.
-@MainActor
-private func openTailscaleLoginURL(_ url: URL) async {
-    let opened = await UIApplication.shared.open(url)
-    if !opened {
-        settingsLog.error("UIApplication.open(\(url.absoluteString, privacy: .public)) returned false")
+/// Identifiable wrapper so we can drive a `.sheet(item:)` directly off a URL.
+private struct AuthURL: Identifiable, Equatable { let id: URL }
+
+/// SFSafariViewController in a SwiftUI sheet. Stays inside Motif so the user
+/// doesn't context-switch out to system Safari for a Tailscale login.
+private struct SafariSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let cfg = SFSafariViewController.Configuration()
+        cfg.entersReaderIfAvailable = false
+        cfg.barCollapsingEnabled = true
+        let vc = SFSafariViewController(url: url, configuration: cfg)
+        vc.dismissButtonStyle = .done
+        vc.preferredControlTintColor = .systemBlue
+        return vc
     }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
 struct SettingsView: View {
@@ -25,8 +33,12 @@ struct SettingsView: View {
     @State private var authKey: String = ""
     @State private var motifdAddressDraft: String = ""
     @State private var showingError: String?
-    /// The auth URL we've already auto-opened in the browser, so a second
-    /// re-render or repeated Notify doesn't repeatedly bounce out to Safari.
+    /// Driving value for the in-app Safari sheet. Setting non-nil shows the
+    /// sheet; when the IPN bus reports .running we set it back to nil so
+    /// the sheet auto-dismisses.
+    @State private var authSheet: AuthURL?
+    /// The URL we already auto-opened, so re-renders of the same .needsAuth
+    /// state don't keep re-presenting the sheet after the user dismisses it.
     @State private var openedAuthURL: URL?
 
     var body: some View {
@@ -34,6 +46,11 @@ struct SettingsView: View {
             Form {
                 Section("Tailscale") {
                     TailscaleStatusRow(state: appState.tailscale.state)
+                    if case .needsAuth(let url) = appState.tailscale.state {
+                        Button("Reopen login") {
+                            authSheet = AuthURL(id: url)
+                        }
+                    }
                     if !isRunning {
                         SecureField("Auth key (tskey-…)", text: $authKey)
                             .textInputAutocapitalization(.never)
@@ -86,16 +103,24 @@ struct SettingsView: View {
                 motifdAddressDraft = appState.motifdAddress
             }
             .onChange(of: appState.tailscale.state) { _, newState in
-                // Auto-open the browser as soon as Tailscale publishes a
-                // login URL on the bus. We only auto-open each URL once;
-                // user can manually re-open via the button below.
+                // Auto-open the in-app Safari sheet on each new login URL.
+                // Track which URL we've already opened so the user can
+                // dismiss the sheet without us bouncing it back up on the
+                // next bus tick.
                 if case .needsAuth(let url) = newState, openedAuthURL != url {
                     openedAuthURL = url
-                    Task { await openTailscaleLoginURL(url) }
+                    authSheet = AuthURL(id: url)
                 }
+                // Login finished — close the sheet and reset the dedupe
+                // marker so a future re-auth pops a fresh one.
                 if case .running = newState {
+                    authSheet = nil
                     openedAuthURL = nil
                 }
+            }
+            .sheet(item: $authSheet) { auth in
+                SafariSheet(url: auth.id)
+                    .ignoresSafeArea()
             }
         }
     }
@@ -133,7 +158,6 @@ struct SettingsView: View {
 
 private struct TailscaleStatusRow: View {
     let state: TailscaleManager.State
-    @State private var isAuthing: Bool = false
 
     var body: some View {
         Group {
@@ -144,11 +168,8 @@ private struct TailscaleStatusRow: View {
                 LabeledContent("Status") {
                     HStack { ProgressView().controlSize(.small); Text("Starting…") }
                 }
-            case .needsAuth(let url):
-                VStack(alignment: .leading, spacing: 6) {
-                    LabeledContent("Status", value: "Needs login")
-                    AuthLinkButton(url: url, isLoading: $isAuthing)
-                }
+            case .needsAuth:
+                LabeledContent("Status", value: "Needs login")
             case .running(let v4, let v6):
                 LabeledContent("Status", value: "Connected")
                 if let v4 { LabeledContent("IPv4", value: v4) }
@@ -161,22 +182,3 @@ private struct TailscaleStatusRow: View {
     }
 }
 
-private struct AuthLinkButton: View {
-    let url: URL
-    @Binding var isLoading: Bool
-
-    var body: some View {
-        Button {
-            Task {
-                isLoading = true
-                defer { isLoading = false }
-                await openTailscaleLoginURL(url)
-            }
-        } label: {
-            HStack {
-                if isLoading { ProgressView().controlSize(.small) }
-                Text("Reopen Tailscale login")
-            }
-        }
-    }
-}
