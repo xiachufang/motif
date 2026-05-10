@@ -6,11 +6,11 @@ import OSLog
 /// PTY list and surfaces protocol events as observable state.
 ///
 /// Lifecycle:
-///   1. `connect(server:)` opens the WS to the local proxy (which forwards
-///      to motifd over tsnet).
+///   1. `connect(server:tailscale:)` opens a WebSocket directly to motifd
+///      over the tsnet SOCKS5 proxy. No local 127.0.0.1 hop.
 ///   2. `attach(sessionName:)` joins a session and seeds the PTY/view
 ///      lists from the attach response.
-///   3. UI subscribes to per-PTY output via `subscribe(ptyID:)`.
+///   3. UI subscribes to per-PTY output via `outputs(for:)`.
 @MainActor
 @Observable
 final class MotifClient {
@@ -36,14 +36,33 @@ final class MotifClient {
     /// the central event task.
     private var outputStreams: [String: (AsyncStream<Data>, AsyncStream<Data>.Continuation)] = [:]
 
-    func connect(localPort: UInt16) async {
+    func connect(server: MotifServer, tailscale: TailscaleManager) async {
         if case .connected = state { return }
         if case .attached = state { return }
         state = .connecting
-        let url = URL(string: "ws://127.0.0.1:\(localPort)/ws")!
+
+        // Build a URLSession that proxies through tsnet's SOCKS5 loopback,
+        // then dial motifd's WS endpoint directly. The Authorization
+        // header carries the per-server Bearer token motifd expects on
+        // the upgrade.
+        let urlSession: URLSession
+        do {
+            urlSession = try await tailscale.makeURLSession()
+        } catch {
+            state = .failed(message: "tsnet not ready: \(error)")
+            return
+        }
+
+        guard let url = URL(string: "ws://\(server.host):\(server.port)/ws") else {
+            state = .failed(message: "bad server URL: \(server.endpoint)")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
+
         let rpc = RpcClient()
         do {
-            try await rpc.connect(url: url)
+            try await rpc.connect(urlSession: urlSession, request: request)
         } catch {
             state = .failed(message: "ws connect: \(error)")
             return

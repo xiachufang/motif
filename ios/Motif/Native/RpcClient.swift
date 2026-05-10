@@ -63,13 +63,15 @@ actor RpcClient {
         self.eventContinuation = cont
     }
 
-    func connect(url: URL) async throws {
-        let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
+    /// Open a WebSocket. The caller supplies a configured URLSession (so the
+    /// caller can route through tsnet's SOCKS5 proxy) and a URLRequest with
+    /// any pre-set headers (Authorization etc).
+    func connect(urlSession: URLSession, request: URLRequest) async throws {
+        let task = urlSession.webSocketTask(with: request)
         self.task = task
         task.resume()
         receiveTask = Task { await self.receiveLoop() }
-        log.notice("rpc connected: \(url.absoluteString, privacy: .public)")
+        log.notice("rpc connected: \(request.url?.absoluteString ?? "?", privacy: .public)")
     }
 
     func close() {

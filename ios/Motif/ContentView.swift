@@ -7,36 +7,13 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            switch appState.serverState {
-            case .starting:
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Starting local server…")
-                        .foregroundStyle(.secondary)
-                }
-            case .failed(let message):
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.yellow)
-                    Text("Local server failed")
-                        .font(.headline)
-                    Text(message)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-            case .running(let port):
-                if appState.servers.activeServer == nil {
-                    WelcomeView()
-                } else {
-                    NativeRoot(localPort: port)
-                        .id(appState.webViewReloadKey)
-                        .environment(appState.motif)
-                }
+            if appState.servers.activeServer == nil {
+                WelcomeView()
+            } else {
+                NativeRoot()
+                    .id(appState.webViewReloadKey)
+                    .environment(appState.motif)
             }
-
         }
         .sheet(isPresented: Binding(
             get: { appState.isShowingConnection },
@@ -51,7 +28,6 @@ struct ContentView: View {
             AboutView().environment(appState)
         }
         .task {
-            await appState.startServerIfNeeded()
             // Auto-resume Tailscale. With cached creds tsnet skips the
             // user prompt entirely; otherwise busDidReceive surfaces a
             // BrowseToURL via the setup sheet. In DEBUG we wedge a

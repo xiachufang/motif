@@ -8,8 +8,13 @@ import TalkerCommonRouter
 struct NativeRoot: View {
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
-    let localPort: UInt16
     @State private var routerDelegate: AttachDetachDelegate?
+
+    /// The active server we're connecting to. Connection re-runs whenever
+    /// the user switches servers or reloads — we tag the .task with this id.
+    private var activeServerID: String {
+        appState.servers.activeServer?.id.uuidString ?? ""
+    }
 
     var body: some View {
         Group {
@@ -22,8 +27,9 @@ struct NativeRoot: View {
                 routerView
             }
         }
-        .task(id: localPort) {
-            await motif.connect(localPort: localPort)
+        .task(id: activeServerID) {
+            guard let server = appState.servers.activeServer else { return }
+            await motif.connect(server: server, tailscale: appState.tailscale)
         }
     }
 
@@ -128,7 +134,10 @@ struct NativeRoot: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
             Button("Retry") {
-                Task { await motif.connect(localPort: localPort) }
+                Task {
+                    guard let server = appState.servers.activeServer else { return }
+                    await motif.connect(server: server, tailscale: appState.tailscale)
+                }
             }
         }
     }

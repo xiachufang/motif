@@ -188,6 +188,16 @@ final class TailscaleManager {
         await node?.tailscale
     }
 
+    /// Build a URLSession that routes all traffic through this tsnet node's
+    /// SOCKS5 loopback. Use this for the WS connection to motifd — it skips
+    /// the LocalHTTPServer + TailscaleProxy detour the WebView used to
+    /// need.
+    func makeURLSession() async throws -> URLSession {
+        guard let node else { throw DialError.notRunning }
+        let (config, _) = try await URLSessionConfiguration.tailscaleSession(node)
+        return URLSession(configuration: config)
+    }
+
     // MARK: - Discovery
 
     /// A tailnet peer that looks like a candidate motifd target. Hostnames
