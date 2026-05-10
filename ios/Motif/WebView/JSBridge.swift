@@ -15,6 +15,8 @@ import OSLog
 final class JSBridge: NSObject {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "JSBridge")
     private weak var webView: WKWebView?
+    private let asr = DoubaoASR()
+    private var asrEventTask: Task<Void, Never>?
 
     /// Inject a globally-available `motif.*` namespace and the message handler.
     /// Called once from WebViewContainer when the WKWebView is created.
@@ -71,16 +73,39 @@ final class JSBridge: NSObject {
             ]
 
         case "asr.start":
-            // P5 hookup: start AudioCapture + Doubao session
-            log.notice("asr.start (stub)")
-            throw BridgeError.notImplemented("asr.start — wired in P5")
+            log.notice("asr.start")
+            try await startASR()
+            return ["ok": true]
 
         case "asr.stop":
-            log.notice("asr.stop (stub)")
-            throw BridgeError.notImplemented("asr.stop — wired in P5")
+            log.notice("asr.stop")
+            await asr.stop()
+            return ["ok": true]
 
         default:
             throw BridgeError.unknownType(type)
+        }
+    }
+
+    // MARK: - ASR wiring
+
+    private func startASR() async throws {
+        asrEventTask?.cancel()
+        let stream = try await asr.start()
+        asrEventTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                switch event {
+                case .partial(let text):
+                    self.emit("asr.partial", payload: ["text": text])
+                case .final(let text):
+                    self.emit("asr.final", payload: ["text": text])
+                case .error(let msg):
+                    self.emit("asr.error", payload: ["message": msg])
+                case .stopped:
+                    self.emit("asr.stopped", payload: [:])
+                }
+            }
         }
     }
 

@@ -14,6 +14,11 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     GENERATE_INFOPLIST_FILE: NO
 
+packages:
+  SwiftProtobuf:
+    url: https://github.com/apple/swift-protobuf.git
+    from: "1.37.0"
+
 targets:
   Motif:
     type: application
@@ -24,6 +29,7 @@ targets:
           - "Resources/web"
           - "Resources/web/**"
           - "Info.plist"
+          - "ASR/Asr.proto"
       - path: Motif/Resources/web
         type: folder
         buildPhase: resources
@@ -67,6 +73,7 @@ targets:
       - framework: vendor/Opus.xcframework
         embed: false
         link: true
+      - package: SwiftProtobuf
 
   MotifTests:
     type: bundle.unit-test
