@@ -253,6 +253,7 @@ private struct ServerEditSheet: View {
     @State private var token: String = ""
     @State private var discovered: [TailscaleManager.DiscoveredPeer] = []
     @State private var discoveryState: DiscoveryState = .idle
+    @State private var showAllPeers: Bool = false
 
     enum DiscoveryState: Equatable {
         case idle
@@ -303,6 +304,12 @@ private struct ServerEditSheet: View {
         }
     }
 
+    /// What we actually render — defaults to "looks like motifd" only,
+    /// expanded to all peers when the user flips the toggle.
+    private var visiblePeers: [TailscaleManager.DiscoveredPeer] {
+        showAllPeers ? discovered : discovered.filter { $0.isLikelyMotifd }
+    }
+
     @ViewBuilder
     private var discoverySection: some View {
         Section {
@@ -314,13 +321,19 @@ private struct ServerEditSheet: View {
                 }
             case .unavailable(let reason):
                 Text(reason).font(.footnote).foregroundStyle(.secondary)
-            case .loaded(let count):
-                if count == 0 {
+            case .loaded(let total):
+                if total == 0 {
                     Text("No peers visible on the tailnet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } else if visiblePeers.isEmpty {
+                    // Total > 0 but filter hid them all — surface the toggle
+                    // explanation instead of an unhelpful empty state.
+                    Text("No motifd-named peers. Toggle “Show all peers” below to pick a non-default host.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
-                    ForEach(discovered) { peer in
+                    ForEach(visiblePeers) { peer in
                         Button {
                             apply(peer)
                         } label: {
@@ -351,6 +364,10 @@ private struct ServerEditSheet: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+                if total > 0 {
+                    Toggle("Show all peers", isOn: $showAllPeers)
+                        .font(.footnote)
                 }
             }
         } header: {
