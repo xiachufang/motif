@@ -18,6 +18,11 @@ pub struct TsServer {
     /// rest of the API needs `&Self`. We `take` for the brief window of
     /// `up()`, then put back. Outside `up()`, this field is always `Some`.
     inner: Option<libtailscale::Tailscale>,
+    /// LocalAPI loopback endpoint (`addr` + basic-auth `credential`) cached
+    /// during `up()`. `loopback()` itself requires `&mut self` on the
+    /// underlying Tailscale, so we call it once and remember the result for
+    /// later `list_peers()` use against `&self`.
+    loopback: Option<libtailscale::Loopback>,
     /// Drains tsnet's stderr-equivalent log pipe, fishing out auth URLs.
     _log_task: tokio::task::JoinHandle<()>,
 }
@@ -53,7 +58,7 @@ impl TsServer {
         t.set_ephemeral(opts.ephemeral).map_err(TsError::Native)?;
 
         tracing::debug!(hostname = %opts.hostname, "TsServer::new (bundled)");
-        Ok(Self { inner: Some(t), _log_task: log_task })
+        Ok(Self { inner: Some(t), loopback: None, _log_task: log_task })
     }
 
     /// Bring the node up — block until joined to the tailnet (or until the
@@ -66,9 +71,12 @@ impl TsServer {
     pub async fn up(&mut self) -> Result<(), TsError> {
         let t = self.inner.as_mut()
             .ok_or_else(|| TsError::Native("TsServer.inner missing (concurrent up()?)".into()))?;
-        tokio::task::block_in_place(|| {
-            t.up().map_err(TsError::Native)
-        })
+        let lb = tokio::task::block_in_place(|| -> Result<libtailscale::Loopback, TsError> {
+            t.up().map_err(TsError::Native)?;
+            t.loopback().map_err(TsError::Native)
+        })?;
+        self.loopback = Some(lb);
+        Ok(())
     }
 
     pub async fn dial_tcp(&self, addr: &str) -> Result<TsStream, TsError> {
@@ -100,13 +108,109 @@ impl TsServer {
         })
     }
 
+    /// Enumerate peers visible on the current tailnet by hitting tsnet's
+    /// LocalAPI (running on the loopback address libtailscale opened during
+    /// `up()`). Returns one `TsPeer` per node — including `online: false`
+    /// peers, since the caller may want to show offline nodes too.
     pub async fn list_peers(&self) -> Result<Vec<TsPeer>, TsError> {
-        // libtailscale 0.2 doesn't expose a peer enumeration API; that
-        // would need either the Loopback (LocalAPI) endpoint or a direct
-        // libtailscale-sys call to TsnetGetIps + Status. Out of scope for
-        // the initial bundled landing.
-        Err(TsError::Unimplemented)
+        let lb = self.loopback.as_ref()
+            .ok_or_else(|| TsError::Native("up() must be called before list_peers".into()))?;
+        let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
+        let status: StatusJson = serde_json::from_slice(&raw)
+            .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))?;
+        let mut peers = Vec::with_capacity(status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
+        if let Some(m) = status.peer {
+            for (_pubkey, p) in m {
+                let ip = p.tailscale_ips.into_iter().next().unwrap_or_default();
+                peers.push(TsPeer {
+                    hostname: p.host_name,
+                    ip,
+                    os:       p.os.unwrap_or_default(),
+                    online:   p.online,
+                });
+            }
+        }
+        Ok(peers)
     }
+}
+
+/// Hand-rolled HTTP/1.0 GET against tsnet's LocalAPI. Inlined rather than
+/// pulling in a full HTTP client crate — the request shape is fixed and
+/// the body is small (single JSON document, capped at ~1MB).
+///
+/// LocalAPI auth requires BOTH the `Sec-Tailscale: localapi` header and
+/// HTTP basic auth with empty username + the credential as password.
+async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<u8>, TsError> {
+    use base64::Engine;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // The username `tsnet` is what libtailscale's own examples use; tsnet's
+    // LocalAPI handler doesn't strictly require it but rejecting empty
+    // username has been observed in some versions, so match the example to
+    // be safe.
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("tsnet:{credential}"));
+    let req = format!(
+        "GET {path} HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Sec-Tailscale: localapi\r\n\
+         Authorization: Basic {auth}\r\n\
+         Connection: close\r\n\
+         \r\n",
+    );
+
+    let mut s = tokio::net::TcpStream::connect(addr).await?;
+    s.write_all(req.as_bytes()).await?;
+    // Half-close the write side so the server knows the request is complete
+    // and can stream + close the response. Some HTTP/1.0 servers wait for
+    // EOF before responding when there's no Content-Length on the request.
+    let _ = s.shutdown().await;
+
+    // Cap the response so a misbehaving server can't OOM us.
+    const CAP: usize = 1 << 20;
+    let mut buf = Vec::with_capacity(8 * 1024);
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        let n = s.read(&mut chunk).await?;
+        if n == 0 { break; }
+        if buf.len() + n > CAP {
+            return Err(TsError::Native("LocalAPI response exceeded 1 MiB cap".into()));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+
+    // Quick status-line check — if it's not 200, surface the line as the
+    // error so misconfig is obvious.
+    let line_end = buf.iter().position(|&b| b == b'\r').unwrap_or(buf.len());
+    let status_line = std::str::from_utf8(&buf[..line_end])
+        .map_err(|_| TsError::Native("LocalAPI status line not utf-8".into()))?;
+    if !status_line.contains(" 200 ") {
+        return Err(TsError::Native(format!("LocalAPI: {status_line}")));
+    }
+
+    let body_start = buf.windows(4).position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .ok_or_else(|| TsError::Native("LocalAPI: no header/body separator".into()))?;
+    Ok(buf[body_start..].to_vec())
+}
+
+#[derive(serde::Deserialize)]
+struct StatusJson {
+    /// `null` on a freshly-started node that hasn't received its first
+    /// netmap yet. Map keys are peer pubkeys.
+    #[serde(rename = "Peer")]
+    peer: Option<std::collections::HashMap<String, PeerJson>>,
+}
+
+#[derive(serde::Deserialize)]
+struct PeerJson {
+    #[serde(rename = "HostName")]
+    host_name: String,
+    #[serde(rename = "TailscaleIPs", default)]
+    tailscale_ips: Vec<String>,
+    #[serde(rename = "Online", default)]
+    online: bool,
+    #[serde(rename = "OS")]
+    os: Option<String>,
 }
 
 /// `libtailscale::Tailscale` claims `Send + Sync` via a SAFETY comment

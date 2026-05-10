@@ -33,6 +33,10 @@ libc               = { workspace = true }
 
 [features]
 default   = []
-# Pulls embedded-Tailscale support through motif-net.  Activates the
-# `--via tailscale://hostname[:port]` branch in `transport::connect`.
-tailscale = ["motif-net/tailscale"]
+# `tailscale`: stub mode (compiles without Go; runtime calls error out).
+# Useful for CI / non-bundled clients that proxy through SSH.
+tailscale         = ["motif-net/tailscale"]
+# `tailscale-bundled`: real embedded tsnet (links libtailscale via
+# motif-tailscale/bundled). Enables `--via tailscale://...` end-to-end
+# and the LocalAPI-driven discovery path in motif-tui.
+tailscale-bundled = ["tailscale", "motif-net/tailscale-bundled"]

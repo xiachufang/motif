@@ -73,6 +73,25 @@ async fn connect_ssh(
     })
 }
 
+/// Build a `TsOptions` for a client-side tsnet node using the conventional
+/// defaults (state dir `~/.cache/motif/tsnet`, per-process hostname so two
+/// concurrent client invocations don't collide on the same tailnet device
+/// entry, ephemeral so the entry self-removes when the process exits).
+/// Env overrides: `MOTIF_TS_{STATE_DIR,HOSTNAME,AUTHKEY,CONTROL_URL}`.
+#[cfg(feature = "tailscale")]
+pub fn default_client_ts_options() -> motif_net::motif_tailscale::TsOptions {
+    motif_net::motif_tailscale::TsOptions {
+        hostname: std::env::var("MOTIF_TS_HOSTNAME")
+            .unwrap_or_else(|_| format!("motif-client-{}", std::process::id())),
+        state_dir: std::env::var_os("MOTIF_TS_STATE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(default_state_dir),
+        authkey:     std::env::var("MOTIF_TS_AUTHKEY").ok(),
+        control_url: std::env::var("MOTIF_TS_CONTROL_URL").ok(),
+        ephemeral:   true,
+    }
+}
+
 #[cfg(feature = "tailscale")]
 async fn connect_tailscale(
     rest:  &str,
@@ -80,7 +99,7 @@ async fn connect_tailscale(
     token: &str,
 ) -> anyhow::Result<Connected> {
     use std::sync::Arc;
-    use motif_net::motif_tailscale::{TsOptions, TsServer};
+    use motif_net::motif_tailscale::TsServer;
 
     // `rest` is `hostname[:port]`, e.g. `motifd-laptop:7777`. Default port
     // matches the server's --tailscale-port default.
@@ -90,23 +109,7 @@ async fn connect_tailscale(
         format!("{rest}:7777")
     };
 
-    // Local tsnet node config. State dir defaults to ~/.cache/motif/tsnet,
-    // overridable via env. Hostname is auto-derived per-process unless
-    // pinned via env (so multiple concurrent client invocations don't
-    // collide on the same tailnet device entry).
-    let state_dir = std::env::var_os("MOTIF_TS_STATE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(default_state_dir);
-    let hostname = std::env::var("MOTIF_TS_HOSTNAME")
-        .unwrap_or_else(|_| format!("motif-client-{}", std::process::id()));
-    let opts = TsOptions {
-        hostname,
-        state_dir,
-        authkey:     std::env::var("MOTIF_TS_AUTHKEY").ok(),
-        control_url: std::env::var("MOTIF_TS_CONTROL_URL").ok(),
-        ephemeral:   true,
-    };
-    let mut server = TsServer::new(opts).context("tsnet init")?;
+    let mut server = TsServer::new(default_client_ts_options()).context("tsnet init")?;
     server.up().await.context("tsnet up")?;
     let server = Arc::new(server);
 

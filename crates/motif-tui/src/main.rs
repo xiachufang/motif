@@ -61,6 +61,17 @@ enum Cmd {
         #[arg(long, env = "MOTIF_TOKEN_FILE")] token_file: Option<PathBuf>,
         #[command(flatten)] via: ViaOpts,
     },
+    /// Discover motifd nodes on the current tailnet by hostname prefix.
+    /// Brings up an ephemeral tsnet client node and queries its LocalAPI
+    /// for the netmap, filters by `--prefix`, and prints a table.
+    /// Requires --features tailscale-bundled.
+    ListServers {
+        /// Hostname prefix that identifies motifd nodes. Default matches
+        /// the convention motifd uses for its own --tailscale-hostname
+        /// auto-default.
+        #[arg(long, default_value = "motifd-")]
+        prefix: String,
+    },
 }
 
 #[tokio::main]
@@ -94,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
         Cmd::PtyRun { url, session, cmd, token_file, via } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
             motif_tui::cmd_pty_run(&url, &token, session, cmd, via.via.as_deref(), via.ssh_remote_port).await
+        }
+        Cmd::ListServers { prefix } => {
+            motif_tui::cmd_list_servers(&prefix).await
         }
     }
 }

@@ -164,3 +164,44 @@ pub async fn cmd_attach(
     let tr = connect(url, token, via, ssh_remote_port).await?;
     ui::run_with(tr, name).await
 }
+
+/// Bring up an embedded tsnet client node, query its LocalAPI, and list
+/// peers whose hostname starts with `prefix` (default `motifd-`, matching
+/// motifd's auto-hostname convention). The command is `tailscale-bundled`
+/// gated because it actually needs a working libtailscale link — the stub
+/// path would just error.
+#[cfg(feature = "tailscale-bundled")]
+pub async fn cmd_list_servers(prefix: &str) -> anyhow::Result<()> {
+    use motif_client::motif_net::motif_tailscale::TsServer;
+    use motif_client::transport::default_client_ts_options;
+
+    let opts = default_client_ts_options();
+    let mut server = TsServer::new(opts).context("tsnet init")?;
+    server.up().await.context("tsnet up")?;
+    let mut peers = server.list_peers().await.context("tsnet LocalAPI status")?;
+    peers.retain(|p| p.hostname.starts_with(prefix));
+    if peers.is_empty() {
+        println!("No peers matching {prefix:?} found in this tailnet.");
+        return Ok(());
+    }
+    peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
+    println!("{:<40} {:<18} {:<7} {}", "HOSTNAME", "TAILNET IP", "ONLINE", "OS");
+    for p in peers {
+        println!(
+            "{:<40} {:<18} {:<7} {}",
+            p.hostname,
+            p.ip,
+            if p.online { "yes" } else { "no" },
+            p.os,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "tailscale-bundled"))]
+pub async fn cmd_list_servers(_prefix: &str) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "list-servers requires this binary to be built with --features tailscale-bundled \
+         (Go toolchain needed at build time)"
+    )
+}
