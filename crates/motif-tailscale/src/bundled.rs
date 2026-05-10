@@ -184,12 +184,15 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
         buf.extend_from_slice(&chunk[..n]);
     }
     eprintln!("[fetch_localapi] EOF, total={} bytes", buf.len());
+    eprintln!("[fetch_localapi] head={:?}",
+        std::str::from_utf8(&buf[..buf.len().min(200)]).unwrap_or("<non-utf8>"));
 
     // Quick status-line check — if it's not 200, surface the line as the
     // error so misconfig is obvious.
     let line_end = buf.iter().position(|&b| b == b'\r').unwrap_or(buf.len());
     let status_line = std::str::from_utf8(&buf[..line_end])
         .map_err(|_| TsError::Native("LocalAPI status line not utf-8".into()))?;
+    eprintln!("[fetch_localapi] status_line={status_line:?}");
     if !status_line.contains(" 200 ") {
         return Err(TsError::Native(format!("LocalAPI: {status_line}")));
     }
