@@ -52,15 +52,25 @@ struct ContentView: View {
         }
         .task {
             await appState.startServerIfNeeded()
-            // Auto-resume Tailscale if a cached login is present. tsnet
-            // reads the state dir on its own; if creds are still valid
-            // we go straight to .running with no UI prompt. If they're
-            // not, busDidReceive will push the login URL via
-            // startLoginInteractive, which surfaces as a Safari sheet
-            // in Settings (which the user can keep closed for now).
+            // Auto-resume Tailscale. With cached creds tsnet skips the
+            // user prompt entirely; otherwise busDidReceive surfaces a
+            // BrowseToURL via the setup sheet. In DEBUG we wedge a
+            // hardcoded auth-key in so first-run iteration doesn't go
+            // through the browser login each time.
+            #if DEBUG
+            await appState.tailscale.start(authKey: Self.debugAuthKey)
+            #else
             await appState.tailscale.start(authKey: nil)
+            #endif
         }
     }
+
+    #if DEBUG
+    /// Dev-only Tailscale auth key. tsnet uses this only when there are
+    /// no usable cached credentials in `Documents/tailscale/`; otherwise
+    /// it's ignored and we resume from cache.
+    private static let debugAuthKey = "tskey-auth-kwzJU9EMHu11CNTRL-VAKoHNUdme4FfZz4Mcjge4oTtzjy1d8re"
+    #endif
 }
 
 #Preview {
