@@ -8,10 +8,13 @@ description = "Motif transport abstraction (plain TCP today, embedded Tailscale 
 
 [features]
 default   = []
-# Pulls motif-tailscale (stub by default — no Go toolchain needed). Enable
-# motif-tailscale's `bundled` or `prebuilt` feature at the binary level to get
-# the real FFI link.
-tailscale = ["dep:motif-tailscale"]
+# `tailscale`: pulls motif-tailscale in stub mode (no Go toolchain
+# needed). Calls return TsError::Unimplemented at runtime.
+tailscale          = ["dep:motif-tailscale"]
+# `tailscale-bundled`: also turns on motif-tailscale/bundled, which links
+# a Go-built libtailscale via libtailscale-sys. Requires Go on the build
+# machine. Use this for motifd; clients usually want plain `tailscale`.
+tailscale-bundled  = ["tailscale", "motif-tailscale/bundled"]
 
 [dependencies]
 tokio              = { workspace = true }
@@ -21,4 +24,4 @@ url                = { workspace = true }
 thiserror          = { workspace = true }
 tracing            = { workspace = true }
 
-motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false, features = ["stub"] }
+motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false }
