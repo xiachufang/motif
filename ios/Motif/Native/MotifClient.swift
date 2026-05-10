@@ -53,8 +53,16 @@ final class MotifClient {
             return
         }
 
-        guard let url = URL(string: "ws://\(server.host):\(server.port)/ws") else {
-            state = .failed(message: "bad server URL: \(server.endpoint)")
+        // iOS's resolver doesn't know `*.ts.net`. URLSession resolves the
+        // hostname BEFORE handing the connection to the SOCKS5 proxy, so
+        // we have to map MagicDNS names to a tailnet IP ourselves.
+        let resolvedHost = await tailscale.resolveTailnetHost(server.host) ?? server.host
+        if resolvedHost != server.host {
+            log.notice("resolved \(server.host, privacy: .public) -> \(resolvedHost, privacy: .public)")
+        }
+
+        guard let url = URL(string: "ws://\(resolvedHost):\(server.port)/ws") else {
+            state = .failed(message: "bad server URL: \(resolvedHost):\(server.port)")
             return
         }
         var request = URLRequest(url: url)

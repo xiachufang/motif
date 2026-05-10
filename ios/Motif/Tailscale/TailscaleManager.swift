@@ -198,6 +198,39 @@ final class TailscaleManager {
         return URLSession(configuration: config)
     }
 
+    /// Resolve a tailnet hostname (MagicDNS short name or full FQDN) to a
+    /// concrete tailnet IP by walking the IPN peer list. iOS's stub
+    /// resolver doesn't know `*.ts.net`, and URLSession's SOCKS5 path
+    /// resolves hostnames locally before tunnelling — so dialling
+    /// `ws://something.ts.net:port` blows up with NSURLErrorNetworkConnectionLost
+    /// (-1005) the moment the SOCKS handshake tries to forward the
+    /// resolved-but-bogus IP. Pre-resolving here keeps the WS open.
+    ///
+    /// Inputs that already look like an IP (digits + dots, or a colon)
+    /// are returned unchanged. If no peer matches, returns nil — caller
+    /// should fall back to the original string.
+    func resolveTailnetHost(_ host: String) async -> String? {
+        if Self.looksLikeIP(host) { return host }
+        let peers = await discoverPeers()
+        let normalized = host.lowercased()
+        for peer in peers {
+            let dns = peer.dnsName.lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let shortName = peer.hostname.lowercased()
+            if dns == normalized || dns.hasPrefix("\(normalized).") || shortName == normalized {
+                if let ip = peer.primaryIP { return ip }
+            }
+        }
+        return nil
+    }
+
+    private static func looksLikeIP(_ s: String) -> Bool {
+        if s.contains(":") { return true } // very rough IPv6 sniff
+        let parts = s.split(separator: ".")
+        if parts.count == 4, parts.allSatisfy({ UInt8($0) != nil }) { return true }
+        return false
+    }
+
     // MARK: - Discovery
 
     /// A tailnet peer that looks like a candidate motifd target. Hostnames
