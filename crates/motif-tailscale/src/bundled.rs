@@ -160,10 +160,12 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
 
     let mut s = tokio::net::TcpStream::connect(addr).await?;
     s.write_all(req.as_bytes()).await?;
-    // Half-close the write side so the server knows the request is complete
-    // and can stream + close the response. Some HTTP/1.0 servers wait for
-    // EOF before responding when there's no Content-Length on the request.
-    let _ = s.shutdown().await;
+    // Don't half-close the write side — tsnet's loopback server does
+    // protocol detection between SOCKS5 and HTTP, and a write-FIN before
+    // the server has identified the protocol can confuse it (observed:
+    // server holds the request open without responding). With
+    // `Connection: close` in the request the server itself will close
+    // after writing the response, giving us a clean EOF on read.
 
     // Cap the response so a misbehaving server can't OOM us.
     const CAP: usize = 1 << 20;
