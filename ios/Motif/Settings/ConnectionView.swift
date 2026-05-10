@@ -26,7 +26,11 @@ private struct SafariSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
-struct SettingsView: View {
+/// Connection management — Tailscale + the motifd server list.
+/// Reached by tapping the active server name in the home screen's
+/// top bar (when in a session) or via the Welcome screen on first run.
+/// Doesn't include version/about info; that's its own sheet.
+struct ConnectionView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
@@ -105,17 +109,8 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("App") {
-                    LabeledContent("Bundle", value: Bundle.main.bundleIdentifier ?? "?")
-                    LabeledContent("Version") {
-                        Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
-                    }
-                    if case .running(let port) = appState.serverState {
-                        LabeledContent("Local server", value: "127.0.0.1:\(port)")
-                    }
-                }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("Connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

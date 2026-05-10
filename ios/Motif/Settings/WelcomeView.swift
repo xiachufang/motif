@@ -73,6 +73,15 @@ struct WelcomeView: View {
             }
             .navigationTitle("motif")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        appState.isShowingAbout = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                }
+            }
             .sheet(item: $serverEditTarget) { target in
                 ServerEditSheet(target: target) { updated in
                     switch target {

@@ -18,8 +18,13 @@ final class AppState {
     let servers: MotifServerStore
     let motif: MotifClient = MotifClient()
 
-    /// Show the Settings sheet on the WebView.
-    var isShowingSettings: Bool = false
+    /// Drives the Connection sheet (Tailscale + Servers). Tapped via the
+    /// server-name button on the top bar of NativeRoot, or implicitly
+    /// from the Welcome screen.
+    var isShowingConnection: Bool = false
+
+    /// Drives the About sheet (bundle id + version).
+    var isShowingAbout: Bool = false
 
     /// Bumped each time the active motifd target changes, so the WebView
     /// can re-attach to a fresh upstream.

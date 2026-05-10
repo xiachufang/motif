@@ -5,6 +5,7 @@ import SwiftUI
 /// terminal. Replaces the WKWebView path entirely.
 struct NativeRoot: View {
     @Environment(MotifClient.self) private var motif
+    @Environment(AppState.self) private var appState
     let localPort: UInt16
     @State private var connectError: String?
 
@@ -18,22 +19,14 @@ struct NativeRoot: View {
             case .connected:
                 NavigationStack {
                     SessionListView()
-                        .navigationTitle("motif")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { commonToolbar(showDisconnect: false) }
                 }
             case .attached:
                 NavigationStack {
                     SessionView()
-                        .navigationTitle(sessionTitle)
                         .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button {
-                                    Task { await motif.disconnect() }
-                                } label: {
-                                    Image(systemName: "rectangle.portrait.and.arrow.right")
-                                }
-                            }
-                        }
+                        .toolbar { commonToolbar(showDisconnect: true) }
                 }
             }
         }
@@ -42,8 +35,52 @@ struct NativeRoot: View {
         }
     }
 
-    private var sessionTitle: String {
-        if case .attached(let name) = motif.state { return name }
+    /// Top bar:
+    ///   leading  — back-to-session-list (when attached)
+    ///   center   — current server name button → ConnectionView sheet
+    ///   trailing — info button → AboutView sheet
+    @ToolbarContentBuilder
+    private func commonToolbar(showDisconnect: Bool) -> some ToolbarContent {
+        if showDisconnect {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    Task { await motif.disconnect() }
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            Button {
+                appState.isShowingConnection = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "server.rack").font(.footnote)
+                    Text(serverLabel)
+                        .font(.headline)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                appState.isShowingAbout = true
+            } label: {
+                Image(systemName: "info.circle")
+            }
+        }
+    }
+
+    private var serverLabel: String {
+        if let s = appState.servers.activeServer {
+            if case .attached(let session) = motif.state {
+                return "\(s.name) · \(session)"
+            }
+            return s.name
+        }
         return "motif"
     }
 

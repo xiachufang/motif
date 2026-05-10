@@ -37,31 +37,18 @@ struct ContentView: View {
                 }
             }
 
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        appState.isShowingSettings.toggle()
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.7))
-                            .padding(8)
-                            .background(.black.opacity(0.4), in: Circle())
-                    }
-                    .padding(.trailing, 12)
-                    .padding(.top, 6)
-                }
-                Spacer()
-            }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .sheet(isPresented: Binding(
-            get: { appState.isShowingSettings },
-            set: { appState.isShowingSettings = $0 }
+            get: { appState.isShowingConnection },
+            set: { appState.isShowingConnection = $0 }
         )) {
-            SettingsView()
-                .environment(appState)
+            ConnectionView().environment(appState)
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.isShowingAbout },
+            set: { appState.isShowingAbout = $0 }
+        )) {
+            AboutView().environment(appState)
         }
         .task {
             await appState.startServerIfNeeded()
