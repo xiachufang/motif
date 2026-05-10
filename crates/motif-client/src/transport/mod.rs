@@ -106,7 +106,7 @@ async fn connect_tailscale(
         control_url: std::env::var("MOTIF_TS_CONTROL_URL").ok(),
         ephemeral:   true,
     };
-    let server = TsServer::new(opts).context("tsnet init")?;
+    let mut server = TsServer::new(opts).context("tsnet init")?;
     server.up().await.context("tsnet up")?;
     let server = Arc::new(server);
 

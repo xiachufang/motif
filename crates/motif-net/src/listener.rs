@@ -94,7 +94,7 @@ async fn bind_tailscale(c: &TailscaleListenConfig) -> io::Result<TsBackend> {
         control_url: c.control_url.clone(),
         ephemeral:   c.ephemeral,
     };
-    let server = TsServer::new(opts).map_err(|e| io::Error::other(format!("tailscale init: {e}")))?;
+    let mut server = TsServer::new(opts).map_err(|e| io::Error::other(format!("tailscale init: {e}")))?;
     server.up().await.map_err(|e| io::Error::other(format!("tailscale up: {e}")))?;
     let server = Arc::new(server);
     let inner  = server.listen(c.port).await

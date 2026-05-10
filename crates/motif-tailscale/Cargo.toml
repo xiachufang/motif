@@ -4,25 +4,25 @@ version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
-description = "Motif — embedded Tailscale (libtailscale) FFI wrapper for clients"
+description = "Motif — embedded Tailscale (libtailscale) wrapper for clients and motifd"
 
 [features]
-# `bundled`: build libtailscale from a vendored Go submodule (requires Go 1.21+).
-# `prebuilt`: download a precompiled libtailscale archive from GitHub releases.
-# `stub` (default): no libtailscale link; runtime calls return `Unimplemented`.
-# When motif-tui is built with --features tailscale, it pulls this crate but
-# leaves the implementation as the stub unless one of bundled/prebuilt is also
-# enabled. This makes the crate compile on machines without Go.
-default  = ["stub"]
-stub     = []
-bundled  = []
+# `bundled`: link `libtailscale` (built from Go via the libtailscale-sys
+# crate's build.rs). Requires Go 1.20+ on the build machine.  When this
+# feature is OFF, all runtime calls return `TsError::Unimplemented` — the
+# crate compiles on machines without Go and downstream code doesn't have
+# to conditionally type-erase.
+default  = []
+bundled  = ["dep:libtailscale"]
+# `prebuilt`: planned for v2 (download a precompiled .tar.gz from the
+# upstream release matching `vendor/libtailscale/VERSION`). Not wired.
 prebuilt = []
 
 [dependencies]
-thiserror = { workspace = true }
-tracing   = { workspace = true }
-tokio     = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+tokio        = { workspace = true }
+libtailscale = { version = "0.2", optional = true }
 
-[build-dependencies]
-# real bundled/prebuilt mode would add bindgen + cmake here. Stub mode needs
-# nothing.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
