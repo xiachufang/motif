@@ -19,7 +19,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
-pub use config::ServerConfig;
+pub use config::{ServerConfig, TailscaleListenConfig};
 
 /// Install the global tracing subscriber.
 ///
@@ -82,11 +82,12 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
     };
     let app = ws::router(state);
 
-    let listener = tokio::net::TcpListener::bind(cfg.listen)
+    let listener = motif_net::Listener::bind(&cfg.to_listen_config())
         .await
-        .with_context(|| format!("failed to bind {}", cfg.listen))?;
-    let bound = listener.local_addr()?;
-    tracing::info!(%bound, "motifd listening");
+        .with_context(|| "failed to bind listener")?;
+    for addr in listener.bound_addrs() {
+        tracing::info!(%addr, "motifd listening");
+    }
 
     axum::serve(listener, app).await?;
     Ok(())

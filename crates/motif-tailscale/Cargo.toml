@@ -21,6 +21,7 @@ prebuilt = []
 [dependencies]
 thiserror = { workspace = true }
 tracing   = { workspace = true }
+tokio     = { workspace = true }
 
 [build-dependencies]
 # real bundled/prebuilt mode would add bindgen + cmake here. Stub mode needs

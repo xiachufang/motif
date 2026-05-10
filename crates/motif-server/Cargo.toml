@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 motif-proto        = { path = "../motif-proto" }
+motif-net          = { path = "../motif-net", features = ["tailscale"] }
 
 tokio              = { workspace = true }
 tokio-tungstenite  = { workspace = true }

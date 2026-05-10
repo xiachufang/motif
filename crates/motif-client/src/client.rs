@@ -14,28 +14,36 @@
 //! reader would silently swallow the prompt and the new tab's view state.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
-use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::sink::Sink;
+use futures_util::stream::Stream as FuturesStream;
 use futures_util::{SinkExt, StreamExt};
 use motif_proto::envelope::{Frame, Id, Notification, Request, Response};
 use motif_proto::error::RpcError;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{
-    connect_async, tungstenite::client::IntoClientRequest, tungstenite::http::HeaderValue,
-    tungstenite::Message, MaybeTlsStream, WebSocketStream,
+    client_async, connect_async, tungstenite::client::IntoClientRequest,
+    tungstenite::http::HeaderValue, tungstenite::Message,
 };
 
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type WsSink   = SplitSink<WsStream, Message>;
-type WsRx     = SplitStream<WsStream>;
+// Sink/stream halves are type-erased via `Box<dyn …>` so the same `Client`
+// type works for both transports: `connect()` (which keeps tungstenite's
+// `MaybeTlsStream<TcpStream>` for transparent `wss://` support) and
+// `connect_with_stream()` (which feeds an arbitrary `AsyncRead+AsyncWrite`
+// produced by `motif-net`, e.g. a tsnet socket). One heap alloc + a vtable
+// hop per WebSocket frame is negligible against the JSON encode cost.
+type WsErr  = tokio_tungstenite::tungstenite::Error;
+type WsSink = Pin<Box<dyn Sink<Message, Error = WsErr> + Send>>;
+type WsRx   = Pin<Box<dyn FuturesStream<Item = Result<Message, WsErr>> + Send>>;
 
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 
@@ -60,32 +68,55 @@ impl Drop for Client {
 }
 
 impl Client {
+    /// Direct connect: dials the URL and runs the WebSocket handshake using
+    /// `tokio_tungstenite::connect_async`, which retains transparent
+    /// `wss://` TLS via `MaybeTlsStream`. Use this for plain TCP / TLS.
     pub async fn connect(url: &str, token: &str) -> anyhow::Result<Self> {
         let normalized = normalize_ws_url(url)?;
-        let mut req = normalized.as_str().into_client_request()
-            .with_context(|| format!("invalid URL: {normalized}"))?;
-        let bearer = format!("Bearer {token}");
-        req.headers_mut().insert(
-            "Authorization",
-            HeaderValue::from_str(&bearer)
-                .map_err(|e| anyhow!("invalid token (cannot be HTTP header value): {e}"))?,
-        );
+        let req = build_request(&normalized, token)?;
         let (ws, _resp) = connect_async(req).await
             .with_context(|| format!("failed to connect to {normalized}"))?;
+        let (tx, rx) = ws.split();
+        Ok(Self::from_split(Box::pin(tx), Box::pin(rx)))
+    }
 
-        let (ws_tx, ws_rx) = ws.split();
+    /// Run the WebSocket handshake on a caller-provided byte stream — the
+    /// stream has already been dialed (e.g. via `motif_net::dial`). The URL
+    /// is used for the WS upgrade `Host` header / origin negotiation only;
+    /// no DNS or TCP connect happens here.
+    ///
+    /// Note: tungstenite's `client_async` does *not* run TLS, so callers
+    /// must pass a plaintext stream (or wrap their own TLS). This is the
+    /// path used by the `--via tailscale://…` branch.
+    pub async fn connect_with_stream<S>(
+        url:    &str,
+        token:  &str,
+        stream: S,
+    ) -> anyhow::Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let normalized = normalize_ws_url(url)?;
+        let req = build_request(&normalized, token)?;
+        let (ws, _resp) = client_async(req, stream).await
+            .with_context(|| format!("ws handshake on supplied stream for {normalized}"))?;
+        let (tx, rx) = ws.split();
+        Ok(Self::from_split(Box::pin(tx), Box::pin(rx)))
+    }
+
+    fn from_split(ws_tx: WsSink, ws_rx: WsRx) -> Self {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
         let pending_for_reader = Arc::clone(&pending);
         let reader = tokio::spawn(reader_task(ws_rx, pending_for_reader, notif_tx));
 
-        Ok(Self {
+        Self {
             ws_tx,
             next_id: AtomicU64::new(1),
             pending,
             notif_rx: Some(notif_rx),
             reader,
-        })
+        }
     }
 
     /// Move the notification stream out so it can be polled independently of
@@ -138,6 +169,18 @@ impl Client {
             None     => None,
         }
     }
+}
+
+fn build_request(url: &str, token: &str) -> anyhow::Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    let mut req = url.into_client_request()
+        .with_context(|| format!("invalid URL: {url}"))?;
+    let bearer = format!("Bearer {token}");
+    req.headers_mut().insert(
+        "Authorization",
+        HeaderValue::from_str(&bearer)
+            .map_err(|e| anyhow!("invalid token (cannot be HTTP header value): {e}"))?,
+    );
+    Ok(req)
 }
 
 async fn reader_task(
