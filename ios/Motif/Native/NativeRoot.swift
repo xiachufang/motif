@@ -44,7 +44,9 @@ struct NativeRoot: View {
         if showDisconnect {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    Task { await motif.disconnect() }
+                    // Go back to session picker, not all the way to a
+                    // dead WS. detach() keeps the connection alive.
+                    Task { await motif.detach() }
                 } label: {
                     Image(systemName: "chevron.backward")
                 }

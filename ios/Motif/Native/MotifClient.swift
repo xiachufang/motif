@@ -94,6 +94,30 @@ final class MotifClient {
         return r.session
     }
 
+    /// Leave the currently attached session but keep the WS connection
+    /// alive — we go back to .connected so the UI lands on the session
+    /// picker again. Different from `disconnect()` which closes the WS.
+    func detach() async {
+        guard let rpc else {
+            state = .disconnected
+            return
+        }
+        do {
+            _ = try await rpc.call("session.detach")
+        } catch {
+            log.error("session.detach: \(String(describing: error), privacy: .public)")
+            // Even if the server-side detach failed, locally tear down so
+            // the user can still get back to the picker.
+        }
+        // Close any per-PTY output streams so the next attach starts fresh.
+        for (_, pair) in outputStreams { pair.1.finish() }
+        outputStreams.removeAll()
+        ptys = []
+        views = []
+        activeViewID = nil
+        state = .connected
+    }
+
     func attach(sessionName: String) async throws {
         guard let rpc else { throw RpcClient.RpcError.notConnected }
         let r = try await rpc.call(
