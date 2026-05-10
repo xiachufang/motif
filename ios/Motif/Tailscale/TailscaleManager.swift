@@ -31,6 +31,10 @@ final class TailscaleManager {
     private var apiClient: LocalAPIClient?
     private var busProcessor: MessageProcessor?
     private var busConsumer: BusConsumer?
+    /// True once we've pushed startLoginInteractive for the current node
+    /// instance, so an Up()-driven NeedsLogin doesn't ask the user for a
+    /// fresh login URL on every bus tick.
+    private var loginInteractivePushed: Bool = false
 
     init(hostName: String = "motif-ios") {
         self.hostName = hostName
@@ -83,27 +87,18 @@ final class TailscaleManager {
                 consumer: consumer
             )
             log.notice("IPN bus subscribed")
+            loginInteractivePushed = false
 
-            // For interactive (no auth-key) flow, explicitly kick off the
-            // login state machine. Without this the bus stays quiet because
-            // tsnet has no reason to start the auth dance — it'll only do so
-            // on the first listen/dial call.
-            if authKey == nil {
-                do {
-                    try await api.startLoginInteractive()
-                    log.notice("startLoginInteractive ok")
-                } catch {
-                    log.error("startLoginInteractive: \(String(describing: error), privacy: .public)")
-                    // Not fatal — the bus may still surface a URL once tsnet
-                    // realises it needs login on its own.
-                }
-            }
-
+            // We do NOT eagerly call startLoginInteractive here. tsnet will
+            // read the cached state directory (Documents/tailscale) and
+            // either transition straight to .Running (cached creds still
+            // valid — the common path on app relaunch) or hit .NeedsLogin
+            // (fresh install / expired cred). Only in the second case will
+            // busDidReceive push startLoginInteractive to surface the URL.
+            //
             // Run `up()` in the background — it blocks until the node is
-            // usable (which for interactive flow means the user has finished
-            // signing in). Don't make `start()` await on it; the bus is the
-            // primary state driver and we want the UI to reflect .needsAuth
-            // / .running as the bus reports them.
+            // usable. start() returns once the bus is hooked up and lets
+            // bus-driven transitions update UI.
             Task { [weak self] in
                 do {
                     try await node.up()
@@ -294,8 +289,21 @@ final class TailscaleManager {
             case .Running:
                 Task { await self.refreshAddresses() }
             case .NeedsLogin:
-                // Stay in .starting / .needsAuth; BrowseToURL drives the UI.
-                break
+                // tsnet has confirmed there's no usable cached login. Push
+                // the interactive flow once so the bus emits BrowseToURL.
+                // (Skip if we've already pushed it for this node — repeated
+                // calls would just churn the URL.)
+                if !loginInteractivePushed, let api = apiClient {
+                    loginInteractivePushed = true
+                    Task { [log] in
+                        do {
+                            try await api.startLoginInteractive()
+                            log.notice("startLoginInteractive ok (state=NeedsLogin)")
+                        } catch {
+                            log.error("startLoginInteractive: \(String(describing: error), privacy: .public)")
+                        }
+                    }
+                }
             case .Stopped:
                 state = .stopped
             default:

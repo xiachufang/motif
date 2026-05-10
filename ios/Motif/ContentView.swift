@@ -61,6 +61,13 @@ struct ContentView: View {
         }
         .task {
             await appState.startServerIfNeeded()
+            // Auto-resume Tailscale if a cached login is present. tsnet
+            // reads the state dir on its own; if creds are still valid
+            // we go straight to .running with no UI prompt. If they're
+            // not, busDidReceive will push the login URL via
+            // startLoginInteractive, which surfaces as a Safari sheet
+            // in Settings (which the user can keep closed for now).
+            await appState.tailscale.start(authKey: nil)
         }
     }
 }
