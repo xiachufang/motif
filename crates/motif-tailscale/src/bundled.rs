@@ -118,8 +118,16 @@ impl TsServer {
         eprintln!("[list_peers] calling fetch_localapi");
         let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
         eprintln!("[list_peers] fetch ok body_len={}", raw.len());
-        let status: StatusJson = serde_json::from_slice(&raw)
-            .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))?;
+        // Dump body for offline inspection.
+        let _ = std::fs::write("/tmp/motif-localapi-body.json", &raw);
+        eprintln!("[list_peers] body dumped to /tmp/motif-localapi-body.json");
+        let status: StatusJson = match serde_json::from_slice(&raw) {
+            Ok(s) => { eprintln!("[list_peers] json ok"); s }
+            Err(e) => {
+                eprintln!("[list_peers] json ERR: {e}");
+                return Err(TsError::Native(format!("LocalAPI status JSON: {e}")));
+            }
+        };
         eprintln!("[list_peers] json parsed peer_count={}",
             status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
         let mut peers = Vec::with_capacity(status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
