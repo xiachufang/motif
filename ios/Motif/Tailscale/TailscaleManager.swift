@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import OSLog
 @preconcurrency import TailscaleKit
@@ -189,12 +190,26 @@ final class TailscaleManager {
     }
 
     /// Build a URLSession that routes all traffic through this tsnet node's
-    /// SOCKS5 loopback. Use this for the WS connection to motifd — it skips
-    /// the LocalHTTPServer + TailscaleProxy detour the WebView used to
-    /// need.
+    /// HTTP CONNECT loopback proxy. tsnet's loopback listener serves both
+    /// SOCKS5 and HTTP CONNECT on the same port. Going via CONNECT (not
+    /// SOCKS5) means URLSession passes the hostname through to the proxy
+    /// instead of trying to resolve it locally — so MagicDNS names like
+    /// `*.ts.net` resolve correctly inside tsnet and we don't need to
+    /// pre-substitute the IP ourselves.
     func makeURLSession() async throws -> URLSession {
         guard let node else { throw DialError.notRunning }
-        let (config, _) = try await URLSessionConfiguration.tailscaleSession(node)
+        let loopback = try await node.loopback()
+        guard let ipStr = loopback.ip,
+              let port = loopback.port,
+              let portU16 = UInt16(exactly: port) else {
+            throw DialError.notRunning
+        }
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ipStr),
+                                            port: NWEndpoint.Port(rawValue: portU16)!)
+        let proxy = ProxyConfiguration(httpCONNECTProxy: endpoint)
+        proxy.applyCredential(username: "tsnet", password: loopback.proxyCredential)
+        let config = URLSessionConfiguration.default
+        config.proxyConfigurations = [proxy]
         return URLSession(configuration: config)
     }
 

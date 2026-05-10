@@ -5,8 +5,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-
             if appState.servers.activeServer == nil {
                 WelcomeView()
             } else {

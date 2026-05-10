@@ -53,9 +53,10 @@ final class MotifClient {
             return
         }
 
-        // iOS's resolver doesn't know `*.ts.net`. URLSession resolves the
-        // hostname BEFORE handing the connection to the SOCKS5 proxy, so
-        // we have to map MagicDNS names to a tailnet IP ourselves.
+        // tsnet's HTTP CONNECT proxy passes hostnames through, so MagicDNS
+        // (`*.ts.net`) resolves on the proxy side. As a safety net for any
+        // build/config combo that ends up resolving locally, we still
+        // try the IP rewrite if we happen to have a peer match.
         let resolvedHost = await tailscale.resolveTailnetHost(server.host) ?? server.host
         if resolvedHost != server.host {
             log.notice("resolved \(server.host, privacy: .public) -> \(resolvedHost, privacy: .public)")
