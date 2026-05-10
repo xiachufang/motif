@@ -83,7 +83,7 @@ final class MotifClient {
         }
     }
 
-    func createSession(name: String, workdir: String?) async throws -> MotifProto.SessionInfo {
+    func createSession(name: String, workdir: String) async throws -> MotifProto.SessionInfo {
         guard let rpc else { throw RpcClient.RpcError.notConnected }
         let r = try await rpc.call(
             "session.create",

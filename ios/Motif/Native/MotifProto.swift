@@ -20,7 +20,10 @@ enum MotifProto {
 
     struct SessionCreateParams: Codable {
         var name: String
-        var workdir: String?
+        // motif-server's CreateParams.workdir is `PathBuf` (non-Optional);
+        // sending null here is a deserialize error on the wire. We require
+        // a value at the call site instead.
+        var workdir: String
     }
 
     struct SessionCreateResult: Codable {
