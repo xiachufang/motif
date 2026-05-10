@@ -10,26 +10,59 @@ struct NativeRoot: View {
     @Environment(AppState.self) private var appState
     @State private var routerDelegate: AttachDetachDelegate?
 
-    /// The active server we're connecting to. Connection re-runs whenever
-    /// the user switches servers or reloads — we tag the .task with this id.
-    private var activeServerID: String {
-        appState.servers.activeServer?.id.uuidString ?? ""
+    /// Re-key the connection .task whenever the active server changes OR
+    /// tsnet flips to .running. The latter is critical: tsnet's loopback
+    /// proxy refuses CONNECT (HTTP 403) until the node has actually joined
+    /// the tailnet, so attempting motifd's WS upgrade before that gives a
+    /// "network connection lost" with no useful message.
+    private var connectKey: String {
+        let id = appState.servers.activeServer?.id.uuidString ?? ""
+        let ts = isTailscaleRunning ? "up" : "wait"
+        return "\(id)|\(ts)"
+    }
+
+    private var isTailscaleRunning: Bool {
+        if case .running = appState.tailscale.state { return true }
+        return false
     }
 
     var body: some View {
         Group {
-            switch motif.state {
-            case .disconnected, .connecting:
-                connectingView
-            case .failed(let m):
-                failedView(message: m)
-            case .connected, .attached:
-                routerView
+            if !isTailscaleRunning {
+                waitingForTailscaleView
+            } else {
+                switch motif.state {
+                case .disconnected, .connecting:
+                    connectingView
+                case .failed(let m):
+                    failedView(message: m)
+                case .connected, .attached:
+                    routerView
+                }
             }
         }
-        .task(id: activeServerID) {
+        .task(id: connectKey) {
+            guard isTailscaleRunning else { return }
             guard let server = appState.servers.activeServer else { return }
             await motif.connect(server: server, tailscale: appState.tailscale)
+        }
+    }
+
+    private var waitingForTailscaleView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("Waiting for Tailscale…").foregroundStyle(.secondary)
+            Text(tailscaleStatusHint).font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    private var tailscaleStatusHint: String {
+        switch appState.tailscale.state {
+        case .stopped:           return "tsnet stopped"
+        case .starting:          return "joining tailnet…"
+        case .needsAuth:         return "needs login (open Settings)"
+        case .running:           return ""
+        case .failed(let m):     return m
         }
     }
 

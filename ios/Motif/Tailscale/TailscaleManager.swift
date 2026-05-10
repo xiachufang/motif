@@ -104,10 +104,10 @@ final class TailscaleManager {
                 do {
                     try await node.up()
                     await self?.refreshAddresses()
-                    await self?.log.notice("node.up returned (connected)")
+                    self?.log.notice("node.up returned (connected)")
                 } catch {
-                    await self?.log.error("node.up: \(String(describing: error), privacy: .public)")
-                    await self?.handleUpFailure(error)
+                    self?.log.error("node.up: \(String(describing: error), privacy: .public)")
+                    self?.handleUpFailure(error)
                 }
             }
             log.notice("Tailscale start kicked off (authKey=\(authKey == nil ? "no" : "yes", privacy: .public))")
