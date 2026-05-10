@@ -1,9 +1,12 @@
 import Foundation
 import Observation
+import OSLog
 
 @Observable
 @MainActor
 final class AppState {
+    private let log = Logger(subsystem: "io.allsunday.motif", category: "AppState")
+
     enum ServerState: Equatable {
         case starting
         case running(port: UInt16)
@@ -47,6 +50,7 @@ final class AppState {
             let port = try await s.start()
             serverState = .running(port: port)
         } catch {
+            log.error("local http server start: \(String(describing: error), privacy: .public)")
             serverState = .failed(message: String(describing: error))
         }
     }

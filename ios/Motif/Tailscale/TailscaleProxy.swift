@@ -135,7 +135,10 @@ actor TailscaleProxy {
         while await !cancelBox.cancelled {
             let chunk: Data? = await withCheckedContinuation { cont in
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { data, _, isComplete, err in
-                    if err != nil { cont.resume(returning: nil); return }
+                    if let err {
+                        log.error("inbound recv: \(String(describing: err), privacy: .public)")
+                        cont.resume(returning: nil); return
+                    }
                     if let data, !data.isEmpty {
                         cont.resume(returning: data)
                     } else if isComplete {

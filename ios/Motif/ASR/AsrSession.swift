@@ -97,13 +97,22 @@ actor AsrSession {
         req.frameState = state
         req.audioData = opus
         let metadata: [String: Any] = ["extra": [String: Any](), "timestamp_ms": timestampMs]
-        if let mj = try? JSONSerialization.data(withJSONObject: metadata, options: []),
-           let s = String(data: mj, encoding: .utf8) {
-            req.payload = s
+        do {
+            let mj = try JSONSerialization.data(withJSONObject: metadata, options: [])
+            if let s = String(data: mj, encoding: .utf8) {
+                req.payload = s
+            } else {
+                log.error("metadata json not utf8 (frame \(self.frameIndex, privacy: .public))")
+            }
+        } catch {
+            log.error("metadata json: \(String(describing: error), privacy: .public)")
         }
 
-        if let bytes = try? req.serializedData() {
-            try? await task.send(.data(bytes))
+        do {
+            let bytes = try req.serializedData()
+            try await task.send(.data(bytes))
+        } catch {
+            log.error("ws send TaskRequest (frame \(self.frameIndex, privacy: .public)): \(String(describing: error), privacy: .public)")
         }
         frameIndex += 1
     }
@@ -117,8 +126,11 @@ actor AsrSession {
         req.serviceName = "ASR"
         req.methodName = "FinishSession"
         req.requestID = requestID
-        if let bytes = try? req.serializedData() {
-            try? await task.send(.data(bytes))
+        do {
+            let bytes = try req.serializedData()
+            try await task.send(.data(bytes))
+        } catch {
+            log.error("ws send FinishSession: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -178,8 +190,13 @@ actor AsrSession {
                 "input_mode": "tool"
             ] as [String: Any]
         ]
-        let data = (try? JSONSerialization.data(withJSONObject: config, options: [])) ?? Data()
-        return String(data: data, encoding: .utf8) ?? "{}"
+        do {
+            let data = try JSONSerialization.data(withJSONObject: config, options: [])
+            return String(data: data, encoding: .utf8) ?? "{}"
+        } catch {
+            log.error("session config json: \(String(describing: error), privacy: .public)")
+            return "{}"
+        }
     }
 
     private func receiveLoop() async {
@@ -204,8 +221,11 @@ actor AsrSession {
     }
 
     private func handleIncoming(data: Data) {
-        guard let pb = try? Asr_AsrResponse(serializedBytes: data) else {
-            log.error("malformed AsrResponse pb (\(data.count, privacy: .public)B)")
+        let pb: Asr_AsrResponse
+        do {
+            pb = try Asr_AsrResponse(serializedBytes: data)
+        } catch {
+            log.error("AsrResponse pb parse failed (\(data.count, privacy: .public)B): \(String(describing: error), privacy: .public)")
             return
         }
         switch pb.messageType {
@@ -222,13 +242,20 @@ actor AsrSession {
         default:
             // Recognition payload arrives in result_json.
             guard !pb.resultJson.isEmpty,
-                  let jsonData = pb.resultJson.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
-            else { return }
+                  let jsonData = pb.resultJson.data(using: .utf8) else { return }
+            let obj: [String: Any]?
+            do {
+                obj = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+            } catch {
+                log.error("result_json parse: \(String(describing: error), privacy: .public); body: \(pb.resultJson.prefix(200), privacy: .public)")
+                return
+            }
+            guard let obj else { return }
 
+            let dict = obj
             // No `results` array → heartbeat; ignore (URLSessionWebSocketTask
             // already keeps the conn alive, so we don't need to bump a timer).
-            guard let results = obj["results"] as? [[String: Any]] else { return }
+            guard let results = dict["results"] as? [[String: Any]] else { return }
 
             // Find the most relevant text + interim flag.
             var text = ""

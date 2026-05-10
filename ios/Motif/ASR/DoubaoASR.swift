@@ -121,8 +121,11 @@ actor DoubaoASR {
         } else if tail.count > Self.bytesPerFrame {
             tail = tail.prefix(Self.bytesPerFrame)
         }
-        if let opus = try? encoder.encode(frame: Data(tail)) {
+        do {
+            let opus = try encoder.encode(frame: Data(tail))
             await session.sendFrame(opus: opus, state: .last)
+        } catch {
+            log.error("encode tail frame: \(String(describing: error), privacy: .public)")
         }
         await session.finish()
     }

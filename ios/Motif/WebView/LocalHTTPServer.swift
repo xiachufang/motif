@@ -98,9 +98,12 @@ actor LocalHTTPServer {
 
     private func readRequest(on connection: NWConnection, accumulated: Data) async {
         // Read up to header terminator. Static GETs have no body so we can stop there.
-        let chunk: Data? = await withCheckedContinuation { cont in
+        let chunk: Data? = await withCheckedContinuation { [log] cont in
             connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, error in
-                if error != nil { cont.resume(returning: nil); return }
+                if let error {
+                    log.error("receive: \(String(describing: error), privacy: .public)")
+                    cont.resume(returning: nil); return
+                }
                 cont.resume(returning: data)
             }
         }
@@ -217,23 +220,32 @@ actor LocalHTTPServer {
         }
 
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolvedFile, isDirectory: &isDir),
-              !isDir.boolValue,
-              let data = try? Data(contentsOf: fileURL)
-        else {
+        let exists = FileManager.default.fileExists(atPath: resolvedFile, isDirectory: &isDir)
+        var loadedData: Data?
+        if exists && !isDir.boolValue {
+            do {
+                loadedData = try Data(contentsOf: fileURL)
+            } catch {
+                log.error("read \(resolvedFile, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
+        guard let data = loadedData else {
             // Fall back to index.html for SPA-style deep links — except for asset paths.
             if !trimmed.hasPrefix("assets/") {
                 let fallback = webRoot.appendingPathComponent("index.html")
-                if let data = try? Data(contentsOf: fallback) {
+                do {
+                    let indexData = try Data(contentsOf: fallback)
                     send(
                         connection: connection,
                         status: 200,
                         statusText: "OK",
-                        body: headOnly ? Data() : data,
+                        body: headOnly ? Data() : indexData,
                         extraHeaders: ["Content-Type": "text/html; charset=utf-8"],
-                        bodyLength: data.count
+                        bodyLength: indexData.count
                     )
                     return
+                } catch {
+                    log.error("read fallback \(fallback.path, privacy: .public): \(String(describing: error), privacy: .public)")
                 }
             }
             send(connection: connection, status: 404, statusText: "Not Found", body: Data())

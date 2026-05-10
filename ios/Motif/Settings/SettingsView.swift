@@ -1,5 +1,8 @@
 import SwiftUI
 import AuthenticationServices
+import OSLog
+
+private let settingsLog = Logger(subsystem: "io.allsunday.motif", category: "SettingsView")
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
@@ -144,9 +147,10 @@ private struct AuthLinkButton: View {
                         using: url,
                         callbackURLScheme: "tailscale-callback"
                     )
+                } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+                    settingsLog.debug("ASWebAuthenticationSession cancelled by user")
                 } catch {
-                    // User cancelled or auth flow aborted; tsnet will still
-                    // complete on its own once they finish in any browser.
+                    settingsLog.error("ASWebAuthenticationSession failed: \(String(describing: error), privacy: .public)")
                 }
             }
         } label: {

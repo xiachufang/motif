@@ -42,7 +42,12 @@ final class TailscaleManager {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let dir = docs.appendingPathComponent("tailscale", isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                Logger(subsystem: "io.allsunday.motif", category: "Tailscale")
+                    .error("createDirectory \(dir.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
         }
         return dir.path
     }
@@ -104,7 +109,11 @@ final class TailscaleManager {
         busConsumer = nil
         apiClient = nil
         if let node {
-            try? await node.close()
+            do {
+                try await node.close()
+            } catch {
+                log.error("node.close: \(String(describing: error), privacy: .public)")
+            }
         }
         node = nil
     }

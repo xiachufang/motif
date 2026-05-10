@@ -39,8 +39,14 @@ final class JSBridge: NSObject {
     /// Push a typed event to the web side. Safe to call from any actor — we
     /// hop to MainActor before touching WKWebView.
     nonisolated func emit(_ event: String, payload: [String: Any]) {
-        let json = (try? JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed]))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+        let json: String
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed])
+            json = String(data: jsonData, encoding: .utf8) ?? "null"
+        } catch {
+            log.error("emit \(event, privacy: .public) payload serialize: \(String(describing: error), privacy: .public)")
+            json = "null"
+        }
         let eventLiteral = Self.escapeJSString(event)
         Task { @MainActor in
             guard let webView = self.webView else { return }
@@ -165,11 +171,17 @@ final class JSBridge: NSObject {
 
     nonisolated private static func escapeJSString(_ s: String) -> String {
         // Use JSONSerialization to get a safely-quoted JS string literal.
-        if let data = try? JSONSerialization.data(withJSONObject: [s], options: [.fragmentsAllowed]),
-           let arr = String(data: data, encoding: .utf8),
-           arr.count >= 2 {
-            // arr is like ["foo"]; strip the brackets
-            return String(arr.dropFirst().dropLast())
+        do {
+            let data = try JSONSerialization.data(withJSONObject: [s], options: [.fragmentsAllowed])
+            if let arr = String(data: data, encoding: .utf8), arr.count >= 2 {
+                // arr is like ["foo"]; strip the brackets
+                return String(arr.dropFirst().dropLast())
+            }
+            Logger(subsystem: "io.allsunday.motif", category: "JSBridge")
+                .error("escapeJSString: data not valid utf8 (\(data.count, privacy: .public)B)")
+        } catch {
+            Logger(subsystem: "io.allsunday.motif", category: "JSBridge")
+                .error("escapeJSString: \(String(describing: error), privacy: .public)")
         }
         return "\"\""
     }

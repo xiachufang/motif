@@ -1,10 +1,12 @@
 import Foundation
 import Security
+import OSLog
 
 /// Tiny wrapper around Keychain Generic Password items, scoped to one
 /// service identifier. We persist Doubao credentials here so they survive
 /// app reinstalls without ending up in iCloud backups.
 struct Keychain {
+    private static let log = Logger(subsystem: "io.allsunday.motif", category: "Keychain")
     let service: String
 
     func setData(_ data: Data, forKey key: String) {
@@ -16,7 +18,10 @@ struct Keychain {
             kSecValueData as String:        data,
             kSecAttrAccessible as String:   kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
-        SecItemAdd(attrs as CFDictionary, nil)
+        let status = SecItemAdd(attrs as CFDictionary, nil)
+        if status != errSecSuccess {
+            Self.log.error("SecItemAdd \(key, privacy: .public): OSStatus \(status)")
+        }
     }
 
     func getData(forKey key: String) -> Data? {
@@ -29,8 +34,12 @@ struct Keychain {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return data
+        if status == errSecItemNotFound { return nil }
+        if status != errSecSuccess {
+            Self.log.error("SecItemCopyMatching \(key, privacy: .public): OSStatus \(status)")
+            return nil
+        }
+        return item as? Data
     }
 
     func deleteData(forKey key: String) {
@@ -39,17 +48,28 @@ struct Keychain {
             kSecAttrService as String:  service,
             kSecAttrAccount as String:  key
         ]
-        SecItemDelete(q as CFDictionary)
+        let status = SecItemDelete(q as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            Self.log.error("SecItemDelete \(key, privacy: .public): OSStatus \(status)")
+        }
     }
 
     func setJSON<T: Encodable>(_ value: T, forKey key: String) {
-        if let data = try? JSONEncoder().encode(value) {
+        do {
+            let data = try JSONEncoder().encode(value)
             setData(data, forKey: key)
+        } catch {
+            Self.log.error("encode \(key, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
     func getJSON<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
         guard let data = getData(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            Self.log.error("decode \(key, privacy: .public): \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 }

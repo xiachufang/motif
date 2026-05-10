@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import OSLog
 
 struct WebViewContainer: UIViewRepresentable {
     let url: URL
@@ -38,6 +39,7 @@ struct WebViewContainer: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private let log = Logger(subsystem: "io.allsunday.motif", category: "WebView")
         var bridge: JSBridge?
 
 
@@ -52,7 +54,10 @@ struct WebViewContainer: UIViewRepresentable {
             }
             // Block navigations to external HTTP(S); open them via system browser instead.
             if let scheme = url.scheme, ["http", "https"].contains(scheme) {
-                await UIApplication.shared.open(url)
+                let opened = await UIApplication.shared.open(url)
+                if !opened {
+                    log.error("failed to open external url \(url.absoluteString, privacy: .public)")
+                }
                 return .cancel
             }
             return .allow

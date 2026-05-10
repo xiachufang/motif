@@ -136,7 +136,11 @@ actor AudioCapture {
         converter = nil
         continuation?.finish()
         continuation = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        } catch {
+            log.warning("setActive(false): \(String(describing: error), privacy: .public)")
+        }
         log.notice("AudioCapture stopped")
     }
 
