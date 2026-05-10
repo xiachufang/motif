@@ -158,8 +158,11 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
          \r\n",
     );
 
+    eprintln!("[fetch_localapi] connecting addr={addr}");
     let mut s = tokio::net::TcpStream::connect(addr).await?;
+    eprintln!("[fetch_localapi] connected, writing {} bytes", req.len());
     s.write_all(req.as_bytes()).await?;
+    eprintln!("[fetch_localapi] wrote, awaiting response");
     // Don't half-close the write side — tsnet's loopback server does
     // protocol detection between SOCKS5 and HTTP, and a write-FIN before
     // the server has identified the protocol can confuse it (observed:
@@ -173,12 +176,14 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
     let mut chunk = [0u8; 8 * 1024];
     loop {
         let n = s.read(&mut chunk).await?;
+        eprintln!("[fetch_localapi] read n={n}");
         if n == 0 { break; }
         if buf.len() + n > CAP {
             return Err(TsError::Native("LocalAPI response exceeded 1 MiB cap".into()));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+    eprintln!("[fetch_localapi] EOF, total={} bytes", buf.len());
 
     // Quick status-line check — if it's not 200, surface the line as the
     // error so misconfig is obvious.
