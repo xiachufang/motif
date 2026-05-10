@@ -26,3 +26,4 @@ ios/Motif/Resources/web/
 ios/vendor/*.xcframework/
 ios/vendor/libtailscale/
 ios/vendor/opus/
+ios/vendor/opus-build/

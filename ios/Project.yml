@@ -64,6 +64,9 @@ targets:
       - framework: vendor/TailscaleKit.xcframework
         embed: true
         codeSign: true
+      - framework: vendor/Opus.xcframework
+        embed: false
+        link: true
 
   MotifTests:
     type: bundle.unit-test
