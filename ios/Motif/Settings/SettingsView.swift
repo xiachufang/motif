@@ -365,15 +365,20 @@ private struct ServerEditSheet: View {
                         .buttonStyle(.plain)
                     }
                 }
-                if total > 0 {
-                    Toggle("Show all peers", isOn: $showAllPeers)
-                        .font(.footnote)
-                }
             }
         } header: {
-            HStack {
+            HStack(spacing: 12) {
                 Text("Discovered on tailnet")
                 Spacer()
+                Button {
+                    showAllPeers.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showAllPeers ? "checkmark.square.fill" : "square")
+                        Text("Show all")
+                    }
+                    .font(.footnote)
+                }
                 Button {
                     Task { await loadDiscovery() }
                 } label: {
