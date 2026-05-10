@@ -10,6 +10,7 @@ struct SessionListView: View {
     @State private var loading: Bool = false
     @State private var error: String?
     @State private var creatingName: String = ""
+    @State private var creatingWorkdir: String = "~"
     @State private var attaching: String?
 
     var body: some View {
@@ -58,14 +59,23 @@ struct SessionListView: View {
                 }
             }
 
-            Section("New session") {
+            Section {
                 TextField("name", text: $creatingName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                TextField("working directory", text: $creatingWorkdir)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
                 Button("Create + attach") {
                     Task { await createAndAttach() }
                 }
-                .disabled(creatingName.trimmingCharacters(in: .whitespaces).isEmpty || attaching != nil)
+                .disabled(!isCreateValid || attaching != nil)
+            } header: {
+                Text("New session")
+            } footer: {
+                Text("Working directory must exist on the server. ~ expands to the motifd user's home.")
+                    .font(.caption2)
             }
 
             if let error {
@@ -99,17 +109,24 @@ struct SessionListView: View {
 
     private func createAndAttach() async {
         let name = creatingName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        let workdir = creatingWorkdir.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !workdir.isEmpty else { return }
         attaching = name
         defer { attaching = nil }
         do {
-            _ = try await motif.createSession(name: name, workdir: nil)
+            _ = try await motif.createSession(name: name, workdir: workdir)
             try await motif.attach(sessionName: name)
             creatingName = ""
+            creatingWorkdir = "~"
             router.push(CmRouterPath("/session", ["name": name]))
         } catch {
             self.error = "create \(name): \(error)"
         }
+    }
+
+    private var isCreateValid: Bool {
+        !creatingName.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !creatingWorkdir.trimmingCharacters(in: .whitespaces).isEmpty
     }
 }
 
