@@ -335,11 +335,11 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
                 }
             };
             // tsnet's first-start log includes a "To authenticate, visit:
-            // https://login.tailscale.com/a/<id>" line. Match generously
-            // on the URL prefix so format tweaks don't break us.
-            if line.contains("https://login.tailscale.com/")
-                || line.contains("https://controlplane.tailscale.com/")
-            {
+            // https://login.tailscale.com/a/<token>" line. Match the
+            // `/a/` path specifically so generic mentions of
+            // controlplane.tailscale.com / login.tailscale.com (e.g.
+            // network errors during shutdown) don't get promoted to WARN.
+            if line.contains("login.tailscale.com/a/") {
                 tracing::warn!(target: "motif_tailscale", "Tailscale auth needed: {}", line);
             } else {
                 tracing::debug!(target: "motif_tailscale::tsnet", "{}", line);
