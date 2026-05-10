@@ -82,6 +82,28 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
     };
     let app = ws::router(state);
 
+    if let Some(ts) = &cfg.tailscale {
+        tracing::info!(
+            hostname  = %ts.hostname,
+            state_dir = %ts.state_dir.display(),
+            port      = ts.port,
+            "embedded tailscale node bringing up",
+        );
+        if ts.authkey.is_none() && !ts.state_dir.join("tailscaled.state").exists() {
+            // First-time bring-up without authkey: libtailscale will print a
+            // login URL on stderr. Surface a hint so the user knows to
+            // expect it. Skip when the state dir already has a session — the
+            // node will reuse its persisted identity, no login needed.
+            tracing::warn!(
+                "tsnet has no authkey and {} appears empty; libtailscale will \
+                 print a Tailscale login URL on stderr — open it once in a \
+                 browser to authorize this node. After first auth the identity \
+                 is cached in the state dir.",
+                ts.state_dir.display(),
+            );
+        }
+    }
+
     let listener = motif_net::Listener::bind(&cfg.to_listen_config())
         .await
         .with_context(|| "failed to bind listener")?;

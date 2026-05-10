@@ -51,6 +51,9 @@ tracing-subscriber = { workspace = true }
 rust-embed         = { workspace = true }
 tempfile           = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 motif-proto = { path = "../motif-proto" }
 tokio       = { workspace = true }
