@@ -42,6 +42,28 @@ function getSpeechCtor(): SpeechCtor | null {
   return C ?? null;
 }
 
+// ── native ASR bridge (iOS app) ─────────────────────────────────────
+//
+// When running inside the Motif iOS app, window.motifNative is injected
+// with isNative=true. We prefer it over Web Speech API because (a) it
+// works without a network round-trip to Apple's servers, and (b) the
+// quality on Doubao for Mandarin is markedly better than iOS Safari's
+// SpeechRecognition implementation.
+type MotifBridge = {
+  invoke: (type: string, params?: Record<string, unknown>) => Promise<unknown>;
+};
+type MotifNative = {
+  isNative?: boolean;
+  on: (event: string, handler: (payload: unknown) => void) => () => void;
+};
+function getNativeASR(): { motif: MotifBridge; native: MotifNative } | null {
+  const w = window as unknown as { motif?: MotifBridge; motifNative?: MotifNative };
+  if (w.motifNative?.isNative && w.motif) {
+    return { motif: w.motif, native: w.motifNative };
+  }
+  return null;
+}
+
 function encodeToB64(s: string): string {
   const u8 = new TextEncoder().encode(s);
   let bin = "";
@@ -62,6 +84,8 @@ export default function MobileInputDock({ ptyId }: Props) {
   const inputRef    = useRef<HTMLInputElement | null>(null);
   const recogRef    = useRef<SpeechRecognitionLike | null>(null);
   const speechCtor  = useMemo(getSpeechCtor, []);
+  const nativeASR   = useMemo(getNativeASR, []);
+  const nativeUnsubsRef = useRef<Array<() => void>>([]);
 
   const send = useCallback((bytes: string) => {
     if (!client || !bytes) return;
@@ -111,12 +135,52 @@ export default function MobileInputDock({ ptyId }: Props) {
 
   // ── voice ────────────────────────────────────────────────────────
   const stopRecognition = useCallback(() => {
+    if (nativeASR) {
+      void nativeASR.motif.invoke("asr.stop");
+      // The actual setRec(false) lands when the bridge fires asr.stopped,
+      // so we don't flip state here — that way the UI accurately reflects
+      // the native pipeline's finalization.
+      return;
+    }
     const r = recogRef.current;
     if (!r) return;
     try { r.stop(); } catch { /* ignore */ }
-  }, []);
+  }, [nativeASR]);
 
   const startRecognition = useCallback(() => {
+    if (nativeASR) {
+      if (recording) return;
+      // Subscribe before invoking start so we don't miss the first event.
+      nativeUnsubsRef.current.forEach(fn => fn());
+      nativeUnsubsRef.current = [
+        nativeASR.native.on("asr.partial", (p) => {
+          const text = (p as { text?: string })?.text ?? "";
+          setInter(text);
+        }),
+        nativeASR.native.on("asr.final", (p) => {
+          const text = (p as { text?: string })?.text ?? "";
+          if (text) setText(prev => (prev ? prev + " " : "") + text);
+          setInter("");
+        }),
+        nativeASR.native.on("asr.stopped", () => {
+          setRec(false);
+          setInter("");
+          nativeUnsubsRef.current.forEach(fn => fn());
+          nativeUnsubsRef.current = [];
+        }),
+        nativeASR.native.on("asr.error", () => {
+          setRec(false);
+          setInter("");
+        })
+      ];
+      setRec(true);
+      void nativeASR.motif.invoke("asr.start").catch(() => {
+        setRec(false);
+        nativeUnsubsRef.current.forEach(fn => fn());
+        nativeUnsubsRef.current = [];
+      });
+      return;
+    }
     if (!speechCtor || recording) return;
     try {
       const r = new speechCtor();
@@ -147,13 +211,20 @@ export default function MobileInputDock({ ptyId }: Props) {
     } catch {
       setRec(false);
     }
-  }, [recording, speechCtor]);
+  }, [recording, speechCtor, nativeASR]);
 
   // Stop recognition when leaving voice mode or unmounting.
   useEffect(() => {
     if (mode !== "voice") stopRecognition();
   }, [mode, stopRecognition]);
-  useEffect(() => () => { try { recogRef.current?.abort(); } catch { /* ignore */ } }, []);
+  useEffect(() => () => {
+    try { recogRef.current?.abort(); } catch { /* ignore */ }
+    nativeUnsubsRef.current.forEach(fn => fn());
+    nativeUnsubsRef.current = [];
+    if (nativeASR) {
+      void nativeASR.motif.invoke("asr.stop").catch(() => { /* ignore */ });
+    }
+  }, [nativeASR]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
