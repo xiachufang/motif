@@ -24,6 +24,9 @@ packages:
   TalkerCommon:
     url: https://github.com/gfreezy/talkercommon.git
     from: "20260505.0.3"
+  TalkerMacro:
+    url: https://github.com/gfreezy/talkermacro.git
+    from: "20241210.1.3"
 
 targets:
   Motif:
@@ -82,6 +85,8 @@ targets:
       - package: SwiftTerm
       - package: TalkerCommon
         product: TalkerCommonRouter
+      - package: TalkerMacro
+        product: TalkerMacro
 
   MotifTests:
     type: bundle.unit-test

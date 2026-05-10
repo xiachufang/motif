@@ -29,6 +29,47 @@ private struct RpcEmpty: Encodable {}
 final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "RpcClient.ws")
 
+    /// Suspends until either `didOpenWithProtocol` (success) or
+    /// `didCompleteWithError` (failure) fires. URLSession's WS task
+    /// `resume()` returns immediately — without this gate, callers send
+    /// frames into a half-open task and URLSession aborts with -1005
+    /// / -1000 / -1001 when the upgrade dance hasn't actually happened
+    /// yet. Repeated calls return the cached result.
+    private let openLock = NSLock()
+    private var openResult: Result<Void, Error>?
+    private var openContinuations: [CheckedContinuation<Void, Error>] = []
+
+    func waitForOpen() async throws {
+        openLock.lock()
+        if let result = openResult {
+            openLock.unlock()
+            try result.get()
+            return
+        }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            openContinuations.append(cont)
+            openLock.unlock()
+        }
+    }
+
+    private func resolveOpen(_ result: Result<Void, Error>) {
+        openLock.lock()
+        if openResult != nil {
+            openLock.unlock()
+            return
+        }
+        openResult = result
+        let waiters = openContinuations
+        openContinuations.removeAll()
+        openLock.unlock()
+        for cont in waiters {
+            switch result {
+            case .success:        cont.resume()
+            case .failure(let e): cont.resume(throwing: e)
+            }
+        }
+    }
+
     func urlSession(
         _ session: URLSession,
         webSocketTask: URLSessionWebSocketTask,
@@ -36,6 +77,7 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
     ) {
         log.notice("ws didOpen (protocol=\(proto ?? "(none)", privacy: .public))")
         FileLog.note("ws", "didOpen protocol=\(proto ?? "(none)")")
+        resolveOpen(.success(()))
     }
 
     func urlSession(
@@ -50,9 +92,42 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // Whether or not the task completed cleanly, anyone waiting for
+        // `didOpen` needs to be unblocked: didCompleteWithError replaces
+        // didOpen if the task dies before the upgrade.
+        if let error {
+            resolveOpen(.failure(error))
+        } else {
+            resolveOpen(.success(()))
+        }
         if let error {
             log.error("ws task didComplete error: \(String(describing: error), privacy: .public)")
-            FileLog.note("ws", "didComplete error=\(error)")
+            // Cracking open the NSError tells us which transport layer
+            // actually died: kCFStreamError* maps to the BSD error from
+            // the SOCKS5 dial; an underlying NWError shows up here too
+            // when the proxy itself rejected. Plain -1005 with no
+            // detail = peer RST or motifd not listening; -1003 = host
+            // not found; -1004 = connection refused at the proxy hop.
+            let ns = error as NSError
+            var bits: [String] = []
+            bits.append("domain=\(ns.domain)")
+            bits.append("code=\(ns.code)")
+            if let urlErr = error as? URLError {
+                bits.append("urlerr=\(urlErr.code.rawValue)")
+                if let host = urlErr.failingURL?.host { bits.append("host=\(host)") }
+            }
+            if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError {
+                bits.append("under=\(underlying.domain)/\(underlying.code)")
+                if let s = underlying.userInfo["NSDescription"] as? String { bits.append("under.desc=\(s)") }
+            }
+            for k in ["_kCFStreamErrorDomainKey", "_kCFStreamErrorCodeKey",
+                      "_NSURLErrorNWPathKey", "_NSURLErrorNWResolutionReportKey",
+                      "_NSURLErrorFailingURLSessionTaskErrorKey"] {
+                if let v = ns.userInfo[k] {
+                    bits.append("\(k)=\(String(describing: v).prefix(180))")
+                }
+            }
+            FileLog.note("ws", "didComplete err " + bits.joined(separator: " "))
         } else {
             log.notice("ws task didComplete (no error)")
             FileLog.note("ws", "didComplete (no error)")
@@ -109,9 +184,13 @@ actor RpcClient {
     }
 
     /// Open a WebSocket. The caller supplies a configured URLSession (so the
-    /// caller can route through tsnet's HTTP CONNECT proxy) and a URLRequest
-    /// with any pre-set headers (Authorization etc).
-    func connect(urlSession: URLSession, request: URLRequest) async throws {
+    /// caller can route through tsnet's HTTP CONNECT proxy), a URLRequest
+    /// with any pre-set headers (Authorization etc), and the URLSession's
+    /// `WSLogDelegate` — `connect` only returns once that delegate has
+    /// observed `didOpenWithProtocol`. Without that gate, callers race
+    /// `task.send(...)` into a half-opened upgrade and URLSession aborts
+    /// with -1005/-1000/-1001 while the dance is still in flight.
+    func connect(urlSession: URLSession, request: URLRequest, delegate: WSLogDelegate) async throws {
         let headerDigest = (request.allHTTPHeaderFields ?? [:])
             .map { "\($0.key)=\($0.value.prefix(40))" }
             .joined(separator: " | ")
@@ -125,6 +204,10 @@ actor RpcClient {
         let task = urlSession.webSocketTask(with: request)
         self.task = task
         task.resume()
+        // Block until the upgrade actually completes. didOpen → success;
+        // didCompleteWithError before didOpen → throw, caller surfaces a
+        // .failed state instead of the bogus "connected" we used to set.
+        try await delegate.waitForOpen()
         receiveTask = Task { await self.receiveLoop() }
     }
 

@@ -56,7 +56,7 @@ struct PtyTerminal: UIViewRepresentable {
                 for await data in stream {
                     guard !Task.isCancelled else { return }
                     let bytes = [UInt8](data)
-                    await MainActor.run { self?.terminal?.feed(byteArray: bytes[...]) }
+                    await self?.terminal?.feed(byteArray: bytes[...])
                 }
             }
         }

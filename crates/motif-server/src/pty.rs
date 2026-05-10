@@ -5,12 +5,14 @@
 //!   - a writer (sync; clients call `pty.write` rarely enough that brief lock
 //!     contention is fine)
 //!   - a 1MB ring buffer of recent stdout bytes for replay on attach
-//!   - per-client (cols, rows) preferences and a "primary" client whose size
-//!     drives the PTY master. Primary is set on creation, on `pty.write`, and
-//!     when a client activates this PTY's view; passive observers (e.g. a TUI
-//!     mirroring in a small tmux pane) don't shrink the PTY. If primary
-//!     detaches, effective size falls back to the largest reported size so
-//!     the PTY isn't stuck at a stale value.
+//!   - per-client (cols, rows) preferences. The master follows the
+//!     currently-active client's size: `primary` is set on creation, on
+//!     `pty.write`, and on `view.activate`, so whoever is most recently
+//!     typing or focusing the tab decides the grid. Non-primary clients'
+//!     sizes are stashed but ignored, and if the active client hasn't
+//!     reported a size yet (just marked, no `pty.resize` in flight) the
+//!     master is left at its last value rather than falling back to a
+//!     passive viewer's dimensions.
 //!
 //! A dedicated OS thread reads from the master in chunks, appends to the ring,
 //! and publishes `Event::PtyOutput` via the back-pointer to its Session.
@@ -58,11 +60,14 @@ pub struct Pty {
 struct PtyState {
     cols:  u16,
     rows:  u16,
-    /// Per-client (cols, rows) preferences. The primary's entry drives the
-    /// master; non-primary entries are kept so we can recover a sensible size
-    /// if the primary detaches.
+    /// Per-client (cols, rows) preferences. Only the primary's entry
+    /// drives the master; non-primary entries are kept around so a
+    /// `mark_primary` handover can immediately apply the new active
+    /// client's already-reported size without an extra round trip.
     sizes: HashMap<ClientId, (u16, u16)>,
-    /// Interactive owner of the PTY. None only after primary detaches.
+    /// Currently-active client (last writer / last view activator). None
+    /// after the previous active client detaches and before someone new
+    /// engages.
     primary: Option<ClientId>,
     alive: bool,
     ring:  VecDeque<u8>,
@@ -189,20 +194,19 @@ pub struct BlockSegments {
     pub output_truncated:  bool,
 }
 
-/// Pick the master size: primary's preference if known, else the largest
-/// reported size (so a passive viewer can keep the PTY usable until someone
-/// becomes primary). None only when `sizes` is empty AND there is no primary
-/// — caller leaves the master size unchanged.
+/// Pick the master size: the currently-active client's reported size, or
+/// `None` if there's no active client (caller leaves the master alone)
+/// or the active client hasn't sent a `pty.resize` yet (we don't want to
+/// snap the master to a passive viewer's smaller dimensions while the
+/// new primary is still mid-handover). Non-primary clients' sizes don't
+/// influence the result — they sit in `sizes` so that the next
+/// `mark_primary` flip can apply immediately if the new active client
+/// has already reported.
 fn compute_effective(
     sizes:   &HashMap<ClientId, (u16, u16)>,
     primary: Option<&ClientId>,
 ) -> Option<(u16, u16)> {
-    if let Some(p) = primary {
-        if let Some(&sz) = sizes.get(p) {
-            return Some(sz);
-        }
-    }
-    sizes.values().copied().reduce(|(c1, r1), (c2, r2)| (c1.max(c2), r1.max(r2)))
+    primary.and_then(|p| sizes.get(p).copied())
 }
 
 /// Bump state + resize the master if the target differs from current.
@@ -787,41 +791,49 @@ mod size_tests {
     }
 
     #[test]
-    fn primary_drives_when_present() {
+    fn primary_drives_master_when_size_is_known() {
+        // Active client wins: web's 200x60 is what claude paints to,
+        // even though tui is also attached at 80x20.
         let m = sizes(&[("web", (200, 60)), ("tui", (80, 20))]);
         let web = "web".to_string();
         assert_eq!(compute_effective(&m, Some(&web)), Some((200, 60)));
     }
 
     #[test]
-    fn fallback_to_max_without_primary() {
-        // No primary → biggest reported wins (per-axis max).
-        let m = sizes(&[("a", (200, 60)), ("b", (80, 100))]);
-        assert_eq!(compute_effective(&m, None), Some((200, 100)));
+    fn handover_to_new_primary_uses_their_already_reported_size() {
+        // mark_primary(tui) after tui has already sent pty.resize: the
+        // new active client's stashed size applies immediately, without
+        // a fresh round trip.
+        let m = sizes(&[("web", (200, 60)), ("tui", (80, 20))]);
+        let tui = "tui".to_string();
+        assert_eq!(compute_effective(&m, Some(&tui)), Some((80, 20)));
     }
 
     #[test]
-    fn fallback_to_max_when_primary_has_no_size() {
-        // Primary set but never sent pty.resize: don't shrink to a passive
-        // viewer's smaller size, hold at the largest known.
+    fn primary_marked_but_no_size_yields_none() {
+        // mark_primary(web) just landed (e.g., from pty.write), but web
+        // hasn't reported a size yet. We deliberately return None so
+        // the caller leaves the master pinned — falling through to a
+        // passive viewer's smaller dimensions would make claude redraw
+        // at the wrong size for ~one round trip.
         let m = sizes(&[("tui", (80, 20))]);
         let web = "web".to_string();
-        assert_eq!(compute_effective(&m, Some(&web)), Some((80, 20)));
+        assert_eq!(compute_effective(&m, Some(&web)), None);
     }
 
     #[test]
-    fn empty_sizes_with_no_primary_yields_none() {
-        let m = sizes(&[]);
+    fn no_primary_yields_none() {
+        // Right after the active client detaches and before anyone new
+        // types or activates a tab. Master holds its last value until
+        // somebody engages.
+        let m = sizes(&[("tui", (80, 20))]);
         assert_eq!(compute_effective(&m, None), None);
     }
 
     #[test]
-    fn passive_observer_doesnt_shrink_primary() {
-        // The dev-tmux scenario: web is primary at 200x60, TUI joins at
-        // 80x20 — effective stays at primary's 200x60.
-        let m = sizes(&[("web", (200, 60)), ("tui", (80, 20))]);
-        let web = "web".to_string();
-        assert_eq!(compute_effective(&m, Some(&web)), Some((200, 60)));
+    fn empty_sizes_yields_none() {
+        let m = sizes(&[]);
+        assert_eq!(compute_effective(&m, None), None);
     }
 }
 

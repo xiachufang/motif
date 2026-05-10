@@ -43,7 +43,7 @@ struct ContentView: View {
     /// Dev-only Tailscale auth key. tsnet uses this only when there are
     /// no usable cached credentials in `Documents/tailscale/`; otherwise
     /// it's ignored and we resume from cache.
-    private static let debugAuthKey = "tskey-auth-kwzJU9EMHu11CNTRL-VAKoHNUdme4FfZz4Mcjge4oTtzjy1d8re"
+    private static let debugAuthKey = "tskey-auth-kgGZLTq6qP11CNTRL-MAm9erG4H263sAaqjM6426aVZU17p8W2"
     #endif
 }
 

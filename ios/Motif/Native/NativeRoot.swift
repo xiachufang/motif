@@ -1,5 +1,6 @@
 import SwiftUI
 import TalkerCommonRouter
+import TalkerMacro
 
 /// Top-level native router after a server is configured. Owns the
 /// MotifClient lifecycle: connect → list/attach a session → present the
@@ -9,6 +10,13 @@ struct NativeRoot: View {
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
     @State private var routerDelegate: AttachDetachDelegate?
+
+    /// Generates `view(_ path: String, query: [String: String]) -> some View`
+    /// at compile time: a switch on `SessionView.path` that calls the
+    /// `init?(_:)` peer the `@Routable` macro added on each registered
+    /// view. Adding a new destination = adding a `@Routable("/x")` view
+    /// here, no manual switch maintenance.
+    #routeViews(SessionView.self, GitDiffPanel.self)
 
     /// Re-key the connection .task whenever the active server changes OR
     /// tsnet flips to .running. The latter is critical: tsnet's loopback
@@ -73,15 +81,8 @@ struct NativeRoot: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar() }
         } destView: { (path: String, query: [String: String]) in
-            switch path {
-            case "/session":
-                SessionView()
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { sessionToolbar(sessionName: query["name"] ?? "") }
-            default:
-                Text("unknown route: \(path)")
-                    .foregroundStyle(.red)
-            }
+            view(path, query: query)
+                .navigationBarTitleDisplayMode(.inline)
         }
     }
 
@@ -98,15 +99,6 @@ struct NativeRoot: View {
     @ToolbarContentBuilder
     private func rootToolbar() -> some ToolbarContent {
         principalServerButton()
-        infoButton()
-    }
-
-    /// Toolbar for the /session route — system back chevron is provided
-    /// by NavigationStack automatically; CmRouter's afterPop fires
-    /// motif.detach() when the user backs out.
-    @ToolbarContentBuilder
-    private func sessionToolbar(sessionName: String) -> some ToolbarContent {
-        principalServerButton(sessionName: sessionName)
         infoButton()
     }
 

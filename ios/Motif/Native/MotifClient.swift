@@ -29,15 +29,55 @@ final class MotifClient {
     private(set) var views: [MotifProto.ViewInfo] = []
     private(set) var activeViewID: String?
     private(set) var lastSeq: UInt64 = 0
+    /// Other clients attached to the same session. Seeded from
+    /// `session.attach` and updated by `client.joined` / `client.left`.
+    /// Excludes our own client_id (the server's attach response already
+    /// returns just the *other* peers).
+    private(set) var clients: [MotifProto.ClientInfo] = []
+    /// Per-PTY currently-running command text (OSC 7770 from
+    /// `pty.command_started`). Cleared on `pty.command_finished` or PTY
+    /// exit. Empty/missing => the PTY is at a shell prompt or the shell
+    /// never bootstrapped shell-integration. Used for tab labels.
+    private(set) var runningCommand: [String: String] = [:]
+    /// Detected shell per PTY, set by `pty.shell_bootstrapped` (or
+    /// `.unknown` after the 5s timeout). Useful for tab badges /
+    /// shell-aware affordances.
+    private(set) var shellKind: [String: MotifProto.ShellKind] = [:]
+    /// Latest `pty.shell_context` snapshot per PTY (branch / venv /
+    /// node version / etc.). Refreshed on every precmd hook.
+    private(set) var shellContext: [String: MotifProto.ShellContext] = [:]
+    /// Bumped on every `tree.changed` notification. Views that cache
+    /// fs.tree results (e.g. FileTreePanel) observe this to invalidate.
+    /// Using a counter rather than the path list keeps the API minimal —
+    /// observers refetch whichever cached subtrees they hold.
+    private(set) var treeChangeTick: UInt64 = 0
+    /// Same pattern as `treeChangeTick`, but for `git.changed` —
+    /// GitDiffPanel / GitStatus observers re-run their RPCs when this
+    /// flips.
+    private(set) var gitChangeTick: UInt64 = 0
 
     private var rpc: RpcClient?
     private var eventTask: Task<Void, Never>?
     /// Strong reference so the URLSession delegate stays alive for the
     /// lifetime of the connection.
     private var wsDelegate: WSLogDelegate?
-    /// Per-PTY output multiplexer. One AsyncStream per pty_id, fed from
-    /// the central event task.
-    private var outputStreams: [String: (AsyncStream<Data>, AsyncStream<Data>.Continuation)] = [:]
+
+    /// Per-PTY output channel. Keeps a small ring buffer of the most
+    /// recent bytes (so a tab switched away and back can replay scrollback
+    /// into a fresh SwiftTerm) plus a set of live subscribers that all
+    /// receive every new chunk. Survives `pty.exited` so a tab opened
+    /// after the PTY died can still see the captured output.
+    private final class PtyChannel {
+        var buffer: [Data] = []
+        var bufferBytes: Int = 0
+        var subscribers: [UUID: AsyncStream<Data>.Continuation] = [:]
+        var finished: Bool = false
+    }
+    private var ptyChannels: [String: PtyChannel] = [:]
+    /// Per-PTY replay budget. SwiftTerm has its own scrollback once we
+    /// feed it; this only needs to cover bytes that arrived while the
+    /// terminal view didn't exist.
+    private let maxBufferBytesPerPty = 512 * 1024
 
     func connect(server: MotifServer, tailscale: TailscaleManager) async {
         if case .connected = state { return }
@@ -77,12 +117,13 @@ final class MotifClient {
         }
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
         FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
+
         var request = URLRequest(url: url)
         request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
 
         let rpc = RpcClient()
         do {
-            try await rpc.connect(urlSession: urlSession, request: request)
+            try await rpc.connect(urlSession: urlSession, request: request, delegate: delegate)
         } catch {
             log.error("ws connect: \(String(describing: error), privacy: .public)")
             FileLog.note("MotifClient", "ws connect failed: \(error)")
@@ -98,7 +139,33 @@ final class MotifClient {
             for await event in stream {
                 self?.handleEvent(event)
             }
+            // The events stream finishes when RpcClient's recvLoop hits
+            // a transport error (or when we explicitly close). Either
+            // way the WS is dead — flip back to .failed so the UI
+            // surfaces the Retry button instead of leaving SessionList
+            // hammering RPC calls into a dead socket.
+            await self?.handleConnectionLost()
         }
+    }
+
+    /// Called once the events stream finishes. If the user explicitly
+    /// disconnect()ed we already cleaned up; only act when the WS died
+    /// out from under us (state is .connecting/.connected/.attached).
+    private func handleConnectionLost() async {
+        switch state {
+        case .disconnected, .failed:
+            return
+        case .connecting, .connected, .attached:
+            break
+        }
+        log.notice("connection lost — resetting state")
+        FileLog.note("MotifClient", "connection lost; resetting state")
+        eventTask?.cancel()
+        eventTask = nil
+        if let rpc { await rpc.close() }
+        rpc = nil
+        clearSessionState()
+        state = .failed(message: "connection lost")
     }
 
     func disconnect() async {
@@ -106,12 +173,24 @@ final class MotifClient {
         eventTask = nil
         if let rpc { await rpc.close() }
         rpc = nil
-        for (_, pair) in outputStreams { pair.1.finish() }
-        outputStreams.removeAll()
+        clearSessionState()
+        state = .disconnected
+    }
+
+    /// Drop every per-session piece of state so a fresh attach (or a
+    /// re-connect) starts from a clean slate. Centralised because three
+    /// teardown paths used to maintain it independently and were already
+    /// drifting out of sync as new fields were added.
+    private func clearSessionState() {
+        finishAllChannels()
+        ptyChannels.removeAll()
         ptys = []
         views = []
         activeViewID = nil
-        state = .disconnected
+        clients = []
+        runningCommand = [:]
+        shellKind = [:]
+        shellContext = [:]
     }
 
     // MARK: - Sessions
@@ -152,12 +231,7 @@ final class MotifClient {
             // Even if the server-side detach failed, locally tear down so
             // the user can still get back to the picker.
         }
-        // Close any per-PTY output streams so the next attach starts fresh.
-        for (_, pair) in outputStreams { pair.1.finish() }
-        outputStreams.removeAll()
-        ptys = []
-        views = []
-        activeViewID = nil
+        clearSessionState()
         state = .connected
     }
 
@@ -169,11 +243,29 @@ final class MotifClient {
             as: MotifProto.SessionAttachResult.self
         )
         ptys = r.ptys ?? []
+        // Pre-create channels for every PTY in the attach response so
+        // pty.output bytes that arrive before any TerminalView exists are
+        // captured into the ring buffer instead of being dropped.
+        for pty in ptys { _ = ensureChannel(pty.id) }
         views = r.views ?? []
         activeViewID = r.active_view
+        clients = r.clients ?? []
         lastSeq = r.last_seq ?? 0
         state = .attached(session: sessionName)
-        log.notice("attached to \(sessionName, privacy: .public): \(self.ptys.count, privacy: .public) ptys, \(self.views.count, privacy: .public) views")
+        log.notice("attached to \(sessionName, privacy: .public): \(self.ptys.count, privacy: .public) ptys, \(self.views.count, privacy: .public) views, \(self.clients.count, privacy: .public) peers")
+    }
+
+    /// Tear down a session entirely (kills its PTYs, drops it from the
+    /// session list everywhere). The server broadcasts `session_closed`
+    /// shape via the connection drop on attached clients — for the
+    /// caller, we just refresh `sessions` after the call.
+    func destroySession(name: String) async throws {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        _ = try await rpc.call(
+            "session.destroy",
+            params: MotifProto.SessionDestroyParams(name: name)
+        )
+        sessions.removeAll { $0.name == name }
     }
 
     // MARK: - PTYs
@@ -186,6 +278,7 @@ final class MotifClient {
             as: MotifProto.PtyCreateResult.self
         )
         ptys.append(r.info)
+        _ = ensureChannel(r.info.id)
         return r.info
     }
 
@@ -217,17 +310,248 @@ final class MotifClient {
         }
     }
 
-    /// Subscribe to a PTY's output stream. The first subscriber on a PTY
-    /// id creates the stream; subsequent subscribers share it (they all
-    /// see the same bytes — currently we expect one terminal view per
-    /// PTY, but the API doesn't enforce it).
-    func outputs(for ptyID: String) -> AsyncStream<Data> {
-        if let existing = outputStreams[ptyID] {
-            return existing.0
+    /// Find the view id whose spec wraps `ptyID`. Used by the tab UI to
+    /// translate a PTY-tab tap into a `view.activate` RPC.
+    func viewID(forPty ptyID: String) -> String? {
+        for v in views {
+            if case .pty(let pid) = v.spec, pid == ptyID { return v.id }
         }
-        let pair = AsyncStream.makeStream(of: Data.self)
-        outputStreams[ptyID] = (pair.stream, pair.continuation)
-        return pair.stream
+        return nil
+    }
+
+    /// Tell the server which view we're focusing. Beyond mirroring the
+    /// active-tab marker across clients, this also claims the PTY's
+    /// primary status: the server's `view.activate` handler calls
+    /// `mark_primary`, so the master immediately snaps to our reported
+    /// dimensions instead of staying pinned to whichever client wrote
+    /// most recently.
+    func activateView(viewID: String) async {
+        guard let rpc else { return }
+        do {
+            _ = try await rpc.call(
+                "view.activate",
+                params: MotifProto.ViewActivateParams(view_id: viewID)
+            )
+        } catch {
+            log.error("view.activate: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Open a server-side view (preview / diff / image / pty wrapper).
+    /// On success, the server broadcasts `view.opened` (and, when
+    /// `activate=true`, `view.active_changed`); we also append directly
+    /// here so the caller can rely on `views` being up-to-date by the
+    /// time the await returns — handy for "open + immediately scroll
+    /// to it".
+    @discardableResult
+    func openView(spec: MotifProto.ViewSpec, activate: Bool = true) async throws -> MotifProto.ViewInfo {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        let r = try await rpc.call(
+            "view.open",
+            params: MotifProto.ViewOpenParams(spec: spec, activate: activate),
+            as: MotifProto.ViewOpenResult.self
+        )
+        if !views.contains(where: { $0.id == r.view.id }) {
+            views.append(r.view)
+        }
+        return r.view
+    }
+
+    func closeView(viewID: String) async {
+        guard let rpc else { return }
+        do {
+            _ = try await rpc.call(
+                "view.close",
+                params: MotifProto.ViewCloseParams(view_id: viewID)
+            )
+        } catch {
+            log.error("view.close: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func moveView(viewID: String, toIndex: Int) async {
+        guard let rpc else { return }
+        do {
+            _ = try await rpc.call(
+                "view.move",
+                params: MotifProto.ViewMoveParams(view_id: viewID, to_index: toIndex)
+            )
+        } catch {
+            log.error("view.move: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    // MARK: - fs / git
+
+    func fsTree(path: String, depth: UInt32 = 1, showHidden: Bool = false) async throws -> MotifProto.FsTreeResult {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.call(
+            "fs.tree",
+            params: MotifProto.FsTreeParams(path: path, depth: depth, show_hidden: showHidden),
+            as: MotifProto.FsTreeResult.self
+        )
+    }
+
+    /// Read a single file. `maxBytes == nil` lets the server cap at its
+    /// default (10 MB per the protocol). Returns the raw `FsReadResult`
+    /// — caller decodes `content_b64` only when `binary == false`.
+    func fsRead(path: String, maxBytes: UInt64? = nil) async throws -> MotifProto.FsReadResult {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.call(
+            "fs.read",
+            params: MotifProto.FsReadParams(path: path, max_bytes: maxBytes),
+            as: MotifProto.FsReadResult.self
+        )
+    }
+
+    func gitStatus(cwd: String? = nil) async throws -> MotifProto.GitStatusResult {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.call(
+            "git.status",
+            params: MotifProto.GitStatusParams(cwd: cwd),
+            as: MotifProto.GitStatusResult.self
+        )
+    }
+
+    /// Returns the unified-diff text, or "" when there are no changes.
+    /// `path == nil` => full repo diff. `staged` selects HEAD-vs-index
+    /// (true) or index-vs-worktree (false).
+    func gitDiff(path: String? = nil, staged: Bool, cwd: String? = nil) async throws -> String {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        let r = try await rpc.call(
+            "git.diff",
+            params: MotifProto.GitDiffParams(path: path, staged: staged, cwd: cwd),
+            as: MotifProto.GitDiffResult.self
+        )
+        return r.patch
+    }
+
+    /// Per-file additions/deletions, same scope as `gitDiff`. Cheaper
+    /// than parsing the full unified patch and used by GitDiffPanel's
+    /// file picker to render `+N −M` chips next to each path.
+    func gitDiffSummary(path: String? = nil, staged: Bool, cwd: String? = nil) async throws -> [MotifProto.DiffSummaryFile] {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        let r = try await rpc.call(
+            "git.diffSummary",
+            params: MotifProto.GitDiffParams(path: path, staged: staged, cwd: cwd),
+            as: MotifProto.DiffSummaryResult.self
+        )
+        return r.files
+    }
+
+    /// Cheap file metadata. Used before a destructive UI action so we
+    /// can surface "delete a 5 MB file?" or to confirm a path's type
+    /// before opening a preview tab.
+    func fsStat(path: String) async throws -> MotifProto.FsStatResult {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.call(
+            "fs.stat",
+            params: MotifProto.FsStatParams(path: path),
+            as: MotifProto.FsStatResult.self
+        )
+    }
+
+    /// Write bytes to a file. `expectedSha256` enables optimistic-lock
+    /// behavior: if the on-disk content has drifted, the server returns
+    /// `Conflict (-32004)` and the caller can decide to reload or
+    /// `force` an overwrite. Pass `nil` for "I'm creating this file"
+    /// or "I genuinely don't care".
+    @discardableResult
+    func fsWrite(path: String, contentB64: String, expectedSha256: String?, force: Bool) async throws -> MotifProto.FsWriteResult {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.call(
+            "fs.write",
+            params: MotifProto.FsWriteParams(
+                path: path,
+                content_b64: contentB64,
+                expected_sha256: expectedSha256,
+                force: force
+            ),
+            as: MotifProto.FsWriteResult.self
+        )
+    }
+
+    func fsMkdir(path: String) async throws {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        _ = try await rpc.call(
+            "fs.mkdir",
+            params: MotifProto.FsMkdirParams(path: path)
+        )
+    }
+
+    func fsRemove(path: String) async throws {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        _ = try await rpc.call(
+            "fs.remove",
+            params: MotifProto.FsRemoveParams(path: path)
+        )
+    }
+
+    func fsRename(from: String, to: String) async throws {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        _ = try await rpc.call(
+            "fs.rename",
+            params: MotifProto.FsRenameParams(from: from, to: to)
+        )
+    }
+
+    /// Subscribe to a PTY's output stream. Each call returns a fresh
+    /// AsyncStream that first replays the channel's ring buffer (so a
+    /// SwiftTerm freshly created after a tab switch still sees recent
+    /// scrollback), then forwards every subsequent live chunk. Multiple
+    /// concurrent subscribers on the same PTY are fine — they all see the
+    /// same bytes. If the PTY has already exited, the buffer is replayed
+    /// and the stream finishes immediately after.
+    func outputs(for ptyID: String) -> AsyncStream<Data> {
+        let ch = ensureChannel(ptyID)
+        let (stream, cont) = AsyncStream.makeStream(of: Data.self)
+        let key = UUID()
+        ch.subscribers[key] = cont
+        cont.onTermination = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.ptyChannels[ptyID]?.subscribers.removeValue(forKey: key)
+            }
+        }
+        for chunk in ch.buffer { cont.yield(chunk) }
+        if ch.finished { cont.finish() }
+        return stream
+    }
+
+    @discardableResult
+    private func ensureChannel(_ ptyID: String) -> PtyChannel {
+        if let ch = ptyChannels[ptyID] { return ch }
+        let ch = PtyChannel()
+        ptyChannels[ptyID] = ch
+        return ch
+    }
+
+    private func appendOutput(ptyID: String, data: Data) {
+        let ch = ensureChannel(ptyID)
+        ch.buffer.append(data)
+        ch.bufferBytes += data.count
+        // Drop oldest chunks until we're back under the per-PTY budget.
+        // Keep at least one chunk so a single oversized burst doesn't
+        // wipe the buffer entirely.
+        while ch.bufferBytes > maxBufferBytesPerPty && ch.buffer.count > 1 {
+            let removed = ch.buffer.removeFirst()
+            ch.bufferBytes -= removed.count
+        }
+        for (_, sub) in ch.subscribers { sub.yield(data) }
+    }
+
+    private func finishChannel(_ ptyID: String) {
+        guard let ch = ptyChannels[ptyID] else { return }
+        ch.finished = true
+        for (_, sub) in ch.subscribers { sub.finish() }
+        ch.subscribers.removeAll()
+    }
+
+    private func finishAllChannels() {
+        for (_, ch) in ptyChannels {
+            ch.finished = true
+            for (_, sub) in ch.subscribers { sub.finish() }
+            ch.subscribers.removeAll()
+        }
     }
 
     // MARK: - Events
@@ -238,20 +562,30 @@ final class MotifClient {
             guard let payload = try? JSONDecoder().decode(MotifProto.PtyOutputEvent.self, from: event.params),
                   let bytes = Data(base64Encoded: payload.data_b64)
             else { return }
-            if let cont = outputStreams[payload.pty_id]?.1 {
-                cont.yield(bytes)
-            }
+            appendOutput(ptyID: payload.pty_id, data: bytes)
             if let s = payload.seq { lastSeq = max(lastSeq, s) }
 
         case "pty.exited":
             guard let payload = try? JSONDecoder().decode(MotifProto.PtyExitedEvent.self, from: event.params)
             else { return }
-            // Mark dead in our cached list + close the output stream.
+            // Mark dead in our cached list + close out live subscribers.
+            // Channel + ring buffer are kept so a tab activated after the
+            // exit can still see what the PTY printed.
             if let i = ptys.firstIndex(where: { $0.id == payload.pty_id }) {
                 ptys[i].alive = false
             }
-            outputStreams[payload.pty_id]?.1.finish()
-            outputStreams.removeValue(forKey: payload.pty_id)
+            finishChannel(payload.pty_id)
+            runningCommand.removeValue(forKey: payload.pty_id)
+            shellKind.removeValue(forKey: payload.pty_id)
+            shellContext.removeValue(forKey: payload.pty_id)
+
+        case "pty.created":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyCreatedEvent.self, from: event.params),
+               !ptys.contains(where: { $0.id == payload.info.id })
+            {
+                ptys.append(payload.info)
+                _ = ensureChannel(payload.info.id)
+            }
 
         case "pty.resize":
             if let payload = try? JSONDecoder().decode(MotifProto.PtyResizeEvent.self, from: event.params),
@@ -261,9 +595,104 @@ final class MotifClient {
                 ptys[i].rows = payload.rows
             }
 
+        case "pty.cwd_changed":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyCwdChangedEvent.self, from: event.params),
+               let i = ptys.firstIndex(where: { $0.id == payload.pty_id })
+            {
+                ptys[i].cwd = payload.cwd
+            }
+
+        case "pty.command_started":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyCommandStartedEvent.self, from: event.params),
+               !payload.text.isEmpty
+            {
+                runningCommand[payload.pty_id] = payload.text
+            }
+
+        case "pty.command_finished":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyCommandFinishedEvent.self, from: event.params) {
+                runningCommand.removeValue(forKey: payload.pty_id)
+            }
+
+        case "tree.changed":
+            // We only need observers to know "something changed". The
+            // payload's `paths` list is informational — leaving it
+            // unparsed keeps the surface small. &+= so observers don't
+            // miss a wraparound (extremely theoretical, but free).
+            treeChangeTick &+= 1
+
+        case "git.changed":
+            // Same pattern as tree.changed: bump a tick so GitStatus /
+            // GitDiffPanel re-fetch on the next observe.
+            gitChangeTick &+= 1
+
+        case "view.opened":
+            if let payload = try? JSONDecoder().decode(MotifProto.ViewOpenedEvent.self, from: event.params),
+               !views.contains(where: { $0.id == payload.view.id })
+            {
+                views.append(payload.view)
+            }
+
+        case "view.closed":
+            if let payload = try? JSONDecoder().decode(MotifProto.ViewClosedEvent.self, from: event.params) {
+                views.removeAll { $0.id == payload.view_id }
+                if activeViewID == payload.view_id {
+                    // Server will emit a follow-up `view.active_changed`
+                    // (possibly with a fallback view). Clear ours now so
+                    // the UI doesn't stay pointed at a missing view in
+                    // the gap between the two events.
+                    activeViewID = nil
+                }
+            }
+
+        case "view.active_changed":
+            if let payload = try? JSONDecoder().decode(MotifProto.ViewActiveChangedEvent.self, from: event.params) {
+                activeViewID = payload.view_id
+            }
+
+        case "view.moved":
+            if let payload = try? JSONDecoder().decode(MotifProto.ViewMovedEvent.self, from: event.params) {
+                // Build a position map from the broadcast order; ids that
+                // somehow aren't in our local `views` (desync) drop to
+                // the tail in arrival order.
+                let order = payload.order
+                var rank: [String: Int] = [:]
+                for (i, id) in order.enumerated() { rank[id] = i }
+                views.sort { a, b in
+                    let ra = rank[a.id] ?? Int.max
+                    let rb = rank[b.id] ?? Int.max
+                    return ra < rb
+                }
+            }
+
+        case "client.joined":
+            if let payload = try? JSONDecoder().decode(MotifProto.ClientJoinedEvent.self, from: event.params) {
+                if let i = clients.firstIndex(where: { $0.id == payload.client_id }) {
+                    clients[i].since = payload.since
+                } else {
+                    clients.append(MotifProto.ClientInfo(id: payload.client_id, since: payload.since))
+                }
+            }
+
+        case "client.left":
+            if let payload = try? JSONDecoder().decode(MotifProto.ClientLeftEvent.self, from: event.params) {
+                clients.removeAll { $0.id == payload.client_id }
+            }
+
+        case "pty.shell_bootstrapped":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyShellBootstrappedEvent.self, from: event.params) {
+                shellKind[payload.pty_id] = payload.shell
+            }
+
+        case "pty.shell_context":
+            if let payload = try? JSONDecoder().decode(MotifProto.PtyShellContextEvent.self, from: event.params) {
+                shellContext[payload.pty_id] = payload.ctx
+            }
+
         default:
-            // We ignore everything else (view.*, tree.*, git.*, client.*,
-            // pty.shell_*) for the MVP. Add cases as the UI grows.
+            // Block-related events (`pty.prompt_started`,
+            // `pty.prompt_ended`) are intentionally ignored — the iOS
+            // client doesn't render the block model yet.
             break
         }
     }
