@@ -97,14 +97,18 @@ final class TailscaleManager {
             // (fresh install / expired cred). Only in the second case will
             // busDidReceive push startLoginInteractive to surface the URL.
             //
-            // Run `up()` in the background — it blocks until the node is
-            // usable. start() returns once the bus is hooked up and lets
-            // bus-driven transitions update UI.
+            // Run `up()` in the background. We deliberately DO NOT flip
+            // state = .running on its return — empirically `Server.Up`
+            // returns once controlplane registers the node, which can be
+            // a couple of seconds before the loopback proxy is actually
+            // forwarding (tailnet engine still finishing wireguard /
+            // DERP setup). The IPN bus `Notify: state=Running` is the
+            // authoritative "ready" signal; busDidReceive flips state to
+            // .running there.
             Task { [weak self] in
                 do {
                     try await node.up()
-                    await self?.refreshAddresses()
-                    self?.log.notice("node.up returned (connected)")
+                    self?.log.notice("node.up returned — waiting for IPN State=Running")
                 } catch {
                     self?.log.error("node.up: \(String(describing: error), privacy: .public)")
                     self?.handleUpFailure(error)
