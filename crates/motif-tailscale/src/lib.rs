@@ -21,9 +21,9 @@ mod bundled;
 mod stub;
 
 #[cfg(feature = "bundled")]
-pub use bundled::{TsListener, TsServer, TsStream};
+pub use bundled::{TsBackendStatus, TsListener, TsServer, TsStream};
 #[cfg(not(feature = "bundled"))]
-pub use stub::{TsListener, TsServer, TsStream};
+pub use stub::{TsBackendStatus, TsListener, TsServer, TsStream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TsError {

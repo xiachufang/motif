@@ -1,69 +1,24 @@
 import SwiftUI
-import UIKit
-import SafariServices
 import OSLog
 
-private let settingsLog = Logger(subsystem: "io.allsunday.motif", category: "SettingsView")
+private let settingsLog = Logger(subsystem: "io.allsunday.motif", category: "ConnectionView")
 
-/// Identifiable wrapper so we can drive a `.sheet(item:)` directly off a URL.
-private struct AuthURL: Identifiable, Equatable { let id: URL }
-
-/// SFSafariViewController in a SwiftUI sheet. Stays inside Motif so the user
-/// doesn't context-switch out to system Safari for a Tailscale login.
-private struct SafariSheet: UIViewControllerRepresentable {
-    let url: URL
-
-    func makeUIViewController(context: Context) -> SFSafariViewController {
-        let cfg = SFSafariViewController.Configuration()
-        cfg.entersReaderIfAvailable = false
-        cfg.barCollapsingEnabled = true
-        let vc = SFSafariViewController(url: url, configuration: cfg)
-        vc.dismissButtonStyle = .done
-        vc.preferredControlTintColor = .systemBlue
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
-}
-
-struct SettingsView: View {
+/// Connection management — Tailscale + the motifd server list.
+/// Reached by tapping the active server name in the home screen's
+/// top bar (when in a session) or via the Welcome screen on first run.
+/// Doesn't include version/about info; that's its own sheet.
+struct ConnectionView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    @State private var authKey: String = ""
     @State private var showingError: String?
     @State private var serverEditTarget: ServerEdit?
-    /// Driving value for the in-app Safari sheet. Setting non-nil shows the
-    /// sheet; when the IPN bus reports .running we set it back to nil so
-    /// the sheet auto-dismisses.
-    @State private var authSheet: AuthURL?
-    /// The URL we already auto-opened, so re-renders of the same .needsAuth
-    /// state don't keep re-presenting the sheet after the user dismisses it.
-    @State private var openedAuthURL: URL?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Tailscale") {
-                    TailscaleStatusRow(state: appState.tailscale.state)
-                    if case .needsAuth(let url) = appState.tailscale.state {
-                        Button("Reopen login") {
-                            authSheet = AuthURL(id: url)
-                        }
-                    }
-                    if !isRunning {
-                        SecureField("Auth key (tskey-…)", text: $authKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Button("Connect with auth key") { connectWithAuthKey() }
-                            .disabled(authKey.isEmpty || isStarting)
-                        Button("Use web auth instead") { connectInteractively() }
-                            .disabled(isStarting)
-                    } else {
-                        Button("Disconnect", role: .destructive) {
-                            Task { await appState.tailscale.stop() }
-                        }
-                    }
+                    TailscaleEntry()
                 }
 
                 Section {
@@ -105,17 +60,8 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("App") {
-                    LabeledContent("Bundle", value: Bundle.main.bundleIdentifier ?? "?")
-                    LabeledContent("Version") {
-                        Text("\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))")
-                    }
-                    if case .running(let port) = appState.serverState {
-                        LabeledContent("Local server", value: "127.0.0.1:\(port)")
-                    }
-                }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("Connection")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -139,52 +85,6 @@ struct SettingsView: View {
                     }
                 }
             }
-            .onChange(of: appState.tailscale.state) { _, newState in
-                // Auto-open the in-app Safari sheet on each new login URL.
-                // Track which URL we've already opened so the user can
-                // dismiss the sheet without us bouncing it back up on the
-                // next bus tick.
-                if case .needsAuth(let url) = newState, openedAuthURL != url {
-                    openedAuthURL = url
-                    authSheet = AuthURL(id: url)
-                }
-                // Login finished — close the sheet and reset the dedupe
-                // marker so a future re-auth pops a fresh one.
-                if case .running = newState {
-                    authSheet = nil
-                    openedAuthURL = nil
-                }
-            }
-            .sheet(item: $authSheet) { auth in
-                SafariSheet(url: auth.id)
-                    .ignoresSafeArea()
-            }
-        }
-    }
-
-    private var isRunning: Bool {
-        if case .running = appState.tailscale.state { return true }
-        return false
-    }
-
-    private var isStarting: Bool {
-        if case .starting = appState.tailscale.state { return true }
-        return false
-    }
-
-    private func connectWithAuthKey() {
-        let key = authKey
-        Task {
-            await appState.tailscale.start(authKey: key)
-            authKey = ""
-        }
-    }
-
-    private func connectInteractively() {
-        Task {
-            await appState.tailscale.start(authKey: nil)
-            // The manager will publish state = .needsAuth(url) when the
-            // BrowseToURL notification arrives. We pick that up below.
         }
     }
 }
@@ -209,6 +109,9 @@ struct ServerRow: View {
                             Image(systemName: "circle")
                                 .foregroundStyle(.secondary)
                         }
+                        Image(systemName: server.kind == .tailscale ? "network" : "globe")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         Text(server.name)
                             .foregroundStyle(.primary)
                     }
@@ -251,6 +154,7 @@ struct ServerEditSheet: View {
     @State private var host: String = ""
     @State private var portText: String = "7777"
     @State private var token: String = ""
+    @State private var kind: ServerKind = .tailscale
     @State private var discovered: [TailscaleManager.DiscoveredPeer] = []
     @State private var discoveryState: DiscoveryState = .idle
     @State private var showAllPeers: Bool = false
@@ -265,7 +169,15 @@ struct ServerEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if isNew {
+                Section("Reach via") {
+                    Picker("Kind", selection: $kind) {
+                        Text("Tailscale").tag(ServerKind.tailscale)
+                        Text("Direct").tag(ServerKind.direct)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                if isNew && kind == .tailscale {
                     discoverySection
                 }
                 Section("Name") {
@@ -280,10 +192,15 @@ struct ServerEditSheet: View {
                     TextField("port", text: $portText)
                         .keyboardType(.numberPad)
                 }
-                Section("Token") {
-                    SecureField("motifd token", text: $token)
+                Section {
+                    SecureField("motifd token (optional)", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Token")
+                } footer: {
+                    Text("Required only if motifd was started with a non-empty token. Leave blank for an unauthenticated server.")
+                        .font(.caption2)
                 }
             }
             .navigationTitle(isNew ? "Add Server" : "Edit Server")
@@ -419,8 +336,7 @@ struct ServerEditSheet: View {
     private var isValid: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty &&
         !host.trimmingCharacters(in: .whitespaces).isEmpty &&
-        UInt16(portText) != nil &&
-        !token.trimmingCharacters(in: .whitespaces).isEmpty
+        UInt16(portText) != nil
     }
 
     private func hydrate() {
@@ -429,6 +345,7 @@ struct ServerEditSheet: View {
             host = s.host
             portText = String(s.port)
             token = s.token
+            kind = s.kind
         }
     }
 
@@ -440,9 +357,9 @@ struct ServerEditSheet: View {
         let server: MotifServer
         switch target {
         case .new:
-            server = MotifServer(name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+            server = MotifServer(name: trimmedName, host: trimmedHost, port: port, token: trimmedToken, kind: kind)
         case .existing(let existing):
-            server = MotifServer(id: existing.id, name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+            server = MotifServer(id: existing.id, name: trimmedName, host: trimmedHost, port: port, token: trimmedToken, kind: kind)
         }
         onSave(server)
         dismiss()

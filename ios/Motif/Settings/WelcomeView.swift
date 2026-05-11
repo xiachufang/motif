@@ -23,13 +23,7 @@ struct WelcomeView: View {
                 }
 
                 Section {
-                    TailscaleStatusRow(state: appState.tailscale.state)
-                    if !isTailscaleRunning {
-                        Button("Use web auth") {
-                            Task { await appState.tailscale.start(authKey: nil) }
-                        }
-                        .disabled(isTailscaleStarting)
-                    }
+                    TailscaleEntry()
                 } header: {
                     Text("Tailscale")
                 } footer: {
@@ -73,6 +67,15 @@ struct WelcomeView: View {
             }
             .navigationTitle("motif")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        appState.isShowingAbout = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                }
+            }
             .sheet(item: $serverEditTarget) { target in
                 ServerEditSheet(target: target) { updated in
                     switch target {
@@ -88,13 +91,4 @@ struct WelcomeView: View {
         }
     }
 
-    private var isTailscaleRunning: Bool {
-        if case .running = appState.tailscale.state { return true }
-        return false
-    }
-
-    private var isTailscaleStarting: Bool {
-        if case .starting = appState.tailscale.state { return true }
-        return false
-    }
 }

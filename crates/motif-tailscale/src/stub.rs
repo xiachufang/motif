@@ -34,6 +34,23 @@ impl TsServer {
     pub async fn list_peers(&self) -> Result<Vec<TsPeer>, TsError> {
         Err(TsError::Unimplemented)
     }
+
+    pub async fn backend_status(&self) -> Result<TsBackendStatus, TsError> {
+        Err(TsError::Unimplemented)
+    }
+
+    /// No-op in stub builds — returns an immediately-completed task.
+    pub fn spawn_status_watcher(self: std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {})
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TsBackendStatus {
+    pub backend_state: String,
+    pub health:        Vec<String>,
+    pub peer_total:    usize,
+    pub peer_online:   usize,
 }
 
 /// Stub stream — never constructed, but the AsyncRead/AsyncWrite impls

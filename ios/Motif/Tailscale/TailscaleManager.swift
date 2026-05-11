@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import OSLog
 @preconcurrency import TailscaleKit
@@ -96,17 +97,21 @@ final class TailscaleManager {
             // (fresh install / expired cred). Only in the second case will
             // busDidReceive push startLoginInteractive to surface the URL.
             //
-            // Run `up()` in the background — it blocks until the node is
-            // usable. start() returns once the bus is hooked up and lets
-            // bus-driven transitions update UI.
+            // Run `up()` in the background. We deliberately DO NOT flip
+            // state = .running on its return — empirically `Server.Up`
+            // returns once controlplane registers the node, which can be
+            // a couple of seconds before the loopback proxy is actually
+            // forwarding (tailnet engine still finishing wireguard /
+            // DERP setup). The IPN bus `Notify: state=Running` is the
+            // authoritative "ready" signal; busDidReceive flips state to
+            // .running there.
             Task { [weak self] in
                 do {
                     try await node.up()
-                    await self?.refreshAddresses()
-                    await self?.log.notice("node.up returned (connected)")
+                    self?.log.notice("node.up returned — waiting for IPN State=Running")
                 } catch {
-                    await self?.log.error("node.up: \(String(describing: error), privacy: .public)")
-                    await self?.handleUpFailure(error)
+                    self?.log.error("node.up: \(String(describing: error), privacy: .public)")
+                    self?.handleUpFailure(error)
                 }
             }
             log.notice("Tailscale start kicked off (authKey=\(authKey == nil ? "no" : "yes", privacy: .public))")
@@ -119,7 +124,7 @@ final class TailscaleManager {
 
     /// Surface a `node.up()` failure as a UI-visible error, but only when we
     /// don't already have something more specific (e.g. needsAuth).
-    private func handleUpFailure(_ error: Error) {
+    private func handleUpFailure(_ error: any Error) {
         switch state {
         case .needsAuth, .running:
             // node.up() races with the bus. If the bus already published a
@@ -158,8 +163,10 @@ final class TailscaleManager {
         do {
             let ips = try await node.addrs()
             state = .running(ipv4: ips.ip4, ipv6: ips.ip6)
+            FileLog.note("Tailscale", "running ipv4=\(ips.ip4 ?? "nil") ipv6=\(ips.ip6 ?? "nil")")
         } catch {
             log.error("addrs failed: \(String(describing: error), privacy: .public)")
+            FileLog.note("Tailscale", "addrs failed: \(error)")
         }
     }
 
@@ -186,6 +193,72 @@ final class TailscaleManager {
     /// `tailscale_dial` use (we need the raw fd for bidi byte pumping).
     func currentTailscaleHandle() async -> Int32? {
         await node?.tailscale
+    }
+
+    /// Build a URLSessionConfiguration that routes all traffic through this
+    /// tsnet node's loopback SOCKS5 proxy. URLSession's CONNECT-proxy path
+    /// turns out to swallow plain `ws://` targets with no upgrade response
+    /// (CONNECT historically tunnels TLS); SOCKS5 has neither restriction.
+    /// We pair this with `resolveTailnetHost` so MagicDNS names get
+    /// rewritten to a 100.x IP before the SOCKS5 dial — URLSession resolves
+    /// hostnames locally for SOCKS5.
+    func makeURLSessionConfiguration() async throws -> URLSessionConfiguration {
+        guard let node else { throw DialError.notRunning }
+        let loopback = try await node.loopback()
+        guard let ipStr = loopback.ip,
+              let port = loopback.port,
+              let portU16 = UInt16(exactly: port) else {
+            log.error("loopback returned bad address: \(String(describing: loopback), privacy: .public)")
+            throw DialError.notRunning
+        }
+        log.notice("tsnet loopback proxy at \(ipStr, privacy: .public):\(portU16, privacy: .public) (cred=\(loopback.proxyCredential.prefix(6), privacy: .public)…)")
+        FileLog.note("Tailscale", "loopback socks5 \(ipStr):\(portU16) cred=\(loopback.proxyCredential.prefix(6))…")
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ipStr),
+                                            port: NWEndpoint.Port(rawValue: portU16)!)
+        let proxy = ProxyConfiguration(socksv5Proxy: endpoint)
+        proxy.applyCredential(username: "tsnet", password: loopback.proxyCredential)
+        let config = URLSessionConfiguration.default
+        config.proxyConfigurations = [proxy]
+        return config
+    }
+
+    /// Convenience wrapper for callers that don't need a URLSessionDelegate.
+    func makeURLSession() async throws -> URLSession {
+        let config = try await makeURLSessionConfiguration()
+        return URLSession(configuration: config)
+    }
+
+    /// Resolve a tailnet hostname (MagicDNS short name or full FQDN) to a
+    /// concrete tailnet IP by walking the IPN peer list. iOS's stub
+    /// resolver doesn't know `*.ts.net`, and URLSession's SOCKS5 path
+    /// resolves hostnames locally before tunnelling — so dialling
+    /// `ws://something.ts.net:port` blows up with NSURLErrorNetworkConnectionLost
+    /// (-1005) the moment the SOCKS handshake tries to forward the
+    /// resolved-but-bogus IP. Pre-resolving here keeps the WS open.
+    ///
+    /// Inputs that already look like an IP (digits + dots, or a colon)
+    /// are returned unchanged. If no peer matches, returns nil — caller
+    /// should fall back to the original string.
+    func resolveTailnetHost(_ host: String) async -> String? {
+        if Self.looksLikeIP(host) { return host }
+        let peers = await discoverPeers()
+        let normalized = host.lowercased()
+        for peer in peers {
+            let dns = peer.dnsName.lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let shortName = peer.hostname.lowercased()
+            if dns == normalized || dns.hasPrefix("\(normalized).") || shortName == normalized {
+                if let ip = peer.primaryIP { return ip }
+            }
+        }
+        return nil
+    }
+
+    private static func looksLikeIP(_ s: String) -> Bool {
+        if s.contains(":") { return true } // very rough IPv6 sniff
+        let parts = s.split(separator: ".")
+        if parts.count == 4, parts.allSatisfy({ UInt8($0) != nil }) { return true }
+        return false
     }
 
     // MARK: - Discovery
@@ -270,6 +343,9 @@ final class TailscaleManager {
     /// the TailscaleKit MessageConsumer protocol. It hops back to MainActor
     /// to mutate `state` on the manager.
     fileprivate func busDidReceive(notify: Ipn.Notify) {
+        if let s = notify.State {
+            FileLog.note("Tailscale", "ipn=\(s) self=\(state)")
+        }
         // Diagnostic: log every Notify field present so we can see exactly
         // what tsnet on iOS emits during the handshake. Trim down once the
         // login flow is verified working end-to-end.
@@ -317,7 +393,7 @@ final class TailscaleManager {
         }
     }
 
-    fileprivate func busDidError(_ error: Error) {
+    fileprivate func busDidError(_ error: any Error) {
         log.error("IPN bus error: \(String(describing: error), privacy: .public)")
     }
 }
@@ -373,7 +449,7 @@ private actor BusConsumer: MessageConsumer {
         }
     }
 
-    func error(_ error: Error) {
+    func error(_ error: any Error) {
         Task { @MainActor [weak manager] in
             manager?.busDidError(error)
         }

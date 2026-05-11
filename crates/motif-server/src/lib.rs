@@ -11,6 +11,8 @@ pub mod rpc;
 pub mod rpc_log;
 pub mod session;
 pub mod shell;
+pub mod wake_detector;
+pub mod wire;
 pub mod ws;
 
 use std::path::Path;
@@ -74,9 +76,14 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
         anyhow::bail!("TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7");
     }
 
+    let manager = session::manager::SessionManager::new();
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
         None    => {
+            // `validate()` already refuses to expose a token-less listener
+            // on non-loopback TCP, so reaching here means the surface is
+            // private (loopback or tailscale-only). Still WARN so the
+            // operator knows auth is off.
             tracing::warn!(
                 "no --token-file configured: motifd will accept WebSocket upgrades without \
                  a Bearer token. Make sure access to this listener is gated elsewhere \
@@ -85,7 +92,6 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
             auth::TokenStore::disabled()
         }
     };
-    let manager = session::manager::SessionManager::new();
     let state   = ws::AppState {
         manager: manager.clone(),
         auth:    Arc::new(token_store),
@@ -113,6 +119,11 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
             );
         }
     }
+
+    // Diagnostic: surface Mac sleep/wake events as WARN lines so the
+    // tsnet snapshot logs that follow can be correlated with a known
+    // suspend cycle. Cheap; runs regardless of --tailscale.
+    let _wake_task = wake_detector::spawn();
 
     let listener = motif_net::Listener::bind(&cfg.to_listen_config())
         .await

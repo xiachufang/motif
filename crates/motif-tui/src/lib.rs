@@ -7,20 +7,14 @@ pub use motif_client::{client, palette, transport};
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use motif_proto::session as ses;
 
 pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
-    let path = path.ok_or_else(|| anyhow!(
-        "no token file specified (use --token-file or set MOTIF_TOKEN_FILE)"
-    ))?;
-    let raw  = std::fs::read_to_string(path)
+    let Some(path) = path else { return Ok(String::new()); };
+    let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading token file {}", path.display()))?;
-    let trimmed = raw.trim().to_string();
-    if trimmed.is_empty() {
-        anyhow::bail!("token file is empty: {}", path.display());
-    }
-    Ok(trimmed)
+    Ok(raw.trim().to_string())
 }
 
 /// Helper: connect with optional SSH tunneling and return the live `Connected`.

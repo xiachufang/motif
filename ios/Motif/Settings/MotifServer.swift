@@ -2,26 +2,53 @@ import Foundation
 import Observation
 import OSLog
 
+/// How the iOS client should reach this motifd. `.tailscale` servers
+/// dial via the bundled tsnet SOCKS5 proxy (and use MagicDNS); `.direct`
+/// servers use a plain `URLSession` with no proxy, treating `host` as a
+/// literal LAN / public hostname.
+enum ServerKind: String, Codable, Sendable {
+    case tailscale
+    case direct
+}
+
 /// One motifd target the user has configured. The `token` field is the
-/// motifd Bearer token (the iOS app talks to motifd directly via tsnet,
-/// not through the motif-web bridge — so there's no separate browser
-/// token).
+/// motifd Bearer token (the iOS app talks to motifd directly, not through
+/// the motif-web bridge — so there's no separate browser token).
 struct MotifServer: Codable, Identifiable, Equatable, Hashable, Sendable {
     let id: UUID
     var name: String
     var host: String
     var port: UInt16
     var token: String
+    var kind: ServerKind
 
-    init(id: UUID = UUID(), name: String, host: String, port: UInt16, token: String) {
+    init(id: UUID = UUID(), name: String, host: String, port: UInt16, token: String, kind: ServerKind = .tailscale) {
         self.id = id
         self.name = name
         self.host = host
         self.port = port
         self.token = token
+        self.kind = kind
     }
 
     var endpoint: String { "\(host):\(port)" }
+
+    // Custom decode so persisted entries without `kind` (pre-multi-kind
+    // installs) come back as `.tailscale` — matching their original
+    // behavior. Synthesized decoding would fail the whole struct.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, host, port, token, kind
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.host = try c.decode(String.self, forKey: .host)
+        self.port = try c.decode(UInt16.self, forKey: .port)
+        self.token = try c.decode(String.self, forKey: .token)
+        self.kind = try c.decodeIfPresent(ServerKind.self, forKey: .kind) ?? .tailscale
+    }
 }
 
 /// Persistent store for the configured server list. The list lives in

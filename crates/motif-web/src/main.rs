@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -14,14 +14,15 @@ struct Args {
     #[arg(long)]
     motifd_url: String,
 
-    /// Token file the bridge presents to motifd.
+    /// Token file the bridge presents to motifd. Omit for an empty token.
     #[arg(long)]
-    motifd_token_file: PathBuf,
+    motifd_token_file: Option<PathBuf>,
 
     /// Token file browsers must present (`auth.login` first message). May be
-    /// the same as motifd-token-file for single-user setups.
+    /// the same as motifd-token-file for single-user setups. Omit for an
+    /// empty token (any browser-supplied token is accepted).
     #[arg(long)]
-    browser_token_file: PathBuf,
+    browser_token_file: Option<PathBuf>,
 
     /// TLS cert (PEM) for the browser-facing listener.
     #[arg(long)] bind_cert: Option<PathBuf>,
@@ -37,11 +38,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     motif_web::init_tracing(&args.log)?;
 
-    let motifd_token   = std::fs::read_to_string(&args.motifd_token_file)?.trim().to_string();
-    let browser_token  = std::fs::read_to_string(&args.browser_token_file)?.trim().to_string();
-    if motifd_token.is_empty() || browser_token.is_empty() {
-        anyhow::bail!("token files must be non-empty");
-    }
+    let motifd_token  = read_token_file(args.motifd_token_file.as_deref())?;
+    let browser_token = read_token_file(args.browser_token_file.as_deref())?;
     let cfg = motif_web::WebConfig {
         listen:        args.listen,
         motifd_url:    args.motifd_url,
@@ -51,4 +49,11 @@ async fn main() -> anyhow::Result<()> {
         bind_key:      args.bind_key,
     };
     motif_web::run(cfg).await
+}
+
+fn read_token_file(path: Option<&Path>) -> anyhow::Result<String> {
+    let Some(path) = path else { return Ok(String::new()); };
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read token file {}: {e}", path.display()))?;
+    Ok(raw.trim().to_string())
 }

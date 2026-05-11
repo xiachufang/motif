@@ -176,7 +176,7 @@ async fn main_loop(
         for (pty_id, data) in writes {
             let _: serde_json::Value = client.call(
                 "pty.write",
-                ppty::PtyWriteParams { pty_id, data_b64: BASE64.encode(&data) },
+                ppty::PtyWriteParams { pty_id, data },
             ).await.unwrap_or(serde_json::Value::Null);
         }
 
@@ -929,7 +929,7 @@ async fn forward_to_pty(
     if bytes.is_empty() { return Ok(KeyOutcome::Stay); }
     let _: serde_json::Value = client.call(
         "pty.write",
-        ppty::PtyWriteParams { pty_id, data_b64: BASE64.encode(&bytes) },
+        ppty::PtyWriteParams { pty_id, data: bytes },
     ).await.unwrap_or(serde_json::Value::Null);
     Ok(KeyOutcome::Stay)
 }

@@ -3,8 +3,8 @@ import Security
 import OSLog
 
 /// Tiny wrapper around Keychain Generic Password items, scoped to one
-/// service identifier. We persist Doubao credentials here so they survive
-/// app reinstalls without ending up in iCloud backups.
+/// service identifier. Used by `MotifServerStore` to keep motifd bearer
+/// tokens out of iCloud backups.
 struct Keychain {
     private static let log = Logger(subsystem: "io.allsunday.motif", category: "Keychain")
     let service: String

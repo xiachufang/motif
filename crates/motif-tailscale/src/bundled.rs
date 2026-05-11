@@ -113,11 +113,7 @@ impl TsServer {
     /// `up()`). Returns one `TsPeer` per node — including `online: false`
     /// peers, since the caller may want to show offline nodes too.
     pub async fn list_peers(&self) -> Result<Vec<TsPeer>, TsError> {
-        let lb = self.loopback.as_ref()
-            .ok_or_else(|| TsError::Native("up() must be called before list_peers".into()))?;
-        let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
-        let status: StatusJson = serde_json::from_slice(&raw)
-            .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))?;
+        let status = self.fetch_status().await?;
         let mut peers = Vec::with_capacity(status.peer.as_ref().map(|m| m.len()).unwrap_or(0));
         if let Some(m) = status.peer {
             for (_pubkey, p) in m {
@@ -131,6 +127,138 @@ impl TsServer {
             }
         }
         Ok(peers)
+    }
+
+    /// Snapshot of tsnet's backend state — what `BackendState` reports and
+    /// how many peers are visible / online. Used by `spawn_status_watcher`
+    /// for periodic diagnostics; callers may also pull it on demand.
+    pub async fn backend_status(&self) -> Result<TsBackendStatus, TsError> {
+        let status = self.fetch_status().await?;
+        let (peer_total, peer_online) = match &status.peer {
+            Some(m) => (m.len(), m.values().filter(|p| p.online).count()),
+            None    => (0, 0),
+        };
+        Ok(TsBackendStatus {
+            backend_state: status.backend_state.unwrap_or_default(),
+            health:        status.health.unwrap_or_default(),
+            peer_total,
+            peer_online,
+        })
+    }
+
+    async fn fetch_status(&self) -> Result<StatusJson, TsError> {
+        let lb = self.loopback.as_ref()
+            .ok_or_else(|| TsError::Native("up() must be called before LocalAPI access".into()))?;
+        let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
+        serde_json::from_slice(&raw)
+            .map_err(|e| TsError::Native(format!("LocalAPI status JSON: {e}")))
+    }
+
+    /// Spawn a periodic backend-state watcher. Logs an INFO line on first
+    /// successful poll, then again only when `BackendState` flips, the
+    /// `Health` array changes, or `peer_online` crosses zero. Three
+    /// consecutive LocalAPI failures escalate to WARN once (cleared on the
+    /// next success). The task lives as long as the `Arc<TsServer>` —
+    /// drop the listener and the task observes the strong-count drop on
+    /// its next tick and exits.
+    pub fn spawn_status_watcher(self: std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        const TICK: std::time::Duration = std::time::Duration::from_secs(5);
+        const FAIL_WARN_AT: u32 = 3;
+        let weak = std::sync::Arc::downgrade(&self);
+        // Drop our own strong ref so the task's `Weak::upgrade` is the only
+        // strong ref source — the task exits naturally once the listener
+        // drops its TsServer.
+        drop(self);
+
+        tokio::spawn(async move {
+            let mut last: Option<TsBackendStatus> = None;
+            let mut fail_count: u32 = 0;
+            let mut warned_failing: bool = false;
+            loop {
+                tokio::time::sleep(TICK).await;
+                let Some(server) = weak.upgrade() else {
+                    tracing::debug!(target: "motif_tailscale", "watcher: TsServer dropped, exiting");
+                    return;
+                };
+                match server.backend_status().await {
+                    Ok(snap) => {
+                        if fail_count > 0 && warned_failing {
+                            tracing::info!(
+                                target: "motif_tailscale",
+                                state = %snap.backend_state,
+                                peers_online = snap.peer_online,
+                                peers_total  = snap.peer_total,
+                                "tsnet LocalAPI recovered",
+                            );
+                        }
+                        fail_count = 0;
+                        warned_failing = false;
+                        let changed = match &last {
+                            None      => true,
+                            Some(prev) => prev.is_meaningful_change(&snap),
+                        };
+                        if changed {
+                            tracing::info!(
+                                target: "motif_tailscale",
+                                state = %snap.backend_state,
+                                peers_online = snap.peer_online,
+                                peers_total  = snap.peer_total,
+                                health = ?snap.health,
+                                "tsnet backend snapshot",
+                            );
+                        }
+                        last = Some(snap);
+                    }
+                    Err(e) => {
+                        fail_count = fail_count.saturating_add(1);
+                        if fail_count >= FAIL_WARN_AT && !warned_failing {
+                            warned_failing = true;
+                            tracing::warn!(
+                                target: "motif_tailscale",
+                                error = %e,
+                                fails = fail_count,
+                                "tsnet LocalAPI status poll failing",
+                            );
+                        } else {
+                            tracing::debug!(
+                                target: "motif_tailscale",
+                                error = %e,
+                                fails = fail_count,
+                                "tsnet LocalAPI status poll error",
+                            );
+                        }
+                    }
+                }
+                drop(server);
+            }
+        })
+    }
+}
+
+/// Snapshot of what `/localapi/v0/status` reports for the embedded node.
+/// Field names match the libtailscale JSON.
+#[derive(Debug, Clone)]
+pub struct TsBackendStatus {
+    /// One of "NoState" / "NeedsLogin" / "Stopped" / "Starting" / "Running".
+    /// Empty string if the field is absent (very early in startup).
+    pub backend_state: String,
+    /// Active health warnings reported by tsnet (e.g. "DERP unreachable").
+    pub health:        Vec<String>,
+    pub peer_total:    usize,
+    pub peer_online:   usize,
+}
+
+impl TsBackendStatus {
+    /// True if a transition between snapshots is worth surfacing in INFO.
+    /// "Meaningful" = state changed, health-warning set changed, or
+    /// peer_online crossed zero (either way). Other peer-count fluctuations
+    /// are noise and stay silent.
+    fn is_meaningful_change(&self, next: &TsBackendStatus) -> bool {
+        if self.backend_state != next.backend_state { return true; }
+        if self.health != next.health { return true; }
+        let was_zero = self.peer_online == 0;
+        let now_zero = next.peer_online == 0;
+        was_zero != now_zero
     }
 }
 
@@ -244,6 +372,13 @@ struct StatusJson {
     /// netmap yet. Map keys are peer pubkeys.
     #[serde(rename = "Peer")]
     peer: Option<std::collections::HashMap<String, PeerJson>>,
+    /// One of "NoState" / "NeedsLogin" / "Stopped" / "Starting" / "Running"
+    /// — see ipn.State in upstream. May be absent very early in startup.
+    #[serde(rename = "BackendState")]
+    backend_state: Option<String>,
+    /// Active health warnings (e.g. "DERP unreachable"). Absent when empty.
+    #[serde(rename = "Health")]
+    health: Option<Vec<String>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -315,11 +450,28 @@ impl TsListener {
         // service other tasks. The `Arc<Listener>` clones cheaply; the
         // listener itself is shared.
         let inner = Arc::clone(&self.inner);
-        let (std_stream, peer): (std::net::TcpStream, IpAddr) =
-            tokio::task::spawn_blocking(move || inner.accept_with_addr())
-                .await
-                .map_err(|e| TsError::Native(format!("spawn_blocking: {e}")))?
-                .map_err(TsError::Native)?;
+        let (res, errno) = tokio::task::spawn_blocking(move || {
+            let r = inner.accept_with_addr();
+            // libtailscale's `tailscale_accept` is a C shim that calls
+            // recvmsg() on a socketpair and just `return -1`s on failure
+            // WITHOUT populating the Tailscale errmsg buffer (see
+            // libtailscale-sys/libtailscale/tailscale.c). So when accept
+            // fails we get an empty string back; the only real signal is
+            // errno, which we capture here on the same blocking thread.
+            let errno = std::io::Error::last_os_error();
+            (r, errno)
+        })
+            .await
+            .map_err(|e| TsError::Native(format!("spawn_blocking: {e}")))?;
+        let (std_stream, peer): (std::net::TcpStream, IpAddr) = res
+            .map_err(|msg| {
+                let msg = msg.trim();
+                if msg.is_empty() {
+                    TsError::Native(format!("recvmsg failed: {errno}"))
+                } else {
+                    TsError::Native(format!("{msg} (os: {errno})"))
+                }
+            })?;
 
         let tokio_stream = into_tokio_stream(std_stream)?;
         // Tailscale's accept_with_addr only gives us the peer's IP, not
@@ -379,19 +531,59 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
                     break;
                 }
             };
-            // tsnet's first-start log includes a "To authenticate, visit:
-            // https://login.tailscale.com/a/<token>" line. Match the
-            // `/a/` path specifically so generic mentions of
-            // controlplane.tailscale.com / login.tailscale.com (e.g.
-            // network errors during shutdown) don't get promoted to WARN.
-            if line.contains("login.tailscale.com/a/") {
-                tracing::warn!(target: "motif_tailscale", "Tailscale auth needed: {}", line);
-            } else {
-                tracing::debug!(target: "motif_tailscale::tsnet", "{}", line);
-            }
+            classify_tsnet_log(&line);
         }
     });
     Ok(handle)
+}
+
+/// Route a single line from libtailscale's stderr-equivalent pipe to a
+/// tracing level. Most lines stay at debug — they're chatty and only useful
+/// when explicitly filtered in. The two classes we surface higher:
+///
+///   - **warn** — the one-shot first-start auth URL (`login.tailscale.com/a/`),
+///     so the operator notices it without enabling debug.
+///   - **info** — network-recovery events: route-socket / wall-time triggered
+///     `LinkChange`, magicsock rebind / throttle, post-rebind DNS reapply,
+///     netmon gateway-change notes, and netcheck-driven rebinds. These are
+///     exactly what we want visible after a Mac sleep/wake or Wi-Fi switch.
+fn classify_tsnet_log(line: &str) {
+    // Match the auth URL's `/a/` path specifically; generic mentions of the
+    // login host (e.g. transient network errors at shutdown) shouldn't get
+    // promoted to WARN.
+    if line.contains("login.tailscale.com/a/") {
+        tracing::warn!(target: "motif_tailscale", "Tailscale auth needed: {}", line);
+    } else if is_network_recovery_line(line) {
+        tracing::info!(target: "motif_tailscale::tsnet", "{}", line);
+    } else {
+        tracing::debug!(target: "motif_tailscale::tsnet", "{}", line);
+    }
+}
+
+/// Heuristic: tsnet log lines that signal network recovery (post-sleep, Wi-Fi
+/// switch, etc.) — exact substrings come from the upstream tailscale.com
+/// source (wgengine/userspace.go, wgengine/magicsock/magicsock.go,
+/// net/netmon/netmon.go) for v1.94.x. Adding new ones is safe: stick to
+/// substrings that only appear on the event we care about.
+fn is_network_recovery_line(line: &str) -> bool {
+    // wgengine/userspace.go: `LinkChange: all links down; pausing` /
+    // `LinkChange: major, rebinding` / `[v1] LinkChange: minor`. We catch
+    // all three by anchoring on the prefix.
+    if line.contains("LinkChange:") { return true; }
+    // magicsock/magicsock.go:1595 — direct rebind notice.
+    if line.contains("magicsock: performing rebind") { return true; }
+    // magicsock/magicsock.go:1600 — rebind suppressed by throttle. Worth
+    // surfacing because it explains why a rebind didn't happen.
+    if line.contains("magicsock: not performing") { return true; }
+    // magicsock/magicsock.go:961 — netcheck-detected send failure path.
+    if line.contains("magicsock: last netcheck") { return true; }
+    // wgengine/userspace.go:1394/1398 — DNS / VPN reapply after major link
+    // change; matches "set DNS config again after major link change" and the
+    // matching error variant.
+    if line.contains("after major link change") { return true; }
+    // net/netmon/netmon.go:390 — gateway flipped.
+    if line.contains("gateway and self IP changed") { return true; }
+    false
 }
 
 #[cfg(unix)]
@@ -411,4 +603,41 @@ fn set_cloexec(fd: &std::os::unix::io::OwnedFd) {
 #[cfg(not(unix))]
 fn wire_log_pipe(_t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHandle<()>, TsError> {
     Err(TsError::Native("log pipe capture is unix-only".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_network_recovery_line;
+
+    #[test]
+    fn classifies_link_change_and_rebind_lines() {
+        // All of these are real upstream log strings (tailscale.com@1.94.x).
+        // The first arm of each pair must classify as recovery; the second
+        // must NOT, so we don't accidentally promote chatter to INFO.
+        let recovery = [
+            "LinkChange: all links down; pausing: <state>",
+            "LinkChange: major, rebinding: <state>",
+            "[v1] LinkChange: minor",
+            "magicsock: performing rebind due to \"link-change-major\"",
+            "magicsock: not performing \"link-change-major\" rebind due to throttle",
+            "magicsock: last netcheck reported send error. Rebinding.",
+            "wgengine: set DNS config again after major link change",
+            "wgengine: error setting DNS config after major link change: x",
+            "monitor: gateway and self IP changed: gw=1.2.3.4 self=5.6.7.8",
+        ];
+        for line in recovery {
+            assert!(is_network_recovery_line(line), "should promote: {line}");
+        }
+
+        let noise = [
+            "magicsock: disco key = abcd",
+            "netcheck: report: udp=true ...",
+            "tsnet: starting",
+            "magicsock: disco: got disco-looking frame from x",
+            "controlclient: ...",
+        ];
+        for line in noise {
+            assert!(!is_network_recovery_line(line), "should NOT promote: {line}");
+        }
+    }
 }

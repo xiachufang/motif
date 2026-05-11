@@ -4,7 +4,7 @@ motif 的 iOS native App，包含：
 
 - WKWebView 加载 motif-web（从本地 127.0.0.1 的 HTTP 服务器加载 bundle 内资源）
 - TailscaleKit (tsnet) 让 App 自身加入 tailnet，反代访问远端 motifd
-- Doubao ASR 的 Swift 移植，给网页里的"按住说话"提供原生语音识别
+- Doubao ASR（gfreezy/DoubaoASR SwiftPM 包），给网页里的"按住说话"提供原生语音识别
 
 ## 第一次构建
 
@@ -33,7 +33,7 @@ ios/
 │   ├── ContentView.swift
 │   ├── WebView/             WKWebView + 本地 HTTP server
 │   ├── Tailscale/           TailscaleKit 包装（待实现）
-│   ├── ASR/                 Doubao ASR 移植（待实现）
+│   ├── ASR/                 AVAudioSession glue（识别本身由 DoubaoASR 包实现）
 │   ├── Settings/            全局状态
 │   ├── Info.plist
 │   └── Resources/web/       同步自 ../crates/motif-web/static（ignore）

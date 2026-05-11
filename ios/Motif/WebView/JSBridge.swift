@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 import OSLog
+import DoubaoASR
 
 /// Bridge between the embedded motif-web JS and native Swift.
 ///
@@ -15,8 +16,7 @@ import OSLog
 final class JSBridge: NSObject {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "JSBridge")
     private weak var webView: WKWebView?
-    private let asr = DoubaoASR()
-    private var asrEventTask: Task<Void, Never>?
+    private var asr: DoubaoASR?
 
     /// Inject a globally-available `motif.*` namespace and the message handler.
     /// Called once from WebViewContainer when the WKWebView is created.
@@ -80,12 +80,12 @@ final class JSBridge: NSObject {
 
         case "asr.start":
             log.notice("asr.start")
-            try await startASR()
+            await startASR()
             return ["ok": true]
 
         case "asr.stop":
             log.notice("asr.stop")
-            await asr.stop()
+            stopASR()
             return ["ok": true]
 
         default:
@@ -95,22 +95,33 @@ final class JSBridge: NSObject {
 
     // MARK: - ASR wiring
 
-    private func startASR() async throws {
-        asrEventTask?.cancel()
-        let stream = try await asr.start()
-        asrEventTask = Task { [weak self] in
-            for await event in stream {
-                guard let self else { return }
-                switch event {
-                case .partial(let text):
-                    self.emit("asr.partial", payload: ["text": text])
-                case .final(let text):
-                    self.emit("asr.final", payload: ["text": text])
-                case .error(let msg):
-                    self.emit("asr.error", payload: ["message": msg])
-                case .stopped:
-                    self.emit("asr.stopped", payload: [:])
-                }
+    private func startASR() async {
+        if let err = await AudioSessionHelper.prepareForRecording() {
+            emit("asr.error", payload: ["message": err])
+            return
+        }
+        let a = DoubaoASR()
+        self.asr = a
+        a.start(
+            onPartial:    { [weak self] text  in self?.emit("asr.partial",    payload: ["text": text]) },
+            onAudioLevel: { [weak self] level in self?.emit("asr.audioLevel", payload: ["level": Double(level)]) },
+            onError:      { [weak self] error in self?.emit("asr.error",      payload: ["message": error.localizedDescription]) }
+        )
+    }
+
+    private func stopASR() {
+        guard let a = asr else { return }
+        a.stop { [weak self] final in
+            // Upstream documents that callbacks fire on the main queue, but the
+            // closure type isn't `@MainActor`-annotated so the compiler can't
+            // see that — hop to the MainActor explicitly to touch `self.asr`
+            // and `AudioSessionHelper`. Order matters for JS consumers:
+            // deliver the final transcript before signaling teardown.
+            Task { @MainActor in
+                self?.emit("asr.final", payload: ["text": final])
+                self?.emit("asr.stopped", payload: [:])
+                AudioSessionHelper.deactivate()
+                self?.asr = nil
             }
         }
     }
@@ -188,24 +199,18 @@ final class JSBridge: NSObject {
 }
 
 extension JSBridge: WKScriptMessageHandlerWithReply {
-    nonisolated func userContentController(
+    func userContentController(
         _ userContentController: WKUserContentController,
-        didReceive message: WKScriptMessage,
-        replyHandler: @escaping @Sendable (Any?, String?) -> Void
-    ) {
-        Task { @MainActor in
-            // WKScriptMessage.body is main-actor-isolated in iOS 18 SDK, so we
-            // dereference it inside the MainActor context.
-            guard let body = message.body as? [String: Any] else {
-                replyHandler(nil, "malformed message: not an object")
-                return
-            }
-            do {
-                let result = try await self.handle(message: body)
-                replyHandler(result, nil)
-            } catch {
-                replyHandler(nil, String(describing: error))
-            }
+        didReceive message: WKScriptMessage
+    ) async -> (Any?, String?) {
+        guard let body = message.body as? [String: Any] else {
+            return (nil, "malformed message: not an object")
+        }
+        do {
+            let result = try await self.handle(message: body)
+            return (result, nil)
+        } catch {
+            return (nil, String(describing: error))
         }
     }
 }

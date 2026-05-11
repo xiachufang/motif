@@ -18,8 +18,12 @@ pub enum Event {
     #[serde(rename = "pty.output")]
     PtyOutput {
         pty_id:   PtyId,
-        /// Base64-encoded raw bytes from the pseudo-tty.
-        data_b64: String,
+        /// Raw bytes from the pseudo-tty. Encoded as base64 string in JSON
+        /// (wire field name kept `data_b64` for backward compat with old
+        /// clients) and as native bin in MessagePack — the serde adapter
+        /// in `crate::wire` picks the right form per serializer.
+        #[serde(rename = "data_b64", with = "crate::wire::bytes_base64_or_native")]
+        data:     Vec<u8>,
         /// Active block id. `None` only when the PTY is in `Unknown`
         /// state (un-bootstrapped or shell-integration disabled).
         /// Allocated at the `133;A` boundary; stable across a whole
@@ -195,6 +199,48 @@ mod tests {
         match back {
             Event::ClientJoined { client_id, .. } => assert_eq!(client_id, "01H"),
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn pty_output_json_base64_round_trip() {
+        let raw = vec![0u8, 1, 2, 3, 0xff, 0xfe];
+        let e = Event::PtyOutput {
+            pty_id:   "p1".into(),
+            data:     raw.clone(),
+            block_id: None,
+            scope:    OutputScope::Output,
+            seq:      7,
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        // JSON wire keeps the historical `data_b64` field name with a
+        // base64 string value.
+        assert!(s.contains("\"data_b64\":\"AAECA//+\""));
+        let back: Event = serde_json::from_str(&s).unwrap();
+        match back {
+            Event::PtyOutput { data, .. } => assert_eq!(data, raw),
+            _ => panic!("expected PtyOutput"),
+        }
+    }
+
+    #[test]
+    fn pty_output_msgpack_native_bytes_round_trip() {
+        let raw = vec![0u8, 1, 2, 3, 0xff, 0xfe];
+        let e = Event::PtyOutput {
+            pty_id:   "p1".into(),
+            data:     raw.clone(),
+            block_id: None,
+            scope:    OutputScope::Output,
+            seq:      7,
+        };
+        let buf = rmp_serde::to_vec_named(&e).unwrap();
+        // msgpack bin8 marker (0xc4) + length 6 for our payload — proves
+        // the bytes are not base64-encoded on the wire.
+        assert!(buf.windows(2).any(|w| w[0] == 0xc4 && w[1] == raw.len() as u8));
+        let back: Event = rmp_serde::from_slice(&buf).unwrap();
+        match back {
+            Event::PtyOutput { data, .. } => assert_eq!(data, raw),
+            _ => panic!("expected PtyOutput"),
         }
     }
 }

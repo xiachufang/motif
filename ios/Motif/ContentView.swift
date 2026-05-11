@@ -5,75 +5,46 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-
-            switch appState.serverState {
-            case .starting:
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Starting local server…")
-                        .foregroundStyle(.secondary)
-                }
-            case .failed(let message):
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.yellow)
-                    Text("Local server failed")
-                        .font(.headline)
-                    Text(message)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                }
-            case .running(let port):
-                if appState.servers.activeServer == nil {
-                    WelcomeView()
-                } else {
-                    WebViewContainer(url: URL(string: "http://127.0.0.1:\(port)/index.html")!)
-                        .id(appState.webViewReloadKey)
-                        .ignoresSafeArea(.container, edges: [.top, .horizontal])
-                }
+            if appState.servers.activeServer == nil {
+                WelcomeView()
+            } else {
+                NativeRoot()
+                    .id(appState.webViewReloadKey)
+                    .environment(appState.motif)
             }
-
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        appState.isShowingSettings.toggle()
-                    } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.7))
-                            .padding(8)
-                            .background(.black.opacity(0.4), in: Circle())
-                    }
-                    .padding(.trailing, 12)
-                    .padding(.top, 6)
-                }
-                Spacer()
-            }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
         }
         .sheet(isPresented: Binding(
-            get: { appState.isShowingSettings },
-            set: { appState.isShowingSettings = $0 }
+            get: { appState.isShowingConnection },
+            set: { appState.isShowingConnection = $0 }
         )) {
-            SettingsView()
-                .environment(appState)
+            ConnectionView().environment(appState)
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.isShowingAbout },
+            set: { appState.isShowingAbout = $0 }
+        )) {
+            AboutView().environment(appState)
         }
         .task {
-            await appState.startServerIfNeeded()
-            // Auto-resume Tailscale if a cached login is present. tsnet
-            // reads the state dir on its own; if creds are still valid
-            // we go straight to .running with no UI prompt. If they're
-            // not, busDidReceive will push the login URL via
-            // startLoginInteractive, which surfaces as a Safari sheet
-            // in Settings (which the user can keep closed for now).
+            // Auto-resume Tailscale. With cached creds tsnet skips the
+            // user prompt entirely; otherwise busDidReceive surfaces a
+            // BrowseToURL via the setup sheet. In DEBUG we wedge a
+            // hardcoded auth-key in so first-run iteration doesn't go
+            // through the browser login each time.
+            #if DEBUG
+            await appState.tailscale.start(authKey: Self.debugAuthKey)
+            #else
             await appState.tailscale.start(authKey: nil)
+            #endif
         }
     }
+
+    #if DEBUG
+    /// Dev-only Tailscale auth key. tsnet uses this only when there are
+    /// no usable cached credentials in `Documents/tailscale/`; otherwise
+    /// it's ignored and we resume from cache.
+    private static let debugAuthKey = "tskey-auth-kgGZLTq6qP11CNTRL-MAm9erG4H263sAaqjM6426aVZU17p8W2"
+    #endif
 }
 
 #Preview {

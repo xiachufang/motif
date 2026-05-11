@@ -99,11 +99,14 @@ pub struct GetBlockOutputParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBlockOutputResult {
-    pub prompt_b64:        String,
+    #[serde(rename = "prompt_b64", with = "crate::wire::bytes_base64_or_native")]
+    pub prompt:            Vec<u8>,
     pub prompt_truncated:  bool,
-    pub command_b64:       String,
+    #[serde(rename = "command_b64", with = "crate::wire::bytes_base64_or_native")]
+    pub command:           Vec<u8>,
     pub command_truncated: bool,
-    pub output_b64:        String,
+    #[serde(rename = "output_b64", with = "crate::wire::bytes_base64_or_native")]
+    pub output:            Vec<u8>,
     pub output_truncated:  bool,
 }
 
@@ -142,8 +145,9 @@ pub struct PtyListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyWriteParams {
-    pub pty_id:   PtyId,
-    pub data_b64: String,
+    pub pty_id: PtyId,
+    #[serde(rename = "data_b64", with = "crate::wire::bytes_base64_or_native")]
+    pub data:   Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

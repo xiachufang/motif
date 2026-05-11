@@ -23,7 +23,4 @@ ios/**/xcuserdata/
 ios/**/xcshareddata/IDEWorkspaceChecks.plist
 ios/Motif.xcodeproj/
 ios/Motif/Resources/web/
-ios/vendor/*.xcframework/
-ios/vendor/libtailscale/
-ios/vendor/opus/
-ios/vendor/opus-build/
+ios/vendor
