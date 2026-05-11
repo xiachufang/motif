@@ -1,9 +1,15 @@
 import SwiftUI
 import UIKit
 import SwiftTerm
+import GhosttyTerminal
 import OSLog
 
 private let ptyLog = Logger(subsystem: "io.allsunday.motif", category: "PtyView")
+
+// SwiftTerm and GhosttyTerminal both export a `TerminalView` symbol
+// (GhosttyTerminal as a typealias for `UITerminalView`). All SwiftTerm
+// references below are spelled `SwiftTerm.TerminalView` so the bare name
+// stays unambiguous; Ghostty references use `UITerminalView` directly.
 
 /// Native PTY surface. Wraps SwiftTerm's UIKit `TerminalView` and pipes
 /// keystrokes -> `pty.write`, `pty.output` events -> the terminal buffer.
@@ -18,8 +24,8 @@ struct PtyTerminal: UIViewRepresentable {
         Coordinator(client: client, ptyID: ptyID)
     }
 
-    func makeUIView(context: Context) -> TerminalView {
-        let term = TerminalView()
+    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+        let term = SwiftTerm.TerminalView()
         term.terminalDelegate = context.coordinator
         term.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         term.nativeBackgroundColor = .black
@@ -39,7 +45,7 @@ struct PtyTerminal: UIViewRepresentable {
         return term
     }
 
-    func updateUIView(_ uiView: TerminalView, context: Context) {
+    func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
         // No-op: dimensions and feed are fully driven by the coordinator
         // and SwiftTerm's own resize callback.
     }
@@ -48,7 +54,7 @@ struct PtyTerminal: UIViewRepresentable {
     final class Coordinator: NSObject, TerminalViewDelegate {
         let client: MotifClient
         let ptyID: String
-        weak var terminal: TerminalView?
+        weak var terminal: SwiftTerm.TerminalView?
         private var pumpTask: Task<Void, Never>?
         private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
 
@@ -75,7 +81,7 @@ struct PtyTerminal: UIViewRepresentable {
 
         // MARK: TerminalViewDelegate
 
-        func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
             // SwiftTerm hands us the raw bytes typed on the keyboard
             // (already encoded, including special key sequences). Forward
             // verbatim to the PTY.
@@ -83,7 +89,7 @@ struct PtyTerminal: UIViewRepresentable {
             Task { [client, ptyID] in await client.write(ptyID: ptyID, data: bytes) }
         }
 
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
             let cols = UInt16(clamping: newCols)
             let rows = UInt16(clamping: newRows)
             if cols == lastSize.cols && rows == lastSize.rows { return }
@@ -91,32 +97,124 @@ struct PtyTerminal: UIViewRepresentable {
             Task { [client, ptyID] in await client.resize(ptyID: ptyID, cols: cols, rows: rows) }
         }
 
-        func setTerminalTitle(source: TerminalView, title: String) {
+        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
             // not surfaced in MVP UI
         }
 
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
             // not surfaced in MVP UI
         }
 
-        func scrolled(source: TerminalView, position: Double) {}
+        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
 
-        func clipboardCopy(source: TerminalView, content: Data) {
+        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
             UIPasteboard.general.string = String(data: content, encoding: .utf8)
         }
 
-        func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
 
-        func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
             if let url = URL(string: link) {
                 UIApplication.shared.open(url)
             }
         }
 
-        func bell(source: TerminalView) {
+        func bell(source: SwiftTerm.TerminalView) {
             // Could trigger a haptic; skipped for now.
         }
 
-        func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
+        func iTermContent(source: SwiftTerm.TerminalView, content: ArraySlice<UInt8>) {}
+    }
+}
+
+/// libghostty-vt backed PTY surface. Wraps GhosttyTerminal's `UITerminalView`
+/// + `InMemoryTerminalSession`: server PTY bytes -> `session.receive`,
+/// terminal output bytes -> `client.write`, grid resize -> `client.resize`.
+///
+/// Selected via `AppState.terminalBackend == .ghostty`. The view is final
+/// in the SPM package so we cannot override its `inputAccessoryView`;
+/// users will see Ghostty's built-in input accessory toolbar in addition
+/// to motif's `BottomInputBar`. Known cosmetic overlap; not addressed in v1.
+struct GhosttyPtyTerminal: UIViewRepresentable {
+    let ptyID: String
+    let initialCols: UInt16
+    let initialRows: UInt16
+    let client: MotifClient
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(client: client, ptyID: ptyID)
+    }
+
+    func makeUIView(context: Context) -> UITerminalView {
+        let view = UITerminalView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateUIView(_ uiView: UITerminalView, context: Context) {
+        // Configuration is set once in attach(to:); grid metrics flow
+        // through the in-memory session's resize callback, output bytes
+        // through the coordinator pump. Nothing for SwiftUI to push.
+    }
+
+    @MainActor
+    final class Coordinator {
+        let client: MotifClient
+        let ptyID: String
+        private let controller = TerminalController()
+        private var session: InMemoryTerminalSession?
+        private var pumpTask: Task<Void, Never>?
+        private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
+
+        init(client: MotifClient, ptyID: String) {
+            self.client = client
+            self.ptyID = ptyID
+        }
+
+        func attach(to view: UITerminalView) {
+            let client = self.client
+            let ptyID = self.ptyID
+            let session = InMemoryTerminalSession(
+                write: { data in
+                    Task { @MainActor in
+                        await client.write(ptyID: ptyID, data: data)
+                    }
+                },
+                resize: { [weak self] viewport in
+                    Task { @MainActor in
+                        self?.handleResize(viewport)
+                    }
+                }
+            )
+            self.session = session
+
+            view.controller = controller
+            view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+
+            pumpTask = Task { @MainActor [weak self, weak session] in
+                guard let self else { return }
+                let stream = self.client.outputs(for: self.ptyID)
+                for await data in stream {
+                    guard !Task.isCancelled else { return }
+                    session?.receive(data)
+                }
+            }
+        }
+
+        private func handleResize(_ viewport: InMemoryTerminalViewport) {
+            let cols = viewport.columns
+            let rows = viewport.rows
+            if cols == lastSize.cols, rows == lastSize.rows { return }
+            lastSize = (cols, rows)
+            let client = self.client
+            let ptyID = self.ptyID
+            Task { @MainActor in
+                await client.resize(ptyID: ptyID, cols: cols, rows: rows)
+            }
+        }
+
+        deinit {
+            pumpTask?.cancel()
+        }
     }
 }

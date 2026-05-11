@@ -36,6 +36,9 @@ packages:
   MessagePack:
     url: https://github.com/Flight-School/MessagePack.git
     from: "1.2.4"
+  libghostty-spm:
+    url: https://github.com/Lakr233/libghostty-spm.git
+    from: "1.0.1778484952"
 
 targets:
   Motif:
@@ -95,6 +98,8 @@ targets:
         product: TalkerMacro
       - package: DoubaoASR
       - package: MessagePack
+      - package: libghostty-spm
+        product: GhosttyTerminal
 
   MotifTests:
     type: bundle.unit-test

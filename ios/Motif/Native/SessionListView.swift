@@ -18,20 +18,57 @@ struct SessionListView: View {
     @State private var destroyTarget: String?
 
     var body: some View {
-        Group {
+        // Always render a List so `.refreshable` is available across
+        // every state (loading, empty, populated). The variants are
+        // expressed as Section contents inside.
+        List {
+            if let error {
+                Section {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
             if motif.sessions.isEmpty && loading {
-                // First-load skeleton — `.refreshable` only fires on a
-                // pull gesture, so without this the screen looks frozen
-                // while the initial session.list is in flight.
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                }
             } else if motif.sessions.isEmpty {
-                emptyState
+                Section {
+                    emptyStateRow
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
             } else {
-                sessionList
+                Section {
+                    ForEach(motif.sessions) { session in
+                        sessionRow(session)
+                    }
+                }
             }
         }
+        .listStyle(.insetGrouped)
+        .refreshable { await refresh() }
         .task { await refresh() }
+        .onChange(of: motif.state) { _, newState in
+            // After a transparent reconnect (failed → connecting → connected)
+            // the existing .task fired only on first appear, so the list
+            // would keep showing whatever sessions were cached pre-drop.
+            // Re-fetch whenever we land back on .connected.
+            if case .connected = newState {
+                Task { await refresh() }
+            }
+        }
         .toolbar {
             // Leading slot — NativeRoot's `rootToolbar` already owns the
             // `.principal` (server picker) and `.topBarTrailing` (info)
@@ -71,30 +108,7 @@ struct SessionListView: View {
         }
     }
 
-    // MARK: - List + rows
-
-    private var sessionList: some View {
-        List {
-            if let error {
-                Section {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                }
-            }
-            Section {
-                ForEach(motif.sessions) { session in
-                    sessionRow(session)
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-        .refreshable { await refresh() }
-    }
+    // MARK: - Rows
 
     @ViewBuilder
     private func sessionRow(_ session: MotifProto.SessionInfo) -> some View {
@@ -159,7 +173,11 @@ struct SessionListView: View {
 
     // MARK: - Empty state
 
-    private var emptyState: some View {
+    /// Hosted inside a List row so `.refreshable` still fires when the
+    /// user pulls down from this state. The error string also lives in
+    /// its own list section above, but we mirror it here too so users
+    /// reading the empty-state copy don't miss it.
+    private var emptyStateRow: some View {
         VStack(spacing: 16) {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.system(size: 44, weight: .light))
@@ -178,16 +196,9 @@ struct SessionListView: View {
                 Label("Create session", systemImage: "plus.circle.fill")
             }
             .buttonStyle(.borderedProminent)
-            if let error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 8)
-            }
         }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 32)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Actions
@@ -353,6 +364,7 @@ enum SessionTab: Hashable, Identifiable {
 struct SessionView: View {
     @Environment(MotifClient.self) private var motif
     @Environment(CmRouter.self) private var router
+    @Environment(AppState.self) private var appState
     let name: String
     @State private var error: String?
     @State private var showingTree: Bool = false
@@ -666,12 +678,25 @@ struct SessionView: View {
         switch tab {
         case .pty(_, let ptyID):
             if let info = motif.ptys.first(where: { $0.id == ptyID }) {
-                PtyTerminal(
-                    ptyID: ptyID,
-                    initialCols: info.cols,
-                    initialRows: info.rows,
-                    client: motif
-                )
+                Group {
+                    switch appState.terminalBackend {
+                    case .swiftTerm:
+                        PtyTerminal(
+                            ptyID: ptyID,
+                            initialCols: info.cols,
+                            initialRows: info.rows,
+                            client: motif
+                        )
+                    case .ghostty:
+                        GhosttyPtyTerminal(
+                            ptyID: ptyID,
+                            initialCols: info.cols,
+                            initialRows: info.rows,
+                            client: motif
+                        )
+                    }
+                }
+                .id("\(ptyID)-\(appState.terminalBackend.rawValue)")
             }
         case .preview(_, let path):
             PreviewPane(path: path)

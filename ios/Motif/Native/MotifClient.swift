@@ -157,8 +157,25 @@ final class MotifClient {
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
         FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
 
+        // Pre-warm the magicsock path before we ask URLSession to open the
+        // WS. `state=Running` only means controlplane is up — the first
+        // data packet to a specific peer still pays NAT discovery / DERP
+        // fallback, which on a cold start can exceed URLSession's request
+        // timeout. A throwaway TCP dial through tailscale_dial provokes
+        // that setup OUTSIDE of URLSession's timeout window, so the WS
+        // upgrade lands on an already-hot path. Best-effort: if the dial
+        // hangs or fails, the WS attempt is still tried (and now has a
+        // 15s timeout instead of the URLSession default 60s).
+        if case .tailscale = server.kind {
+            await preWarmTsnetPath(host: resolvedHost, port: server.port, tailscale: tailscale)
+        }
+
         var request = URLRequest(url: url)
         request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
+        // Default URLSession request timeout is 60s — too long when the
+        // tsnet path is wedged. Pair with NativeRoot's exponential backoff
+        // so a stuck handshake fails fast and the retry loop picks up.
+        request.timeoutInterval = 15
 
         let rpc = RpcClient(wireMode: .binary)
         do {
@@ -208,6 +225,43 @@ final class MotifClient {
         } else {
             state = .connected
         }
+    }
+
+    /// Best-effort TCP dial through tsnet to provoke the magicsock path
+    /// setup before the WS upgrade. Races the dial against an 8s timeout
+    /// so a wedged path doesn't stall the connect indefinitely — if it
+    /// times out or errors, we still proceed to the WS attempt (which
+    /// has its own 15s URLRequest timeout). The probe connection is
+    /// closed immediately; we just want the side effect of building the
+    /// peer route in libtailscale.
+    private func preWarmTsnetPath(host: String, port: UInt16, tailscale: TailscaleManager) async {
+        let start = Date()
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    let conn = try await tailscale.dial(host: host, port: port)
+                    await conn.close()
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 8 * 1_000_000_000)
+                    throw PreWarmTimeout()
+                }
+                _ = try await group.next()
+                group.cancelAll()
+            }
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            log.notice("tsnet path pre-warmed to \(host, privacy: .public):\(port, privacy: .public) in \(ms, privacy: .public)ms")
+            FileLog.note("MotifClient", "tsnet pre-warm ok \(host):\(port) (\(ms)ms)")
+        } catch {
+            // Don't fail the connect; the WS attempt will surface the real
+            // error if the path really is broken.
+            log.warning("tsnet pre-warm dial failed: \(String(describing: error), privacy: .public)")
+            FileLog.note("MotifClient", "tsnet pre-warm failed: \(error)")
+        }
+    }
+
+    private struct PreWarmTimeout: Error, CustomStringConvertible {
+        var description: String { "pre-warm dial timed out" }
     }
 
     /// Called once the events stream finishes. If the user explicitly
