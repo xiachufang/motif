@@ -11,7 +11,7 @@ use axum::extract::ws::{Message as AxMessage, WebSocket};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
-use motif_proto::envelope::{Frame, Id, Response as RpcResponse};
+use motif_proto::envelope::{Frame, Response as RpcResponse};
 use motif_proto::error::{ErrorCode, RpcError};
 use serde::Deserialize;
 use serde_json::Value;

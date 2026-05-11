@@ -300,7 +300,7 @@ enum Mode {
 }
 
 enum ViewBodyCache {
-    Preview { content: String, binary: bool },
+    Preview { content: String },
     Diff    { patch: String },
 }
 
@@ -643,7 +643,7 @@ async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
                 } else {
                     String::from_utf8_lossy(&bytes).into_owned()
                 };
-                state.view_cache.insert(vid, ViewBodyCache::Preview { content, binary: r.binary });
+                state.view_cache.insert(vid, ViewBodyCache::Preview { content });
             }
         }
         ViewSpec::Diff { staged, path } => {
