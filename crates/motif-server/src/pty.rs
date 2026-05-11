@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use dashmap::DashMap;
 use motif_proto::common::{ClientId, PtyId, UnixMs};
 use motif_proto::event::Event;
@@ -484,12 +483,12 @@ fn reader_loop(
                                 s.shell.record_output(&bytes);
                                 (s.shell.active_block_id().cloned(), s.shell.active_scope())
                             };
-                            let chunk = BASE64.encode(&bytes);
                             if let Some(ref weak) = session {
                                 if let Some(sess) = weak.upgrade() {
                                     let pid = pty_id.clone();
+                                    let data = bytes.clone();
                                     sess.publish_event(|seq| Event::PtyOutput {
-                                        pty_id: pid, data_b64: chunk, block_id, scope, seq,
+                                        pty_id: pid, data, block_id, scope, seq,
                                     });
                                 }
                             }

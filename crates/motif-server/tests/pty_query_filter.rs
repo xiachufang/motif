@@ -11,7 +11,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use motif_proto::common::ClientId;
 use motif_proto::event::Event;
 use motif_proto::pty::PtyCreateParams;
@@ -63,8 +62,8 @@ async fn pty_output_strips_da1_query() {
         match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Ok(ev)) => {
                 match ev.as_ref() {
-                    Event::PtyOutput { data_b64, .. } => {
-                        all.extend(BASE64.decode(data_b64).unwrap_or_default());
+                    Event::PtyOutput { data, .. } => {
+                        all.extend_from_slice(data);
                     }
                     Event::PtyExited { .. } => { exited = true; break; }
                     _ => {}

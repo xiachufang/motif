@@ -10,6 +10,16 @@ struct NativeRoot: View {
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
     @State private var routerDelegate: AttachDetachDelegate?
+    /// Backoff retry handle for the auto-reconnect loop. Spawned by
+    /// `onStateChange` on `.failed`, cancelled by the next `.connected`
+    /// or by a connectKey-change refire of the initial `.task`. Keeping
+    /// it in @State (instead of a free Task that re-spawns itself) lets
+    /// the view's lifecycle clean it up automatically and prevents a
+    /// runaway retry storm if the user backs out mid-cycle.
+    @State private var retryTask: Task<Void, Never>?
+    /// Failed-connect counter feeding the backoff schedule. Resets on a
+    /// successful `.connected`/`.attached` or on a connectKey change.
+    @State private var retryAttempt: Int = 0
 
     /// Generates `view(_ path: String, query: [String: String]) -> some View`
     /// at compile time: a switch on `SessionView.path` that calls the
@@ -51,10 +61,65 @@ struct NativeRoot: View {
     var body: some View {
         routerView
             .task(id: connectKey) {
+                // A connectKey change means the prereqs for "who/how we
+                // dial" have shifted (server swap, kind flip, tsnet flip).
+                // Drop any pending backoff so we don't dial a stale target
+                // and reset the attempt counter for fresh exponential backoff.
+                retryTask?.cancel()
+                retryTask = nil
+                retryAttempt = 0
                 guard !blocked else { return }
                 guard let server = appState.servers.activeServer else { return }
                 await motif.connect(server: server, tailscale: appState.tailscale)
             }
+            .onChange(of: motif.state) { _, newState in
+                onStateChange(newState)
+            }
+    }
+
+    /// Reactive bridge between MotifClient.state and the retry loop.
+    /// `.failed` schedules a backoff retry; success cancels any pending
+    /// one. The fall-through cases (`.connecting`, `.disconnected`) are
+    /// intermediate states — leave the retry handle alone so an in-flight
+    /// attempt isn't yanked out from under itself when `connect()`
+    /// transitions through `.connecting` on its way to a result.
+    private func onStateChange(_ s: MotifClient.State) {
+        switch s {
+        case .connected, .attached:
+            retryTask?.cancel()
+            retryTask = nil
+            retryAttempt = 0
+        case .failed:
+            guard !blocked else { return }
+            scheduleRetry()
+        case .connecting, .disconnected:
+            break
+        }
+    }
+
+    /// Exponential backoff: 1s, 2s, 4s, 8s, 15s, 15s, … capped to keep a
+    /// permanently-down server from hammering itself awake while still
+    /// recovering quickly from common transients (Mac sleep, network blip,
+    /// server restart). Re-reads server / tsnet state at fire time so a
+    /// user-driven config change between schedule and fire takes effect.
+    private func scheduleRetry() {
+        retryTask?.cancel()
+        retryAttempt += 1
+        let attempt = retryAttempt
+        let delaySec = min(pow(2.0, Double(attempt - 1)), 15.0)
+        retryTask = Task { [motif, appState] in
+            try? await Task.sleep(for: .seconds(delaySec))
+            guard !Task.isCancelled else { return }
+            // Bail if something else already moved us off `.failed` —
+            // e.g. user hit the manual Retry, or the connectKey-driven
+            // `.task` rebooted the flow.
+            guard case .failed = motif.state else { return }
+            guard let server = appState.servers.activeServer else { return }
+            if server.kind == .tailscale {
+                guard case .running = appState.tailscale.state else { return }
+            }
+            await motif.connect(server: server, tailscale: appState.tailscale)
+        }
     }
 
     private var routerView: some View {
@@ -67,6 +132,15 @@ struct NativeRoot: View {
         } destView: { (path: String, query: [String: String]) in
             view(path, query: query)
                 .navigationBarTitleDisplayMode(.inline)
+                // Same overlay here so /session (and any future pushed
+                // route) shows "Connecting…" / "Connection failed" when
+                // the WS dies mid-attach, instead of leaving the user
+                // staring at a frozen SessionView. The overlay is rendered
+                // inside the destination content — NOT around it — so the
+                // navigation toolbar (Quit / Files / Diff buttons) stays
+                // reachable on top, matching the rationale on the root
+                // overlay above.
+                .overlay { rootConnectionOverlay }
         }
     }
 

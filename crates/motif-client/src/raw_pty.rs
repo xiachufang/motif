@@ -121,8 +121,8 @@ pub async fn pump(
                 let _: Value = c.call(
                     "pty.write",
                     ppty::PtyWriteParams {
-                        pty_id:   pty_id.clone(),
-                        data_b64: BASE64.encode(&bytes),
+                        pty_id: pty_id.clone(),
+                        data:   bytes,
                     },
                 ).await?;
             }

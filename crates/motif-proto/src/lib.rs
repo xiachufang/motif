@@ -12,6 +12,7 @@ pub mod pty;
 pub mod session;
 pub mod terminal_query;
 pub mod view;
+pub mod wire;
 
 pub use common::*;
 pub use envelope::*;

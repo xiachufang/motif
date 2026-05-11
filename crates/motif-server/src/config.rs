@@ -13,7 +13,9 @@ pub struct ServerConfig {
     /// Embedded-Tailscale listener. Independently optional from `listen`;
     /// at least one must be set.
     pub tailscale: Option<TailscaleListenConfig>,
-    pub token:     String,
+    /// Bearer token expected on the `Authorization` header. `None` disables
+    /// auth entirely — every WS upgrade succeeds regardless of headers.
+    pub token:     Option<String>,
     pub cert:      Option<PathBuf>,
     pub key:       Option<PathBuf>,
 }

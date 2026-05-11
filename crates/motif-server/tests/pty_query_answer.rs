@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use motif_proto::common::ClientId;
 use motif_proto::event::Event;
 use motif_proto::pty::PtyCreateParams;
@@ -86,8 +85,8 @@ async fn wait_for_bytes(rx: &mut Receiver<Arc<Event>>, needle: &[u8], duration: 
         let remaining = deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Ok(ev)) => {
-                if let Event::PtyOutput { data_b64, .. } = ev.as_ref() {
-                    out.extend(BASE64.decode(data_b64).unwrap_or_default());
+                if let Event::PtyOutput { data, .. } = ev.as_ref() {
+                    out.extend_from_slice(data);
                     if out.windows(needle.len()).any(|w| w == needle) {
                         return;
                     }
@@ -113,8 +112,8 @@ async fn collect_for(rx: &mut Receiver<Arc<Event>>, duration: Duration) -> Vec<u
         let remaining = deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Ok(ev)) => {
-                if let Event::PtyOutput { data_b64, .. } = ev.as_ref() {
-                    out.extend(BASE64.decode(data_b64).unwrap_or_default());
+                if let Event::PtyOutput { data, .. } = ev.as_ref() {
+                    out.extend_from_slice(data);
                 }
             }
             _ => break,

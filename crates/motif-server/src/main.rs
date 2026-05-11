@@ -48,9 +48,11 @@ struct Args {
     #[arg(long, requires = "tailscale")]
     tailscale_ephemeral: bool,
 
-    /// Bearer-token file. The server reads this once at startup; rotate by restart.
+    /// Bearer-token file. The server reads this once at startup; rotate by
+    /// restart. Omit to disable auth entirely — every WS upgrade is
+    /// accepted regardless of headers (a startup WARN is logged).
     #[arg(long)]
-    token_file: PathBuf,
+    token_file: Option<PathBuf>,
 
     /// TLS cert (PEM). M1 does not yet implement TLS; rejected on startup if set.
     #[arg(long)]
@@ -76,13 +78,19 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     motif_server::init_tracing(&args.log, args.rpc_log.as_deref())?;
 
-    let token = std::fs::read_to_string(&args.token_file)
-        .map_err(|e| anyhow::anyhow!("failed to read --token-file {}: {e}", args.token_file.display()))?
-        .trim()
-        .to_string();
-    if token.is_empty() {
-        anyhow::bail!("token file is empty: {}", args.token_file.display());
-    }
+    let token = match args.token_file.as_deref() {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("failed to read --token-file {}: {e}", path.display()))?
+                .trim()
+                .to_string();
+            if raw.is_empty() {
+                anyhow::bail!("token file is empty: {}", path.display());
+            }
+            Some(raw)
+        }
+        None => None,
+    };
 
     let tailscale = if args.tailscale {
         let hostname = args.tailscale_hostname.unwrap_or_else(default_ts_hostname);

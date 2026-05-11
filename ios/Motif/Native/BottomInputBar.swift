@@ -180,7 +180,7 @@ struct BottomInputBar: View {
         let text = buffer
         guard !text.isEmpty else { return }
         var data = Data(text.utf8)
-        data.append(0x0A) // newline = enter; matches user expectation of "submit"
+        data.append(0x0D) // newline = enter; matches user expectation of "submit"
         await motif.write(ptyID: id, data: data)
         buffer = ""
         expectedBuffer = ""

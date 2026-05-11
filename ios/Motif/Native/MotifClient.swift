@@ -28,7 +28,30 @@ final class MotifClient {
     private(set) var ptys: [MotifProto.PtyInfo] = []
     private(set) var views: [MotifProto.ViewInfo] = []
     private(set) var activeViewID: String?
+    /// Highest seq we've observed on the current WS — across every event
+    /// kind, not just pty.output (server allocates one monotonic counter
+    /// per session). Reset on attach to whatever the server returns in
+    /// the attach response; bumped by handleEvent on every notification
+    /// via `SeqPeek`. Snapshotted into `resumeSeqs` when the WS dies so a
+    /// follow-up attach can ask the server for the diff.
     private(set) var lastSeq: UInt64 = 0
+    /// Per-session resume markers, populated when the WS dies under us
+    /// (`handleConnectionLost`). On a subsequent `attach(sessionName:)`,
+    /// we hand the saved seq to the server as `last_seq` so it replays
+    /// only events newer than that instead of the full ring. Cleared on
+    /// successful attach, voluntary detach, destroy, and disconnect.
+    /// Note: SwiftTerm gets torn down on conn loss, so resume saves
+    /// bandwidth on the wire but doesn't preserve the rendered scrollback
+    /// in the terminal view — that requires keeping the SwiftTerm
+    /// `TerminalView` alive across reconnects, which is a separate change.
+    private var resumeSeqs: [String: UInt64] = [:]
+    /// Session the user is currently *intending* to be attached to. Set
+    /// by `attach()`, cleared by `detach()`/`disconnect()`/`destroy()`,
+    /// and — critically — NOT cleared by `handleConnectionLost`. After a
+    /// successful reconnect, `connect()` reads this to drive a transparent
+    /// auto-reattach so the user lands back in their terminal instead of
+    /// the session picker.
+    private var intendedSession: String?
     /// Other clients attached to the same session. Seeded from
     /// `session.attach` and updated by `client.joined` / `client.left`.
     /// Excludes our own client_id (the server's attach response already
@@ -147,7 +170,6 @@ final class MotifClient {
             return
         }
         self.rpc = rpc
-        state = .connected
         log.notice("connected to motifd as \(server.name, privacy: .public)")
         FileLog.note("MotifClient", "ws task resumed (state=connected)")
         eventTask = Task { [weak self] in
@@ -162,6 +184,30 @@ final class MotifClient {
             // hammering RPC calls into a dead socket.
             await self?.handleConnectionLost()
         }
+
+        // Auto-rehydrate: if we were attached to a session before a WS
+        // drop, transparently reattach now so the user lands back in
+        // their terminal. Skip the transient `.connected` step (jump
+        // straight from `.connecting` to `.attached`) so the UI overlay
+        // shows "Connecting…" continuously across reconnect+reattach
+        // rather than flashing a blank session picker mid-cycle.
+        if let name = intendedSession {
+            log.notice("auto re-attaching to \(name, privacy: .public)")
+            FileLog.note("MotifClient", "auto re-attaching to \(name)")
+            do {
+                try await attach(sessionName: name)
+            } catch {
+                // Session was destroyed / renamed / otherwise gone. Stop
+                // looping on the same failure; drop to `.connected` so the
+                // user lands on the picker on their next interaction.
+                log.error("auto re-attach \(name, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                FileLog.note("MotifClient", "auto re-attach \(name) failed: \(error)")
+                intendedSession = nil
+                state = .connected
+            }
+        } else {
+            state = .connected
+        }
     }
 
     /// Called once the events stream finishes. If the user explicitly
@@ -173,6 +219,14 @@ final class MotifClient {
             return
         case .connecting, .connected, .attached:
             break
+        }
+        // Snapshot the resume marker BEFORE clearing state — once we hit
+        // `clearSessionState` lastSeq is no longer meaningful for any
+        // particular session, and we still need the value to hand back
+        // to the server on the next attach.
+        if case .attached(let name) = state, lastSeq > 0 {
+            resumeSeqs[name] = lastSeq
+            log.notice("saved resume marker for \(name, privacy: .public) at seq=\(self.lastSeq, privacy: .public)")
         }
         log.notice("connection lost — resetting state")
         FileLog.note("MotifClient", "connection lost; resetting state")
@@ -190,6 +244,13 @@ final class MotifClient {
         if let rpc { await rpc.close() }
         rpc = nil
         clearSessionState()
+        // Manual disconnect = "forget everything". Drop resume markers so a
+        // subsequent attach starts from the full ring instead of a stale
+        // seq from a different server/session. Also drop the auto-reattach
+        // intent so the next connect lands on the picker.
+        resumeSeqs.removeAll()
+        intendedSession = nil
+        lastSeq = 0
         state = .disconnected
     }
 
@@ -236,6 +297,16 @@ final class MotifClient {
     /// alive — we go back to .connected so the UI lands on the session
     /// picker again. Different from `disconnect()` which closes the WS.
     func detach() async {
+        // Voluntary detach = clean exit. If the user re-attaches later,
+        // they expect the same full-scrollback experience as the first
+        // attach, not a diff from where they detached. Drop the marker.
+        if case .attached(let name) = state {
+            resumeSeqs.removeValue(forKey: name)
+        }
+        // Also drop the auto-reattach intent — the user explicitly chose
+        // to leave, so a subsequent reconnect should land them on the
+        // session picker, not silently rejoin the session they just left.
+        intendedSession = nil
         guard let rpc else {
             state = .disconnected
             return
@@ -253,9 +324,17 @@ final class MotifClient {
 
     func attach(sessionName: String) async throws {
         guard let rpc else { throw RpcClient.RpcError.notConnected }
+        // Resume marker (set by a previous handleConnectionLost on this
+        // same session) → ask the server for events since that seq only.
+        // `nil` => first attach this WS lifetime → server defaults to 0 =
+        // full ring replay.
+        let resume = resumeSeqs[sessionName]
+        if let r = resume {
+            log.notice("attaching to \(sessionName, privacy: .public) with resume seq=\(r, privacy: .public)")
+        }
         let r = try await rpc.call(
             "session.attach",
-            params: MotifProto.SessionAttachParams(name: sessionName, last_seq: nil, term_fg: nil, term_bg: nil),
+            params: MotifProto.SessionAttachParams(name: sessionName, last_seq: resume, term_fg: nil, term_bg: nil),
             as: MotifProto.SessionAttachResult.self
         )
         ptys = r.ptys ?? []
@@ -267,6 +346,13 @@ final class MotifClient {
         activeViewID = r.active_view
         clients = r.clients ?? []
         lastSeq = r.last_seq ?? 0
+        // Marker has been spent. Replayed events will arrive as normal
+        // notifications and re-populate lastSeq via SeqPeek; if the WS
+        // dies again, handleConnectionLost will re-snapshot.
+        resumeSeqs.removeValue(forKey: sessionName)
+        // Remember the intent so a future connection drop + reconnect can
+        // auto-reattach without user action.
+        intendedSession = sessionName
         state = .attached(session: sessionName)
         log.notice("attached to \(sessionName, privacy: .public): \(self.ptys.count, privacy: .public) ptys, \(self.views.count, privacy: .public) views, \(self.clients.count, privacy: .public) peers")
     }
@@ -282,6 +368,15 @@ final class MotifClient {
             params: MotifProto.SessionDestroyParams(name: name)
         )
         sessions.removeAll { $0.name == name }
+        // The session and its ring are gone server-side; any saved
+        // resume seq for it is useless and would be wrong if a future
+        // session was created with the same name. Same reasoning for
+        // the auto-reattach intent: don't try to re-enter a session
+        // that no longer exists.
+        resumeSeqs.removeValue(forKey: name)
+        if intendedSession == name {
+            intendedSession = nil
+        }
     }
 
     // MARK: - PTYs
@@ -572,11 +667,18 @@ final class MotifClient {
     // MARK: - Events
 
     private func handleEvent(_ event: RpcClient.Event) {
+        // Server's seq is session-global and monotonic across every event
+        // kind. Peek it via a tiny `{seq?}` shape so we update lastSeq for
+        // pty.created / view.opened / git.changed / etc. too — otherwise a
+        // long quiet stretch with no PTY output would leave our resume
+        // marker stuck behind the live cursor.
+        if let s = (try? event.decode(MotifProto.SeqPeek.self))?.seq {
+            lastSeq = max(lastSeq, s)
+        }
         switch event.method {
         case "pty.output":
             guard let payload = try? event.decode(MotifProto.PtyOutputEvent.self) else { return }
             appendOutput(ptyID: payload.pty_id, data: payload.data)
-            if let s = payload.seq { lastSeq = max(lastSeq, s) }
 
         case "pty.exited":
             guard let payload = try? event.decode(MotifProto.PtyExitedEvent.self) else { return }

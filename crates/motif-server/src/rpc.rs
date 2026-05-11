@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use motif_proto::envelope::{Id, Request, Response};
 use motif_proto::error::{ErrorCode, RpcError};
 use motif_proto::view as pview;
@@ -415,11 +414,7 @@ fn handle_pty_write(
     let Some(pty) = s.pty_pool.get(&p.pty_id) else {
         return Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found"));
     };
-    let bytes = match BASE64.decode(p.data_b64.as_bytes()) {
-        Ok(b) => b,
-        Err(e) => return Response::err(id, RpcError::invalid_params(format!("bad base64: {e}"))),
-    };
-    if let Err(e) = pty.write_bytes(&bytes) {
+    if let Err(e) = pty.write_bytes(&p.data) {
         return Response::err(id, RpcError::internal(format!("pty write: {e}")));
     }
     mark_pty_primary(&s, &p.pty_id, conn.client_id.clone());
@@ -528,11 +523,11 @@ fn handle_pty_get_block_output(
         Some(seg) => Response::ok(
             id,
             ppty::GetBlockOutputResult {
-                prompt_b64: BASE64.encode(&seg.prompt),
+                prompt: seg.prompt,
                 prompt_truncated: seg.prompt_truncated,
-                command_b64: BASE64.encode(&seg.command),
+                command: seg.command,
                 command_truncated: seg.command_truncated,
-                output_b64: BASE64.encode(&seg.output),
+                output: seg.output,
                 output_truncated: seg.output_truncated,
             },
         ),

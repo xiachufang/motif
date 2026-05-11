@@ -356,6 +356,14 @@ enum MotifProto {
 
     // MARK: - Server-pushed events
 
+    /// Tiny shape that matches every event's params: pulls out `seq` without
+    /// paying for a full typed decode. Used by MotifClient to track the
+    /// highest seq seen across all event kinds so a reconnect can pass it
+    /// back as `session.attach.last_seq` and skip duplicated scrollback.
+    struct SeqPeek: Decodable {
+        var seq: UInt64?
+    }
+
     /// Decoded form of a `pty.output` notification's params.
     struct PtyOutputEvent: Decodable {
         var pty_id: String

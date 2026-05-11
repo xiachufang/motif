@@ -99,6 +99,11 @@ async fn bind_tailscale(c: &TailscaleListenConfig) -> io::Result<TsBackend> {
     let server = Arc::new(server);
     let inner  = server.listen(c.port).await
         .map_err(|e| io::Error::other(format!("tailscale listen :{}: {e}", c.port)))?;
+    // Periodic backend snapshot — surfaces BackendState transitions and
+    // peer-list collapses (e.g. after a Mac sleep/wake). Task ties its
+    // lifetime to the Arc via Weak::upgrade, so it self-terminates when
+    // the listener drops `_server`.
+    let _watcher = Arc::clone(&server).spawn_status_watcher();
     Ok(TsBackend { _server: server, inner, port: c.port })
 }
 

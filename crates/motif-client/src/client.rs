@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use futures_util::sink::Sink;
@@ -35,6 +35,15 @@ use tokio_tungstenite::{
     tungstenite::http::HeaderValue, tungstenite::Message,
 };
 
+/// Mirror of the server-side heartbeat: each side independently sends a
+/// Ping every PING_INTERVAL and closes if no frame (text, binary, ping,
+/// pong) has arrived in IDLE_TIMEOUT. Pong responses are emitted
+/// automatically by tungstenite 0.29 / axum 0.8, so we only need to
+/// originate Pings — incoming Pongs just bump the watermark.
+const PING_INTERVAL:  Duration = Duration::from_secs(20);
+const IDLE_TIMEOUT:   Duration = Duration::from_secs(45);
+const HEARTBEAT_TICK: Duration = Duration::from_secs(10);
+
 // Sink/stream halves are type-erased via `Box<dyn …>` so the same `Client`
 // type works for both transports: `connect()` (which keeps tungstenite's
 // `MaybeTlsStream<TcpStream>` for transparent `wss://` support) and
@@ -48,7 +57,12 @@ type WsRx   = Pin<Box<dyn FuturesStream<Item = Result<Message, WsErr>> + Send>>;
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 
 pub struct Client {
-    ws_tx:    WsSink,
+    /// Push end of the outbound queue. The writer task owns the actual
+    /// `WsSink` and drains this channel. Cheap to clone if needed; using
+    /// it from `call()` is `Send` and doesn't block on TCP-level
+    /// back-pressure (writer awaits the sink). Drop guarantees teardown
+    /// via the JoinHandle aborts below.
+    out_tx:   mpsc::UnboundedSender<Message>,
     next_id:  AtomicU64,
     pending:  PendingMap,
     /// `None` once the caller has taken the notification stream out via
@@ -58,12 +72,16 @@ pub struct Client {
     /// calls. In-place users (`motif-tui`) just keep calling
     /// [`Client::recv_notification`] and never touch this branch.
     notif_rx: Option<mpsc::UnboundedReceiver<Notification>>,
-    reader:   JoinHandle<()>,
+    reader:    JoinHandle<()>,
+    writer:    JoinHandle<()>,
+    heartbeat: JoinHandle<()>,
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
         self.reader.abort();
+        self.writer.abort();
+        self.heartbeat.abort();
     }
 }
 
@@ -107,15 +125,28 @@ impl Client {
     fn from_split(ws_tx: WsSink, ws_rx: WsRx) -> Self {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
-        let pending_for_reader = Arc::clone(&pending);
-        let reader = tokio::spawn(reader_task(ws_rx, pending_for_reader, notif_tx));
+        let (out_tx,   out_rx)   = mpsc::unbounded_channel::<Message>();
+        let last_recv = Arc::new(Mutex::new(Instant::now()));
+
+        let pending_for_reader  = Arc::clone(&pending);
+        let last_recv_for_reader = Arc::clone(&last_recv);
+        let reader = tokio::spawn(reader_task(
+            ws_rx,
+            pending_for_reader,
+            notif_tx,
+            last_recv_for_reader,
+        ));
+        let writer    = tokio::spawn(writer_task(ws_tx, out_rx));
+        let heartbeat = tokio::spawn(heartbeat_task(out_tx.clone(), last_recv));
 
         Self {
-            ws_tx,
+            out_tx,
             next_id: AtomicU64::new(1),
             pending,
             notif_rx: Some(notif_rx),
             reader,
+            writer,
+            heartbeat,
         }
     }
 
@@ -141,9 +172,14 @@ impl Client {
 
         let req = Request::new(id, method, params);
         let raw = serde_json::to_string(&req)?;
-        if let Err(e) = self.ws_tx.send(Message::Text(raw.into())).await {
+        // Queueing into the writer task's mpsc is fire-and-forget: if the
+        // writer is alive it will get to it; the only failure mode is the
+        // channel being closed, which happens when the writer has exited
+        // (peer or network error). In that case fail fast — there's no
+        // chance of a response.
+        if self.out_tx.send(Message::Text(raw.into())).is_err() {
             self.pending.lock().unwrap().remove(&id);
-            return Err(anyhow!("ws send failed: {e}"));
+            return Err(anyhow!("ws send failed: writer task gone"));
         }
 
         let resp = match tokio::time::timeout(Duration::from_secs(15), rx).await {
@@ -187,6 +223,7 @@ async fn reader_task(
     mut ws_rx:  WsRx,
     pending:    PendingMap,
     notif_tx:   mpsc::UnboundedSender<Notification>,
+    last_recv:  Arc<Mutex<Instant>>,
 ) {
     while let Some(item) = ws_rx.next().await {
         let msg = match item {
@@ -196,6 +233,10 @@ async fn reader_task(
                 break;
             }
         };
+        // Refresh the liveness watermark on every frame, including
+        // Pings/Pongs handled below the JSON-RPC layer. The heartbeat task
+        // reads this to decide whether to close on idle.
+        *last_recv.lock().unwrap() = Instant::now();
         let text = match msg {
             Message::Text(t)  => t.to_string(),
             Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => continue,
@@ -236,6 +277,52 @@ async fn reader_task(
     // Drop pending senders so any in-flight callers get a clean RecvError
     // (which `call` translates into "connection closed before response").
     pending.lock().unwrap().clear();
+}
+
+/// Drain the outbound mpsc into the WS sink. Exits on send error or when
+/// every sender is dropped (i.e. `Client` was dropped — Drop aborts us
+/// before we observe that on most paths, but the channel-closed path is
+/// the clean shutdown signal).
+async fn writer_task(mut ws_tx: WsSink, mut out_rx: mpsc::UnboundedReceiver<Message>) {
+    while let Some(msg) = out_rx.recv().await {
+        if let Err(e) = ws_tx.send(msg).await {
+            tracing::debug!(error = %e, "ws write error; writer exiting");
+            return;
+        }
+    }
+}
+
+/// 20s-period heartbeat with a 45s idle watchdog. Single task, single
+/// 10s ticker — checks idleness every tick, originates a Ping every
+/// PING_INTERVAL. Closing is best-effort: we queue a Close frame and exit;
+/// the reader and writer will tear down naturally as the peer (or the
+/// runtime Drop) closes the underlying socket.
+async fn heartbeat_task(
+    out_tx:    mpsc::UnboundedSender<Message>,
+    last_recv: Arc<Mutex<Instant>>,
+) {
+    let mut ticker    = tokio::time::interval(HEARTBEAT_TICK);
+    ticker.tick().await; // skip immediate first tick
+    let mut next_ping = Instant::now() + PING_INTERVAL;
+    loop {
+        ticker.tick().await;
+        let now  = Instant::now();
+        let idle = now.duration_since(*last_recv.lock().unwrap());
+        if idle > IDLE_TIMEOUT {
+            tracing::warn!(
+                idle_secs = idle.as_secs(),
+                "ws idle timeout; closing",
+            );
+            let _ = out_tx.send(Message::Close(None));
+            return;
+        }
+        if now >= next_ping {
+            if out_tx.send(Message::Ping(Default::default())).is_err() {
+                return;
+            }
+            next_ping = now + PING_INTERVAL;
+        }
+    }
 }
 
 fn decode_response<R: DeserializeOwned>(r: Response) -> anyhow::Result<R> {

@@ -11,6 +11,8 @@ pub mod rpc;
 pub mod rpc_log;
 pub mod session;
 pub mod shell;
+pub mod wake_detector;
+pub mod wire;
 pub mod ws;
 
 use std::path::Path;
@@ -74,11 +76,20 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
         anyhow::bail!("TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7");
     }
 
-    let token   = cfg.token.clone();
     let manager = session::manager::SessionManager::new();
+    let auth = match cfg.token.clone() {
+        Some(t) => auth::TokenStore::new(t),
+        None => {
+            tracing::warn!(
+                "motifd starting WITHOUT --token-file: auth is disabled — every WS upgrade is accepted. \
+                 Pass --token-file to require a Bearer token."
+            );
+            auth::TokenStore::disabled()
+        }
+    };
     let state   = ws::AppState {
         manager: manager.clone(),
-        auth:    Arc::new(auth::TokenStore::new(token)),
+        auth:    Arc::new(auth),
     };
     let app = ws::router(state);
 
@@ -103,6 +114,11 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
             );
         }
     }
+
+    // Diagnostic: surface Mac sleep/wake events as WARN lines so the
+    // tsnet snapshot logs that follow can be correlated with a known
+    // suspend cycle. Cheap; runs regardless of --tailscale.
+    let _wake_task = wake_detector::spawn();
 
     let listener = motif_net::Listener::bind(&cfg.to_listen_config())
         .await
