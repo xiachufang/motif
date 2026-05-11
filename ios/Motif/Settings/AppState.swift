@@ -9,6 +9,7 @@ final class AppState {
 
     let tailscale: TailscaleManager
     let servers: MotifServerStore
+    let commands: QuickCommandStore
     let motif: MotifClient = MotifClient()
 
     /// Drives the Connection sheet (Tailscale + Servers). Tapped via the
@@ -27,6 +28,7 @@ final class AppState {
     init() {
         self.tailscale = TailscaleManager()
         self.servers = MotifServerStore()
+        self.commands = QuickCommandStore()
     }
 
     /// Called by ConnectionView after switching the active server, so

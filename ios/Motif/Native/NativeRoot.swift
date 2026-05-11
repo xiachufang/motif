@@ -18,15 +18,19 @@ struct NativeRoot: View {
     /// here, no manual switch maintenance.
     #routeViews(SessionView.self, GitDiffPanel.self)
 
-    /// Re-key the connection .task whenever the active server changes OR
-    /// tsnet flips to .running. The latter is critical: tsnet's loopback
-    /// proxy refuses CONNECT (HTTP 403) until the node has actually joined
-    /// the tailnet, so attempting motifd's WS upgrade before that gives a
-    /// "network connection lost" with no useful message.
+    /// Re-key the connection .task whenever the active server changes,
+    /// its kind flips, OR tsnet flips to .running. The tsnet flag matters
+    /// only for `.tailscale` servers — its loopback proxy refuses CONNECT
+    /// (HTTP 403) until the node has actually joined the tailnet, so
+    /// attempting motifd's WS upgrade before that gives "network
+    /// connection lost" with no useful message. Including `kind.rawValue`
+    /// here is what makes an in-place kind edit (same UUID via
+    /// MotifServerStore.update) re-fire the task.
     private var connectKey: String {
         let id = appState.servers.activeServer?.id.uuidString ?? ""
+        let kind = appState.servers.activeServer?.kind.rawValue ?? ""
         let ts = isTailscaleRunning ? "up" : "wait"
-        return "\(id)|\(ts)"
+        return "\(id)|\(kind)|\(ts)"
     }
 
     private var isTailscaleRunning: Bool {
@@ -34,33 +38,92 @@ struct NativeRoot: View {
         return false
     }
 
+    /// True only when the active server is a `.tailscale` target — i.e.
+    /// when tsnet must be up before we can dial. `.direct` servers don't
+    /// care about tsnet state, so the UI/connect flow shouldn't wait.
+    private var requiresTailscale: Bool {
+        appState.servers.activeServer?.kind == .tailscale
+    }
+
+    /// Single gate consumed by both the view switch and the connect task.
+    private var blocked: Bool { requiresTailscale && !isTailscaleRunning }
+
     var body: some View {
-        Group {
-            if !isTailscaleRunning {
-                waitingForTailscaleView
-            } else {
-                switch motif.state {
-                case .disconnected, .connecting:
-                    connectingView
-                case .failed(let m):
-                    failedView(message: m)
-                case .connected, .attached:
-                    routerView
-                }
+        routerView
+            .task(id: connectKey) {
+                guard !blocked else { return }
+                guard let server = appState.servers.activeServer else { return }
+                await motif.connect(server: server, tailscale: appState.tailscale)
             }
-        }
-        .task(id: connectKey) {
-            guard isTailscaleRunning else { return }
-            guard let server = appState.servers.activeServer else { return }
-            await motif.connect(server: server, tailscale: appState.tailscale)
+    }
+
+    private var routerView: some View {
+        let delegate = ensureDelegate()
+        return CmRouterView(delegate: delegate) {
+            SessionListView()
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { rootToolbar() }
+                .overlay { rootConnectionOverlay }
+        } destView: { (path: String, query: [String: String]) in
+            view(path, query: query)
+                .navigationBarTitleDisplayMode(.inline)
         }
     }
 
-    private var waitingForTailscaleView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Waiting for Tailscale…").foregroundStyle(.secondary)
-            Text(tailscaleStatusHint).font(.footnote).foregroundStyle(.secondary)
+    /// Connection status painted on top of the root SessionListView. The
+    /// nav-bar toolbar (server picker + info) is rendered by the
+    /// navigation stack and is NOT covered by this overlay, so the user
+    /// can always switch servers / open settings — even while we're
+    /// waiting on tsnet or retrying a failed WS dial. Order matters:
+    /// `blocked` takes precedence over `motif.state == .failed` so a
+    /// tailscale drop reads as "Waiting for Tailscale…" instead of a
+    /// scary "Connection failed".
+    @ViewBuilder
+    private var rootConnectionOverlay: some View {
+        if blocked {
+            connectionOverlayContainer {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Waiting for Tailscale…").foregroundStyle(.secondary)
+                    Text(tailscaleStatusHint).font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            switch motif.state {
+            case .disconnected, .connecting:
+                connectionOverlayContainer {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Connecting…").foregroundStyle(.secondary)
+                    }
+                }
+            case .failed(let m):
+                connectionOverlayContainer {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.yellow)
+                        Text("Connection failed").font(.headline)
+                        Text(m)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
+                        Button("Retry") { triggerRetry() }
+                    }
+                }
+            case .connected, .attached:
+                EmptyView()
+            }
+        }
+    }
+
+    /// Opaque backdrop + centered content. The backdrop absorbs taps so
+    /// the list underneath isn't accidentally driven while disconnected.
+    private func connectionOverlayContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            content()
         }
     }
 
@@ -74,15 +137,18 @@ struct NativeRoot: View {
         }
     }
 
-    private var routerView: some View {
-        let delegate = ensureDelegate()
-        return CmRouterView(delegate: delegate) {
-            SessionListView()
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar() }
-        } destView: { (path: String, query: [String: String]) in
-            view(path, query: query)
-                .navigationBarTitleDisplayMode(.inline)
+    /// Tailscale-first retry. For `.tailscale` servers, refuse to dial
+    /// the WS while tsnet isn't `.running` — the `.task(id: connectKey)`
+    /// watcher will re-fire automatically when the bus reports
+    /// `.running`, so there's nothing useful to do here except wait.
+    /// The guard mostly handles the race where the user taps Retry the
+    /// instant tsnet drops, before the next render swaps in the
+    /// "Waiting for Tailscale…" copy.
+    private func triggerRetry() {
+        guard let server = appState.servers.activeServer else { return }
+        if server.kind == .tailscale && !isTailscaleRunning { return }
+        Task {
+            await motif.connect(server: server, tailscale: appState.tailscale)
         }
     }
 
@@ -91,7 +157,9 @@ struct NativeRoot: View {
         let d = AttachDetachDelegate(motif: motif)
         // Stash so the same delegate is reused across re-renders (CmRouterView
         // takes a non-Sendable weak ref under the hood).
-        DispatchQueue.main.async { self.routerDelegate = d }
+        Task {
+            self.routerDelegate = d
+        }
         return d
     }
 
@@ -140,32 +208,6 @@ struct NativeRoot: View {
         return serverName
     }
 
-    private var connectingView: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Connecting…").foregroundStyle(.secondary)
-        }
-    }
-
-    private func failedView(message: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 32))
-                .foregroundStyle(.yellow)
-            Text("Connection failed").font(.headline)
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            Button("Retry") {
-                Task {
-                    guard let server = appState.servers.activeServer else { return }
-                    await motif.connect(server: server, tailscale: appState.tailscale)
-                }
-            }
-        }
-    }
 }
 
 /// Bridges CmRouter pop events to MotifClient.detach. Whenever a route is

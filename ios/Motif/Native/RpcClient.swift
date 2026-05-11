@@ -1,5 +1,7 @@
 import Foundation
+import MessagePack
 import OSLog
+import TalkerCommonSync
 
 /// Native JSON-RPC 2.0 client over a single WebSocket. Mirrors what the
 /// motif-web JS client does, minus the auth.login first-frame dance —
@@ -11,6 +13,12 @@ import OSLog
 ///   - `call(method:params:)` → request/response with auto id
 ///   - `events` → AsyncStream of server-pushed notifications
 ///   - `close()` → tears everything down
+///
+/// Wire mode (set at init):
+///   - `.json`   — JSON-RPC over WebSocket text frames (legacy).
+///   - `.binary` — MessagePack over WebSocket binary frames. The caller
+///     must also add `?bin=1` to the connect URL so motifd negotiates
+///     into the matching codec.
 /// Wire envelope for an RPC request. Lifted out of `RpcClient.call` so the
 /// generic parameter is allowed (Swift forbids generic structs nested in
 /// generic functions).
@@ -21,7 +29,35 @@ private struct RpcEnvelope<P: Encodable>: Encodable {
     let params: P
 }
 
-private struct RpcEmpty: Encodable {}
+private struct RpcEmpty: Encodable, Decodable {}
+
+/// Whole-frame Decodable used by binary mode to extract a typed `result`
+/// or `error` from a single MessagePackDecoder pass.
+private struct ResponseEnvelope<R: Decodable>: Decodable {
+    let id: Int
+    let result: R?
+    let error: RpcErrorPayload?
+}
+
+/// Whole-frame Decodable used by binary mode to extract typed event
+/// `params` (e.g. PtyOutputEvent) in one MessagePackDecoder pass.
+private struct NotificationEnvelope<P: Decodable>: Decodable {
+    let method: String
+    let params: P
+}
+
+private struct RpcErrorPayload: Decodable {
+    let code: Int
+    let message: String
+}
+
+/// Lightweight peek used by the receive loop to route a frame as either
+/// a response (has `id`) or a notification (has `method`, no `id`)
+/// without paying for a full typed decode.
+private struct FrameDescriptor: Decodable {
+    let id: Int?
+    let method: String?
+}
 
 /// URLSession delegate that captures WebSocket lifecycle events and
 /// surfaces them via OSLog. URLSession owns this strongly while it's
@@ -35,33 +71,36 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
     /// frames into a half-open task and URLSession aborts with -1005
     /// / -1000 / -1001 when the upgrade dance hasn't actually happened
     /// yet. Repeated calls return the cached result.
-    private let openLock = NSLock()
-    private var openResult: Result<Void, Error>?
-    private var openContinuations: [CheckedContinuation<Void, Error>] = []
+    private struct OpenState {
+        var result: Result<Void, any Error>?
+        var continuations: [CheckedContinuation<Void, any Error>] = []
+    }
+    private let openState = Lock<OpenState>(OpenState())
 
     func waitForOpen() async throws {
-        openLock.lock()
-        if let result = openResult {
-            openLock.unlock()
-            try result.get()
-            return
-        }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            openContinuations.append(cont)
-            openLock.unlock()
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
+            let immediate: Result<Void, any Error>? = openState.withLock { state in
+                if let r = state.result { return r }
+                state.continuations.append(cont)
+                return nil
+            }
+            if let r = immediate {
+                switch r {
+                case .success:        cont.resume()
+                case .failure(let e): cont.resume(throwing: e)
+                }
+            }
         }
     }
 
-    private func resolveOpen(_ result: Result<Void, Error>) {
-        openLock.lock()
-        if openResult != nil {
-            openLock.unlock()
-            return
+    private func resolveOpen(_ result: Result<Void, any Error>) {
+        let waiters: [CheckedContinuation<Void, any Error>] = openState.withLock { state in
+            if state.result != nil { return [] }
+            state.result = result
+            let w = state.continuations
+            state.continuations.removeAll()
+            return w
         }
-        openResult = result
-        let waiters = openContinuations
-        openContinuations.removeAll()
-        openLock.unlock()
         for cont in waiters {
             switch result {
             case .success:        cont.resume()
@@ -91,7 +130,11 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
         FileLog.note("ws", "didClose code=\(closeCode.rawValue) reason=\(reasonStr)")
     }
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: (any Error)?
+    ) {
         // Whether or not the task completed cleanly, anyone waiting for
         // `didOpen` needs to be unblocked: didCompleteWithError replaces
         // didOpen if the task dies before the upgrade.
@@ -146,6 +189,13 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
 actor RpcClient {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "RpcClient")
 
+    /// Negotiated wire codec for the WebSocket. Set at init; both ends
+    /// must agree (server side keys off `?bin=1` in the upgrade URL).
+    enum WireMode: Sendable {
+        case json
+        case binary
+    }
+
     enum RpcError: Error, CustomStringConvertible {
         case notConnected
         case decode(String)
@@ -162,22 +212,51 @@ actor RpcClient {
         }
     }
 
-    /// A server-pushed notification (no id). `params` is whatever JSON
-    /// shape the protocol declares for that method — callers pull fields
-    /// out via `JSONDecoder` against a method-specific Codable type.
+    /// A server-pushed notification (no id). `frame` carries the entire
+    /// notification message bytes (JSON or MessagePack); callers pull
+    /// typed `params` out via `decode(_:)`, which uses the right decoder
+    /// for the active wire mode.
     struct Event: Sendable {
         let method: String
-        let params: Data  // raw JSON; decode lazily per-event-type
+        fileprivate let frame: Data
+        fileprivate let mode: WireMode
+
+        /// Decode the notification's `params` into a method-specific
+        /// Codable shape. Wraps the typed payload in `NotificationEnvelope`
+        /// so we can use a single decoder pass for both wire modes.
+        func decode<T: Decodable>(_ type: T.Type) throws -> T {
+            switch mode {
+            case .json:
+                return try JSONDecoder().decode(NotificationEnvelope<T>.self, from: frame).params
+            case .binary:
+                return try MessagePackDecoder().decode(NotificationEnvelope<T>.self, from: frame).params
+            }
+        }
     }
 
+    let wireMode: WireMode
     private var task: URLSessionWebSocketTask?
     private var nextID: Int = 1
-    private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
+    private var pending: [Int: CheckedContinuation<Data, any Error>] = [:]
     private var receiveTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    /// Liveness watermark. Bumped by `receiveLoop` on every received frame
+    /// AND by the Pong handler in `sendHeartbeatPing`. The heartbeat loop
+    /// reads it every tick to decide whether to declare the WS wedged.
+    /// URLSessionWebSocketTask silently auto-pongs incoming peer Pings and
+    /// does NOT surface them in `receive()`, so without these two write
+    /// sites we'd never get a fresh signal once the server falls quiet.
+    private var lastRecvAt: Date = Date()
+    /// Server-side mirror is 20s/45s; iOS sends its own pings on the same
+    /// cadence. 10s tick is the watchdog granularity.
+    private let pingInterval: TimeInterval  = 20
+    private let idleTimeout:  TimeInterval  = 45
+    private let heartbeatTick: TimeInterval = 10
     private var eventContinuation: AsyncStream<Event>.Continuation?
     let events: AsyncStream<Event>
 
-    init() {
+    init(wireMode: WireMode = .json) {
+        self.wireMode = wireMode
         var cont: AsyncStream<Event>.Continuation!
         self.events = AsyncStream { c in cont = c }
         self.eventContinuation = cont
@@ -208,13 +287,17 @@ actor RpcClient {
         // didCompleteWithError before didOpen → throw, caller surfaces a
         // .failed state instead of the bogus "connected" we used to set.
         try await delegate.waitForOpen()
-        receiveTask = Task { await self.receiveLoop() }
+        lastRecvAt = Date()
+        receiveTask  = Task { await self.receiveLoop() }
+        heartbeatTask = Task { await self.heartbeatLoop() }
     }
 
     func close() {
         log.notice("rpc closing")
         receiveTask?.cancel()
         receiveTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         // Reject every outstanding call.
@@ -225,6 +308,9 @@ actor RpcClient {
     }
 
     /// Make a JSON-RPC request and wait for the matching response.
+    /// Returns the raw frame bytes (whole Response shape) in the active
+    /// wire mode — callers that need typed results should use the `as:`
+    /// overload below, which is what the rest of the app does.
     @discardableResult
     func call<P: Encodable>(_ method: String, params: P) async throws -> Data {
         guard let task else { throw RpcError.notConnected }
@@ -233,17 +319,24 @@ actor RpcClient {
         let body = RpcEnvelope(id: id, method: method, params: params)
         let data: Data
         do {
-            data = try JSONEncoder().encode(body)
+            data = try encode(body)
         } catch {
             throw RpcError.decode("encode: \(error)")
         }
+        let wsMessage: URLSessionWebSocketTask.Message
+        switch wireMode {
+        case .json:
+            wsMessage = .string(String(data: data, encoding: .utf8) ?? "")
+        case .binary:
+            wsMessage = .data(data)
+        }
 
-        log.debug("rpc.send #\(id, privacy: .public) \(method, privacy: .public) (\(data.count, privacy: .public)B)")
+        log.debug("rpc.send #\(id, privacy: .public) \(method, privacy: .public) (\(data.count, privacy: .public)B mode=\(String(describing: self.wireMode), privacy: .public))")
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
             self.pending[id] = cont
             Task { [weak self, log] in
                 do {
-                    try await task.send(.string(String(data: data, encoding: .utf8) ?? ""))
+                    try await task.send(wsMessage)
                 } catch {
                     log.error("rpc.send #\(id, privacy: .public) \(method, privacy: .public) failed: \(String(describing: error), privacy: .public)")
                     FileLog.note("RpcClient", "send #\(id) \(method) failed: \(error)")
@@ -261,13 +354,30 @@ actor RpcClient {
         return try await call(method, params: RpcEmpty())
     }
 
-    /// Convenience: decode the result into a Codable.
+    /// Convenience: decode the result into a Codable. The wire-mode-aware
+    /// decoder runs the typed pass via `ResponseEnvelope<R>` so we only
+    /// pay one decoder for the whole frame.
     func call<P: Encodable, R: Decodable>(_ method: String, params: P, as type: R.Type) async throws -> R {
-        let data = try await call(method, params: params)
+        let frame = try await call(method, params: params)
         do {
-            return try JSONDecoder().decode(R.self, from: data)
+            let envelope: ResponseEnvelope<R>
+            switch wireMode {
+            case .json:
+                envelope = try JSONDecoder().decode(ResponseEnvelope<R>.self, from: frame)
+            case .binary:
+                envelope = try MessagePackDecoder().decode(ResponseEnvelope<R>.self, from: frame)
+            }
+            if let err = envelope.error {
+                throw RpcError.server(code: err.code, message: err.message)
+            }
+            guard let result = envelope.result else {
+                throw RpcError.decode("\(method) result: empty")
+            }
+            return result
+        } catch let e as RpcError {
+            throw e
         } catch {
-            throw RpcError.decode("\(method) result: \(error); body=\(String(data: data, encoding: .utf8) ?? "?")")
+            throw RpcError.decode("\(method) result: \(error)")
         }
     }
 
@@ -275,9 +385,25 @@ actor RpcClient {
         return try await call(method, params: RpcEmpty(), as: type)
     }
 
+    // MARK: - Codec helpers
+
+    private func encode<T: Encodable>(_ value: T) throws -> Data {
+        switch wireMode {
+        case .json:   return try JSONEncoder().encode(value)
+        case .binary: return try MessagePackEncoder().encode(value)
+        }
+    }
+
+    private func decodeDescriptor(_ data: Data) throws -> FrameDescriptor {
+        switch wireMode {
+        case .json:   return try JSONDecoder().decode(FrameDescriptor.self, from: data)
+        case .binary: return try MessagePackDecoder().decode(FrameDescriptor.self, from: data)
+        }
+    }
+
     // MARK: - Internals
 
-    private func fail(id: Int, error: Error) {
+    private func fail(id: Int, error: any Error) {
         if let cont = pending.removeValue(forKey: id) {
             cont.resume(throwing: error)
         }
@@ -297,6 +423,12 @@ actor RpcClient {
         while !Task.isCancelled {
             do {
                 let message = try await task.receive()
+                // Any frame from the peer means the link is alive.
+                // URLSessionWebSocketTask consumes peer Pings internally
+                // (auto-Pong) and never surfaces them here, so this site
+                // and the Pong handler in sendHeartbeatPing are the only
+                // places that can refresh the watermark.
+                lastRecvAt = Date()
                 switch message {
                 case .string(let s):
                     log.debug("rpc.recv text \(s.count, privacy: .public) chars")
@@ -320,39 +452,84 @@ actor RpcClient {
         log.notice("rpc.recvLoop exited")
     }
 
-    private func handleFrame(_ data: Data) {
-        // Untagged shape: {id, result|error} = response, {method, params} = notification.
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log.error("rpc: malformed frame (\(data.count, privacy: .public)B)")
-            return
-        }
-
-        if let id = obj["id"] as? Int {
-            if let err = obj["error"] as? [String: Any] {
-                let code = (err["code"] as? Int) ?? -32603
-                let msg = (err["message"] as? String) ?? "(no message)"
-                fail(id: id, error: RpcError.server(code: code, message: msg))
+    /// Periodic WS-level liveness: every PING_INTERVAL push a Ping; every
+    /// HEARTBEAT_TICK check that the watermark hasn't gone stale.
+    /// Without this loop a Mac sleep / wedged-TCP scenario leaves the iOS
+    /// app stuck "connected" with no data flowing (URLSession only fires
+    /// task errors when the OS gives up on retransmits, which can be
+    /// minutes). The Pong handler refreshes the watermark so a healthy
+    /// server keeps us alive even during long idle stretches.
+    private func heartbeatLoop() async {
+        let tickNs       = UInt64(heartbeatTick * 1_000_000_000)
+        var nextPingAt   = Date().addingTimeInterval(pingInterval)
+        log.notice("rpc.heartbeat started (ping=\(self.pingInterval)s idle=\(self.idleTimeout)s)")
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: tickNs)
+            if Task.isCancelled { return }
+            let now  = Date()
+            let idle = now.timeIntervalSince(lastRecvAt)
+            if idle > idleTimeout {
+                log.error("rpc.heartbeat idle=\(idle, privacy: .public)s > \(self.idleTimeout, privacy: .public)s; closing ws")
+                FileLog.note("RpcClient", "ws idle timeout \(Int(idle))s; closing")
+                task?.cancel(with: .goingAway, reason: nil)
                 return
             }
-            // Pull out the `result` sub-object (re-serialize so callers can
-            // decode it as their own Codable).
-            if let result = obj["result"] {
-                if let bytes = try? JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed]) {
-                    deliver(id: id, payload: bytes)
-                } else {
-                    fail(id: id, error: RpcError.decode("re-encode result"))
-                }
-            } else {
-                deliver(id: id, payload: Data("null".utf8))
+            if now >= nextPingAt {
+                sendHeartbeatPing()
+                nextPingAt = now.addingTimeInterval(pingInterval)
             }
+        }
+    }
+
+    /// Fire one Ping. URLSessionWebSocketTask invokes the handler when
+    /// the matching Pong arrives or when the task fails — both refresh
+    /// the watermark; failure additionally cancels the task so the
+    /// receiveLoop wakes up with an error and the higher-level
+    /// MotifClient flips to .failed → triggers reconnect. The handler
+    /// runs on URLSession's queue, not the actor's, so we hop back via
+    /// `Task { await ... }`.
+    private func sendHeartbeatPing() {
+        guard let task else { return }
+        task.sendPing { [weak self] error in
+            guard let self else { return }
+            Task { await self.handlePongResult(error: error) }
+        }
+    }
+
+    private func handlePongResult(error: (any Error)?) async {
+        if let error {
+            log.error("rpc.heartbeat ping failed: \(String(describing: error), privacy: .public)")
+            FileLog.note("RpcClient", "ping failed: \(error)")
+            task?.cancel(with: .goingAway, reason: nil)
+            return
+        }
+        lastRecvAt = Date()
+    }
+
+    private func handleFrame(_ data: Data) {
+        // Peek id/method without paying for a full typed decode. The
+        // pending continuation (response path) and the event consumer
+        // (notification path) each do their own typed second pass.
+        let desc: FrameDescriptor
+        do {
+            desc = try decodeDescriptor(data)
+        } catch {
+            log.error("rpc: malformed frame (\(data.count, privacy: .public)B): \(String(describing: error), privacy: .public)")
             return
         }
 
-        // Notification.
-        if let method = obj["method"] as? String {
-            let params = obj["params"] ?? [:]
-            let bytes = (try? JSONSerialization.data(withJSONObject: params, options: [.fragmentsAllowed])) ?? Data("{}".utf8)
-            eventContinuation?.yield(Event(method: method, params: bytes))
+        if let id = desc.id {
+            // Hand the whole frame to the pending call; it owns the
+            // typed ResponseEnvelope<R> decode for its R.
+            deliver(id: id, payload: data)
+            return
+        }
+
+        // Notification: hand the whole frame to the event stream; the
+        // consumer's `event.decode(_:)` runs a typed
+        // NotificationEnvelope<P> pass with the right decoder.
+        if let method = desc.method {
+            eventContinuation?.yield(Event(method: method, frame: data, mode: wireMode))
             return
         }
 

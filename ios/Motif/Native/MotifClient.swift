@@ -84,33 +84,49 @@ final class MotifClient {
         if case .attached = state { return }
         state = .connecting
 
-        // Build a URLSession config that proxies through tsnet's HTTP
-        // CONNECT loopback, then dial motifd's WS endpoint directly. The
-        // Authorization header carries the per-server Bearer token motifd
-        // expects on the upgrade. We attach a WSLogDelegate so we can see
-        // the upgrade response code, headers, and any close reasons.
+        // Pick the URLSession config based on server kind. `.tailscale`
+        // servers go through tsnet's HTTP CONNECT loopback so the WS
+        // upgrade gets routed inside the tailnet; `.direct` servers use
+        // a plain URLSession with no proxy. The Authorization header
+        // (set below) carries the per-server Bearer token in both cases.
+        // WSLogDelegate is attached so we can see the upgrade response
+        // code, headers, and any close reasons.
         let urlSessionConfig: URLSessionConfiguration
-        do {
-            urlSessionConfig = try await tailscale.makeURLSessionConfiguration()
-        } catch {
-            log.error("tsnet not ready: \(String(describing: error), privacy: .public)")
-            state = .failed(message: "tsnet not ready: \(error)")
-            return
+        switch server.kind {
+        case .tailscale:
+            do {
+                urlSessionConfig = try await tailscale.makeURLSessionConfiguration()
+            } catch {
+                log.error("tsnet not ready: \(String(describing: error), privacy: .public)")
+                state = .failed(message: "tsnet not ready: \(error)")
+                return
+            }
+        case .direct:
+            urlSessionConfig = .default
         }
         let delegate = WSLogDelegate()
         self.wsDelegate = delegate
         let urlSession = URLSession(configuration: urlSessionConfig, delegate: delegate, delegateQueue: nil)
 
-        // tsnet's HTTP CONNECT proxy passes hostnames through, so MagicDNS
-        // (`*.ts.net`) resolves on the proxy side. As a safety net for any
-        // build/config combo that ends up resolving locally, we still
-        // try the IP rewrite if we happen to have a peer match.
-        let resolvedHost = await tailscale.resolveTailnetHost(server.host) ?? server.host
-        if resolvedHost != server.host {
-            log.notice("resolved \(server.host, privacy: .public) -> \(resolvedHost, privacy: .public)")
+        // For `.tailscale` we rewrite MagicDNS names to peer IPs as a
+        // safety net for build/config combos where DNS resolves locally.
+        // For `.direct` we trust the host string as-typed.
+        let resolvedHost: String
+        switch server.kind {
+        case .tailscale:
+            resolvedHost = await tailscale.resolveTailnetHost(server.host) ?? server.host
+            if resolvedHost != server.host {
+                log.notice("resolved \(server.host, privacy: .public) -> \(resolvedHost, privacy: .public)")
+            }
+        case .direct:
+            resolvedHost = server.host
         }
 
-        guard let url = URL(string: "ws://\(resolvedHost):\(server.port)/ws") else {
+        // Negotiate the MessagePack codec — keeps PTY bytes off base64 and
+        // saves the JSON envelope on every frame. motifd's /ws handler
+        // accepts `?bin=1` to flip its codec; older clients without the
+        // flag stay on JSON.
+        guard let url = URL(string: "ws://\(resolvedHost):\(server.port)/ws?bin=1") else {
             log.error("bad server URL: \(resolvedHost, privacy: .public):\(server.port, privacy: .public)")
             state = .failed(message: "bad server URL: \(resolvedHost):\(server.port)")
             return
@@ -121,7 +137,7 @@ final class MotifClient {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
 
-        let rpc = RpcClient()
+        let rpc = RpcClient(wireMode: .binary)
         do {
             try await rpc.connect(urlSession: urlSession, request: request, delegate: delegate)
         } catch {
@@ -284,9 +300,8 @@ final class MotifClient {
 
     func write(ptyID: String, data: Data) async {
         guard let rpc else { return }
-        let b64 = data.base64EncodedString()
         do {
-            _ = try await rpc.call("pty.write", params: MotifProto.PtyWriteParams(pty_id: ptyID, data_b64: b64))
+            _ = try await rpc.call("pty.write", params: MotifProto.PtyWriteParams(pty_id: ptyID, data: data))
         } catch {
             log.error("pty.write: \(String(describing: error), privacy: .public)")
         }
@@ -559,15 +574,12 @@ final class MotifClient {
     private func handleEvent(_ event: RpcClient.Event) {
         switch event.method {
         case "pty.output":
-            guard let payload = try? JSONDecoder().decode(MotifProto.PtyOutputEvent.self, from: event.params),
-                  let bytes = Data(base64Encoded: payload.data_b64)
-            else { return }
-            appendOutput(ptyID: payload.pty_id, data: bytes)
+            guard let payload = try? event.decode(MotifProto.PtyOutputEvent.self) else { return }
+            appendOutput(ptyID: payload.pty_id, data: payload.data)
             if let s = payload.seq { lastSeq = max(lastSeq, s) }
 
         case "pty.exited":
-            guard let payload = try? JSONDecoder().decode(MotifProto.PtyExitedEvent.self, from: event.params)
-            else { return }
+            guard let payload = try? event.decode(MotifProto.PtyExitedEvent.self) else { return }
             // Mark dead in our cached list + close out live subscribers.
             // Channel + ring buffer are kept so a tab activated after the
             // exit can still see what the PTY printed.
@@ -580,7 +592,7 @@ final class MotifClient {
             shellContext.removeValue(forKey: payload.pty_id)
 
         case "pty.created":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyCreatedEvent.self, from: event.params),
+            if let payload = try? event.decode(MotifProto.PtyCreatedEvent.self),
                !ptys.contains(where: { $0.id == payload.info.id })
             {
                 ptys.append(payload.info)
@@ -588,7 +600,7 @@ final class MotifClient {
             }
 
         case "pty.resize":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyResizeEvent.self, from: event.params),
+            if let payload = try? event.decode(MotifProto.PtyResizeEvent.self),
                let i = ptys.firstIndex(where: { $0.id == payload.pty_id })
             {
                 ptys[i].cols = payload.cols
@@ -596,21 +608,21 @@ final class MotifClient {
             }
 
         case "pty.cwd_changed":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyCwdChangedEvent.self, from: event.params),
+            if let payload = try? event.decode(MotifProto.PtyCwdChangedEvent.self),
                let i = ptys.firstIndex(where: { $0.id == payload.pty_id })
             {
                 ptys[i].cwd = payload.cwd
             }
 
         case "pty.command_started":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyCommandStartedEvent.self, from: event.params),
+            if let payload = try? event.decode(MotifProto.PtyCommandStartedEvent.self),
                !payload.text.isEmpty
             {
                 runningCommand[payload.pty_id] = payload.text
             }
 
         case "pty.command_finished":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyCommandFinishedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.PtyCommandFinishedEvent.self) {
                 runningCommand.removeValue(forKey: payload.pty_id)
             }
 
@@ -627,14 +639,14 @@ final class MotifClient {
             gitChangeTick &+= 1
 
         case "view.opened":
-            if let payload = try? JSONDecoder().decode(MotifProto.ViewOpenedEvent.self, from: event.params),
+            if let payload = try? event.decode(MotifProto.ViewOpenedEvent.self),
                !views.contains(where: { $0.id == payload.view.id })
             {
                 views.append(payload.view)
             }
 
         case "view.closed":
-            if let payload = try? JSONDecoder().decode(MotifProto.ViewClosedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.ViewClosedEvent.self) {
                 views.removeAll { $0.id == payload.view_id }
                 if activeViewID == payload.view_id {
                     // Server will emit a follow-up `view.active_changed`
@@ -646,12 +658,12 @@ final class MotifClient {
             }
 
         case "view.active_changed":
-            if let payload = try? JSONDecoder().decode(MotifProto.ViewActiveChangedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.ViewActiveChangedEvent.self) {
                 activeViewID = payload.view_id
             }
 
         case "view.moved":
-            if let payload = try? JSONDecoder().decode(MotifProto.ViewMovedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.ViewMovedEvent.self) {
                 // Build a position map from the broadcast order; ids that
                 // somehow aren't in our local `views` (desync) drop to
                 // the tail in arrival order.
@@ -666,7 +678,7 @@ final class MotifClient {
             }
 
         case "client.joined":
-            if let payload = try? JSONDecoder().decode(MotifProto.ClientJoinedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.ClientJoinedEvent.self) {
                 if let i = clients.firstIndex(where: { $0.id == payload.client_id }) {
                     clients[i].since = payload.since
                 } else {
@@ -675,17 +687,17 @@ final class MotifClient {
             }
 
         case "client.left":
-            if let payload = try? JSONDecoder().decode(MotifProto.ClientLeftEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.ClientLeftEvent.self) {
                 clients.removeAll { $0.id == payload.client_id }
             }
 
         case "pty.shell_bootstrapped":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyShellBootstrappedEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.PtyShellBootstrappedEvent.self) {
                 shellKind[payload.pty_id] = payload.shell
             }
 
         case "pty.shell_context":
-            if let payload = try? JSONDecoder().decode(MotifProto.PtyShellContextEvent.self, from: event.params) {
+            if let payload = try? event.decode(MotifProto.PtyShellContextEvent.self) {
                 shellContext[payload.pty_id] = payload.ctx
             }
 

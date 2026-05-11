@@ -11,6 +11,10 @@ enum MotifProto {
         var name: String
         var workdir: String?
         var created_at: UInt64?
+        /// How many WebSocket peers are currently attached to this session.
+        /// Optional for forward-compat with motifd builds that predate the
+        /// field; treat `nil` as "unknown" rather than "zero".
+        var client_count: UInt32?
         var id: String { name }
     }
 
@@ -104,7 +108,14 @@ enum MotifProto {
 
     struct PtyWriteParams: Codable {
         var pty_id: String
-        var data_b64: String
+        /// Wire field is named `data_b64` for backward compat with older
+        /// JSON clients; JSONEncoder base64-encodes Data automatically and
+        /// MessagePackEncoder writes it as native bin.
+        var data: Data
+        enum CodingKeys: String, CodingKey {
+            case pty_id
+            case data = "data_b64"
+        }
     }
 
     struct PtyResizeParams: Codable {
@@ -175,7 +186,7 @@ enum MotifProto {
             case staged
         }
 
-        init(from decoder: Decoder) throws {
+        init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             let kind = (try? c.decode(String.self, forKey: .kind)) ?? "?"
             switch kind {
@@ -197,7 +208,7 @@ enum MotifProto {
             }
         }
 
-        func encode(to encoder: Encoder) throws {
+        func encode(to encoder: any Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
             case .pty(let id):
@@ -348,8 +359,15 @@ enum MotifProto {
     /// Decoded form of a `pty.output` notification's params.
     struct PtyOutputEvent: Decodable {
         var pty_id: String
-        var data_b64: String
+        /// Wire field name is `data_b64` (kept for compat); JSON decoder
+        /// base64-decodes the string, MessagePack decoder reads native bin.
+        var data: Data
         var seq: UInt64?
+        enum CodingKeys: String, CodingKey {
+            case pty_id
+            case data = "data_b64"
+            case seq
+        }
     }
 
     struct PtyExitedEvent: Decodable {

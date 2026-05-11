@@ -124,7 +124,7 @@ final class TailscaleManager {
 
     /// Surface a `node.up()` failure as a UI-visible error, but only when we
     /// don't already have something more specific (e.g. needsAuth).
-    private func handleUpFailure(_ error: Error) {
+    private func handleUpFailure(_ error: any Error) {
         switch state {
         case .needsAuth, .running:
             // node.up() races with the bus. If the bus already published a
@@ -393,7 +393,7 @@ final class TailscaleManager {
         }
     }
 
-    fileprivate func busDidError(_ error: Error) {
+    fileprivate func busDidError(_ error: any Error) {
         log.error("IPN bus error: \(String(describing: error), privacy: .public)")
     }
 }
@@ -449,7 +449,7 @@ private actor BusConsumer: MessageConsumer {
         }
     }
 
-    func error(_ error: Error) {
+    func error(_ error: any Error) {
         Task { @MainActor [weak manager] in
             manager?.busDidError(error)
         }

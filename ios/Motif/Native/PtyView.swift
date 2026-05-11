@@ -24,6 +24,12 @@ struct PtyTerminal: UIViewRepresentable {
         term.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         term.nativeBackgroundColor = .black
         term.nativeForegroundColor = .white
+        // SwiftTerm installs its own `TerminalAccessory` as the keyboard's
+        // accessory view. We replace it with `nil` so our `BottomInputBar`
+        // is the single authority for quick keys / mic / send. SwiftTerm
+        // already defaults the UITextInputTraits (autocorrect / smart-*)
+        // to `.no`, so no further config needed there.
+        term.inputAccessoryView = nil
         // The terminal will reshape itself on first layout; SwiftTerm
         // recomputes cols/rows from the view bounds. We pass the requested
         // size via the dimension-change delegate as soon as it's known.
@@ -38,6 +44,7 @@ struct PtyTerminal: UIViewRepresentable {
         // and SwiftTerm's own resize callback.
     }
 
+    @MainActor
     final class Coordinator: NSObject, TerminalViewDelegate {
         let client: MotifClient
         let ptyID: String
@@ -51,12 +58,13 @@ struct PtyTerminal: UIViewRepresentable {
         }
 
         func start() {
-            pumpTask = Task { [client, ptyID, weak self] in
-                let stream = await client.outputs(for: ptyID)
+            pumpTask = Task { [weak self] in
+                guard let self else { return }
+                let stream = self.client.outputs(for: self.ptyID)
                 for await data in stream {
                     guard !Task.isCancelled else { return }
                     let bytes = [UInt8](data)
-                    await self?.terminal?.feed(byteArray: bytes[...])
+                    self.terminal?.feed(byteArray: bytes[...])
                 }
             }
         }
@@ -72,7 +80,7 @@ struct PtyTerminal: UIViewRepresentable {
             // (already encoded, including special key sequences). Forward
             // verbatim to the PTY.
             let bytes = Data(data)
-            Task { await client.write(ptyID: ptyID, data: bytes) }
+            Task { [client, ptyID] in await client.write(ptyID: ptyID, data: bytes) }
         }
 
         func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -80,7 +88,7 @@ struct PtyTerminal: UIViewRepresentable {
             let rows = UInt16(clamping: newRows)
             if cols == lastSize.cols && rows == lastSize.rows { return }
             lastSize = (cols, rows)
-            Task { await client.resize(ptyID: ptyID, cols: cols, rows: rows) }
+            Task { [client, ptyID] in await client.resize(ptyID: ptyID, cols: cols, rows: rows) }
         }
 
         func setTerminalTitle(source: TerminalView, title: String) {

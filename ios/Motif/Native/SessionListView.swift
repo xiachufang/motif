@@ -10,95 +10,49 @@ struct SessionListView: View {
 
     @State private var loading: Bool = false
     @State private var error: String?
-    @State private var creatingName: String = ""
-    @State private var creatingWorkdir: String = "~"
     @State private var attaching: String?
+    @State private var creatingSheet: Bool = false
     /// Name of the session the user has asked to destroy. Drives the
     /// confirmation alert; non-nil means "alert is visible". Cleared in
     /// both the OK and Cancel branches.
     @State private var destroyTarget: String?
 
     var body: some View {
-        List {
-            Section {
-                if motif.sessions.isEmpty && !loading {
-                    Text("No sessions on this server.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(motif.sessions) { session in
-                        Button {
-                            Task { await attach(session.name) }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(session.name)
-                                        .foregroundStyle(.primary)
-                                    if let wd = session.workdir {
-                                        Text(wd).font(.footnote).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if attaching == session.name {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "arrow.right.circle")
-                                        .foregroundStyle(.tint)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(attaching != nil)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                destroyTarget = session.name
-                            } label: {
-                                Label("Destroy", systemImage: "trash")
-                            }
-                            .disabled(attaching != nil)
-                        }
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("Sessions")
-                    Spacer()
-                    Button {
-                        Task { await refresh() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise").font(.footnote)
-                    }
-                }
-            }
-
-            Section {
-                TextField("name", text: $creatingName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("working directory", text: $creatingWorkdir)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.asciiCapable)
-                Button("Create + attach") {
-                    Task { await createAndAttach() }
-                }
-                .disabled(!isCreateValid || attaching != nil)
-            } header: {
-                Text("New session")
-            } footer: {
-                Text("Working directory must exist on the server. ~ expands to the motifd user's home.")
-                    .font(.caption2)
-            }
-
-            if let error {
-                Section {
-                    Text(error).font(.footnote).foregroundStyle(.red)
-                }
+        Group {
+            if motif.sessions.isEmpty && loading {
+                // First-load skeleton — `.refreshable` only fires on a
+                // pull gesture, so without this the screen looks frozen
+                // while the initial session.list is in flight.
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if motif.sessions.isEmpty {
+                emptyState
+            } else {
+                sessionList
             }
         }
-        .task {
-            await refresh()
+        .task { await refresh() }
+        .toolbar {
+            // Leading slot — NativeRoot's `rootToolbar` already owns the
+            // `.principal` (server picker) and `.topBarTrailing` (info)
+            // placements, so put the create CTA on the opposite side
+            // instead of fighting for trailing space.
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    creatingSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .disabled(attaching != nil)
+            }
+        }
+        .sheet(isPresented: $creatingSheet) {
+            CreateSessionSheet { name, workdir in
+                creatingSheet = false
+                await createAndAttach(name: name, workdir: workdir)
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
         .alert("Destroy session?",
                isPresented: Binding(
@@ -116,6 +70,127 @@ struct SessionListView: View {
             }
         }
     }
+
+    // MARK: - List + rows
+
+    private var sessionList: some View {
+        List {
+            if let error {
+                Section {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            Section {
+                ForEach(motif.sessions) { session in
+                    sessionRow(session)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .refreshable { await refresh() }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ session: MotifProto.SessionInfo) -> some View {
+        Button {
+            Task { await attach(session.name) }
+        } label: {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(session.name)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if let wd = session.workdir, !wd.isEmpty {
+                        Label {
+                            Text(wd)
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        } icon: {
+                            Image(systemName: "folder")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 10) {
+                        if let count = session.client_count, count > 0 {
+                            Label("\(count) attached", systemImage: "person.2.fill")
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption2)
+                                .foregroundStyle(.tint)
+                        }
+                        if let ms = session.created_at, ms > 0 {
+                            Text(relativeTime(unixMs: ms))
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                Spacer(minLength: 8)
+                if attaching == session.name {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+        .disabled(attaching != nil)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                destroyTarget = session.name
+            } label: {
+                Label("Destroy", systemImage: "trash")
+            }
+            .disabled(attaching != nil)
+        }
+    }
+
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "rectangle.stack.badge.plus")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(.tertiary)
+            VStack(spacing: 4) {
+                Text("No sessions yet")
+                    .font(.headline)
+                Text("Create one to attach a workspace on this server.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button {
+                creatingSheet = true
+            } label: {
+                Label("Create session", systemImage: "plus.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 8)
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Actions
 
     private func refresh() async {
         loading = true
@@ -136,17 +211,15 @@ struct SessionListView: View {
         }
     }
 
-    private func createAndAttach() async {
-        let name = creatingName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let workdir = creatingWorkdir.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func createAndAttach(name: String, workdir: String) async {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workdir = workdir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !workdir.isEmpty else { return }
         attaching = name
         defer { attaching = nil }
         do {
             _ = try await motif.createSession(name: name, workdir: workdir)
             try await motif.attach(sessionName: name)
-            creatingName = ""
-            creatingWorkdir = "~"
             let (path, query) = SessionView.route(name: name)
             router.push(CmRouterPath(path, query))
         } catch {
@@ -164,9 +237,84 @@ struct SessionListView: View {
         }
     }
 
-    private var isCreateValid: Bool {
-        !creatingName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !creatingWorkdir.trimmingCharacters(in: .whitespaces).isEmpty
+    /// "2h ago", "Just now", etc. Lazy formatter — kept around so we
+    /// don't re-allocate one per row repaint when the list scrolls.
+    private func relativeTime(unixMs: UInt64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(unixMs) / 1000)
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+}
+
+/// Modal create-session form. Lifted out of the list so the parent screen
+/// stays scroll-only — entering "name + workdir" used to push the list
+/// down out of view on smaller iPhones whenever the keyboard came up.
+private struct CreateSessionSheet: View {
+    let onCreate: (_ name: String, _ workdir: String) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String = ""
+    @State private var workdir: String = "~"
+    @State private var submitting: Bool = false
+    @FocusState private var focused: Field?
+    private enum Field { case name, workdir }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Name", text: $name)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focused, equals: .name)
+                        .onSubmit { focused = .workdir }
+                    TextField("Working directory", text: $workdir)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.asciiCapable)
+                        .submitLabel(.go)
+                        .focused($focused, equals: .workdir)
+                        .onSubmit { if isValid { submit() } }
+                } footer: {
+                    Text("Working directory must exist on the server. ~ expands to the motifd user's home.")
+                }
+            }
+            .navigationTitle("New session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(submitting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if submitting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Create") { submit() }
+                            .disabled(!isValid)
+                    }
+                }
+            }
+            .onAppear { focused = .name }
+        }
+    }
+
+    private var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !workdir.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func submit() {
+        submitting = true
+        Task {
+            await onCreate(name, workdir)
+            submitting = false
+        }
     }
 }
 
@@ -208,6 +356,7 @@ struct SessionView: View {
     let name: String
     @State private var error: String?
     @State private var showingTree: Bool = false
+    @State private var quitConfirm: Bool = false
 
     /// Project the server's view list into our heterogeneous tab enum.
     /// Order matches `motif.views`, which the server keeps consistent
@@ -246,6 +395,14 @@ struct SessionView: View {
         return motif.ptys.first(where: { $0.cwd?.isEmpty == false })?.cwd
     }
 
+    /// PTY id the BottomInputBar should write to. Active tab's PTY when
+    /// the user is in a terminal; falls back to the first live PTY when
+    /// viewing a preview / diff / image so quick commands still work.
+    private var activePtyID: String? {
+        if case .pty(_, let id) = activeTab { return id }
+        return motif.ptys.first(where: { $0.alive ?? true })?.id
+    }
+
     @Routable("/session")
     init(name: String) {
         self.name = name
@@ -256,6 +413,8 @@ struct SessionView: View {
             tabBar
             Divider()
             paneArea
+                .padding(.bottom)
+            BottomInputBar(activePtyID: activePtyID)
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
@@ -278,6 +437,20 @@ struct SessionView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    quitConfirm = true
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .confirmationDialog("Quit", isPresented: $quitConfirm) {
+                    Button("Quit") {
+                        router.pop()
+                    }
+                } message: {
+                    Text("Are you sure to quit?")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingTree = true
@@ -305,6 +478,7 @@ struct SessionView: View {
                     .padding()
             }
         }
+        .navigationBarBackButtonHidden(true)
     }
 
     // MARK: - Tab management

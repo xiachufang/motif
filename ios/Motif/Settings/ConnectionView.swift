@@ -109,6 +109,9 @@ struct ServerRow: View {
                             Image(systemName: "circle")
                                 .foregroundStyle(.secondary)
                         }
+                        Image(systemName: server.kind == .tailscale ? "network" : "globe")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         Text(server.name)
                             .foregroundStyle(.primary)
                     }
@@ -151,6 +154,7 @@ struct ServerEditSheet: View {
     @State private var host: String = ""
     @State private var portText: String = "7777"
     @State private var token: String = ""
+    @State private var kind: ServerKind = .tailscale
     @State private var discovered: [TailscaleManager.DiscoveredPeer] = []
     @State private var discoveryState: DiscoveryState = .idle
     @State private var showAllPeers: Bool = false
@@ -165,7 +169,15 @@ struct ServerEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if isNew {
+                Section("Reach via") {
+                    Picker("Kind", selection: $kind) {
+                        Text("Tailscale").tag(ServerKind.tailscale)
+                        Text("Direct").tag(ServerKind.direct)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                if isNew && kind == .tailscale {
                     discoverySection
                 }
                 Section("Name") {
@@ -333,6 +345,7 @@ struct ServerEditSheet: View {
             host = s.host
             portText = String(s.port)
             token = s.token
+            kind = s.kind
         }
     }
 
@@ -344,9 +357,9 @@ struct ServerEditSheet: View {
         let server: MotifServer
         switch target {
         case .new:
-            server = MotifServer(name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+            server = MotifServer(name: trimmedName, host: trimmedHost, port: port, token: trimmedToken, kind: kind)
         case .existing(let existing):
-            server = MotifServer(id: existing.id, name: trimmedName, host: trimmedHost, port: port, token: trimmedToken)
+            server = MotifServer(id: existing.id, name: trimmedName, host: trimmedHost, port: port, token: trimmedToken, kind: kind)
         }
         onSave(server)
         dismiss()
