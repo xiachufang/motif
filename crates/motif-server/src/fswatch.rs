@@ -139,7 +139,9 @@ fn forward_loop(
         for de in events {
             let kind = de.event.kind;
             // Access (read/open/close) is pure noise — skip outright.
-            if matches!(kind, EventKind::Access(_)) { continue; }
+            if matches!(kind, EventKind::Access(_)) {
+                continue;
+            }
 
             // Pre-compute classifications once per event (cheap; same for
             // every path in the event).
@@ -159,29 +161,29 @@ fn forward_loop(
                 || matches!(kind, EventKind::Other | EventKind::Any);
 
             for path in &de.event.paths {
-                let Ok(rel) = path.strip_prefix(&workdir) else { continue };
-                if is_excluded(rel) { continue; }
+                let Ok(rel) = path.strip_prefix(&workdir) else {
+                    continue;
+                };
+                if is_excluded(rel) {
+                    continue;
+                }
 
                 // Self-maintain the repo cache: when a `.git` entry itself
                 // appears or disappears, drop everything and let the next
                 // events rebuild lazily. This is the only time the cache
                 // can go stale, and `.git` create/remove is rare.
-                if (is_create || is_remove)
-                    && rel.file_name().map(|n| n == ".git").unwrap_or(false)
+                if (is_create || is_remove) && rel.file_name().map(|n| n == ".git").unwrap_or(false)
                 {
                     repo_cache.clear();
                 }
 
-                if tree_event
-                    && !rel.starts_with(".git")
-                    && tree_paths.len() < TREE_PATHS_CAP
-                {
+                if tree_event && !rel.starts_with(".git") && tree_paths.len() < TREE_PATHS_CAP {
                     tree_paths.push(rel.to_string_lossy().into_owned());
                 }
 
-                if !git_changed && git_event
-                    && (rel.starts_with(".git")
-                        || path_in_git_repo(&workdir, rel, &mut repo_cache))
+                if !git_changed
+                    && git_event
+                    && (rel.starts_with(".git") || path_in_git_repo(&workdir, rel, &mut repo_cache))
                 {
                     git_changed = true;
                 }
@@ -189,7 +191,10 @@ fn forward_loop(
         }
 
         if !tree_paths.is_empty() {
-            s.publish_event(|seq| Event::TreeChanged { paths: tree_paths, seq });
+            s.publish_event(|seq| Event::TreeChanged {
+                paths: tree_paths,
+                seq,
+            });
         }
         if git_changed {
             s.publish_event(|seq| Event::GitChanged { seq });
@@ -201,11 +206,7 @@ fn forward_loop(
 /// "does this directory contain `.git`?". Caches every directory seen so
 /// the next event under the same subtree is O(1). `.git` can be a dir
 /// (normal repo) or a file (worktree/submodule pointer); both count.
-fn path_in_git_repo(
-    workdir: &Path,
-    rel: &Path,
-    cache: &mut HashMap<PathBuf, bool>,
-) -> bool {
+fn path_in_git_repo(workdir: &Path, rel: &Path, cache: &mut HashMap<PathBuf, bool>) -> bool {
     let abs = workdir.join(rel);
     let start = abs.parent().unwrap_or(&abs);
     let mut walked: Vec<PathBuf> = Vec::new();
@@ -243,9 +244,18 @@ fn is_excluded(rel: &Path) -> bool {
             let s = s.to_string_lossy();
             if matches!(
                 s.as_ref(),
-                "node_modules" | "target" | "dist" | "build"
-                | ".next" | ".nuxt" | ".vite" | ".turbo" | ".cache"
-                | "coverage" | ".pytest_cache" | "__pycache__"
+                "node_modules"
+                    | "target"
+                    | "dist"
+                    | "build"
+                    | ".next"
+                    | ".nuxt"
+                    | ".vite"
+                    | ".turbo"
+                    | ".cache"
+                    | "coverage"
+                    | ".pytest_cache"
+                    | "__pycache__"
             ) {
                 return true;
             }

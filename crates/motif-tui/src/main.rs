@@ -3,7 +3,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "motif-tui", version, about = "motif remote dev agent — TUI client")]
+#[command(
+    name = "motif-tui",
+    version,
+    about = "motif remote dev agent — TUI client"
+)]
 struct Cli {
     /// Log filter (env: MOTIF_TUI_LOG).
     #[arg(long, env = "MOTIF_TUI_LOG", default_value = "warn")]
@@ -30,36 +34,52 @@ enum Cmd {
     /// Attach to a session in the full ratatui UI.
     Attach {
         url: String,
-        #[arg(long)] session: String,
+        #[arg(long)]
+        session: String,
         #[arg(long, env = "MOTIF_TOKEN_FILE")]
         token_file: Option<PathBuf>,
-        #[arg(long)] log: bool,
-        #[command(flatten)] via: ViaOpts,
+        #[arg(long)]
+        log: bool,
+        #[command(flatten)]
+        via: ViaOpts,
     },
     List {
         url: String,
-        #[arg(long, env = "MOTIF_TOKEN_FILE")] token_file: Option<PathBuf>,
-        #[command(flatten)] via: ViaOpts,
+        #[arg(long, env = "MOTIF_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        #[command(flatten)]
+        via: ViaOpts,
     },
     New {
         url: String,
-        #[arg(long)] name: String,
-        #[arg(long)] workdir: PathBuf,
-        #[arg(long, env = "MOTIF_TOKEN_FILE")] token_file: Option<PathBuf>,
-        #[command(flatten)] via: ViaOpts,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        workdir: PathBuf,
+        #[arg(long, env = "MOTIF_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        #[command(flatten)]
+        via: ViaOpts,
     },
     Destroy {
         url: String,
-        #[arg(long)] name: String,
-        #[arg(long, env = "MOTIF_TOKEN_FILE")] token_file: Option<PathBuf>,
-        #[command(flatten)] via: ViaOpts,
+        #[arg(long)]
+        name: String,
+        #[arg(long, env = "MOTIF_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        #[command(flatten)]
+        via: ViaOpts,
     },
     PtyRun {
         url: String,
-        #[arg(long)] session: String,
-        #[arg(long)] cmd: String,
-        #[arg(long, env = "MOTIF_TOKEN_FILE")] token_file: Option<PathBuf>,
-        #[command(flatten)] via: ViaOpts,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        cmd: String,
+        #[arg(long, env = "MOTIF_TOKEN_FILE")]
+        token_file: Option<PathBuf>,
+        #[command(flatten)]
+        via: ViaOpts,
     },
     /// Discover motifd nodes on the current tailnet by hostname prefix.
     /// Brings up an ephemeral tsnet client node and queries its LocalAPI
@@ -89,32 +109,88 @@ async fn main() -> anyhow::Result<()> {
         .ok();
 
     match cli.cmd {
-        Cmd::Attach { url, session, token_file, log, via } => {
+        Cmd::Attach {
+            url,
+            session,
+            token_file,
+            log,
+            via,
+        } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
             if log {
-                motif_tui::cmd_attach_log(&url, &token, session, via.via.as_deref(), via.ssh_remote_port).await
+                motif_tui::cmd_attach_log(
+                    &url,
+                    &token,
+                    session,
+                    via.via.as_deref(),
+                    via.ssh_remote_port,
+                )
+                .await
             } else {
-                motif_tui::cmd_attach(&url, &token, session, via.via.as_deref(), via.ssh_remote_port).await
+                motif_tui::cmd_attach(
+                    &url,
+                    &token,
+                    session,
+                    via.via.as_deref(),
+                    via.ssh_remote_port,
+                )
+                .await
             }
         }
-        Cmd::List { url, token_file, via } => {
+        Cmd::List {
+            url,
+            token_file,
+            via,
+        } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
             motif_tui::cmd_list(&url, &token, via.via.as_deref(), via.ssh_remote_port).await
         }
-        Cmd::New { url, name, workdir, token_file, via } => {
+        Cmd::New {
+            url,
+            name,
+            workdir,
+            token_file,
+            via,
+        } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
-            motif_tui::cmd_new(&url, &token, name, workdir, via.via.as_deref(), via.ssh_remote_port).await
+            motif_tui::cmd_new(
+                &url,
+                &token,
+                name,
+                workdir,
+                via.via.as_deref(),
+                via.ssh_remote_port,
+            )
+            .await
         }
-        Cmd::Destroy { url, name, token_file, via } => {
+        Cmd::Destroy {
+            url,
+            name,
+            token_file,
+            via,
+        } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
-            motif_tui::cmd_destroy(&url, &token, name, via.via.as_deref(), via.ssh_remote_port).await
+            motif_tui::cmd_destroy(&url, &token, name, via.via.as_deref(), via.ssh_remote_port)
+                .await
         }
-        Cmd::PtyRun { url, session, cmd, token_file, via } => {
+        Cmd::PtyRun {
+            url,
+            session,
+            cmd,
+            token_file,
+            via,
+        } => {
             let token = motif_tui::read_token(token_file.as_deref())?;
-            motif_tui::cmd_pty_run(&url, &token, session, cmd, via.via.as_deref(), via.ssh_remote_port).await
+            motif_tui::cmd_pty_run(
+                &url,
+                &token,
+                session,
+                cmd,
+                via.via.as_deref(),
+                via.ssh_remote_port,
+            )
+            .await
         }
-        Cmd::ListServers { prefix } => {
-            motif_tui::cmd_list_servers(&prefix).await
-        }
+        Cmd::ListServers { prefix } => motif_tui::cmd_list_servers(&prefix).await,
     }
 }

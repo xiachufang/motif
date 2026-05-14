@@ -1,26 +1,18 @@
-//! axum router + shared helpers for the new-protocol HTTP / WS
-//! endpoints (`/rpc/<method>`, `/events`, `/pty/<id>`) and the
-//! existing `/blob/<id>` data plane. Heartbeat constants, OutMsg
-//! framing, and Event ↔ Notification encoding live here so sibling
-//! modules don't duplicate them.
+//! axum router + shared helpers for the HTTP / WS endpoints
+//! (`/rpc/<method>`, `/events`, `/pty/<id>`). Heartbeat constants,
+//! OutMsg framing, and Event ↔ Notification encoding live here so
+//! sibling modules don't duplicate them.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
+use axum::extract::ws::Message;
 use axum::routing::get;
 use axum::Router;
-use futures_util::{SinkExt, StreamExt};
 use motif_proto::envelope::Notification;
 use motif_proto::event::Event;
-use motif_proto::fs::BlobMode;
-use sha2::Digest;
 
 use crate::auth::TokenStore;
-use crate::blob::BlobTransfer;
 use crate::conn_registry::ConnRegistry;
 use crate::http_rpc;
 use crate::session::manager::SessionManager;
@@ -44,34 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/rpc/{method}", axum::routing::post(http_rpc::rpc_dispatch))
         .route("/events", get(crate::events_ws::events_upgrade))
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
-        .route("/blob/{tid}", get(blob_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
         .with_state(state)
-}
-
-/// `/blob/<id>` data channel. The browser UI no longer depends on this,
-/// but native clients can still use the existing WS transfer path.
-async fn blob_upgrade(
-    State(state): State<AppState>,
-    AxumPath(tid): AxumPath<String>,
-    headers: HeaderMap,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    if !state.auth.verify_header(&headers) {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
-    }
-    // Look the transfer up across all sessions.
-    let mut found: Option<(Arc<crate::session::Session>, Arc<BlobTransfer>)> = None;
-    for s in state.manager.list() {
-        if let Some(t) = s.blobs.get(&tid) {
-            found = Some((s, t));
-            break;
-        }
-    }
-    let Some((session, transfer)) = found else {
-        return (StatusCode::GONE, "blob transfer not found or expired").into_response();
-    };
-    ws.on_upgrade(move |socket| handle_blob(socket, session, transfer))
 }
 
 /// How often the server sends a Ping (echoed as Pong by every reasonable
@@ -162,105 +128,6 @@ pub fn event_tag(ev: &Event) -> &'static str {
         Event::ViewMoved { .. } => "evt:view.moved",
         Event::Unknown => "evt:unknown",
     }
-}
-
-async fn handle_blob(
-    socket: WebSocket,
-    _session: Arc<crate::session::Session>,
-    transfer: Arc<BlobTransfer>,
-) {
-    match transfer.mode {
-        BlobMode::Read => blob_read(socket, transfer).await,
-        BlobMode::Write => blob_write(socket, transfer).await,
-    }
-}
-
-async fn blob_read(socket: WebSocket, transfer: Arc<BlobTransfer>) {
-    let (mut ws_tx, mut ws_rx) = socket.split();
-    // Drive a background task to drain incoming control messages (close, ping).
-    let drain = tokio::spawn(async move { while let Some(_) = ws_rx.next().await {} });
-
-    let path = transfer.path.clone();
-    let send_res = async move {
-        // 1MB chunks streamed as binary frames.
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(?path, "blob read open failed: {e}");
-                return Err(());
-            }
-        };
-        for chunk in bytes.chunks(1024 * 1024) {
-            if ws_tx
-                .send(Message::Binary(chunk.to_vec().into()))
-                .await
-                .is_err()
-            {
-                return Err(());
-            }
-        }
-        let _ = ws_tx.send(Message::Close(None)).await;
-        Ok(())
-    }
-    .await;
-
-    if send_res.is_err() {
-        tracing::debug!("blob read aborted");
-    }
-    drain.abort();
-}
-
-async fn blob_write(socket: WebSocket, transfer: Arc<BlobTransfer>) {
-    let (mut ws_tx, mut ws_rx) = socket.split();
-
-    // Allocate a tmp file under <workdir>/.motif/blobs/.
-    let tmp_dir = transfer
-        .path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .join(".motif")
-        .join("blobs");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-    let tmp_path = tmp_dir.join(format!("{}.tmp", transfer.id));
-    let mut tmp_file = match std::fs::File::create(&tmp_path) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(?tmp_path, "blob tmp create failed: {e}");
-            let _ = ws_tx.send(Message::Close(None)).await;
-            return;
-        }
-    };
-    {
-        let mut st = transfer.state.lock();
-        st.tmp_file = Some(tmp_path.clone());
-    }
-    use std::io::Write;
-    while let Some(item) = ws_rx.next().await {
-        let msg = match item {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        match msg {
-            Message::Binary(b) => {
-                {
-                    let mut st = transfer.state.lock();
-                    st.bytes_received += b.len() as u64;
-                    st.running_hash.update(&b);
-                }
-                if tmp_file.write_all(&b).is_err() {
-                    break;
-                }
-            }
-            Message::Close(_) => break,
-            _ => continue,
-        }
-    }
-    let _ = tmp_file.flush();
-    {
-        let mut st = transfer.state.lock();
-        st.completed = true;
-    }
-    let _ = ws_tx.send(Message::Close(None)).await;
 }
 
 pub fn encode_event(ev: &Event, codec: Codec) -> Message {

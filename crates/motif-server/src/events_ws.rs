@@ -5,7 +5,8 @@
 //! subscribe to the session's broadcast tx, replay buffered events past
 //! `since`, then stream live. Difference: no inbound RPC handling here
 //! — clients send RPC over HTTP. The receive side of the WS exists
-//! only to detect peer close (and to gracefully tear down).
+//! only to detect peer close, gracefully tear down, and keep the
+//! session's attached-client count in sync with browser lifetime.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -216,7 +217,8 @@ async fn handle_events_socket(
     forwarder.abort();
     heartbeat.abort();
     write_task.abort();
-    tracing::info!(client_id = %client_id, "events ws disconnected");
+    let detached = session.detach_client(&client_id);
+    tracing::info!(client_id = %client_id, detached, "events ws disconnected");
 }
 
 fn is_self_event(ev: &Event, client_id: &str) -> bool {

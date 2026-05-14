@@ -80,8 +80,9 @@ async fn main() -> anyhow::Result<()> {
 
     let token = match args.token_file.as_deref() {
         Some(path) => {
-            let raw = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("failed to read --token-file {}: {e}", path.display()))?;
+            let raw = std::fs::read_to_string(path).map_err(|e| {
+                anyhow::anyhow!("failed to read --token-file {}: {e}", path.display())
+            })?;
             let trimmed = raw.trim().to_string();
             if trimmed.is_empty() {
                 anyhow::bail!("token file is empty: {}", path.display());
@@ -95,15 +96,15 @@ async fn main() -> anyhow::Result<()> {
         let hostname = args.tailscale_hostname.unwrap_or_else(default_ts_hostname);
         let state_dir = match args.tailscale_state_dir {
             Some(p) => p,
-            None    => default_ts_state_dir()?,
+            None => default_ts_state_dir()?,
         };
         Some(motif_server::TailscaleListenConfig {
             hostname,
             state_dir,
-            port:        args.tailscale_port,
-            authkey:     args.tailscale_authkey,
+            port: args.tailscale_port,
+            authkey: args.tailscale_authkey,
             control_url: args.tailscale_control_url,
-            ephemeral:   args.tailscale_ephemeral,
+            ephemeral: args.tailscale_ephemeral,
         })
     } else {
         None
@@ -113,8 +114,8 @@ async fn main() -> anyhow::Result<()> {
         listen: args.listen,
         tailscale,
         token,
-        cert:   args.cert,
-        key:    args.key,
+        cert: args.cert,
+        key: args.key,
     };
     motif_server::serve(cfg).await
 }
@@ -124,8 +125,15 @@ async fn main() -> anyhow::Result<()> {
 /// device entry. Sanitized to DNS-safe lowercase.
 fn default_ts_hostname() -> String {
     let raw = system_hostname().unwrap_or_default();
-    let sanitized: String = raw.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+    let sanitized: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let sanitized = sanitized.trim_matches('-');
     if sanitized.is_empty() {
@@ -160,10 +168,10 @@ fn system_hostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: we pass a buffer of known size; libc::gethostname writes at most
     // buf.len() bytes including the trailing NUL on success.
-    let rc = unsafe {
-        libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len())
-    };
-    if rc != 0 { return None; }
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
     let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     std::str::from_utf8(&buf[..nul]).ok().map(|s| s.to_string())
 }

@@ -58,7 +58,11 @@ impl TsServer {
         t.set_ephemeral(opts.ephemeral).map_err(TsError::Native)?;
 
         tracing::debug!(hostname = %opts.hostname, "TsServer::new (bundled)");
-        Ok(Self { inner: Some(t), loopback: None, _log_task: log_task })
+        Ok(Self {
+            inner: Some(t),
+            loopback: None,
+            _log_task: log_task,
+        })
     }
 
     /// Bring the node up — block until joined to the tailnet (or until the
@@ -69,7 +73,9 @@ impl TsServer {
     /// the multi-threaded tokio runtime (motifd uses `#[tokio::main]`
     /// which defaults to that).
     pub async fn up(&mut self) -> Result<(), TsError> {
-        let t = self.inner.as_mut()
+        let t = self
+            .inner
+            .as_mut()
             .ok_or_else(|| TsError::Native("TsServer.inner missing (concurrent up()?)".into()))?;
         let lb = tokio::task::block_in_place(|| -> Result<libtailscale::Loopback, TsError> {
             t.up().map_err(TsError::Native)?;
@@ -80,20 +86,26 @@ impl TsServer {
     }
 
     pub async fn dial_tcp(&self, addr: &str) -> Result<TsStream, TsError> {
-        let t = self.inner.as_ref()
+        let t = self
+            .inner
+            .as_ref()
             .ok_or_else(|| TsError::Native("TsServer not initialized".into()))?;
-        let std_stream = tokio::task::block_in_place(|| {
-            t.dial("tcp", addr).map_err(TsError::Native)
-        })?;
+        let std_stream =
+            tokio::task::block_in_place(|| t.dial("tcp", addr).map_err(TsError::Native))?;
         let tokio_stream = into_tokio_stream(std_stream)?;
-        Ok(TsStream { inner: tokio_stream })
+        Ok(TsStream {
+            inner: tokio_stream,
+        })
     }
 
     pub async fn listen(self: &Arc<Self>, port: u16) -> Result<TsListener, TsError> {
-        let t = self.inner.as_ref()
+        let t = self
+            .inner
+            .as_ref()
             .ok_or_else(|| TsError::Native("TsServer not initialized".into()))?;
         let listener: libtailscale::Listener<'_> = tokio::task::block_in_place(|| {
-            t.listen("tcp", &format!(":{port}")).map_err(TsError::Native)
+            t.listen("tcp", &format!(":{port}"))
+                .map_err(TsError::Native)
         })?;
         // SAFETY: the listener borrows from `*t`, which lives inside the
         // `Arc<TsServer>` we clone below. Drop order in `TsListener` (its
@@ -121,8 +133,8 @@ impl TsServer {
                 peers.push(TsPeer {
                     hostname: p.host_name,
                     ip,
-                    os:       p.os.unwrap_or_default(),
-                    online:   p.online,
+                    os: p.os.unwrap_or_default(),
+                    online: p.online,
                 });
             }
         }
@@ -136,18 +148,20 @@ impl TsServer {
         let status = self.fetch_status().await?;
         let (peer_total, peer_online) = match &status.peer {
             Some(m) => (m.len(), m.values().filter(|p| p.online).count()),
-            None    => (0, 0),
+            None => (0, 0),
         };
         Ok(TsBackendStatus {
             backend_state: status.backend_state.unwrap_or_default(),
-            health:        status.health.unwrap_or_default(),
+            health: status.health.unwrap_or_default(),
             peer_total,
             peer_online,
         })
     }
 
     async fn fetch_status(&self) -> Result<StatusJson, TsError> {
-        let lb = self.loopback.as_ref()
+        let lb = self
+            .loopback
+            .as_ref()
             .ok_or_else(|| TsError::Native("up() must be called before LocalAPI access".into()))?;
         let raw = fetch_localapi(&lb.address, &lb.credential, "/localapi/v0/status").await?;
         serde_json::from_slice(&raw)
@@ -194,7 +208,7 @@ impl TsServer {
                         fail_count = 0;
                         warned_failing = false;
                         let changed = match &last {
-                            None      => true,
+                            None => true,
                             Some(prev) => prev.is_meaningful_change(&snap),
                         };
                         if changed {
@@ -243,9 +257,9 @@ pub struct TsBackendStatus {
     /// Empty string if the field is absent (very early in startup).
     pub backend_state: String,
     /// Active health warnings reported by tsnet (e.g. "DERP unreachable").
-    pub health:        Vec<String>,
-    pub peer_total:    usize,
-    pub peer_online:   usize,
+    pub health: Vec<String>,
+    pub peer_total: usize,
+    pub peer_online: usize,
 }
 
 impl TsBackendStatus {
@@ -254,8 +268,12 @@ impl TsBackendStatus {
     /// peer_online crossed zero (either way). Other peer-count fluctuations
     /// are noise and stay silent.
     fn is_meaningful_change(&self, next: &TsBackendStatus) -> bool {
-        if self.backend_state != next.backend_state { return true; }
-        if self.health != next.health { return true; }
+        if self.backend_state != next.backend_state {
+            return true;
+        }
+        if self.health != next.health {
+            return true;
+        }
         let was_zero = self.peer_online == 0;
         let now_zero = next.peer_online == 0;
         was_zero != now_zero
@@ -301,9 +319,13 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
     let mut chunk = [0u8; 8 * 1024];
     loop {
         let n = s.read(&mut chunk).await?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         if buf.len() + n > CAP {
-            return Err(TsError::Native("LocalAPI response exceeded 1 MiB cap".into()));
+            return Err(TsError::Native(
+                "LocalAPI response exceeded 1 MiB cap".into(),
+            ));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
@@ -317,11 +339,13 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
         return Err(TsError::Native(format!("LocalAPI: {status_line}")));
     }
 
-    let body_start = buf.windows(4).position(|w| w == b"\r\n\r\n")
+    let body_start = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
         .map(|i| i + 4)
         .ok_or_else(|| TsError::Native("LocalAPI: no header/body separator".into()))?;
     let headers = &buf[..body_start];
-    let body    = &buf[body_start..];
+    let body = &buf[body_start..];
 
     // tsnet's net/http defaults to chunked transfer encoding for
     // unknown-length responses; decode if so. Header match is
@@ -333,7 +357,11 @@ async fn fetch_localapi(addr: &str, credential: &str, path: &str) -> Result<Vec<
             .windows(b"chunked".len())
             .any(|w| w.eq_ignore_ascii_case(b"chunked"));
 
-    let body = if chunked { decode_chunked(body)? } else { body.to_vec() };
+    let body = if chunked {
+        decode_chunked(body)?
+    } else {
+        body.to_vec()
+    };
     Ok(body)
 }
 
@@ -344,15 +372,22 @@ fn decode_chunked(mut input: &[u8]) -> Result<Vec<u8>, TsError> {
     let mut out = Vec::with_capacity(input.len());
     loop {
         // Find the size line terminator.
-        let crlf = input.windows(2).position(|w| w == b"\r\n")
+        let crlf = input
+            .windows(2)
+            .position(|w| w == b"\r\n")
             .ok_or_else(|| TsError::Native("chunked: missing size CRLF".into()))?;
         let size_str = std::str::from_utf8(&input[..crlf])
             .map_err(|_| TsError::Native("chunked: non-utf8 size line".into()))?
-            .split(';').next().unwrap_or("").trim();    // strip chunk-extensions if any
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim(); // strip chunk-extensions if any
         let size = usize::from_str_radix(size_str, 16)
             .map_err(|e| TsError::Native(format!("chunked: bad size {size_str:?}: {e}")))?;
         input = &input[crlf + 2..];
-        if size == 0 { break; }
+        if size == 0 {
+            break;
+        }
         if input.len() < size + 2 {
             return Err(TsError::Native("chunked: short chunk data".into()));
         }
@@ -439,7 +474,7 @@ impl AsyncWrite for TsStream {
 ///
 /// Field order matters: `inner` is dropped first, then `_server`.
 pub struct TsListener {
-    inner:   Arc<libtailscale::Listener<'static>>,
+    inner: Arc<libtailscale::Listener<'static>>,
     _server: Arc<TsServer>,
 }
 
@@ -461,24 +496,28 @@ impl TsListener {
             let errno = std::io::Error::last_os_error();
             (r, errno)
         })
-            .await
-            .map_err(|e| TsError::Native(format!("spawn_blocking: {e}")))?;
-        let (std_stream, peer): (std::net::TcpStream, IpAddr) = res
-            .map_err(|msg| {
-                let msg = msg.trim();
-                if msg.is_empty() {
-                    TsError::Native(format!("recvmsg failed: {errno}"))
-                } else {
-                    TsError::Native(format!("{msg} (os: {errno})"))
-                }
-            })?;
+        .await
+        .map_err(|e| TsError::Native(format!("spawn_blocking: {e}")))?;
+        let (std_stream, peer): (std::net::TcpStream, IpAddr) = res.map_err(|msg| {
+            let msg = msg.trim();
+            if msg.is_empty() {
+                TsError::Native(format!("recvmsg failed: {errno}"))
+            } else {
+                TsError::Native(format!("{msg} (os: {errno})"))
+            }
+        })?;
 
         let tokio_stream = into_tokio_stream(std_stream)?;
         // Tailscale's accept_with_addr only gives us the peer's IP, not
         // the ephemeral port. Use 0 as a placeholder — axum's serve uses
         // this purely for logging.
         let addr = SocketAddr::new(peer, 0);
-        Ok((TsStream { inner: tokio_stream }, addr))
+        Ok((
+            TsStream {
+                inner: tokio_stream,
+            },
+            addr,
+        ))
     }
 }
 
@@ -500,10 +539,13 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
     // SAFETY: pipe(2) writes two fds into the array on success.
     let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc != 0 {
-        return Err(TsError::Native(format!("pipe(2): {}", std::io::Error::last_os_error())));
+        return Err(TsError::Native(format!(
+            "pipe(2): {}",
+            std::io::Error::last_os_error()
+        )));
     }
     // SAFETY: pipe(2) succeeded so both fds are valid and freshly owned.
-    let read_fd:  OwnedFd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let read_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let write_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
 
     // FD_CLOEXEC on both — motifd spawns PTY children, we don't want them
@@ -525,7 +567,7 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
         let reader = BufReader::new(f);
         for line in reader.lines() {
             let line = match line {
-                Ok(l)  => l,
+                Ok(l) => l,
                 Err(e) => {
                     tracing::debug!(error = %e, "tsnet log pipe read error");
                     break;
@@ -569,20 +611,32 @@ fn is_network_recovery_line(line: &str) -> bool {
     // wgengine/userspace.go: `LinkChange: all links down; pausing` /
     // `LinkChange: major, rebinding` / `[v1] LinkChange: minor`. We catch
     // all three by anchoring on the prefix.
-    if line.contains("LinkChange:") { return true; }
+    if line.contains("LinkChange:") {
+        return true;
+    }
     // magicsock/magicsock.go:1595 — direct rebind notice.
-    if line.contains("magicsock: performing rebind") { return true; }
+    if line.contains("magicsock: performing rebind") {
+        return true;
+    }
     // magicsock/magicsock.go:1600 — rebind suppressed by throttle. Worth
     // surfacing because it explains why a rebind didn't happen.
-    if line.contains("magicsock: not performing") { return true; }
+    if line.contains("magicsock: not performing") {
+        return true;
+    }
     // magicsock/magicsock.go:961 — netcheck-detected send failure path.
-    if line.contains("magicsock: last netcheck") { return true; }
+    if line.contains("magicsock: last netcheck") {
+        return true;
+    }
     // wgengine/userspace.go:1394/1398 — DNS / VPN reapply after major link
     // change; matches "set DNS config again after major link change" and the
     // matching error variant.
-    if line.contains("after major link change") { return true; }
+    if line.contains("after major link change") {
+        return true;
+    }
     // net/netmon/netmon.go:390 — gateway flipped.
-    if line.contains("gateway and self IP changed") { return true; }
+    if line.contains("gateway and self IP changed") {
+        return true;
+    }
     false
 }
 
@@ -637,7 +691,10 @@ mod tests {
             "controlclient: ...",
         ];
         for line in noise {
-            assert!(!is_network_recovery_line(line), "should NOT promote: {line}");
+            assert!(
+                !is_network_recovery_line(line),
+                "should NOT promote: {line}"
+            );
         }
     }
 }

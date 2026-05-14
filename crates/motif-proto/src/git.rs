@@ -20,8 +20,8 @@ pub enum GitFileStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitFile {
-    pub path:     String,
-    pub staged:   GitFileStatus,
+    pub path: String,
+    pub staged: GitFileStatus,
     pub unstaged: GitFileStatus,
 }
 
@@ -29,9 +29,9 @@ pub struct GitFile {
 pub struct StatusResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    pub ahead:  u32,
+    pub ahead: u32,
     pub behind: u32,
-    pub files:  Vec<GitFile>,
+    pub files: Vec<GitFile>,
 }
 
 /// Optional override for which directory to run `git` in. When unset, the
@@ -55,11 +55,13 @@ pub struct DiffParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiffResult { pub patch: String }
+pub struct DiffResult {
+    pub patch: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSummaryFile {
-    pub path:      String,
+    pub path: String,
     pub additions: u32,
     pub deletions: u32,
 }

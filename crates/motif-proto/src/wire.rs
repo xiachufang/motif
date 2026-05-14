@@ -41,7 +41,9 @@ mod tests {
 
     #[test]
     fn json_uses_base64() {
-        let s = Sample { data: vec![0, 1, 2, 3, 0xff] };
+        let s = Sample {
+            data: vec![0, 1, 2, 3, 0xff],
+        };
         let json = serde_json::to_string(&s).unwrap();
         // Wire is base64 string, not an array.
         assert!(json.contains("\"data\":\"AAECA/8=\""));
@@ -51,7 +53,9 @@ mod tests {
 
     #[test]
     fn msgpack_uses_native_bytes() {
-        let s = Sample { data: vec![0, 1, 2, 3, 0xff] };
+        let s = Sample {
+            data: vec![0, 1, 2, 3, 0xff],
+        };
         let buf = rmp_serde::to_vec_named(&s).unwrap();
         // msgpack bin8 marker (0xc4) for a 5-byte string sits right after
         // the fixmap header — proves we didn't emit base64.

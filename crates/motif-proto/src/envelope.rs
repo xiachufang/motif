@@ -26,36 +26,42 @@ pub enum Id {
     Str(String),
 }
 
-impl From<u64> for Id { fn from(n: u64) -> Self { Self::Num(n) } }
+impl From<u64> for Id {
+    fn from(n: u64) -> Self {
+        Self::Num(n)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub jsonrpc: String,
-    pub id:      Id,
-    pub method:  String,
+    pub id: Id,
+    pub method: String,
     #[serde(default = "default_params")]
-    pub params:  Value,
+    pub params: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub jsonrpc: String,
-    pub method:  String,
+    pub method: String,
     #[serde(default = "default_params")]
-    pub params:  Value,
+    pub params: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     pub jsonrpc: String,
-    pub id:      Id,
+    pub id: Id,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result:  Option<Value>,
+    pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub error:   Option<RpcError>,
+    pub error: Option<RpcError>,
 }
 
-fn default_params() -> Value { Value::Null }
+fn default_params() -> Value {
+    Value::Null
+}
 
 /// Top-level frame for inbound parsing. Outbound construction uses `Request`,
 /// `Notification`, or `Response` directly via convenience constructors below.
@@ -76,9 +82,9 @@ impl Request {
     pub fn new<P: Serialize>(id: u64, method: impl Into<String>, params: P) -> Self {
         Self {
             jsonrpc: JSONRPC_V2.into(),
-            id:      Id::Num(id),
-            method:  method.into(),
-            params:  serde_json::to_value(params).unwrap_or(Value::Null),
+            id: Id::Num(id),
+            method: method.into(),
+            params: serde_json::to_value(params).unwrap_or(Value::Null),
         }
     }
 }
@@ -87,8 +93,8 @@ impl Notification {
     pub fn new<P: Serialize>(method: impl Into<String>, params: P) -> Self {
         Self {
             jsonrpc: JSONRPC_V2.into(),
-            method:  method.into(),
-            params:  serde_json::to_value(params).unwrap_or(Value::Null),
+            method: method.into(),
+            params: serde_json::to_value(params).unwrap_or(Value::Null),
         }
     }
 }
@@ -99,7 +105,7 @@ impl Response {
             jsonrpc: JSONRPC_V2.into(),
             id,
             result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
-            error:  None,
+            error: None,
         }
     }
 
@@ -108,7 +114,7 @@ impl Response {
             jsonrpc: JSONRPC_V2.into(),
             id,
             result: None,
-            error:  Some(error),
+            error: Some(error),
         }
     }
 }

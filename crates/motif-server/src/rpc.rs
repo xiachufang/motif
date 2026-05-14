@@ -195,40 +195,8 @@ pub fn dispatch_concurrent(
             crate::git::diff_summary(&cwd, &p)
         }),
 
-        // fs.openBlob / commitBlob / cancelBlob — M7
-        "fs.openBlob" => attached_with_session(
-            manager,
-            conn,
-            id,
-            req.params,
-            |s, p: motif_proto::fs::OpenBlobParams| {
-                crate::blob::open(&s, conn_client_id_passthrough().as_str(), &p)
-            },
-        ),
-        "fs.commitBlob" => attached_with_session(
-            manager,
-            conn,
-            id,
-            req.params,
-            |s, p: motif_proto::fs::CommitBlobParams| crate::blob::commit(&s, &p),
-        ),
-        "fs.cancelBlob" => attached_with_session(
-            manager,
-            conn,
-            id,
-            req.params,
-            |s, p: motif_proto::fs::CancelBlobParams| crate::blob::cancel(&s, &p),
-        ),
-
         other => Response::err(id, RpcError::method_not_found(other)),
     }
-}
-
-fn conn_client_id_passthrough() -> String {
-    // Placeholder shim — real client_id is bound at the WS handler layer when
-    // it stuffs the value into a thread-local. For simplicity in M7 we let the
-    // blob layer re-derive ownership from the session attached client list.
-    String::new()
 }
 
 fn parse<P: DeserializeOwned>(v: Value) -> Result<P, RpcError> {

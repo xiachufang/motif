@@ -16,16 +16,27 @@ pub type ViewId = String; // ULID
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ViewSpec {
-    Pty     { pty_id: PtyId },
-    Preview { path:   String },
-    Diff    { #[serde(default)] staged: bool, #[serde(default)] path: Option<String> },
-    Image   { path:   String },
+    Pty {
+        pty_id: PtyId,
+    },
+    Preview {
+        path: String,
+    },
+    Diff {
+        #[serde(default)]
+        staged: bool,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    Image {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewInfo {
-    pub id:         ViewId,
-    pub spec:       ViewSpec,
+    pub id: ViewId,
+    pub spec: ViewSpec,
     pub created_at: UnixMs,
 }
 
@@ -39,7 +50,9 @@ pub struct OpenParams {
     #[serde(default = "default_true")]
     pub activate: bool,
 }
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenResult {
@@ -49,7 +62,9 @@ pub struct OpenResult {
 // ────────────────────────────────────── view.close
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CloseParams { pub view_id: ViewId }
+pub struct CloseParams {
+    pub view_id: ViewId,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CloseResult {}
@@ -73,7 +88,7 @@ pub struct ActivateResult {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoveParams {
-    pub view_id:  ViewId,
+    pub view_id: ViewId,
     pub to_index: usize,
 }
 

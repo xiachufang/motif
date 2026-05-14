@@ -22,23 +22,23 @@ use crate::rpc::ConnState;
 /// Soft idle timeout. After this much wall-clock with no `touch()`, the
 /// entry is eligible for reaping on the next `gc()` call. Lazy GC: we
 /// don't run a background sweeper; whoever calls `get` / `mint` opportunistically
-/// drops stale entries. Five minutes matches the blob TTL — long enough
-/// to survive a phone going to sleep mid-task, short enough that an
-/// abandoned client doesn't pin state forever.
+/// drops stale entries. Five minutes — long enough to survive a phone
+/// going to sleep mid-task, short enough that an abandoned client doesn't
+/// pin state forever.
 pub const SESSION_IDLE_TTL: Duration = Duration::from_secs(300);
 
 pub struct ConnEntry {
-    pub state:    Mutex<ConnState>,
+    pub state: Mutex<ConnState>,
     /// Wall-clock of the most recent `touch()`. Used by lazy GC. Mutex
     /// because the field is updated on every HTTP RPC and we don't need
     /// atomic semantics — coarser than a single instant is fine.
-    last_seen:    Mutex<Instant>,
+    last_seen: Mutex<Instant>,
 }
 
 impl ConnEntry {
     fn new(state: ConnState) -> Self {
         Self {
-            state:     Mutex::new(state),
+            state: Mutex::new(state),
             last_seen: Mutex::new(Instant::now()),
         }
     }
@@ -58,7 +58,9 @@ pub struct ConnRegistry {
 }
 
 impl ConnRegistry {
-    pub fn new() -> Arc<Self> { Arc::new(Self::default()) }
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
 
     /// Mint a fresh session_id, insert a new ConnState, return both.
     /// Called by the HTTP `session.attach` path before delegating to
@@ -89,7 +91,9 @@ impl ConnRegistry {
     /// invoke from `mint` and any hot path that can tolerate the work;
     /// no background task needed for v1.
     pub fn gc(&self) {
-        let stale: Vec<SessionId> = self.conns.iter()
+        let stale: Vec<SessionId> = self
+            .conns
+            .iter()
             .filter(|kv| kv.value().idle_for() > SESSION_IDLE_TTL)
             .map(|kv| kv.key().clone())
             .collect();
@@ -98,7 +102,9 @@ impl ConnRegistry {
         }
     }
 
-    pub fn len(&self) -> usize { self.conns.len() }
+    pub fn len(&self) -> usize {
+        self.conns.len()
+    }
 }
 
 #[cfg(test)]
@@ -132,6 +138,6 @@ mod tests {
         *stale_entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
         r.gc();
         assert!(r.get(&fresh_id).is_some(), "fresh entry was reaped");
-        assert!(r.get(&stale_id).is_none(),  "stale entry survived");
+        assert!(r.get(&stale_id).is_none(), "stale entry survived");
     }
 }

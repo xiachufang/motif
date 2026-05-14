@@ -13,18 +13,18 @@ use crate::config::ListenConfig;
 use crate::stream::Stream;
 
 #[cfg(feature = "tailscale")]
-use std::net::{IpAddr, Ipv4Addr};
-#[cfg(feature = "tailscale")]
-use std::sync::Arc;
+use crate::config::TailscaleListenConfig;
 #[cfg(feature = "tailscale")]
 use motif_tailscale::{TsListener, TsOptions, TsServer};
 #[cfg(feature = "tailscale")]
-use crate::config::TailscaleListenConfig;
+use std::net::{IpAddr, Ipv4Addr};
+#[cfg(feature = "tailscale")]
+use std::sync::Arc;
 
 pub struct Listener {
     tcp: Option<TcpListener>,
     #[cfg(feature = "tailscale")]
-    ts:  Option<TsBackend>,
+    ts: Option<TsBackend>,
 }
 
 #[cfg(feature = "tailscale")]
@@ -34,10 +34,10 @@ struct TsBackend {
     /// needs to dial out from the server (currently it doesn't, but the
     /// option exists).
     _server: Arc<TsServer>,
-    inner:   TsListener,
+    inner: TsListener,
     /// Cached for `local_addr()` — tsnet has no real socket addr, so we
     /// synthesize `0.0.0.0:<port>` as a stand-in.
-    port:    u16,
+    port: u16,
 }
 
 impl Listener {
@@ -46,8 +46,9 @@ impl Listener {
 
         let tcp = match cfg.tcp {
             Some(addr) => Some(
-                TcpListener::bind(addr).await
-                    .map_err(|e| io::Error::new(e.kind(), format!("bind {addr}: {e}")))?
+                TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| io::Error::new(e.kind(), format!("bind {addr}: {e}")))?,
             ),
             None => None,
         };
@@ -55,7 +56,7 @@ impl Listener {
         #[cfg(feature = "tailscale")]
         let ts = match cfg.tailscale.as_ref() {
             Some(c) => Some(bind_tailscale(c).await?),
-            None    => None,
+            None => None,
         };
 
         Ok(Self {
@@ -88,27 +89,37 @@ impl Listener {
 #[cfg(feature = "tailscale")]
 async fn bind_tailscale(c: &TailscaleListenConfig) -> io::Result<TsBackend> {
     let opts = TsOptions {
-        hostname:    c.hostname.clone(),
-        state_dir:   c.state_dir.clone(),
-        authkey:     c.authkey.clone(),
+        hostname: c.hostname.clone(),
+        state_dir: c.state_dir.clone(),
+        authkey: c.authkey.clone(),
         control_url: c.control_url.clone(),
-        ephemeral:   c.ephemeral,
+        ephemeral: c.ephemeral,
     };
-    let mut server = TsServer::new(opts).map_err(|e| io::Error::other(format!("tailscale init: {e}")))?;
-    server.up().await.map_err(|e| io::Error::other(format!("tailscale up: {e}")))?;
+    let mut server =
+        TsServer::new(opts).map_err(|e| io::Error::other(format!("tailscale init: {e}")))?;
+    server
+        .up()
+        .await
+        .map_err(|e| io::Error::other(format!("tailscale up: {e}")))?;
     let server = Arc::new(server);
-    let inner  = server.listen(c.port).await
+    let inner = server
+        .listen(c.port)
+        .await
         .map_err(|e| io::Error::other(format!("tailscale listen :{}: {e}", c.port)))?;
     // Periodic backend snapshot — surfaces BackendState transitions and
     // peer-list collapses (e.g. after a Mac sleep/wake). Task ties its
     // lifetime to the Arc via Weak::upgrade, so it self-terminates when
     // the listener drops `_server`.
     let _watcher = Arc::clone(&server).spawn_status_watcher();
-    Ok(TsBackend { _server: server, inner, port: c.port })
+    Ok(TsBackend {
+        _server: server,
+        inner,
+        port: c.port,
+    })
 }
 
 impl axum::serve::Listener for Listener {
-    type Io   = Stream;
+    type Io = Stream;
     type Addr = SocketAddr;
 
     fn accept(&mut self) -> impl Future<Output = (Self::Io, Self::Addr)> + Send {
@@ -134,7 +145,7 @@ impl axum::serve::Listener for Listener {
 
                 match res {
                     Ok(pair) => return pair,
-                    Err(e)   => {
+                    Err(e) => {
                         tracing::warn!(error = %e, "motif-net: accept failed; retrying");
                         // Same back-off shape as axum's TcpListener impl —
                         // gives the kernel a chance to free fds on EMFILE etc.
@@ -173,7 +184,10 @@ async fn accept_tcp(o: Option<&TcpListener>) -> io::Result<(Stream, SocketAddr)>
 async fn accept_ts(o: Option<&mut TsBackend>) -> io::Result<(Stream, SocketAddr)> {
     match o {
         Some(b) => {
-            let (s, a) = b.inner.accept().await
+            let (s, a) = b
+                .inner
+                .accept()
+                .await
                 .map_err(|e| io::Error::other(format!("tailscale accept: {e}")))?;
             Ok((Stream::from_tailscale(s), a))
         }

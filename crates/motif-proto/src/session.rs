@@ -10,16 +10,16 @@ use crate::view::{ViewId, ViewInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
-    pub id:           SessionId,
-    pub name:         String,
-    pub workdir:      PathBuf,
-    pub created_at:   UnixMs,
+    pub id: SessionId,
+    pub name: String,
+    pub workdir: PathBuf,
+    pub created_at: UnixMs,
     pub client_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
-    pub id:    ClientId,
+    pub id: ClientId,
     pub since: UnixMs,
 }
 
@@ -37,7 +37,7 @@ pub struct ListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateParams {
-    pub name:    String,
+    pub name: String,
     pub workdir: PathBuf,
 }
 
@@ -72,13 +72,13 @@ pub struct AttachParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachResult {
-    pub session:     SessionInfo,
-    pub client_id:   ClientId,
-    pub clients:     Vec<ClientInfo>,
-    pub ptys:        Vec<PtyInfo>,
-    pub views:       Vec<ViewInfo>,
+    pub session: SessionInfo,
+    pub client_id: ClientId,
+    pub clients: Vec<ClientInfo>,
+    pub ptys: Vec<PtyInfo>,
+    pub views: Vec<ViewInfo>,
     pub active_view: Option<ViewId>,
-    pub last_seq:    Seq,
+    pub last_seq: Seq,
 }
 
 // ────────────────────────────────────────────────────── session.detach

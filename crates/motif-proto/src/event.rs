@@ -23,19 +23,32 @@ pub enum Event {
     TreeChanged { paths: Vec<String>, seq: Seq },
 
     #[serde(rename = "pty.resize")]
-    PtyResize { pty_id: PtyId, cols: u16, rows: u16, seq: Seq },
+    PtyResize {
+        pty_id: PtyId,
+        cols: u16,
+        rows: u16,
+        seq: Seq,
+    },
 
     #[serde(rename = "pty.created")]
     PtyCreated { info: PtyInfo, seq: Seq },
 
     #[serde(rename = "pty.exited")]
-    PtyExited { pty_id: PtyId, exit_code: Option<i32>, seq: Seq },
+    PtyExited {
+        pty_id: PtyId,
+        exit_code: Option<i32>,
+        seq: Seq,
+    },
 
     #[serde(rename = "git.changed")]
     GitChanged { seq: Seq },
 
     #[serde(rename = "client.joined")]
-    ClientJoined { client_id: ClientId, since: UnixMs, seq: Seq },
+    ClientJoined {
+        client_id: ClientId,
+        since: UnixMs,
+        seq: Seq,
+    },
 
     #[serde(rename = "client.left")]
     ClientLeft { client_id: ClientId, seq: Seq },
@@ -71,17 +84,17 @@ impl Event {
     /// known events without crashing on an unknown one.
     pub fn seq(&self) -> Seq {
         match self {
-            Self::TreeChanged       { seq, .. } => *seq,
-            Self::PtyResize         { seq, .. } => *seq,
-            Self::PtyCreated        { seq, .. } => *seq,
-            Self::PtyExited         { seq, .. } => *seq,
-            Self::GitChanged        { seq, .. } => *seq,
-            Self::ClientJoined      { seq, .. } => *seq,
-            Self::ClientLeft        { seq, .. } => *seq,
-            Self::ViewOpened        { seq, .. } => *seq,
-            Self::ViewClosed        { seq, .. } => *seq,
+            Self::TreeChanged { seq, .. } => *seq,
+            Self::PtyResize { seq, .. } => *seq,
+            Self::PtyCreated { seq, .. } => *seq,
+            Self::PtyExited { seq, .. } => *seq,
+            Self::GitChanged { seq, .. } => *seq,
+            Self::ClientJoined { seq, .. } => *seq,
+            Self::ClientLeft { seq, .. } => *seq,
+            Self::ViewOpened { seq, .. } => *seq,
+            Self::ViewClosed { seq, .. } => *seq,
             Self::ViewActiveChanged { seq, .. } => *seq,
-            Self::ViewMoved         { seq, .. } => *seq,
+            Self::ViewMoved { seq, .. } => *seq,
             Self::Unknown => 0,
         }
     }
@@ -95,8 +108,8 @@ mod tests {
     fn client_joined_round_trip() {
         let e = Event::ClientJoined {
             client_id: "01H".into(),
-            since:     1700000000000,
-            seq:       42,
+            since: 1700000000000,
+            seq: 42,
         };
         let s = serde_json::to_string(&e).unwrap();
         assert!(s.contains("\"method\":\"client.joined\""));

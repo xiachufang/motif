@@ -10,19 +10,19 @@ use std::sync::Arc;
 /// `tailscale` must be `Some` — `Listener::bind` rejects the empty case.
 #[derive(Debug, Clone, Default)]
 pub struct ListenConfig {
-    pub tcp:       Option<SocketAddr>,
+    pub tcp: Option<SocketAddr>,
     pub tailscale: Option<TailscaleListenConfig>,
 }
 
 /// Bring up an embedded tsnet node and listen on `port`.
 #[derive(Debug, Clone)]
 pub struct TailscaleListenConfig {
-    pub hostname:    String,
-    pub state_dir:   PathBuf,
-    pub port:        u16,
-    pub authkey:     Option<String>,
+    pub hostname: String,
+    pub state_dir: PathBuf,
+    pub port: u16,
+    pub authkey: Option<String>,
     pub control_url: Option<String>,
-    pub ephemeral:   bool,
+    pub ephemeral: bool,
 }
 
 impl ListenConfig {
@@ -45,7 +45,7 @@ pub enum DialTarget {
     Tcp(String),
     #[cfg(feature = "tailscale")]
     Tailscale {
-        addr:   String,
+        addr: String,
         server: Arc<motif_tailscale::TsServer>,
     },
 }

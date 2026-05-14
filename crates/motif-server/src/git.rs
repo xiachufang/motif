@@ -9,15 +9,22 @@ use motif_proto::git::*;
 pub fn workdir_is_repo(workdir: &Path) -> bool {
     Command::new("git")
         .arg("--no-optional-locks")
-        .arg("-C").arg(workdir)
+        .arg("-C")
+        .arg(workdir)
         .args(["rev-parse", "--is-inside-work-tree"])
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn ensure_repo(workdir: &Path) -> Result<(), RpcError> {
     if !workdir_is_repo(workdir) {
-        return Err(RpcError::new(ErrorCode::NotAGitRepo, "not a git repository"));
+        return Err(RpcError::new(
+            ErrorCode::NotAGitRepo,
+            "not a git repository",
+        ));
     }
     Ok(())
 }
@@ -35,8 +42,14 @@ pub fn status(workdir: &Path) -> Result<StatusResult, RpcError> {
     // `git.changed`, the client re-calls `git.status`, and we loop forever.
     let out = Command::new("git")
         .arg("--no-optional-locks")
-        .arg("-C").arg(workdir)
-        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=all"])
+        .arg("-C")
+        .arg(workdir)
+        .args([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+        ])
         .output()
         .map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
     if !out.status.success() {
@@ -47,9 +60,9 @@ pub fn status(workdir: &Path) -> Result<StatusResult, RpcError> {
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut branch = None;
-    let mut ahead  = 0u32;
+    let mut ahead = 0u32;
     let mut behind = 0u32;
-    let mut files  = Vec::new();
+    let mut files = Vec::new();
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("# branch.head ") {
             branch = Some(rest.to_string());
@@ -71,7 +84,7 @@ pub fn status(workdir: &Path) -> Result<StatusResult, RpcError> {
             // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\t<orig>
             let parts: Vec<&str> = line.splitn(9, ' ').collect();
             if parts.len() >= 9 {
-                let xy   = parts[1];
+                let xy = parts[1];
                 let path = if line.starts_with("2 ") {
                     // skip the score field; path starts after the next space
                     let after_score = parts[8];
@@ -83,54 +96,80 @@ pub fn status(workdir: &Path) -> Result<StatusResult, RpcError> {
                     parts[8].to_string()
                 };
                 let (staged, unstaged) = parse_xy(xy);
-                files.push(GitFile { path, staged, unstaged });
+                files.push(GitFile {
+                    path,
+                    staged,
+                    unstaged,
+                });
             }
         } else if line.starts_with("? ") {
             files.push(GitFile {
                 path: line[2..].to_string(),
-                staged:   GitFileStatus::Untracked,
+                staged: GitFileStatus::Untracked,
                 unstaged: GitFileStatus::Untracked,
             });
         } else if line.starts_with("! ") {
             files.push(GitFile {
                 path: line[2..].to_string(),
-                staged:   GitFileStatus::Ignored,
+                staged: GitFileStatus::Ignored,
                 unstaged: GitFileStatus::Ignored,
             });
         }
     }
-    Ok(StatusResult { branch, ahead, behind, files })
+    Ok(StatusResult {
+        branch,
+        ahead,
+        behind,
+        files,
+    })
 }
 
 fn parse_xy(xy: &str) -> (GitFileStatus, GitFileStatus) {
     let bytes = xy.as_bytes();
-    let staged   = if bytes.len() > 0 { code_to_status(bytes[0] as char) } else { GitFileStatus::Unmodified };
-    let unstaged = if bytes.len() > 1 { code_to_status(bytes[1] as char) } else { GitFileStatus::Unmodified };
+    let staged = if bytes.len() > 0 {
+        code_to_status(bytes[0] as char)
+    } else {
+        GitFileStatus::Unmodified
+    };
+    let unstaged = if bytes.len() > 1 {
+        code_to_status(bytes[1] as char)
+    } else {
+        GitFileStatus::Unmodified
+    };
     (staged, unstaged)
 }
 
 fn code_to_status(c: char) -> GitFileStatus {
     match c {
         '.' | ' ' => GitFileStatus::Unmodified,
-        'M'       => GitFileStatus::Modified,
-        'A'       => GitFileStatus::Added,
-        'D'       => GitFileStatus::Deleted,
-        'R'       => GitFileStatus::Renamed,
-        'C'       => GitFileStatus::Copied,
-        'U'       => GitFileStatus::Conflicted,
-        '?'       => GitFileStatus::Untracked,
-        '!'       => GitFileStatus::Ignored,
-        _         => GitFileStatus::Unmodified,
+        'M' => GitFileStatus::Modified,
+        'A' => GitFileStatus::Added,
+        'D' => GitFileStatus::Deleted,
+        'R' => GitFileStatus::Renamed,
+        'C' => GitFileStatus::Copied,
+        'U' => GitFileStatus::Conflicted,
+        '?' => GitFileStatus::Untracked,
+        '!' => GitFileStatus::Ignored,
+        _ => GitFileStatus::Unmodified,
     }
 }
 
 pub fn diff(workdir: &Path, p: &DiffParams) -> Result<DiffResult, RpcError> {
     ensure_repo(workdir)?;
     let mut cmd = Command::new("git");
-    cmd.arg("--no-optional-locks").arg("-C").arg(workdir).arg("diff");
-    if p.staged { cmd.arg("--staged"); }
-    if let Some(path) = &p.path { cmd.arg("--").arg(path); }
-    let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
+    cmd.arg("--no-optional-locks")
+        .arg("-C")
+        .arg(workdir)
+        .arg("diff");
+    if p.staged {
+        cmd.arg("--staged");
+    }
+    if let Some(path) = &p.path {
+        cmd.arg("--").arg(path);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
     if !out.status.success() {
         return Err(RpcError::internal(format!(
             "git diff: {}",
@@ -146,7 +185,9 @@ pub fn diff(workdir: &Path, p: &DiffParams) -> Result<DiffResult, RpcError> {
     if !p.staged {
         for rel in list_untracked(workdir, p.path.as_deref())? {
             if let Some(chunk) = diff_untracked_file(workdir, &rel) {
-                if !patch.is_empty() && !patch.ends_with('\n') { patch.push('\n'); }
+                if !patch.is_empty() && !patch.ends_with('\n') {
+                    patch.push('\n');
+                }
                 patch.push_str(&chunk);
             }
         }
@@ -159,10 +200,18 @@ pub fn diff(workdir: &Path, p: &DiffParams) -> Result<DiffResult, RpcError> {
 /// with spaces / non-utf8.
 fn list_untracked(workdir: &Path, path_filter: Option<&str>) -> Result<Vec<String>, RpcError> {
     let mut cmd = Command::new("git");
-    cmd.arg("--no-optional-locks").arg("-C").arg(workdir)
-       .args(["ls-files", "--others", "--exclude-standard", "-z"]);
-    if let Some(p) = path_filter { cmd.arg("--").arg(p); }
-    let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
+    cmd.arg("--no-optional-locks").arg("-C").arg(workdir).args([
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ]);
+    if let Some(p) = path_filter {
+        cmd.arg("--").arg(p);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
     if !out.status.success() {
         return Err(RpcError::internal(format!(
             "git ls-files: {}",
@@ -184,21 +233,35 @@ fn list_untracked(workdir: &Path, path_filter: Option<&str>) -> Result<Vec<Strin
 fn diff_untracked_file(workdir: &Path, rel: &str) -> Option<String> {
     let out = Command::new("git")
         .arg("--no-optional-locks")
-        .arg("-C").arg(workdir)
+        .arg("-C")
+        .arg(workdir)
         .args(["diff", "--no-index", "--no-color", "--", "/dev/null", rel])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let code = out.status.code().unwrap_or(-1);
-    if code != 0 && code != 1 { return None; }
+    if code != 0 && code != 1 {
+        return None;
+    }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 pub fn diff_summary(workdir: &Path, p: &DiffParams) -> Result<DiffSummaryResult, RpcError> {
     ensure_repo(workdir)?;
     let mut cmd = Command::new("git");
-    cmd.arg("--no-optional-locks").arg("-C").arg(workdir).arg("diff").arg("--numstat");
-    if p.staged { cmd.arg("--staged"); }
-    if let Some(path) = &p.path { cmd.arg("--").arg(path); }
-    let out = cmd.output().map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
+    cmd.arg("--no-optional-locks")
+        .arg("-C")
+        .arg(workdir)
+        .arg("diff")
+        .arg("--numstat");
+    if p.staged {
+        cmd.arg("--staged");
+    }
+    if let Some(path) = &p.path {
+        cmd.arg("--").arg(path);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| RpcError::internal(format!("spawn git: {e}")))?;
     if !out.status.success() {
         return Err(RpcError::internal(format!(
             "git diff --numstat: {}",
@@ -211,8 +274,14 @@ pub fn diff_summary(workdir: &Path, p: &DiffParams) -> Result<DiffSummaryResult,
         let add = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
         let del = it.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
         let path = it.collect::<Vec<_>>().join(" ");
-        if path.is_empty() { continue; }
-        files.push(DiffSummaryFile { path, additions: add, deletions: del });
+        if path.is_empty() {
+            continue;
+        }
+        files.push(DiffSummaryFile {
+            path,
+            additions: add,
+            deletions: del,
+        });
     }
     Ok(DiffSummaryResult { files })
 }

@@ -29,5 +29,5 @@ pub type UnixMs = u64;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedId {
     pub name: String,
-    pub id:   String,
+    pub id: String,
 }

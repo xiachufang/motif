@@ -35,12 +35,12 @@ pub enum Codec {
 /// the original raw bytes.
 pub fn rmpv_to_json(v: rmpv::Value) -> serde_json::Value {
     use rmpv::Value as R;
-    use serde_json::Value as J;
     use serde_json::Number;
+    use serde_json::Value as J;
     match v {
-        R::Nil               => J::Null,
-        R::Boolean(b)        => J::Bool(b),
-        R::Integer(n)        => {
+        R::Nil => J::Null,
+        R::Boolean(b) => J::Bool(b),
+        R::Integer(n) => {
             if let Some(u) = n.as_u64() {
                 J::Number(Number::from(u))
             } else if let Some(i) = n.as_i64() {
@@ -51,23 +51,23 @@ pub fn rmpv_to_json(v: rmpv::Value) -> serde_json::Value {
                 J::Null
             }
         }
-        R::F32(f)            => Number::from_f64(f as f64).map(J::Number).unwrap_or(J::Null),
-        R::F64(f)            => Number::from_f64(f).map(J::Number).unwrap_or(J::Null),
-        R::String(s)         => J::String(s.into_str().unwrap_or_default()),
-        R::Binary(bytes)     => J::String(BASE64.encode(&bytes)),
-        R::Array(xs)         => J::Array(xs.into_iter().map(rmpv_to_json).collect()),
-        R::Map(pairs)        => {
+        R::F32(f) => Number::from_f64(f as f64).map(J::Number).unwrap_or(J::Null),
+        R::F64(f) => Number::from_f64(f).map(J::Number).unwrap_or(J::Null),
+        R::String(s) => J::String(s.into_str().unwrap_or_default()),
+        R::Binary(bytes) => J::String(BASE64.encode(&bytes)),
+        R::Array(xs) => J::Array(xs.into_iter().map(rmpv_to_json).collect()),
+        R::Map(pairs) => {
             let mut obj = serde_json::Map::with_capacity(pairs.len());
             for (k, v) in pairs {
                 let key = match k {
                     R::String(s) => s.into_str().unwrap_or_default(),
-                    other        => other.to_string(),
+                    other => other.to_string(),
                 };
                 obj.insert(key, rmpv_to_json(v));
             }
             J::Object(obj)
         }
-        R::Ext(_, _)         => J::Null,
+        R::Ext(_, _) => J::Null,
     }
 }
 
@@ -87,13 +87,19 @@ mod tests {
     fn nested_map_round_trip() {
         let v = rmpv::Value::Map(vec![
             (rmpv::Value::from("pty_id"), rmpv::Value::from("p1")),
-            (rmpv::Value::from("data_b64"), rmpv::Value::Binary(vec![1, 2, 3])),
+            (
+                rmpv::Value::from("data_b64"),
+                rmpv::Value::Binary(vec![1, 2, 3]),
+            ),
         ]);
         let j = rmpv_to_json(v);
         let obj = j.as_object().expect("object");
         assert_eq!(obj["pty_id"], serde_json::Value::from("p1"));
         // data_b64 base64-encoded under the same key — typed PtyWriteParams
         // deserializer will decode back to Vec<u8> via the wire adapter.
-        assert_eq!(obj["data_b64"], serde_json::Value::String(BASE64.encode(&[1u8, 2, 3])));
+        assert_eq!(
+            obj["data_b64"],
+            serde_json::Value::String(BASE64.encode(&[1u8, 2, 3]))
+        );
     }
 }

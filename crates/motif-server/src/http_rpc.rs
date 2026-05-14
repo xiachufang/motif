@@ -15,11 +15,11 @@
 //! pending replay cursor) lived on the WS task. Now it lives in
 //! [`ConnRegistry`] keyed by an opaque `session_id`:
 //!
-//! - `POST /rpc/session.attach`: server mints a fresh session_id, runs
-//!   the existing attach logic against it, returns the id via the
-//!   `X-Motif-Session` response header. The JSON body keeps the existing
-//!   `AttachResult` shape, so the proto crate doesn't need to grow a new
-//!   field this iteration.
+//! - `POST /rpc/session.attach`: server reuses the request's
+//!   `X-Motif-Session` entry when present, otherwise mints a fresh
+//!   session_id. The id is returned via the `X-Motif-Session` response
+//!   header. The JSON body keeps the existing `AttachResult` shape, so
+//!   the proto crate doesn't need to grow a new field this iteration.
 //! - All other methods that need session state: client echoes the id in
 //!   the `X-Motif-Session` request header.
 //! - `POST /rpc/session.detach`: looks up by header, runs detach,
@@ -64,12 +64,14 @@ pub async fn rpc_dispatch(
     } else {
         match serde_json::from_slice(&body) {
             Ok(v) => v,
-            Err(e) => return err_response(
-                RpcError::parse_error(format!("body json: {e}")),
-                req_recv_at,
-                &method,
-                None,
-            ),
+            Err(e) => {
+                return err_response(
+                    RpcError::parse_error(format!("body json: {e}")),
+                    req_recv_at,
+                    &method,
+                    None,
+                )
+            }
         }
     };
 
@@ -105,10 +107,8 @@ pub async fn rpc_dispatch(
             "rpc done",
         );
         let mut r = (StatusCode::OK, body_bytes).into_response();
-        r.headers_mut().insert(
-            "content-type",
-            HeaderValue::from_static("application/json"),
-        );
+        r.headers_mut()
+            .insert("content-type", HeaderValue::from_static("application/json"));
         r
     };
 
@@ -133,10 +133,14 @@ pub async fn rpc_dispatch(
 /// `Response`, plus optionally a session_id that was created or
 /// removed (always None on this path).
 async fn dispatch_concurrent_http(
-    state:   AppState,
+    state: AppState,
     headers: &HeaderMap,
-    req:     Request,
-) -> (motif_proto::envelope::Response, Option<String>, Option<String>) {
+    req: Request,
+) -> (
+    motif_proto::envelope::Response,
+    Option<String>,
+    Option<String>,
+) {
     // Resolve the conn snapshot from the registry, if the client has
     // a session_id. Methods like session.list / session.create work
     // without one.
@@ -159,19 +163,19 @@ async fn dispatch_concurrent_http(
         },
         None => rpc::ConnSnapshot {
             client_id: String::new(),
-            attached:  None,
+            attached: None,
         },
     };
 
     let manager = Arc::clone(&state.manager);
-    let resp = tokio::task::spawn_blocking(move || {
-        rpc::dispatch_concurrent(&manager, &snap, req)
-    })
-    .await
-    .unwrap_or_else(|e| motif_proto::envelope::Response::err(
-        Id::Num(0),
-        RpcError::internal(format!("dispatch panic: {e}")),
-    ));
+    let resp = tokio::task::spawn_blocking(move || rpc::dispatch_concurrent(&manager, &snap, req))
+        .await
+        .unwrap_or_else(|e| {
+            motif_proto::envelope::Response::err(
+                Id::Num(0),
+                RpcError::internal(format!("dispatch panic: {e}")),
+            )
+        });
 
     (resp, None, None)
 }
@@ -180,12 +184,16 @@ async fn dispatch_concurrent_http(
 /// can't go through `spawn_blocking` with a borrow — we hold the
 /// registry's per-entry mutex for the call.
 async fn dispatch_mutating(
-    state:   AppState,
+    state: AppState,
     headers: &HeaderMap,
-    req:     Request,
-) -> (motif_proto::envelope::Response, Option<String>, Option<String>) {
+    req: Request,
+) -> (
+    motif_proto::envelope::Response,
+    Option<String>,
+    Option<String>,
+) {
     match req.method.as_str() {
-        "session.attach" => handle_attach_http(state, req).await,
+        "session.attach" => handle_attach_http(state, headers, req).await,
         "session.detach" => handle_detach_http(state, headers, req).await,
         _ => (
             motif_proto::envelope::Response::err(
@@ -200,35 +208,50 @@ async fn dispatch_mutating(
 
 async fn handle_attach_http(
     state: AppState,
-    req:   Request,
-) -> (motif_proto::envelope::Response, Option<String>, Option<String>) {
-    // Mint a registry entry BEFORE dispatch so attach can mutate the
-    // fresh ConnState. The mint also triggers an opportunistic GC pass
-    // — cheap, keeps the map from growing unbounded under churny
-    // clients.
+    headers: &HeaderMap,
+    req: Request,
+) -> (
+    motif_proto::envelope::Response,
+    Option<String>,
+    Option<String>,
+) {
+    // Attach is also the reconnect path. If the browser/native client
+    // still has a live session_id, reuse its ConnState so dispatch_mut
+    // can replace the existing attachment instead of creating another
+    // client_id. If the header is missing or stale, mint a new entry.
     state.conns.gc();
-    let (session_id, entry) = state.conns.mint();
+    let (session_id, entry, minted) = match header_session(headers)
+        .and_then(|sid| state.conns.get(&sid).map(|entry| (sid, entry)))
+    {
+        Some((sid, entry)) => (sid, entry, false),
+        None => {
+            let (sid, entry) = state.conns.mint();
+            (sid, entry, true)
+        }
+    };
     let manager = Arc::clone(&state.manager);
 
-    // Use blocking spawn since dispatch_mut → attach_client touches
+    // Use blocking spawn since dispatch_mut -> attach_client touches
     // session-wide locks; consistent with WS path's treatment of
-    // mutating dispatch as a synchronous operation. We hold the
-    // ConnEntry lock for the duration of dispatch_mut.
+    // mutating dispatch as a synchronous operation. We hold the ConnEntry
+    // lock for the duration of dispatch_mut.
     let entry_for_task = Arc::clone(&entry);
     let resp = tokio::task::spawn_blocking(move || {
         let mut conn = entry_for_task.state.lock();
         rpc::dispatch_mut(&manager, &mut conn, req)
     })
     .await
-    .unwrap_or_else(|e| motif_proto::envelope::Response::err(
-        Id::Num(0),
-        RpcError::internal(format!("attach panic: {e}")),
-    ));
+    .unwrap_or_else(|e| {
+        motif_proto::envelope::Response::err(
+            Id::Num(0),
+            RpcError::internal(format!("attach panic: {e}")),
+        )
+    });
 
     // If attach failed, drop the freshly minted entry so the client
     // doesn't end up with a dangling session_id pointing at empty
     // state.
-    if resp.error.is_some() {
+    if resp.error.is_some() && minted {
         state.conns.remove(&session_id);
         return (resp, None, None);
     }
@@ -237,10 +260,14 @@ async fn handle_attach_http(
 }
 
 async fn handle_detach_http(
-    state:   AppState,
+    state: AppState,
     headers: &HeaderMap,
-    req:     Request,
-) -> (motif_proto::envelope::Response, Option<String>, Option<String>) {
+    req: Request,
+) -> (
+    motif_proto::envelope::Response,
+    Option<String>,
+    Option<String>,
+) {
     let Some(session_id) = header_session(headers) else {
         return (
             motif_proto::envelope::Response::err(
@@ -268,10 +295,12 @@ async fn handle_detach_http(
         rpc::dispatch_mut(&manager, &mut conn, req)
     })
     .await
-    .unwrap_or_else(|e| motif_proto::envelope::Response::err(
-        Id::Num(0),
-        RpcError::internal(format!("detach panic: {e}")),
-    ));
+    .unwrap_or_else(|e| {
+        motif_proto::envelope::Response::err(
+            Id::Num(0),
+            RpcError::internal(format!("detach panic: {e}")),
+        )
+    });
 
     // Always remove on detach — even on error. The error usually means
     // "already not attached", and we don't want to keep a stale entry
@@ -281,15 +310,16 @@ async fn handle_detach_http(
 }
 
 fn header_session(headers: &HeaderMap) -> Option<String> {
-    headers.get(SESSION_HEADER)
+    headers
+        .get(SESSION_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
 }
 
 fn err_response(
-    err:           RpcError,
-    req_recv_at:   Instant,
-    method:        &str,
+    err: RpcError,
+    req_recv_at: Instant,
+    method: &str,
     minted_session: Option<&str>,
 ) -> Response {
     let body_bytes = serde_json::to_vec(&err).unwrap_or_else(|_| b"{}".to_vec());
@@ -298,14 +328,13 @@ fn err_response(
         -32601 => StatusCode::NOT_FOUND,
         -32602 => StatusCode::BAD_REQUEST,
         -32700 => StatusCode::BAD_REQUEST,
-        c if c == ErrorCode::AuthRequired as i32     => StatusCode::UNAUTHORIZED,
-        c if c == ErrorCode::PathEscape as i32       => StatusCode::FORBIDDEN,
-        c if c == ErrorCode::SessionNotFound as i32  => StatusCode::NOT_FOUND,
-        c if c == ErrorCode::NotAttached as i32      => StatusCode::CONFLICT,
-        c if c == ErrorCode::AlreadyExists as i32    => StatusCode::CONFLICT,
-        c if c == ErrorCode::PtyNotFound as i32      => StatusCode::NOT_FOUND,
-        c if c == ErrorCode::BlobNotFound as i32     => StatusCode::NOT_FOUND,
-        c if c == ErrorCode::FileTooLarge as i32     => StatusCode::PAYLOAD_TOO_LARGE,
+        c if c == ErrorCode::AuthRequired as i32 => StatusCode::UNAUTHORIZED,
+        c if c == ErrorCode::PathEscape as i32 => StatusCode::FORBIDDEN,
+        c if c == ErrorCode::SessionNotFound as i32 => StatusCode::NOT_FOUND,
+        c if c == ErrorCode::NotAttached as i32 => StatusCode::CONFLICT,
+        c if c == ErrorCode::AlreadyExists as i32 => StatusCode::CONFLICT,
+        c if c == ErrorCode::PtyNotFound as i32 => StatusCode::NOT_FOUND,
+        c if c == ErrorCode::FileTooLarge as i32 => StatusCode::PAYLOAD_TOO_LARGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     tracing::info!(
@@ -319,7 +348,8 @@ fn err_response(
         "rpc done",
     );
     let mut r = (status, body_bytes).into_response();
-    r.headers_mut().insert("content-type", HeaderValue::from_static("application/json"));
+    r.headers_mut()
+        .insert("content-type", HeaderValue::from_static("application/json"));
     if let Some(sid) = minted_session {
         if let Ok(v) = HeaderValue::from_str(sid) {
             r.headers_mut().insert(SESSION_HEADER, v);
@@ -328,7 +358,9 @@ fn err_response(
     r
 }
 
-fn us_to_ms(us: u64) -> f64 { us as f64 / 1000.0 }
+fn us_to_ms(us: u64) -> f64 {
+    us as f64 / 1000.0
+}
 
 /// Re-export so tests / external code referring to ConnState through
 /// the HTTP path don't need to dig into rpc::ConnState directly.

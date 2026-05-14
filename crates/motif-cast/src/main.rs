@@ -83,32 +83,37 @@ async fn main() -> anyhow::Result<()> {
     let token = read_token(cli.token_file.as_deref())?;
     let workdir = match cli.workdir {
         Some(p) => p,
-        None    => std::env::current_dir().context("getting current directory")?,
+        None => std::env::current_dir().context("getting current directory")?,
     };
     let name = cli.name.unwrap_or_else(default_session_name);
     // Empty argv → no cmd → motifd uses $SHELL. Otherwise join with single
     // spaces; motifd interprets the whole string via /bin/sh -lc so the
     // user can quote arguments themselves if they need to.
-    let cmd = if cli.cmd.is_empty() { None } else { Some(cli.cmd.join(" ")) };
+    let cmd = if cli.cmd.is_empty() {
+        None
+    } else {
+        Some(cli.cmd.join(" "))
+    };
 
     run(Run {
-        url:             cli.url,
+        url: cli.url,
         token,
         name,
         workdir,
         cmd,
-        via:             cli.via,
+        via: cli.via,
         ssh_remote_port: cli.ssh_remote_port,
-    }).await
+    })
+    .await
 }
 
 struct Run {
-    url:             String,
-    token:           String,
-    name:            String,
-    workdir:         PathBuf,
-    cmd:             Option<String>,
-    via:             Option<String>,
+    url: String,
+    token: String,
+    name: String,
+    workdir: PathBuf,
+    cmd: Option<String>,
+    via: Option<String>,
     ssh_remote_port: Option<u16>,
 }
 
@@ -118,31 +123,56 @@ async fn run(r: Run) -> anyhow::Result<()> {
 
     // 1. session.create — owns the name from here on. Failure to create →
     //    no guard needed, just bail.
-    let _: ses::CreateResult = client.call(
-        "session.create",
-        ses::CreateParams { name: r.name.clone(), workdir: r.workdir.clone() },
-    ).await.with_context(|| format!("session.create '{}'", r.name))?;
+    let _: ses::CreateResult = client
+        .call(
+            "session.create",
+            ses::CreateParams {
+                name: r.name.clone(),
+                workdir: r.workdir.clone(),
+            },
+        )
+        .await
+        .with_context(|| format!("session.create '{}'", r.name))?;
 
     // 2. session.attach — required to receive pty.output events.
     let (term_fg, term_bg) = palette::probe();
-    let _: ses::AttachResult = client.call(
-        "session.attach",
-        ses::AttachParams { name: r.name.clone(), last_seq: None, term_fg, term_bg },
-    ).await.context("session.attach")?;
+    let _: ses::AttachResult = client
+        .call(
+            "session.attach",
+            ses::AttachParams {
+                name: r.name.clone(),
+                last_seq: None,
+                term_fg,
+                term_bg,
+            },
+        )
+        .await
+        .context("session.attach")?;
 
     // 3. pty.create — size from the local terminal.
     let (cols, rows) = raw_pty::current_size();
-    let pty: ppty::PtyCreateResult = client.call(
-        "pty.create",
-        ppty::PtyCreateParams { cmd: r.cmd, cwd: None, env: vec![], cols, rows },
-    ).await.context("pty.create")?;
+    let pty: ppty::PtyCreateResult = client
+        .call(
+            "pty.create",
+            ppty::PtyCreateParams {
+                cmd: r.cmd,
+                cwd: None,
+                env: vec![],
+                cols,
+                rows,
+            },
+        )
+        .await
+        .context("pty.create")?;
     let pty_id: PtyId = pty.info.id.clone();
 
     // 4. Hand the rest of the Client to a shared Arc<Mutex>; pull events
     //    out as a free-standing receiver so the pump's notification arm
     //    doesn't conflict with `pty.write` / `pty.resize` calls under the
     //    mutex.
-    let events = client.take_notifications().await
+    let events = client
+        .take_notifications()
+        .await
         .ok_or_else(|| anyhow!("client lost its notification stream before attach"))?;
     let client = Arc::new(Mutex::new(client));
 
@@ -163,20 +193,28 @@ async fn run(r: Run) -> anyhow::Result<()> {
 /// before main returns and the runtime drops. If the WS is already gone,
 /// the call fails and we just log it.
 struct SessionGuard {
-    name:   String,
+    name: String,
     client: Option<Arc<Mutex<Client>>>,
 }
 impl SessionGuard {
     fn new(name: String, client: Arc<Mutex<Client>>) -> Self {
-        Self { name, client: Some(client) }
+        Self {
+            name,
+            client: Some(client),
+        }
     }
 }
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        let Some(client) = self.client.take() else { return; };
+        let Some(client) = self.client.take() else {
+            return;
+        };
         let name = std::mem::take(&mut self.name);
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::warn!("session.destroy: no tokio runtime, leaking session '{}'", name);
+            tracing::warn!(
+                "session.destroy: no tokio runtime, leaking session '{}'",
+                name
+            );
             return;
         };
         // block_on inside a fresh OS thread so we don't deadlock the
@@ -185,19 +223,22 @@ impl Drop for SessionGuard {
         let _ = std::thread::spawn(move || {
             handle.block_on(async move {
                 let mut c = client.lock().await;
-                if let Err(e) = c.call::<_, Value>(
-                    "session.destroy",
-                    ses::DestroyParams { name: name.clone() },
-                ).await {
+                if let Err(e) = c
+                    .call::<_, Value>("session.destroy", ses::DestroyParams { name: name.clone() })
+                    .await
+                {
                     tracing::warn!(error = %e, session = %name, "session.destroy failed");
                 }
             });
-        }).join();
+        })
+        .join();
     }
 }
 
 fn read_token(path: Option<&std::path::Path>) -> anyhow::Result<String> {
-    let Some(path) = path else { return Ok(String::new()); };
+    let Some(path) = path else {
+        return Ok(String::new());
+    };
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading token file {}", path.display()))?;
     Ok(raw.trim().to_string())

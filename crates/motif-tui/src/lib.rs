@@ -11,7 +11,9 @@ use anyhow::Context;
 use motif_proto::session as ses;
 
 pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
-    let Some(path) = path else { return Ok(String::new()); };
+    let Some(path) = path else {
+        return Ok(String::new());
+    };
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading token file {}", path.display()))?;
     Ok(raw.trim().to_string())
@@ -22,69 +24,81 @@ pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
 /// legacy `transport::connect` (and `Client`) are still exported for
 /// motif-cast until Phase 5.
 pub async fn connect(
-    url:   &str,
+    url: &str,
     token: &str,
-    via:   Option<&str>,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<transport::ConnectedV2> {
     transport::connect_v2(url, token, via, ssh_remote_port).await
 }
 
 pub async fn cmd_list(
-    url:   &str,
+    url: &str,
     token: &str,
-    via:   Option<&str>,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
-    let r: ses::ListResult = tr.client.call("session.list", ses::ListParams::default()).await?;
-    if r.sessions.is_empty() { println!("(no sessions)"); return Ok(()); }
+    let r: ses::ListResult = tr
+        .client
+        .call("session.list", ses::ListParams::default())
+        .await?;
+    if r.sessions.is_empty() {
+        println!("(no sessions)");
+        return Ok(());
+    }
     println!("{:<20} {:<28} CLIENTS  WORKDIR", "NAME", "ID");
     for s in &r.sessions {
-        println!("{:<20} {:<28} {:<8} {}", s.name, s.id, s.client_count, s.workdir.display());
+        println!(
+            "{:<20} {:<28} {:<8} {}",
+            s.name,
+            s.id,
+            s.client_count,
+            s.workdir.display()
+        );
     }
     Ok(())
 }
 
 pub async fn cmd_new(
-    url:   &str,
+    url: &str,
     token: &str,
-    name:  String,
+    name: String,
     workdir: PathBuf,
-    via:   Option<&str>,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
-    let r: ses::CreateResult = tr.client.call(
-        "session.create",
-        ses::CreateParams { name, workdir },
-    ).await?;
+    let r: ses::CreateResult = tr
+        .client
+        .call("session.create", ses::CreateParams { name, workdir })
+        .await?;
     println!("session created: {} (id={})", r.session.name, r.session.id);
     Ok(())
 }
 
 pub async fn cmd_destroy(
-    url:   &str,
+    url: &str,
     token: &str,
-    name:  String,
-    via:   Option<&str>,
+    name: String,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
-    let _: ses::DestroyResult = tr.client.call(
-        "session.destroy",
-        ses::DestroyParams { name: name.clone() },
-    ).await?;
+    let _: ses::DestroyResult = tr
+        .client
+        .call("session.destroy", ses::DestroyParams { name: name.clone() })
+        .await?;
     println!("session destroyed: {name}");
     Ok(())
 }
 
 pub async fn cmd_pty_run(
-    url:   &str,
+    url: &str,
     token: &str,
-    name:  String,
-    cmd:   String,
-    via:   Option<&str>,
+    name: String,
+    cmd: String,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -93,14 +107,31 @@ pub async fn cmd_pty_run(
 
     let tr = connect(url, token, via, ssh_remote_port).await?;
     let (term_fg, term_bg) = palette::probe();
-    let _: ses::AttachResult = tr.client.call(
-        "session.attach",
-        ses::AttachParams { name: name.clone(), last_seq: None, term_fg, term_bg },
-    ).await?;
-    let r: ppty::PtyCreateResult = tr.client.call(
-        "pty.create",
-        ppty::PtyCreateParams { cmd: Some(cmd), cwd: None, env: vec![], cols: 120, rows: 40 },
-    ).await?;
+    let _: ses::AttachResult = tr
+        .client
+        .call(
+            "session.attach",
+            ses::AttachParams {
+                name: name.clone(),
+                last_seq: None,
+                term_fg,
+                term_bg,
+            },
+        )
+        .await?;
+    let r: ppty::PtyCreateResult = tr
+        .client
+        .call(
+            "pty.create",
+            ppty::PtyCreateParams {
+                cmd: Some(cmd),
+                cwd: None,
+                env: vec![],
+                cols: 120,
+                rows: 40,
+            },
+        )
+        .await?;
     let want = r.info.id;
 
     let mut stdout = std::io::stdout();
@@ -113,7 +144,8 @@ pub async fn cmd_pty_run(
                 ) {
                     if pid == want {
                         if let Ok(b) = BASE64.decode(b64.as_bytes()) {
-                            stdout.write_all(&b)?; stdout.flush()?;
+                            stdout.write_all(&b)?;
+                            stdout.flush()?;
                         }
                     }
                 }
@@ -130,20 +162,32 @@ pub async fn cmd_pty_run(
 }
 
 pub async fn cmd_attach_log(
-    url:   &str,
+    url: &str,
     token: &str,
-    name:  String,
-    via:   Option<&str>,
+    name: String,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
     let (term_fg, term_bg) = palette::probe();
-    let r: ses::AttachResult = tr.client.call(
-        "session.attach",
-        ses::AttachParams { name: name.clone(), last_seq: None, term_fg, term_bg },
-    ).await?;
-    println!("attached: session={} client_id={} other-clients={}",
-        r.session.name, r.client_id, r.clients.len());
+    let r: ses::AttachResult = tr
+        .client
+        .call(
+            "session.attach",
+            ses::AttachParams {
+                name: name.clone(),
+                last_seq: None,
+                term_fg,
+                term_bg,
+            },
+        )
+        .await?;
+    println!(
+        "attached: session={} client_id={} other-clients={}",
+        r.session.name,
+        r.client_id,
+        r.clients.len()
+    );
     while let Some(n) = tr.client.recv_notification().await {
         let p = serde_json::to_string(&n.params).unwrap_or_default();
         println!("event {}  {}", n.method, p);
@@ -152,10 +196,10 @@ pub async fn cmd_attach_log(
 }
 
 pub async fn cmd_attach(
-    url:   &str,
+    url: &str,
     token: &str,
-    name:  String,
-    via:   Option<&str>,
+    name: String,
+    via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
@@ -182,7 +226,10 @@ pub async fn cmd_list_servers(prefix: &str) -> anyhow::Result<()> {
         println!("No peers matching {prefix:?} found in this tailnet.");
     } else {
         peers.sort_by(|a, b| a.hostname.cmp(&b.hostname));
-        println!("{:<40} {:<18} {:<7} {}", "HOSTNAME", "TAILNET IP", "ONLINE", "OS");
+        println!(
+            "{:<40} {:<18} {:<7} {}",
+            "HOSTNAME", "TAILNET IP", "ONLINE", "OS"
+        );
         for p in peers {
             println!(
                 "{:<40} {:<18} {:<7} {}",

@@ -15,7 +15,6 @@ import TalkerCommonSync
 ///   - `events: AsyncStream<Event>` — receives both /events frames AND
 ///      synthesized `pty.output` events from per-PTY WSes.
 ///   - `close()` — tears down everything.
-///   - `openBlobRead(blobPath:sizeHint:)` — unchanged.
 ///
 /// Routing rules (mirror the Rust Coordinator):
 ///   - `session.attach` → HTTP POST; on success, store session_id, open
@@ -622,37 +621,5 @@ actor RpcClient {
             withJSONObject: ["method": method, "params": params],
         )) ?? Data()
         return (method, frame)
-    }
-
-    // ─────────────────────────── /blob/<tid> (unchanged) ───────────────────────────
-
-    /// Pulls a blob over its dedicated WS. Used for fs.openBlob /
-    /// future big-RPC blob delivery. Bytes accumulate into Data until
-    /// the server sends Close.
-    func openBlobRead(blobPath: String, sizeHint: UInt64?) async throws -> Data {
-        guard let urlSession, let delegate else { throw RpcError.notConnected }
-        guard let url = URL(string: "ws://\(host):\(port)\(blobPath)") else {
-            throw RpcError.transport("bad blob url")
-        }
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let task = urlSession.webSocketTask(with: req)
-        task.resume()
-        try await delegate.waitForOpen()
-        var buf = Data()
-        if let sizeHint { buf.reserveCapacity(Int(sizeHint)) }
-        while true {
-            do {
-                let msg = try await task.receive()
-                switch msg {
-                case .data(let d): buf.append(d)
-                case .string(let s): if let d = s.data(using: .utf8) { buf.append(d) }
-                @unknown default: continue
-                }
-            } catch {
-                break
-            }
-        }
-        return buf
     }
 }

@@ -48,9 +48,9 @@ impl TsServer {
 #[derive(Debug, Clone, Default)]
 pub struct TsBackendStatus {
     pub backend_state: String,
-    pub health:        Vec<String>,
-    pub peer_total:    usize,
-    pub peer_online:   usize,
+    pub health: Vec<String>,
+    pub peer_total: usize,
+    pub peer_online: usize,
 }
 
 /// Stub stream — never constructed, but the AsyncRead/AsyncWrite impls

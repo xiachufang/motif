@@ -25,7 +25,9 @@ pub fn resolve(workdir: &Path, rel: &str) -> Result<PathBuf, RpcError> {
         candidate.canonicalize().unwrap_or(candidate)
     } else {
         match candidate.parent() {
-            Some(p) => p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+            Some(p) => p
+                .canonicalize()
+                .unwrap_or_else(|_| p.to_path_buf())
                 .join(candidate.file_name().unwrap_or_default()),
             None => candidate,
         }
@@ -36,7 +38,10 @@ pub fn resolve(workdir: &Path, rel: &str) -> Result<PathBuf, RpcError> {
 pub fn tree(s: &Session, p: &TreeParams) -> Result<TreeResult, RpcError> {
     let dir = resolve(&s.workdir, &p.path)?;
     if !dir.is_dir() {
-        return Err(RpcError::invalid_params(format!("not a directory: {}", p.path)));
+        return Err(RpcError::invalid_params(format!(
+            "not a directory: {}",
+            p.path
+        )));
     }
     let mut entries = Vec::new();
     let depth = p.depth.max(1) as usize;
@@ -45,34 +50,53 @@ pub fn tree(s: &Session, p: &TreeParams) -> Result<TreeResult, RpcError> {
         .max_depth(depth)
         .sort_by_file_name()
     {
-        let ent = match ent { Ok(e) => e, Err(_) => continue };
+        let ent = match ent {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         let name = ent.file_name().to_string_lossy().to_string();
-        if !p.show_hidden && name.starts_with('.') { continue; }
-        let meta = match ent.metadata() { Ok(m) => m, Err(_) => continue };
-        let kind = if meta.is_dir() { FileType::Dir }
-                   else if meta.file_type().is_symlink() { FileType::Symlink }
-                   else { FileType::File };
+        if !p.show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let meta = match ent.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let kind = if meta.is_dir() {
+            FileType::Dir
+        } else if meta.file_type().is_symlink() {
+            FileType::Symlink
+        } else {
+            FileType::File
+        };
         entries.push(TreeEntry {
             name,
             kind,
-            size:       if meta.is_file() { meta.len() } else { 0 },
-            mtime:      mtime_ms(&meta),
+            size: if meta.is_file() { meta.len() } else { 0 },
+            mtime: mtime_ms(&meta),
             git_status: None,
         });
     }
-    Ok(TreeResult { path: p.path.clone(), entries })
+    Ok(TreeResult {
+        path: p.path.clone(),
+        entries,
+    })
 }
 
 pub fn stat(s: &Session, p: &StatParams) -> Result<StatResult, RpcError> {
     let path = resolve(&s.workdir, &p.path)?;
     let meta = std::fs::metadata(&path).map_err(io_to_rpc_err)?;
-    let kind = if meta.is_dir() { FileType::Dir }
-               else if meta.file_type().is_symlink() { FileType::Symlink }
-               else { FileType::File };
+    let kind = if meta.is_dir() {
+        FileType::Dir
+    } else if meta.file_type().is_symlink() {
+        FileType::Symlink
+    } else {
+        FileType::File
+    };
     Ok(StatResult {
         kind,
-        size:       if meta.is_file() { meta.len() } else { 0 },
-        mtime:      mtime_ms(&meta),
+        size: if meta.is_file() { meta.len() } else { 0 },
+        mtime: mtime_ms(&meta),
         git_status: None,
     })
 }
@@ -87,21 +111,22 @@ pub fn read(s: &Session, p: &ReadParams) -> Result<ReadResult, RpcError> {
         ));
     }
     let bytes = std::fs::read(&path).map_err(io_to_rpc_err)?;
-    let sha   = sha256_hex(&bytes);
+    let sha = sha256_hex(&bytes);
     let binary = is_binary(&bytes);
-    let mime  = mime_guess::from_path(&path).first_raw().map(String::from);
+    let mime = mime_guess::from_path(&path).first_raw().map(String::from);
     Ok(ReadResult {
         content_b64: BASE64.encode(&bytes),
-        sha256:      sha,
-        truncated:   false,
+        sha256: sha,
+        truncated: false,
         binary,
         mime,
     })
 }
 
 pub fn write(s: &Session, p: &WriteParams) -> Result<WriteResult, RpcError> {
-    let path  = resolve(&s.workdir, &p.path)?;
-    let bytes = BASE64.decode(p.content_b64.as_bytes())
+    let path = resolve(&s.workdir, &p.path)?;
+    let bytes = BASE64
+        .decode(p.content_b64.as_bytes())
         .map_err(|e| RpcError::invalid_params(format!("bad base64: {e}")))?;
 
     if let Some(expected) = &p.expected_sha256 {
@@ -124,14 +149,16 @@ pub fn write(s: &Session, p: &WriteParams) -> Result<WriteResult, RpcError> {
         }
     }
     std::fs::write(&path, &bytes).map_err(io_to_rpc_err)?;
-    Ok(WriteResult { sha256: sha256_hex(&bytes) })
+    Ok(WriteResult {
+        sha256: sha256_hex(&bytes),
+    })
 }
 
 pub(crate) fn io_to_rpc_err(e: std::io::Error) -> RpcError {
     match e.kind() {
-        ErrorKind::NotFound          => RpcError::invalid_params(format!("not found: {e}")),
-        ErrorKind::PermissionDenied  => RpcError::internal(format!("permission denied: {e}")),
-        _                            => RpcError::internal(e.to_string()),
+        ErrorKind::NotFound => RpcError::invalid_params(format!("not found: {e}")),
+        ErrorKind::PermissionDenied => RpcError::internal(format!("permission denied: {e}")),
+        _ => RpcError::internal(e.to_string()),
     }
 }
 
@@ -143,7 +170,9 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 
 fn is_binary(bytes: &[u8]) -> bool {
     let head = &bytes[..bytes.len().min(8192)];
-    if head.contains(&0u8) { return true; }
+    if head.contains(&0u8) {
+        return true;
+    }
     std::str::from_utf8(head).is_err()
 }
 

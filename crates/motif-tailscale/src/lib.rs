@@ -37,17 +37,17 @@ pub enum TsError {
 
 #[derive(Debug, Clone)]
 pub struct TsOptions {
-    pub hostname:    String,
-    pub state_dir:   PathBuf,
-    pub authkey:     Option<String>,
+    pub hostname: String,
+    pub state_dir: PathBuf,
+    pub authkey: Option<String>,
     pub control_url: Option<String>,
-    pub ephemeral:   bool,
+    pub ephemeral: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct TsPeer {
     pub hostname: String,
-    pub ip:       String,
-    pub os:       String,
-    pub online:   bool,
+    pub ip: String,
+    pub os: String,
+    pub online: bool,
 }

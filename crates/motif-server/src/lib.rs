@@ -1,7 +1,6 @@
 //! Motif core server library.
 
 pub mod auth;
-pub mod blob;
 pub mod config;
 pub mod conn_registry;
 pub mod embed;
@@ -106,13 +105,15 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
     cfg.validate()?;
 
     if cfg.cert.is_some() {
-        anyhow::bail!("TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7");
+        anyhow::bail!(
+            "TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7"
+        );
     }
 
     let manager = session::manager::SessionManager::new();
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
-        None    => {
+        None => {
             // `validate()` already refuses to expose a token-less listener
             // on non-loopback TCP, so reaching here means the surface is
             // private (loopback or tailscale-only). Still WARN so the
@@ -125,10 +126,10 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
             auth::TokenStore::disabled()
         }
     };
-    let state   = ws::AppState {
+    let state = ws::AppState {
         manager: manager.clone(),
-        auth:    Arc::new(token_store),
-        conns:   conn_registry::ConnRegistry::new(),
+        auth: Arc::new(token_store),
+        conns: conn_registry::ConnRegistry::new(),
     };
     let app = ws::router(state);
 
