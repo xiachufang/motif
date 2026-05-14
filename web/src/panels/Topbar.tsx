@@ -46,7 +46,7 @@ export default function Topbar({ sessionName, fileTree, gitStatus, mobileDock }:
             visible={mobileDock.visible}
             onClick={mobileDock.toggle}
             title={mobileDock.visible ? "Hide mobile input dock" : "Show mobile input dock"}
-            label="📱"
+            label="⌨"
           />
         )}
         <span className="pill">{others.length + 1} client{others.length === 0 ? "" : "s"}</span>

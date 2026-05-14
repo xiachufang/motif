@@ -86,7 +86,7 @@ export default function Login() {
     <div className="centered">
       <form onSubmit={submit} className="card login">
         <h1>motif</h1>
-        <p className="muted">Sign in with the token configured on your motif-web bridge.</p>
+        <p className="muted">Sign in with the token configured on your motifd server.</p>
         <input
           type="password"
           value={token}

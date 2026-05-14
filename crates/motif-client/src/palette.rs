@@ -14,7 +14,9 @@
 
 pub fn probe() -> (Option<String>, Option<String>) {
     let (fg_osc, bg_osc) = osc_probe();
-    if fg_osc.is_some() && bg_osc.is_some() { return (fg_osc, bg_osc); }
+    if fg_osc.is_some() && bg_osc.is_some() {
+        return (fg_osc, bg_osc);
+    }
     let (fg_env, bg_env) = from_colorfgbg();
     (fg_osc.or(fg_env), bg_osc.or(bg_env))
 }
@@ -28,7 +30,7 @@ fn osc_probe() -> (Option<String>, Option<String>) {
     // Both stdin and stdout must be a tty: stdin so the terminal can deliver
     // the response, stdout so writing the query bytes doesn't leak into a
     // redirected file.
-    let stdin_fd  = std::io::stdin().as_raw_fd();
+    let stdin_fd = std::io::stdin().as_raw_fd();
     let stdout_fd = std::io::stdout().as_raw_fd();
     if !is_tty(stdin_fd) || !is_tty(stdout_fd) {
         return (None, None);
@@ -36,15 +38,14 @@ fn osc_probe() -> (Option<String>, Option<String>) {
 
     let original = match get_termios(stdin_fd) {
         Some(t) => t,
-        None    => return (None, None),
+        None => return (None, None),
     };
     if !apply_raw_with_timeout(stdin_fd, &original) {
         return (None, None);
     }
 
     let mut stdout = std::io::stdout();
-    let wrote = stdout.write_all(b"\x1b]10;?\x07\x1b]11;?\x07").is_ok()
-        && stdout.flush().is_ok();
+    let wrote = stdout.write_all(b"\x1b]10;?\x07\x1b]11;?\x07").is_ok() && stdout.flush().is_ok();
 
     let collected = if wrote {
         let mut buf = [0u8; 256];
@@ -54,16 +55,20 @@ fn osc_probe() -> (Option<String>, Option<String>) {
         while Instant::now() < deadline {
             match stdin.read(&mut buf) {
                 // VTIME elapsed with no bytes — try again until total deadline.
-                Ok(0)  => {
-                    if !out.is_empty() { break; }
+                Ok(0) => {
+                    if !out.is_empty() {
+                        break;
+                    }
                 }
-                Ok(n)  => {
+                Ok(n) => {
                     out.extend_from_slice(&buf[..n]);
                     // Two responses arrive as two ESC-introduced sequences;
                     // stop early if we've plausibly seen both.
                     let escs = out.iter().filter(|b| **b == 0x1b).count();
                     let term = out.iter().filter(|b| **b == 0x07 || **b == b'\\').count();
-                    if escs >= 2 && term >= 2 { break; }
+                    if escs >= 2 && term >= 2 {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
@@ -78,7 +83,9 @@ fn osc_probe() -> (Option<String>, Option<String>) {
 }
 
 #[cfg(not(unix))]
-fn osc_probe() -> (Option<String>, Option<String>) { (None, None) }
+fn osc_probe() -> (Option<String>, Option<String>) {
+    (None, None)
+}
 
 #[cfg(unix)]
 fn is_tty(fd: libc::c_int) -> bool {
@@ -88,7 +95,9 @@ fn is_tty(fd: libc::c_int) -> bool {
 #[cfg(unix)]
 fn get_termios(fd: libc::c_int) -> Option<libc::termios> {
     let mut t: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut t) } != 0 { return None; }
+    if unsafe { libc::tcgetattr(fd, &mut t) } != 0 {
+        return None;
+    }
     Some(t)
 }
 
@@ -105,7 +114,7 @@ fn apply_raw_with_timeout(fd: libc::c_int, original: &libc::termios) -> bool {
     let mut t = *original;
     t.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
     t.c_iflag &= !(libc::IXON | libc::ICRNL);
-    t.c_cc[libc::VMIN]  = 0;
+    t.c_cc[libc::VMIN] = 0;
     t.c_cc[libc::VTIME] = 2;
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) == 0 }
 }
@@ -120,9 +129,13 @@ fn extract_rgb(text: &str, tag: &str) -> Option<String> {
     let needle = format!("\x1b]{};rgb:", tag);
     let i = text.find(&needle)?;
     let rest = &text[i + needle.len()..];
-    let end  = rest.find(|c: char| c == '\x07' || c == '\x1b')?;
-    let rgb  = rest[..end].trim();
-    if rgb.is_empty() { None } else { Some(rgb.to_string()) }
+    let end = rest.find(|c: char| c == '\x07' || c == '\x1b')?;
+    let rgb = rest[..end].trim();
+    if rgb.is_empty() {
+        None
+    } else {
+        Some(rgb.to_string())
+    }
 }
 
 /// Parse the xterm/rxvt `COLORFGBG` env var, e.g. `"15;0"` (white-on-black)
@@ -136,19 +149,36 @@ fn from_colorfgbg() -> (Option<String>, Option<String>) {
 fn parse_colorfgbg(v: Option<&str>) -> (Option<String>, Option<String>) {
     let Some(v) = v else { return (None, None) };
     let parts: Vec<&str> = v.split(';').collect();
-    if parts.len() < 2 { return (None, None); }
+    if parts.len() < 2 {
+        return (None, None);
+    }
     let fg = parts[0].parse::<u8>().ok().and_then(index_to_rgb);
-    let bg = parts[parts.len() - 1].parse::<u8>().ok().and_then(index_to_rgb);
+    let bg = parts[parts.len() - 1]
+        .parse::<u8>()
+        .ok()
+        .and_then(index_to_rgb);
     (fg, bg)
 }
 
 fn index_to_rgb(i: u8) -> Option<String> {
     // Standard 16-colour palette (xterm defaults).
     let table: [(u8, u8, u8); 16] = [
-        (0x00, 0x00, 0x00), (0xcd, 0x00, 0x00), (0x00, 0xcd, 0x00), (0xcd, 0xcd, 0x00),
-        (0x00, 0x00, 0xee), (0xcd, 0x00, 0xcd), (0x00, 0xcd, 0xcd), (0xe5, 0xe5, 0xe5),
-        (0x7f, 0x7f, 0x7f), (0xff, 0x00, 0x00), (0x00, 0xff, 0x00), (0xff, 0xff, 0x00),
-        (0x5c, 0x5c, 0xff), (0xff, 0x00, 0xff), (0x00, 0xff, 0xff), (0xff, 0xff, 0xff),
+        (0x00, 0x00, 0x00),
+        (0xcd, 0x00, 0x00),
+        (0x00, 0xcd, 0x00),
+        (0xcd, 0xcd, 0x00),
+        (0x00, 0x00, 0xee),
+        (0xcd, 0x00, 0xcd),
+        (0x00, 0xcd, 0xcd),
+        (0xe5, 0xe5, 0xe5),
+        (0x7f, 0x7f, 0x7f),
+        (0xff, 0x00, 0x00),
+        (0x00, 0xff, 0x00),
+        (0xff, 0xff, 0x00),
+        (0x5c, 0x5c, 0xff),
+        (0xff, 0x00, 0xff),
+        (0x00, 0xff, 0xff),
+        (0xff, 0xff, 0xff),
     ];
     let (r, g, b) = *table.get(i as usize)?;
     // OSC 10/11 reply uses 16-bit components written as 4 hex digits each:
@@ -164,15 +194,19 @@ mod tests {
     #[test]
     fn parses_osc11_response_st_terminator() {
         let bytes = b"\x1b]11;rgb:1e1e/1e1e/2020\x1b\\";
-        assert_eq!(extract_rgb(&String::from_utf8_lossy(bytes), "11"),
-                   Some("1e1e/1e1e/2020".into()));
+        assert_eq!(
+            extract_rgb(&String::from_utf8_lossy(bytes), "11"),
+            Some("1e1e/1e1e/2020".into())
+        );
     }
 
     #[test]
     fn parses_osc10_response_bel_terminator() {
         let bytes = b"\x1b]10;rgb:e6e6/e6e6/e6e6\x07garbage";
-        assert_eq!(extract_rgb(&String::from_utf8_lossy(bytes), "10"),
-                   Some("e6e6/e6e6/e6e6".into()));
+        assert_eq!(
+            extract_rgb(&String::from_utf8_lossy(bytes), "10"),
+            Some("e6e6/e6e6/e6e6".into())
+        );
     }
 
     #[test]

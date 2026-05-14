@@ -10,31 +10,14 @@ if set -q __motif_loaded
 end
 set -g __motif_loaded 1
 
-# fish 4.0+ emits OSC 133;A/B around its prompt natively (with
-# `;click_events=1` etc.). If we ALSO emit 133;A/B from our
-# fish_prompt handler, our pair fires BEFORE fish writes the actual
-# PS1 — leaving the server's BlockState in `Composing` when PS1
-# bytes flow, which routes them to command_buf instead of prompt_buf
-# and breaks block backfill + (under partial-redraw races) live
-# prompt_html capture too. Detect once and skip our 133;A/B on 4.x.
-#
-# 133;C / 133;D are still emitted from preexec/postexec — those are
-# idempotent with fish's native ones and ensure motif's state
-# machine advances even on shells where the native 133 emission is
-# disabled (e.g. via `set -e fish_term_features`).
-set -g __motif_fish_native_133 0
-if string match -qr '^([4-9]|[1-9][0-9]+)\.' -- "$FISH_VERSION"
-    set -g __motif_fish_native_133 1
-end
-
 # ── helpers ──────────────────────────────────────────────────────────
 
 function __motif_hex
     LC_ALL=C printf '%s' $argv[1] | od -An -v -tx1 | tr -d ' \n'
 end
 
-function __motif_emit_osc
-    printf '\e]%s;%s\a' $argv[1] $argv[2]
+function __motif_emit_si
+    printf '\e]777;%s\a' (string join ';' -- $argv)
 end
 
 function __motif_json_escape
@@ -74,35 +57,99 @@ end
 
 function __motif_preexec --on-event fish_preexec
     set -l cmd "$argv[1]"
-    __motif_emit_osc 7770 (__motif_hex "$cmd")
-    printf '\e]133;C\a'
+    __motif_emit_si E (__motif_hex "$cmd")
+    __motif_emit_si C
     set -g __motif_in_cmd 1
 end
 
 function __motif_postexec --on-event fish_postexec
     set -l last $status
-    printf '\e]133;D;%s\a' $last
+    __motif_emit_si D $last
     set -e __motif_in_cmd
 end
 
-function __motif_prompt --on-event fish_prompt
-    # On fish 4.x leave 133;A/B to the native emission so they land at
-    # the correct lifecycle points (after PS1 paint for B, before for A).
-    # We still emit OSC 7 (cwd, in case PWD didn't change between cycles)
-    # and OSC 7771 (motif-specific shell context) every cycle.
-    if test "$__motif_fish_native_133" = 0
-        printf '\e]133;A\a'
+function __motif_prompt_start
+    __motif_emit_si A
+    __motif_emit_si P "Cwd=file://"(hostname)"$PWD"
+    __motif_emit_si P "Context="(__motif_hex (__motif_build_context_json))
+end
+
+function __motif_prompt_end
+    __motif_emit_si B
+end
+
+function __motif_fish_has_mode_prompt
+    functions fish_mode_prompt | string match -rvq '^ *(#|function |end$|$)'
+end
+
+function __motif_fish_has_right_prompt
+    functions fish_right_prompt | string match -rvq '^ *(#|function |end$|$)'
+end
+
+function __motif_install_prompt_wrappers
+    if functions --query fish_prompt
+        functions --copy fish_prompt __motif_fish_prompt
+    else
+        function __motif_fish_prompt
+            echo -n (whoami)@(prompt_hostname) (prompt_pwd) '~> '
+        end
     end
-    __motif_emit_osc 7    "file://"(hostname)"$PWD"
-    __motif_emit_osc 7771 (__motif_hex (__motif_build_context_json))
-    if test "$__motif_fish_native_133" = 0
-        printf '\e]133;B\a'
+
+    set -l has_mode 0
+    if __motif_fish_has_mode_prompt
+        set has_mode 1
+        functions --copy fish_mode_prompt __motif_fish_mode_prompt
+    end
+
+    set -l has_right 0
+    if __motif_fish_has_right_prompt
+        set has_right 1
+        functions --copy fish_right_prompt __motif_fish_right_prompt
+    end
+
+    if test "$has_mode" = 1
+        function fish_mode_prompt
+            __motif_prompt_start
+            __motif_fish_mode_prompt
+        end
+    end
+
+    if test "$has_right" = 1
+        if test "$has_mode" = 1
+            function fish_prompt
+                __motif_fish_prompt
+            end
+        else
+            function fish_prompt
+                __motif_prompt_start
+                __motif_fish_prompt
+            end
+        end
+        function fish_right_prompt
+            __motif_fish_right_prompt
+            __motif_prompt_end
+        end
+    else
+        if test "$has_mode" = 1
+            function fish_prompt
+                __motif_fish_prompt
+                __motif_prompt_end
+            end
+        else
+            function fish_prompt
+                __motif_prompt_start
+                __motif_fish_prompt
+                __motif_prompt_end
+            end
+        end
     end
 end
 
 # fish doesn't have a chpwd hook by name, but PWD is a tracked variable
-# — emitting OSC 7 on every PWD change gives motifd's BlockState the
-# same precision OSC 7 buys for bash/zsh.
+# — emitting the private Cwd property on every PWD change gives clients
+# prompt-independent cwd updates.
 function __motif_pwd --on-variable PWD
-    __motif_emit_osc 7 "file://"(hostname)"$PWD"
+    __motif_emit_si P "Cwd=file://"(hostname)"$PWD"
 end
+
+__motif_install_prompt_wrappers

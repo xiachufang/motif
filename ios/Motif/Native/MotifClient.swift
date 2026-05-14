@@ -57,7 +57,7 @@ final class MotifClient {
     /// Excludes our own client_id (the server's attach response already
     /// returns just the *other* peers).
     private(set) var clients: [MotifProto.ClientInfo] = []
-    /// Per-PTY currently-running command text (OSC 7770 from
+    /// Per-PTY currently-running command text (shell-integration marker from
     /// `pty.command_started`). Cleared on `pty.command_finished` or PTY
     /// exit. Empty/missing => the PTY is at a shell prompt or the shell
     /// never bootstrapped shell-integration. Used for tab labels.
@@ -145,45 +145,34 @@ final class MotifClient {
             resolvedHost = server.host
         }
 
-        // Negotiate the MessagePack codec — keeps PTY bytes off base64 and
-        // saves the JSON envelope on every frame. motifd's /ws handler
-        // accepts `?bin=1` to flip its codec; older clients without the
-        // flag stay on JSON.
-        guard let url = URL(string: "ws://\(resolvedHost):\(server.port)/ws?bin=1") else {
-            log.error("bad server URL: \(resolvedHost, privacy: .public):\(server.port, privacy: .public)")
-            state = .failed(message: "bad server URL: \(resolvedHost):\(server.port)")
-            return
-        }
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
         FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
 
-        // Pre-warm the magicsock path before we ask URLSession to open the
-        // WS. `state=Running` only means controlplane is up — the first
-        // data packet to a specific peer still pays NAT discovery / DERP
-        // fallback, which on a cold start can exceed URLSession's request
-        // timeout. A throwaway TCP dial through tailscale_dial provokes
-        // that setup OUTSIDE of URLSession's timeout window, so the WS
-        // upgrade lands on an already-hot path. Best-effort: if the dial
-        // hangs or fails, the WS attempt is still tried (and now has a
-        // 15s timeout instead of the URLSession default 60s).
+        // Pre-warm the magicsock path before we ask URLSession to open
+        // anything. `state=Running` only means controlplane is up — the
+        // first data packet to a specific peer still pays NAT discovery
+        // / DERP fallback, which on a cold start can exceed URLSession's
+        // request timeout. A throwaway TCP dial through tailscale_dial
+        // provokes that setup OUTSIDE of URLSession's timeout window so
+        // the first /rpc call lands on an already-hot path.
         if case .tailscale = server.kind {
             await preWarmTsnetPath(host: resolvedHost, port: server.port, tailscale: tailscale)
         }
 
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(server.token)", forHTTPHeaderField: "Authorization")
-        // Default URLSession request timeout is 60s — too long when the
-        // tsnet path is wedged. Pair with NativeRoot's exponential backoff
-        // so a stuck handshake fails fast and the retry loop picks up.
-        request.timeoutInterval = 15
-
-        let rpc = RpcClient(wireMode: .binary)
+        // New protocol: RPC runs over HTTP, server-pushed events / PTY
+        // bytes go on separate WSes. No ?bin=1 codec negotiation
+        // anymore — RPC bodies are JSON, PTY bytes are raw.
+        let rpc = RpcClient()
         do {
-            try await rpc.connect(urlSession: urlSession, request: request, delegate: delegate)
+            try await rpc.connect(urlSession: urlSession,
+                                  host: resolvedHost,
+                                  port: server.port,
+                                  token: server.token,
+                                  delegate: delegate)
         } catch {
-            log.error("ws connect: \(String(describing: error), privacy: .public)")
-            FileLog.note("MotifClient", "ws connect failed: \(error)")
-            state = .failed(message: "ws connect: \(error)")
+            log.error("rpc connect: \(String(describing: error), privacy: .public)")
+            FileLog.note("MotifClient", "rpc connect failed: \(error)")
+            state = .failed(message: "rpc connect: \(error)")
             return
         }
         self.rpc = rpc

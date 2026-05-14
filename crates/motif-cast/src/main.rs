@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
-use motif_client::client::Client;
+use motif_client::coordinator::Coordinator as Client;
 use motif_client::{palette, raw_pty, transport};
 use motif_proto::common::PtyId;
 use motif_proto::pty as ppty;
@@ -70,7 +70,15 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let env = tracing_subscriber::EnvFilter::try_new(&cli.log)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    tracing_subscriber::fmt().with_env_filter(env).with_writer(std::io::stderr).try_init().ok();
+    let timer = tracing_subscriber::fmt::time::LocalTime::new(time::macros::format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+    ));
+    tracing_subscriber::fmt()
+        .with_env_filter(env)
+        .with_timer(timer)
+        .with_writer(std::io::stderr)
+        .try_init()
+        .ok();
 
     let token = read_token(cli.token_file.as_deref())?;
     let workdir = match cli.workdir {
@@ -105,8 +113,8 @@ struct Run {
 }
 
 async fn run(r: Run) -> anyhow::Result<()> {
-    let tr = transport::connect(&r.url, &r.token, r.via.as_deref(), r.ssh_remote_port).await?;
-    let transport::Connected { mut client, _keepalive } = tr;
+    let tr = transport::connect_v2(&r.url, &r.token, r.via.as_deref(), r.ssh_remote_port).await?;
+    let transport::ConnectedV2 { client, _keepalive } = tr;
 
     // 1. session.create — owns the name from here on. Failure to create →
     //    no guard needed, just bail.
@@ -134,7 +142,7 @@ async fn run(r: Run) -> anyhow::Result<()> {
     //    out as a free-standing receiver so the pump's notification arm
     //    doesn't conflict with `pty.write` / `pty.resize` calls under the
     //    mutex.
-    let events = client.take_notifications()
+    let events = client.take_notifications().await
         .ok_or_else(|| anyhow!("client lost its notification stream before attach"))?;
     let client = Arc::new(Mutex::new(client));
 

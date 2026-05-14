@@ -24,9 +24,9 @@ pub fn detect(cmd: &str) -> ShellKind {
     let first = cmd.split_whitespace().next().unwrap_or("");
     match Path::new(first).file_name().and_then(|s| s.to_str()) {
         Some("bash") => ShellKind::Bash,
-        Some("zsh")  => ShellKind::Zsh,
+        Some("zsh") => ShellKind::Zsh,
         Some("fish") => ShellKind::Fish,
-        _            => ShellKind::Unknown,
+        _ => ShellKind::Unknown,
     }
 }
 
@@ -34,15 +34,15 @@ pub fn detect(cmd: &str) -> ShellKind {
 /// lifetime; dropping the `Pty` (which owns this) drops the tmpdir
 /// which removes the materialized scripts.
 pub struct Bootstrap {
-    pub kind:       ShellKind,
+    pub kind: ShellKind,
     pub session_id: String,
     /// RAII wrapper — directory is removed on drop.
-    dir:            tempfile::TempDir,
+    dir: tempfile::TempDir,
     /// Path of the entry-point script we hand the shell.
-    entry:          PathBuf,
+    entry: PathBuf,
     /// Original ZDOTDIR (zsh-only) so the wrapped rcfile can reach the
     /// user's real ~/.zshrc instead of recursing into our tmpdir.
-    user_zdotdir:   Option<PathBuf>,
+    user_zdotdir: Option<PathBuf>,
 }
 
 impl Bootstrap {
@@ -50,7 +50,9 @@ impl Bootstrap {
     /// support, and when the user has disabled integration via
     /// `MOTIF_SHELL_INTEGRATION=0`.
     pub fn prepare(kind: ShellKind, session_id: &str) -> Option<Self> {
-        if matches!(kind, ShellKind::Unknown) { return None; }
+        if matches!(kind, ShellKind::Unknown) {
+            return None;
+        }
         if std::env::var("MOTIF_SHELL_INTEGRATION").as_deref() == Ok("0") {
             return None;
         }
@@ -88,9 +90,9 @@ impl Bootstrap {
     /// Apply the bootstrap to a `portable-pty` CommandBuilder before it
     /// spawns. Sets shared env vars + the shell-specific injection flag.
     pub fn apply_to(&self, cb: &mut CommandBuilder) {
-        cb.env("MOTIF_BOOTSTRAPPED",  "1");
-        cb.env("MOTIF_SHELL",         shell_kind_str(self.kind));
-        cb.env("MOTIF_SESSION_ID",    &self.session_id);
+        cb.env("MOTIF_BOOTSTRAPPED", "1");
+        cb.env("MOTIF_SHELL", shell_kind_str(self.kind));
+        cb.env("MOTIF_SESSION_ID", &self.session_id);
         cb.env("MOTIF_BOOTSTRAP_DIR", self.dir.path().as_os_str());
 
         match self.kind {
@@ -116,9 +118,9 @@ impl Bootstrap {
 
 fn shell_kind_str(k: ShellKind) -> &'static str {
     match k {
-        ShellKind::Bash    => "bash",
-        ShellKind::Zsh     => "zsh",
-        ShellKind::Fish    => "fish",
+        ShellKind::Bash => "bash",
+        ShellKind::Zsh => "zsh",
+        ShellKind::Fish => "fish",
         ShellKind::Unknown => "unknown",
     }
 }
@@ -151,12 +153,15 @@ mod tests {
 
     #[test]
     fn detect_resolves_path_basenames() {
-        assert!(matches!(detect("/bin/bash"),                    ShellKind::Bash));
-        assert!(matches!(detect("/usr/local/bin/zsh -l"),        ShellKind::Zsh));
-        assert!(matches!(detect("fish"),                          ShellKind::Fish));
-        assert!(matches!(detect("/opt/homebrew/bin/fish --foo"),  ShellKind::Fish));
-        assert!(matches!(detect("/bin/sh"),                       ShellKind::Unknown));
-        assert!(matches!(detect(""),                              ShellKind::Unknown));
+        assert!(matches!(detect("/bin/bash"), ShellKind::Bash));
+        assert!(matches!(detect("/usr/local/bin/zsh -l"), ShellKind::Zsh));
+        assert!(matches!(detect("fish"), ShellKind::Fish));
+        assert!(matches!(
+            detect("/opt/homebrew/bin/fish --foo"),
+            ShellKind::Fish
+        ));
+        assert!(matches!(detect("/bin/sh"), ShellKind::Unknown));
+        assert!(matches!(detect(""), ShellKind::Unknown));
     }
 
     #[test]
@@ -164,7 +169,10 @@ mod tests {
         // Catches a forgotten `assets/shell/` file at compile time —
         // rust-embed won't fail to build, but the asset will be missing.
         for name in ["bash.sh", "bash-preexec.sh", "zsh.zsh", "fish.fish"] {
-            assert!(ShellAssets::get(name).is_some(), "missing embedded asset: {name}");
+            assert!(
+                ShellAssets::get(name).is_some(),
+                "missing embedded asset: {name}"
+            );
         }
     }
 
@@ -176,8 +184,11 @@ mod tests {
         let bs = Bootstrap::prepare(ShellKind::Bash, "test-session");
         match prev {
             Some(v) => std::env::set_var("MOTIF_SHELL_INTEGRATION", v),
-            None    => std::env::remove_var("MOTIF_SHELL_INTEGRATION"),
+            None => std::env::remove_var("MOTIF_SHELL_INTEGRATION"),
         }
-        assert!(bs.is_none(), "MOTIF_SHELL_INTEGRATION=0 should skip prepare");
+        assert!(
+            bs.is_none(),
+            "MOTIF_SHELL_INTEGRATION=0 should skip prepare"
+        );
     }
 }

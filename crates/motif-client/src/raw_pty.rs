@@ -25,8 +25,6 @@ use serde_json::Value;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::client::Client;
-
 /// Restores the terminal mode no matter how the function returns. Constructed
 /// after every fallible setup step so a failure to enable raw mode doesn't
 /// leave a stale guard behind.
@@ -55,7 +53,7 @@ pub fn current_size() -> (u16, u16) {
 /// `session.attach` + `pty.create`. Returns `Ok(())` on the inner PTY's
 /// `pty.exited`, on stdin EOF, or when the WebSocket reader signals close.
 pub async fn pump(
-    client: Arc<Mutex<Client>>,
+    client: Arc<Mutex<crate::coordinator::Coordinator>>,
     mut events: mpsc::UnboundedReceiver<Notification>,
     pty_id: PtyId,
 ) -> anyhow::Result<()> {
@@ -74,15 +72,17 @@ pub async fn pump(
             match lock.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() { break; }
+                    if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
         }
     });
 
-    let mut sigwinch = signal(SignalKind::window_change())
-        .context("installing SIGWINCH handler")?;
+    let mut sigwinch =
+        signal(SignalKind::window_change()).context("installing SIGWINCH handler")?;
 
     let mut stdout = std::io::stdout();
 
@@ -117,7 +117,7 @@ pub async fn pump(
 
             bytes_opt = stdin_rx.recv() => {
                 let Some(bytes) = bytes_opt else { return Ok(()); };
-                let mut c = client.lock().await;
+                let c = client.lock().await;
                 let _: Value = c.call(
                     "pty.write",
                     ppty::PtyWriteParams {
@@ -129,7 +129,7 @@ pub async fn pump(
 
             _ = sigwinch.recv() => {
                 let (cols, rows) = current_size();
-                let mut c = client.lock().await;
+                let c = client.lock().await;
                 let _: Value = c.call(
                     "pty.resize",
                     ppty::PtyResizeParams { pty_id: pty_id.clone(), cols, rows },

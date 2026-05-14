@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一个终端跑 motifd / motif-web / vite，三路输出由 foreman 合并并加色彩前缀。
+# 一个终端跑 motifd / vite，两路输出由 foreman 合并并加色彩前缀。
 # Rust 端用 cargo-watch 监听对应 crate 自动重启；vite 自带 HMR。
 # 实际进程定义在 Procfile.dev 里。
 set -euo pipefail
@@ -12,9 +12,6 @@ export MOTIFD_HOST="${MOTIFD_HOST:-127.0.0.1}"
 export MOTIFD_PORT="${MOTIFD_PORT:-7777}"
 export MOTIFD_LISTEN="${MOTIFD_LISTEN:-${MOTIFD_HOST}:${MOTIFD_PORT}}"
 export WEB_HOST="${WEB_HOST:-127.0.0.1}"
-export WEB_PORT="${WEB_PORT:-8080}"
-export WEB_LISTEN="${WEB_LISTEN:-${WEB_HOST}:${WEB_PORT}}"
-export MOTIFD_URL="${MOTIFD_URL:-ws://${MOTIFD_HOST}:${MOTIFD_PORT}/}"
 export VITE_PORT="${VITE_PORT:-5173}"
 export TOKEN_FILE
 
@@ -41,9 +38,8 @@ fi
 export MOTIFD_RPC_LOG="${MOTIFD_RPC_LOG:-${ROOT_DIR}/motif-rpc.log}"
 
 cat <<EOF
-motifd:    ws://${MOTIFD_LISTEN}/ws    (cargo watch 自动重启)
-motif-web: http://${WEB_LISTEN}        (cargo watch 自动重启)
-vite dev:  http://${WEB_HOST}:${VITE_PORT}      (pnpm dev)
+motifd:    http://${MOTIFD_LISTEN}             (cargo watch 自动重启)
+vite dev:  http://${WEB_HOST}:${VITE_PORT}     (pnpm dev，API/WS 直连 motifd)
 token:     $(cat "$TOKEN_FILE")  (${TOKEN_FILE})
 按 Ctrl-C 一起停。
 EOF

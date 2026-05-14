@@ -457,7 +457,7 @@ enum MotifProto {
     }
 
     /// `pty.command_started` — fires when the shell hands a command line off
-    /// to the kernel (FinalTerm 133;C boundary). `text` is the OSC 7770
+    /// to the kernel (command-start boundary). `text` is the shell-integration
     /// logical command string, "" when the shell didn't emit one.
     struct PtyCommandStartedEvent: Decodable {
         var pty_id: String

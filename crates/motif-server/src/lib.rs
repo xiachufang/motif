@@ -3,10 +3,15 @@
 pub mod auth;
 pub mod blob;
 pub mod config;
+pub mod conn_registry;
+pub mod embed;
+pub mod events_ws;
 pub mod fs;
 pub mod fswatch;
 pub mod git;
+pub mod http_rpc;
 pub mod pty;
+pub mod pty_ws;
 pub mod rpc;
 pub mod rpc_log;
 pub mod session;
@@ -19,7 +24,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
+use time::macros::format_description;
+use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
+
+/// Compact local-time format used by all our log layers:
+/// `YYYY-MM-DD HH:MM:SS.sss`. Operators read logs in their wall-clock
+/// timezone — RFC3339 with full subsecond + offset is just noise.
+fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'static>]> {
+    LocalTime::new(format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+    ))
+}
 
 pub use config::{ServerConfig, TailscaleListenConfig};
 
@@ -32,10 +48,26 @@ pub use config::{ServerConfig, TailscaleListenConfig};
 /// giving us a clean per-frame audit trail for debugging the wire
 /// protocol.
 pub fn init_tracing(filter: &str, rpc_log: Option<&Path>) -> anyhow::Result<()> {
-    let stderr_filter = EnvFilter::try_new(format!("{filter},{}=off", rpc_log::TARGET))
-        .unwrap_or_else(|_| EnvFilter::new(format!("info,{}=off", rpc_log::TARGET)));
+    // The RPC frame-dump target is force-off on stderr (it goes to the
+    // rpc-log file only). But its child target `motif::rpc::timing` —
+    // per-request latency lines — IS meant for stderr so operators see
+    // git.diff slowness without having to opt into --rpc-log. Use a
+    // longer prefix to override the parent's `=off` for that one path.
+    let stderr_filter = EnvFilter::try_new(format!(
+        "{filter},{}=off,{}=info",
+        rpc_log::TARGET,
+        ws::TIMING_TARGET,
+    ))
+    .unwrap_or_else(|_| {
+        EnvFilter::new(format!(
+            "info,{}=off,{}=info",
+            rpc_log::TARGET,
+            ws::TIMING_TARGET,
+        ))
+    });
     let stderr_layer = fmt::layer()
         .with_writer(std::io::stderr)
+        .with_timer(local_timer())
         .with_filter(stderr_filter);
 
     let file_layer = match rpc_log {
@@ -53,6 +85,7 @@ pub fn init_tracing(filter: &str, rpc_log: Option<&Path>) -> anyhow::Result<()> 
             Some(
                 fmt::layer()
                     .with_writer(writer)
+                    .with_timer(local_timer())
                     .with_ansi(false)
                     .with_target(false)
                     .with_filter(filter),
@@ -95,6 +128,7 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
     let state   = ws::AppState {
         manager: manager.clone(),
         auth:    Arc::new(token_store),
+        conns:   conn_registry::ConnRegistry::new(),
     };
     let app = ws::router(state);
 

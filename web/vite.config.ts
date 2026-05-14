@@ -1,10 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// During `pnpm dev` the Vite dev server proxies /ws and /blob to a locally
-// running motif-web bridge. Set VITE_BRIDGE if you want a different target.
-const BRIDGE = process.env.VITE_BRIDGE ?? "http://127.0.0.1:8080";
-const WS_BRIDGE = BRIDGE.replace(/^http/, "ws");
+// During `pnpm dev` the Vite dev server proxies API/WS routes to motifd.
+// Set VITE_MOTIFD if you want a different target.
+const MOTIFD = process.env.VITE_MOTIFD ?? "http://127.0.0.1:7777";
+const WS_MOTIFD = MOTIFD.replace(/^http/, "ws");
 
 export default defineConfig({
   plugins: [react()],
@@ -27,7 +27,7 @@ export default defineConfig({
           if (/\/(react|react-dom|scheduler)\//.test(id))      return "react";
           return;
         },
-        // Keep file names predictable so motif-web's rust-embed picks them up
+        // Keep file names predictable so motifd's rust-embed picks them up
         // by extension (we don't depend on hashed names — the embedded server
         // sets Cache-Control: no-store).
         entryFileNames: "assets/[name].js",
@@ -39,8 +39,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/ws":   { target: WS_BRIDGE, ws: true,  changeOrigin: true },
-      "/blob": { target: BRIDGE,    changeOrigin: true }
+      "/rpc":    { target: MOTIFD,    changeOrigin: true },
+      "/events": { target: WS_MOTIFD, ws: true,  changeOrigin: true },
+      "/pty":    { target: WS_MOTIFD, ws: true,  changeOrigin: true }
     }
   }
 });

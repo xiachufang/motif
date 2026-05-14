@@ -2,7 +2,7 @@
 
 motif 的 iOS native App，包含：
 
-- WKWebView 加载 motif-web（从本地 127.0.0.1 的 HTTP 服务器加载 bundle 内资源）
+- WKWebView 加载 web bundle（从本地 127.0.0.1 的 HTTP 服务器加载资源）
 - TailscaleKit (tsnet) 让 App 自身加入 tailnet，反代访问远端 motifd
 - Doubao ASR（gfreezy/DoubaoASR SwiftPM 包），给网页里的"按住说话"提供原生语音识别
 
@@ -11,7 +11,7 @@ motif 的 iOS native App，包含：
 ```bash
 brew install xcodegen
 cd ios
-./scripts/sync-web.sh           # 把 ../crates/motif-web/static/ 拷到 Motif/Resources/web/
+./scripts/sync-web.sh           # 把 ../web/dist/ 拷到 Motif/Resources/web/
 xcodegen                        # 由 Project.yml 生成 Motif.xcodeproj
 open Motif.xcodeproj
 ```
@@ -36,7 +36,7 @@ ios/
 │   ├── ASR/                 AVAudioSession glue（识别本身由 DoubaoASR 包实现）
 │   ├── Settings/            全局状态
 │   ├── Info.plist
-│   └── Resources/web/       同步自 ../crates/motif-web/static（ignore）
+│   └── Resources/web/       同步自 ../web/dist（ignore）
 ├── scripts/
 │   └── sync-web.sh          web 资源同步
 └── vendor/                  外部 xcframework（ignore，由 build 脚本产出）

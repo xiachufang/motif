@@ -79,7 +79,14 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let env = tracing_subscriber::EnvFilter::try_new(&cli.log)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    tracing_subscriber::fmt().with_env_filter(env).try_init().ok();
+    let timer = tracing_subscriber::fmt::time::LocalTime::new(time::macros::format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+    ));
+    tracing_subscriber::fmt()
+        .with_env_filter(env)
+        .with_timer(timer)
+        .try_init()
+        .ok();
 
     match cli.cmd {
         Cmd::Attach { url, session, token_file, log, via } => {

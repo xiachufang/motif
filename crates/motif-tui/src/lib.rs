@@ -3,7 +3,7 @@
 pub mod pty_view;
 pub mod ui;
 
-pub use motif_client::{client, palette, transport};
+pub use motif_client::{palette, transport};
 
 use std::path::{Path, PathBuf};
 
@@ -17,14 +17,17 @@ pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
     Ok(raw.trim().to_string())
 }
 
-/// Helper: connect with optional SSH tunneling and return the live `Connected`.
+/// Helper: connect with optional SSH tunneling and return the live
+/// `ConnectedV2`. The TUI runs on the new HTTP-split protocol; the
+/// legacy `transport::connect` (and `Client`) are still exported for
+/// motif-cast until Phase 5.
 pub async fn connect(
     url:   &str,
     token: &str,
     via:   Option<&str>,
     ssh_remote_port: Option<u16>,
-) -> anyhow::Result<transport::Connected> {
-    transport::connect(url, token, via, ssh_remote_port).await
+) -> anyhow::Result<transport::ConnectedV2> {
+    transport::connect_v2(url, token, via, ssh_remote_port).await
 }
 
 pub async fn cmd_list(
@@ -33,7 +36,7 @@ pub async fn cmd_list(
     via:   Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
-    let mut tr = connect(url, token, via, ssh_remote_port).await?;
+    let tr = connect(url, token, via, ssh_remote_port).await?;
     let r: ses::ListResult = tr.client.call("session.list", ses::ListParams::default()).await?;
     if r.sessions.is_empty() { println!("(no sessions)"); return Ok(()); }
     println!("{:<20} {:<28} CLIENTS  WORKDIR", "NAME", "ID");
@@ -51,7 +54,7 @@ pub async fn cmd_new(
     via:   Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
-    let mut tr = connect(url, token, via, ssh_remote_port).await?;
+    let tr = connect(url, token, via, ssh_remote_port).await?;
     let r: ses::CreateResult = tr.client.call(
         "session.create",
         ses::CreateParams { name, workdir },
@@ -67,7 +70,7 @@ pub async fn cmd_destroy(
     via:   Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
-    let mut tr = connect(url, token, via, ssh_remote_port).await?;
+    let tr = connect(url, token, via, ssh_remote_port).await?;
     let _: ses::DestroyResult = tr.client.call(
         "session.destroy",
         ses::DestroyParams { name: name.clone() },
@@ -88,7 +91,7 @@ pub async fn cmd_pty_run(
     use motif_proto::pty as ppty;
     use std::io::Write;
 
-    let mut tr = connect(url, token, via, ssh_remote_port).await?;
+    let tr = connect(url, token, via, ssh_remote_port).await?;
     let (term_fg, term_bg) = palette::probe();
     let _: ses::AttachResult = tr.client.call(
         "session.attach",
@@ -133,7 +136,7 @@ pub async fn cmd_attach_log(
     via:   Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
-    let mut tr = connect(url, token, via, ssh_remote_port).await?;
+    let tr = connect(url, token, via, ssh_remote_port).await?;
     let (term_fg, term_bg) = palette::probe();
     let r: ses::AttachResult = tr.client.call(
         "session.attach",

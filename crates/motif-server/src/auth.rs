@@ -24,22 +24,37 @@ impl TokenStore {
     /// Constant-time check of the `Authorization: Bearer <token>` header.
     /// Always returns true in `Disabled` mode.
     pub fn verify_header(&self, headers: &HeaderMap) -> bool {
-        let expected = match self {
-            Self::Disabled => return true,
-            Self::Required(t) => t,
-        };
+        if matches!(self, Self::Disabled) {
+            return true;
+        }
         let Some(value) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
             return false;
         };
         let Some(provided) = value.strip_prefix("Bearer ") else {
             return false;
         };
+        self.verify_token(provided)
+    }
+
+    /// Browser WebSocket constructors cannot set Authorization headers.
+    /// Same-origin web clients pass the same server token as `?token=...`.
+    pub fn verify_header_or_query(&self, headers: &HeaderMap, query_token: Option<&str>) -> bool {
+        self.verify_header(headers) || query_token.is_some_and(|token| self.verify_token(token))
+    }
+
+    fn verify_token(&self, provided: &str) -> bool {
+        let expected = match self {
+            Self::Disabled => return true,
+            Self::Required(t) => t,
+        };
         constant_time_eq(provided.as_bytes(), expected.as_bytes())
     }
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     let mut diff = 0u8;
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;

@@ -70,7 +70,8 @@ use std::time::Duration;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
+    KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -94,24 +95,32 @@ use ratatui::Terminal;
 
 use tui_term::widget::PseudoTerminal;
 
-use crate::client::Client;
 use crate::pty_view::{BlockMark, BlockStatus, PtyView};
+use motif_client::coordinator::Coordinator as Client;
 
 type TermBackend = CrosstermBackend<Stdout>;
 
 pub async fn run(url: &str, token: &str, session: String) -> Result<()> {
-    let tr = crate::transport::connect(url, token, None, None).await?;
+    let tr = crate::transport::connect_v2(url, token, None, None).await?;
     run_with(tr, session).await
 }
 
-pub async fn run_with(mut tr: crate::transport::Connected, session: String) -> Result<()> {
+pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) -> Result<()> {
     // Probe BEFORE entering raw mode / alt screen so the OSC reply the
     // terminal writes back doesn't get mixed with crossterm event traffic.
     let (term_fg, term_bg) = crate::palette::probe();
-    let attach: ses::AttachResult = tr.client.call(
-        "session.attach",
-        ses::AttachParams { name: session.clone(), last_seq: None, term_fg, term_bg },
-    ).await?;
+    let attach: ses::AttachResult = tr
+        .client
+        .call(
+            "session.attach",
+            ses::AttachParams {
+                name: session.clone(),
+                last_seq: None,
+                term_fg,
+                term_bg,
+            },
+        )
+        .await?;
     // Initial tree root: active PTY's cwd if there's one already running,
     // otherwise the session's workdir. Either way it's an absolute path.
     let initial_root: PathBuf = attach
@@ -119,19 +128,40 @@ pub async fn run_with(mut tr: crate::transport::Connected, session: String) -> R
         .as_ref()
         .and_then(|vid| attach.views.iter().find(|v| &v.id == vid))
         .and_then(|v| match &v.spec {
-            ViewSpec::Pty { pty_id } => attach.ptys.iter().find(|p| &p.id == pty_id).map(|p| p.cwd.clone()),
+            ViewSpec::Pty { pty_id } => attach
+                .ptys
+                .iter()
+                .find(|p| &p.id == pty_id)
+                .map(|p| p.cwd.clone()),
             _ => None,
         })
         .unwrap_or_else(|| attach.session.workdir.clone());
 
-    let tree: pfs::TreeResult = tr.client.call(
-        "fs.tree",
-        pfs::TreeParams { path: initial_root.to_string_lossy().into_owned(), depth: 1, show_hidden: false },
-    ).await.unwrap_or(pfs::TreeResult { path: initial_root.to_string_lossy().into_owned(), entries: vec![] });
-    let git_status = tr.client.call::<_, pgit::StatusResult>(
-        "git.status",
-        pgit::StatusParams { cwd: Some(initial_root.clone()) },
-    ).await.ok();
+    let tree: pfs::TreeResult = tr
+        .client
+        .call(
+            "fs.tree",
+            pfs::TreeParams {
+                path: initial_root.to_string_lossy().into_owned(),
+                depth: 1,
+                show_hidden: false,
+            },
+        )
+        .await
+        .unwrap_or(pfs::TreeResult {
+            path: initial_root.to_string_lossy().into_owned(),
+            entries: vec![],
+        });
+    let git_status = tr
+        .client
+        .call::<_, pgit::StatusResult>(
+            "git.status",
+            pgit::StatusParams {
+                cwd: Some(initial_root.clone()),
+            },
+        )
+        .await
+        .ok();
 
     let mut state = AppState::new(session, attach, initial_root, tree, git_status);
 
@@ -144,16 +174,20 @@ pub async fn run_with(mut tr: crate::transport::Connected, session: String) -> R
     let result = main_loop(&mut term, &mut tr.client, &mut state).await;
 
     disable_raw_mode()?;
-    execute!(term.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     term.show_cursor()?;
 
     result
 }
 
 async fn main_loop(
-    term:   &mut Terminal<TermBackend>,
+    term: &mut Terminal<TermBackend>,
     client: &mut Client,
-    state:  &mut AppState,
+    state: &mut AppState,
 ) -> Result<()> {
     loop {
         term.draw(|f| draw(f, state))?;
@@ -162,10 +196,10 @@ async fn main_loop(
         // measurements of the body area).
         let resizes: Vec<(PtyId, u16, u16)> = state.pending_resizes.drain(..).collect();
         for (pty_id, cols, rows) in resizes {
-            let _: serde_json::Value = client.call(
-                "pty.resize",
-                ppty::PtyResizeParams { pty_id, cols, rows },
-            ).await.unwrap_or(serde_json::Value::Null);
+            let _: serde_json::Value = client
+                .call("pty.resize", ppty::PtyResizeParams { pty_id, cols, rows })
+                .await
+                .unwrap_or(serde_json::Value::Null);
         }
 
         // Push out canonical responses to terminal capability queries that
@@ -174,10 +208,10 @@ async fn main_loop(
         // from inside `apply_frame`.
         let writes: Vec<(PtyId, Vec<u8>)> = state.pending_pty_writes.drain(..).collect();
         for (pty_id, data) in writes {
-            let _: serde_json::Value = client.call(
-                "pty.write",
-                ppty::PtyWriteParams { pty_id, data },
-            ).await.unwrap_or(serde_json::Value::Null);
+            let _: serde_json::Value = client
+                .call("pty.write", ppty::PtyWriteParams { pty_id, data })
+                .await
+                .unwrap_or(serde_json::Value::Null);
         }
 
         // Lazy-load the active view's body cache (preview text / diff patch).
@@ -191,8 +225,8 @@ async fn main_loop(
         for _ in 0..64 {
             match tokio::time::timeout(Duration::from_millis(0), client.recv_notification()).await {
                 Ok(Some(n)) => apply_notification(state, n),
-                Ok(None)    => return Ok(()), // connection closed
-                Err(_)      => break,         // queue empty for now
+                Ok(None) => return Ok(()), // connection closed
+                Err(_) => break,           // queue empty for now
             }
         }
 
@@ -210,10 +244,12 @@ async fn main_loop(
 
         if event::poll(Duration::from_millis(20))? {
             if let CtEvent::Key(k) = event::read()? {
-                if k.kind != KeyEventKind::Press { continue; }
+                if k.kind != KeyEventKind::Press {
+                    continue;
+                }
                 match handle_key(state, client, k.code, k.modifiers).await? {
-                    KeyOutcome::Quit  => return Ok(()),
-                    KeyOutcome::Stay  => {}
+                    KeyOutcome::Quit => return Ok(()),
+                    KeyOutcome::Stay => {}
                 }
             }
         }
@@ -223,44 +259,44 @@ async fn main_loop(
 // ─────────────────────────── App state ───────────────────────────
 
 struct AppState {
-    session_name:    String,
+    session_name: String,
     /// Workdir as reported by the server. Used as the fallback tree root when
     /// no PTY is active.
     session_workdir: PathBuf,
-    other_clients:   u32,
+    other_clients: u32,
 
     /// Absolute directory the file tree pane is currently showing.
-    current_path:    PathBuf,
-    files:           Vec<pfs::TreeEntry>,
-    tree_state:      ListState,
-    git:             Option<pgit::StatusResult>,
+    current_path: PathBuf,
+    files: Vec<pfs::TreeEntry>,
+    tree_state: ListState,
+    git: Option<pgit::StatusResult>,
 
     /// Synced from server.
-    views:           Vec<ViewInfo>,
-    active_view:     Option<ViewId>,
+    views: Vec<ViewInfo>,
+    active_view: Option<ViewId>,
 
     /// Latest known cwd per PTY. Seeded from `attach.ptys` and updated on
     /// `pty.created` and `pty.cwd_changed`. The main loop diffs the active
     /// PTY's entry against `current_path` and retargets the tree.
-    pty_cwds:        HashMap<PtyId, PathBuf>,
+    pty_cwds: HashMap<PtyId, PathBuf>,
     /// Spawn command per PTY (e.g. "/bin/zsh"), seeded from `attach.ptys`
     /// and `pty.created`. Used as a fallback label when nothing better is
     /// available.
-    pty_cmds:        HashMap<PtyId, String>,
+    pty_cmds: HashMap<PtyId, String>,
     /// v2 shell-integration UI state per PTY: the currently-running
     /// command (for `▶ <cmd>` chip + `<cwd> · <fg>` tab labels) and the
     /// most-recent finish for a brief flash of `✓ 0` / `✗ N`.
-    pty_blocks:      HashMap<PtyId, PtyBlockUi>,
+    pty_blocks: HashMap<PtyId, PtyBlockUi>,
 
     /// True when the user has manually navigated away (Backspace / Enter into
     /// a subdir). While true, we DON'T auto-follow the active PTY's cwd —
     /// otherwise their browsing would get yanked back every 1.5s. Reset by
     /// `g` (re-anchor) or by switching tabs.
-    manual_nav:      bool,
+    manual_nav: bool,
 
     /// Per-client PTY screen state, keyed by pty_id.
-    pty_views:       HashMap<PtyId, PtyView>,
-    pty_last_size:   HashMap<PtyId, (u16, u16)>,
+    pty_views: HashMap<PtyId, PtyView>,
+    pty_last_size: HashMap<PtyId, (u16, u16)>,
     pending_resizes: Vec<(PtyId, u16, u16)>,
 
     /// Per-PTY scanner that strips fish-style terminal capability queries
@@ -269,20 +305,20 @@ struct AppState {
     /// server filter were ever bypassed (e.g. older server, query split
     /// across the broadcast boundary in a way the server's scanner missed),
     /// the TUI still keeps fish unstuck.
-    pty_scanners:    HashMap<PtyId, QueryScanner>,
+    pty_scanners: HashMap<PtyId, QueryScanner>,
     /// Bytes destined for `pty.write` calls, drained by the main loop.
     /// Mirrors the deferred-RPC pattern used for `pending_resizes`.
     pending_pty_writes: Vec<(PtyId, Vec<u8>)>,
 
     /// Per-view client cache for preview/diff content. Hydrated lazily when
     /// the view becomes active.
-    view_cache:      HashMap<ViewId, ViewBodyCache>,
+    view_cache: HashMap<ViewId, ViewBodyCache>,
 
     /// Modal state. Keys behave very differently across modes — see the
     /// module docs for the full keymap.
-    mode:            Mode,
+    mode: Mode,
 
-    status:          String,
+    status: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,7 +337,7 @@ enum Mode {
 
 enum ViewBodyCache {
     Preview { content: String },
-    Diff    { patch: String },
+    Diff { patch: String },
 }
 
 #[derive(Default, Debug, Clone)]
@@ -311,7 +347,7 @@ struct PtyBlockUi {
     running: Option<String>,
     /// Most-recent finish: (command text, exit code, when it landed).
     /// Rendered for ~3s as a colour flash, then suppressed.
-    flash:   Option<(String, Option<i32>, std::time::Instant)>,
+    flash: Option<(String, Option<i32>, std::time::Instant)>,
 }
 
 const FLASH_TTL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -321,30 +357,36 @@ const FLASH_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 /// `EDITOR=vim git commit` → "git".
 fn first_meaningful_token(cmd: &str) -> String {
     for tok in cmd.split_whitespace() {
-        if tok.contains('=') { continue; }
+        if tok.contains('=') {
+            continue;
+        }
         return std::path::Path::new(tok)
-            .file_name().and_then(|s| s.to_str())
-            .unwrap_or(tok).to_string();
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(tok)
+            .to_string();
     }
     cmd.split_whitespace().next().unwrap_or("").to_string()
 }
 
 impl AppState {
     fn new(
-        session_name:    String,
-        attach:          ses::AttachResult,
-        initial_root:    PathBuf,
-        tree:            pfs::TreeResult,
-        git:             Option<pgit::StatusResult>,
+        session_name: String,
+        attach: ses::AttachResult,
+        initial_root: PathBuf,
+        tree: pfs::TreeResult,
+        git: Option<pgit::StatusResult>,
     ) -> Self {
         let mut tree_state = ListState::default();
-        if !tree.entries.is_empty() { tree_state.select(Some(0)); }
+        if !tree.entries.is_empty() {
+            tree_state.select(Some(0));
+        }
 
         // Pre-allocate PTY screen state + cwd map for any PTYs already in the
         // session; output will replay via the broadcast ring after attach.
-        let mut pty_views     = HashMap::new();
-        let mut pty_cwds      = HashMap::new();
-        let mut pty_cmds      = HashMap::new();
+        let mut pty_views = HashMap::new();
+        let mut pty_cwds = HashMap::new();
+        let mut pty_cmds = HashMap::new();
         for p in &attach.ptys {
             pty_views.insert(p.id.clone(), PtyView::new(p.rows.max(1), p.cols.max(1)));
             pty_cwds.insert(p.id.clone(), p.cwd.clone());
@@ -355,25 +397,28 @@ impl AppState {
         Self {
             session_name,
             session_workdir,
-            other_clients:   attach.clients.len() as u32,
-            current_path:    initial_root,
-            files:           tree.entries,
+            other_clients: attach.clients.len() as u32,
+            current_path: initial_root,
+            files: tree.entries,
             tree_state,
             git,
-            views:           attach.views,
-            active_view:     attach.active_view,
+            views: attach.views,
+            active_view: attach.active_view,
             pty_cwds,
             pty_cmds,
-            pty_blocks:      HashMap::new(),
-            manual_nav:      false,
+            pty_blocks: HashMap::new(),
+            manual_nav: false,
             pty_views,
-            pty_last_size:   HashMap::new(),
+            pty_last_size: HashMap::new(),
             pending_resizes: Vec::new(),
-            pty_scanners:       HashMap::new(),
+            pty_scanners: HashMap::new(),
             pending_pty_writes: Vec::new(),
-            view_cache:      HashMap::new(),
-            mode:            Mode::Pane,
-            status:          format!("attached as {} — Ctrl-g for prefix, Ctrl-g ? for help", attach.client_id),
+            view_cache: HashMap::new(),
+            mode: Mode::Pane,
+            status: format!(
+                "attached as {} — Ctrl-g for prefix, Ctrl-g ? for help",
+                attach.client_id
+            ),
         }
     }
 }
@@ -383,16 +428,16 @@ impl AppState {
 fn apply_notification(state: &mut AppState, n: Notification) {
     match n.method.as_str() {
         "client.joined" => state.other_clients += 1,
-        "client.left"   => state.other_clients = state.other_clients.saturating_sub(1),
-        "tree.changed"  => state.status = "tree changed (press r to refresh)".into(),
-        "git.changed"   => state.status = "git changed (press r to refresh)".into(),
+        "client.left" => state.other_clients = state.other_clients.saturating_sub(1),
+        "tree.changed" => state.status = "tree changed (press r to refresh)".into(),
+        "git.changed" => state.status = "git changed (press r to refresh)".into(),
 
         // Synced tabs: views are the source of truth for "what tabs exist /
         // which is active". They auto-pop-up on every client.
-        "view.opened"   => {
-            if let Ok(Event::ViewOpened { view, .. }) =
-                serde_json::from_value::<Event>(serde_json::json!({"method":"view.opened","params":n.params}))
-            {
+        "view.opened" => {
+            if let Ok(Event::ViewOpened { view, .. }) = serde_json::from_value::<Event>(
+                serde_json::json!({"method":"view.opened","params":n.params}),
+            ) {
                 if !state.views.iter().any(|v| v.id == view.id) {
                     state.views.push(view);
                 }
@@ -408,17 +453,21 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                     // so the render falls through to "none". Drop out of
                     // Scroll mode if we were scrolling the now-dead PTY.
                     state.active_view = None;
-                    if state.mode == Mode::Scroll { state.mode = Mode::Pane; }
+                    if state.mode == Mode::Scroll {
+                        state.mode = Mode::Pane;
+                    }
                 }
             }
         }
         "view.active_changed" => {
-            if let Ok(Event::ViewActiveChanged { view_id, .. }) =
-                serde_json::from_value::<Event>(serde_json::json!({"method":"view.active_changed","params":n.params}))
-            {
+            if let Ok(Event::ViewActiveChanged { view_id, .. }) = serde_json::from_value::<Event>(
+                serde_json::json!({"method":"view.active_changed","params":n.params}),
+            ) {
                 let new_active_pty_changed = match (
                     active_pty_id(state).cloned(),
-                    view_id.as_ref().and_then(|vid| pty_id_of(state, vid).cloned()),
+                    view_id
+                        .as_ref()
+                        .and_then(|vid| pty_id_of(state, vid).cloned()),
                 ) {
                     (Some(a), Some(b)) if a == b => false,
                     _ => true,
@@ -429,7 +478,9 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                     // tab's cwd will pull the file tree along. Also drop
                     // Scroll mode (it was tied to the previous PTY).
                     state.manual_nav = false;
-                    if state.mode == Mode::Scroll { state.mode = Mode::Pane; }
+                    if state.mode == Mode::Scroll {
+                        state.mode = Mode::Pane;
+                    }
                 }
             }
         }
@@ -439,28 +490,34 @@ fn apply_notification(state: &mut AppState, n: Notification) {
             // separately, but be defensive); any local view missing from
             // `order` is appended in its original position to avoid losing
             // tabs if events race.
-            if let Ok(Event::ViewMoved { order, .. }) =
-                serde_json::from_value::<Event>(serde_json::json!({"method":"view.moved","params":n.params}))
-            {
+            if let Ok(Event::ViewMoved { order, .. }) = serde_json::from_value::<Event>(
+                serde_json::json!({"method":"view.moved","params":n.params}),
+            ) {
                 let mut by_id: std::collections::HashMap<String, ViewInfo> =
                     state.views.drain(..).map(|v| (v.id.clone(), v)).collect();
                 let mut next: Vec<ViewInfo> = Vec::with_capacity(order.len());
                 for id in &order {
-                    if let Some(v) = by_id.remove(id) { next.push(v); }
+                    if let Some(v) = by_id.remove(id) {
+                        next.push(v);
+                    }
                 }
                 // Append leftovers (rare) so we don't silently drop tabs.
-                for (_id, v) in by_id { next.push(v); }
+                for (_id, v) in by_id {
+                    next.push(v);
+                }
                 state.views = next;
             }
         }
 
         // PTY infrastructure events — these maintain the per-PTY screen
         // buffer + cwd map. Tab list is synced via view.* (above), not these.
-        "pty.created"   => {
-            if let Ok(Event::PtyCreated { info, .. }) =
-                serde_json::from_value::<Event>(serde_json::json!({"method":"pty.created","params":n.params}))
-            {
-                state.pty_views.entry(info.id.clone())
+        "pty.created" => {
+            if let Ok(Event::PtyCreated { info, .. }) = serde_json::from_value::<Event>(
+                serde_json::json!({"method":"pty.created","params":n.params}),
+            ) {
+                state
+                    .pty_views
+                    .entry(info.id.clone())
                     .or_insert_with(|| PtyView::new(info.rows.max(1), info.cols.max(1)));
                 state.pty_cwds.insert(info.id.clone(), info.cwd.clone());
                 state.pty_cmds.insert(info.id.clone(), info.cmd.clone());
@@ -489,8 +546,8 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 n.params.get("block_id").and_then(|v| v.as_str()),
                 n.params.get("text").and_then(|v| v.as_str()),
             ) {
-                state.pty_blocks.entry(pid.to_string())
-                    .or_default().running = Some(text.to_string());
+                state.pty_blocks.entry(pid.to_string()).or_default().running =
+                    Some(text.to_string());
                 if let Some(view) = state.pty_views.get_mut(pid) {
                     view.mark_block_start(block_id.to_string());
                 }
@@ -498,8 +555,13 @@ fn apply_notification(state: &mut AppState, n: Notification) {
         }
         "pty.command_finished" => {
             if let Some(pid) = n.params.get("pty_id").and_then(|v| v.as_str()) {
-                let exit = n.params.get("exit_code")
-                    .and_then(|v| if v.is_null() { None } else { v.as_i64().map(|x| x as i32) });
+                let exit = n.params.get("exit_code").and_then(|v| {
+                    if v.is_null() {
+                        None
+                    } else {
+                        v.as_i64().map(|x| x as i32)
+                    }
+                });
                 let entry = state.pty_blocks.entry(pid.to_string()).or_default();
                 let cmd = entry.running.take().unwrap_or_default();
                 entry.flash = Some((cmd, exit, std::time::Instant::now()));
@@ -551,8 +613,7 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                     // consumer reads them with strict framing.
                     let scanner = state.pty_scanners.entry(pid_owned.clone()).or_default();
                     let scan = scanner.feed(&bytes);
-                    // v2: shell-integration markers (OSC 133 / 7 / 7770 /
-                    // 7771) have no canonical response — server already
+                    // shell-integration markers have no canonical response — server already
                     // consumed them into block events. Only capability
                     // queries reach this defence-in-depth path.
                     for q in scan.queries {
@@ -560,7 +621,9 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                             state.pending_pty_writes.push((pid_owned.clone(), reply));
                         }
                     }
-                    let view = state.pty_views.entry(pid_owned)
+                    let view = state
+                        .pty_views
+                        .entry(pid_owned)
                         .or_insert_with(|| PtyView::new(24, 80));
                     view.process(&scan.passthrough);
                 }
@@ -573,18 +636,28 @@ fn apply_notification(state: &mut AppState, n: Notification) {
 // ─────────────────────────── Helpers ───────────────────────────
 
 fn active_view_info(state: &AppState) -> Option<&ViewInfo> {
-    state.active_view.as_ref().and_then(|id| state.views.iter().find(|v| &v.id == id))
+    state
+        .active_view
+        .as_ref()
+        .and_then(|id| state.views.iter().find(|v| &v.id == id))
 }
 
 fn active_index(state: &AppState) -> Option<usize> {
-    state.active_view.as_ref().and_then(|id| state.views.iter().position(|v| &v.id == id))
+    state
+        .active_view
+        .as_ref()
+        .and_then(|id| state.views.iter().position(|v| &v.id == id))
 }
 
 fn pty_id_of<'a>(state: &'a AppState, view_id: &str) -> Option<&'a PtyId> {
-    state.views.iter().find(|v| v.id == view_id).and_then(|v| match &v.spec {
-        ViewSpec::Pty { pty_id } => Some(pty_id),
-        _ => None,
-    })
+    state
+        .views
+        .iter()
+        .find(|v| v.id == view_id)
+        .and_then(|v| match &v.spec {
+            ViewSpec::Pty { pty_id } => Some(pty_id),
+            _ => None,
+        })
 }
 
 fn active_pty_id(state: &AppState) -> Option<&PtyId> {
@@ -602,48 +675,74 @@ fn active_pty_cwd(state: &AppState) -> Option<&PathBuf> {
 }
 
 async fn activate_view_id(client: &mut Client, view_id: ViewId) {
-    let _: serde_json::Value = client.call(
-        "view.activate",
-        pview::ActivateParams { view_id: Some(view_id) },
-    ).await.unwrap_or(serde_json::Value::Null);
+    let _: serde_json::Value = client
+        .call(
+            "view.activate",
+            pview::ActivateParams {
+                view_id: Some(view_id),
+            },
+        )
+        .await
+        .unwrap_or(serde_json::Value::Null);
 }
 
 async fn close_view_id(client: &mut Client, view_id: ViewId) {
-    let _: serde_json::Value = client.call(
-        "view.close",
-        pview::CloseParams { view_id },
-    ).await.unwrap_or(serde_json::Value::Null);
+    let _: serde_json::Value = client
+        .call("view.close", pview::CloseParams { view_id })
+        .await
+        .unwrap_or(serde_json::Value::Null);
 }
 
 async fn open_view(client: &mut Client, spec: ViewSpec, activate: bool) {
-    let _: serde_json::Value = client.call(
-        "view.open",
-        pview::OpenParams { spec, activate },
-    ).await.unwrap_or(serde_json::Value::Null);
+    let _: serde_json::Value = client
+        .call("view.open", pview::OpenParams { spec, activate })
+        .await
+        .unwrap_or(serde_json::Value::Null);
 }
 
 // ─────────────────────────── Lazy view content loading ───────────────────────────
 
 async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
-    let Some(vid) = state.active_view.clone() else { return };
-    if state.view_cache.contains_key(&vid) { return; }
-    let spec = match state.views.iter().find(|v| v.id == vid).map(|v| v.spec.clone()) {
+    let Some(vid) = state.active_view.clone() else {
+        return;
+    };
+    if state.view_cache.contains_key(&vid) {
+        return;
+    }
+    let spec = match state
+        .views
+        .iter()
+        .find(|v| v.id == vid)
+        .map(|v| v.spec.clone())
+    {
         Some(s) => s,
-        None    => return,
+        None => return,
     };
     match spec {
         ViewSpec::Preview { path } => {
-            if let Ok(r) = client.call::<_, pfs::ReadResult>(
-                "fs.read",
-                pfs::ReadParams { path: path.clone(), max_bytes: 5_000_000 },
-            ).await {
+            if let Ok(r) = client
+                .call::<_, pfs::ReadResult>(
+                    "fs.read",
+                    pfs::ReadParams {
+                        path: path.clone(),
+                        max_bytes: 5_000_000,
+                    },
+                )
+                .await
+            {
                 let bytes = BASE64.decode(r.content_b64.as_bytes()).unwrap_or_default();
                 let content = if r.binary {
-                    format!("(binary file, {} bytes, mime: {})", bytes.len(), r.mime.as_deref().unwrap_or("?"))
+                    format!(
+                        "(binary file, {} bytes, mime: {})",
+                        bytes.len(),
+                        r.mime.as_deref().unwrap_or("?")
+                    )
                 } else {
                     String::from_utf8_lossy(&bytes).into_owned()
                 };
-                state.view_cache.insert(vid, ViewBodyCache::Preview { content });
+                state
+                    .view_cache
+                    .insert(vid, ViewBodyCache::Preview { content });
             }
         }
         ViewSpec::Diff { staged, path } => {
@@ -651,11 +750,13 @@ async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
             // pointing at. Mirrors the web client's behavior — switching cwd
             // and reopening diff yields a fresh view of the new repo.
             let cwd = Some(state.current_path.clone());
-            if let Ok(r) = client.call::<_, pgit::DiffResult>(
-                "git.diff",
-                pgit::DiffParams { path, staged, cwd },
-            ).await {
-                state.view_cache.insert(vid, ViewBodyCache::Diff { patch: r.patch });
+            if let Ok(r) = client
+                .call::<_, pgit::DiffResult>("git.diff", pgit::DiffParams { path, staged, cwd })
+                .await
+            {
+                state
+                    .view_cache
+                    .insert(vid, ViewBodyCache::Diff { patch: r.patch });
             }
         }
         ViewSpec::Pty { .. } | ViewSpec::Image { .. } => {
@@ -666,7 +767,10 @@ async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
 
 // ─────────────────────────── Key handling ───────────────────────────
 
-enum KeyOutcome { Stay, Quit }
+enum KeyOutcome {
+    Stay,
+    Quit,
+}
 
 /// Number of rows we move on `C-v` / `M-v` in tree mode. Half a typical
 /// terminal height; we don't track the actual pane size here so this is a
@@ -674,10 +778,10 @@ enum KeyOutcome { Stay, Quit }
 const TREE_PAGE_LINES: i32 = 10;
 
 async fn handle_key(
-    state:  &mut AppState,
+    state: &mut AppState,
     client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     match state.mode {
         Mode::Prefix => {
@@ -686,19 +790,19 @@ async fn handle_key(
             state.mode = Mode::Pane;
             handle_prefix_key(state, client, code, mods).await
         }
-        Mode::Tree   => handle_tree_mode_key(state, client, code, mods).await,
+        Mode::Tree => handle_tree_mode_key(state, client, code, mods).await,
         Mode::Scroll => handle_scroll_mode_key(state, client, code, mods).await,
-        Mode::Pane   => handle_pane_key(state, client, code, mods).await,
+        Mode::Pane => handle_pane_key(state, client, code, mods).await,
     }
 }
 
 /// Default mode: every key (other than the prefix `Ctrl-g`) is forwarded to
 /// the active PTY, exactly like a tmux pane.
 async fn handle_pane_key(
-    state:  &mut AppState,
+    state: &mut AppState,
     client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     if matches!(code, KeyCode::Char('g')) && mods.contains(KeyModifiers::CONTROL) {
         state.mode = Mode::Prefix;
@@ -713,26 +817,35 @@ async fn handle_pane_key(
 /// back to Pane after the command (unless the command itself entered Tree
 /// or Scroll).
 async fn handle_prefix_key(
-    state:  &mut AppState,
+    state: &mut AppState,
     client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
     match (code, ctrl) {
         // tmux: prefix-c → new window
         (KeyCode::Char('c'), false) => {
             let (cols, rows) = (100u16, 30u16);
-            match client.call::<_, ppty::PtyCreateResult>(
-                "pty.create",
-                ppty::PtyCreateParams { cmd: None, cwd: None, env: vec![], cols, rows },
-            ).await {
-                Ok(r)  => state.status = format!("created {}", r.info.id),
+            match client
+                .call::<_, ppty::PtyCreateResult>(
+                    "pty.create",
+                    ppty::PtyCreateParams {
+                        cmd: None,
+                        cwd: None,
+                        env: vec![],
+                        cols,
+                        rows,
+                    },
+                )
+                .await
+            {
+                Ok(r) => state.status = format!("created {}", r.info.id),
                 Err(e) => state.status = format!("pty.create: {e}"),
             }
         }
         // tmux: prefix-n / prefix-p → next/prev window
-        (KeyCode::Char('n'), false) => cycle_tabs(state, client,  1).await,
+        (KeyCode::Char('n'), false) => cycle_tabs(state, client, 1).await,
         (KeyCode::Char('p'), false) => cycle_tabs(state, client, -1).await,
         // tmux: prefix-& → kill window
         (KeyCode::Char('&'), _) => {
@@ -763,7 +876,15 @@ async fn handle_prefix_key(
         (KeyCode::Char('g'), false) => re_anchor_tree(state, client).await,
         // open diff tab. Capital D so prefix-d stays "detach" per tmux.
         (KeyCode::Char('D'), false) => {
-            open_view(client, ViewSpec::Diff { staged: false, path: None }, true).await;
+            open_view(
+                client,
+                ViewSpec::Diff {
+                    staged: false,
+                    path: None,
+                },
+                true,
+            )
+            .await;
         }
         // enter Tree mode (file-tree navigation, emacs keys)
         (KeyCode::Char('t'), false) => {
@@ -800,19 +921,33 @@ async fn handle_prefix_key(
 fn jump_block(state: &mut AppState, forward: bool) {
     let pid = match active_pty_id(state) {
         Some(p) => p.clone(),
-        None    => { state.status = "no PTY to jump".into(); return; }
+        None => {
+            state.status = "no PTY to jump".into();
+            return;
+        }
     };
     let view = match state.pty_views.get_mut(&pid) {
         Some(v) => v,
-        None    => { state.status = "no PTY view yet".into(); return; }
+        None => {
+            state.status = "no PTY view yet".into();
+            return;
+        }
     };
-    let target = if forward { view.next_block_anchor() } else { view.prev_block_anchor() };
+    let target = if forward {
+        view.next_block_anchor()
+    } else {
+        view.prev_block_anchor()
+    };
     let Some(target) = target else {
-        state.status = if forward { "no later block".into() } else { "no earlier block".into() };
+        state.status = if forward {
+            "no later block".into()
+        } else {
+            "no earlier block".into()
+        };
         return;
     };
     view.jump_to_abs(target);
-    state.mode   = Mode::Scroll;
+    state.mode = Mode::Scroll;
     state.status = format!(
         "scroll · {} block · b/f to walk · q/Ctrl-g leave",
         if forward { "next" } else { "prev" },
@@ -823,37 +958,41 @@ fn jump_block(state: &mut AppState, forward: bool) {
 /// fallbacks since they're unambiguous when keys aren't being forwarded
 /// to a shell.
 async fn handle_tree_mode_key(
-    state:  &mut AppState,
+    state: &mut AppState,
     client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let alt  = mods.contains(KeyModifiers::ALT);
+    let alt = mods.contains(KeyModifiers::ALT);
     match (code, ctrl, alt) {
         // Ctrl-g re-enters Prefix so commands chain (the prefix is "always
         // reachable" from inside any sub-mode, tmux-style).
         (KeyCode::Char('g'), true, false) => {
-            state.mode   = Mode::Prefix;
+            state.mode = Mode::Prefix;
             state.status = "tree → prefix".into();
         }
         // Plain `q` leaves to Pane.
         (KeyCode::Char('q'), false, false) => {
-            state.mode   = Mode::Pane;
+            state.mode = Mode::Pane;
             state.status = "left tree".into();
         }
         // Selection up/down — emacs Ctrl-n / Ctrl-p (and arrow fallbacks).
-        (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => move_tree(state,  1),
-        (KeyCode::Char('p'), true, false) | (KeyCode::Up,   false, false) => move_tree(state, -1),
+        (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => move_tree(state, 1),
+        (KeyCode::Char('p'), true, false) | (KeyCode::Up, false, false) => move_tree(state, -1),
         // Page — emacs Ctrl-v / Alt-v.
-        (KeyCode::Char('v'), true, false) => move_tree(state,  TREE_PAGE_LINES),
+        (KeyCode::Char('v'), true, false) => move_tree(state, TREE_PAGE_LINES),
         (KeyCode::Char('v'), false, true) => move_tree(state, -TREE_PAGE_LINES),
         // First / last — emacs M-< / M->.
         (KeyCode::Char('<'), false, true) => move_tree(state, i32::MIN),
         (KeyCode::Char('>'), false, true) => move_tree(state, i32::MAX),
         // Open / go up — emacs Ctrl-m (RET) / Ctrl-h (BS) and friendly fallbacks.
-        (KeyCode::Char('m'), true, false) | (KeyCode::Enter,     false, false) => on_enter_in_tree(state, client).await,
-        (KeyCode::Char('h'), true, false) | (KeyCode::Backspace, false, false) => go_up_dir(state, client).await,
+        (KeyCode::Char('m'), true, false) | (KeyCode::Enter, false, false) => {
+            on_enter_in_tree(state, client).await
+        }
+        (KeyCode::Char('h'), true, false) | (KeyCode::Backspace, false, false) => {
+            go_up_dir(state, client).await
+        }
         _ => {}
     }
     Ok(KeyOutcome::Stay)
@@ -861,17 +1000,17 @@ async fn handle_tree_mode_key(
 
 /// Active-PTY scrollback. Same emacs movement vocabulary as Tree mode.
 async fn handle_scroll_mode_key(
-    state:  &mut AppState,
+    state: &mut AppState,
     _client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let alt  = mods.contains(KeyModifiers::ALT);
+    let alt = mods.contains(KeyModifiers::ALT);
     match (code, ctrl, alt) {
         // Ctrl-g re-enters Prefix so commands chain (same as Tree mode).
         (KeyCode::Char('g'), true, false) => {
-            state.mode   = Mode::Prefix;
+            state.mode = Mode::Prefix;
             state.status = "scroll → prefix".into();
         }
         // Plain `q` leaves to Pane. tmux's copy-mode-q leaves where you are;
@@ -879,18 +1018,20 @@ async fn handle_scroll_mode_key(
         // output that they have to scroll back to see.
         (KeyCode::Char('q'), false, false) => {
             jump_active_pty(state, false);
-            state.mode   = Mode::Pane;
+            state.mode = Mode::Pane;
             state.status = "back to live".into();
         }
         // Page (emacs).
         (KeyCode::Char('v'), true, false) => scroll_active_pty(state, -1),
-        (KeyCode::Char('v'), false, true) => scroll_active_pty(state,  1),
+        (KeyCode::Char('v'), false, true) => scroll_active_pty(state, 1),
         // Top of scrollback / live (emacs M-< / M->).
         (KeyCode::Char('<'), false, true) => jump_active_pty(state, true),
         (KeyCode::Char('>'), false, true) => jump_active_pty(state, false),
         // Line up/down.
-        (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => scroll_lines(state, -1),
-        (KeyCode::Char('p'), true, false) | (KeyCode::Up,   false, false) => scroll_lines(state,  1),
+        (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => {
+            scroll_lines(state, -1)
+        }
+        (KeyCode::Char('p'), true, false) | (KeyCode::Up, false, false) => scroll_lines(state, 1),
         // v2 shell-integration: walk between block starts.
         (KeyCode::Char('b'), false, false) => jump_block(state, /* forward */ false),
         (KeyCode::Char('f'), false, false) => jump_block(state, /* forward */ true),
@@ -900,7 +1041,10 @@ async fn handle_scroll_mode_key(
 }
 
 fn scroll_lines(state: &mut AppState, lines: i64) {
-    let id = match active_pty_id(state) { Some(i) => i.clone(), None => return };
+    let id = match active_pty_id(state) {
+        Some(i) => i.clone(),
+        None => return,
+    };
     if let Some(view) = state.pty_views.get_mut(&id) {
         view.scroll_lines(lines);
         state.status = scroll_status(view);
@@ -908,7 +1052,9 @@ fn scroll_lines(state: &mut AppState, lines: i64) {
 }
 
 async fn cycle_tabs(state: &AppState, client: &mut Client, delta: i32) {
-    if state.views.is_empty() { return; }
+    if state.views.is_empty() {
+        return;
+    }
     let len = state.views.len() as i32;
     let cur = active_index(state).unwrap_or(0) as i32;
     let next = ((cur + delta).rem_euclid(len)) as usize;
@@ -917,20 +1063,28 @@ async fn cycle_tabs(state: &AppState, client: &mut Client, delta: i32) {
 }
 
 async fn forward_to_pty(
-    state:  &AppState,
+    state: &AppState,
     client: &mut Client,
-    code:   KeyCode,
-    mods:   KeyModifiers,
+    code: KeyCode,
+    mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     let Some(pty_id) = active_pty_id(state).cloned() else {
         return Ok(KeyOutcome::Stay);
     };
     let bytes = key_to_bytes(code, mods);
-    if bytes.is_empty() { return Ok(KeyOutcome::Stay); }
-    let _: serde_json::Value = client.call(
-        "pty.write",
-        ppty::PtyWriteParams { pty_id, data: bytes },
-    ).await.unwrap_or(serde_json::Value::Null);
+    if bytes.is_empty() {
+        return Ok(KeyOutcome::Stay);
+    }
+    let _: serde_json::Value = client
+        .call(
+            "pty.write",
+            ppty::PtyWriteParams {
+                pty_id,
+                data: bytes,
+            },
+        )
+        .await
+        .unwrap_or(serde_json::Value::Null);
     Ok(KeyOutcome::Stay)
 }
 
@@ -939,7 +1093,9 @@ fn key_to_bytes(code: KeyCode, mods: KeyModifiers) -> Vec<u8> {
         KeyCode::Char(c) => {
             if mods.contains(KeyModifiers::CONTROL) {
                 let lc = c.to_ascii_lowercase();
-                if ('a'..='z').contains(&lc) { return vec![(lc as u8) - b'a' + 1]; }
+                if ('a'..='z').contains(&lc) {
+                    return vec![(lc as u8) - b'a' + 1];
+                }
                 return vec![c as u8];
             }
             if mods.contains(KeyModifiers::ALT) {
@@ -949,31 +1105,41 @@ fn key_to_bytes(code: KeyCode, mods: KeyModifiers) -> Vec<u8> {
             }
             c.to_string().into_bytes()
         }
-        KeyCode::Enter      => vec![b'\r'],
-        KeyCode::Tab        => vec![b'\t'],
-        KeyCode::Backspace  => vec![0x7f],
-        KeyCode::Esc        => vec![0x1b],
-        KeyCode::Up         => b"\x1b[A".to_vec(),
-        KeyCode::Down       => b"\x1b[B".to_vec(),
-        KeyCode::Right      => b"\x1b[C".to_vec(),
-        KeyCode::Left       => b"\x1b[D".to_vec(),
-        KeyCode::Home       => b"\x1b[H".to_vec(),
-        KeyCode::End        => b"\x1b[F".to_vec(),
-        KeyCode::PageUp     => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown   => b"\x1b[6~".to_vec(),
-        KeyCode::Delete     => b"\x1b[3~".to_vec(),
-        _                   => vec![],
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        _ => vec![],
     }
 }
 
 fn page_size(state: &AppState) -> i64 {
-    let id = match active_pty_id(state) { Some(i) => i, None => return 10 };
-    state.pty_last_size.get(id).map(|(_, r)| (*r / 2).max(1) as i64).unwrap_or(10)
+    let id = match active_pty_id(state) {
+        Some(i) => i,
+        None => return 10,
+    };
+    state
+        .pty_last_size
+        .get(id)
+        .map(|(_, r)| (*r / 2).max(1) as i64)
+        .unwrap_or(10)
 }
 
 fn scroll_active_pty(state: &mut AppState, dir: i32) {
     let step = -(dir as i64) * page_size(state);
-    let id   = match active_pty_id(state) { Some(i) => i.clone(), None => return };
+    let id = match active_pty_id(state) {
+        Some(i) => i.clone(),
+        None => return,
+    };
     if let Some(view) = state.pty_views.get_mut(&id) {
         view.scroll_lines(step);
         state.status = scroll_status(view);
@@ -981,25 +1147,37 @@ fn scroll_active_pty(state: &mut AppState, dir: i32) {
 }
 
 fn jump_active_pty(state: &mut AppState, top: bool) {
-    let id = match active_pty_id(state) { Some(i) => i.clone(), None => return };
+    let id = match active_pty_id(state) {
+        Some(i) => i.clone(),
+        None => return,
+    };
     if let Some(view) = state.pty_views.get_mut(&id) {
-        if top { view.jump_top(); } else { view.jump_live(); }
+        if top {
+            view.jump_top();
+        } else {
+            view.jump_live();
+        }
         state.status = scroll_status(view);
     }
 }
 
 fn scroll_status(view: &PtyView) -> String {
     match view.anchor() {
-        None    => "live".into(),
-        Some(a) => format!("scroll: line {a} of {} (End=live, Home=top)", view.abs_top()),
+        None => "live".into(),
+        Some(a) => format!(
+            "scroll: line {a} of {} (End=live, Home=top)",
+            view.abs_top()
+        ),
     }
 }
 
 fn move_tree(state: &mut AppState, delta: i32) {
     let total = state.files.len() + parent_offset(state);
-    if total == 0 { return; }
-    let max  = total as i32 - 1;
-    let cur  = state.tree_state.selected().unwrap_or(0) as i32;
+    if total == 0 {
+        return;
+    }
+    let max = total as i32 - 1;
+    let cur = state.tree_state.selected().unwrap_or(0) as i32;
     // Clamp instead of wrap. `i32::MIN`/`MAX` are the sentinels used for
     // emacs `M-<` / `M->` (jump to first / last) — they saturate cleanly.
     let new = cur.saturating_add(delta).clamp(0, max);
@@ -1009,28 +1187,45 @@ fn move_tree(state: &mut AppState, delta: i32) {
 /// Whether to render a `.. (parent)` row at the top of the file list. We hide
 /// it when the current path has no parent (e.g., `/`) to avoid a dead row.
 fn parent_offset(state: &AppState) -> usize {
-    if state.current_path.parent().is_some() { 1 } else { 0 }
+    if state.current_path.parent().is_some() {
+        1
+    } else {
+        0
+    }
 }
 
 async fn refresh_tree(state: &mut AppState, client: &mut Client) {
     let path_str = state.current_path.to_string_lossy().into_owned();
-    if let Ok(t) = client.call::<_, pfs::TreeResult>(
-        "fs.tree",
-        pfs::TreeParams { path: path_str.clone(), depth: 1, show_hidden: false },
-    ).await {
+    if let Ok(t) = client
+        .call::<_, pfs::TreeResult>(
+            "fs.tree",
+            pfs::TreeParams {
+                path: path_str.clone(),
+                depth: 1,
+                show_hidden: false,
+            },
+        )
+        .await
+    {
         state.files = t.entries;
         let cap = state.files.len() + parent_offset(state);
-        if cap == 0 { state.tree_state.select(None); }
-        else if state.tree_state.selected().unwrap_or(0) >= cap {
+        if cap == 0 {
+            state.tree_state.select(None);
+        } else if state.tree_state.selected().unwrap_or(0) >= cap {
             state.tree_state.select(Some(cap - 1));
         }
     }
     // git.status with the active cwd; if outside any repo the server returns
     // NotAGitRepo, which we surface as None (panel shows "(not a git repo)").
-    state.git = client.call::<_, pgit::StatusResult>(
-        "git.status",
-        pgit::StatusParams { cwd: Some(state.current_path.clone()) },
-    ).await.ok();
+    state.git = client
+        .call::<_, pgit::StatusResult>(
+            "git.status",
+            pgit::StatusParams {
+                cwd: Some(state.current_path.clone()),
+            },
+        )
+        .await
+        .ok();
     state.status = format!("refreshed @ {path_str}");
 }
 
@@ -1038,25 +1233,29 @@ async fn refresh_tree(state: &mut AppState, client: &mut Client) {
 /// snap us back on the next pty.cwd_changed tick.
 async fn change_dir(state: &mut AppState, client: &mut Client, new_path: PathBuf) {
     state.current_path = new_path;
-    state.manual_nav   = true;
+    state.manual_nav = true;
     state.tree_state.select(Some(0));
     refresh_tree(state, client).await;
 }
 
 async fn go_up_dir(state: &mut AppState, client: &mut Client) {
-    let Some(parent) = state.current_path.parent().map(|p| p.to_path_buf()) else { return };
+    let Some(parent) = state.current_path.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
     change_dir(state, client, parent).await;
 }
 
 async fn on_enter_in_tree(state: &mut AppState, client: &mut Client) {
-    let sel  = state.tree_state.selected().unwrap_or(0);
-    let off  = parent_offset(state);
+    let sel = state.tree_state.selected().unwrap_or(0);
+    let off = parent_offset(state);
     if sel == 0 && off == 1 {
         go_up_dir(state, client).await;
         return;
     }
     let idx = sel.saturating_sub(off);
-    let Some(ent) = state.files.get(idx).cloned() else { return };
+    let Some(ent) = state.files.get(idx).cloned() else {
+        return;
+    };
     let abs_path = state.current_path.join(&ent.name);
     match ent.kind {
         pfs::FileType::Dir => change_dir(state, client, abs_path).await,
@@ -1097,7 +1296,11 @@ async fn re_anchor_tree(state: &mut AppState, client: &mut Client) {
 fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(f.area());
 
     let mut spans: Vec<Span> = vec![Span::raw(format!(
@@ -1108,12 +1311,14 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         if state.other_clients == 1 { "" } else { "s" },
     ))];
     match state.mode {
-        Mode::Pane   => {}
+        Mode::Pane => {}
         Mode::Prefix => spans.push(Span::raw("  [PREFIX]")),
-        Mode::Tree   => spans.push(Span::raw("  [TREE]")),
+        Mode::Tree => spans.push(Span::raw("  [TREE]")),
         Mode::Scroll => spans.push(Span::raw("  [SCROLL]")),
     }
-    if state.manual_nav { spans.push(Span::raw("  [MANUAL]")); }
+    if state.manual_nav {
+        spans.push(Span::raw("  [MANUAL]"));
+    }
     // v2 shell-integration: render the active PTY's command-state chip
     // — `▶ cmd` while running, `✓0 cmd` / `✗N cmd` for ~3s after.
     if let Some(active_pid) = active_pty_id(state) {
@@ -1148,9 +1353,9 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     }
     for e in &state.files {
         let glyph = match e.kind {
-            pfs::FileType::Dir     => "📁 ",
+            pfs::FileType::Dir => "📁 ",
             pfs::FileType::Symlink => "↳ ",
-            pfs::FileType::File    => "  ",
+            pfs::FileType::File => "  ",
         };
         let style = if matches!(e.kind, pfs::FileType::Dir) {
             Style::default().fg(Color::Cyan)
@@ -1161,7 +1366,9 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     }
     // Show only the leaf segment in the panel title to keep it compact;
     // the full absolute path is in the header bar.
-    let leaf = state.current_path.file_name()
+    let leaf = state
+        .current_path
+        .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| state.current_path.to_string_lossy().into_owned());
     let title = format!("files · {leaf}");
@@ -1185,11 +1392,16 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
                     Span::raw(" "),
                     Span::raw(f.path.clone()),
                 ]));
-                if v.len() > 200 { break; }
+                if v.len() > 200 {
+                    break;
+                }
             }
             v
         }
-        None => vec![Line::from(Span::styled("(not a git repo)", Style::default().fg(Color::DarkGray)))],
+        None => vec![Line::from(Span::styled(
+            "(not a git repo)",
+            Style::default().fg(Color::DarkGray),
+        ))],
     };
     f.render_widget(
         Paragraph::new(git_lines)
@@ -1209,31 +1421,47 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     // server-side monotonic id, so closing the middle PTY makes the next one
     // slide up to "pty:2" rather than leaving a "sh-7" gap.
     let mut pty_seen = 0usize;
-    let titles: Vec<Line> = state.views.iter().enumerate().map(|(i, v)| {
-        let label = match &v.spec {
-            ViewSpec::Pty { pty_id } => {
-                pty_seen += 1;
-                pty_tab_label(state, pty_id, pty_seen)
-            }
-            _ => view_label(v),
-        };
-        Line::from(format!("{} {}", i + 1, label))
-    }).collect();
+    let titles: Vec<Line> = state
+        .views
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let label = match &v.spec {
+                ViewSpec::Pty { pty_id } => {
+                    pty_seen += 1;
+                    pty_tab_label(state, pty_id, pty_seen)
+                }
+                _ => view_label(v),
+            };
+            Line::from(format!("{} {}", i + 1, label))
+        })
+        .collect();
     let tabs_widget = if titles.is_empty() {
         Tabs::new(vec![Line::from("(no tabs — Ctrl-b c to open PTY)")])
     } else {
         Tabs::new(titles)
             .select(active_index(state).unwrap_or(0))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED).fg(Color::LightYellow))
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::REVERSED)
+                    .fg(Color::LightYellow),
+            )
     };
-    f.render_widget(tabs_widget.block(Block::default().borders(Borders::ALL).title("tabs")), right[0]);
+    f.render_widget(
+        tabs_widget.block(Block::default().borders(Borders::ALL).title("tabs")),
+        right[0],
+    );
 
-    let body_block = Block::default().borders(Borders::ALL).title(match state.mode {
-        Mode::Pane   => "Ctrl-g c=newpty · Ctrl-g n/p=tab · Ctrl-g t=tree · Ctrl-g [=scroll · Ctrl-g ?=help",
-        Mode::Prefix => "[prefix] · waiting for command key",
-        Mode::Tree   => "[tree mode] · Ctrl-n/p select · Ctrl-m open · Ctrl-h up · q to leave",
-        Mode::Scroll => "[scroll mode] · Ctrl-v/Alt-v page · Alt-</Alt-> top/live · q to leave",
-    });
+    let body_block = Block::default()
+        .borders(Borders::ALL)
+        .title(match state.mode {
+            Mode::Pane => {
+                "Ctrl-g c=newpty · Ctrl-g n/p=tab · Ctrl-g t=tree · Ctrl-g [=scroll · Ctrl-g ?=help"
+            }
+            Mode::Prefix => "[prefix] · waiting for command key",
+            Mode::Tree => "[tree mode] · Ctrl-n/p select · Ctrl-m open · Ctrl-h up · q to leave",
+            Mode::Scroll => "[scroll mode] · Ctrl-v/Alt-v page · Alt-</Alt-> top/live · q to leave",
+        });
     let inner = body_block.inner(right[1]);
     f.render_widget(body_block, right[1]);
 
@@ -1249,18 +1477,30 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     let active_body: ActiveBody = match active_view_info(state).map(|v| v.spec.clone()) {
         Some(ViewSpec::Pty { pty_id }) => ActiveBody::Pty(pty_id),
         Some(ViewSpec::Preview { .. }) => {
-            match state.active_view.as_ref().and_then(|vid| state.view_cache.get(vid)) {
-                Some(ViewBodyCache::Preview { content, .. }) => ActiveBody::Preview(content.clone()),
+            match state
+                .active_view
+                .as_ref()
+                .and_then(|vid| state.view_cache.get(vid))
+            {
+                Some(ViewBodyCache::Preview { content, .. }) => {
+                    ActiveBody::Preview(content.clone())
+                }
                 _ => ActiveBody::Loading("loading file…"),
             }
         }
         Some(ViewSpec::Diff { .. }) => {
-            match state.active_view.as_ref().and_then(|vid| state.view_cache.get(vid)) {
+            match state
+                .active_view
+                .as_ref()
+                .and_then(|vid| state.view_cache.get(vid))
+            {
                 Some(ViewBodyCache::Diff { patch }) => ActiveBody::Diff(patch.clone()),
                 _ => ActiveBody::Loading("loading diff…"),
             }
         }
-        Some(ViewSpec::Image { path }) => ActiveBody::Loading(Box::leak(format!("(image: {} — open in browser to view)", path).into_boxed_str())),
+        Some(ViewSpec::Image { path }) => ActiveBody::Loading(Box::leak(
+            format!("(image: {} — open in browser to view)", path).into_boxed_str(),
+        )),
         None => ActiveBody::None,
     };
     match active_body {
@@ -1269,17 +1509,28 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
             f.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), inner);
         }
         ActiveBody::Diff(patch) => {
-            let lines: Vec<Line> = patch.lines().map(|l| {
-                let style = if l.starts_with('+') { Style::default().fg(Color::Green) }
-                            else if l.starts_with('-') { Style::default().fg(Color::Red) }
-                            else if l.starts_with("@@") { Style::default().fg(Color::Cyan) }
-                            else { Style::default() };
-                Line::from(Span::styled(l.to_string(), style))
-            }).collect();
+            let lines: Vec<Line> = patch
+                .lines()
+                .map(|l| {
+                    let style = if l.starts_with('+') {
+                        Style::default().fg(Color::Green)
+                    } else if l.starts_with('-') {
+                        Style::default().fg(Color::Red)
+                    } else if l.starts_with("@@") {
+                        Style::default().fg(Color::Cyan)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(l.to_string(), style))
+                })
+                .collect();
             f.render_widget(Paragraph::new(lines), inner);
         }
         ActiveBody::Loading(msg) => {
-            f.render_widget(Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)), inner);
+            f.render_widget(
+                Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
+                inner,
+            );
         }
         ActiveBody::None => {}
     }
@@ -1296,12 +1547,7 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     );
 }
 
-fn render_pty_tab(
-    f:     &mut ratatui::Frame,
-    state: &mut AppState,
-    id:    &PtyId,
-    inner: Rect,
-) {
+fn render_pty_tab(f: &mut ratatui::Frame, state: &mut AppState, id: &PtyId, inner: Rect) {
     // Reserve one column on the left for a per-block status gutter:
     //   ▶ yellow │ — running command's row range
     //   ✓ green  │ — finished, exit 0
@@ -1311,20 +1557,33 @@ fn render_pty_tab(
     // block use a vertical bar in the same color. Rows that don't fall
     // inside any tracked block stay blank.
     const GUTTER_W: u16 = 1;
-    if inner.width <= GUTTER_W || inner.height == 0 { return; }
-    let gutter_area = Rect { x: inner.x, y: inner.y, width: GUTTER_W, height: inner.height };
-    let pty_area    = Rect {
-        x: inner.x + GUTTER_W, y: inner.y,
-        width:  inner.width - GUTTER_W,
+    if inner.width <= GUTTER_W || inner.height == 0 {
+        return;
+    }
+    let gutter_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: GUTTER_W,
+        height: inner.height,
+    };
+    let pty_area = Rect {
+        x: inner.x + GUTTER_W,
+        y: inner.y,
+        width: inner.width - GUTTER_W,
         height: inner.height,
     };
 
     let cols = pty_area.width.max(1);
     let rows = pty_area.height.max(1);
 
-    let view = state.pty_views.entry(id.clone()).or_insert_with(|| PtyView::new(rows, cols));
+    let view = state
+        .pty_views
+        .entry(id.clone())
+        .or_insert_with(|| PtyView::new(rows, cols));
     let (sr, sc) = view.current_size();
-    if sr != rows || sc != cols { view.set_size(rows, cols); }
+    if sr != rows || sc != cols {
+        view.set_size(rows, cols);
+    }
     let last = state.pty_last_size.get(id).copied();
     if last != Some((cols, rows)) {
         state.pty_last_size.insert(id.clone(), (cols, rows));
@@ -1332,8 +1591,8 @@ fn render_pty_tab(
     }
 
     let scr_ref = state.pty_views.get_mut(id).unwrap();
-    let cursor          = scr_ref.cursor_position();
-    let scrolled        = scr_ref.is_scrolled_back();
+    let cursor = scr_ref.cursor_position();
+    let scrolled = scr_ref.is_scrolled_back();
     let abs_top_visible = scr_ref.anchor().unwrap_or(scr_ref.abs_top());
     // Snapshot the block list before borrowing the screen; we'll need
     // the buffer mutably afterward to paint the gutter.
@@ -1345,20 +1604,24 @@ fn render_pty_tab(
     for r in 0..rows {
         let abs_r = abs_top_visible.saturating_add(r as u64);
         let block = blocks.iter().rev().find(|b| {
-            b.start_abs <= abs_r && match b.end_abs {
-                Some(end) => abs_r < end,
-                None      => true, // running: extends to live cursor
-            }
+            b.start_abs <= abs_r
+                && match b.end_abs {
+                    Some(end) => abs_r < end,
+                    None => true, // running: extends to live cursor
+                }
         });
         if let Some(b) = block {
             let (sym, color) = match b.status {
-                BlockStatus::Running           => ("▶", Color::Yellow),
+                BlockStatus::Running => ("▶", Color::Yellow),
                 BlockStatus::Finished(Some(0)) => ("✓", Color::Green),
                 BlockStatus::Finished(Some(_)) => ("✗", Color::Red),
-                BlockStatus::Finished(None)    => ("·", Color::Gray),
+                BlockStatus::Finished(None) => ("·", Color::Gray),
             };
             let glyph = if abs_r == b.start_abs { sym } else { "│" };
-            if let Some(cell) = buf.cell_mut(Position { x: gutter_area.x, y: gutter_area.y + r }) {
+            if let Some(cell) = buf.cell_mut(Position {
+                x: gutter_area.x,
+                y: gutter_area.y + r,
+            }) {
                 cell.set_symbol(glyph).set_style(Style::default().fg(color));
             }
         }
@@ -1377,10 +1640,16 @@ fn render_pty_tab(
 
 fn view_label(v: &ViewInfo) -> String {
     match &v.spec {
-        ViewSpec::Pty { pty_id }       => format!("pty:{pty_id}"),
-        ViewSpec::Preview { path }     => format!("file:{path}"),
-        ViewSpec::Diff { staged, .. }  => if *staged { "diff(staged)".into() } else { "diff".into() },
-        ViewSpec::Image { path }       => format!("img:{path}"),
+        ViewSpec::Pty { pty_id } => format!("pty:{pty_id}"),
+        ViewSpec::Preview { path } => format!("file:{path}"),
+        ViewSpec::Diff { staged, .. } => {
+            if *staged {
+                "diff(staged)".into()
+            } else {
+                "diff".into()
+            }
+        }
+        ViewSpec::Image { path } => format!("img:{path}"),
     }
 }
 
@@ -1397,9 +1666,12 @@ fn block_chip(blocks: &HashMap<PtyId, PtyBlockUi>, pty_id: &str) -> Option<(Stri
             let (sym, color) = match exit {
                 Some(0) => ("✓", Color::Green),
                 Some(_) => ("✗", Color::Red),
-                None    => ("·", Color::Gray),
+                None => ("·", Color::Gray),
             };
-            let exit_str = match exit { Some(c) => format!("{c}"), None => String::new() };
+            let exit_str = match exit {
+                Some(c) => format!("{c}"),
+                None => String::new(),
+            };
             return Some((format!("{sym}{exit_str} {}", trim_cmd(cmd, 40)), color));
         }
     }
@@ -1422,22 +1694,28 @@ fn trim_cmd(cmd: &str, max: usize) -> String {
 /// skipped). When nothing is running, the suffix is omitted; falling
 /// back chain: cwd → spawn cmd basename → 1-based ordinal.
 fn pty_tab_label(state: &AppState, pty_id: &str, ordinal: usize) -> String {
-    let cwd_base = state.pty_cwds.get(pty_id)
+    let cwd_base = state
+        .pty_cwds
+        .get(pty_id)
         .and_then(|p| p.file_name().and_then(|s| s.to_str()))
         .map(|s| s.to_string());
-    let fg = state.pty_blocks.get(pty_id)
+    let fg = state
+        .pty_blocks
+        .get(pty_id)
         .and_then(|b| b.running.as_deref())
         .map(first_meaningful_token)
         .filter(|s| !s.is_empty());
 
     match (cwd_base, fg) {
         (Some(c), Some(f)) => format!("{c} · {f}"),
-        (Some(c), None)    => c,
-        (None,    Some(f)) => f,
-        (None,    None)    => {
+        (Some(c), None) => c,
+        (None, Some(f)) => f,
+        (None, None) => {
             if let Some(cmd) = state.pty_cmds.get(pty_id) {
                 let base = first_meaningful_token(cmd);
-                if !base.is_empty() { return base; }
+                if !base.is_empty() {
+                    return base;
+                }
             }
             format!("pty:{ordinal}")
         }
@@ -1447,8 +1725,14 @@ fn pty_tab_label(state: &AppState, pty_id: &str, ordinal: usize) -> String {
 fn short_status(s: pgit::GitFileStatus) -> &'static str {
     use pgit::GitFileStatus::*;
     match s {
-        Unmodified => ".", Modified => "M", Added => "A", Deleted => "D",
-        Renamed => "R", Copied => "C", Untracked => "?", Ignored => "!",
+        Unmodified => ".",
+        Modified => "M",
+        Added => "A",
+        Deleted => "D",
+        Renamed => "R",
+        Copied => "C",
+        Untracked => "?",
+        Ignored => "!",
         Conflicted => "U",
     }
 }

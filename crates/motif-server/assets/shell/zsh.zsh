@@ -15,8 +15,12 @@ __motif_hex() {
     LC_ALL=C printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'
 }
 
-__motif_emit_osc() {
-    printf '\e]%s;%s\a' "$1" "$2"
+__motif_emit_si() {
+    if [[ $# -gt 1 ]]; then
+        printf '\e]777;%s;%s\a' "$1" "$2"
+    else
+        printf '\e]777;%s\a' "$1"
+    fi
 }
 
 __motif_json_escape() {
@@ -52,19 +56,19 @@ __motif_build_context_json() {
 __motif_precmd() {
     local last_exit=$?
     if [[ -n "$__motif_in_cmd" ]]; then
-        printf '\e]133;D;%s\a' "$last_exit"
+        __motif_emit_si D "$last_exit"
         unset __motif_in_cmd
     fi
-    printf '\e]133;A\a'
-    __motif_emit_osc 7    "file://${HOST}${PWD}"
-    __motif_emit_osc 7771 "$(__motif_hex "$(__motif_build_context_json)")"
-    printf '\e]133;B\a'
+    __motif_emit_si A
+    __motif_emit_si P "Cwd=file://${HOST}${PWD}"
+    __motif_emit_si P "Context=$(__motif_hex "$(__motif_build_context_json)")"
+    __motif_emit_si B
 }
 
 __motif_preexec() {
     local cmd=$1
-    __motif_emit_osc 7770 "$(__motif_hex "$cmd")"
-    printf '\e]133;C\a'
+    __motif_emit_si E "$(__motif_hex "$cmd")"
+    __motif_emit_si C
     __motif_in_cmd=1
 }
 

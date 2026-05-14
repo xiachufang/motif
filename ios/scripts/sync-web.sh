@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync motif-web build output into Motif/Resources/web so Xcode bundles it.
+# Sync the web build output into Motif/Resources/web so Xcode bundles it.
 # Run before xcodegen / build. Idempotent.
 
 set -euo pipefail
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 IOS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 REPO_ROOT="$(cd -- "$IOS_DIR/.." &> /dev/null && pwd)"
 
-SRC="$REPO_ROOT/crates/motif-web/static"
+SRC="$REPO_ROOT/web/dist"
 DST="$IOS_DIR/Motif/Resources/web"
 
 if [[ ! -d "$SRC" ]]; then

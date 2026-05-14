@@ -1,38 +1,26 @@
-// JSON-RPC 2.0 over a single WebSocket. Designed for the motif-web bridge:
-// the first frame is `auth.login`, the bridge replies with a synthetic
-// success, and from then on frames flow transparently to/from motifd.
+// New-protocol web client. fetch() for /rpc/<method>, WebSocket for
+// /events, one WebSocket per open PTY for /pty/<id>. Synthesizes legacy
+// `pty.output` events from per-PTY byte streams so existing consumers
+// (Workspace.tsx and friends) don't need rewires beyond the new
+// connect API.
 //
-// Auto-reconnect: on unexpected close, the client opens a fresh WS,
-// re-runs `auth.login` with the cached token, then fires `onReconnect`
-// so the workspace can call `session.attach { last_seq }` to replay
-// missed events. Pending requests issued on the dead socket are
-// rejected; new calls during the gap also reject (caller should retry
-// after onReconnect). Explicit `close()` disables reconnect.
+// Auth model:
+//   - HTTP requests carry `Authorization: Bearer <browser_token>`.
+//   - WS opens carry `?token=<browser_token>` in the URL because the
+//     browser WebSocket API can't set headers. motifd accepts the query
+//     token using the same server-side token store.
+//
+// Same-origin assumption: this client targets `location.origin` —
+// motifd itself.
 
 import type { Event } from "../proto/types";
-
-/// True when the page is running inside the Motif iOS App. In native mode
-/// the WS upgrade Authorization header is injected at the local proxy
-/// layer, so the JS-side auth.login dance is unnecessary (and harmful —
-/// motifd has no auth.login method).
-function isRunningNative(): boolean {
-  const w = window as unknown as { motifNative?: { isNative?: boolean } };
-  return w.motifNative?.isNative === true;
-}
-
-interface PendingCall {
-  resolve: (v: unknown) => void;
-  reject:  (e: Error) => void;
-}
+import { ShellState, type ShellEvent } from "../shellIntegration";
 
 export type EventHandler = (ev: Event) => void;
 
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
 
-// Truncate long strings (base64 PTY chunks, big HTML blobs) so the console
-// stays readable. Frames are still logged in full structure, just with
-// long strings summarized.
 function summarize(v: unknown, maxStr = 200): string {
   try {
     return JSON.stringify(v, (_k, val) => {
@@ -46,70 +34,203 @@ function summarize(v: unknown, maxStr = 200): string {
   }
 }
 
+function b64encode(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
 export class RpcClient {
-  private ws:        WebSocket | null = null;
-  private token:     string;
-  private nextId   = 1;
-  private pending  = new Map<number, PendingCall>();
+  private token: string;
+  private sessionID: string | null = null;
+  private eventsWs: WebSocket | null = null;
+  private ptyWs   = new Map<string, WebSocket>();
+  /// Per-PTY shell-integration parser. Drives block-state machine
+  /// off shell-integration OSC markers in the /pty/<id> byte stream and
+  /// emits the same shape of structured notifications the server
+  /// used to push.
+  private ptyShell = new Map<string, ShellState>();
   private handlers = new Set<EventHandler>();
-  private closed   = false;
+  private closed = false;
   private reconnectDelay = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Fires after a transparent reconnect + auth.login succeed. The
-   *  workspace uses this to call `session.attach` with the last seen
-   *  `seq` so the server can replay missed events. */
-  public  onReconnect: (() => void | Promise<void>) | null = null;
-  /** Fires only on explicit close() or when reconnect is permanently
-   *  given up (auth.login fails — token revoked). */
-  public  onClose:     (() => void) | null = null;
+  /** Fires after a transparent reconnect of `/events`. Workspace
+   *  calls `session.attach` with the last seen seq for replay. */
+  public onReconnect: (() => void | Promise<void>) | null = null;
+  public onClose:     (() => void) | null = null;
 
   private constructor(token: string) {
     this.token = token;
   }
 
-  /** Open a connection, perform auth.login, return a ready RpcClient. */
+  /** Probe the new endpoint by calling `session.list`. The server
+   *  rejects unauthenticated bearer; success means the token is
+   *  good and the new-protocol routes are wired. */
   static async connect(token: string): Promise<RpcClient> {
     const c = new RpcClient(token);
-    await c.openSocket();
+    await c.httpCall("session.list", {});  // throws on auth failure
     return c;
   }
 
-  private async openSocket(): Promise<void> {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url   = `${proto}://${location.host}/ws`;
-    console.log("[rpc] opening", url);
-    const ws    = new WebSocket(url);
-    await new Promise<void>((res, rej) => {
-      ws.addEventListener("open",  () => res(),                                  { once: true });
-      ws.addEventListener("error", () => rej(new Error("connection failed")),    { once: true });
-    });
-    console.log("[rpc] open");
-    this.ws = ws;
-    ws.addEventListener("message", e => this.onMessage(e.data));
-    ws.addEventListener("close",   () => this.handleSocketClose());
-    ws.addEventListener("error",   () => { /* surface via close */ });
-    // motifd uses Bearer auth on the WS upgrade. The motif-web bridge
-    // expected an `auth.login` first frame instead because browsers can't
-    // set request headers on a WebSocket open. The iOS App injects the
-    // Authorization header at the local proxy, so when running natively
-    // we skip the legacy first-frame dance entirely — sending it would
-    // make motifd reject the connection (unknown method).
-    if (!isRunningNative()) {
-        await this.sendCall("auth.login", { token: this.token });
+  /** New shape: routes by method name. */
+  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("closed"));
+    switch (method) {
+      case "session.attach": return this.doAttach<T>(params);
+      case "session.detach": return this.doDetach<T>();
+      case "pty.write":      return this.doPtyWrite<T>(params);
+      case "pty.create":     return this.doPtyCreate<T>(params);
+      case "pty.kill":       return this.doPtyKill<T>(params);
+      default:               return this.httpCall<T>(method, params);
     }
+  }
+
+  on(h: EventHandler): () => void {
+    this.handlers.add(h);
+    return () => this.handlers.delete(h);
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.tearDownEventsAndPty();
+    this.onClose?.();
+  }
+
+  // ─────────────────────────── method handlers ───────────────────────────
+
+  private async doAttach<T>(params: Record<string, unknown>): Promise<T> {
+    const { body, sessionID } = await this.httpCallRaw("session.attach", params);
+    if (!sessionID) throw new Error("attach: server didn't return X-Motif-Session");
+    this.sessionID = sessionID;
+    const result = body ? JSON.parse(new TextDecoder().decode(body)) : null;
+    const lastSeq = (result && typeof result === "object" && "last_seq" in result) ? Number(result.last_seq) || 0 : 0;
+    await this.openEvents(lastSeq);
+    const ptys = (result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).ptys))
+      ? ((result as Record<string, unknown>).ptys as Array<Record<string, unknown>>)
+      : [];
+    for (const p of ptys) {
+      const pid = typeof p.id === "string" ? p.id : null;
+      if (pid) await this.openPty(pid, /*primary=*/false);
+    }
+    return result as T;
+  }
+
+  private async doDetach<T>(): Promise<T> {
+    this.tearDownEventsAndPty();
+    const r = await this.httpCall<T>("session.detach", {});
+    this.sessionID = null;
+    return r;
+  }
+
+  private async doPtyWrite<T>(params: Record<string, unknown>): Promise<T> {
+    const pid  = typeof params.pty_id === "string" ? params.pty_id : "";
+    const dataField = params.data ?? params.data_b64;
+    if (!pid) throw new Error("pty.write: missing pty_id");
+    await this.ensurePtyOpen(pid);
+    let bytes: Uint8Array;
+    if (typeof dataField === "string") {
+      // already base64 (legacy path)
+      const bin = atob(dataField);
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } else if (Array.isArray(dataField)) {
+      bytes = new Uint8Array(dataField as number[]);
+    } else if (dataField instanceof Uint8Array) {
+      bytes = dataField;
+    } else {
+      throw new Error("pty.write: data/data_b64 must be string|number[]|Uint8Array");
+    }
+    const ws = this.ptyWs.get(pid);
+    if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error(`pty.write: WS not open for ${pid}`);
+    // Forward a fresh ArrayBuffer slice; ws.send wants ArrayBuffer-y
+    // shapes and the TS types don't accept a Uint8Array view of
+    // SharedArrayBuffer without a copy.
+    ws.send(bytes.slice().buffer);
+    return ({} as T);
+  }
+
+  private async doPtyCreate<T>(params: Record<string, unknown>): Promise<T> {
+    const body = await this.httpCall<Record<string, unknown>>("pty.create", params);
+    const info = (body && typeof body === "object" && (body as Record<string, unknown>).info) as Record<string, unknown> | undefined;
+    const pid  = info && typeof info.id === "string" ? info.id : null;
+    if (pid) await this.openPty(pid, /*primary=*/true);
+    return body as T;
+  }
+
+  private async doPtyKill<T>(params: Record<string, unknown>): Promise<T> {
+    const pid = typeof params.pty_id === "string" ? params.pty_id : "";
+    const body = await this.httpCall<T>("pty.kill", params);
+    const ws = this.ptyWs.get(pid);
+    if (ws) { try { ws.close(); } catch {} this.ptyWs.delete(pid); }
+    return body;
+  }
+
+  // ─────────────────────────── HTTP plumbing ───────────────────────────
+
+  private async httpCall<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
+    const { body } = await this.httpCallRaw(method, params);
+    if (!body || body.byteLength === 0) return (null as T);
+    return JSON.parse(new TextDecoder().decode(body)) as T;
+  }
+
+  private async httpCallRaw(method: string, params: Record<string, unknown>): Promise<{ body: ArrayBuffer; sessionID: string | null }> {
+    const url = `${location.origin}/rpc/${encodeURIComponent(method)}`;
+    const headers: Record<string, string> = {
+      "Authorization": `Bearer ${this.token}`,
+      "Content-Type":  "application/json",
+    };
+    if (this.sessionID) headers["X-Motif-Session"] = this.sessionID;
+    const t0 = performance.now();
+    console.log(`[rpc →] ${method}`, summarize(params));
+    const resp = await fetch(url, {
+      method:  "POST",
+      headers,
+      body:    JSON.stringify(params),
+    });
+    const buf = await resp.arrayBuffer();
+    console.log(`[rpc ←] ${method} status=${resp.status} ${Math.round(performance.now() - t0)}ms ${buf.byteLength}B`);
+    if (!resp.ok) {
+      try {
+        const err = JSON.parse(new TextDecoder().decode(buf));
+        throw new Error(`rpc ${err.code}: ${err.message}`);
+      } catch (e) {
+        if (e instanceof Error && /^rpc /.test(e.message)) throw e;
+        throw new Error(`HTTP ${resp.status}`);
+      }
+    }
+    return { body: buf, sessionID: resp.headers.get("x-motif-session") };
+  }
+
+  // ─────────────────────────── /events ───────────────────────────
+
+  private async openEvents(since: number): Promise<void> {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/events?session=${encodeURIComponent(this.sessionID ?? "")}&since=${since}&token=${encodeURIComponent(this.token)}`;
+    const ws = new WebSocket(url);
+    await new Promise<void>((res, rej) => {
+      ws.addEventListener("open",  () => res(),                                    { once: true });
+      ws.addEventListener("error", () => rej(new Error("/events open failed")),    { once: true });
+    });
+    this.eventsWs = ws;
+    ws.addEventListener("message", e => this.onEventsMessage(e.data));
+    ws.addEventListener("close",   () => this.handleEventsClose());
     this.reconnectDelay = RECONNECT_MIN_MS;
   }
 
-  private handleSocketClose() {
-    console.log("[rpc] socket closed");
-    this.ws = null;
-    // Reject every in-flight call — they were sent on a dead socket and
-    // the server won't respond.
-    if (this.pending.size > 0) {
-      const dead = this.pending;
-      this.pending = new Map();
-      for (const p of dead.values()) p.reject(new Error("disconnected"));
-    }
+  private onEventsMessage(raw: unknown) {
+    const text = typeof raw === "string" ? raw : "";
+    if (!text) return;
+    let parsed: { method?: string; params?: unknown };
+    try { parsed = JSON.parse(text); } catch { return; }
+    if (!parsed.method) return;
+    const ev = { method: parsed.method, params: parsed.params } as Event;
+    this.handlers.forEach(h => h(ev));
+  }
+
+  private handleEventsClose() {
+    this.eventsWs = null;
     if (this.closed) return;
     this.scheduleReconnect();
   }
@@ -121,119 +242,119 @@ export class RpcClient {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.closed) return;
+      if (!this.sessionID) return;
       try {
-        await this.openSocket();
+        await this.openEvents(0);
       } catch {
         if (!this.closed) this.scheduleReconnect();
         return;
       }
-      try { await this.onReconnect?.(); } catch { /* surfaced by caller */ }
+      try { await this.onReconnect?.(); } catch {}
     }, delay);
   }
 
-  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    if (this.closed) return Promise.reject(new Error("closed"));
-    return this.sendCall(method, params) as Promise<T>;
+  // ─────────────────────────── /pty/<id> ───────────────────────────
+
+  private async ensurePtyOpen(pid: string): Promise<void> {
+    if (this.ptyWs.has(pid)) return;
+    await this.openPty(pid, /*primary=*/false);
   }
 
-  private sendCall(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("disconnected"));
-    }
-    const id = this.nextId++;
-    console.log(`[rpc →] #${id} ${method}`, summarize(params));
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  private async openPty(pid: string, primary: boolean): Promise<void> {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${location.host}/pty/${encodeURIComponent(pid)}?session=${encodeURIComponent(this.sessionID ?? "")}&since=0&primary=${primary ? 1 : 0}&token=${encodeURIComponent(this.token)}`;
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    await new Promise<void>((res, rej) => {
+      ws.addEventListener("open",  () => res(),                                              { once: true });
+      ws.addEventListener("error", () => rej(new Error(`/pty/${pid} open failed`)),          { once: true });
     });
+    this.ptyWs.set(pid, ws);
+    this.ptyShell.set(pid, new ShellState());
+    ws.addEventListener("message", e => this.onPtyMessage(pid, e.data));
+    ws.addEventListener("close",   () => this.handlePtyClose(pid));
   }
 
-  on(h: EventHandler): () => void {
-    this.handlers.add(h);
-    return () => this.handlers.delete(h);
-  }
-
-  /** Permanently close. No more reconnects, no more events. */
-  close() {
-    if (this.closed) return;
-    console.log("[rpc] close()");
-    this.closed = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.ws?.close();
-    this.ws = null;
-    this.onClose?.();
-  }
-
-  private onMessage(raw: unknown) {
-    const text = typeof raw === "string" ? raw : "";
-    if (!text) return;
-    let msg: { id?: number; method?: string; result?: unknown; error?: { code: number; message: string }; params?: unknown };
-    try { msg = JSON.parse(text); } catch { return; }
-
-    if (msg.id != null) {
-      const p = this.pending.get(msg.id);
-      if (!p) return;
-      this.pending.delete(msg.id);
-      if (msg.error) {
-        console.log(`[rpc ←] #${msg.id} error`, msg.error);
-        p.reject(new Error(`rpc ${msg.error.code}: ${msg.error.message}`));
-      } else {
-        console.log(`[rpc ←] #${msg.id} ok`, summarize(msg.result));
-        p.resolve(msg.result);
-      }
+  private onPtyMessage(pid: string, raw: unknown) {
+    let bytes: Uint8Array;
+    if (raw instanceof ArrayBuffer) {
+      bytes = new Uint8Array(raw);
+    } else if (typeof raw === "string") {
+      bytes = new TextEncoder().encode(raw);
+    } else {
       return;
     }
-    if (msg.method) {
-      console.log(`[rpc ev] ${msg.method}`, summarize(msg.params));
-      logShellEvent(msg.method, msg.params);
-      const ev = { method: msg.method, params: msg.params } as Event;
-      this.handlers.forEach(h => h(ev));
+    const shell = this.ptyShell.get(pid);
+    if (!shell) return;
+    const { passthrough, events } = shell.feed(bytes);
+    if (passthrough.length > 0) {
+      const out = {
+        method: "pty.output",
+        params: {
+          pty_id:   pid,
+          data_b64: b64encode(passthrough),
+          block_id: shell.activeBlockID,
+          scope:    shell.activeScope,
+          seq:      0,
+        },
+      } as unknown as Event;
+      this.handlers.forEach(h => h(out));
     }
+    for (const ev of events) {
+      const wire = shellEventToNotification(pid, ev);
+      this.handlers.forEach(h => h(wire));
+    }
+  }
+
+  private handlePtyClose(pid: string) {
+    const shell = this.ptyShell.get(pid);
+    if (shell) {
+      const tail = shell.onClose();
+      if (tail) {
+        const wire = shellEventToNotification(pid, tail);
+        this.handlers.forEach(h => h(wire));
+      }
+    }
+    this.ptyShell.delete(pid);
+    this.ptyWs.delete(pid);
+    const ev = {
+      method: "pty.ws.closed",
+      params: { pty_id: pid },
+    } as unknown as Event;
+    this.handlers.forEach(h => h(ev));
+  }
+
+  private tearDownEventsAndPty() {
+    try { this.eventsWs?.close(); } catch {}
+    this.eventsWs = null;
+    for (const [, ws] of this.ptyWs) { try { ws.close(); } catch {} }
+    this.ptyWs.clear();
+    this.ptyShell.clear();
   }
 }
 
-/** Compact log line for shell-integration lifecycle events. The full
- *  `[rpc ev]` log above stays for byte-level debugging; this gives a
- *  filterable `[shell]` channel that strips out the noisy fields and
- *  shows just block lifecycle, in arrival order. Useful for diagnosing
- *  prompt-fallback / off-by-one / state-machine issues without
- *  scrolling through every `pty.output` chunk. */
-function logShellEvent(method: string, raw: unknown): void {
-  if (!method.startsWith("pty.")) return;
-  const sub = method.slice(4);
-  // pty.output is too high-frequency to log per-chunk here; everything
-  // else is a shell-integration boundary that fires at most once per
-  // user action. Resize / write are also skipped (visual / input-only).
-  if (sub === "output" || sub === "resize" || sub === "write") return;
-
-  const p = (raw && typeof raw === "object") ? raw as Record<string, unknown> : {};
-  const bid = typeof p.block_id === "string"
-    ? `block=…${(p.block_id as string).slice(-6)}`
-    : "";
-  const pty = typeof p.pty_id === "string" ? `pty=${p.pty_id}` : "";
-  const seq = typeof p.seq === "number" ? `seq=${p.seq}` : "";
-  // Per-event extras worth surfacing inline.
-  const extras: string[] = [];
-  if (sub === "command_started" && typeof p.text === "string") {
-    extras.push(`cmd=${JSON.stringify(p.text)}`);
+/// Translate a high-level `ShellEvent` into the legacy `Event` JSON-RPC
+/// notification shape so existing consumers (Workspace.tsx etc.) keep
+/// processing them unchanged.
+function shellEventToNotification(pid: string, ev: ShellEvent): Event {
+  switch (ev.kind) {
+    case "bootstrapped":
+      return { method: "pty.shell_bootstrapped", params: { pty_id: pid, shell: ev.shell, seq: 0 } } as unknown as Event;
+    case "promptStarted":
+      return { method: "pty.prompt_started", params: { pty_id: pid, block_id: ev.blockID, seq: 0 } } as unknown as Event;
+    case "promptEnded":
+      return { method: "pty.prompt_ended", params: { pty_id: pid, block_id: ev.blockID, seq: 0 } } as unknown as Event;
+    case "commandStarted":
+      return { method: "pty.command_started", params: {
+        pty_id: pid, block_id: ev.blockID, text: ev.text, cwd: ev.cwd, started_at: ev.startedAt, seq: 0,
+      } } as unknown as Event;
+    case "commandFinished":
+      return { method: "pty.command_finished", params: {
+        pty_id: pid, block_id: ev.blockID, exit_code: ev.exitCode, finished_at: ev.finishedAt, seq: 0,
+      } } as unknown as Event;
+    case "shellContext":
+      return { method: "pty.shell_context", params: { pty_id: pid, ctx: ev.ctx, seq: 0 } } as unknown as Event;
+    case "cwdChanged":
+      return { method: "pty.cwd_changed", params: { pty_id: pid, cwd: ev.cwd, seq: 0 } } as unknown as Event;
   }
-  if (sub === "command_finished" && p.exit_code !== undefined) {
-    extras.push(`exit=${p.exit_code}`);
-  }
-  if (sub === "shell_bootstrapped" && typeof p.shell === "string") {
-    extras.push(`shell=${p.shell}`);
-  }
-  if (sub === "cwd_changed" && typeof p.cwd === "string") {
-    extras.push(`cwd=${p.cwd}`);
-  }
-  if (sub === "shell_context" && p.ctx && typeof p.ctx === "object") {
-    extras.push(`ctx=${JSON.stringify(p.ctx)}`);
-  }
-  const head = `[shell] ${sub.padEnd(17)}`;
-  const fields = [bid, pty, seq, ...extras].filter(Boolean).join(" ");
-  console.log(`${head}${fields ? " " + fields : ""}`);
 }

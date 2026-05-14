@@ -127,14 +127,34 @@ struct PtyTerminal: UIViewRepresentable {
     }
 }
 
+#if DEBUG
+/// DEBUG-only: route libghostty-spm's `TerminalDebugLog` into `FileLog` so
+/// metric/lifecycle/action events land in `Documents/motif.log` alongside
+/// the rest of our diagnostics. Categories deliberately exclude `.render`
+/// and `.output` — they fire per-frame / per-byte and would drown the file.
+/// Initialized lazily on the first Ghostty coordinator so non-Ghostty
+/// sessions pay nothing.
+private let ghosttyDebugLogOnce: Void = {
+    TerminalDebugLog.sink = { message in
+        FileLog.note("Ghostty", message)
+    }
+    TerminalDebugLog.enable([.lifecycle, .metrics, .actions])
+}()
+#endif
+
 /// libghostty-vt backed PTY surface. Wraps GhosttyTerminal's `UITerminalView`
 /// + `InMemoryTerminalSession`: server PTY bytes -> `session.receive`,
 /// terminal output bytes -> `client.write`, grid resize -> `client.resize`.
 ///
-/// Selected via `AppState.terminalBackend == .ghostty`. The view is final
-/// in the SPM package so we cannot override its `inputAccessoryView`;
-/// users will see Ghostty's built-in input accessory toolbar in addition
-/// to motif's `BottomInputBar`. Known cosmetic overlap; not addressed in v1.
+/// Selected via `AppState.terminalBackend == .ghostty`. Ghostty's bundled
+/// `inputAccessoryView` (Esc/Ctrl/Alt/Cmd/Tab/arrows/Paste chips) is
+/// disabled via `isInputAccessoryViewEnabled = false` so motif's
+/// `BottomInputBar` (Quick Commands + TextField + Mic + Send) stays the
+/// single input authority — matching the SwiftTerm path that pins
+/// `term.inputAccessoryView = nil`. Users who need raw Esc/Ctrl/arrow
+/// keys add them as Quick Commands. The flag itself is a motif-specific
+/// addition to our fork of libghostty-spm
+/// (gfreezy/libghostty-spm@motif/suppress-input-accessory).
 struct GhosttyPtyTerminal: UIViewRepresentable {
     let ptyID: String
     let initialCols: UInt16
@@ -165,13 +185,27 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
         private var session: InMemoryTerminalSession?
         private var pumpTask: Task<Void, Never>?
         private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
+        /// Trailing-edge debounce for `client.resize`. On first attach,
+        /// libghostty's grid reflows three times in ~10ms: ghostty's own
+        /// default size on surface create, then `synchronizeMetrics` from
+        /// `didMoveToWindow`'s `DispatchQueue.main.async` (before SwiftUI
+        /// settles bounds), then `synchronizeMetrics` from `layoutSubviews`
+        /// once the VStack has actually pushed the BottomInputBar in. Each
+        /// reflow SIGWINCHes the shell and redraws the prompt — visible as
+        /// the content "jittering up and down" the user reports. Coalescing
+        /// inside 50ms collapses all three into one final resize.
+        private var pendingResize: Task<Void, Never>?
 
         init(client: MotifClient, ptyID: String) {
             self.client = client
             self.ptyID = ptyID
+            #if DEBUG
+            _ = ghosttyDebugLogOnce
+            #endif
         }
 
         func attach(to view: UITerminalView) {
+            view.isInputAccessoryViewEnabled = false
             let client = self.client
             let ptyID = self.ptyID
             let session = InMemoryTerminalSession(
@@ -206,15 +240,19 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
             let rows = viewport.rows
             if cols == lastSize.cols, rows == lastSize.rows { return }
             lastSize = (cols, rows)
+            pendingResize?.cancel()
             let client = self.client
             let ptyID = self.ptyID
-            Task { @MainActor in
+            pendingResize = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled else { return }
                 await client.resize(ptyID: ptyID, cols: cols, rows: rows)
             }
         }
 
         deinit {
             pumpTask?.cancel()
+            pendingResize?.cancel()
         }
     }
 }

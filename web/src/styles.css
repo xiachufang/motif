@@ -158,12 +158,16 @@ a { color: var(--accent); }
   gap: 0.7em;
   flex-wrap: nowrap;
   min-width: 0;
+  overflow: hidden;
 }
 .topbar > .row { flex-wrap: nowrap; min-width: 0; }
 /* Left side (session name + cwd) takes all remaining space and truncates,
    so the toggle buttons + client pill on the right always stay visible. */
 .topbar > .row:first-child { flex: 1 1 auto; overflow: hidden; }
 .topbar > .row:first-child > strong { flex: 0 0 auto; }
+/* Right side must never shrink — if it did, its (non-clipped) contents would
+   spill past the topbar and create a body-level horizontal scrollbar. */
+.topbar > .row:last-child { flex: 0 0 auto; }
 .topbar .topbar-path {
   flex: 1 1 auto;
   min-width: 0;

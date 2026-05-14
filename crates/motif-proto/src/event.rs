@@ -2,11 +2,18 @@
 //!
 //! Each variant carries a monotonically increasing `seq`. Clients can pass the
 //! last known seq in `session.attach` to request replay of buffered events.
+//!
+//! After Phase 5b: shell-integration variants (`PtyOutput`,
+//! `PtyCwdChanged`, `PtyShellBootstrapped`, `PtyPromptStarted/Ended`,
+//! `PtyCommandStarted/Finished`, `PtyShellContext`) are gone — clients
+//! parse OSC sequences off the `/pty/<id>` byte stream themselves and
+//! synthesize the equivalent notifications locally. Only "server-only
+//! knowledge" events remain here.
 
 use serde::{Deserialize, Serialize};
 
-use crate::common::{BlockId, ClientId, PtyId, Seq, UnixMs};
-use crate::pty::{OutputScope, PtyInfo, ShellContext, ShellKind};
+use crate::common::{ClientId, PtyId, Seq, UnixMs};
+use crate::pty::PtyInfo;
 use crate::view::{ViewId, ViewInfo};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,28 +21,6 @@ use crate::view::{ViewId, ViewInfo};
 pub enum Event {
     #[serde(rename = "tree.changed")]
     TreeChanged { paths: Vec<String>, seq: Seq },
-
-    #[serde(rename = "pty.output")]
-    PtyOutput {
-        pty_id:   PtyId,
-        /// Raw bytes from the pseudo-tty. Encoded as base64 string in JSON
-        /// (wire field name kept `data_b64` for backward compat with old
-        /// clients) and as native bin in MessagePack — the serde adapter
-        /// in `crate::wire` picks the right form per serializer.
-        #[serde(rename = "data_b64", with = "crate::wire::bytes_base64_or_native")]
-        data:     Vec<u8>,
-        /// Active block id. `None` only when the PTY is in `Unknown`
-        /// state (un-bootstrapped or shell-integration disabled).
-        /// Allocated at the `133;A` boundary; stable across a whole
-        /// prompt cycle (prompt → command → output).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        block_id: Option<BlockId>,
-        /// Which segment of the block these bytes belong to. Always
-        /// `Prompt` when `block_id` is `None` (treat as raw terminal
-        /// stream).
-        scope:    OutputScope,
-        seq:      Seq,
-    },
 
     #[serde(rename = "pty.resize")]
     PtyResize { pty_id: PtyId, cols: u16, rows: u16, seq: Seq },
@@ -45,18 +30,6 @@ pub enum Event {
 
     #[serde(rename = "pty.exited")]
     PtyExited { pty_id: PtyId, exit_code: Option<i32>, seq: Seq },
-
-    /// The cwd of a PTY's shell process changed. Server polls
-    /// /proc/<pid>/cwd (Linux) or proc_pidinfo (macOS) every ~1.5s and
-    /// emits this on transitions. Clients use it to scope file tree / git
-    /// diff. The v2 shell-integration path (OSC 7 from a precmd hook) emits
-    /// the same event but at I/O speed instead of polling cadence.
-    #[serde(rename = "pty.cwd_changed")]
-    PtyCwdChanged {
-        pty_id: PtyId,
-        cwd:    std::path::PathBuf,
-        seq:    Seq,
-    },
 
     #[serde(rename = "git.changed")]
     GitChanged { seq: Seq },
@@ -85,65 +58,6 @@ pub enum Event {
     #[serde(rename = "view.moved")]
     ViewMoved { order: Vec<ViewId>, seq: Seq },
 
-    // ── v2 shell-integration events ──
-
-    /// First successful OSC 133 sequence observed on this PTY (or 5s
-    /// timeout reached → `shell: Unknown`). Lets clients distinguish
-    /// "still booting" from "this PTY won't ever produce block events".
-    #[serde(rename = "pty.shell_bootstrapped")]
-    PtyShellBootstrapped { pty_id: PtyId, shell: ShellKind, seq: Seq },
-
-    /// OSC 133;A observed: shell is (re-)rendering its prompt. Emitted
-    /// on every 133;A — fish redraws the prompt for autosuggest /
-    /// syntax highlighting and each redraw is its own `prompt_started`.
-    /// Clients use this as the boundary to clear their PS1 renderer so
-    /// the next prompt paints on a fresh grid.
-    ///
-    /// `block_id` is the id allocated for this prompt cycle. On a pure
-    /// redraw (AtPrompt → AtPrompt) the id is the same as the previous
-    /// `prompt_started` for this PTY; on a fresh cycle (after a
-    /// command_finished or a forced finalize) it's a new ULID.
-    #[serde(rename = "pty.prompt_started")]
-    PtyPromptStarted { pty_id: PtyId, block_id: BlockId, seq: Seq },
-
-    /// OSC 133;B observed: prompt is done, user is now composing input.
-    /// Only emitted on the AtPrompt → Composing transition (not on
-    /// pure redraws), so clients can use it to freeze the PS1 + user
-    /// input row for the eventual BlockCard header. `block_id` matches
-    /// the same prompt cycle's `prompt_started`.
-    #[serde(rename = "pty.prompt_ended")]
-    PtyPromptEnded { pty_id: PtyId, block_id: BlockId, seq: Seq },
-
-    /// User pressed Enter; shell is about to run a command. Allocates a
-    /// `block_id` that subsequent `pty.output` events carry.
-    #[serde(rename = "pty.command_started")]
-    PtyCommandStarted {
-        pty_id:     PtyId,
-        block_id:   BlockId,
-        text:       String,
-        cwd:        std::path::PathBuf,
-        started_at: UnixMs,
-        seq:        Seq,
-    },
-
-    /// Command finished. `exit_code = None` when the block was force-
-    /// finalized (e.g., shell sent a fresh prompt without `133;D`).
-    #[serde(rename = "pty.command_finished")]
-    PtyCommandFinished {
-        pty_id:      PtyId,
-        block_id:    BlockId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        exit_code:   Option<i32>,
-        finished_at: UnixMs,
-        seq:         Seq,
-    },
-
-    /// Cheap prompt context (git branch, venv, etc.) refreshed on every
-    /// precmd. Sent at most once per prompt; clients render as status-bar
-    /// chips.
-    #[serde(rename = "pty.shell_context")]
-    PtyShellContext { pty_id: PtyId, ctx: ShellContext, seq: Seq },
-
     /// Catch-all so older clients can ignore newly added variants without
     /// the JSON-RPC parse failing. Required because we use `tag = "method"`
     /// — without this, an unknown method string aborts deserialization.
@@ -157,25 +71,17 @@ impl Event {
     /// known events without crashing on an unknown one.
     pub fn seq(&self) -> Seq {
         match self {
-            Self::TreeChanged    { seq, .. } => *seq,
-            Self::PtyOutput      { seq, .. } => *seq,
-            Self::PtyResize      { seq, .. } => *seq,
-            Self::PtyCreated     { seq, .. } => *seq,
-            Self::PtyExited      { seq, .. } => *seq,
-            Self::PtyCwdChanged  { seq, .. } => *seq,
-            Self::GitChanged     { seq, .. } => *seq,
-            Self::ClientJoined   { seq, .. } => *seq,
-            Self::ClientLeft     { seq, .. } => *seq,
-            Self::ViewOpened     { seq, .. } => *seq,
-            Self::ViewClosed     { seq, .. } => *seq,
-            Self::ViewActiveChanged   { seq, .. } => *seq,
-            Self::ViewMoved           { seq, .. } => *seq,
-            Self::PtyShellBootstrapped { seq, .. } => *seq,
-            Self::PtyPromptStarted     { seq, .. } => *seq,
-            Self::PtyPromptEnded       { seq, .. } => *seq,
-            Self::PtyCommandStarted    { seq, .. } => *seq,
-            Self::PtyCommandFinished   { seq, .. } => *seq,
-            Self::PtyShellContext      { seq, .. } => *seq,
+            Self::TreeChanged       { seq, .. } => *seq,
+            Self::PtyResize         { seq, .. } => *seq,
+            Self::PtyCreated        { seq, .. } => *seq,
+            Self::PtyExited         { seq, .. } => *seq,
+            Self::GitChanged        { seq, .. } => *seq,
+            Self::ClientJoined      { seq, .. } => *seq,
+            Self::ClientLeft        { seq, .. } => *seq,
+            Self::ViewOpened        { seq, .. } => *seq,
+            Self::ViewClosed        { seq, .. } => *seq,
+            Self::ViewActiveChanged { seq, .. } => *seq,
+            Self::ViewMoved         { seq, .. } => *seq,
             Self::Unknown => 0,
         }
     }
@@ -199,48 +105,6 @@ mod tests {
         match back {
             Event::ClientJoined { client_id, .. } => assert_eq!(client_id, "01H"),
             _ => panic!(),
-        }
-    }
-
-    #[test]
-    fn pty_output_json_base64_round_trip() {
-        let raw = vec![0u8, 1, 2, 3, 0xff, 0xfe];
-        let e = Event::PtyOutput {
-            pty_id:   "p1".into(),
-            data:     raw.clone(),
-            block_id: None,
-            scope:    OutputScope::Output,
-            seq:      7,
-        };
-        let s = serde_json::to_string(&e).unwrap();
-        // JSON wire keeps the historical `data_b64` field name with a
-        // base64 string value.
-        assert!(s.contains("\"data_b64\":\"AAECA//+\""));
-        let back: Event = serde_json::from_str(&s).unwrap();
-        match back {
-            Event::PtyOutput { data, .. } => assert_eq!(data, raw),
-            _ => panic!("expected PtyOutput"),
-        }
-    }
-
-    #[test]
-    fn pty_output_msgpack_native_bytes_round_trip() {
-        let raw = vec![0u8, 1, 2, 3, 0xff, 0xfe];
-        let e = Event::PtyOutput {
-            pty_id:   "p1".into(),
-            data:     raw.clone(),
-            block_id: None,
-            scope:    OutputScope::Output,
-            seq:      7,
-        };
-        let buf = rmp_serde::to_vec_named(&e).unwrap();
-        // msgpack bin8 marker (0xc4) + length 6 for our payload — proves
-        // the bytes are not base64-encoded on the wire.
-        assert!(buf.windows(2).any(|w| w[0] == 0xc4 && w[1] == raw.len() as u8));
-        let back: Event = rmp_serde::from_slice(&buf).unwrap();
-        match back {
-            Event::PtyOutput { data, .. } => assert_eq!(data, raw),
-            _ => panic!("expected PtyOutput"),
         }
     }
 }

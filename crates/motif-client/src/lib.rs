@@ -1,9 +1,19 @@
 //! Motif RPC client shared between `motif-tui` (rich UI) and `motif-cast`
-//! (raw passthrough). Pure JSON-RPC + WebSocket transport — no TUI deps.
+//! (raw passthrough). New-protocol transport: HTTP for RPC, separate
+//! WebSockets for the structured event stream and each PTY's raw byte
+//! channel.
 
-pub mod client;
+pub mod coordinator;
+pub mod events;
+pub mod http;
 pub mod palette;
+pub mod pty_ws;
 pub mod raw_pty;
+/// Phase-5b: client-side shell-integration OSC parser. Drives a per-
+/// PTY block state machine off shell-integration markers that the server
+/// now passes through unchanged. Lifted from the (now-deleted)
+/// server-side `shell/state.rs`.
+pub mod shell_integration;
 pub mod transport;
 
 /// Re-exported so callers (motif-tui, motif-cast) can reach

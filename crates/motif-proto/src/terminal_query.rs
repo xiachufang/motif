@@ -1,7 +1,7 @@
 //! Streaming detector for terminal control sequences that motifd needs to
 //! intercept: capability queries (DA1 / OSC 11 / CPR / …) emitted by shells
-//! and prompt frameworks, plus v2 shell-integration markers (OSC 133 / 7 /
-//! 7770 / 7771) emitted by motif's bootstrap scripts.
+//! and prompt frameworks, plus shell-integration markers emitted by motif's
+//! bootstrap scripts.
 //!
 //! Two consumer patterns:
 //!
@@ -15,11 +15,12 @@
 //!   PTY master immediately.
 //!
 //! * **Shell-integration markers** (`canonical_response()` returns `None`):
-//!   motif's bootstrap script emits `OSC 133;A/B/C/D` (block boundaries),
-//!   `OSC 7` (cwd), `OSC 7770;<hex>` (preexec command text), and
-//!   `OSC 7771;<hex>` (precmd context JSON). The scanner consumes them and
-//!   the server's `BlockState` state machine turns them into `Event::Pty*`
-//!   broadcasts — they never reach client emulators.
+//!   motif's bootstrap script emits a VS Code-style private protocol under
+//!   `OSC 777;A/B/C/D/E/P` (block boundaries, explicit command text, and
+//!   properties such as cwd/context). The scanner also accepts the older
+//!   `OSC 133`, `OSC 7`, `OSC 7770`, and `OSC 7771` forms as compatibility
+//!   input. Shell-integration markers are consumed and never reach client
+//!   emulators.
 //!
 //! Anything not matched falls through `passthrough` byte-for-byte so
 //! unrelated OSC / CSI / DCS sequences (alt-screen, OSC 9, OSC 1337, …)
@@ -65,34 +66,40 @@ pub enum QueryKind {
     /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
     /// The host segment is ignored; path is URL-decoded.
     Osc7Cwd { path: std::path::PathBuf },
-    /// `ESC ] 133 ; A ST` — prompt about to render (FinalTerm A).
+    /// `ESC ] 777 ; A ST` — prompt about to render. Legacy `133;A` is
+    /// accepted as compatibility input.
     Osc133PromptStart,
-    /// `ESC ] 133 ; B ST` — prompt rendered, user input phase begins.
+    /// `ESC ] 777 ; B ST` — prompt rendered, user input phase begins.
+    /// Legacy `133;B` is accepted as compatibility input.
     Osc133PromptEnd,
-    /// `ESC ] 133 ; C [;cmdline_url=<percent>] ST` — command starting to
-    /// execute. Fish 4.x's native marker carries the literal commandline
+    /// `ESC ] 777 ; C ST` — command starting to execute. Legacy
+    /// `133;C[;cmdline_url=<percent>]` is also accepted; fish 4.x's native
+    /// marker carries the literal commandline
     /// percent-encoded as `cmdline_url`; that's the *authoritative* cmd
     /// text because fish writes this marker BEFORE firing the
     /// `fish_preexec` event (see fish-shell `reader/reader.rs:858-862`),
-    /// which is when our bootstrap's OSC 7770 fallback emits — too late to
-    /// be consumed by the same cycle's `133;C` transition. State machine
-    /// prefers `cmdline_url` when present and falls back to pending OSC
-    /// 7770 otherwise. Percent-decoding mirrors fish's `EscapeStringStyle::Url`
-    /// (only `[A-Za-z0-9/.~_-]` left literal; everything else is `%HH`).
+    /// which is when Motif's explicit command marker fires — too late to
+    /// be consumed by the same cycle's native `133;C` transition. State
+    /// machine prefers `cmdline_url` when present and falls back to pending
+    /// explicit command text otherwise. Percent-decoding mirrors fish's
+    /// `EscapeStringStyle::Url` (only `[A-Za-z0-9/.~_-]` left literal;
+    /// everything else is `%HH`).
     Osc133CmdStart { cmdline_url: Option<String> },
-    /// `ESC ] 133 ; D [;<exit>] ST` — command finished, exit code is the
+    /// `ESC ] 777 ; D [;<exit>] ST` — command finished, exit code is the
     /// `$?` shell observed on the *previous* command. `None` means the
-    /// shell sent the terminator without a code (e.g., first prompt of a
-    /// session).
+    /// shell sent the terminator without a code. Legacy `133;D` is accepted
+    /// as compatibility input.
     Osc133CmdEnd { exit: Option<i32> },
-    /// `ESC ] 7770 ; <hex_command> ST` — preexec command text. The inner
-    /// String is hex-decoded and lossily UTF-8-converted (binaries names
-    /// or weird locales would otherwise reject the whole sequence).
+    /// `ESC ] 777 ; E ; <hex_command> ST` — explicit command text, matching
+    /// VS Code's `E` role but using Motif's private OSC code and existing
+    /// hex payload encoding. The legacy `ESC ] 7770 ; <hex_command> ST`
+    /// form is accepted as compatibility input.
     Osc7770Cmd { text: String },
-    /// `ESC ] 7771 ; <hex_json> ST` — precmd context JSON. Successfully
-    /// parsed into a typed `ShellContext`; if the inner JSON is malformed,
-    /// the scanner drops the whole sequence to passthrough rather than
-    /// surfacing a half-typed structure.
+    /// `ESC ] 777 ; P ; Context=<hex_json> ST` — precmd context JSON.
+    /// Successfully parsed into a typed `ShellContext`; if the inner JSON is
+    /// malformed, the scanner drops the whole sequence to passthrough rather
+    /// than surfacing a half-typed structure. The legacy
+    /// `ESC ] 7771 ; <hex_json> ST` form is accepted as compatibility input.
     Osc7771Context { ctx: crate::pty::ShellContext },
 }
 
@@ -111,7 +118,7 @@ impl QueryKind {
             // a sentinel that callers (starship etc.) treat as "the
             // terminal answered, move on".
             Self::Cpr => b"\x1b[1;1R".to_vec(),
-            // Match the dark theme used by motif-web's xterm.js so prompt
+            // Match the dark theme used by the web UI's xterm.js so prompt
             // frameworks pick a colour scheme consistent with the visible
             // background.
             Self::Osc10 => b"\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\".to_vec(),
@@ -214,7 +221,63 @@ fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
     } else {
         s
     };
-    Some(std::path::PathBuf::from(String::from_utf8(percent_decode(bytes)).ok()?))
+    Some(std::path::PathBuf::from(
+        String::from_utf8(percent_decode(bytes)).ok()?,
+    ))
+}
+
+fn parse_exit_field(s: &[u8]) -> Option<i32> {
+    let s = std::str::from_utf8(s).ok().map(str::trim).unwrap_or("");
+    if s.is_empty() {
+        None
+    } else {
+        s.parse::<i32>().ok()
+    }
+}
+
+fn parse_context_hex(hex: &[u8]) -> Option<crate::pty::ShellContext> {
+    decode_hex(hex).and_then(|bs| serde_json::from_slice::<crate::pty::ShellContext>(&bs).ok())
+}
+
+fn parse_motif_private_osc(rest: &[u8]) -> Decision {
+    match rest {
+        b"A" => return Decision::Match(QueryKind::Osc133PromptStart),
+        b"B" => return Decision::Match(QueryKind::Osc133PromptEnd),
+        b"C" => return Decision::Match(QueryKind::Osc133CmdStart { cmdline_url: None }),
+        b"D" => return Decision::Match(QueryKind::Osc133CmdEnd { exit: None }),
+        _ => {}
+    }
+
+    if let Some(after_d) = rest.strip_prefix(b"D;") {
+        let first_field = after_d.split(|&b| b == b';').next().unwrap_or_default();
+        return Decision::Match(QueryKind::Osc133CmdEnd {
+            exit: parse_exit_field(first_field),
+        });
+    }
+
+    if let Some(hex) = rest.strip_prefix(b"E;") {
+        return match decode_hex(hex).and_then(|bs| String::from_utf8(bs).ok()) {
+            Some(text) => Decision::Match(QueryKind::Osc7770Cmd { text }),
+            None => Decision::Reject,
+        };
+    }
+
+    if let Some(prop) = rest.strip_prefix(b"P;") {
+        if let Some(cwd) = prop.strip_prefix(b"Cwd=") {
+            return match parse_file_uri(cwd) {
+                Some(path) => Decision::Match(QueryKind::Osc7Cwd { path }),
+                None => Decision::Reject,
+            };
+        }
+        if let Some(hex) = prop.strip_prefix(b"Context=") {
+            return match parse_context_hex(hex) {
+                Some(ctx) => Decision::Match(QueryKind::Osc7771Context { ctx }),
+                None => Decision::Reject,
+            };
+        }
+    }
+
+    Decision::Reject
 }
 
 /// One element of the time-ordered scan output. Use this when the
@@ -226,8 +289,13 @@ fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
 pub enum ScanItem {
     /// A run of passthrough bytes (consecutive items are merged).
     Bytes(Vec<u8>),
-    /// A recognized control sequence.
-    Query(QueryKind),
+    /// A recognized control sequence. `raw` is the original bytes of
+    /// the matched escape sequence — present for callers that need to
+    /// re-emit shell-integration markers downstream so a client-side
+    /// parser can see them (Phase 5b of the protocol redesign).
+    /// Capability queries strip the bytes server-side regardless of
+    /// `raw`, so re-emit is opt-in by the consumer.
+    Query { kind: QueryKind, raw: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -260,9 +328,9 @@ impl ScanResult {
             _ => self.items.push(ScanItem::Bytes(bs.to_vec())),
         }
     }
-    fn push_query(&mut self, q: QueryKind) {
+    fn push_query(&mut self, q: QueryKind, raw: Vec<u8>) {
         self.queries.push(q.clone());
-        self.items.push(ScanItem::Query(q));
+        self.items.push(ScanItem::Query { kind: q, raw });
     }
 }
 
@@ -318,8 +386,13 @@ impl QueryScanner {
         match outcome {
             Decision::Pending => {}
             Decision::Match(k) => {
-                r.push_query(k);
-                self.pending.clear();
+                // Snapshot the matched bytes BEFORE we clear pending —
+                // consumers that need to re-emit the OSC downstream
+                // (e.g. the new-protocol `/pty/<id>` broadcast wanting
+                // shell-integration markers to reach client-side
+                // parsers) read this from `ScanItem::Query.raw`.
+                let raw = std::mem::take(&mut self.pending);
+                r.push_query(k, raw);
             }
             Decision::Reject => {
                 let drained = std::mem::take(&mut self.pending);
@@ -406,7 +479,7 @@ impl QueryScanner {
             _ => {}
         }
 
-        // ── v2 shell-integration markers ──
+        // ── shell-integration markers ──
 
         // OSC 7 ; file://...  (cwd update)
         if let Some(rest) = body.strip_prefix(b"7;") {
@@ -414,6 +487,16 @@ impl QueryScanner {
                 Some(path) => Decision::Match(QueryKind::Osc7Cwd { path }),
                 None => Decision::Reject,
             };
+        }
+
+        // OSC 777 ; <sub>[;<payload>...]  (Motif private shell integration)
+        //
+        // Mirroring VS Code's private protocol shape:
+        //   A/B/C/D = prompt/command lifecycle
+        //   E       = explicit command line
+        //   P       = properties, currently Cwd and Context
+        if let Some(rest) = body.strip_prefix(b"777;") {
+            return parse_motif_private_osc(rest);
         }
 
         // OSC 133 ; <sub>[;<params>...]
@@ -450,7 +533,7 @@ impl QueryScanner {
                             // Walk `;`-separated params for `cmdline_url=<percent>`.
                             // First match wins; missing or undecodable values
                             // fall back to None (state machine then uses pending
-                            // OSC 7770 from our bootstrap).
+                            // explicit command marker from our bootstrap).
                             let cmdline_url = after_sub
                                 .split(|&b| b == b';')
                                 .find_map(|p| p.strip_prefix(b"cmdline_url="))
@@ -460,20 +543,14 @@ impl QueryScanner {
                         Some(b'D') => {
                             // `D;<exit>[;<extras>]` — first field is the
                             // exit code; everything after is ignored.
-                            let first_field: &[u8] = match after_sub
-                                .iter()
-                                .position(|&b| b == b';')
+                            let first_field: &[u8] = match after_sub.iter().position(|&b| b == b';')
                             {
                                 Some(i) => &after_sub[..i],
-                                None    => after_sub,
+                                None => after_sub,
                             };
-                            let s = std::str::from_utf8(first_field)
-                                .ok()
-                                .map(str::trim)
-                                .unwrap_or("");
                             // Empty `D;` is malformed but treated as
                             // "exit unknown" rather than rejecting.
-                            let exit = if s.is_empty() { None } else { s.parse::<i32>().ok() };
+                            let exit = parse_exit_field(first_field);
                             Decision::Match(QueryKind::Osc133CmdEnd { exit })
                         }
                         _ => Decision::Reject,
@@ -482,7 +559,7 @@ impl QueryScanner {
             };
         }
 
-        // OSC 7770 ; <hex>  (preexec command text)
+        // OSC 7770 ; <hex>  (legacy preexec command text)
         if let Some(hex) = body.strip_prefix(b"7770;") {
             return match decode_hex(hex).and_then(|bs| String::from_utf8(bs).ok()) {
                 Some(text) => Decision::Match(QueryKind::Osc7770Cmd { text }),
@@ -490,11 +567,9 @@ impl QueryScanner {
             };
         }
 
-        // OSC 7771 ; <hex>  (precmd context JSON)
+        // OSC 7771 ; <hex>  (legacy precmd context JSON)
         if let Some(hex) = body.strip_prefix(b"7771;") {
-            return match decode_hex(hex)
-                .and_then(|bs| serde_json::from_slice::<crate::pty::ShellContext>(&bs).ok())
-            {
+            return match parse_context_hex(hex) {
                 Some(ctx) => Decision::Match(QueryKind::Osc7771Context { ctx }),
                 None => Decision::Reject,
             };
@@ -694,7 +769,7 @@ mod tests {
         assert!(bytes.ends_with(b"\x1b\\"));
     }
 
-    // ── v2 shell-integration markers ──
+    // ── shell-integration markers ──
 
     #[test]
     fn osc133_prompt_and_cmd_markers() {
@@ -749,10 +824,7 @@ mod tests {
                 &b"\x1b]133;A;click_events=1\x1b\\"[..],
                 QueryKind::Osc133PromptStart,
             ),
-            (
-                &b"\x1b]133;B;aid=foo\x07"[..],
-                QueryKind::Osc133PromptEnd,
-            ),
+            (&b"\x1b]133;B;aid=foo\x07"[..], QueryKind::Osc133PromptEnd),
             (
                 &b"\x1b]133;C;cmdline_url=false\x07"[..],
                 QueryKind::Osc133CmdStart {
@@ -819,6 +891,62 @@ mod tests {
         let r = scan_one(bytes);
         assert!(r.queries.is_empty());
         assert_eq!(r.passthrough, bytes);
+    }
+
+    #[test]
+    fn osc777_private_markers_match_vscode_style_subcommands() {
+        for (bytes, kind) in [
+            (&b"\x1b]777;A\x07"[..], QueryKind::Osc133PromptStart),
+            (&b"\x1b]777;B\x07"[..], QueryKind::Osc133PromptEnd),
+            (
+                &b"\x1b]777;C\x07"[..],
+                QueryKind::Osc133CmdStart { cmdline_url: None },
+            ),
+            (
+                &b"\x1b]777;D\x07"[..],
+                QueryKind::Osc133CmdEnd { exit: None },
+            ),
+            (
+                &b"\x1b]777;D;42\x1b\\"[..],
+                QueryKind::Osc133CmdEnd { exit: Some(42) },
+            ),
+        ] {
+            let r = scan_one(bytes);
+            assert!(r.passthrough.is_empty(), "leak: {:?}", bytes);
+            assert_eq!(r.queries, vec![kind], "{:?}", bytes);
+        }
+    }
+
+    #[test]
+    fn osc777_private_explicit_command_hex_decodes() {
+        let r = scan_one(b"\x1b]777;E;6563686f206869\x07");
+        match &r.queries[..] {
+            [QueryKind::Osc7770Cmd { text }] => assert_eq!(text, "echo hi"),
+            other => panic!("expected explicit command marker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc777_private_properties_parse_cwd_and_context() {
+        let r = scan_one(b"\x1b]777;P;Cwd=file:///path/with%20space\x07");
+        match &r.queries[..] {
+            [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/path/with space"),
+            other => panic!("expected cwd property, got {other:?}"),
+        }
+
+        let json = r#"{"branch":"main","venv":"work"}"#;
+        let hex: String = json.bytes().map(|b| format!("{b:02x}")).collect();
+        let mut bytes = b"\x1b]777;P;Context=".to_vec();
+        bytes.extend_from_slice(hex.as_bytes());
+        bytes.push(0x07);
+        let r = scan_one(&bytes);
+        match &r.queries[..] {
+            [QueryKind::Osc7771Context { ctx }] => {
+                assert_eq!(ctx.branch.as_deref(), Some("main"));
+                assert_eq!(ctx.venv.as_deref(), Some("work"));
+            }
+            other => panic!("expected context property, got {other:?}"),
+        }
     }
 
     #[test]
@@ -903,7 +1031,9 @@ mod tests {
             QueryKind::Osc133PromptStart,
             QueryKind::Osc133PromptEnd,
             QueryKind::Osc133CmdStart { cmdline_url: None },
-            QueryKind::Osc133CmdStart { cmdline_url: Some("ls".into()) },
+            QueryKind::Osc133CmdStart {
+                cmdline_url: Some("ls".into()),
+            },
             QueryKind::Osc133CmdEnd { exit: Some(0) },
             QueryKind::Osc7Cwd { path: "/x".into() },
             QueryKind::Osc7770Cmd { text: "x".into() },
@@ -928,12 +1058,12 @@ mod tests {
     fn full_command_lifecycle_in_one_chunk() {
         // Realistic precmd → preexec → cmd → finish burst.
         // Hex of "ls -la" = 6c73202d6c61
-        let burst = b"\x1b]133;D;0\x07\
-                      \x1b]133;A\x07\
-                      \x1b]7;file:///tmp\x07\
-                      \x1b]133;B\x07\
-                      \x1b]7770;6c73202d6c61\x07\
-                      \x1b]133;C\x07";
+        let burst = b"\x1b]777;D;0\x07\
+                      \x1b]777;A\x07\
+                      \x1b]777;P;Cwd=file:///tmp\x07\
+                      \x1b]777;B\x07\
+                      \x1b]777;E;6c73202d6c61\x07\
+                      \x1b]777;C\x07";
         let r = scan_one(burst);
         assert!(
             r.passthrough.is_empty(),

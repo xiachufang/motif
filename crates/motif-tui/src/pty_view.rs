@@ -36,42 +36,42 @@ use vt100::Parser;
 const SCROLLBACK_LINES: usize = 1000;
 
 pub struct PtyView {
-    parser:        Parser,
-    anchor:        Option<u64>,
-    abs_top:       u64,
+    parser: Parser,
+    anchor: Option<u64>,
+    abs_top: u64,
     last_top_hash: Option<u64>,
     /// v2 shell-integration: per-block start/end absolute row numbers,
     /// recorded when `pty.command_started` / `pty.command_finished`
     /// arrive. The list is chronological — entries beyond `abs_floor()`
     /// have been evicted from scrollback and are pruned on insert.
-    blocks:        Vec<BlockMark>,
+    blocks: Vec<BlockMark>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockStatus {
     Running,
     /// Finished. `None` means signaled / no exit code (e.g. SIGINT
-    /// before the shell could send `OSC 133;D`); `Some(0)` is success;
+    /// before the shell could send a command-end marker); `Some(0)` is success;
     /// any other Some(N) is a failure with code N.
     Finished(Option<i32>),
 }
 
 #[derive(Debug, Clone)]
 pub struct BlockMark {
-    pub id:        String,
+    pub id: String,
     pub start_abs: u64,
-    pub end_abs:   Option<u64>,
-    pub status:    BlockStatus,
+    pub end_abs: Option<u64>,
+    pub status: BlockStatus,
 }
 
 impl PtyView {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser:        Parser::new(rows.max(1), cols.max(1), SCROLLBACK_LINES),
-            anchor:        None,
-            abs_top:       0,
+            parser: Parser::new(rows.max(1), cols.max(1), SCROLLBACK_LINES),
+            anchor: None,
+            abs_top: 0,
             last_top_hash: None,
-            blocks:        Vec::new(),
+            blocks: Vec::new(),
         }
     }
 
@@ -82,7 +82,9 @@ impl PtyView {
         // can still show.
         if let Some(a) = self.anchor {
             let floor = self.abs_floor();
-            if a < floor { self.anchor = Some(floor); }
+            if a < floor {
+                self.anchor = Some(floor);
+            }
         }
     }
 
@@ -101,9 +103,15 @@ impl PtyView {
         self.parser.screen().cursor_position()
     }
 
-    pub fn is_scrolled_back(&self) -> bool { self.anchor.is_some() }
-    pub fn anchor(&self)            -> Option<u64> { self.anchor }
-    pub fn abs_top(&self)           -> u64 { self.abs_top }
+    pub fn is_scrolled_back(&self) -> bool {
+        self.anchor.is_some()
+    }
+    pub fn anchor(&self) -> Option<u64> {
+        self.anchor
+    }
+    pub fn abs_top(&self) -> u64 {
+        self.abs_top
+    }
     pub fn abs_floor(&self) -> u64 {
         self.abs_top.saturating_sub(SCROLLBACK_LINES as u64)
     }
@@ -112,7 +120,7 @@ impl PtyView {
     /// return a screen ref the caller can hand to a renderer.
     pub fn screen_for_render(&mut self) -> &vt100::Screen {
         let offset = match self.anchor {
-            None    => 0,
+            None => 0,
             Some(a) => self.abs_top.saturating_sub(a) as usize,
         };
         self.parser.screen_mut().set_scrollback(offset);
@@ -123,14 +131,18 @@ impl PtyView {
     /// `delta < 0` moves into history.
     pub fn scroll_lines(&mut self, delta: i64) {
         let cur = self.anchor.unwrap_or(self.abs_top) as i64;
-        let lo  = self.abs_floor() as i64;
-        let hi  = self.abs_top    as i64;
+        let lo = self.abs_floor() as i64;
+        let hi = self.abs_top as i64;
         let new = (cur + delta).clamp(lo, hi) as u64;
         self.anchor = if new >= self.abs_top { None } else { Some(new) };
     }
 
-    pub fn jump_top(&mut self)  { self.anchor = Some(self.abs_floor()); }
-    pub fn jump_live(&mut self) { self.anchor = None; }
+    pub fn jump_top(&mut self) {
+        self.anchor = Some(self.abs_floor());
+    }
+    pub fn jump_live(&mut self) {
+        self.anchor = None;
+    }
 
     // ── v2 shell-integration: block markers ──────────────────────────
 
@@ -147,7 +159,9 @@ impl PtyView {
         let floor = self.abs_floor();
         self.blocks.retain(|b| b.start_abs >= floor);
         self.blocks.push(BlockMark {
-            id, start_abs: self.cursor_abs_row(), end_abs: None,
+            id,
+            start_abs: self.cursor_abs_row(),
+            end_abs: None,
             status: BlockStatus::Running,
         });
     }
@@ -157,15 +171,22 @@ impl PtyView {
     /// attach and only command_finished was replayed).
     pub fn mark_block_end(&mut self, id: &str, exit_code: Option<i32>) {
         let cur = self.cursor_abs_row();
-        if let Some(b) = self.blocks.iter_mut().rev().find(|b| b.id == id && b.end_abs.is_none()) {
+        if let Some(b) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|b| b.id == id && b.end_abs.is_none())
+        {
             b.end_abs = Some(cur);
-            b.status  = BlockStatus::Finished(exit_code);
+            b.status = BlockStatus::Finished(exit_code);
         }
     }
 
     /// All currently-known block marks, oldest first. Renderers use this
     /// to paint the gutter for visible rows.
-    pub fn block_marks(&self) -> &[BlockMark] { &self.blocks }
+    pub fn block_marks(&self) -> &[BlockMark] {
+        &self.blocks
+    }
 
     /// Anchor (the line currently at the top of the viewport, or
     /// `abs_top` when in live mode) of the block immediately *before*
@@ -173,7 +194,9 @@ impl PtyView {
     /// scroll to, or None when there is no earlier block.
     pub fn prev_block_anchor(&self) -> Option<u64> {
         let cursor_anchor = self.anchor.unwrap_or(self.abs_top);
-        self.blocks.iter().rev()
+        self.blocks
+            .iter()
+            .rev()
             .find(|b| b.start_abs < cursor_anchor)
             .map(|b| b.start_abs)
     }
@@ -181,7 +204,8 @@ impl PtyView {
     /// Anchor of the block strictly after the current scroll position.
     pub fn next_block_anchor(&self) -> Option<u64> {
         let cursor_anchor = self.anchor.unwrap_or(0);
-        self.blocks.iter()
+        self.blocks
+            .iter()
             .find(|b| b.start_abs > cursor_anchor)
             .map(|b| b.start_abs)
     }
@@ -205,7 +229,9 @@ impl PtyView {
         // Hash the LIVE row 0, regardless of where the user is currently
         // looking, then restore.
         let saved = self.parser.screen().scrollback();
-        if saved != 0 { self.parser.screen_mut().set_scrollback(0); }
+        if saved != 0 {
+            self.parser.screen_mut().set_scrollback(0);
+        }
         let cur_hash = hash_top(&self.parser);
 
         match self.last_top_hash {
@@ -220,7 +246,9 @@ impl PtyView {
             }
             _ => {}
         }
-        if saved != 0 { self.parser.screen_mut().set_scrollback(saved); }
+        if saved != 0 {
+            self.parser.screen_mut().set_scrollback(saved);
+        }
     }
 
     /// Search vt100's scrollback for a row whose hash matches `prev_hash`.
@@ -272,8 +300,8 @@ mod tests {
     #[test]
     fn alt_screen_pauses_tracking() {
         let mut v = PtyView::new(4, 10);
-        v.process(b"a\r\nb\r\nc\r\nd");   // baseline
-        v.process(b"\r\ne");              // 1 scroll
+        v.process(b"a\r\nb\r\nc\r\nd"); // baseline
+        v.process(b"\r\ne"); // 1 scroll
         assert_eq!(v.abs_top(), 1);
 
         // Enter alt screen — output here must not advance abs_top, no
@@ -350,9 +378,9 @@ mod tests {
     #[test]
     fn anchor_snaps_to_floor_when_evicted() {
         let mut v = PtyView::new(2, 10);
-        v.process(b"x\r\ny");           // baseline
-        v.process(b"\r\nz");            // abs_top = 1
-        v.scroll_lines(-1);             // anchor = 0
+        v.process(b"x\r\ny"); // baseline
+        v.process(b"\r\nz"); // abs_top = 1
+        v.scroll_lines(-1); // anchor = 0
         assert_eq!(v.anchor(), Some(0));
 
         // Push past the buffer — abs_top grows beyond SCROLLBACK_LINES so
@@ -364,6 +392,10 @@ mod tests {
         // on huge bursts, but the clamp guarantees the user never chases a
         // line vt100 has already evicted).
         let a = v.anchor().expect("anchor stays set");
-        assert!(a >= v.abs_floor(), "anchor {a} below floor {}", v.abs_floor());
+        assert!(
+            a >= v.abs_floor(),
+            "anchor {a} below floor {}",
+            v.abs_floor()
+        );
     }
 }

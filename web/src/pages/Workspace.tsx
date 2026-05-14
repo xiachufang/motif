@@ -33,7 +33,6 @@ function saveBool(key: string, v: boolean) {
 const PtyTab         = lazy(() => import("../tabs/PtyTab"));
 const DiffTab        = lazy(() => import("../tabs/DiffTab"));
 const FilePreviewTab = lazy(() => import("../tabs/FilePreviewTab"));
-const ImageTab       = lazy(() => import("../tabs/ImageTab"));
 const MobileInputDock = lazy(() => import("../panels/MobileInputDock"));
 
 interface Props { sessionName: string }
@@ -43,10 +42,6 @@ function decodeB64(b64: string): Uint8Array {
   const u8 = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
   return u8;
-}
-
-function isImagePath(path: string): boolean {
-  return /\.(avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i.test(path);
 }
 
 /** Pick the active PTY's cwd (if any) for the initial fs.tree/git.status
@@ -298,7 +293,7 @@ export default function Workspace({ sessionName }: Props) {
     const spec = activeViewObj.spec;
     (async () => {
       try {
-        if (spec.kind === "preview") {
+        if (spec.kind === "preview" || spec.kind === "image") {
           const r = await client.call<ReadResult>("fs.read", { path: spec.path });
           const bytes = decodeB64(r.content_b64);
           const content = r.binary
@@ -313,9 +308,6 @@ export default function Workspace({ sessionName }: Props) {
           const cwd = useApp.getState().currentPath || session.workdir;
           const r = await client.call<DiffResult>("git.diff", { staged: spec.staged, path: spec.path, cwd });
           setViewCache(vid, { kind: "diff", patch: r.patch });
-        } else if (spec.kind === "image") {
-          // ImageTab does its own fetch; we only cache the auth'd blob URL
-          // path in the tab itself. Skip pre-loading here.
         }
       } catch (e) {
         setStatus(`load view failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -334,7 +326,7 @@ export default function Workspace({ sessionName }: Props) {
       // Server creates the view (broadcast) and we'll pick it up via the
       // view.opened event; cache content on our client.
       await client.call("view.open", {
-        spec: { kind: isImagePath(path) ? "image" : "preview", path } as ViewSpec,
+        spec: { kind: "preview", path } as ViewSpec,
         activate: true,
       });
       // Auto-collapse the drawer so the freshly-opened tab is fully visible.
@@ -510,10 +502,10 @@ export default function Workspace({ sessionName }: Props) {
                     {view.spec.kind === "pty" && (
                       <PtyTab ptyId={view.spec.pty_id} active={active} />
                     )}
-                    {view.spec.kind === "preview" && cache?.kind === "preview" && (
+                    {(view.spec.kind === "preview" || view.spec.kind === "image") && cache?.kind === "preview" && (
                       <FilePreviewTab path={view.spec.path} content={cache.content} mime={cache.mime} binary={cache.binary} />
                     )}
-                    {view.spec.kind === "preview" && !cache && (
+                    {(view.spec.kind === "preview" || view.spec.kind === "image") && !cache && (
                       <div className="muted center">loading…</div>
                     )}
                     {view.spec.kind === "diff" && cache?.kind === "diff" && (
@@ -521,9 +513,6 @@ export default function Workspace({ sessionName }: Props) {
                     )}
                     {view.spec.kind === "diff" && !cache && (
                       <div className="muted center">loading diff…</div>
-                    )}
-                    {view.spec.kind === "image" && (
-                      <ImageTab path={view.spec.path} />
                     )}
                   </Suspense>
                 </div>

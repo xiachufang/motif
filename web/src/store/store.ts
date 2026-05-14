@@ -1,9 +1,9 @@
 // Application state.
 //
-// PTY/preview/diff/image tabs are now server-side state ("views") synced via
+// PTY/preview/diff tabs are now server-side state ("views") synced via
 // view.opened / view.closed / view.active_changed events. The store mirrors
 // `views` and `activeView`. Per-view client-side cache (preview content,
-// diff patch, image blob URL) lives in `viewCache` and is hydrated on the
+// diff patch) lives in `viewCache` and is hydrated on the
 // fly when a view first becomes visible — content is not synced.
 //
 // Path model: file-tree paths are ABSOLUTE. The tree is rooted at the active
@@ -23,12 +23,11 @@ export type Page =
   | { kind: "sessions" }
   | { kind: "workspace"; sessionName: string };
 
-/** Per-view cache: optional content/patch/blob URL stored locally on each
+/** Per-view cache: optional content/patch stored locally on each
  *  client. Populated lazily when the view is first rendered. */
 export type ViewCache =
   | { kind: "preview"; content: string; mime: string | null; binary: boolean }
-  | { kind: "diff";    patch: string }
-  | { kind: "image";   blobUrl: string };
+  | { kind: "diff";    patch: string };
 
 export interface AppState {
   page:          Page;
