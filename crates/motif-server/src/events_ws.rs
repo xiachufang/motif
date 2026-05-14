@@ -174,7 +174,7 @@ async fn handle_events_socket(
         let mut last_replayed = replay_since;
         for ev in past {
             last_replayed = last_replayed.max(ev.seq());
-            if is_self_event(ev.as_ref(), &sub_client) {
+            if should_drop(&sub_session, ev.as_ref(), &sub_client) {
                 continue;
             }
             if !send_event(&sub_out_tx, ev, codec) {
@@ -187,7 +187,7 @@ async fn handle_events_socket(
                     if ev.seq() <= last_replayed {
                         continue;
                     }
-                    if is_self_event(ev.as_ref(), &sub_client) {
+                    if should_drop(&sub_session, ev.as_ref(), &sub_client) {
                         continue;
                     }
                     if !send_event(&sub_out_tx, ev, codec) {
@@ -224,6 +224,22 @@ async fn handle_events_socket(
 fn is_self_event(ev: &Event, client_id: &str) -> bool {
     matches!(ev, Event::ClientJoined { client_id: cid, .. } if cid == client_id)
         || matches!(ev, Event::ClientLeft { client_id: cid, .. } if cid == client_id)
+}
+
+/// Per-client delivery filter. Always drops self-attach/detach echoes; also
+/// drops `tree.changed` / `git.changed` for clients that haven't opted into
+/// the fs watch via `fs.watch`. Both checks are cheap (HashSet lookup +
+/// pattern match) — fine to run on the hot replay/broadcast path.
+fn should_drop(session: &Session, ev: &Event, client_id: &str) -> bool {
+    if is_self_event(ev, client_id) {
+        return true;
+    }
+    if matches!(ev, Event::TreeChanged { .. } | Event::GitChanged { .. })
+        && !session.is_fs_subscribed(client_id)
+    {
+        return true;
+    }
+    false
 }
 
 fn send_event(out_tx: &mpsc::UnboundedSender<OutMsg>, ev: Arc<Event>, codec: Codec) -> bool {

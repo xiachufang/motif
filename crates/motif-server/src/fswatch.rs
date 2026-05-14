@@ -190,6 +190,13 @@ fn forward_loop(
             }
         }
 
+        // The watcher only runs when ≥1 client has subscribed via `fs.watch`,
+        // but recheck before each publish to handle the race where the last
+        // subscriber unsubscribes between events and `drop(FsWatcher)` hasn't
+        // closed the channel yet.
+        if !s.any_fs_subscriber() {
+            continue;
+        }
         if !tree_paths.is_empty() {
             s.publish_event(|seq| Event::TreeChanged {
                 paths: tree_paths,

@@ -95,6 +95,9 @@ async fn fs_operations_and_events() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
     let mut c = TestClient::connect(&server, "fs", dir.path()).await.unwrap();
+    // tree.changed / git.changed are opt-in: subscribe before driving fs.* so
+    // the per-client filter delivers them.
+    let _: serde_json::Value = c.call("fs.watch", json!({})).await.unwrap();
 
     // mkdir sub/ — emits TreeChanged only (rpc.rs: no GitChanged for mkdir).
     let _: serde_json::Value = c
@@ -553,9 +556,12 @@ async fn multi_client_mirror() {
     // A attaches first — no siblings.
     let mut a = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
     assert_eq!(a.attach_result.clients.len(), 0);
+    // All three clients opt into tree.changed / git.changed (gated by fs.watch).
+    let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
 
     // B attaches — A sees `client.joined(B)`; B's snapshot lists A.
     let mut b = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
+    let _: serde_json::Value = b.call("fs.watch", json!({})).await.unwrap();
     a.expect_event("A: client.joined(B)", |e| {
         matches!(e, Event::ClientJoined { client_id, .. } if client_id == &b.client_id)
     })
@@ -565,6 +571,7 @@ async fn multi_client_mirror() {
 
     // C attaches — both A and B see `client.joined(C)`.
     let mut c = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
+    let _: serde_json::Value = c.call("fs.watch", json!({})).await.unwrap();
     a.expect_event("A: client.joined(C)", |e| {
         matches!(e, Event::ClientJoined { client_id, .. } if client_id == &c.client_id)
     })
@@ -834,8 +841,11 @@ async fn event_replay_on_reattach() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
 
-    // A attaches and seeds the ring with a few events.
+    // A attaches and seeds the ring with a few events. fs.watch first so the
+    // tree.changed / git.changed events the test relies on actually go into
+    // the ring (default-off post-`fs.watch` rewrite).
     let mut a = TestClient::connect(&server, "replay", dir.path()).await.unwrap();
+    let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
     let _: ppty::PtyCreateResult = a
         .call(
             "pty.create",
@@ -869,8 +879,14 @@ async fn event_replay_on_reattach() {
     assert!(highest > 0, "expected some events to have been published");
 
     // ── Scenario 1: a fresh client subscribes with `since=0` and receives the
-    //    full ring replay.
-    let mut b = TestClient::connect(&server, "replay", dir.path()).await.unwrap();
+    //    full ring replay. B has to call fs.watch BEFORE opening /events:
+    //    the per-client filter consults the live subscriber set during the
+    //    replay loop, so a late subscribe drops the buffered tree/git events.
+    let mut b = TestClient::connect_no_events(&server, "replay", dir.path())
+        .await
+        .unwrap();
+    let _: serde_json::Value = b.call("fs.watch", json!({})).await.unwrap();
+    b.spawn_events_ws(0).await.unwrap();
     let collected = b.drain_events().await;
     // B's own ClientJoined is filtered server-side; everything earlier is
     // replayed in order.
@@ -909,6 +925,9 @@ async fn event_replay_on_reattach() {
     // ClientJoined(D) into the ring; D itself filters that). After this point
     // we know the ring contains events up to at least D's attach seq.
     let d_attach_seq = d.attach_result.last_seq;
+    // Subscribe before opening /events so we receive the upcoming
+    // tree.changed / git.changed (subscribe-then-open keeps the filter happy).
+    let _: serde_json::Value = d.call("fs.watch", json!({})).await.unwrap();
     d.spawn_events_ws(d_attach_seq).await.unwrap();
     let collected = d.drain_events().await;
     assert!(
@@ -947,5 +966,107 @@ async fn event_replay_on_reattach() {
     assert!(
         collected.is_empty(),
         "expected empty replay for huge since, got {collected:?}"
+    );
+}
+
+// ─────────────────────────── 8. fs_watch_subscription ───────────────────────────
+
+#[tokio::test]
+async fn fs_watch_subscription_gates_events() {
+    let server = TestServer::start().await;
+    let dir = TempDir::new().unwrap();
+
+    // ── Default state: no subscription, no events.
+    let mut a = TestClient::connect(&server, "watch", dir.path()).await.unwrap();
+    let _: pfs::WriteResult = a
+        .call(
+            "fs.write",
+            pfs::WriteParams {
+                path: "before.txt".into(),
+                content_b64: b64_encode(b"hi\n"),
+                expected_sha256: None,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+    let collected = a.drain_events().await;
+    assert!(
+        collected
+            .iter()
+            .all(|e| !matches!(e, Event::TreeChanged { .. } | Event::GitChanged { .. })),
+        "unsubscribed client received tree/git events: {collected:?}"
+    );
+
+    // ── Subscribe → events flow.
+    let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
+    let _: pfs::WriteResult = a
+        .call(
+            "fs.write",
+            pfs::WriteParams {
+                path: "during.txt".into(),
+                content_b64: b64_encode(b"yo\n"),
+                expected_sha256: None,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+    a.expect_event("tree.changed (during)", |e| {
+        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "during.txt"))
+    })
+    .await;
+    a.expect_event("git.changed (during)", |e| matches!(e, Event::GitChanged { .. }))
+        .await;
+
+    // ── Unsubscribe → events stop. fs.watch / fs.unwatch are both idempotent.
+    let _: serde_json::Value = a.call("fs.unwatch", json!({})).await.unwrap();
+    let _: serde_json::Value = a.call("fs.unwatch", json!({})).await.unwrap();
+    let _: pfs::WriteResult = a
+        .call(
+            "fs.write",
+            pfs::WriteParams {
+                path: "after.txt".into(),
+                content_b64: b64_encode(b"bye\n"),
+                expected_sha256: None,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+    let collected = a.drain_events().await;
+    assert!(
+        collected
+            .iter()
+            .all(|e| !matches!(e, Event::TreeChanged { .. } | Event::GitChanged { .. })),
+        "events arrived after unwatch: {collected:?}"
+    );
+
+    // ── Multi-client: A subscribed, B not. A's write reaches only A.
+    //    A must re-subscribe — we unwatched above.
+    let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
+    let mut b = TestClient::connect(&server, "watch", dir.path()).await.unwrap();
+    let _: pfs::WriteResult = a
+        .call(
+            "fs.write",
+            pfs::WriteParams {
+                path: "split.txt".into(),
+                content_b64: b64_encode(b"split\n"),
+                expected_sha256: None,
+                force: false,
+            },
+        )
+        .await
+        .unwrap();
+    a.expect_event("A: tree.changed (split)", |e| {
+        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "split.txt"))
+    })
+    .await;
+    let b_collected = b.drain_events().await;
+    assert!(
+        b_collected
+            .iter()
+            .all(|e| !matches!(e, Event::TreeChanged { .. } | Event::GitChanged { .. })),
+        "unsubscribed B received tree/git events: {b_collected:?}"
     );
 }

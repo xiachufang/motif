@@ -133,7 +133,7 @@ motif-tui **不**保存任何 SSH 凭据。这意味着：
 
 ## 5. 浏览器侧的 SSH 模式
 
-Web UI 已经内嵌进 motifd（见 `crates/motif-server/src/embed.rs` + `motif-server/src/ws.rs::router` 上的 `/` 与 `/assets/*p` 路由），不存在独立 `motif-web` 二进制。浏览器走 SSH 的姿势就是经典的 `ssh -L`：
+Web UI 内嵌在 motifd（见 `crates/motif-server/src/embed.rs` + `motif-server/src/ws.rs::router` 上的 `/` 与 `/assets/*p` 路由）。浏览器走 SSH 的姿势就是经典的 `ssh -L`：
 
 ```bash
 # 在 client 机器上保留一个长期 forward

@@ -123,26 +123,22 @@ pub fn dispatch_concurrent(
         "fs.write" => {
             attached_with_session(manager, conn, id, req.params, |s, p: pfs::WriteParams| {
                 let r = crate::fs::write(&s, &p)?;
-                // Emit changes.
-                let path = p.path.clone();
-                s.publish_event(|seq| Event::TreeChanged {
-                    paths: vec![path],
-                    seq,
-                });
-                // Unconditional: clients fan out to whichever cwd they care about
-                // (which may be outside the session workdir). They handle
-                // NotAGitRepo gracefully on the re-fetch.
-                s.publish_event(|seq| Event::GitChanged { seq });
+                publish_fs_change(&s, vec![p.path]);
                 Ok(r)
             })
         }
         "fs.mkdir" => attached_with_session(manager, conn, id, req.params, |s, p: MkdirParams| {
             let safe = crate::fs::resolve(&s.workdir, &p.path)?;
             std::fs::create_dir_all(&safe).map_err(crate::fs::io_to_rpc_err)?;
-            s.publish_event(|seq| Event::TreeChanged {
-                paths: vec![p.path],
-                seq,
-            });
+            // Only TreeChanged here — mkdir doesn't flip git status (empty dirs
+            // are invisible to git), so we skip GitChanged. publish_fs_change
+            // would emit both; inline the gated call instead.
+            if s.any_fs_subscriber() {
+                s.publish_event(|seq| Event::TreeChanged {
+                    paths: vec![p.path],
+                    seq,
+                });
+            }
             Ok(Empty {})
         }),
         "fs.remove" => {
@@ -153,14 +149,7 @@ pub fn dispatch_concurrent(
                 } else {
                     std::fs::remove_file(&safe).map_err(crate::fs::io_to_rpc_err)?;
                 }
-                s.publish_event(|seq| Event::TreeChanged {
-                    paths: vec![p.path],
-                    seq,
-                });
-                // Unconditional: clients fan out to whichever cwd they care about
-                // (which may be outside the session workdir). They handle
-                // NotAGitRepo gracefully on the re-fetch.
-                s.publish_event(|seq| Event::GitChanged { seq });
+                publish_fs_change(&s, vec![p.path]);
                 Ok(Empty {})
             })
         }
@@ -169,17 +158,21 @@ pub fn dispatch_concurrent(
                 let from = crate::fs::resolve(&s.workdir, &p.from)?;
                 let to = crate::fs::resolve(&s.workdir, &p.to)?;
                 std::fs::rename(&from, &to).map_err(crate::fs::io_to_rpc_err)?;
-                s.publish_event(|seq| Event::TreeChanged {
-                    paths: vec![p.from, p.to],
-                    seq,
-                });
-                // Unconditional: clients fan out to whichever cwd they care about
-                // (which may be outside the session workdir). They handle
-                // NotAGitRepo gracefully on the re-fetch.
-                s.publish_event(|seq| Event::GitChanged { seq });
+                publish_fs_change(&s, vec![p.from, p.to]);
                 Ok(Empty {})
             })
         }
+        "fs.watch" => attached(manager, conn, id, req.params, |s, _: pfs::WatchParams| {
+            // Gated subscription: this client opts into tree.changed /
+            // git.changed events; if no one was previously subscribed, the
+            // session spins up its OS file watcher. See `Session::add_fs_subscriber`.
+            s.add_fs_subscriber(conn.client_id.clone());
+            Ok(pfs::WatchResult::default())
+        }),
+        "fs.unwatch" => attached(manager, conn, id, req.params, |s, _: pfs::UnwatchParams| {
+            s.remove_fs_subscriber(&conn.client_id);
+            Ok(pfs::UnwatchResult::default())
+        }),
 
         // git.*
         "git.status" => attached(manager, conn, id, req.params, |s, p: pgit::StatusParams| {
@@ -542,6 +535,21 @@ fn handle_view_move(
 }
 
 // ─────────────────────────── helpers ───────────────────────────
+
+/// Publish `tree.changed` (paths) + `git.changed` for a write-y fs op, but
+/// skip both when no client has called `fs.watch`. Per-session subscriber
+/// state lives in `Session::fs_subscribers`; the events themselves still go
+/// through `publish_event` so seq stays monotonic for everyone else.
+fn publish_fs_change(s: &Arc<Session>, paths: Vec<String>) {
+    if !s.any_fs_subscriber() {
+        return;
+    }
+    s.publish_event(|seq| Event::TreeChanged { paths, seq });
+    // Unconditional git.changed: clients fan out to whichever cwd they care
+    // about (may be outside the session workdir) and handle NotAGitRepo on
+    // re-fetch.
+    s.publish_event(|seq| Event::GitChanged { seq });
+}
 
 /// Promote `client` to primary on the named PTY. Resizes the master and
 /// publishes a PtyResize event when that changes the effective size.

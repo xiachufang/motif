@@ -93,3 +93,22 @@ pub struct WriteResult {
     pub sha256: Sha256Hex,
 }
 
+// ────────────────────────────────────────────────────── fs.watch / fs.unwatch
+//
+// `tree.changed` and `git.changed` are opt-in: clients call `fs.watch` to
+// start receiving them and `fs.unwatch` to stop. The server only spins up the
+// per-session OS file watcher when ≥1 client is subscribed, so an attached
+// client that doesn't care about the file tree pays no fswatch cost.
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WatchParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WatchResult {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnwatchParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnwatchResult {}
+

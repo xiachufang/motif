@@ -18,6 +18,7 @@ use motif_proto::common::SessionId;
 use parking_lot::Mutex;
 
 use crate::rpc::ConnState;
+use crate::session::manager::SessionManager;
 
 /// Soft idle timeout. After this much wall-clock with no `touch()`, the
 /// entry is eligible for reaping on the next `gc()` call. Lazy GC: we
@@ -90,14 +91,29 @@ impl ConnRegistry {
     /// in practice — N is in single digits per machine). Caller should
     /// invoke from `mint` and any hot path that can tolerate the work;
     /// no background task needed for v1.
-    pub fn gc(&self) {
-        let stale: Vec<SessionId> = self
+    ///
+    /// Before removing a stale entry we look at its `ConnState`; if it's
+    /// still `attached`, run `Session::detach_client` first. Without this,
+    /// a client that called `session.attach` over HTTP and then died
+    /// before opening `/events` would leave a phantom `client_id` in the
+    /// session's clients list — the normal detach path (`/events` WS close
+    /// in `events_ws.rs`) never fires for that client. The events WS
+    /// branch still owns its own detach call, so this only catches the
+    /// "attached but never opened events" leak.
+    pub fn gc(&self, manager: &SessionManager) {
+        let stale: Vec<(SessionId, Arc<ConnEntry>)> = self
             .conns
             .iter()
             .filter(|kv| kv.value().idle_for() > SESSION_IDLE_TTL)
-            .map(|kv| kv.key().clone())
+            .map(|kv| (kv.key().clone(), Arc::clone(kv.value())))
             .collect();
-        for id in stale {
+        for (id, entry) in stale {
+            let snap = entry.state.lock().snapshot();
+            if let Some(name) = snap.attached {
+                if let Some(s) = manager.get(&name) {
+                    s.detach_client(&snap.client_id);
+                }
+            }
             self.conns.remove(&id);
         }
     }
@@ -131,13 +147,50 @@ mod tests {
     #[test]
     fn gc_keeps_fresh_drops_stale() {
         let r = ConnRegistry::new();
+        let mgr = SessionManager::new();
         let (fresh_id, _) = r.mint();
         let (stale_id, stale_entry) = r.mint();
         // Hand-roll a "stale" entry by rewinding its last_seen far enough
         // that the GC threshold triggers.
         *stale_entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
-        r.gc();
+        r.gc(&mgr);
         assert!(r.get(&fresh_id).is_some(), "fresh entry was reaped");
         assert!(r.get(&stale_id).is_none(), "stale entry survived");
+    }
+
+    #[test]
+    fn gc_detaches_orphaned_client() {
+        // A client called session.attach over HTTP, was assigned a conn entry,
+        // then died before opening /events. GC must clean up both the conn
+        // entry AND the session.clients ghost — otherwise client_count stays
+        // pinned and ClientLeft never fires.
+        let r = ConnRegistry::new();
+        let mgr = SessionManager::new();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let session = mgr
+            .create("ghost".to_string(), tmp.path().to_path_buf())
+            .expect("create session");
+
+        let (sid, entry) = r.mint();
+        // Simulate dispatch_mut's effect on attach: record the session name and
+        // register this client_id with the session.
+        let client_id = {
+            let mut state = entry.state.lock();
+            state.attached = Some("ghost".to_string());
+            state.client_id.clone()
+        };
+        session.attach_client(client_id.clone());
+        assert_eq!(session.info().client_count, 1);
+
+        // Rewind so this conn looks stale.
+        *entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
+        r.gc(&mgr);
+
+        assert!(r.get(&sid).is_none(), "stale conn entry survived gc");
+        assert_eq!(
+            session.info().client_count,
+            0,
+            "session.clients still has phantom client_id after gc"
+        );
     }
 }

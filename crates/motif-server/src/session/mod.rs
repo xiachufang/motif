@@ -2,7 +2,7 @@
 
 pub mod manager;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -49,10 +49,17 @@ pub struct Session {
     views: Mutex<Vec<ViewInfo>>,
     active_view: Mutex<Option<ViewId>>,
 
-    /// Filesystem watcher rooted at `workdir`. Initialized lazily after
-    /// `Arc::new` so the forwarder thread can hold a `Weak<Session>` for
-    /// publish-event callbacks. Dropped with the Session.
+    /// Filesystem watcher rooted at `workdir`. Spawned lazily when the first
+    /// client calls `fs.watch`; dropped when the last subscriber leaves
+    /// (`fs.unwatch` or detach). The forwarder thread holds a `Weak<Session>`
+    /// so this can be torn down without leaks.
     fswatcher: Mutex<Option<crate::fswatch::FsWatcher>>,
+
+    /// Per-client opt-in to `tree.changed` / `git.changed`. Empty by default
+    /// — neither event is emitted nor delivered while this set is empty, and
+    /// `fswatcher` stays `None`. Toggled by `fs.watch` / `fs.unwatch` RPCs
+    /// and cleaned up on `detach_client`.
+    fs_subscribers: Mutex<HashSet<ClientId>>,
 
     /// Latest client-reported terminal palette as `(fg, bg)`, where each is
     /// the rgb portion of an OSC 10/11 reply (e.g. `"e6e6/e6e6/e6e6"`).
@@ -81,20 +88,11 @@ impl Session {
             views: Mutex::new(Vec::new()),
             active_view: Mutex::new(None),
             fswatcher: Mutex::new(None),
+            fs_subscribers: Mutex::new(HashSet::new()),
             term_palette: Mutex::new(None),
         });
         // pool needs a back-reference for publishing events.
         s.pty_pool.set_session(Arc::downgrade(&s));
-
-        // Watch workdir so PTY-driven edits surface as tree.changed/git.changed.
-        // A failure here is logged but doesn't kill the session — the user can
-        // still work, they just won't get auto-refresh.
-        match crate::fswatch::spawn(Arc::downgrade(&s), s.workdir.clone()) {
-            Ok(w) => *s.fswatcher.lock() = Some(w),
-            Err(e) => {
-                tracing::warn!(workdir = %s.workdir.display(), error = %e, "fs watcher disabled")
-            }
-        }
         s
     }
 
@@ -207,11 +205,72 @@ impl Session {
             return false;
         }
         self.pty_pool.forget_client_sizes(client_id);
+        // Drop any fs subscription this client held, including the per-session
+        // fswatcher if they were the last subscriber. Without this, a client
+        // that crashes mid-`fs.watch` would pin the watcher forever (or until
+        // `Session::destroy`).
+        self.remove_fs_subscriber(client_id);
         self.publish_event(|seq| Event::ClientLeft {
             client_id: client_id.clone(),
             seq,
         });
         true
+    }
+
+    // ── tree.changed / git.changed subscription ──
+
+    /// Returns true if any client has called `fs.watch` and not yet
+    /// unsubscribed / detached. Call sites for `tree.changed` /
+    /// `git.changed` consult this before publishing — when no one is
+    /// listening we skip both the ring append and the broadcast send.
+    pub fn any_fs_subscriber(&self) -> bool {
+        !self.fs_subscribers.lock().is_empty()
+    }
+
+    pub fn is_fs_subscribed(&self, client_id: &str) -> bool {
+        self.fs_subscribers.lock().contains(client_id)
+    }
+
+    /// Add `client_id` to the subscriber set; if the set was empty before,
+    /// spawn the per-session fswatcher so PTY-driven edits start producing
+    /// events. Idempotent — calling twice from the same client is fine.
+    pub fn add_fs_subscriber(self: &Arc<Self>, client_id: ClientId) {
+        let became_first = {
+            let mut subs = self.fs_subscribers.lock();
+            let was_empty = subs.is_empty();
+            subs.insert(client_id);
+            was_empty
+        };
+        if became_first {
+            self.ensure_fswatcher();
+        }
+    }
+
+    /// Remove `client_id` from the subscriber set; if it was the last
+    /// subscriber, tear down the fswatcher. Idempotent.
+    pub fn remove_fs_subscriber(&self, client_id: &str) {
+        let became_empty = {
+            let mut subs = self.fs_subscribers.lock();
+            let removed = subs.remove(client_id);
+            removed && subs.is_empty()
+        };
+        if became_empty {
+            *self.fswatcher.lock() = None;
+        }
+    }
+
+    fn ensure_fswatcher(self: &Arc<Self>) {
+        let mut guard = self.fswatcher.lock();
+        if guard.is_some() {
+            return;
+        }
+        let root = self.desired_watch_root();
+        match crate::fswatch::spawn(Arc::downgrade(self), root) {
+            Ok(w) => *guard = Some(w),
+            Err(e) => {
+                tracing::warn!(error = %e, "fs watcher disabled");
+            }
+        }
     }
 
     pub fn views_snapshot(&self) -> Vec<ViewInfo> {

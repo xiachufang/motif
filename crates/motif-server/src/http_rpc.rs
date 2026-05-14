@@ -219,7 +219,7 @@ async fn handle_attach_http(
     // still has a live session_id, reuse its ConnState so dispatch_mut
     // can replace the existing attachment instead of creating another
     // client_id. If the header is missing or stale, mint a new entry.
-    state.conns.gc();
+    state.conns.gc(&state.manager);
     let (session_id, entry, minted) = match header_session(headers)
         .and_then(|sid| state.conns.get(&sid).map(|entry| (sid, entry)))
     {
