@@ -130,6 +130,10 @@ final class MotifClient {
         let delegate = WSLogDelegate()
         self.wsDelegate = delegate
         let urlSession = URLSession(configuration: urlSessionConfig, delegate: delegate, delegateQueue: nil)
+        let proxyCount = urlSessionConfig.proxyConfigurations.count
+        let proxyDesc = urlSessionConfig.proxyConfigurations.first.map { String(describing: $0) } ?? "(none)"
+        log.notice("urlSession proxyCount=\(proxyCount, privacy: .public) first=\(proxyDesc, privacy: .public)")
+        FileLog.note("MotifClient", "urlSession proxyCount=\(proxyCount) first=\(proxyDesc)")
 
         // For `.tailscale` we rewrite MagicDNS names to peer IPs as a
         // safety net for build/config combos where DNS resolves locally.
@@ -157,6 +161,14 @@ final class MotifClient {
         // the first /rpc call lands on an already-hot path.
         if case .tailscale = server.kind {
             await preWarmTsnetPath(host: resolvedHost, port: server.port, tailscale: tailscale)
+            // Diagnostic: prove the tailnet path can carry a plain-HTTP
+            // request end-to-end without URLSession in the loop. If this
+            // returns a status line but the URLSession POST that follows
+            // times out, the bug is in URLSession's SOCKS5 routing — not
+            // the tsnet path or the server's accept loop.
+            let probe = await tailscale.rawHttpProbe(host: resolvedHost, port: server.port, path: "/")
+            log.notice("raw http probe status=\(probe.statusLine ?? "(nil)", privacy: .public) bytes=\(probe.bytesRead, privacy: .public) elapsed=\(probe.elapsedMs, privacy: .public)ms err=\(probe.error ?? "(none)", privacy: .public)")
+            FileLog.note("MotifClient", "raw http probe status=\(probe.statusLine ?? "(nil)") bytes=\(probe.bytesRead) elapsed=\(probe.elapsedMs)ms err=\(probe.error ?? "(none)")")
         }
 
         // New protocol: RPC runs over HTTP, server-pushed events / PTY

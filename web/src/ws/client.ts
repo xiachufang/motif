@@ -54,6 +54,13 @@ export class RpcClient {
   private closed = false;
   private reconnectDelay = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /// Serializes session.attach / session.detach so a mount → unmount →
+  /// mount cycle (React StrictMode in dev) can't run two attaches
+  /// concurrently. Without this, attach #1's HTTP could land *after* the
+  /// cleanup's detach, opening a second /events + /pty WS set that
+  /// double-delivers every PTY byte alongside attach #2's sockets —
+  /// presenting as duplicated prompts and double-echoed input.
+  private attachQueue: Promise<unknown> = Promise.resolve();
   /** Fires after a transparent reconnect of `/events`. Workspace
    *  calls `session.attach` with the last seen seq for replay. */
   public onReconnect: (() => void | Promise<void>) | null = null;
@@ -100,28 +107,42 @@ export class RpcClient {
 
   // ─────────────────────────── method handlers ───────────────────────────
 
-  private async doAttach<T>(params: Record<string, unknown>): Promise<T> {
-    const { body, sessionID } = await this.httpCallRaw("session.attach", params);
-    if (!sessionID) throw new Error("attach: server didn't return X-Motif-Session");
-    this.sessionID = sessionID;
-    const result = body ? JSON.parse(new TextDecoder().decode(body)) : null;
-    const lastSeq = (result && typeof result === "object" && "last_seq" in result) ? Number(result.last_seq) || 0 : 0;
-    await this.openEvents(lastSeq);
-    const ptys = (result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).ptys))
-      ? ((result as Record<string, unknown>).ptys as Array<Record<string, unknown>>)
-      : [];
-    for (const p of ptys) {
-      const pid = typeof p.id === "string" ? p.id : null;
-      if (pid) await this.openPty(pid, /*primary=*/false);
-    }
-    return result as T;
+  /// Queue `fn` after every prior attach/detach. Order is preserved even
+  /// across rejections — a failed attach must not let the next detach
+  /// jump it in line, or the detach would tear down sockets that
+  /// haven't been opened yet.
+  private serializeAttach<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.attachQueue.then(fn, fn);
+    this.attachQueue = result.catch(() => {});
+    return result;
   }
 
-  private async doDetach<T>(): Promise<T> {
-    this.tearDownEventsAndPty();
-    const r = await this.httpCall<T>("session.detach", {});
-    this.sessionID = null;
-    return r;
+  private doAttach<T>(params: Record<string, unknown>): Promise<T> {
+    return this.serializeAttach(async () => {
+      const { body, sessionID } = await this.httpCallRaw("session.attach", params);
+      if (!sessionID) throw new Error("attach: server didn't return X-Motif-Session");
+      this.sessionID = sessionID;
+      const result = body ? JSON.parse(new TextDecoder().decode(body)) : null;
+      const lastSeq = (result && typeof result === "object" && "last_seq" in result) ? Number(result.last_seq) || 0 : 0;
+      await this.openEvents(lastSeq);
+      const ptys = (result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).ptys))
+        ? ((result as Record<string, unknown>).ptys as Array<Record<string, unknown>>)
+        : [];
+      for (const p of ptys) {
+        const pid = typeof p.id === "string" ? p.id : null;
+        if (pid) await this.openPty(pid, /*primary=*/false);
+      }
+      return result as T;
+    });
+  }
+
+  private doDetach<T>(): Promise<T> {
+    return this.serializeAttach(async () => {
+      this.tearDownEventsAndPty();
+      const r = await this.httpCall<T>("session.detach", {});
+      this.sessionID = null;
+      return r;
+    });
   }
 
   private async doPtyWrite<T>(params: Record<string, unknown>): Promise<T> {
@@ -213,9 +234,27 @@ export class RpcClient {
       ws.addEventListener("open",  () => res(),                                    { once: true });
       ws.addEventListener("error", () => rej(new Error("/events open failed")),    { once: true });
     });
+    // Swap-then-close. Each WS's message/close handlers compare `this.eventsWs`
+    // against their captured `ws`, so the displaced socket sees itself as
+    // stale: late messages are dropped, and the intentional close doesn't
+    // schedule a reconnect or clobber the new socket. Without this, opening
+    // /events twice (reconnect timer racing the post-reconnect re-attach,
+    // or any concurrent attach path) leaves the prior onMessage handler
+    // dispatching events alongside the new one — same shape of bug as the
+    // /pty leak below.
+    const prev = this.eventsWs;
     this.eventsWs = ws;
-    ws.addEventListener("message", e => this.onEventsMessage(e.data));
-    ws.addEventListener("close",   () => this.handleEventsClose());
+    ws.addEventListener("message", e => {
+      if (this.eventsWs !== ws) return;
+      this.onEventsMessage(e.data);
+    });
+    ws.addEventListener("close", () => {
+      if (this.eventsWs !== ws) return;
+      this.eventsWs = null;
+      if (this.closed) return;
+      this.scheduleReconnect();
+    });
+    if (prev) { try { prev.close(); } catch { /* ignore */ } }
     this.reconnectDelay = RECONNECT_MIN_MS;
   }
 
@@ -227,12 +266,6 @@ export class RpcClient {
     if (!parsed.method) return;
     const ev = { method: parsed.method, params: parsed.params } as Event;
     this.handlers.forEach(h => h(ev));
-  }
-
-  private handleEventsClose() {
-    this.eventsWs = null;
-    if (this.closed) return;
-    this.scheduleReconnect();
   }
 
   private scheduleReconnect() {
@@ -269,10 +302,26 @@ export class RpcClient {
       ws.addEventListener("open",  () => res(),                                              { once: true });
       ws.addEventListener("error", () => rej(new Error(`/pty/${pid} open failed`)),          { once: true });
     });
+    // Swap-then-close. The displaced socket's handlers compare the map entry
+    // against their own captured `ws` and bail when displaced — so its late
+    // ring-replay frames (and live bytes already in flight) don't get fed
+    // into the shell parser and forwarded to `appendOutput` a second time.
+    // The previous code overwrote `ptyWs.set(pid, ws)` without closing the
+    // prior socket, which under a /events reconnect-induced re-attach left
+    // *both* /pty/<id> sockets delivering the full `?since=0` ring replay
+    // into xterm — the visible "lss" + duplicated prompts symptom.
+    const prev = this.ptyWs.get(pid);
     this.ptyWs.set(pid, ws);
     this.ptyShell.set(pid, new ShellState());
-    ws.addEventListener("message", e => this.onPtyMessage(pid, e.data));
-    ws.addEventListener("close",   () => this.handlePtyClose(pid));
+    ws.addEventListener("message", e => {
+      if (this.ptyWs.get(pid) !== ws) return;
+      this.onPtyMessage(pid, e.data);
+    });
+    ws.addEventListener("close", () => {
+      if (this.ptyWs.get(pid) !== ws) return;
+      this.handlePtyClose(pid);
+    });
+    if (prev) { try { prev.close(); } catch { /* ignore */ } }
   }
 
   private onPtyMessage(pid: string, raw: unknown) {
@@ -325,11 +374,18 @@ export class RpcClient {
   }
 
   private tearDownEventsAndPty() {
-    try { this.eventsWs?.close(); } catch {}
+    // Clear the maps before calling close(). The ownership-aware close
+    // handlers in openEvents/openPty bail when the map slot no longer
+    // points at their captured `ws`; nulling first makes that check
+    // succeed unconditionally — the close is intentional and must not
+    // schedule a reconnect or emit a stale pty.ws.closed event.
+    const eventsWs = this.eventsWs;
+    const ptyWses = Array.from(this.ptyWs.values());
     this.eventsWs = null;
-    for (const [, ws] of this.ptyWs) { try { ws.close(); } catch {} }
     this.ptyWs.clear();
     this.ptyShell.clear();
+    try { eventsWs?.close(); } catch { /* ignore */ }
+    for (const ws of ptyWses) { try { ws.close(); } catch { /* ignore */ } }
   }
 }
 

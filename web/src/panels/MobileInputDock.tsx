@@ -1,13 +1,13 @@
 // Mobile-friendly bottom dock for an active PTY view. Provides:
 //   - a horizontally-scrollable, customizable quick-command chip bar
-//   - a text/voice toggle on a single input
-//   - a Send button that writes to the PTY via the same `pty.write` RPC
-//     xterm uses, so server-side state stays the source of truth
+//   - a text input with a Send button that writes to the PTY via the same
+//     `pty.write` RPC xterm uses, so server-side state stays the source
+//     of truth
 //
 // The dock is rendered by Workspace only when the active view is a PTY,
 // and gated by a topbar visibility toggle so desktop users can hide it.
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "../store/store";
 import {
   addQuickCommand, decodeEscapes, deleteQuickCommand,
@@ -16,53 +16,6 @@ import {
 } from "../store/quickCommands";
 
 interface Props { ptyId: string }
-
-// ── speech recognition (Web Speech API) ─────────────────────────────
-//
-// SpeechRecognition / webkitSpeechRecognition is non-standard but
-// supported on Chrome desktop, Android Chrome, and iOS Safari (16.5+).
-// We feature-detect and fall back to text-only when missing.
-type SpeechResultLike = { transcript: string; isFinal?: boolean };
-interface SpeechRecognitionLike {
-  lang:           string;
-  continuous:     boolean;
-  interimResults: boolean;
-  onresult: ((ev: { results: ArrayLike<ArrayLike<SpeechResultLike>>; resultIndex: number }) => void) | null;
-  onerror:  ((ev: { error?: string }) => void) | null;
-  onend:    (() => void) | null;
-  start():  void;
-  stop():   void;
-  abort():  void;
-}
-type SpeechCtor = new () => SpeechRecognitionLike;
-
-function getSpeechCtor(): SpeechCtor | null {
-  const w = window as unknown as Record<string, unknown>;
-  const C = (w.SpeechRecognition ?? w.webkitSpeechRecognition) as SpeechCtor | undefined;
-  return C ?? null;
-}
-
-// ── native ASR bridge (iOS app) ─────────────────────────────────────
-//
-// When running inside the Motif iOS app, window.motifNative is injected
-// with isNative=true. We prefer it over Web Speech API because (a) it
-// works without a network round-trip to Apple's servers, and (b) the
-// quality on Doubao for Mandarin is markedly better than iOS Safari's
-// SpeechRecognition implementation.
-type MotifBridge = {
-  invoke: (type: string, params?: Record<string, unknown>) => Promise<unknown>;
-};
-type MotifNative = {
-  isNative?: boolean;
-  on: (event: string, handler: (payload: unknown) => void) => () => void;
-};
-function getNativeASR(): { motif: MotifBridge; native: MotifNative } | null {
-  const w = window as unknown as { motif?: MotifBridge; motifNative?: MotifNative };
-  if (w.motifNative?.isNative && w.motif) {
-    return { motif: w.motif, native: w.motifNative };
-  }
-  return null;
-}
 
 function encodeToB64(s: string): string {
   const u8 = new TextEncoder().encode(s);
@@ -75,17 +28,10 @@ export default function MobileInputDock({ ptyId }: Props) {
   const client    = useApp(s => s.client);
   const commands  = useQuickCommands();
 
-  const [mode, setMode]     = useState<"text" | "voice">("text");
-  const [text, setText]     = useState("");
-  const [recording, setRec] = useState(false);
-  const [interim, setInter] = useState("");
-  const [showMgr, setMgr]   = useState(false);
+  const [text, setText]   = useState("");
+  const [showMgr, setMgr] = useState(false);
 
-  const inputRef    = useRef<HTMLInputElement | null>(null);
-  const recogRef    = useRef<SpeechRecognitionLike | null>(null);
-  const speechCtor  = useMemo(getSpeechCtor, []);
-  const nativeASR   = useMemo(getNativeASR, []);
-  const nativeUnsubsRef = useRef<Array<() => void>>([]);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const send = useCallback((bytes: string) => {
     if (!client || !bytes) return;
@@ -101,7 +47,6 @@ export default function MobileInputDock({ ptyId }: Props) {
     // bare NL bypasses that path and some shells don't execute on it.
     send(value + "\r");
     setText("");
-    setInter("");
     // Keep focus so the user can keep typing without re-tapping.
     inputRef.current?.focus();
   }, [text, send]);
@@ -133,107 +78,12 @@ export default function MobileInputDock({ ptyId }: Props) {
     });
   }, [send]);
 
-  // ── voice ────────────────────────────────────────────────────────
-  const stopRecognition = useCallback(() => {
-    if (nativeASR) {
-      void nativeASR.motif.invoke("asr.stop");
-      // The actual setRec(false) lands when the bridge fires asr.stopped,
-      // so we don't flip state here — that way the UI accurately reflects
-      // the native pipeline's finalization.
-      return;
-    }
-    const r = recogRef.current;
-    if (!r) return;
-    try { r.stop(); } catch { /* ignore */ }
-  }, [nativeASR]);
-
-  const startRecognition = useCallback(() => {
-    if (nativeASR) {
-      if (recording) return;
-      // Subscribe before invoking start so we don't miss the first event.
-      nativeUnsubsRef.current.forEach(fn => fn());
-      nativeUnsubsRef.current = [
-        nativeASR.native.on("asr.partial", (p) => {
-          const text = (p as { text?: string })?.text ?? "";
-          setInter(text);
-        }),
-        nativeASR.native.on("asr.final", (p) => {
-          const text = (p as { text?: string })?.text ?? "";
-          if (text) setText(prev => (prev ? prev + " " : "") + text);
-          setInter("");
-        }),
-        nativeASR.native.on("asr.stopped", () => {
-          setRec(false);
-          setInter("");
-          nativeUnsubsRef.current.forEach(fn => fn());
-          nativeUnsubsRef.current = [];
-        }),
-        nativeASR.native.on("asr.error", () => {
-          setRec(false);
-          setInter("");
-        })
-      ];
-      setRec(true);
-      void nativeASR.motif.invoke("asr.start").catch(() => {
-        setRec(false);
-        nativeUnsubsRef.current.forEach(fn => fn());
-        nativeUnsubsRef.current = [];
-      });
-      return;
-    }
-    if (!speechCtor || recording) return;
-    try {
-      const r = new speechCtor();
-      r.lang = navigator.language || "en-US";
-      r.continuous     = true;
-      r.interimResults = true;
-      r.onresult = (ev) => {
-        let finalAdd = "";
-        let interimAdd = "";
-        for (let i = ev.resultIndex; i < ev.results.length; i++) {
-          const alt = ev.results[i][0];
-          if (alt?.transcript == null) continue;
-          if (alt.isFinal) finalAdd += alt.transcript;
-          else             interimAdd += alt.transcript;
-        }
-        if (finalAdd) {
-          setText(prev => (prev ? prev + " " : "") + finalAdd.trim());
-          setInter("");
-        } else if (interimAdd) {
-          setInter(interimAdd);
-        }
-      };
-      r.onerror = () => { /* surfaced via onend */ };
-      r.onend   = () => { setRec(false); recogRef.current = null; setInter(""); };
-      r.start();
-      recogRef.current = r;
-      setRec(true);
-    } catch {
-      setRec(false);
-    }
-  }, [recording, speechCtor, nativeASR]);
-
-  // Stop recognition when leaving voice mode or unmounting.
-  useEffect(() => {
-    if (mode !== "voice") stopRecognition();
-  }, [mode, stopRecognition]);
-  useEffect(() => () => {
-    try { recogRef.current?.abort(); } catch { /* ignore */ }
-    nativeUnsubsRef.current.forEach(fn => fn());
-    nativeUnsubsRef.current = [];
-    if (nativeASR) {
-      void nativeASR.motif.invoke("asr.stop").catch(() => { /* ignore */ });
-    }
-  }, [nativeASR]);
-
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSendInput();
     }
   }, [onSendInput]);
-
-  const displayValue = recording && interim ? `${text}${text ? " " : ""}${interim}` : text;
 
   return (
     <>
@@ -265,34 +115,13 @@ export default function MobileInputDock({ ptyId }: Props) {
         </div>
 
         <div className="mdock-input">
-          <button
-            className={"ghost small mdock-mode " + (mode === "voice" ? "on" : "")}
-            onClick={() => setMode(m => m === "voice" ? "text" : "voice")}
-            title={mode === "voice" ? "Switch to keyboard" : "Switch to voice"}
-            aria-label="Toggle voice input"
-            aria-pressed={mode === "voice"}
-          >
-            {mode === "voice" ? "⌨︎" : "🎤"}
-          </button>
-
-          {mode === "voice" ? (
-            <button
-              className={"mdock-mic " + (recording ? "recording" : "")}
-              onClick={recording ? stopRecognition : startRecognition}
-              disabled={!speechCtor}
-              title={!speechCtor ? "Voice input not supported in this browser" : recording ? "Stop" : "Tap to speak"}
-            >
-              {!speechCtor ? "voice unavailable" : recording ? "● recording — tap to stop" : "🎤 tap to speak"}
-            </button>
-          ) : null}
-
           <input
             ref={inputRef}
             className="mdock-text"
             type="text"
-            value={displayValue}
-            placeholder={mode === "voice" ? "(speak, then send)" : "type a command — Enter to send"}
-            onChange={e => { setText(e.target.value); setInter(""); }}
+            value={text}
+            placeholder="type a command — Enter to send"
+            onChange={e => setText(e.target.value)}
             onKeyDown={onKeyDown}
             autoCapitalize="off"
             autoCorrect="off"
@@ -300,8 +129,6 @@ export default function MobileInputDock({ ptyId }: Props) {
             spellCheck={false}
             // Keep the mobile keyboard's submit button labeled "send".
             enterKeyHint="send"
-            inputMode={mode === "voice" ? "none" : "text"}
-            readOnly={mode === "voice" && recording}
           />
           <button
             className="mdock-send"

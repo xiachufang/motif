@@ -23,6 +23,7 @@ html, body, #root {
   background: var(--bg);
   color: var(--fg);
   font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
 }
 
 button {
@@ -143,7 +144,16 @@ a { color: var(--accent); }
 
 /* ── workspace ── */
 
-.workspace { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.workspace {
+  position: fixed;
+  top: var(--vv-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--app-height, 100%);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .topbar {
   background: var(--panel);
   border-bottom: 1px solid var(--border);
@@ -840,18 +850,6 @@ button.icon-btn {
   align-items: stretch;
   gap: 6px;
 }
-.mdock-mode {
-  flex: 0 0 auto;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0 10px;
-  min-width: 38px;
-}
-.mdock-mode.on {
-  background: var(--accent-bg);
-  color: var(--fg);
-  border-color: var(--accent);
-}
 .mdock-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -867,32 +865,6 @@ button.icon-btn {
   padding: 0 14px;
 }
 .mdock-send:disabled { opacity: 0.5; }
-
-.mdock-mic {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: var(--muted-bg);
-  border: 1px dashed var(--border);
-  color: var(--fg);
-  font-family: var(--mono);
-  font-size: 13px;
-  border-radius: 4px;
-  padding: 0 10px;
-  cursor: pointer;
-}
-.mdock-mic.recording {
-  border-style: solid;
-  border-color: #ff6b6b;
-  background: rgba(255, 107, 107, 0.10);
-  color: #ffb0b0;
-  animation: mdock-pulse 1.4s ease-in-out infinite;
-}
-.mdock-mic:disabled { opacity: 0.5; cursor: not-allowed; }
-
-@keyframes mdock-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.35); }
-  50%      { box-shadow: 0 0 0 6px rgba(255, 107, 107, 0); }
-}
 
 /* ── quick-commands manager modal ──────────────────────────────────── */
 

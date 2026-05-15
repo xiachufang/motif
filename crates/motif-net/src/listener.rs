@@ -174,6 +174,7 @@ async fn accept_tcp(o: Option<&TcpListener>) -> io::Result<(Stream, SocketAddr)>
     match o {
         Some(t) => {
             let (s, a) = t.accept().await?;
+            tracing::info!(peer = %a, transport = "tcp", "motif-net: accept");
             Ok((Stream::from_tcp(s), a))
         }
         None => std::future::pending().await,
@@ -189,6 +190,7 @@ async fn accept_ts(o: Option<&mut TsBackend>) -> io::Result<(Stream, SocketAddr)
                 .accept()
                 .await
                 .map_err(|e| io::Error::other(format!("tailscale accept: {e}")))?;
+            tracing::info!(peer = %a, transport = "tailscale", "motif-net: accept");
             Ok((Stream::from_tailscale(s), a))
         }
         None => std::future::pending().await,

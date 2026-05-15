@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import Observation
@@ -226,6 +227,87 @@ final class TailscaleManager {
     func makeURLSession() async throws -> URLSession {
         let config = try await makeURLSessionConfiguration()
         return URLSession(configuration: config)
+    }
+
+    /// Diagnostic probe: dial host:port via `tailscale_dial` directly (no
+    /// URLSession, no SOCKS5), write a minimal HTTP/1.1 `GET <path>`, and
+    /// read the first response chunk. Returns the response status line
+    /// and total bytes read so we can tell whether the tailnet path can
+    /// carry a plain-HTTP request end-to-end. Used to isolate "URLSession
+    /// SOCKS5 is wedged" from "the tsnet HTTP path itself is broken".
+    struct RawHttpProbeResult: Sendable {
+        var statusLine: String?
+        var bytesRead: Int
+        var elapsedMs: Int
+        var error: String?
+    }
+    func rawHttpProbe(host: String, port: UInt16, path: String = "/", timeoutMs: Int = 10000) async -> RawHttpProbeResult {
+        guard let node, let handle = await node.tailscale else {
+            return RawHttpProbeResult(statusLine: nil, bytesRead: 0, elapsedMs: 0, error: "tsnet not running")
+        }
+        let start = Date()
+        return await Task.detached(priority: .utility) {
+            var conn: tailscale_conn = 0
+            let addr = "\(host):\(port)"
+            let dialRes = addr.withCString { cAddr in
+                "tcp".withCString { cProto in
+                    tailscale_dial(handle, cProto, cAddr, &conn)
+                }
+            }
+            if dialRes != 0 {
+                var errBuf = [CChar](repeating: 0, count: 256)
+                _ = tailscale_errmsg(handle, &errBuf, 256)
+                let nulIdx = errBuf.firstIndex(of: 0) ?? errBuf.endIndex
+                let msg = String(decoding: errBuf[..<nulIdx].map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return RawHttpProbeResult(statusLine: nil, bytesRead: 0, elapsedMs: elapsed,
+                                          error: "dial failed: \(msg) (rc=\(dialRes))")
+            }
+            defer { Darwin.close(conn) }
+            // Set a recv timeout so we don't block forever on a wedged socket.
+            var tv = timeval(tv_sec: timeoutMs / 1000, tv_usec: Int32((timeoutMs % 1000) * 1000))
+            _ = setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            _ = setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            let req = "GET \(path) HTTP/1.1\r\nHost: \(host):\(port)\r\nUser-Agent: motif-probe/1\r\nConnection: close\r\n\r\n"
+            let data = Data(req.utf8)
+            let w = data.withUnsafeBytes { ptr -> Int in
+                Darwin.write(conn, ptr.baseAddress!, data.count)
+            }
+            if w != data.count {
+                let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+                return RawHttpProbeResult(statusLine: nil, bytesRead: 0, elapsedMs: elapsed,
+                                          error: "short write \(w)/\(data.count) errno=\(errno)")
+            }
+            let cap = 1024
+            var buf = [UInt8](repeating: 0, count: cap)
+            var total = 0
+            // Read until we have at least one full line or hit timeout/EOF.
+            while total < cap {
+                let remaining = cap - total
+                let offset = total
+                let n = buf.withUnsafeMutableBytes { p -> Int in
+                    Darwin.read(conn, p.baseAddress!.advanced(by: offset), remaining)
+                }
+                if n <= 0 { break }
+                total += n
+                if buf[..<total].contains(UInt8(ascii: "\n")) { break }
+            }
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            if total == 0 {
+                return RawHttpProbeResult(statusLine: nil, bytesRead: 0, elapsedMs: elapsed,
+                                          error: "read returned 0 bytes errno=\(errno)")
+            }
+            let firstLine: String? = {
+                let prefix = Array(buf[..<total])
+                if let nlIdx = prefix.firstIndex(of: UInt8(ascii: "\n")) {
+                    var line = Array(prefix[..<nlIdx])
+                    if line.last == UInt8(ascii: "\r") { line.removeLast() }
+                    return String(bytes: line, encoding: .utf8)
+                }
+                return String(bytes: prefix, encoding: .utf8)
+            }()
+            return RawHttpProbeResult(statusLine: firstLine, bytesRead: total, elapsedMs: elapsed, error: nil)
+        }.value
     }
 
     /// Resolve a tailnet hostname (MagicDNS short name or full FQDN) to a

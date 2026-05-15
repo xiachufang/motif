@@ -151,6 +151,16 @@ actor RpcClient {
 
     private static let largeFrameBytes = 32 * 1024
     private static let slowStageMs:    Double = 5
+    /// Cap for `URLSessionWebSocketTask.maximumMessageSize`. Apple's
+    /// default is 1 MiB, but motif-server's per-PTY ring is 2 MiB
+    /// (`RING_BYTES` in `crates/motif-server/src/pty.rs`) and the
+    /// `/pty/<id>?since=0` replay arrives as a single `Message::Binary`
+    /// frame containing the whole ring. Anything bigger than the
+    /// task's limit makes URLSession close the WS without surfacing a
+    /// useful error — the symptom is a freshly-attached terminal that
+    /// stays blank because the replay never reaches `processPtyBytes`.
+    /// 4 MiB leaves headroom for the ring plus any future bump.
+    private static let maxWsMessageBytes = 4 * 1024 * 1024
 
     private var urlSession: URLSession?
     private var host:       String = ""
@@ -300,23 +310,16 @@ actor RpcClient {
 
     private func doPtyWrite<P: Encodable>(params: P) async throws -> Data {
         // Decode params to extract pty_id + data, route bytes to that
-        // PTY's WS instead of doing an HTTP call.
-        let raw   = try JSONEncoder().encode(params)
-        guard let obj  = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
-              let pid  = obj["pty_id"] as? String,
-              let dataB64 = obj["data"] as? String,
+        // PTY's WS instead of doing an HTTP call. The wire field is
+        // `data_b64` — `PtyWriteParams` uses a CodingKey to rename
+        // `data` on encode, so JSONSerialization sees `data_b64` here.
+        let raw = try JSONEncoder().encode(params)
+        guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
+              let pid = obj["pty_id"] as? String,
+              let dataB64 = obj["data_b64"] as? String,
               let data = Data(base64Encoded: dataB64)
         else {
-            // Some callers pass `data` as raw [UInt8] not base64; handle that too.
-            if let obj  = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
-               let pid  = obj["pty_id"] as? String,
-               let arr  = obj["data"] as? [Int] {
-                try await ensurePtyOpen(ptyID: pid)
-                let bytes = Data(arr.map { UInt8(truncatingIfNeeded: $0) })
-                try await sendPtyBytes(ptyID: pid, data: bytes)
-                return "{}".data(using: .utf8)!
-            }
-            throw RpcError.decode("pty.write: missing pty_id / data")
+            throw RpcError.decode("pty.write: missing pty_id / data_b64")
         }
         try await ensurePtyOpen(ptyID: pid)
         try await sendPtyBytes(ptyID: pid, data: data)
@@ -367,6 +370,10 @@ actor RpcClient {
         req.httpBody = try JSONEncoder().encode(params)
         req.timeoutInterval = 30
 
+        let proxyCount = urlSession.configuration.proxyConfigurations.count
+        log.info("rpc.send method=\(method, privacy: .public) url=\(url.absoluteString, privacy: .public) proxyCount=\(proxyCount, privacy: .public)")
+        FileLog.note("RpcClient", "rpc.send method=\(method) url=\(url.absoluteString) proxyCount=\(proxyCount)")
+
         let start = Date()
         let (data, response) = try await urlSession.data(for: req)
         let elapsed = Date().timeIntervalSince(start) * 1000
@@ -395,6 +402,7 @@ actor RpcClient {
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = urlSession.webSocketTask(with: req)
+        task.maximumMessageSize = Self.maxWsMessageBytes
         task.resume()
         try await delegate.waitForOpen()
         self.eventsTask = task
@@ -469,6 +477,7 @@ actor RpcClient {
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = urlSession.webSocketTask(with: req)
+        task.maximumMessageSize = Self.maxWsMessageBytes
         task.resume()
         try await delegate.waitForOpen()
 
@@ -517,7 +526,7 @@ actor RpcClient {
     /// marker. Matches the legacy wire shape so existing MotifClient
     /// handlers keep working unchanged.
     private func processPtyBytes(ptyID: String, bytes: Data) {
-        guard var ch = ptys[ptyID] else { return }
+        guard let ch = ptys[ptyID] else { return }
         let (passthrough, events) = ch.shell.feed(bytes)
         let blockID = ch.shell.activeBlockID
         let scope   = ch.shell.activeScope
