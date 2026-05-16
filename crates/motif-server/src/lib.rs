@@ -167,6 +167,16 @@ pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
         tracing::info!(%addr, "motifd listening");
     }
 
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info::<PeerAddr>()` so handlers
+    // can pull the peer addr via `ConnectInfo<PeerAddr>` and stamp it
+    // onto request logs. `PeerAddr` is a `SocketAddr` newtype because
+    // orphan rules don't let motif-net implement `Connected` for std's
+    // `SocketAddr` directly. For tailscale accepts the wrapped addr has
+    // port = 0 (libtailscale doesn't surface ephemeral ports).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<motif_net::PeerAddr>(),
+    )
+    .await?;
     Ok(())
 }

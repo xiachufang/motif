@@ -23,10 +23,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{CloseCode, CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use motif_net::PeerAddr;
 use motif_proto::common::{ClientId, PtyId};
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -55,15 +56,18 @@ pub struct PtyQuery {
 
 pub async fn pty_upgrade(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<PeerAddr>,
     AxumPath(pty_id): AxumPath<String>,
     headers: HeaderMap,
     Query(q): Query<PtyQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    tracing::info!(peer = %peer, pty_id = %pty_id, "pty ws upgrade requested");
     if !state
         .auth
         .verify_header_or_query(&headers, q.token.as_deref())
     {
+        tracing::warn!(peer = %peer, pty_id = %pty_id, "pty ws auth rejected");
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
     }
     let Some(session_id) = q.session.clone() else {
@@ -88,7 +92,7 @@ pub async fn pty_upgrade(
     let primary = q.primary == Some(1);
 
     ws.on_upgrade(move |socket| {
-        handle_pty_socket(socket, session, pty, client_id, pty_id, since, primary)
+        handle_pty_socket(socket, session, pty, client_id, pty_id, since, primary, peer)
     })
 }
 
@@ -100,8 +104,10 @@ async fn handle_pty_socket(
     pty_id: PtyId,
     since: u64,
     request_primary: bool,
+    peer: PeerAddr,
 ) {
     tracing::info!(
+        peer      = %peer,
         client_id = %client_id,
         session   = %session.name,
         pty_id    = %pty_id,

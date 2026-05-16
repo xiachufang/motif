@@ -15,7 +15,7 @@ use crate::stream::Stream;
 #[cfg(feature = "tailscale")]
 use crate::config::TailscaleListenConfig;
 #[cfg(feature = "tailscale")]
-use motif_tailscale::{TsListener, TsOptions, TsServer};
+use motif_tailscale::{TsOptions, TsServer};
 #[cfg(feature = "tailscale")]
 use std::net::{IpAddr, Ipv4Addr};
 #[cfg(feature = "tailscale")]
@@ -34,10 +34,28 @@ struct TsBackend {
     /// needs to dial out from the server (currently it doesn't, but the
     /// option exists).
     _server: Arc<TsServer>,
-    inner: TsListener,
+    /// Connections accepted by the dedicated pump task. We pull from this
+    /// channel inside `tokio::select!` so axum's accept loop can race the
+    /// tsnet backend against the TCP backend without leaking ghost
+    /// recvmsg waiters — see the field docs on `_pump` for the bug
+    /// motivation.
+    rx: tokio::sync::mpsc::Receiver<io::Result<(Stream, SocketAddr)>>,
     /// Cached for `local_addr()` — tsnet has no real socket addr, so we
     /// synthesize `0.0.0.0:<port>` as a stand-in.
     port: u16,
+    /// Background task that owns the underlying `TsListener` and pumps
+    /// every accept into `rx`. We can't poll `TsListener::accept()`
+    /// directly from `tokio::select!` because that future internally
+    /// `spawn_blocking`s a `recvmsg` on the libtailscale socketpair —
+    /// when the select branch is cancelled (TCP races and wins) the
+    /// blocking thread keeps running, and the next select-iteration
+    /// spawns *another* one. The kernel can hand the next inbound
+    /// connection to any waiter, so abandoned threads accumulate and
+    /// silently consume real tsnet connections, leaving axum thinking
+    /// nothing arrived. Funnelling accepts through a permanent task
+    /// + mpsc means exactly one `recvmsg` is ever outstanding and the
+    /// cancellation is on the cancel-safe `rx.recv()` side.
+    _pump: tokio::task::JoinHandle<()>,
 }
 
 impl Listener {
@@ -111,10 +129,33 @@ async fn bind_tailscale(c: &TailscaleListenConfig) -> io::Result<TsBackend> {
     // lifetime to the Arc via Weak::upgrade, so it self-terminates when
     // the listener drops `_server`.
     let _watcher = Arc::clone(&server).spawn_status_watcher();
+    // Permanent accept pump — see `TsBackend::_pump` for the ghost-waiter
+    // bug this works around. Bounded buffer pushes backpressure onto
+    // libtailscale (i.e. tsnet's accept queue) instead of letting an
+    // unbounded number of accepted-but-unread connections pile up here.
+    let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<(Stream, SocketAddr)>>(8);
+    let pump = tokio::spawn(async move {
+        let mut listener = inner;
+        loop {
+            let res = listener
+                .accept()
+                .await
+                .map(|(s, a)| (Stream::from_tailscale(s), a))
+                .map_err(|e| io::Error::other(format!("tailscale accept: {e}")));
+            // tx.send only fails when the receiver has been dropped,
+            // which means the parent `Listener` (and the whole motifd
+            // process most likely) is shutting down. Bail out cleanly.
+            if tx.send(res).await.is_err() {
+                tracing::debug!("tailscale accept pump: receiver dropped, exiting");
+                return;
+            }
+        }
+    });
     Ok(TsBackend {
         _server: server,
-        inner,
+        rx,
         port: c.port,
+        _pump: pump,
     })
 }
 
@@ -184,16 +225,48 @@ async fn accept_tcp(o: Option<&TcpListener>) -> io::Result<(Stream, SocketAddr)>
 #[cfg(feature = "tailscale")]
 async fn accept_ts(o: Option<&mut TsBackend>) -> io::Result<(Stream, SocketAddr)> {
     match o {
-        Some(b) => {
-            let (s, a) = b
-                .inner
-                .accept()
-                .await
-                .map_err(|e| io::Error::other(format!("tailscale accept: {e}")))?;
-            tracing::info!(peer = %a, transport = "tailscale", "motif-net: accept");
-            Ok((Stream::from_tailscale(s), a))
-        }
+        Some(b) => match b.rx.recv().await {
+            Some(Ok((stream, addr))) => {
+                tracing::info!(peer = %addr, transport = "tailscale", "motif-net: accept");
+                Ok((stream, addr))
+            }
+            Some(Err(e)) => Err(e),
+            None => {
+                // Pump exited unexpectedly. Wedge here forever instead of
+                // returning Err (which would make the outer loop spin):
+                // a healthier motifd should restart the listener at this
+                // point, but that's outside motif-net's responsibility.
+                std::future::pending().await
+            }
+        },
         None => std::future::pending().await,
+    }
+}
+
+/// Newtype around [`SocketAddr`] used as the connect-info payload so
+/// handlers can pull the peer addr via `ConnectInfo<PeerAddr>`. We can't
+/// `impl Connected<...> for SocketAddr` here — orphan rules reject it
+/// since both `SocketAddr` and `IncomingStream` are foreign. Wrapping
+/// in a local newtype side-steps that.
+///
+/// For TCP accepts the addr is the real socket peer; for tailscale
+/// accepts the IP is the tsnet peer's tailnet IP and the port is `0`
+/// (libtailscale doesn't surface ephemeral ports). Use `transport` from
+/// the accept log if you need to disambiguate.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerAddr(pub SocketAddr);
+
+impl std::fmt::Display for PeerAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, Listener>>
+    for PeerAddr
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, Listener>) -> Self {
+        PeerAddr(*stream.remote_addr())
     }
 }
 

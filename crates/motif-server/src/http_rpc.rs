@@ -29,9 +29,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{ConnectInfo, Path as AxumPath, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use motif_net::PeerAddr;
 use motif_proto::envelope::{Id, Request};
 use motif_proto::error::{ErrorCode, RpcError};
 
@@ -45,13 +46,23 @@ pub const SESSION_HEADER: &str = "x-motif-session";
 
 pub async fn rpc_dispatch(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<PeerAddr>,
     AxumPath(method): AxumPath<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let req_recv_at = Instant::now();
+    tracing::info!(
+        target: TIMING_TARGET,
+        peer = %peer,
+        method = %method,
+        req_size = body.len(),
+        transport = "http",
+        "rpc recv",
+    );
 
     if !state.auth.verify_header(&headers) {
+        tracing::warn!(peer = %peer, method = %method, "rpc auth rejected");
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
     }
 
@@ -70,6 +81,7 @@ pub async fn rpc_dispatch(
                     req_recv_at,
                     &method,
                     None,
+                    peer,
                 )
             }
         }
@@ -92,12 +104,13 @@ pub async fn rpc_dispatch(
     // for a JSON-RPC envelope on every reply.
     let total_us = req_recv_at.elapsed().as_micros() as u64;
     let mut http: Response = if let Some(err) = resp.error {
-        err_response(err, req_recv_at, &method, minted_session.as_deref())
+        err_response(err, req_recv_at, &method, minted_session.as_deref(), peer)
     } else {
         let body_bytes = serde_json::to_vec(&resp.result.unwrap_or(serde_json::Value::Null))
             .unwrap_or_else(|_| b"null".to_vec());
         tracing::info!(
             target: TIMING_TARGET,
+            peer       = %peer,
             method     = %method,
             req_size   = body.len(),
             resp_size  = body_bytes.len(),
@@ -321,6 +334,7 @@ fn err_response(
     req_recv_at: Instant,
     method: &str,
     minted_session: Option<&str>,
+    peer: PeerAddr,
 ) -> Response {
     let body_bytes = serde_json::to_vec(&err).unwrap_or_else(|_| b"{}".to_vec());
     let status = match err.code {
@@ -339,6 +353,7 @@ fn err_response(
     };
     tracing::info!(
         target: TIMING_TARGET,
+        peer       = %peer,
         method     = %method,
         resp_size  = body_bytes.len(),
         total_ms   = us_to_ms(req_recv_at.elapsed().as_micros() as u64),

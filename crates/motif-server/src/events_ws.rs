@@ -12,10 +12,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use motif_net::PeerAddr;
 use motif_proto::common::{ClientId, Seq};
 use motif_proto::event::Event;
 use serde::Deserialize;
@@ -50,14 +51,17 @@ impl EventsQuery {
 
 pub async fn events_upgrade(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<PeerAddr>,
     headers: HeaderMap,
     Query(q): Query<EventsQuery>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    tracing::info!(peer = %peer, "events ws upgrade requested");
     if !state
         .auth
         .verify_header_or_query(&headers, q.token.as_deref())
     {
+        tracing::warn!(peer = %peer, "events ws auth rejected");
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
     }
     let Some(session_id) = q.session.clone() else {
@@ -86,7 +90,7 @@ pub async fn events_upgrade(
     let codec = q.codec();
 
     ws.on_upgrade(move |socket| {
-        handle_events_socket(socket, motif_session, client_id, since, codec)
+        handle_events_socket(socket, motif_session, client_id, since, codec, peer)
     })
 }
 
@@ -96,8 +100,10 @@ async fn handle_events_socket(
     client_id: ClientId,
     replay_since: Seq,
     codec: Codec,
+    peer: PeerAddr,
 ) {
     tracing::info!(
+        peer      = %peer,
         client_id = %client_id,
         session   = %session.name,
         codec     = ?codec,
@@ -218,7 +224,7 @@ async fn handle_events_socket(
     heartbeat.abort();
     write_task.abort();
     let detached = session.detach_client(&client_id);
-    tracing::info!(client_id = %client_id, detached, "events ws disconnected");
+    tracing::info!(peer = %peer, client_id = %client_id, detached, "events ws disconnected");
 }
 
 fn is_self_event(ev: &Event, client_id: &str) -> bool {
