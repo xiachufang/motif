@@ -2,6 +2,15 @@ import Foundation
 import Observation
 import OSLog
 
+/// Discriminator for QuickCommand behavior. `.bytes` (the default) writes
+/// the fixed `payload` to the PTY. `.paste` reads `UIPasteboard.general.string`
+/// at tap time — payload is unused but kept as `Data()` so persistence stays
+/// uniform.
+enum QuickCommandKind: String, Codable, Sendable {
+    case bytes
+    case paste
+}
+
 /// One configurable button in the BottomInputBar's quick-command row.
 ///
 /// `payload` is the raw byte sequence sent to the active PTY's stdin.
@@ -19,19 +28,35 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// arrows = 0x1B 0x5B 0x41..0x44) round-trip cleanly through Codable.
     var payload: Data
     var sendImmediately: Bool
+    var kind: QuickCommandKind
 
     init(
         id: UUID = UUID(),
         label: String,
         symbol: String? = nil,
         payload: Data,
-        sendImmediately: Bool = true
+        sendImmediately: Bool = true,
+        kind: QuickCommandKind = .bytes
     ) {
         self.id = id
         self.label = label
         self.symbol = symbol
         self.payload = payload
         self.sendImmediately = sendImmediately
+        self.kind = kind
+    }
+
+    // Swift's synthesized Codable does not honor `var` defaults for missing
+    // keys — it throws `keyNotFound`. Hand-written decoder defaults `kind`
+    // to `.bytes` so v1-persisted JSON (without the field) keeps loading.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        symbol = try c.decodeIfPresent(String.self, forKey: .symbol)
+        payload = try c.decode(Data.self, forKey: .payload)
+        sendImmediately = try c.decode(Bool.self, forKey: .sendImmediately)
+        kind = try c.decodeIfPresent(QuickCommandKind.self, forKey: .kind) ?? .bytes
     }
 }
 
@@ -45,6 +70,12 @@ extension QuickCommand {
     static func bytes(label: String, symbol: String? = nil, _ bytes: [UInt8], sendImmediately: Bool = true) -> QuickCommand {
         QuickCommand(label: label, symbol: symbol, payload: Data(bytes), sendImmediately: sendImmediately)
     }
+
+    /// Paste-from-clipboard button. The payload at tap time is read from
+    /// `UIPasteboard.general.string`, so the persisted `payload` stays empty.
+    static func paste(label: String = "Paste", symbol: String? = "doc.on.clipboard") -> QuickCommand {
+        QuickCommand(label: label, symbol: symbol, payload: Data(), sendImmediately: true, kind: .paste)
+    }
 }
 
 /// Predefined "key-style" commands the editor can pick from. Each maps
@@ -57,37 +88,46 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
     case pageUp, pageDown
     case ctrlA, ctrlB, ctrlC, ctrlD, ctrlE, ctrlF, ctrlG, ctrlK, ctrlL
     case ctrlN, ctrlP, ctrlR, ctrlT, ctrlU, ctrlW, ctrlY, ctrlZ
+    case pipe, slash, tilde, dash, underscore, backtick, singleQuote, doubleQuote
 
     var label: String {
         switch self {
-        case .esc:       return "Esc"
-        case .tab:       return "Tab"
-        case .enter:     return "↵"
-        case .up:        return "↑"
-        case .down:      return "↓"
-        case .left:      return "←"
-        case .right:     return "→"
-        case .home:      return "Home"
-        case .end:       return "End"
-        case .pageUp:    return "PgUp"
-        case .pageDown:  return "PgDn"
-        case .ctrlA:     return "^A"
-        case .ctrlB:     return "^B"
-        case .ctrlC:     return "^C"
-        case .ctrlD:     return "^D"
-        case .ctrlE:     return "^E"
-        case .ctrlF:     return "^F"
-        case .ctrlG:     return "^G"
-        case .ctrlK:     return "^K"
-        case .ctrlL:     return "^L"
-        case .ctrlN:     return "^N"
-        case .ctrlP:     return "^P"
-        case .ctrlR:     return "^R"
-        case .ctrlT:     return "^T"
-        case .ctrlU:     return "^U"
-        case .ctrlW:     return "^W"
-        case .ctrlY:     return "^Y"
-        case .ctrlZ:     return "^Z"
+        case .esc:         return "Esc"
+        case .tab:         return "Tab"
+        case .enter:       return "↵"
+        case .up:          return "↑"
+        case .down:        return "↓"
+        case .left:        return "←"
+        case .right:       return "→"
+        case .home:        return "Home"
+        case .end:         return "End"
+        case .pageUp:      return "PgUp"
+        case .pageDown:    return "PgDn"
+        case .ctrlA:       return "^A"
+        case .ctrlB:       return "^B"
+        case .ctrlC:       return "^C"
+        case .ctrlD:       return "^D"
+        case .ctrlE:       return "^E"
+        case .ctrlF:       return "^F"
+        case .ctrlG:       return "^G"
+        case .ctrlK:       return "^K"
+        case .ctrlL:       return "^L"
+        case .ctrlN:       return "^N"
+        case .ctrlP:       return "^P"
+        case .ctrlR:       return "^R"
+        case .ctrlT:       return "^T"
+        case .ctrlU:       return "^U"
+        case .ctrlW:       return "^W"
+        case .ctrlY:       return "^Y"
+        case .ctrlZ:       return "^Z"
+        case .pipe:        return "|"
+        case .slash:       return "/"
+        case .tilde:       return "~"
+        case .dash:        return "-"
+        case .underscore:  return "_"
+        case .backtick:    return "`"
+        case .singleQuote: return "'"
+        case .doubleQuote: return "\""
         }
     }
 
@@ -104,34 +144,42 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
 
     var bytes: [UInt8] {
         switch self {
-        case .esc:      return [0x1B]
-        case .tab:      return [0x09]
-        case .enter:    return [0x0D]
-        case .up:       return [0x1B, 0x5B, 0x41]
-        case .down:     return [0x1B, 0x5B, 0x42]
-        case .right:    return [0x1B, 0x5B, 0x43]
-        case .left:     return [0x1B, 0x5B, 0x44]
-        case .home:     return [0x1B, 0x5B, 0x48]
-        case .end:      return [0x1B, 0x5B, 0x46]
-        case .pageUp:   return [0x1B, 0x5B, 0x35, 0x7E]
-        case .pageDown: return [0x1B, 0x5B, 0x36, 0x7E]
-        case .ctrlA:    return [0x01]
-        case .ctrlB:    return [0x02]
-        case .ctrlC:    return [0x03]
-        case .ctrlD:    return [0x04]
-        case .ctrlE:    return [0x05]
-        case .ctrlF:    return [0x06]
-        case .ctrlG:    return [0x07]
-        case .ctrlK:    return [0x0B]
-        case .ctrlL:    return [0x0C]
-        case .ctrlN:    return [0x0E]
-        case .ctrlP:    return [0x10]
-        case .ctrlR:    return [0x12]
-        case .ctrlT:    return [0x14]
-        case .ctrlU:    return [0x15]
-        case .ctrlW:    return [0x17]
-        case .ctrlY:    return [0x19]
-        case .ctrlZ:    return [0x1A]
+        case .esc:         return [0x1B]
+        case .tab:         return [0x09]
+        case .enter:       return [0x0D]
+        case .up:          return [0x1B, 0x5B, 0x41]
+        case .down:        return [0x1B, 0x5B, 0x42]
+        case .right:       return [0x1B, 0x5B, 0x43]
+        case .left:        return [0x1B, 0x5B, 0x44]
+        case .home:        return [0x1B, 0x5B, 0x48]
+        case .end:         return [0x1B, 0x5B, 0x46]
+        case .pageUp:      return [0x1B, 0x5B, 0x35, 0x7E]
+        case .pageDown:    return [0x1B, 0x5B, 0x36, 0x7E]
+        case .ctrlA:       return [0x01]
+        case .ctrlB:       return [0x02]
+        case .ctrlC:       return [0x03]
+        case .ctrlD:       return [0x04]
+        case .ctrlE:       return [0x05]
+        case .ctrlF:       return [0x06]
+        case .ctrlG:       return [0x07]
+        case .ctrlK:       return [0x0B]
+        case .ctrlL:       return [0x0C]
+        case .ctrlN:       return [0x0E]
+        case .ctrlP:       return [0x10]
+        case .ctrlR:       return [0x12]
+        case .ctrlT:       return [0x14]
+        case .ctrlU:       return [0x15]
+        case .ctrlW:       return [0x17]
+        case .ctrlY:       return [0x19]
+        case .ctrlZ:       return [0x1A]
+        case .pipe:        return [0x7C]
+        case .slash:       return [0x2F]
+        case .tilde:       return [0x7E]
+        case .dash:        return [0x2D]
+        case .underscore:  return [0x5F]
+        case .backtick:    return [0x60]
+        case .singleQuote: return [0x27]
+        case .doubleQuote: return [0x22]
         }
     }
 
@@ -148,6 +196,7 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
 final class QuickCommandStore {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "QuickCommandStore")
     private static let listKey = "motif.quickCommands.v1"
+    private static let migrationV2Key = "motif.quickCommands.migratedTo.v2"
 
     private(set) var commands: [QuickCommand] = []
 
@@ -156,7 +205,31 @@ final class QuickCommandStore {
         if commands.isEmpty {
             commands = Self.seedDefaults()
             persist()
+            UserDefaults.standard.set(true, forKey: Self.migrationV2Key)
+        } else if !UserDefaults.standard.bool(forKey: Self.migrationV2Key) {
+            migrateAppendV2Defaults()
         }
+    }
+
+    /// One-shot append of v2-era seed additions (8 symbols + Paste) for users
+    /// who already had a persisted command list. Dedup by raw payload bytes /
+    /// `.paste` kind so a hand-curated list never gets duplicates.
+    private func migrateAppendV2Defaults() {
+        var changed = false
+        let existingPayloads = Set(commands.map(\.payload))
+        let v2SymbolKeys: [QuickCommandKey] = [
+            .pipe, .slash, .tilde, .dash, .underscore, .backtick, .singleQuote, .doubleQuote,
+        ]
+        for key in v2SymbolKeys where !existingPayloads.contains(Data(key.bytes)) {
+            commands.append(key.makeCommand())
+            changed = true
+        }
+        if !commands.contains(where: { $0.kind == .paste }) {
+            commands.append(.paste())
+            changed = true
+        }
+        UserDefaults.standard.set(true, forKey: Self.migrationV2Key)
+        if changed { persist() }
     }
 
     func add(_ cmd: QuickCommand) {
@@ -226,6 +299,15 @@ final class QuickCommandStore {
         out.append(QuickCommandKey.ctrlD.makeCommand())
         out.append(.text(label: "cd ..", "cd ..\n"))
         out.append(.text(label: "ls",    "ls\n"))
+        out.append(QuickCommandKey.pipe.makeCommand())
+        out.append(QuickCommandKey.slash.makeCommand())
+        out.append(QuickCommandKey.tilde.makeCommand())
+        out.append(QuickCommandKey.dash.makeCommand())
+        out.append(QuickCommandKey.underscore.makeCommand())
+        out.append(QuickCommandKey.backtick.makeCommand())
+        out.append(QuickCommandKey.singleQuote.makeCommand())
+        out.append(QuickCommandKey.doubleQuote.makeCommand())
+        out.append(.paste())
         return out
     }
 }

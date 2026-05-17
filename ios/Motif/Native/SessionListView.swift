@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import TalkerCommonRouter
 import TalkerMacro
 
@@ -368,21 +369,6 @@ struct SessionView: View {
     @State private var error: String?
     @State private var showingTree: Bool = false
     @State private var quitConfirm: Bool = false
-    /// FR state — split because SwiftUI's `@FocusState` can only track
-    /// values that some SwiftUI view binds via `.focused(_:equals:)`, and
-    /// UITerminalView (UIKit) can't carry that modifier. So:
-    ///   - `bottomBarFocused` (`@FocusState`) drives the composer
-    ///     TextField, the only SwiftUI-side keyboard owner.
-    ///   - `termFocused` (`@State`) drives UITerminalView FR through
-    ///     GhosttyPtyTerminal's `updateUIView` (which calls
-    ///     `becomeFirstResponder` / `resignFirstResponder` directly).
-    /// The two are kept mutually exclusive by `.onChange` watchers below
-    /// — only one keyboard owner at a time. Trying to fold both into a
-    /// single `@FocusState<EnumCase?>` caused SwiftUI to silently reset
-    /// the value back to `nil` when no SwiftUI view bound the
-    /// `.terminal` case, which flickered the keyboard.
-    @FocusState private var bottomBarFocused: Bool
-    @State private var termFocused: Bool = false
     /// Project the server's view list into our heterogeneous tab enum.
     /// Order matches `motif.views`, which the server keeps consistent
     /// across clients via `view.opened` / `view.moved` events.
@@ -438,23 +424,13 @@ struct SessionView: View {
             tabBar
             Divider()
             paneArea
-                .padding(.bottom)
-            BottomInputBar(activePtyID: activePtyID, focused: $bottomBarFocused)
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
         }
         .background(Color.black)
-        .onChange(of: bottomBarFocused) { _, isFocused in
-            // Composer pulled FR (user tapped the TextField, quick-tap
-            // inserted text, ASR start, etc.). Drop the terminal so we
-            // never advertise two keyboard owners.
-            if isFocused { termFocused = false }
-        }
-        .onChange(of: termFocused) { _, isFocused in
-            // Terminal pulled FR (tap GR). Drop the composer; UIKit will
-            // hand the keyboard off to UITerminalView without a dismiss.
-            if isFocused { bottomBarFocused = false }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            BottomInputBar(activePtyID: activePtyID)
         }
         .task {
             // Auto-pick: if the server didn't seed an active view in the
@@ -705,9 +681,7 @@ struct SessionView: View {
                     ptyID: ptyID,
                     initialCols: info.cols,
                     initialRows: info.rows,
-                    client: motif,
-                    isFocused: termFocused,
-                    setFocused: { termFocused = $0 }
+                    client: motif
                 )
                 .id(ptyID)
             }

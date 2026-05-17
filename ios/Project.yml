@@ -34,8 +34,7 @@ packages:
     url: https://github.com/Flight-School/MessagePack.git
     from: "1.2.4"
   libghostty-spm:
-    url: https://github.com/gfreezy/libghostty-spm.git
-    revision: 21e17b7bf1f734cc747d859e80ad834bc949fa50
+    path: ../../libghostty-spm
 
 targets:
   Motif:

@@ -1,6 +1,14 @@
 import SwiftUI
+import UIKit
 import OSLog
 import DoubaoASR
+
+/// Sticky-modifier lifecycle for Ctrl / Alt on the QuickCommandRow.
+/// `inactive` is dormant; `armed` applies on the next QuickCommand tap and
+/// then auto-resets; `locked` persists across taps until toggled off.
+enum StickyState: Sendable { case inactive, armed, locked }
+
+enum ModifierKind: Sendable { case ctrl, alt }
 
 /// Bottom input fixture that sits below `paneArea` in `SessionView`.
 /// Two stacked rows:
@@ -28,15 +36,11 @@ import DoubaoASR
 ///   - Second tap on mic → manual stop, final merged.
 struct BottomInputBar: View {
     let activePtyID: String?
-    /// SessionView's `@FocusState<Bool>` for the composer TextField.
-    /// Bound directly so flips from outside (e.g. terminal stealing FR
-    /// resigns this) and writes from inside (quick-tap, ASR start)
-    /// share one source of truth.
-    @FocusState.Binding var focused: Bool
 
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
 
+    @FocusState private var focused: Bool
     @State private var buffer: String = ""
     @State private var isRecording: Bool = false
     @State private var asr: DoubaoASR?
@@ -55,6 +59,8 @@ struct BottomInputBar: View {
     /// the user's edit. Cleared after every stop.
     @State private var ignoreFinalTranscript: Bool = false
     @State private var editingCommands: Bool = false
+    @State private var ctrlState: StickyState = .inactive
+    @State private var altState: StickyState = .inactive
 
     private let log = Logger(subsystem: "io.allsunday.motif", category: "BottomInputBar")
 
@@ -65,7 +71,10 @@ struct BottomInputBar: View {
             QuickCommandRow(
                 commands: appState.commands.commands,
                 disabled: !canDispatch,
+                ctrlState: ctrlState,
+                altState: altState,
                 onTap: { handleQuickTap($0) },
+                onToggleModifier: { toggleModifier($0) },
                 onEdit: { editingCommands = true }
             )
             Divider()
@@ -216,7 +225,7 @@ struct BottomInputBar: View {
             // out of ASR exactly the same way as user typing would.
             if let s = String(data: cmd.payload, encoding: .utf8) {
                 buffer.append(s)
-                focused = true
+                focusComposer()
             }
         }
     }
@@ -249,7 +258,7 @@ struct BottomInputBar: View {
         audioLevel = 0
         // Surface the keyboard + caret so the user can see partials land
         // (and so a stray tap on the field doesn't fight us).
-        focused = true
+        focusComposer()
         a.start(
             onPartial: { text in
                 MainActor.assumeIsolated {
@@ -321,6 +330,10 @@ struct BottomInputBar: View {
         //  directory" gap after typing "ls " before dictating.
         let needsSpace = !(base.last?.isWhitespace ?? false)
         return needsSpace ? base + " " + text : base + text
+    }
+
+    private func focusComposer() {
+        focused = true
     }
 }
 
