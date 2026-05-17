@@ -28,12 +28,16 @@ import DoubaoASR
 ///   - Second tap on mic → manual stop, final merged.
 struct BottomInputBar: View {
     let activePtyID: String?
+    /// SessionView's `@FocusState<Bool>` for the composer TextField.
+    /// Bound directly so flips from outside (e.g. terminal stealing FR
+    /// resigns this) and writes from inside (quick-tap, ASR start)
+    /// share one source of truth.
+    @FocusState.Binding var focused: Bool
 
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
 
     @State private var buffer: String = ""
-    @FocusState private var bufferFocused: Bool
     @State private var isRecording: Bool = false
     @State private var asr: DoubaoASR?
     @State private var asrError: String?
@@ -81,6 +85,17 @@ struct BottomInputBar: View {
             QuickCommandEditor().environment(appState)
         }
         .onChange(of: buffer) { _, newValue in
+            // Multi-line TextField turns Return into a literal "\n" rather
+            // than firing onSubmit. Treat any inserted newline as the
+            // user's "send" intent: bail out of ASR if needed and dispatch.
+            if newValue.contains("\n") {
+                if isRecording {
+                    ignoreFinalTranscript = true
+                    stopASR()
+                }
+                Task { await send() }
+                return
+            }
             // Recording in flight + buffer drifted away from what we
             // last wrote = user is editing. Hand the field back to them
             // and drop the imminent final transcript.
@@ -88,11 +103,10 @@ struct BottomInputBar: View {
             ignoreFinalTranscript = true
             stopASR()
         }
-        .onChange(of: bufferFocused) { _, focused in
-            // Focus loss during recording = "I'm done dictating". Let
-            // the final transcript merge in (no edit conflict to worry
-            // about).
-            if isRecording && !focused {
+        .onChange(of: focused) { _, newValue in
+            // Focus left the composer (terminal took FR or all resigned)
+            // = "I'm done dictating". Let the final transcript merge in.
+            if isRecording && !newValue {
                 ignoreFinalTranscript = false
                 stopASR()
             }
@@ -130,7 +144,7 @@ struct BottomInputBar: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.return)
-                .focused($bufferFocused)
+                .focused($focused)
             micButton
         }
         .padding(.horizontal, 12)
@@ -177,13 +191,16 @@ struct BottomInputBar: View {
 
     private func send() async {
         guard let id = activePtyID else { return }
-        let text = buffer
-        guard !text.isEmpty else { return }
-        var data = Data(text.utf8)
-        data.append(0x0D) // newline = enter; matches user expectation of "submit"
-        await motif.write(ptyID: id, data: data)
+        // Strip the TextField's literal "\n" — that was the Enter that
+        // got us here. Always clear the buffer so a stray newline alone
+        // doesn't leave the field looking dirty.
+        let text = buffer.replacingOccurrences(of: "\n", with: "")
         buffer = ""
         expectedBuffer = ""
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        var data = Data(text.utf8)
+        data.append(0x0D) // CR = PTY "Enter"
+        await motif.write(ptyID: id, data: data)
     }
 
     private func handleQuickTap(_ cmd: QuickCommand) {
@@ -199,7 +216,7 @@ struct BottomInputBar: View {
             // out of ASR exactly the same way as user typing would.
             if let s = String(data: cmd.payload, encoding: .utf8) {
                 buffer.append(s)
-                bufferFocused = true
+                focused = true
             }
         }
     }
@@ -232,7 +249,7 @@ struct BottomInputBar: View {
         audioLevel = 0
         // Surface the keyboard + caret so the user can see partials land
         // (and so a stray tap on the field doesn't fight us).
-        bufferFocused = true
+        focused = true
         a.start(
             onPartial: { text in
                 MainActor.assumeIsolated {

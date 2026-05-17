@@ -2,18 +2,6 @@ import Foundation
 import Observation
 import OSLog
 
-enum TerminalBackend: String, CaseIterable, Identifiable, Sendable {
-    case swiftTerm
-    case ghostty
-    var id: String { rawValue }
-    var displayName: String {
-        switch self {
-        case .swiftTerm: "SwiftTerm"
-        case .ghostty: "Ghostty"
-        }
-    }
-}
-
 @Observable
 @MainActor
 final class AppState {
@@ -32,17 +20,6 @@ final class AppState {
     /// Drives the About sheet (bundle id + version).
     var isShowingAbout: Bool = false
 
-    /// Active terminal renderer. Persisted in UserDefaults — switching
-    /// rebuilds the PTY view in place; scrollback is replayed from
-    /// `MotifClient`'s per-PTY ring buffer.
-    var terminalBackend: TerminalBackend {
-        didSet {
-            guard oldValue != terminalBackend else { return }
-            UserDefaults.standard.set(terminalBackend.rawValue, forKey: Self.backendKey)
-        }
-    }
-    private static let backendKey = "terminal_backend"
-
     /// Bumped to force NativeRoot to rebuild + re-task the connection when
     /// something other than the active server changes (e.g. Tailscale flips
     /// from .stopped to .running and the previous connection bailed early).
@@ -52,12 +29,6 @@ final class AppState {
         self.tailscale = TailscaleManager()
         self.servers = MotifServerStore()
         self.commands = QuickCommandStore()
-        if let raw = UserDefaults.standard.string(forKey: Self.backendKey),
-           let backend = TerminalBackend(rawValue: raw) {
-            self.terminalBackend = backend
-        } else {
-            self.terminalBackend = .swiftTerm
-        }
     }
 
     /// Called by ConnectionView after switching the active server, so

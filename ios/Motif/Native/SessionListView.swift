@@ -364,12 +364,25 @@ enum SessionTab: Hashable, Identifiable {
 struct SessionView: View {
     @Environment(MotifClient.self) private var motif
     @Environment(CmRouter.self) private var router
-    @Environment(AppState.self) private var appState
     let name: String
     @State private var error: String?
     @State private var showingTree: Bool = false
     @State private var quitConfirm: Bool = false
-
+    /// FR state — split because SwiftUI's `@FocusState` can only track
+    /// values that some SwiftUI view binds via `.focused(_:equals:)`, and
+    /// UITerminalView (UIKit) can't carry that modifier. So:
+    ///   - `bottomBarFocused` (`@FocusState`) drives the composer
+    ///     TextField, the only SwiftUI-side keyboard owner.
+    ///   - `termFocused` (`@State`) drives UITerminalView FR through
+    ///     GhosttyPtyTerminal's `updateUIView` (which calls
+    ///     `becomeFirstResponder` / `resignFirstResponder` directly).
+    /// The two are kept mutually exclusive by `.onChange` watchers below
+    /// — only one keyboard owner at a time. Trying to fold both into a
+    /// single `@FocusState<EnumCase?>` caused SwiftUI to silently reset
+    /// the value back to `nil` when no SwiftUI view bound the
+    /// `.terminal` case, which flickered the keyboard.
+    @FocusState private var bottomBarFocused: Bool
+    @State private var termFocused: Bool = false
     /// Project the server's view list into our heterogeneous tab enum.
     /// Order matches `motif.views`, which the server keeps consistent
     /// across clients via `view.opened` / `view.moved` events.
@@ -426,12 +439,23 @@ struct SessionView: View {
             Divider()
             paneArea
                 .padding(.bottom)
-            BottomInputBar(activePtyID: activePtyID)
+            BottomInputBar(activePtyID: activePtyID, focused: $bottomBarFocused)
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
         }
         .background(Color.black)
+        .onChange(of: bottomBarFocused) { _, isFocused in
+            // Composer pulled FR (user tapped the TextField, quick-tap
+            // inserted text, ASR start, etc.). Drop the terminal so we
+            // never advertise two keyboard owners.
+            if isFocused { termFocused = false }
+        }
+        .onChange(of: termFocused) { _, isFocused in
+            // Terminal pulled FR (tap GR). Drop the composer; UIKit will
+            // hand the keyboard off to UITerminalView without a dismiss.
+            if isFocused { bottomBarFocused = false }
+        }
         .task {
             // Auto-pick: if the server didn't seed an active view in the
             // attach response and there's no view yet, spawn a PTY (the
@@ -656,16 +680,15 @@ struct SessionView: View {
     @ViewBuilder
     private var paneArea: some View {
         // Only the active tab is mounted. We tried keeping inactive panes
-        // alive at opacity 0 (MRU style for instant tab flips), but
-        // SwiftTerm's `TerminalView` is itself a `UIScrollView`, and
-        // SwiftUI's hit-testing didn't fully insulate the inactive
-        // scroll views' pan gestures from the active one — typing into
-        // the active terminal worked, but two-finger scrollback didn't.
-        // Single-pane is simpler and SwiftTerm's scrollback replays
-        // instantly from MotifClient's per-PTY ring buffer on remount.
-        // The cost: PreviewPane edit buffers don't survive a tab switch
-        // — acceptable for v1; lift edit state into MotifClient when it
-        // becomes a problem.
+        // alive at opacity 0 (MRU style for instant tab flips), but the
+        // terminal view is itself a scroll view, and SwiftUI's hit-testing
+        // didn't fully insulate the inactive scroll views' pan gestures
+        // from the active one — typing into the active terminal worked,
+        // but two-finger scrollback didn't. Single-pane is simpler and
+        // the terminal scrollback replays instantly from MotifClient's
+        // per-PTY ring buffer on remount. The cost: PreviewPane edit
+        // buffers don't survive a tab switch — acceptable for v1; lift
+        // edit state into MotifClient when it becomes a problem.
         if let active = activeTab {
             paneFor(active)
                 .id(active.viewID)
@@ -678,25 +701,15 @@ struct SessionView: View {
         switch tab {
         case .pty(_, let ptyID):
             if let info = motif.ptys.first(where: { $0.id == ptyID }) {
-                Group {
-                    switch appState.terminalBackend {
-                    case .swiftTerm:
-                        PtyTerminal(
-                            ptyID: ptyID,
-                            initialCols: info.cols,
-                            initialRows: info.rows,
-                            client: motif
-                        )
-                    case .ghostty:
-                        GhosttyPtyTerminal(
-                            ptyID: ptyID,
-                            initialCols: info.cols,
-                            initialRows: info.rows,
-                            client: motif
-                        )
-                    }
-                }
-                .id("\(ptyID)-\(appState.terminalBackend.rawValue)")
+                GhosttyPtyTerminal(
+                    ptyID: ptyID,
+                    initialCols: info.cols,
+                    initialRows: info.rows,
+                    client: motif,
+                    isFocused: termFocused,
+                    setFocused: { termFocused = $0 }
+                )
+                .id(ptyID)
             }
         case .preview(_, let path):
             PreviewPane(path: path)

@@ -21,9 +21,6 @@ packages:
   SwiftProtobuf:
     url: https://github.com/apple/swift-protobuf.git
     from: "1.37.0"
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm.git
-    from: "1.2.4"
   TalkerCommon:
     url: https://github.com/gfreezy/talkercommon.git
     from: "20260505.0.3"
@@ -38,7 +35,7 @@ packages:
     from: "1.2.4"
   libghostty-spm:
     url: https://github.com/gfreezy/libghostty-spm.git
-    branch: motif/suppress-input-accessory
+    revision: 21e17b7bf1f734cc747d859e80ad834bc949fa50
 
 targets:
   Motif:
@@ -69,9 +66,11 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSMicrophoneUsageDescription: "Motif 需要使用麦克风来识别您的语音指令。"
+        NSMicrophoneUsageDescription: "Motif needs microphone to recognize your voice commands."
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          # Do NOT combine with NSAllowsLocalNetworking — on iOS 10+ that
+          # key causes NSAllowsArbitraryLoads to be ignored (Apple docs).
+          NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.allsunday.motif
@@ -91,7 +90,6 @@ targets:
         embed: true
         codeSign: true
       - package: SwiftProtobuf
-      - package: SwiftTerm
       - package: TalkerCommon
         product: TalkerCommon
       - package: TalkerMacro

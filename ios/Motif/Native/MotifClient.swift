@@ -40,10 +40,10 @@ final class MotifClient {
     /// we hand the saved seq to the server as `last_seq` so it replays
     /// only events newer than that instead of the full ring. Cleared on
     /// successful attach, voluntary detach, destroy, and disconnect.
-    /// Note: SwiftTerm gets torn down on conn loss, so resume saves
-    /// bandwidth on the wire but doesn't preserve the rendered scrollback
-    /// in the terminal view — that requires keeping the SwiftTerm
-    /// `TerminalView` alive across reconnects, which is a separate change.
+    /// Note: the terminal view gets torn down on conn loss, so resume
+    /// saves bandwidth on the wire but doesn't preserve the rendered
+    /// scrollback in the terminal view — that requires keeping the
+    /// terminal view alive across reconnects, which is a separate change.
     private var resumeSeqs: [String: UInt64] = [:]
     /// Session the user is currently *intending* to be attached to. Set
     /// by `attach()`, cleared by `detach()`/`disconnect()`/`destroy()`,
@@ -87,8 +87,8 @@ final class MotifClient {
 
     /// Per-PTY output channel. Keeps a small ring buffer of the most
     /// recent bytes (so a tab switched away and back can replay scrollback
-    /// into a fresh SwiftTerm) plus a set of live subscribers that all
-    /// receive every new chunk. Survives `pty.exited` so a tab opened
+    /// into a fresh terminal view) plus a set of live subscribers that
+    /// all receive every new chunk. Survives `pty.exited` so a tab opened
     /// after the PTY died can still see the captured output.
     private final class PtyChannel {
         var buffer: [Data] = []
@@ -97,9 +97,9 @@ final class MotifClient {
         var finished: Bool = false
     }
     private var ptyChannels: [String: PtyChannel] = [:]
-    /// Per-PTY replay budget. SwiftTerm has its own scrollback once we
-    /// feed it; this only needs to cover bytes that arrived while the
-    /// terminal view didn't exist.
+    /// Per-PTY replay budget. The terminal view has its own scrollback
+    /// once we feed it; this only needs to cover bytes that arrived
+    /// while the terminal view didn't exist.
     private let maxBufferBytesPerPty = 512 * 1024
 
     func connect(server: MotifServer, tailscale: TailscaleManager) async {
@@ -662,7 +662,7 @@ final class MotifClient {
 
     /// Subscribe to a PTY's output stream. Each call returns a fresh
     /// AsyncStream that first replays the channel's ring buffer (so a
-    /// SwiftTerm freshly created after a tab switch still sees recent
+    /// terminal view freshly created after a tab switch still sees recent
     /// scrollback), then forwards every subsequent live chunk. Multiple
     /// concurrent subscribers on the same PTY are fine — they all see the
     /// same bytes. If the PTY has already exited, the buffer is replayed

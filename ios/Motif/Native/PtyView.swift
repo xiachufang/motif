@@ -1,131 +1,9 @@
 import SwiftUI
 import UIKit
-import SwiftTerm
 import GhosttyTerminal
 import OSLog
 
 private let ptyLog = Logger(subsystem: "io.allsunday.motif", category: "PtyView")
-
-// SwiftTerm and GhosttyTerminal both export a `TerminalView` symbol
-// (GhosttyTerminal as a typealias for `UITerminalView`). All SwiftTerm
-// references below are spelled `SwiftTerm.TerminalView` so the bare name
-// stays unambiguous; Ghostty references use `UITerminalView` directly.
-
-/// Native PTY surface. Wraps SwiftTerm's UIKit `TerminalView` and pipes
-/// keystrokes -> `pty.write`, `pty.output` events -> the terminal buffer.
-/// Resize changes the terminal computes are forwarded as `pty.resize`.
-struct PtyTerminal: UIViewRepresentable {
-    let ptyID: String
-    let initialCols: UInt16
-    let initialRows: UInt16
-    let client: MotifClient
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(client: client, ptyID: ptyID)
-    }
-
-    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
-        let term = SwiftTerm.TerminalView()
-        term.terminalDelegate = context.coordinator
-        term.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        term.nativeBackgroundColor = .black
-        term.nativeForegroundColor = .white
-        // SwiftTerm installs its own `TerminalAccessory` as the keyboard's
-        // accessory view. We replace it with `nil` so our `BottomInputBar`
-        // is the single authority for quick keys / mic / send. SwiftTerm
-        // already defaults the UITextInputTraits (autocorrect / smart-*)
-        // to `.no`, so no further config needed there.
-        term.inputAccessoryView = nil
-        // The terminal will reshape itself on first layout; SwiftTerm
-        // recomputes cols/rows from the view bounds. We pass the requested
-        // size via the dimension-change delegate as soon as it's known.
-        context.coordinator.terminal = term
-        // Spin up the output pump for this pty.
-        context.coordinator.start()
-        return term
-    }
-
-    func updateUIView(_ uiView: SwiftTerm.TerminalView, context: Context) {
-        // No-op: dimensions and feed are fully driven by the coordinator
-        // and SwiftTerm's own resize callback.
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, TerminalViewDelegate {
-        let client: MotifClient
-        let ptyID: String
-        weak var terminal: SwiftTerm.TerminalView?
-        private var pumpTask: Task<Void, Never>?
-        private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
-
-        init(client: MotifClient, ptyID: String) {
-            self.client = client
-            self.ptyID = ptyID
-        }
-
-        func start() {
-            pumpTask = Task { [weak self] in
-                guard let self else { return }
-                let stream = self.client.outputs(for: self.ptyID)
-                for await data in stream {
-                    guard !Task.isCancelled else { return }
-                    let bytes = [UInt8](data)
-                    self.terminal?.feed(byteArray: bytes[...])
-                }
-            }
-        }
-
-        deinit {
-            pumpTask?.cancel()
-        }
-
-        // MARK: TerminalViewDelegate
-
-        func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
-            // SwiftTerm hands us the raw bytes typed on the keyboard
-            // (already encoded, including special key sequences). Forward
-            // verbatim to the PTY.
-            let bytes = Data(data)
-            Task { [client, ptyID] in await client.write(ptyID: ptyID, data: bytes) }
-        }
-
-        func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
-            let cols = UInt16(clamping: newCols)
-            let rows = UInt16(clamping: newRows)
-            if cols == lastSize.cols && rows == lastSize.rows { return }
-            lastSize = (cols, rows)
-            Task { [client, ptyID] in await client.resize(ptyID: ptyID, cols: cols, rows: rows) }
-        }
-
-        func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
-            // not surfaced in MVP UI
-        }
-
-        func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
-            // not surfaced in MVP UI
-        }
-
-        func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
-
-        func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
-            UIPasteboard.general.string = String(data: content, encoding: .utf8)
-        }
-
-        func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
-
-        func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
-            if let url = URL(string: link) {
-                UIApplication.shared.open(url)
-            }
-        }
-
-        func bell(source: SwiftTerm.TerminalView) {
-            // Could trigger a haptic; skipped for now.
-        }
-
-        func iTermContent(source: SwiftTerm.TerminalView, content: ArraySlice<UInt8>) {}
-    }
-}
 
 #if DEBUG
 /// DEBUG-only: route libghostty-spm's `TerminalDebugLog` into `FileLog` so
@@ -146,41 +24,70 @@ private let ghosttyDebugLogOnce: Void = {
 /// + `InMemoryTerminalSession`: server PTY bytes -> `session.receive`,
 /// terminal output bytes -> `client.write`, grid resize -> `client.resize`.
 ///
-/// Selected via `AppState.terminalBackend == .ghostty`. Ghostty's bundled
-/// `inputAccessoryView` (Esc/Ctrl/Alt/Cmd/Tab/arrows/Paste chips) is
-/// disabled via `isInputAccessoryViewEnabled = false` so motif's
-/// `BottomInputBar` (Quick Commands + TextField + Mic + Send) stays the
-/// single input authority — matching the SwiftTerm path that pins
-/// `term.inputAccessoryView = nil`. Users who need raw Esc/Ctrl/arrow
-/// keys add them as Quick Commands. The flag itself is a motif-specific
-/// addition to our fork of libghostty-spm
-/// (gfreezy/libghostty-spm@motif/suppress-input-accessory).
+/// Focus model: SessionView holds two cooperating sources of truth —
+/// `@FocusState<Bool>` for the composer TextField (SwiftUI-driven) and
+/// `@State<Bool>` for the terminal (UIKit-driven through this view).
+/// `isFocused == true` means we want UITerminalView to be first
+/// responder; `updateUIView` reconciles UIKit FR to match. The tap GR
+/// writes back through `setFocused(true)`, and SessionView's
+/// `.onChange` watchers keep the two FR slots mutually exclusive — so
+/// UIKit hands the keyboard off in place when the user flips between
+/// terminal and TextField, no flicker.
+///
+/// motif-specific UITerminalView subclass. Overrides `inputAccessoryView`
+/// to return `nil`, suppressing ghostty's bundled chip bar
+/// (Esc/Ctrl/Alt/Cmd/Tab/arrows/Paste) so motif's BottomInputBar
+/// (Quick Commands + TextField + Mic + Send) stays the single input
+/// authority on the keyboard. Users who need raw Esc/Ctrl/arrow keys
+/// add them as Quick Commands. Subclassing is possible because the
+/// motif fork of libghostty-spm drops `final` from `UITerminalView`.
+final class MotifTerminalView: UITerminalView {
+    override var inputAccessoryView: UIView? { nil }
+}
+
 struct GhosttyPtyTerminal: UIViewRepresentable {
     let ptyID: String
     let initialCols: UInt16
     let initialRows: UInt16
     let client: MotifClient
+    let isFocused: Bool
+    let setFocused: @MainActor (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(client: client, ptyID: ptyID)
+        Coordinator(client: client, ptyID: ptyID, setFocused: setFocused)
     }
 
-    func makeUIView(context: Context) -> UITerminalView {
-        let view = UITerminalView(frame: .zero)
+    func makeUIView(context: Context) -> MotifTerminalView {
+        let view = MotifTerminalView(frame: .zero)
         context.coordinator.attach(to: view)
         return view
     }
 
-    func updateUIView(_ uiView: UITerminalView, context: Context) {
+    func updateUIView(_ uiView: MotifTerminalView, context: Context) {
         // Configuration is set once in attach(to:); grid metrics flow
         // through the in-memory session's resize callback, output bytes
-        // through the coordinator pump. Nothing for SwiftUI to push.
+        // through the coordinator pump. The one bit SwiftUI keeps live
+        // is FR: reconcile UITerminalView's FR to the SwiftUI focus
+        // state. Done async on main so we don't mutate FR mid-update
+        // cycle.
+        context.coordinator.setFocused = setFocused
+        let want = isFocused
+        if uiView.isFirstResponder != want {
+            DispatchQueue.main.async {
+                if want {
+                    uiView.becomeFirstResponder()
+                } else {
+                    uiView.resignFirstResponder()
+                }
+            }
+        }
     }
 
     @MainActor
-    final class Coordinator {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         let client: MotifClient
         let ptyID: String
+        var setFocused: @MainActor (Bool) -> Void
         private let controller = TerminalController()
         private var session: InMemoryTerminalSession?
         private var pumpTask: Task<Void, Never>?
@@ -196,16 +103,45 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
         /// inside 50ms collapses all three into one final resize.
         private var pendingResize: Task<Void, Never>?
 
-        init(client: MotifClient, ptyID: String) {
+        init(
+            client: MotifClient,
+            ptyID: String,
+            setFocused: @escaping @MainActor (Bool) -> Void
+        ) {
             self.client = client
             self.ptyID = ptyID
+            self.setFocused = setFocused
+            super.init()
             #if DEBUG
             _ = ghosttyDebugLogOnce
             #endif
         }
 
-        func attach(to view: UITerminalView) {
-            view.isInputAccessoryViewEnabled = false
+        /// Tap GR installed on UITerminalView. Flips SwiftUI's
+        /// `termFocused` state via `setFocused(true)`; `updateUIView`
+        /// then drives the actual UIKit FR transition, which in turn
+        /// makes UITerminalView's bundled `becomeFirstResponder`
+        /// override set ghostty cursor focus and raise/own the software
+        /// keyboard. The library's own `touchesBegan` already promotes
+        /// FR when no soft keyboard is up — this GR covers the other
+        /// case (BottomInputBar is FR + keyboard up), where the library
+        /// deliberately skips `becomeFirstResponder()`.
+        @objc func handleTapFocusTerminal(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            setFocused(true)
+        }
+
+        func attach(to view: MotifTerminalView) {
+            let tap = UITapGestureRecognizer(
+                target: self,
+                action: #selector(handleTapFocusTerminal(_:))
+            )
+            // `cancelsTouchesInView = false` so this GR coexists with
+            // UITerminalView's pan/pinch recognizers and its own
+            // touchesBegan/Ended bookkeeping — taps still pass through.
+            tap.cancelsTouchesInView = false
+            tap.delegate = self
+            view.addGestureRecognizer(tap)
             let client = self.client
             let ptyID = self.ptyID
             let session = InMemoryTerminalSession(
@@ -233,6 +169,13 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
                     session?.receive(data)
                 }
             }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
 
         private func handleResize(_ viewport: InMemoryTerminalViewport) {

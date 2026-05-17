@@ -26,7 +26,7 @@
 		<true/>
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Motif 需要使用麦克风来识别您的语音指令。</string>
+	<string>Motif needs microphone to recognize your voice commands.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
