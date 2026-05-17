@@ -20,12 +20,20 @@ struct QuickCommandEditor: View {
         NavigationStack {
             List {
                 ForEach(appState.commands.commands) { cmd in
-                    Button {
-                        editing = cmd
-                    } label: {
+                    if cmd.kind == .paste {
+                        // Paste reads `UIPasteboard` at tap time — there's
+                        // nothing to edit beyond its label, and that's not
+                        // worth a separate editor in v1. Keep it visible /
+                        // reorderable / deletable, just not tappable.
                         row(cmd)
+                    } else {
+                        Button {
+                            editing = cmd
+                        } label: {
+                            row(cmd)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 .onMove { from, to in appState.commands.move(from: from, to: to) }
                 .onDelete { offsets in appState.commands.remove(at: offsets) }
@@ -161,6 +169,10 @@ private struct SpecialKeyPicker: View {
                     keyButton(.ctrlL); keyButton(.ctrlR); keyButton(.ctrlT)
                     keyButton(.ctrlB); keyButton(.ctrlF)
                     keyButton(.ctrlG); keyButton(.ctrlN); keyButton(.ctrlP)
+                }
+                Section("Symbols") {
+                    keyButton(.pipe); keyButton(.slash); keyButton(.tilde); keyButton(.dash)
+                    keyButton(.underscore); keyButton(.backtick); keyButton(.singleQuote); keyButton(.doubleQuote)
                 }
             }
             .navigationTitle("Pick a key")

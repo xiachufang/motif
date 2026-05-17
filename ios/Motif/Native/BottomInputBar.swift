@@ -128,7 +128,18 @@ struct BottomInputBar: View {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { asrError = nil }
         }
-        .onDisappear { stopASRSync() }
+        .onChange(of: activePtyID) { _, _ in
+            // A locked Ctrl/Alt leaking into a different PTY is the classic
+            // "why is my shell typing junk" trap. Reset modifiers whenever
+            // the dispatch target changes.
+            ctrlState = .inactive
+            altState = .inactive
+        }
+        .onDisappear {
+            stopASRSync()
+            ctrlState = .inactive
+            altState = .inactive
+        }
     }
 
     // MARK: - Input row
@@ -214,20 +225,105 @@ struct BottomInputBar: View {
 
     private func handleQuickTap(_ cmd: QuickCommand) {
         guard canDispatch, let id = activePtyID else { return }
-        if cmd.sendImmediately {
-            Task { await motif.write(ptyID: id, data: cmd.payload) }
-        } else {
+        switch cmd.kind {
+        case .paste:
+            // Read clipboard at tap time; empty / non-string clipboards no-op.
+            // Wrap in xterm bracketed-paste so fish/zsh treat it as a paste
+            // (no autosuggest fight, no per-line history pollution).
+            guard let s = UIPasteboard.general.string, !s.isEmpty else {
+                consumeArmedModifiers()
+                return
+            }
+            var data = Data([0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])           // ESC [ 200 ~
+            data.append(Data(s.utf8))
+            data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])   // ESC [ 201 ~
+            Task { await motif.write(ptyID: id, data: data) }
+            consumeArmedModifiers()
+        case .bytes where cmd.sendImmediately:
+            let out = applyModifiers(
+                payload: cmd.payload,
+                ctrl: ctrlState != .inactive,
+                alt: altState != .inactive
+            )
+            Task { await motif.write(ptyID: id, data: out) }
+            consumeArmedModifiers()
+        case .bytes:
             // Insert decoded payload into the buffer. v1: append at end;
             // SwiftUI's TextField doesn't expose a stable cursor position
             // for arbitrary insertion without UIViewRepresentable. The
             // resulting `buffer` mutation flows through `onChange(of:
             // buffer)`, which — if a recording is in flight — bails us
             // out of ASR exactly the same way as user typing would.
+            //
+            // Modifiers are intentionally NOT consumed here: a snippet
+            // insert isn't a "key press" in the modifier sense.
             if let s = String(data: cmd.payload, encoding: .utf8) {
                 buffer.append(s)
                 focusComposer()
             }
         }
+    }
+
+    // MARK: - Sticky modifiers
+
+    private func toggleModifier(_ kind: ModifierKind) {
+        let next: (StickyState) -> StickyState = { s in
+            switch s {
+            case .inactive: return .armed
+            case .armed:    return .locked
+            case .locked:   return .inactive
+            }
+        }
+        switch kind {
+        case .ctrl: ctrlState = next(ctrlState)
+        case .alt:  altState  = next(altState)
+        }
+    }
+
+    private func consumeArmedModifiers() {
+        if ctrlState == .armed { ctrlState = .inactive }
+        if altState  == .armed { altState  = .inactive }
+    }
+
+    /// Apply Ctrl / Alt modifiers to a QuickCommand payload. Handles the
+    /// common cases — ASCII letters & `[\]^_` for Ctrl, ESC-prefix for Alt,
+    /// xterm CSI modifier form (`ESC [ 1 ; mod X`) for arrows + Home/End,
+    /// and readline-style word-jump (`ESC b` / `ESC f`) for Alt-only +
+    /// Left/Right since bash/zsh bind those by default but ignore the CSI form.
+    /// Unrecognized payloads pass through; Alt-only still prepends ESC.
+    private func applyModifiers(payload: Data, ctrl: Bool, alt: Bool) -> Data {
+        guard ctrl || alt else { return payload }
+
+        if payload.count == 1 {
+            var byte = payload[0]
+            if ctrl {
+                switch byte {
+                case 0x61...0x7A, 0x41...0x5A, 0x5B...0x5F:
+                    byte &= 0x1F
+                default:
+                    break
+                }
+            }
+            return alt ? Data([0x1B, byte]) : Data([byte])
+        }
+
+        // 3-byte CSI: ESC [ X where X is arrow (0x41..0x44), Home (0x48), End (0x46).
+        if payload.count == 3, payload[0] == 0x1B, payload[1] == 0x5B {
+            let finalByte = payload[2]
+            let isModifiable = (0x41...0x44).contains(finalByte) || finalByte == 0x48 || finalByte == 0x46
+            if isModifiable {
+                if alt && !ctrl {
+                    if finalByte == 0x44 { return Data([0x1B, 0x62]) }  // Alt+Left  → ESC b
+                    if finalByte == 0x43 { return Data([0x1B, 0x66]) }  // Alt+Right → ESC f
+                }
+                let mod: UInt8 = 1 + (alt ? 2 : 0) + (ctrl ? 4 : 0)
+                return Data([0x1B, 0x5B, 0x31, 0x3B, 0x30 + mod, finalByte])
+            }
+        }
+
+        // Multi-byte non-CSI (PgUp/PgDn etc.): Alt-only prepends ESC.
+        if alt && !ctrl { return Data([0x1B]) + payload }
+        return payload
     }
 
     // MARK: - Mic / ASR
@@ -397,31 +493,51 @@ private extension View {
 private struct QuickCommandRow: View {
     let commands: [QuickCommand]
     let disabled: Bool
+    let ctrlState: StickyState
+    let altState: StickyState
     let onTap: (QuickCommand) -> Void
+    let onToggleModifier: (ModifierKind) -> Void
     let onEdit: () -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(commands) { cmd in
-                    Button {
-                        onTap(cmd)
-                    } label: {
-                        label(for: cmd)
-                    }
-                    .buttonStyle(QuickCommandButtonStyle())
-                    .disabled(disabled)
+        HStack(spacing: 0) {
+            // Pinned outside the ScrollView so modifier state is always
+            // visible — a Ctrl that scrolled off-screen while armed is the
+            // sharpest failure mode for sticky modifiers.
+            HStack(spacing: 6) {
+                StickyModifierButton(label: "Ctrl", symbol: "control", state: ctrlState) {
+                    onToggleModifier(.ctrl)
                 }
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                        .font(.footnote)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
+                StickyModifierButton(label: "Alt", symbol: "option", state: altState) {
+                    onToggleModifier(.alt)
                 }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                Divider().frame(height: 18)
             }
-            .padding(.horizontal, 8)
+            .padding(.leading, 8)
             .padding(.vertical, 6)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(commands) { cmd in
+                        Button {
+                            onTap(cmd)
+                        } label: {
+                            label(for: cmd)
+                        }
+                        .buttonStyle(QuickCommandButtonStyle())
+                        .disabled(disabled)
+                    }
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .font(.footnote)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
         }
     }
 
@@ -451,5 +567,65 @@ private struct QuickCommandButtonStyle: ButtonStyle {
                 )
             )
             .foregroundStyle(.primary)
+    }
+}
+
+/// Sticky Ctrl / Alt button. Inactive blends with the regular QuickCommand
+/// strip; armed shows an accent stroke; locked is an accent fill with a
+/// small dot below to disambiguate "armed once" from "latched on".
+private struct StickyModifierButton: View {
+    let label: String
+    let symbol: String
+    let state: StickyState
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 3) {
+                Image(systemName: symbol).font(.footnote)
+                Text(label).font(.footnote.monospaced())
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(background)
+            .foregroundStyle(foreground)
+            .overlay(alignment: .bottom) {
+                if state == .locked {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 3, height: 3)
+                        .offset(y: 3)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        switch state {
+        case .inactive:
+            Capsule().fill(Color(.tertiarySystemFill))
+        case .armed:
+            Capsule()
+                .fill(Color.accentColor.opacity(0.18))
+                .overlay(Capsule().strokeBorder(Color.accentColor, lineWidth: 1.2))
+        case .locked:
+            Capsule().fill(Color.accentColor)
+        }
+    }
+
+    private var foreground: Color {
+        state == .locked ? .white : .primary
+    }
+
+    private var accessibilityValue: String {
+        switch state {
+        case .inactive: return "off"
+        case .armed:    return "armed"
+        case .locked:   return "locked"
+        }
     }
 }
