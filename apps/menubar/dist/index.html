@@ -28,6 +28,8 @@
     button.primary { border-color: #2563eb; color: #2563eb; }
     .actions { display: flex; gap: 8px; margin-top: 14px; }
     .err { color: #ef4444; font-size: 12px; margin-top: 10px; min-height: 1em; white-space: pre-wrap; }
+    pre.logbox { margin: 6px 0 0; padding: 8px 10px; border-radius: 8px; background: rgba(127,127,127,.10);
+      font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 160px; overflow: auto; white-space: pre-wrap; }
     ul.sessions { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
     .pill { display: inline-block; padding: 1px 6px; border-radius: 6px; background: rgba(127,127,127,.18); font-size: 11px; }
     a.login { color: #2563eb; cursor: pointer; }
@@ -90,7 +92,10 @@
 
   <h2>General</h2>
   <div class="row">
-    <label><input type="checkbox" id="autostart" /> Start server when the app launches</label>
+    <label><input type="checkbox" id="launch_at_login" /> Launch Motif at login</label>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="autostart" /> Start server when Motif launches</label>
   </div>
 
   <div class="actions">
@@ -98,6 +103,9 @@
     <span id="save-note" class="muted" style="align-self:center"></span>
   </div>
   <div id="err" class="err"></div>
+
+  <h2>Logs</h2>
+  <pre id="logs" class="logbox muted">(no logs yet)</pre>
 
   <script>
     const { invoke } = window.__TAURI__.core;
@@ -163,6 +171,7 @@
           token: $("auth_token").value,
         },
         autostart: $("autostart").checked,
+        launch_at_login: $("launch_at_login").checked,
       };
     }
 
@@ -175,10 +184,23 @@
       $("auth_enabled").checked = !!c.auth?.enabled;
       $("auth_token").value = c.auth?.token || "";
       $("autostart").checked = !!c.autostart;
+      $("launch_at_login").checked = !!c.launch_at_login;
+    }
+
+    async function refreshLogs() {
+      try {
+        const lines = await invoke("tail_logs", { lines: 200 });
+        const box = $("logs");
+        const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+        box.textContent = lines.length ? lines.join("\n") : "(no logs yet)";
+        box.classList.toggle("muted", lines.length === 0);
+        if (atBottom) box.scrollTop = box.scrollHeight;
+      } catch (e) { /* keep last */ }
     }
 
     async function refresh() {
       try { renderStatus(await invoke("get_status")); } catch (e) { /* keep last */ }
+      refreshLogs();
     }
 
     $("start").onclick = async () => { setErr(""); try { renderStatus(await invoke("start_server")); } catch (e) { setErr(String(e)); } };
@@ -207,6 +229,13 @@
       if (!t) return;
       try { await navigator.clipboard.writeText(t); }
       catch { $("auth_token").select(); document.execCommand("copy"); }
+    };
+
+    $("launch_at_login").onchange = async (e) => {
+      setErr("");
+      const enable = e.target.checked;
+      try { await invoke("set_launch_at_login", { enable }); }
+      catch (err) { e.target.checked = !enable; setErr(String(err)); }
     };
 
     (async () => {

@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 motif-server = { path = "../../crates/motif-server" }
 
 tauri              = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
 tokio              = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

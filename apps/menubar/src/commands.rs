@@ -134,6 +134,25 @@ pub fn generate_token() -> String {
     motif_server::auth::generate_token()
 }
 
+/// Toggle OS launch-at-login (via tauri-plugin-autostart) and persist the
+/// choice. The plugin registers/unregisters the current executable.
+#[tauri::command]
+pub async fn set_launch_at_login(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enable: bool,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    let res = if enable { mgr.enable() } else { mgr.disable() };
+    res.map_err(|e| format!("autostart: {e}"))?;
+    let mut c = state.config.lock().await;
+    c.launch_at_login = enable;
+    c.save(&state.paths.config_file)
+        .map_err(|e| format!("saving config: {e}"))?;
+    Ok(())
+}
+
 /// Open an http(s) URL (the Tailscale login link) in the default browser.
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {

@@ -63,8 +63,12 @@ pub struct MenuConfig {
     pub tailscale: TsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    /// Start the embedded server automatically when the app launches.
     #[serde(default)]
     pub autostart: bool,
+    /// Register the app to launch at OS login (via tauri-plugin-autostart).
+    #[serde(default)]
+    pub launch_at_login: bool,
 }
 
 fn default_port() -> u16 {
@@ -79,6 +83,7 @@ impl Default for MenuConfig {
             tailscale: TsConfig::default(),
             auth: AuthConfig::default(),
             autostart: false,
+            launch_at_login: false,
         }
     }
 }
