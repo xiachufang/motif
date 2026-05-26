@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Motif</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px -apple-system, system-ui, sans-serif; }
+    body { margin: 0; padding: 20px; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    .status { padding: 10px 12px; border-radius: 8px; background: rgba(127,127,127,.12); margin-bottom: 14px; }
+    .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+    .on { background: #22c55e; } .off { background: #9ca3af; }
+    .addrs { color: #6b7280; font-size: 12px; margin-top: 6px; word-break: break-all; }
+    button { font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid rgba(127,127,127,.35); background: transparent; cursor: pointer; margin-right: 8px; }
+    button:hover { background: rgba(127,127,127,.12); }
+    button:disabled { opacity: .5; cursor: default; }
+    .err { color: #ef4444; font-size: 12px; margin-top: 10px; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <h1>Motif Server</h1>
+  <div class="status">
+    <span id="dot" class="dot off"></span><span id="state">Stopped</span>
+    <div id="addrs" class="addrs"></div>
+  </div>
+  <button id="start">Start</button>
+  <button id="stop">Stop</button>
+  <div id="err" class="err"></div>
+
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const $ = (id) => document.getElementById(id);
+
+    function render(s) {
+      const running = s && s.running;
+      $("dot").className = "dot " + (running ? "on" : "off");
+      $("state").textContent = running
+        ? `Running · ${s.session_count} session${s.session_count === 1 ? "" : "s"}`
+        : "Stopped";
+      $("addrs").textContent = running ? s.bound_addrs.join("  ") : "";
+      $("start").disabled = running;
+      $("stop").disabled = !running;
+    }
+
+    async function refresh() {
+      try { render(await invoke("get_status")); } catch (e) { /* keep last */ }
+    }
+
+    $("start").onclick = async () => {
+      $("err").textContent = "";
+      try { render(await invoke("start_server")); }
+      catch (e) { $("err").textContent = String(e); }
+    };
+    $("stop").onclick = async () => {
+      $("err").textContent = "";
+      try { render(await invoke("stop_server")); }
+      catch (e) { $("err").textContent = String(e); }
+    };
+
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>

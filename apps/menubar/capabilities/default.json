@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Core defaults for the settings window. App commands (start/stop/get_status) are not gated by the ACL.",
+  "windows": ["*"],
+  "permissions": ["core:default"]
+}
