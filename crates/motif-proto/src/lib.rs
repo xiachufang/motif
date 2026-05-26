@@ -8,6 +8,7 @@ pub mod error;
 pub mod event;
 pub mod fs;
 pub mod git;
+pub mod ping;
 pub mod pty;
 pub mod session;
 pub mod terminal_query;

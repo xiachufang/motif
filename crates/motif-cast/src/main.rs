@@ -32,8 +32,11 @@ use tokio::sync::Mutex;
                   via `motif-tui destroy`."
 )]
 struct Cli {
-    /// motifd WebSocket URL — e.g. `ws://localhost:7777`.
-    url: String,
+    /// motifd target: a bare `host`, `host:port`, or a full `ws://…` /
+    /// `http://…` URL. A bare host defaults to port 7777. Omit entirely to
+    /// auto-probe a local server on `127.0.0.1:7777`.
+    #[arg(long)]
+    host: Option<String>,
 
     /// Trailing argv passed to motifd as a single shell command. If omitted,
     /// motifd spawns the user's `$SHELL`.
@@ -96,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     run(Run {
-        url: cli.url,
+        url: normalize_target(cli.host.as_deref()),
         token,
         name,
         workdir,
@@ -120,6 +123,24 @@ struct Run {
 async fn run(r: Run) -> anyhow::Result<()> {
     let tr = transport::connect_v2(&r.url, &r.token, r.via.as_deref(), r.ssh_remote_port).await?;
     let transport::ConnectedV2 { client, _keepalive } = tr;
+
+    // 0. /ping probe — confirm a motif-server is actually answering before
+    //    we mint a session. Catches "wrong port / some other HTTP service"
+    //    with a clear message instead of a confusing RPC decode failure
+    //    later. Unauthenticated, so it works even before the token is
+    //    checked.
+    let info = client
+        .ping()
+        .await
+        .with_context(|| format!("no motif-server responding at {}", r.url))?;
+    if !info.is_motif_server() {
+        return Err(anyhow!(
+            "{} is not a motif-server (service={:?})",
+            r.url,
+            info.service
+        ));
+    }
+    eprintln!("motif-cast: found motif-server {} at {}", info.version, r.url);
 
     // 1. session.create — owns the name from here on. Failure to create →
     //    no guard needed, just bail.
@@ -222,7 +243,7 @@ impl Drop for SessionGuard {
         // completes before main returns and the runtime tears down.
         let _ = std::thread::spawn(move || {
             handle.block_on(async move {
-                let mut c = client.lock().await;
+                let c = client.lock().await;
                 if let Err(e) = c
                     .call::<_, Value>("session.destroy", ses::DestroyParams { name: name.clone() })
                     .await
@@ -232,6 +253,21 @@ impl Drop for SessionGuard {
             });
         })
         .join();
+    }
+}
+
+/// Turn the `--host` argument into a URL `connect_v2` accepts.
+///
+/// - `None` → `ws://127.0.0.1:7777` (the auto-probe default).
+/// - already a `scheme://…` URL → passed through untouched.
+/// - `host:port` → `ws://host:port`.
+/// - bare `host` → `ws://host:7777` (motifd's default port).
+fn normalize_target(host: Option<&str>) -> String {
+    match host {
+        None => "ws://127.0.0.1:7777".to_string(),
+        Some(h) if h.contains("://") => h.to_string(),
+        Some(h) if h.contains(':') => format!("ws://{h}"),
+        Some(h) => format!("ws://{h}:7777"),
     }
 }
 

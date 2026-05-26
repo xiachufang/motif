@@ -119,6 +119,42 @@ impl HttpRpc {
         self.session_id.lock().unwrap().clone()
     }
 
+    /// `GET /ping` — unauthenticated identity probe. Returns the parsed
+    /// [`motif_proto::ping::PingInfo`] so callers can confirm the target is
+    /// a motif-server before minting a session. Goes through the same
+    /// stream factory as every other call, so it works over plain TCP,
+    /// SSH tunnel, or tsnet alike.
+    pub async fn ping(&self) -> anyhow::Result<motif_proto::ping::PingInfo> {
+        let stream = (self.factory)().await?;
+        let io = hyper_util::rt::TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+            .await
+            .context("http1 handshake")?;
+        let conn_task = tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                tracing::debug!(error = %e, "http1 conn task exited");
+            }
+        });
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/ping")
+            .header("host", &self.authority)
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| anyhow!("build ping request: {e}"))?;
+
+        let resp = sender.send_request(req).await.context("send /ping")?;
+        let status = resp.status();
+        let body_bytes = collect_body(resp.into_body()).await?;
+        drop(sender);
+        let _ = conn_task.await;
+
+        if !status.is_success() {
+            return Err(decode_error_response(status, &body_bytes));
+        }
+        serde_json::from_slice(&body_bytes).map_err(|e| anyhow!("decode /ping response: {e}"))
+    }
+
     /// Generic RPC call. Serializes `params` to JSON, POSTs to
     /// `/rpc/<method>`, decodes the result.
     pub async fn call<P, R>(&self, method: &str, params: &P) -> anyhow::Result<R>

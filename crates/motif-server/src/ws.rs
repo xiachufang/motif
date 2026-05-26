@@ -41,20 +41,16 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Stable magic string clients match on to confirm a `motif-server` is
-/// answering (vs. some other service on the same host/port). Keep this
-/// value frozen across versions — it's an identity probe, not a version
-/// check.
-pub const PING_SERVICE: &str = "motif-server";
-
 /// `GET /ping` — unauthenticated liveness + identity probe. Returns a
 /// fixed `service` tag so clients can detect a motif-server before they
-/// hold a token, plus the build version for diagnostics.
-async fn ping() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({
-        "service": PING_SERVICE,
-        "version": env!("CARGO_PKG_VERSION"),
-    }))
+/// hold a token, plus the build version for diagnostics. The payload and
+/// magic string live in `motif_proto::ping` so client and server can't
+/// drift.
+async fn ping() -> axum::Json<motif_proto::ping::PingInfo> {
+    axum::Json(motif_proto::ping::PingInfo {
+        service: motif_proto::ping::PING_SERVICE.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
 
 /// How often the server sends a Ping (echoed as Pong by every reasonable

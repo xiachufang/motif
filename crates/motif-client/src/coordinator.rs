@@ -136,6 +136,12 @@ impl Coordinator {
         }
     }
 
+    /// `GET /ping` identity probe — confirm the target is a motif-server
+    /// before opening a session. Delegates to the HTTP transport.
+    pub async fn ping(&self) -> Result<motif_proto::ping::PingInfo> {
+        self.rpc.ping().await
+    }
+
     pub async fn recv_notification(&self) -> Option<Notification> {
         self.notif_rx.lock().await.recv().await
     }
