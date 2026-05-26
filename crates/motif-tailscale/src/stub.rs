@@ -39,6 +39,11 @@ impl TsServer {
         Err(TsError::Unimplemented)
     }
 
+    /// Always `None` in stub builds — no tsnet node to log in.
+    pub fn auth_url(&self) -> Option<String> {
+        None
+    }
+
     /// No-op in stub builds — returns an immediately-completed task.
     pub fn spawn_status_watcher(self: std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async {})
@@ -51,6 +56,7 @@ pub struct TsBackendStatus {
     pub health: Vec<String>,
     pub peer_total: usize,
     pub peer_online: usize,
+    pub auth_url: Option<String>,
 }
 
 /// Stub stream — never constructed, but the AsyncRead/AsyncWrite impls

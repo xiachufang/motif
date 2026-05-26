@@ -15,6 +15,7 @@ motif-proto        = { path = "../motif-proto" }
 motif-net          = { path = "../motif-net", features = ["tailscale-bundled"] }
 
 tokio              = { workspace = true }
+tokio-util         = { workspace = true }
 tokio-tungstenite  = { workspace = true }
 tokio-rustls       = { workspace = true }
 rustls             = { workspace = true }
@@ -41,6 +42,7 @@ notify-debouncer-full = { workspace = true }
 sha2               = { workspace = true }
 hex                = { workspace = true }
 ulid               = { workspace = true }
+getrandom          = { workspace = true }
 
 clap               = { workspace = true }
 anyhow             = { workspace = true }

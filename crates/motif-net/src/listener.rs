@@ -102,6 +102,17 @@ impl Listener {
         }
         out
     }
+
+    /// The embedded tsnet node, if the tailscale backend is active. Lets an
+    /// embedding host (e.g. the menu-bar app) read live tailscale status
+    /// (`backend_status`, `list_peers`, `auth_url`) after `bind()` — the
+    /// node otherwise stays buried in the listener and is moved into
+    /// `axum::serve`. Cheap `Arc` clone; the node's lifetime is still owned
+    /// by the listener.
+    #[cfg(feature = "tailscale")]
+    pub fn tailscale_server(&self) -> Option<Arc<TsServer>> {
+        self.ts.as_ref().map(|b| Arc::clone(&b._server))
+    }
 }
 
 #[cfg(feature = "tailscale")]

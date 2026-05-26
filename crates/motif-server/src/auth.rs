@@ -2,6 +2,16 @@
 
 use axum::http::HeaderMap;
 
+/// Generate a fresh bearer token: 32 bytes from the OS RNG, base64url
+/// (no padding) → 43 url-safe chars. Used by embedding hosts (the menu-bar
+/// app) that mint a token for the user instead of reading one off disk.
+pub fn generate_token() -> String {
+    use base64::Engine;
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("OS RNG unavailable");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 #[derive(Debug, Clone)]
 pub enum TokenStore {
     /// Verify `Authorization: Bearer <token>` against the configured value.
@@ -91,6 +101,15 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("authorization", "Bearer wrong".parse().unwrap());
         assert!(!TokenStore::required("right").verify_header(&h));
+    }
+
+    #[test]
+    fn generate_token_is_unique_and_urlsafe() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 43); // 32 bytes base64url-nopad
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]

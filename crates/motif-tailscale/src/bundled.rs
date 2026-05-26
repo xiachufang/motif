@@ -4,7 +4,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -23,6 +23,11 @@ pub struct TsServer {
     /// underlying Tailscale, so we call it once and remember the result for
     /// later `list_peers()` use against `&self`.
     loopback: Option<libtailscale::Loopback>,
+    /// Latest first-start device-auth URL parsed off the tsnet log pipe.
+    /// `None` until the node emits one (or after it reaches `Running`).
+    /// Shared with the log-reader task. On non-unix the pipe isn't wired,
+    /// so this stays `None` and callers fall back to `TsBackendStatus.auth_url`.
+    auth_url: Arc<Mutex<Option<String>>>,
     /// Drains tsnet's stderr-equivalent log pipe, fishing out auth URLs.
     _log_task: tokio::task::JoinHandle<()>,
 }
@@ -39,8 +44,9 @@ impl TsServer {
 
         // Capture tsnet's logs through a pipe so we can spot the
         // `https://login.tailscale.com/...` URL on first-start auth and
-        // surface it via tracing.
-        let log_task = wire_log_pipe(&mut t)?;
+        // surface it via tracing + the shared `auth_url` cell.
+        let auth_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let log_task = wire_log_pipe(&mut t, Arc::clone(&auth_url))?;
 
         // Configuration must happen before `start`/`up`. libtailscale's
         // setters return Err on invalid input; we propagate as Native.
@@ -61,8 +67,17 @@ impl TsServer {
         Ok(Self {
             inner: Some(t),
             loopback: None,
+            auth_url,
             _log_task: log_task,
         })
+    }
+
+    /// The latest first-start device-auth URL, if tsnet emitted one and the
+    /// node hasn't reached `Running` yet. Unix only (the log pipe is
+    /// unix-only); on other platforms read `TsBackendStatus.auth_url`
+    /// from [`backend_status`] instead.
+    pub fn auth_url(&self) -> Option<String> {
+        self.auth_url.lock().unwrap().clone()
     }
 
     /// Bring the node up — block until joined to the tailnet (or until the
@@ -150,11 +165,21 @@ impl TsServer {
             Some(m) => (m.len(), m.values().filter(|p| p.online).count()),
             None => (0, 0),
         };
+        let backend_state = status.backend_state.unwrap_or_default();
+        // Once the node is Running, any cached login URL is stale — clear it
+        // so the UI stops showing a dead "log in" button.
+        if backend_state == "Running" {
+            *self.auth_url.lock().unwrap() = None;
+        }
+        // Prefer the URL parsed off the log pipe (unix); fall back to the
+        // LocalAPI `AuthURL` field, which is the only source on non-unix.
+        let auth_url = self.auth_url().or(status.auth_url);
         Ok(TsBackendStatus {
-            backend_state: status.backend_state.unwrap_or_default(),
+            backend_state,
             health: status.health.unwrap_or_default(),
             peer_total,
             peer_online,
+            auth_url,
         })
     }
 
@@ -260,6 +285,9 @@ pub struct TsBackendStatus {
     pub health: Vec<String>,
     pub peer_total: usize,
     pub peer_online: usize,
+    /// First-start device-auth URL, when the node needs login. Sourced from
+    /// the log pipe (unix) or the LocalAPI `AuthURL` field.
+    pub auth_url: Option<String>,
 }
 
 impl TsBackendStatus {
@@ -414,6 +442,11 @@ struct StatusJson {
     /// Active health warnings (e.g. "DERP unreachable"). Absent when empty.
     #[serde(rename = "Health")]
     health: Option<Vec<String>>,
+    /// First-start device-auth URL surfaced by tsnet when login is needed.
+    /// Present only while `BackendState == NeedsLogin`. The primary source
+    /// on non-unix, where the log pipe isn't wired.
+    #[serde(rename = "AuthURL")]
+    auth_url: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -532,7 +565,10 @@ fn into_tokio_stream(s: std::net::TcpStream) -> Result<tokio::net::TcpStream, Ts
 /// read end. The task ends when the writer closes (i.e. when our wrapped
 /// `Tailscale` is dropped, which closes its logfd).
 #[cfg(unix)]
-fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHandle<()>, TsError> {
+fn wire_log_pipe(
+    t: &mut libtailscale::Tailscale,
+    auth_url: Arc<Mutex<Option<String>>>,
+) -> Result<tokio::task::JoinHandle<()>, TsError> {
     use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 
     let mut fds = [0i32; 2];
@@ -573,7 +609,7 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
                     break;
                 }
             };
-            classify_tsnet_log(&line);
+            classify_tsnet_log(&line, &auth_url);
         }
     });
     Ok(handle)
@@ -589,17 +625,34 @@ fn wire_log_pipe(t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHan
 ///     `LinkChange`, magicsock rebind / throttle, post-rebind DNS reapply,
 ///     netmon gateway-change notes, and netcheck-driven rebinds. These are
 ///     exactly what we want visible after a Mac sleep/wake or Wi-Fi switch.
-fn classify_tsnet_log(line: &str) {
+fn classify_tsnet_log(line: &str, auth_url: &Arc<Mutex<Option<String>>>) {
     // Match the auth URL's `/a/` path specifically; generic mentions of the
     // login host (e.g. transient network errors at shutdown) shouldn't get
     // promoted to WARN.
     if line.contains("login.tailscale.com/a/") {
+        if let Some(url) = extract_auth_url(line) {
+            *auth_url.lock().unwrap() = Some(url);
+        }
         tracing::warn!(target: "motif_tailscale", "Tailscale auth needed: {}", line);
     } else if is_network_recovery_line(line) {
         tracing::info!(target: "motif_tailscale::tsnet", "{}", line);
     } else {
         tracing::debug!(target: "motif_tailscale::tsnet", "{}", line);
     }
+}
+
+/// Pull the device-auth URL token out of a tsnet log line. Anchors on the
+/// `login.tailscale.com/a/` substring, then widens to the surrounding
+/// whitespace-delimited token so the scheme (`https://`) is included.
+fn extract_auth_url(line: &str) -> Option<String> {
+    let idx = line.find("login.tailscale.com/a/")?;
+    let start = line[..idx]
+        .rfind(char::is_whitespace)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let rest = &line[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
 }
 
 /// Heuristic: tsnet log lines that signal network recovery (post-sleep, Wi-Fi
@@ -655,13 +708,31 @@ fn set_cloexec(fd: &std::os::unix::io::OwnedFd) {
 }
 
 #[cfg(not(unix))]
-fn wire_log_pipe(_t: &mut libtailscale::Tailscale) -> Result<tokio::task::JoinHandle<()>, TsError> {
+fn wire_log_pipe(
+    _t: &mut libtailscale::Tailscale,
+    _auth_url: Arc<Mutex<Option<String>>>,
+) -> Result<tokio::task::JoinHandle<()>, TsError> {
     Err(TsError::Native("log pipe capture is unix-only".into()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_network_recovery_line;
+    use super::{extract_auth_url, is_network_recovery_line};
+
+    #[test]
+    fn extracts_auth_url_with_scheme() {
+        let line = "To authenticate, visit: https://login.tailscale.com/a/abc123def now";
+        assert_eq!(
+            extract_auth_url(line).as_deref(),
+            Some("https://login.tailscale.com/a/abc123def")
+        );
+        // No scheme prefix: still grabs the whole token.
+        assert_eq!(
+            extract_auth_url("login.tailscale.com/a/xyz").as_deref(),
+            Some("login.tailscale.com/a/xyz")
+        );
+        assert_eq!(extract_auth_url("nothing here"), None);
+    }
 
     #[test]
     fn classifies_link_change_and_rebind_lines() {
