@@ -49,7 +49,7 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
     // Swift's synthesized Codable does not honor `var` defaults for missing
     // keys — it throws `keyNotFound`. Hand-written decoder defaults `kind`
     // to `.bytes` so v1-persisted JSON (without the field) keeps loading.
-    init(from decoder: Decoder) throws {
+    init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
         label = try c.decode(String.self, forKey: .label)

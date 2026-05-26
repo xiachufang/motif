@@ -365,6 +365,7 @@ enum SessionTab: Hashable, Identifiable {
 struct SessionView: View {
     @Environment(MotifClient.self) private var motif
     @Environment(CmRouter.self) private var router
+    @Environment(AppState.self) private var appState
     let name: String
     @State private var error: String?
     @State private var showingTree: Bool = false
@@ -681,7 +682,8 @@ struct SessionView: View {
                     ptyID: ptyID,
                     initialCols: info.cols,
                     initialRows: info.rows,
-                    client: motif
+                    client: motif,
+                    terminals: appState.terminals
                 )
                 .id(ptyID)
             }

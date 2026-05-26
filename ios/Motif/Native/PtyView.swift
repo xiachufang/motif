@@ -38,9 +38,10 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
     let initialCols: UInt16
     let initialRows: UInt16
     let client: MotifClient
+    let terminals: TerminalRegistry
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(client: client, ptyID: ptyID)
+        Coordinator(client: client, ptyID: ptyID, terminals: terminals)
     }
 
     func makeUIView(context: Context) -> MotifTerminalView {
@@ -59,6 +60,7 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
     final class Coordinator: NSObject {
         let client: MotifClient
         let ptyID: String
+        let terminals: TerminalRegistry
         private let controller = TerminalController()
         private var session: InMemoryTerminalSession?
         private var pumpTask: Task<Void, Never>?
@@ -76,10 +78,12 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
 
         init(
             client: MotifClient,
-            ptyID: String
+            ptyID: String,
+            terminals: TerminalRegistry
         ) {
             self.client = client
             self.ptyID = ptyID
+            self.terminals = terminals
             super.init()
             #if DEBUG
             _ = ghosttyDebugLogOnce
@@ -105,6 +109,12 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
 
             view.controller = controller
             view.configuration = TerminalSurfaceOptions(backend: .inMemory(session))
+
+            // Expose this view to BottomInputBar's Ctrl/Alt buttons so
+            // they can drive libghostty's sticky-modifier state machine.
+            // Registration installs a change handler that re-renders any
+            // host UI mirroring the sticky state.
+            terminals.register(view, ptyID: ptyID)
 
             pumpTask = Task { @MainActor [weak self, weak session] in
                 guard let self else { return }
@@ -134,6 +144,11 @@ struct GhosttyPtyTerminal: UIViewRepresentable {
         deinit {
             pumpTask?.cancel()
             pendingResize?.cancel()
+            let registry = terminals
+            let id = ptyID
+            Task { @MainActor in
+                registry.unregister(ptyID: id)
+            }
         }
     }
 }

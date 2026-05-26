@@ -1,4 +1,8 @@
 /target
+# binary symlinks -> target/debug/* (created for convenience)
+/motifd
+/motif-tui
+/motif-cast
 /crates/motif-server/static/
 **/*.rs.bk
 Cargo.lock.bak

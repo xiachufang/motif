@@ -2,13 +2,34 @@ import SwiftUI
 import UIKit
 import OSLog
 import DoubaoASR
+import GhosttyTerminal
 
 /// Sticky-modifier lifecycle for Ctrl / Alt on the QuickCommandRow.
-/// `inactive` is dormant; `armed` applies on the next QuickCommand tap and
-/// then auto-resets; `locked` persists across taps until toggled off.
+/// Mirrors libghostty's `TerminalPublicStickyActivation` — that's the
+/// source of truth (per `UITerminalView`); we re-declare it locally so
+/// the row UI doesn't have to import GhosttyTerminal types.
 enum StickyState: Sendable { case inactive, armed, locked }
 
 enum ModifierKind: Sendable { case ctrl, alt }
+
+private extension StickyState {
+    init(_ ghostty: TerminalPublicStickyActivation) {
+        switch ghostty {
+        case .inactive: self = .inactive
+        case .armed:    self = .armed
+        case .locked:   self = .locked
+        }
+    }
+}
+
+private extension ModifierKind {
+    var ghostty: TerminalPublicStickyModifier {
+        switch self {
+        case .ctrl: return .ctrl
+        case .alt:  return .alt
+        }
+    }
+}
 
 /// Bottom input fixture that sits below `paneArea` in `SessionView`.
 /// Two stacked rows:
@@ -59,14 +80,38 @@ struct BottomInputBar: View {
     /// the user's edit. Cleared after every stop.
     @State private var ignoreFinalTranscript: Bool = false
     @State private var editingCommands: Bool = false
-    @State private var ctrlState: StickyState = .inactive
-    @State private var altState: StickyState = .inactive
 
     private let log = Logger(subsystem: "io.allsunday.motif", category: "BottomInputBar")
 
     private var canDispatch: Bool { activePtyID != nil }
 
+    /// Active `UITerminalView` for the focused PTY tab, if any. Used as
+    /// the sticky-modifier authority — libghostty owns the per-key
+    /// transform for typed input, so BottomInputBar must drive its
+    /// state machine rather than running its own.
+    private var activeTerminal: UITerminalView? {
+        appState.terminals.view(for: activePtyID)
+    }
+
+    private var ctrlState: StickyState {
+        guard let tv = activeTerminal else { return .inactive }
+        return StickyState(tv.stickyActivation(for: .ctrl))
+    }
+
+    private var altState: StickyState {
+        guard let tv = activeTerminal else { return .inactive }
+        return StickyState(tv.stickyActivation(for: .alt))
+    }
+
     var body: some View {
+        // Hoisted out of the computed properties so SwiftUI's @Observable
+        // tracker definitely sees the read during body evaluation. Without
+        // this, the chip pill doesn't redraw when libghostty consumes
+        // armed state from a typed terminal keystroke. No `return` so
+        // SwiftUI's @ViewBuilder semantics on `body` stay intact —
+        // explicit return silently changes how the view tree is wrapped
+        // and `.onChange(of: buffer)` was getting dropped from the chain.
+        let _ = appState.terminals.stickyVersion
         VStack(spacing: 0) {
             QuickCommandRow(
                 commands: appState.commands.commands,
@@ -93,7 +138,32 @@ struct BottomInputBar: View {
         .sheet(isPresented: $editingCommands) {
             QuickCommandEditor().environment(appState)
         }
-        .onChange(of: buffer) { _, newValue in
+        .onChange(of: buffer) { oldValue, newValue in
+            // Sticky-modifier interception for the composer TextField.
+            // libghostty handles `UITerminalView.insertText` directly, but
+            // this SwiftUI TextField is a separate input surface — without
+            // a hook here, tapping Ctrl in our chip pill then typing into
+            // the composer would just deposit the raw letter into the
+            // buffer. Single character appended at the end + non-newline
+            // + not an ASR programmatic write = treat as a key press with
+            // current Ctrl/Alt, send transformed bytes to the active PTY,
+            // and roll the buffer back. Multi-char inserts (paste, IME
+            // commits) pass through unmodified.
+            let ctrl = ctrlState
+            let alt  = altState
+            if (ctrl != .inactive || alt != .inactive),
+               canDispatch,
+               !newValue.contains("\n"),
+               newValue != expectedBuffer,
+               newValue.count == oldValue.count + 1,
+               newValue.hasPrefix(oldValue),
+               let last = newValue.last
+            {
+                buffer = oldValue
+                expectedBuffer = oldValue
+                sendModifiedCharacter(last, ctrlWas: ctrl, altWas: alt)
+                return
+            }
             // Multi-line TextField turns Return into a literal "\n" rather
             // than firing onSubmit. Treat any inserted newline as the
             // user's "send" intent: bail out of ASR if needed and dispatch.
@@ -128,17 +198,12 @@ struct BottomInputBar: View {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { asrError = nil }
         }
-        .onChange(of: activePtyID) { _, _ in
-            // A locked Ctrl/Alt leaking into a different PTY is the classic
-            // "why is my shell typing junk" trap. Reset modifiers whenever
-            // the dispatch target changes.
-            ctrlState = .inactive
-            altState = .inactive
-        }
         .onDisappear {
             stopASRSync()
-            ctrlState = .inactive
-            altState = .inactive
+            // Ghostty's sticky state lives per UITerminalView; resetting
+            // it here also clears any latch the user left on before the
+            // session view tore down.
+            activeTerminal?.resetStickyModifiers()
         }
     }
 
@@ -225,28 +290,33 @@ struct BottomInputBar: View {
 
     private func handleQuickTap(_ cmd: QuickCommand) {
         guard canDispatch, let id = activePtyID else { return }
+        // Snapshot before we send: needed both for `applyModifiers` and
+        // to know which armed states to consume afterwards. Locked states
+        // are preserved across the consume.
+        let ctrl = ctrlState
+        let alt  = altState
         switch cmd.kind {
         case .paste:
             // Read clipboard at tap time; empty / non-string clipboards no-op.
             // Wrap in xterm bracketed-paste so fish/zsh treat it as a paste
             // (no autosuggest fight, no per-line history pollution).
             guard let s = UIPasteboard.general.string, !s.isEmpty else {
-                consumeArmedModifiers()
+                consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
                 return
             }
             var data = Data([0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])           // ESC [ 200 ~
             data.append(Data(s.utf8))
             data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])   // ESC [ 201 ~
             Task { await motif.write(ptyID: id, data: data) }
-            consumeArmedModifiers()
+            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
         case .bytes where cmd.sendImmediately:
             let out = applyModifiers(
                 payload: cmd.payload,
-                ctrl: ctrlState != .inactive,
-                alt: altState != .inactive
+                ctrl: ctrl != .inactive,
+                alt:  alt  != .inactive
             )
             Task { await motif.write(ptyID: id, data: out) }
-            consumeArmedModifiers()
+            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
         case .bytes:
             // Insert decoded payload into the buffer. v1: append at end;
             // SwiftUI's TextField doesn't expose a stable cursor position
@@ -266,23 +336,46 @@ struct BottomInputBar: View {
 
     // MARK: - Sticky modifiers
 
+    /// Forward the tap into libghostty's per-view state machine.
+    /// Cycles inactive → armed → locked → inactive. The change handler
+    /// installed by `TerminalRegistry` will bump `stickyVersion`, which
+    /// re-renders this view's modifier UI.
     private func toggleModifier(_ kind: ModifierKind) {
-        let next: (StickyState) -> StickyState = { s in
-            switch s {
-            case .inactive: return .armed
-            case .armed:    return .locked
-            case .locked:   return .inactive
-            }
-        }
-        switch kind {
-        case .ctrl: ctrlState = next(ctrlState)
-        case .alt:  altState  = next(altState)
-        }
+        activeTerminal?.toggleStickyModifier(kind.ghostty)
     }
 
-    private func consumeArmedModifiers() {
-        if ctrlState == .armed { ctrlState = .inactive }
-        if altState  == .armed { altState  = .inactive }
+    /// TextField composer's modifier interception. The same `applyModifiers`
+    /// transform the QuickCommand byte path uses, then armed consume via
+    /// libghostty's per-view state machine.
+    private func sendModifiedCharacter(_ char: Character, ctrlWas ctrl: StickyState, altWas alt: StickyState) {
+        guard let id = activePtyID else { return }
+        let payload = Data(String(char).utf8)
+        let out = applyModifiers(
+            payload: payload,
+            ctrl: ctrl != .inactive,
+            alt:  alt  != .inactive
+        )
+        Task { await motif.write(ptyID: id, data: out) }
+        consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
+    }
+
+    /// Consume armed modifiers in libghostty after a QuickCommand byte
+    /// send. The public API only exposes `toggle` and `resetStickyModifiers`
+    /// (no `consumeForNextKey`), so we reset all and re-toggle to put
+    /// previously-locked states back. Has no effect when nothing was armed.
+    private func consumeArmedOnTerminal(ctrlWas ctrl: StickyState, altWas alt: StickyState) {
+        guard ctrl == .armed || alt == .armed else { return }
+        guard let tv = activeTerminal else { return }
+        tv.resetStickyModifiers()
+        if ctrl == .locked {
+            // inactive → armed → locked
+            tv.toggleStickyModifier(.ctrl)
+            tv.toggleStickyModifier(.ctrl)
+        }
+        if alt == .locked {
+            tv.toggleStickyModifier(.alt)
+            tv.toggleStickyModifier(.alt)
+        }
     }
 
     /// Apply Ctrl / Alt modifiers to a QuickCommand payload. Handles the
