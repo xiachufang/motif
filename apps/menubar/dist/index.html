@@ -5,61 +5,215 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Motif</title>
   <style>
-    :root { color-scheme: light dark; font: 14px -apple-system, system-ui, sans-serif; }
-    body { margin: 0; padding: 20px; }
-    h1 { font-size: 16px; margin: 0 0 12px; }
-    .status { padding: 10px 12px; border-radius: 8px; background: rgba(127,127,127,.12); margin-bottom: 14px; }
+    :root { color-scheme: light dark; font: 13px -apple-system, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 16px 18px 22px; }
+    h1 { font-size: 15px; margin: 0 0 12px; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #8a8f98; margin: 18px 0 8px; }
+    .card { padding: 10px 12px; border-radius: 9px; background: rgba(127,127,127,.10); }
     .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
-    .on { background: #22c55e; } .off { background: #9ca3af; }
-    .addrs { color: #6b7280; font-size: 12px; margin-top: 6px; word-break: break-all; }
-    button { font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid rgba(127,127,127,.35); background: transparent; cursor: pointer; margin-right: 8px; }
-    button:hover { background: rgba(127,127,127,.12); }
-    button:disabled { opacity: .5; cursor: default; }
-    .err { color: #ef4444; font-size: 12px; margin-top: 10px; min-height: 1em; }
+    .on { background: #22c55e; } .off { background: #9ca3af; } .warn { background: #f59e0b; }
+    .muted { color: #8a8f98; font-size: 12px; }
+    .addrs { margin-top: 6px; font-size: 12px; word-break: break-all; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+    .row label.lead { width: 78px; color: #8a8f98; }
+    input[type=text], input[type=number], select { font: inherit; padding: 5px 7px; border-radius: 6px;
+      border: 1px solid rgba(127,127,127,.35); background: transparent; color: inherit; }
+    input[type=text] { flex: 1; min-width: 0; }
+    input[type=number] { width: 84px; }
+    button { font: inherit; padding: 6px 12px; border-radius: 7px; border: 1px solid rgba(127,127,127,.35);
+      background: transparent; color: inherit; cursor: pointer; }
+    button:hover:not(:disabled) { background: rgba(127,127,127,.14); }
+    button:disabled { opacity: .45; cursor: default; }
+    button.primary { border-color: #2563eb; color: #2563eb; }
+    .actions { display: flex; gap: 8px; margin-top: 14px; }
+    .err { color: #ef4444; font-size: 12px; margin-top: 10px; min-height: 1em; white-space: pre-wrap; }
+    ul.sessions { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+    .pill { display: inline-block; padding: 1px 6px; border-radius: 6px; background: rgba(127,127,127,.18); font-size: 11px; }
+    a.login { color: #2563eb; cursor: pointer; }
+    fieldset { border: 0; padding: 0; margin: 0; }
+    .indent { margin-left: 14px; }
   </style>
 </head>
 <body>
   <h1>Motif Server</h1>
-  <div class="status">
+
+  <div class="card">
     <span id="dot" class="dot off"></span><span id="state">Stopped</span>
-    <div id="addrs" class="addrs"></div>
+    <div id="addrs" class="addrs muted"></div>
+    <div id="ts-line" class="addrs muted"></div>
+    <div id="auth-line" class="addrs"></div>
+    <ul id="sessions" class="sessions"></ul>
   </div>
-  <button id="start">Start</button>
-  <button id="stop">Stop</button>
+
+  <div class="actions">
+    <button id="start" class="primary">Start</button>
+    <button id="stop">Stop</button>
+    <button id="restart">Restart</button>
+  </div>
+
+  <h2>Listener</h2>
+  <div class="row">
+    <label class="lead">Mode</label>
+    <select id="listen_mode">
+      <option value="loopback">Loopback (127.0.0.1)</option>
+      <option value="lan">LAN (0.0.0.0)</option>
+      <option value="off">Off (Tailscale only)</option>
+    </select>
+    <label class="lead" style="width:auto">Port</label>
+    <input type="number" id="port" min="1" max="65535" />
+  </div>
+
+  <h2>Authentication</h2>
+  <div class="row">
+    <label><input type="checkbox" id="auth_enabled" /> Require a bearer token</label>
+  </div>
+  <div class="row indent">
+    <label class="lead">Token</label>
+    <input type="text" id="auth_token" placeholder="(set or generate a token)" />
+    <button id="gen_token">Generate</button>
+    <button id="copy_token">Copy</button>
+  </div>
+
+  <h2>Tailscale</h2>
+  <div class="row">
+    <label><input type="checkbox" id="ts_enabled" /> Join my tailnet</label>
+  </div>
+  <div class="row indent">
+    <label class="lead">Hostname</label>
+    <input type="text" id="ts_hostname" placeholder="(default: machine hostname)" />
+  </div>
+  <div class="row indent">
+    <label class="lead">Auth key</label>
+    <input type="text" id="ts_authkey" placeholder="(optional — else browser login)" />
+  </div>
+
+  <h2>General</h2>
+  <div class="row">
+    <label><input type="checkbox" id="autostart" /> Start server when the app launches</label>
+  </div>
+
+  <div class="actions">
+    <button id="save" class="primary">Save</button>
+    <span id="save-note" class="muted" style="align-self:center"></span>
+  </div>
   <div id="err" class="err"></div>
 
   <script>
     const { invoke } = window.__TAURI__.core;
     const $ = (id) => document.getElementById(id);
+    const setErr = (m) => { $("err").textContent = m || ""; };
 
-    function render(s) {
-      const running = s && s.running;
+    function renderStatus(s) {
+      const running = !!(s && s.running);
       $("dot").className = "dot " + (running ? "on" : "off");
       $("state").textContent = running
         ? `Running · ${s.session_count} session${s.session_count === 1 ? "" : "s"}`
         : "Stopped";
-      $("addrs").textContent = running ? s.bound_addrs.join("  ") : "";
+      $("addrs").textContent = running ? s.bound_addrs.join("   ") : "";
+
+      // Tailscale line
+      let tsLine = "";
+      if (running && s.tailscale) {
+        const t = s.tailscale;
+        tsLine = `Tailscale: ${t.backend_state} · peers ${t.peer_online}/${t.peer_total}`;
+        if (t.health && t.health.length) tsLine += ` · ${t.health.join("; ")}`;
+        $("dot").className = "dot " + (t.backend_state === "Running" ? "on" : "warn");
+      }
+      $("ts-line").textContent = tsLine;
+
+      // Login URL
+      const auth = $("auth-line");
+      auth.innerHTML = "";
+      if (running && s.auth_url) {
+        const a = document.createElement("a");
+        a.className = "login";
+        a.textContent = "Tailscale needs login — click to authorize";
+        a.onclick = () => invoke("open_external", { url: s.auth_url }).catch(setErr);
+        auth.appendChild(a);
+      }
+
+      // Sessions
+      const ul = $("sessions");
+      ul.innerHTML = "";
+      if (running && s.sessions) {
+        for (const sess of s.sessions) {
+          const li = document.createElement("li");
+          li.innerHTML = `<b>${sess.name}</b> <span class="pill">${sess.client_count} client${sess.client_count === 1 ? "" : "s"}</span> <span class="muted">${sess.workdir}</span>`;
+          ul.appendChild(li);
+        }
+      }
+
       $("start").disabled = running;
       $("stop").disabled = !running;
+      $("restart").disabled = !running;
+    }
+
+    function readForm() {
+      return {
+        listen_mode: $("listen_mode").value,
+        port: parseInt($("port").value, 10) || 7777,
+        tailscale: {
+          enabled: $("ts_enabled").checked,
+          hostname: $("ts_hostname").value,
+          authkey: $("ts_authkey").value,
+        },
+        auth: {
+          enabled: $("auth_enabled").checked,
+          token: $("auth_token").value,
+        },
+        autostart: $("autostart").checked,
+      };
+    }
+
+    function writeForm(c) {
+      $("listen_mode").value = c.listen_mode || "loopback";
+      $("port").value = c.port || 7777;
+      $("ts_enabled").checked = !!c.tailscale?.enabled;
+      $("ts_hostname").value = c.tailscale?.hostname || "";
+      $("ts_authkey").value = c.tailscale?.authkey || "";
+      $("auth_enabled").checked = !!c.auth?.enabled;
+      $("auth_token").value = c.auth?.token || "";
+      $("autostart").checked = !!c.autostart;
     }
 
     async function refresh() {
-      try { render(await invoke("get_status")); } catch (e) { /* keep last */ }
+      try { renderStatus(await invoke("get_status")); } catch (e) { /* keep last */ }
     }
 
-    $("start").onclick = async () => {
-      $("err").textContent = "";
-      try { render(await invoke("start_server")); }
-      catch (e) { $("err").textContent = String(e); }
-    };
-    $("stop").onclick = async () => {
-      $("err").textContent = "";
-      try { render(await invoke("stop_server")); }
-      catch (e) { $("err").textContent = String(e); }
+    $("start").onclick = async () => { setErr(""); try { renderStatus(await invoke("start_server")); } catch (e) { setErr(String(e)); } };
+    $("stop").onclick = async () => { setErr(""); try { renderStatus(await invoke("stop_server")); } catch (e) { setErr(String(e)); } };
+    $("restart").onclick = async () => {
+      setErr("");
+      try { await invoke("stop_server"); renderStatus(await invoke("start_server")); }
+      catch (e) { setErr(String(e)); }
     };
 
-    refresh();
-    setInterval(refresh, 2000);
+    $("save").onclick = async () => {
+      setErr("");
+      try {
+        await invoke("set_config", { config: readForm() });
+        $("save-note").textContent = "Saved — restart to apply.";
+        setTimeout(() => ($("save-note").textContent = ""), 2500);
+      } catch (e) { setErr(String(e)); }
+    };
+
+    $("gen_token").onclick = async () => {
+      try { $("auth_token").value = await invoke("generate_token"); $("auth_enabled").checked = true; }
+      catch (e) { setErr(String(e)); }
+    };
+    $("copy_token").onclick = async () => {
+      const t = $("auth_token").value;
+      if (!t) return;
+      try { await navigator.clipboard.writeText(t); }
+      catch { $("auth_token").select(); document.execCommand("copy"); }
+    };
+
+    (async () => {
+      try { writeForm(await invoke("get_config")); } catch (e) { setErr(String(e)); }
+      refresh();
+      setInterval(refresh, 2000);
+    })();
   </script>
 </body>
 </html>

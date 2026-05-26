@@ -2507,6 +2507,7 @@ dependencies = [
 name = "motif-menubar"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "motif-server",
  "serde",
  "serde_json",

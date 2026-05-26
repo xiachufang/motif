@@ -8,6 +8,7 @@
 
 mod app_state;
 mod commands;
+mod config;
 mod tray;
 
 use app_state::AppState;
@@ -23,12 +24,25 @@ fn main() {
         .expect("build tokio runtime");
     tauri::async_runtime::set(rt.handle().clone());
 
+    // GUI has no stderr console: log to a file + an in-memory ring the
+    // settings window can tail.
+    let paths = config::app_paths();
+    let log_ring = motif_server::LogRing::new();
+    let _ = motif_server::init_tracing_gui("info,motif_tailscale=info", &paths.log_dir, log_ring.clone());
+    let cfg = config::MenuConfig::load(&paths.config_file);
+    let state = AppState::new(paths, cfg, log_ring);
+
     tauri::Builder::default()
-        .manage(AppState::default())
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::start_server,
             commands::stop_server,
             commands::get_status,
+            commands::get_config,
+            commands::set_config,
+            commands::generate_token,
+            commands::open_external,
+            commands::tail_logs,
         ])
         .setup(|app| {
             // Menu-bar app: no Dock icon on macOS.
