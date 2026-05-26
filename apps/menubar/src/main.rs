@@ -12,7 +12,6 @@ mod config;
 mod tray;
 
 use app_state::AppState;
-use tauri::Manager;
 
 fn main() {
     // Tauri must own the main thread for the GUI event loop, so we can't use
@@ -62,8 +61,7 @@ fn main() {
             if start_on_launch {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let state = handle.state::<AppState>();
-                    if let Err(e) = commands::do_start(state.inner()).await {
+                    if let Err(e) = commands::do_start(&handle).await {
                         tracing::warn!(error = %e, "autostart: server failed to start");
                     }
                 });

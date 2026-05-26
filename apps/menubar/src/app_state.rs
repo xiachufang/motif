@@ -3,12 +3,23 @@ use tokio::sync::Mutex;
 
 use crate::config::{AppPaths, MenuConfig};
 
-/// Shared app state, `manage`d by Tauri. The running server (if any) lives
-/// behind an async mutex so both the tray menu handlers and the
-/// settings-window commands drive the same instance. The current config is
-/// cached here (mirrored to `config.json` on every `set_config`).
+/// Lifecycle of the embedded server. `Starting` exists because tsnet
+/// bring-up can block for a while on first-run login — we must not freeze
+/// the UI waiting for it, so start happens off the command path and this
+/// reflects progress.
+pub enum ServerState {
+    Stopped,
+    Starting,
+    Running(RunningServer),
+    /// Last start attempt failed; carries the message for the UI.
+    Failed(String),
+}
+
+/// Shared app state, `manage`d by Tauri. The server lifecycle and current
+/// config both live here; config is mirrored to `config.json` on every
+/// `set_config`.
 pub struct AppState {
-    pub running: Mutex<Option<RunningServer>>,
+    pub server: Mutex<ServerState>,
     pub config: Mutex<MenuConfig>,
     pub paths: AppPaths,
     pub log_ring: LogRing,
@@ -17,7 +28,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(paths: AppPaths, config: MenuConfig, log_ring: LogRing) -> Self {
         Self {
-            running: Mutex::new(None),
+            server: Mutex::new(ServerState::Stopped),
             config: Mutex::new(config),
             paths,
             log_ring,

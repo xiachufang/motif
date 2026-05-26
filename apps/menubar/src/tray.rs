@@ -7,7 +7,7 @@ use tauri::{
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, ServerState};
 use crate::commands;
 
 const TRAY_ID: &str = "main";
@@ -16,6 +16,7 @@ const TRAY_ID: &str = "main";
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayState {
     Stopped,
+    Starting,
     Running,
     NeedsLogin,
 }
@@ -23,9 +24,10 @@ enum TrayState {
 impl TrayState {
     fn rgb(self) -> (u8, u8, u8) {
         match self {
-            TrayState::Stopped => (142, 142, 147),   // gray
-            TrayState::Running => (40, 200, 90),      // green
-            TrayState::NeedsLogin => (245, 158, 11),  // amber
+            TrayState::Stopped => (142, 142, 147),     // gray
+            TrayState::Starting => (245, 158, 11),     // amber
+            TrayState::Running => (40, 200, 90),       // green
+            TrayState::NeedsLogin => (245, 158, 11),   // amber
         }
     }
 }
@@ -71,10 +73,11 @@ pub fn spawn_status_poller(app: &AppHandle) {
             tokio::time::sleep(Duration::from_secs(3)).await;
             let cur = {
                 let state = app.state::<AppState>();
-                let guard = state.running.lock().await;
-                match guard.as_ref() {
-                    None => TrayState::Stopped,
-                    Some(r) => {
+                let guard = state.server.lock().await;
+                match &*guard {
+                    ServerState::Stopped | ServerState::Failed(_) => TrayState::Stopped,
+                    ServerState::Starting => TrayState::Starting,
+                    ServerState::Running(r) => {
                         if r.tailscale_auth_url().is_some() {
                             TrayState::NeedsLogin
                         } else {
@@ -112,8 +115,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
         "start" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let state = app.state::<AppState>();
-                if let Err(e) = commands::do_start(state.inner()).await {
+                if let Err(e) = commands::do_start(&app).await {
                     tracing::warn!(error = %e, "tray: start failed");
                 }
             });
@@ -121,8 +123,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
         "stop" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let state = app.state::<AppState>();
-                if let Err(e) = commands::do_stop(state.inner()).await {
+                if let Err(e) = commands::do_stop(&app).await {
                     tracing::warn!(error = %e, "tray: stop failed");
                 }
             });

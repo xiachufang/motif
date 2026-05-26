@@ -45,6 +45,7 @@
     <div id="addrs" class="addrs muted"></div>
     <div id="ts-line" class="addrs muted"></div>
     <div id="auth-line" class="addrs"></div>
+    <div id="srv-err" class="addrs" style="color:#ef4444"></div>
     <ul id="sessions" class="sessions"></ul>
   </div>
 
@@ -113,12 +114,14 @@
 
     function renderStatus(s) {
       const running = !!(s && s.running);
+      const starting = !!(s && s.starting);
       statusRunning = running;
-      $("dot").className = "dot " + (running ? "on" : "off");
+      $("dot").className = "dot " + (running ? "on" : (starting ? "warn" : "off"));
       $("state").textContent = running
         ? `Running · ${s.session_count} session${s.session_count === 1 ? "" : "s"}`
-        : "Stopped";
+        : (starting ? "Starting…" : "Stopped");
       $("addrs").textContent = running ? s.bound_addrs.join("   ") : "";
+      $("srv-err").textContent = (s && s.error) ? s.error : "";
 
       // Tailscale line
       let tsLine = "";
@@ -133,7 +136,7 @@
       // Login URL
       const auth = $("auth-line");
       auth.innerHTML = "";
-      if (running && s.auth_url) {
+      if ((running || starting) && s.auth_url) {
         const a = document.createElement("a");
         a.className = "login";
         a.textContent = "Tailscale needs login — click to authorize";
@@ -152,8 +155,8 @@
         }
       }
 
-      $("start").disabled = running;
-      $("stop").disabled = !running;
+      $("start").disabled = running || starting;
+      $("stop").disabled = !(running || starting);
       $("restart").disabled = !running;
     }
 
