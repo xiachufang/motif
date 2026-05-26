@@ -65,6 +65,7 @@
     <label class="lead" style="width:auto">Port</label>
     <input type="number" id="port" min="1" max="65535" />
   </div>
+  <div id="lan-warn" class="muted" style="color:#f59e0b; margin-top:2px"></div>
 
   <h2>Authentication</h2>
   <div class="row">
@@ -98,10 +99,7 @@
     <label><input type="checkbox" id="autostart" /> Start server when Motif launches</label>
   </div>
 
-  <div class="actions">
-    <button id="save" class="primary">Save</button>
-    <span id="save-note" class="muted" style="align-self:center"></span>
-  </div>
+  <div id="saved" class="muted" style="margin-top:12px; min-height:1em"></div>
   <div id="err" class="err"></div>
 
   <h2>Logs</h2>
@@ -111,9 +109,11 @@
     const { invoke } = window.__TAURI__.core;
     const $ = (id) => document.getElementById(id);
     const setErr = (m) => { $("err").textContent = m || ""; };
+    let statusRunning = false;
 
     function renderStatus(s) {
       const running = !!(s && s.running);
+      statusRunning = running;
       $("dot").className = "dot " + (running ? "on" : "off");
       $("state").textContent = running
         ? `Running · ${s.session_count} session${s.session_count === 1 ? "" : "s"}`
@@ -211,18 +211,37 @@
       catch (e) { setErr(String(e)); }
     };
 
-    $("save").onclick = async () => {
+    function updateHints() {
+      const lan = $("listen_mode").value === "lan";
+      const noAuth = !$("auth_enabled").checked;
+      $("lan-warn").textContent = (lan && noAuth)
+        ? "⚠ Listening on 0.0.0.0 with no token — anyone on the network can connect."
+        : "";
+    }
+
+    let saveTimer = null;
+    async function saveConfig() {
       setErr("");
+      updateHints();
       try {
         await invoke("set_config", { config: readForm() });
-        $("save-note").textContent = "Saved — restart to apply.";
-        setTimeout(() => ($("save-note").textContent = ""), 2500);
+        const el = $("saved");
+        el.textContent = statusRunning ? "Saved — restart to apply" : "Saved";
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => (el.textContent = ""), 2000);
       } catch (e) { setErr(String(e)); }
-    };
+    }
+
+    // Auto-save on any field change (text fields fire on blur/enter).
+    ["listen_mode", "port", "ts_enabled", "ts_hostname", "ts_authkey", "auth_enabled", "auth_token", "autostart"]
+      .forEach((id) => $(id).addEventListener("change", saveConfig));
 
     $("gen_token").onclick = async () => {
-      try { $("auth_token").value = await invoke("generate_token"); $("auth_enabled").checked = true; }
-      catch (e) { setErr(String(e)); }
+      try {
+        $("auth_token").value = await invoke("generate_token");
+        $("auth_enabled").checked = true;
+        await saveConfig();
+      } catch (e) { setErr(String(e)); }
     };
     $("copy_token").onclick = async () => {
       const t = $("auth_token").value;
@@ -239,7 +258,7 @@
     };
 
     (async () => {
-      try { writeForm(await invoke("get_config")); } catch (e) { setErr(String(e)); }
+      try { writeForm(await invoke("get_config")); updateHints(); } catch (e) { setErr(String(e)); }
       refresh();
       setInterval(refresh, 2000);
     })();

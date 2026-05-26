@@ -4,7 +4,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
 use crate::app_state::AppState;
@@ -30,15 +30,24 @@ impl TrayState {
     }
 }
 
-/// Build the status-bar tray icon + menu.
-pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let start_i = MenuItem::with_id(app, "start", "Start Server", true, None::<&str>)?;
-    let stop_i = MenuItem::with_id(app, "stop", "Stop Server", true, None::<&str>)?;
+/// Build the menu for the current run state: only Start (stopped) or only
+/// Stop (running), plus Settings + Quit. Rebuilt on state change rather than
+/// toggling item visibility (muda has no per-item visibility).
+fn build_menu(app: &AppHandle, running: bool) -> tauri::Result<Menu<Wry>> {
+    let toggle = if running {
+        MenuItem::with_id(app, "stop", "Stop Server", true, None::<&str>)?
+    } else {
+        MenuItem::with_id(app, "start", "Start Server", true, None::<&str>)?
+    };
     let settings_i = MenuItem::with_id(app, "settings", "Open Settings…", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "Quit Motif", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&start_i, &stop_i, &sep, &settings_i, &quit_i])?;
+    Menu::with_items(app, &[&toggle, &sep, &settings_i, &quit_i])
+}
 
+/// Build the status-bar tray icon + menu.
+pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = build_menu(app, false)?;
     TrayIconBuilder::with_id(TRAY_ID)
         // Colored status disc — NOT a template image, so the green/amber/gray
         // shows through on every platform (template mode would strip color).
@@ -77,12 +86,21 @@ pub fn spawn_status_poller(app: &AppHandle) {
             if Some(cur) == last {
                 continue;
             }
+            let was_running = last.map(|s| s != TrayState::Stopped);
             last = Some(cur);
+            let running = cur != TrayState::Stopped;
             let app2 = app.clone();
             // Tray mutations go on the main thread to be safe across platforms.
             let _ = app.run_on_main_thread(move || {
                 if let Some(tray) = app2.tray_by_id(TRAY_ID) {
                     let _ = tray.set_icon(Some(disc_icon(cur)));
+                    // Only swap the menu when the running/stopped split flips
+                    // (NeedsLogin↔Running keeps the same Stop item).
+                    if was_running != Some(running) {
+                        if let Ok(menu) = build_menu(&app2, running) {
+                            let _ = tray.set_menu(Some(menu));
+                        }
+                    }
                 }
             });
         }

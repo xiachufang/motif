@@ -133,9 +133,11 @@ impl MenuConfig {
             None
         };
 
-        if matches!(self.listen_mode, ListenMode::Lan) && token.is_none() {
-            return Err("LAN mode exposes the port to the network — enable auth and set a token.".into());
-        }
+        // LAN without a token is permitted by request. The server's
+        // `validate()` refuses a non-loopback listener without auth unless we
+        // explicitly opt in, so flip the override in exactly that case.
+        let allow_insecure_no_auth =
+            matches!(self.listen_mode, ListenMode::Lan) && token.is_none();
 
         let tailscale = if self.tailscale.enabled {
             let authkey = {
@@ -160,7 +162,7 @@ impl MenuConfig {
             token,
             cert: None,
             key: None,
-            allow_insecure_no_auth: false,
+            allow_insecure_no_auth,
         })
     }
 }
@@ -207,10 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn lan_without_token_rejected() {
+    fn lan_without_token_allowed_insecure() {
         let mut c = MenuConfig::default();
         c.listen_mode = ListenMode::Lan;
-        assert!(c.to_server_config(&tsnet()).is_err());
+        let sc = c.to_server_config(&tsnet()).expect("lan without token is allowed");
+        assert!(sc.token.is_none());
+        assert!(sc.allow_insecure_no_auth, "must opt into insecure for non-loopback no-auth");
     }
 
     #[test]
