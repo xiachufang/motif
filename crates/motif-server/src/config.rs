@@ -19,6 +19,11 @@ pub struct ServerConfig {
     pub token: Option<String>,
     pub cert: Option<PathBuf>,
     pub key: Option<PathBuf>,
+    /// Explicit opt-out of the token-less non-loopback guard in `validate`.
+    /// When set, a network-reachable TCP port without auth is permitted (with
+    /// a loud startup warning). Off by default; operators must consciously
+    /// enable it.
+    pub allow_insecure_no_auth: bool,
 }
 
 impl ServerConfig {
@@ -26,7 +31,8 @@ impl ServerConfig {
     /// - At least one of `listen` / `tailscale` must be set.
     /// - `--cert` and `--key` must come together.
     /// - Token-less mode is rejected on non-loopback TCP (no auth on a
-    ///   network-reachable port is never what the operator means).
+    ///   network-reachable port is never what the operator means), unless
+    ///   `allow_insecure_no_auth` is set as an explicit override.
     ///   Loopback or tailscale-only is fine: tailnet membership is the
     ///   auth boundary.
     ///
@@ -42,11 +48,20 @@ impl ServerConfig {
         if let Some(addr) = self.listen {
             let is_loopback = addr.ip().is_loopback();
             if !is_loopback && self.token.is_none() {
-                anyhow::bail!(
-                    "refusing to listen on non-loopback address {} without --token-file \
-                     (anyone reachable on the network could attach otherwise)",
-                    addr
-                );
+                if self.allow_insecure_no_auth {
+                    tracing::warn!(
+                        %addr,
+                        "listening on non-loopback address with auth DISABLED \
+                         (--insecure-no-auth): anyone reachable on the network can attach"
+                    );
+                } else {
+                    anyhow::bail!(
+                        "refusing to listen on non-loopback address {} without --token-file \
+                         (anyone reachable on the network could attach otherwise; \
+                         pass --insecure-no-auth to override)",
+                        addr
+                    );
+                }
             }
         }
         if self.cert.is_some() != self.key.is_some() {

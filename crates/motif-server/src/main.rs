@@ -54,6 +54,13 @@ struct Args {
     #[arg(long)]
     token_file: Option<PathBuf>,
 
+    /// Permit a non-loopback --listen without --token-file, disabling auth on
+    /// a network-reachable port. Off by default; this is an explicit, unsafe
+    /// override (anyone who can reach the port can attach). Logs a warning at
+    /// startup.
+    #[arg(long)]
+    insecure_no_auth: bool,
+
     /// TLS cert (PEM). M1 does not yet implement TLS; rejected on startup if set.
     #[arg(long)]
     cert: Option<PathBuf>,
@@ -116,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         token,
         cert: args.cert,
         key: args.key,
+        allow_insecure_no_auth: args.insecure_no_auth,
     };
     motif_server::serve(cfg).await
 }
