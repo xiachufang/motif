@@ -32,12 +32,29 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(crate::embed::serve_index))
+        .route("/ping", get(ping))
         .route("/assets/{*p}", get(crate::embed::serve_assets))
         .route("/rpc/{method}", axum::routing::post(http_rpc::rpc_dispatch))
         .route("/events", get(crate::events_ws::events_upgrade))
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
         .with_state(state)
+}
+
+/// Stable magic string clients match on to confirm a `motif-server` is
+/// answering (vs. some other service on the same host/port). Keep this
+/// value frozen across versions — it's an identity probe, not a version
+/// check.
+pub const PING_SERVICE: &str = "motif-server";
+
+/// `GET /ping` — unauthenticated liveness + identity probe. Returns a
+/// fixed `service` tag so clients can detect a motif-server before they
+/// hold a token, plus the build version for diagnostics.
+async fn ping() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "service": PING_SERVICE,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 /// How often the server sends a Ping (echoed as Pong by every reasonable
