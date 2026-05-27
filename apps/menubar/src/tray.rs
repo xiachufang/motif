@@ -12,24 +12,14 @@ use crate::commands;
 
 const TRAY_ID: &str = "main";
 
-/// What the tray icon color reflects.
+/// Run state the tray icon reflects. Shown via a corner badge shape (not
+/// color), so the icon can stay a single system-tinted template color.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrayState {
     Stopped,
     Starting,
     Running,
     NeedsLogin,
-}
-
-impl TrayState {
-    fn rgb(self) -> (u8, u8, u8) {
-        match self {
-            TrayState::Stopped => (142, 142, 147),     // gray
-            TrayState::Starting => (245, 158, 11),     // amber
-            TrayState::Running => (40, 200, 90),       // green
-            TrayState::NeedsLogin => (245, 158, 11),   // amber
-        }
-    }
 }
 
 /// Build the menu for the current run state: only Start (stopped) or only
@@ -51,10 +41,10 @@ fn build_menu(app: &AppHandle, running: bool) -> tauri::Result<Menu<Wry>> {
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, false)?;
     TrayIconBuilder::with_id(TRAY_ID)
-        // Colored status disc — NOT a template image, so the green/amber/gray
-        // shows through on every platform (template mode would strip color).
+        // Single-color template image (macOS tints it for the menu bar);
+        // status is the corner badge shape, not color.
         .icon(status_icon(TrayState::Stopped))
-        .icon_as_template(false)
+        .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| on_menu_event(app, event.id.as_ref()))
@@ -180,43 +170,68 @@ pub fn open_settings(app: &AppHandle) {
     }
 }
 
-/// The seed-of-life motif (same mark as the app icon) rendered in the
-/// status color on a transparent background, anti-aliased. Status is read
-/// from the color, so the menu bar shows the brand mark while still
-/// signalling stopped/starting/running at a glance. 64px for retina crispness.
+/// The seed-of-life motif (same mark as the app icon) as a single-color
+/// template image, with a bottom-right badge encoding run state by shape:
+/// stopped = none, starting = hollow ring, running = filled dot,
+/// needs-login = "!". A transparent knockout halo separates the badge from
+/// the motif strokes. RGB is black; macOS tints the template for the bar.
+/// 64px for retina crispness.
 fn status_icon(state: TrayState) -> Image<'static> {
     const N: u32 = 64;
-    let (r8, g8, b8) = state.rgb();
-    let c = (N as f32 - 1.0) / 2.0;
-    let boundary_r = N as f32 * 0.42;
+    let nf = N as f32;
+    let c = (nf - 1.0) / 2.0;
+    let boundary_r = nf * 0.40;
     let r = boundary_r / 2.0;
-    let hw = N as f32 * 0.055 / 2.0; // half stroke width
+    let hw = nf * 0.025; // half stroke width
 
-    // Center circle + 6 around it (centers on the center circle's edge).
     let mut centers = [(c, c); 7];
     for k in 0..6 {
         let a = std::f32::consts::FRAC_PI_3 * k as f32 - std::f32::consts::FRAC_PI_6;
         centers[k + 1] = (c + r * a.cos(), c + r * a.sin());
     }
-    // Coverage of a stroked ring of radius `cr` at distance `d`, AA over ~1px.
     let ring = |d: f32, cr: f32| (hw + 0.5 - (d - cr).abs()).clamp(0.0, 1.0);
+    let disc = |d: f32, rr: f32| (rr + 0.5 - d).clamp(0.0, 1.0);
+    let sring = |d: f32, rr: f32, h: f32| (h + 0.5 - (d - rr).abs()).clamp(0.0, 1.0);
+
+    let (bx, by) = (nf * 0.74, nf * 0.74); // badge center
+    let knock = nf * 0.27; // transparent halo radius
 
     let mut rgba = vec![0u8; (N * N * 4) as usize];
     for y in 0..N {
         for x in 0..N {
             let (px, py) = (x as f32, y as f32);
-            let mut cov = ring((px - c).hypot(py - c), boundary_r);
+
+            // Motif strokes.
+            let mut a = ring((px - c).hypot(py - c), boundary_r);
             for (cxx, cyy) in centers.iter() {
-                if cov >= 1.0 {
+                if a >= 1.0 {
                     break;
                 }
-                cov = cov.max(ring((px - cxx).hypot(py - cyy), r));
+                a = a.max(ring((px - cxx).hypot(py - cyy), r));
             }
+
+            if !matches!(state, TrayState::Stopped) {
+                let db = (px - bx).hypot(py - by);
+                a *= 1.0 - disc(db, knock); // clear a halo for the badge
+                let glyph = match state {
+                    TrayState::Running => disc(db, nf * 0.165),
+                    TrayState::Starting => sring(db, nf * 0.15, nf * 0.045),
+                    TrayState::NeedsLogin => {
+                        // "!" — a short vertical capsule + a dot below.
+                        let cyy = py.clamp(by - nf * 0.14, by + nf * 0.02);
+                        let bar = (nf * 0.052 + 0.5 - (px - bx).hypot(py - cyy)).clamp(0.0, 1.0);
+                        let dot =
+                            (nf * 0.06 + 0.5 - (px - bx).hypot(py - (by + nf * 0.12))).clamp(0.0, 1.0);
+                        bar.max(dot)
+                    }
+                    TrayState::Stopped => 0.0,
+                };
+                a = a.max(glyph);
+            }
+
             let i = ((y * N + x) * 4) as usize;
-            rgba[i] = r8;
-            rgba[i + 1] = g8;
-            rgba[i + 2] = b8;
-            rgba[i + 3] = (cov * 255.0).round() as u8;
+            // Template image: color is black; status is shape, not color.
+            rgba[i + 3] = (a * 255.0).round() as u8;
         }
     }
     Image::new_owned(rgba, N, N)
