@@ -87,6 +87,9 @@ pub fn spawn_status_poller(app: &AppHandle) {
             let _ = app.run_on_main_thread(move || {
                 if let Some(tray) = app2.tray_by_id(TRAY_ID) {
                     let _ = tray.set_icon(Some(status_icon(cur)));
+                    // set_icon drops the template flag, so re-assert it or the
+                    // icon renders solid black instead of being system-tinted.
+                    let _ = tray.set_icon_as_template(true);
                     // Only swap the menu when the running/stopped split flips
                     // (NeedsLogin↔Running keeps the same Stop item).
                     if was_running != Some(running) {
@@ -170,58 +173,54 @@ pub fn open_settings(app: &AppHandle) {
     }
 }
 
-/// The seed-of-life motif (same mark as the app icon) as a single-color
-/// template image, with a bottom-right badge encoding run state by shape:
-/// stopped = none, starting = hollow ring, running = filled dot,
-/// needs-login = "!". A transparent knockout halo separates the badge from
-/// the motif strokes. RGB is black; macOS tints the template for the bar.
-/// 64px for retina crispness.
+/// Three stacked water-ripple waves as a single-color template image, with a
+/// bottom-right badge encoding run state by shape: stopped = none,
+/// starting = hollow ring, running = filled dot, needs-login = "!". A
+/// transparent knockout halo separates the badge from the waves. RGB is
+/// black; macOS tints the template for the bar. 64px for retina crispness.
 fn status_icon(state: TrayState) -> Image<'static> {
     const N: u32 = 64;
     let nf = N as f32;
     let c = (nf - 1.0) / 2.0;
-    let boundary_r = nf * 0.40;
-    let r = boundary_r / 2.0;
-    let hw = nf * 0.025; // half stroke width
 
-    let mut centers = [(c, c); 7];
-    for k in 0..6 {
-        let a = std::f32::consts::FRAC_PI_3 * k as f32 - std::f32::consts::FRAC_PI_6;
-        centers[k + 1] = (c + r * a.cos(), c + r * a.sin());
-    }
-    let ring = |d: f32, cr: f32| (hw + 0.5 - (d - cr).abs()).clamp(0.0, 1.0);
+    let hw = nf * 0.05; // half stroke width (≈0.10·N stroke)
+    let amp = nf * 0.055; // wave amplitude
+    let k = std::f32::consts::TAU / (nf * 0.62); // ≈1.5 cycles across the mark
+    let bases = [0.27_f32, 0.50, 0.73]; // wave baselines (fraction of N)
+    let half_w = nf * 0.40; // clip waves to the central band
+
     let disc = |d: f32, rr: f32| (rr + 0.5 - d).clamp(0.0, 1.0);
     let sring = |d: f32, rr: f32, h: f32| (h + 0.5 - (d - rr).abs()).clamp(0.0, 1.0);
 
-    let (bx, by) = (nf * 0.74, nf * 0.74); // badge center
-    let knock = nf * 0.27; // transparent halo radius
+    let (bx, by) = (nf * 0.76, nf * 0.76); // badge center
+    let knock = nf * 0.25; // transparent halo radius
 
     let mut rgba = vec![0u8; (N * N * 4) as usize];
     for y in 0..N {
         for x in 0..N {
             let (px, py) = (x as f32, y as f32);
 
-            // Motif strokes.
-            let mut a = ring((px - c).hypot(py - c), boundary_r);
-            for (cxx, cyy) in centers.iter() {
-                if a >= 1.0 {
-                    break;
+            // Waves.
+            let mut a = 0.0_f32;
+            if (px - c).abs() <= half_w {
+                for b in bases {
+                    let yy = nf * b + amp * ((px - c) * k).sin();
+                    a = a.max((hw + 0.5 - (py - yy).abs()).clamp(0.0, 1.0));
                 }
-                a = a.max(ring((px - cxx).hypot(py - cyy), r));
             }
 
             if !matches!(state, TrayState::Stopped) {
                 let db = (px - bx).hypot(py - by);
                 a *= 1.0 - disc(db, knock); // clear a halo for the badge
                 let glyph = match state {
-                    TrayState::Running => disc(db, nf * 0.165),
-                    TrayState::Starting => sring(db, nf * 0.15, nf * 0.045),
+                    TrayState::Running => disc(db, nf * 0.15),
+                    TrayState::Starting => sring(db, nf * 0.135, nf * 0.045),
                     TrayState::NeedsLogin => {
                         // "!" — a short vertical capsule + a dot below.
-                        let cyy = py.clamp(by - nf * 0.14, by + nf * 0.02);
-                        let bar = (nf * 0.052 + 0.5 - (px - bx).hypot(py - cyy)).clamp(0.0, 1.0);
+                        let cyy = py.clamp(by - nf * 0.13, by + nf * 0.02);
+                        let bar = (nf * 0.05 + 0.5 - (px - bx).hypot(py - cyy)).clamp(0.0, 1.0);
                         let dot =
-                            (nf * 0.06 + 0.5 - (px - bx).hypot(py - (by + nf * 0.12))).clamp(0.0, 1.0);
+                            (nf * 0.055 + 0.5 - (px - bx).hypot(py - (by + nf * 0.11))).clamp(0.0, 1.0);
                         bar.max(dot)
                     }
                     TrayState::Stopped => 0.0,
