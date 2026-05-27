@@ -237,7 +237,18 @@ pub fn generate_token() -> String {
     motif_server::auth::generate_token()
 }
 
+/// `true` when this process is running from inside a `.app` bundle. Login
+/// launch only makes sense for the bundle (it carries the icon, identity,
+/// and LSUIElement) — never the bare dev binary.
+fn is_bundled() -> bool {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+        .unwrap_or(false)
+}
+
 /// Toggle OS launch-at-login (via tauri-plugin-autostart) and persist it.
+/// Enabling is refused from a non-bundled dev binary so we never register a
+/// throwaway `target/debug` path as a login item.
 #[tauri::command]
 pub async fn set_launch_at_login(
     app: AppHandle,
@@ -245,14 +256,47 @@ pub async fn set_launch_at_login(
     enable: bool,
 ) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
+
+    if enable && !is_bundled() {
+        return Err(
+            "Launch at login needs the bundled Motif.app — run apps/menubar/bundle.sh and \
+             start that, not the dev binary."
+                .into(),
+        );
+    }
+
     let mgr = app.autolaunch();
     let res = if enable { mgr.enable() } else { mgr.disable() };
     res.map_err(|e| format!("autostart: {e}"))?;
+
     let mut c = state.config.lock().await;
     c.launch_at_login = enable;
     c.save(&state.paths.config_file)
         .map_err(|e| format!("saving config: {e}"))?;
     Ok(())
+}
+
+/// On launch, bring the OS login-item registration in line with the saved
+/// preference. Only acts when running from the bundle: it re-`enable()`s
+/// (which rewrites the launchd path to *this* `.app`, repairing a stale
+/// entry after the app was moved) or `disable()`s to match. Dev-binary runs
+/// are left untouched so they neither register a throwaway path nor clobber
+/// a real `.app` login item.
+pub async fn reconcile_autostart(app: &AppHandle, want: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    if !is_bundled() {
+        return;
+    }
+    let mgr = app.autolaunch();
+    if want {
+        if let Err(e) = mgr.enable() {
+            tracing::warn!(error = %e, "autostart: reconcile enable failed");
+        }
+    } else if mgr.is_enabled().unwrap_or(false) {
+        if let Err(e) = mgr.disable() {
+            tracing::warn!(error = %e, "autostart: reconcile disable failed");
+        }
+    }
 }
 
 /// Open an http(s) URL (the Tailscale login link) in the default browser.

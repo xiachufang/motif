@@ -31,6 +31,7 @@ fn main() {
     let _ = motif_server::init_tracing_gui("info,motif_tailscale=info", &paths.log_dir, log_ring.clone());
     let cfg = config::MenuConfig::load(&paths.config_file);
     let start_on_launch = cfg.autostart;
+    let want_login = cfg.launch_at_login;
     let state = AppState::new(paths, cfg, log_ring);
 
     tauri::Builder::default()
@@ -56,6 +57,15 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::build_tray(app.handle())?;
             tray::spawn_status_poller(app.handle());
+
+            // Keep the login-item registration honest with the saved
+            // preference (and repair a stale path if the .app moved).
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::reconcile_autostart(&handle, want_login).await;
+                });
+            }
 
             // Optionally bring the server up immediately on launch.
             if start_on_launch {
