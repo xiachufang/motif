@@ -53,7 +53,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         // Colored status disc — NOT a template image, so the green/amber/gray
         // shows through on every platform (template mode would strip color).
-        .icon(disc_icon(TrayState::Stopped))
+        .icon(status_icon(TrayState::Stopped))
         .icon_as_template(false)
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -96,7 +96,7 @@ pub fn spawn_status_poller(app: &AppHandle) {
             // Tray mutations go on the main thread to be safe across platforms.
             let _ = app.run_on_main_thread(move || {
                 if let Some(tray) = app2.tray_by_id(TRAY_ID) {
-                    let _ = tray.set_icon(Some(disc_icon(cur)));
+                    let _ = tray.set_icon(Some(status_icon(cur)));
                     // Only swap the menu when the running/stopped split flips
                     // (NeedsLogin↔Running keeps the same Stop item).
                     if was_running != Some(running) {
@@ -136,40 +136,87 @@ fn on_menu_event(app: &AppHandle, id: &str) {
 
 /// Show the settings window, creating it the first time. The window is a
 /// regular webview pointed at the embedded `dist/index.html`.
+///
+/// On macOS an Accessory app (no Dock icon) can't reliably bring a window
+/// to the front with `set_focus()` alone — the app isn't frontmost. So we
+/// promote to `Regular` while the window is open (which also surfaces it),
+/// and drop back to `Accessory` when it closes. The Dock icon is only
+/// present while Settings is showing.
 pub fn open_settings(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
     if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
         return;
     }
-    if let Err(e) = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+
+    match WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
         .title("Motif")
         .inner_size(440.0, 640.0)
         .resizable(true)
+        .focused(true)
         .build()
     {
-        tracing::warn!(error = %e, "failed to open settings window");
+        Ok(w) => {
+            // Revert to a Dock-less accessory app once Settings is dismissed.
+            #[cfg(target_os = "macos")]
+            {
+                let app = app.clone();
+                w.on_window_event(move |ev| {
+                    if matches!(
+                        ev,
+                        tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                    ) {
+                        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    }
+                });
+            }
+            let _ = w.set_focus();
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to open settings window"),
     }
 }
 
-/// A 32×32 filled disc in the given color (opaque), transparent elsewhere.
-fn disc_icon(state: TrayState) -> Image<'static> {
-    const N: u32 = 32;
+/// The seed-of-life motif (same mark as the app icon) rendered in the
+/// status color on a transparent background, anti-aliased. Status is read
+/// from the color, so the menu bar shows the brand mark while still
+/// signalling stopped/starting/running at a glance. 64px for retina crispness.
+fn status_icon(state: TrayState) -> Image<'static> {
+    const N: u32 = 64;
     let (r8, g8, b8) = state.rgb();
-    let mut rgba = vec![0u8; (N * N * 4) as usize];
     let c = (N as f32 - 1.0) / 2.0;
-    let rad = N as f32 * 0.42;
+    let boundary_r = N as f32 * 0.42;
+    let r = boundary_r / 2.0;
+    let hw = N as f32 * 0.055 / 2.0; // half stroke width
+
+    // Center circle + 6 around it (centers on the center circle's edge).
+    let mut centers = [(c, c); 7];
+    for k in 0..6 {
+        let a = std::f32::consts::FRAC_PI_3 * k as f32 - std::f32::consts::FRAC_PI_6;
+        centers[k + 1] = (c + r * a.cos(), c + r * a.sin());
+    }
+    // Coverage of a stroked ring of radius `cr` at distance `d`, AA over ~1px.
+    let ring = |d: f32, cr: f32| (hw + 0.5 - (d - cr).abs()).clamp(0.0, 1.0);
+
+    let mut rgba = vec![0u8; (N * N * 4) as usize];
     for y in 0..N {
         for x in 0..N {
-            let dx = x as f32 - c;
-            let dy = y as f32 - c;
-            if dx * dx + dy * dy <= rad * rad {
-                let i = ((y * N + x) * 4) as usize;
-                rgba[i] = r8;
-                rgba[i + 1] = g8;
-                rgba[i + 2] = b8;
-                rgba[i + 3] = 255;
+            let (px, py) = (x as f32, y as f32);
+            let mut cov = ring((px - c).hypot(py - c), boundary_r);
+            for (cxx, cyy) in centers.iter() {
+                if cov >= 1.0 {
+                    break;
+                }
+                cov = cov.max(ring((px - cxx).hypot(py - cyy), r));
             }
+            let i = ((y * N + x) * 4) as usize;
+            rgba[i] = r8;
+            rgba[i + 1] = g8;
+            rgba[i + 2] = b8;
+            rgba[i + 3] = (cov * 255.0).round() as u8;
         }
     }
     Image::new_owned(rgba, N, N)
