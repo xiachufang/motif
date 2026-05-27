@@ -1,5 +1,7 @@
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::Parser;
 
@@ -80,8 +82,26 @@ struct Args {
     rpc_log: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = rt.block_on(run());
+
+    // libtailscale's accept/log plumbing uses blocking tasks. During Ctrl-C
+    // shutdown those tasks can stay parked inside Go/C FFI after motifd has
+    // already closed its listeners, and Tokio's default runtime drop waits
+    // for blocking tasks forever. Bound that wait for the CLI process; the
+    // embeddable `motif_server::start` path keeps the regular runtime owned
+    // by its host.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    rt.shutdown_timeout(Duration::from_secs(2));
+
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     motif_server::init_tracing(&args.log, args.rpc_log.as_deref())?;
 

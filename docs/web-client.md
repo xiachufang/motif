@@ -13,7 +13,7 @@ Web 端反向验证 v1 协议是否真的"client-agnostic"——浏览器对 Web
 `motifd` 同时承担协议服务器和 Web SPA 宿主两件事：
 
 - 它已经在 axum 上有 HTTP `/rpc/*` + WS `/events` + WS `/pty/<id>`，再挂两条静态资源路由 (`/`、`/assets/*`) 是零成本的事；`rust-embed` 把 `web/dist` 编译期塞进二进制，部署仍然是单文件。
-- 浏览器唯一需要的特殊化是 `WebSocket` API 设不了自定义 header，所以 `/events` 和 `/pty/<id>` 接受 `?token=<value>` query，走的还是同一个 token 校验函数（`crates/motif-server/src/auth.rs:41` 的 `verify_header_or_query`）。
+- 浏览器唯一需要的特殊化是 `WebSocket` API 设不了自定义 header，所以 `/events` 和 `/pty/<id>` 在 token 非空时接受 `?token=<value>` query，走的还是同一个 token 校验函数（`crates/motif-server/src/auth.rs` 的 `verify_header_or_query`）。
 
 `web/` 顶层目录是独立的前端项目，构建后被嵌入到 `motifd`。
 
@@ -27,7 +27,8 @@ Web 端反向验证 v1 协议是否真的"client-agnostic"——浏览器对 Web
    │ React SPA (web/dist)     │  ── HTTP ────►   │ GET /                       │
    │  - xterm.js              │  ── HTTP ────►   │ GET /assets/*  (rust-embed) │
    │  - diff2html             │                  │ ─────────────────────────── │
-   │  - highlight.js          │  ── HTTP POST ►  │ /rpc/<method>  (Bearer hdr) │
+   │  - highlight.js          │  ── HTTP POST ►  │ /rpc/<method>  (optional    │
+   │                          │                  │  Bearer hdr)                │
    │  - zustand store         │  ── WS ──────►   │ /events?session=&since=     │
    │                          │  ── WS ──────►   │ /pty/<id>?session=          │
    └──────────────────────────┘                  │ ─────────────────────────── │
@@ -41,7 +42,7 @@ Web 端反向验证 v1 协议是否真的"client-agnostic"——浏览器对 Web
 
 - **路由都在一个 axum router 里**（`crates/motif-server/src/ws.rs:32`），SPA 路由（`/`、`/assets/*`、SPA fallback）和协议路由（`/rpc/<method>`、`/events`、`/pty/<id>`）平级。
 - **`motifd` 看不出浏览器和 TUI 的区别**：两边打到同一组 `SessionManager` / PTY / git 对象，事件广播也走同一条路径。"完全镜像"语义因此天然成立。
-- **没有 `motif-web` crate / 二进制**：浏览器特殊化只是 `?token=` query 一条，纳进 motifd 自己的 router 就够。
+- **没有 `motif-web` crate / 二进制**：浏览器特殊化只是非空 token 时的 `?token=` query 一条，纳进 motifd 自己的 router 就够。
 
 ---
 
@@ -142,29 +143,29 @@ cargo build -p motif-server
 
 ### 5.1 RPC
 
-`POST /rpc/<method>`，body 是 JSON params。请求头需要：
+`POST /rpc/<method>`，body 是 JSON params。请求头：
 
 ```
-Authorization: Bearer <token>
+Authorization: Bearer <token>  ← 仅在 token 非空时发送
 Content-Type: application/json
 X-Motif-Session: <sid>      ← attach 之后所有请求都带上，server 回的 X-Motif-Session 提供
 ```
 
-实现见 `web/src/ws/client.ts:178`（`httpCallRaw`）。
+实现见 `web/src/ws/client.ts`（`httpCallRaw`）。
 
 ### 5.2 Events
 
-`GET /events?session=<sid>&since=<seq>&token=<value>`，Upgrade 到 WS。客户端断线 → 指数退避重连（`web/src/ws/client.ts:238`，500ms 起，封顶 15s），重连成功后 Workspace 层用记到的 `last_seq` 重发 `session.attach` 做 replay。
+`GET /events?session=<sid>&since=<seq>[&token=<value>]`，Upgrade 到 WS。客户端断线 → 指数退避重连（`web/src/ws/client.ts`，500ms 起，封顶 15s），重连成功后 Workspace 层用记到的 `last_seq` 重发 `session.attach` 做 replay。
 
 ### 5.3 PTY 字节流
 
-每个 PTY 一条独立 WS：`GET /pty/<id>?session=<sid>&since=<seq>&primary=0|1&token=<value>`。和 `motif-tui` 一致地走 binary frames。浏览器侧 base64 包一层给老代码消费（`web/src/ws/client.ts:285`），同时把 shell-integration OSC 流单独解出来生成结构化通知。
+每个 PTY 一条独立 WS：`GET /pty/<id>?session=<sid>&since=<seq>&primary=0|1[&token=<value>]`。和 `motif-tui` 一致地走 binary frames。浏览器侧 base64 包一层给老代码消费（`web/src/ws/client.ts`），同时把 shell-integration OSC 流单独解出来生成结构化通知。
 
 ### 5.4 鉴权：`?token=<value>` 的存在理由
 
-`new WebSocket(url)` 在浏览器里没法设 `Authorization` header，所以 motifd 在 `/events` 和 `/pty/<id>` 的握手处接受 `?token=...` query 参数，走和 Bearer header 同一个 token 比较函数（`crates/motif-server/src/auth.rs:41`）。HTTP `/rpc/*` 继续要 Bearer header——浏览器在 fetch 里能设 header，没必要 query。
+`new WebSocket(url)` 在浏览器里没法设 `Authorization` header，所以 motifd 在 `/events` 和 `/pty/<id>` 的握手处接受 `?token=...` query 参数，走和 Bearer header 同一个 token 比较函数（`crates/motif-server/src/auth.rs`）。HTTP `/rpc/*` 在 token 非空时继续用 Bearer header；空 token 表示连接到 no-auth motifd，HTTP 和 WS 都不附带 token。
 
-Token 怎么到浏览器：**没有任何 cookie 或一次性令牌机制**。用户在登录页 `web/src/pages/Login.tsx:88` 手动粘贴 motifd 配置的 token 字符串，按"remember on this device"勾选与否分别存到 `localStorage` / `sessionStorage`（key `motif.token`）。下次访问 `web/src/pages/Login.tsx:49` 的 effect 自动取出尝试重连。
+Token 怎么到浏览器：**没有任何 cookie 或一次性令牌机制**。用户在登录页 `web/src/pages/Login.tsx` 手动填写 motifd 配置的 token 字符串；如果服务端关闭鉴权，可以留空连接。按"remember on this device"勾选与否分别存到 `localStorage` / `sessionStorage`（key `motif.token`，no-auth 模式会存空字符串）。下次访问时登录页的 effect 自动取出尝试重连。
 
 > 注：iOS Native 容器有一条特殊路径——`window.motifNative.isNative === true` 时（`web/src/pages/Login.tsx:5`）跳过 token 表单，由本地代理在 WS 升级时注入 Authorization。这是 native 壳的事情，浏览器场景与它无关。
 

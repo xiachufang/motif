@@ -277,23 +277,28 @@ impl RunningServer {
     /// would hang stop forever. Also aborts the wake-detector task.
     pub async fn shutdown(self) -> anyhow::Result<()> {
         const GRACE: Duration = Duration::from_secs(3);
-        self.shutdown.cancel();
-        match tokio::time::timeout(GRACE, self.serve_task).await {
-            Ok(Ok(res)) => {
-                self.wake_task.abort();
-                res
-            }
-            Ok(Err(join_err)) => {
-                self.wake_task.abort();
-                Err(anyhow::anyhow!("serve task panicked: {join_err}"))
-            }
+        let RunningServer {
+            bound: _bound,
+            manager: _manager,
+            ts: _ts,
+            shutdown,
+            mut serve_task,
+            wake_task,
+        } = self;
+
+        shutdown.cancel();
+        let result = match tokio::time::timeout(GRACE, &mut serve_task).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(join_err)) => Err(anyhow::anyhow!("serve task panicked: {join_err}")),
             Err(_) => {
                 // Grace window elapsed with connections still open — force it.
                 tracing::warn!("graceful shutdown timed out after {GRACE:?}; aborting serve task");
-                self.wake_task.abort();
+                serve_task.abort();
                 Ok(())
             }
-        }
+        };
+        wake_task.abort();
+        result
     }
 }
 

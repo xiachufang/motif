@@ -23,16 +23,18 @@ shell-integration OSC 协议见 `shell-integration.md`。
 
 ### 1.2 鉴权
 
-所有四类入口都先过 `TokenStore`（`crates/motif-server/src/auth.rs`）做常时间
-Bearer 比对。token 是 `motifd --token-file` 指向文件的整行字符串；空 token 一
-律拒绝。鉴权失败：
+所有四类入口都先过 `TokenStore`（`crates/motif-server/src/auth.rs`）。配置了
+token 时，`TokenStore` 做常时间 Bearer 比对；token 是 `motifd --token-file`
+指向文件的整行字符串，空 token 文件一律拒绝启动。未配置 token 时，
+`TokenStore::Disabled` 接受请求。鉴权失败：
 
 - `/rpc/*`：HTTP 401，body 是 `missing or invalid Bearer token`。
 - `/events`、`/pty/<id>`：同样 HTTP 401，连接不会升级到 WS。
 
 `Authorization: Bearer <token>` 是默认通道。浏览器 WS 构造器没法附加自定义
-头，所以 `/events` 和 `/pty/<id>` 额外接受 `?token=<value>` 查询字符串
-（`auth.rs::verify_header_or_query`）。`/rpc/*` **不**支持 query-string token。
+头，所以 `/events` 和 `/pty/<id>` 在 token 非空时额外接受 `?token=<value>`
+查询字符串（`auth.rs::verify_header_or_query`）。`/rpc/*` **不**支持
+query-string token。
 
 ### 1.3 Session 绑定
 

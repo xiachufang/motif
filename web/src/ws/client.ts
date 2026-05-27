@@ -5,10 +5,12 @@
 // connect API.
 //
 // Auth model:
-//   - HTTP requests carry `Authorization: Bearer <browser_token>`.
-//   - WS opens carry `?token=<browser_token>` in the URL because the
-//     browser WebSocket API can't set headers. motifd accepts the query
-//     token using the same server-side token store.
+//   - If a browser token is present, HTTP requests carry
+//     `Authorization: Bearer <browser_token>`.
+//   - If a browser token is present, WS opens carry `?token=<browser_token>`
+//     because the browser WebSocket API can't set headers. motifd accepts the
+//     query token using the same server-side token store.
+//   - Empty token means the user is connecting to a no-auth motifd.
 //
 // Same-origin assumption: this client targets `location.origin` —
 // motifd itself.
@@ -20,6 +22,11 @@ export type EventHandler = (ev: Event) => void;
 
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
+
+function normalizeToken(token: string): string | null {
+  const t = token.trim();
+  return t ? t : null;
+}
 
 function summarize(v: unknown, maxStr = 200): string {
   try {
@@ -41,7 +48,7 @@ function b64encode(bytes: Uint8Array): string {
 }
 
 export class RpcClient {
-  private token: string;
+  private token: string | null;
   private sessionID: string | null = null;
   private eventsWs: WebSocket | null = null;
   private ptyWs   = new Map<string, WebSocket>();
@@ -67,12 +74,12 @@ export class RpcClient {
   public onClose:     (() => void) | null = null;
 
   private constructor(token: string) {
-    this.token = token;
+    this.token = normalizeToken(token);
   }
 
   /** Probe the new endpoint by calling `session.list`. The server
-   *  rejects unauthenticated bearer; success means the token is
-   *  good and the new-protocol routes are wired. */
+   *  rejects missing/invalid auth when auth is enabled; success means
+   *  the token choice is accepted and the new-protocol routes are wired. */
   static async connect(token: string): Promise<RpcClient> {
     const c = new RpcClient(token);
     await c.httpCall("session.list", {});  // throws on auth failure
@@ -199,9 +206,9 @@ export class RpcClient {
   private async httpCallRaw(method: string, params: Record<string, unknown>): Promise<{ body: ArrayBuffer; sessionID: string | null }> {
     const url = `${location.origin}/rpc/${encodeURIComponent(method)}`;
     const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
       "Content-Type":  "application/json",
     };
+    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
     if (this.sessionID) headers["X-Motif-Session"] = this.sessionID;
     const t0 = performance.now();
     console.log(`[rpc →] ${method}`, summarize(params));
@@ -228,7 +235,10 @@ export class RpcClient {
 
   private async openEvents(since: number): Promise<void> {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${location.host}/events?session=${encodeURIComponent(this.sessionID ?? "")}&since=${since}&token=${encodeURIComponent(this.token)}`;
+    const url = new URL(`${proto}://${location.host}/events`);
+    url.searchParams.set("session", this.sessionID ?? "");
+    url.searchParams.set("since", String(since));
+    if (this.token) url.searchParams.set("token", this.token);
     const ws = new WebSocket(url);
     await new Promise<void>((res, rej) => {
       ws.addEventListener("open",  () => res(),                                    { once: true });
@@ -295,7 +305,11 @@ export class RpcClient {
 
   private async openPty(pid: string, primary: boolean): Promise<void> {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const url = `${proto}://${location.host}/pty/${encodeURIComponent(pid)}?session=${encodeURIComponent(this.sessionID ?? "")}&since=0&primary=${primary ? 1 : 0}&token=${encodeURIComponent(this.token)}`;
+    const url = new URL(`${proto}://${location.host}/pty/${encodeURIComponent(pid)}`);
+    url.searchParams.set("session", this.sessionID ?? "");
+    url.searchParams.set("since", "0");
+    url.searchParams.set("primary", primary ? "1" : "0");
+    if (this.token) url.searchParams.set("token", this.token);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     await new Promise<void>((res, rej) => {

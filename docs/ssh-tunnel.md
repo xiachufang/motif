@@ -150,7 +150,7 @@ $ ssh -N \
 - 长生命周期场景建议进程化管理这条 SSH（systemd user unit / launchd / `autossh`），断了重起即可
 - SSH 认证最好用 key 而非交互式（运维场景下没人会去敲 passphrase）
 - 推荐配合 `restrict` shell 或 `command="..."` 限制 ssh 用户只允许 forward，最小化暴露面
-- 浏览器需要 `Authorization: Bearer <token>` 来调 `/rpc/*` 和 `/events`；WS 路径也接受 `?token=<v>` 查询参数 fallback（见 `crates/motif-server/src/auth.rs::verify_header_or_query`）
+- 如果 motifd 启用了 token，浏览器用 `Authorization: Bearer <token>` 调 `/rpc/*`，WS 路径用 `?token=<v>` 查询参数 fallback（见 `crates/motif-server/src/auth.rs::verify_header_or_query`）；no-auth motifd 可以在 Web 登录页留空 token
 
 ---
 

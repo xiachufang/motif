@@ -24,12 +24,13 @@ export default function Login() {
     // so the JS-side token is unused. Connect with an empty placeholder
     // and skip the persist step.
     const nextToken = native ? "" : rawToken.trim();
-    if (!native && !nextToken) return;
     setBusy(true); setErr(null);
     try {
       const c = await RpcClient.connect(nextToken);
       if (persist && !native) {
         const storage = remember ? localStorage : sessionStorage;
+        localStorage.removeItem("motif.token");
+        sessionStorage.removeItem("motif.token");
         storage.setItem("motif.token", nextToken);
       }
       setToken(nextToken);
@@ -53,7 +54,7 @@ export default function Login() {
       connect("", false);
       return;
     }
-    if (!initial) return;
+    if (initial === null) return;
     autoTried.current = true;
     connect(initial, false);
     // `connect` intentionally closes over the current store setters.
@@ -86,12 +87,12 @@ export default function Login() {
     <div className="centered">
       <form onSubmit={submit} className="card login">
         <h1>motif</h1>
-        <p className="muted">Sign in with the token configured on your motifd server.</p>
+        <p className="muted">Enter the token configured on your motifd server, or leave it blank when auth is disabled.</p>
         <input
           type="password"
           value={token}
           onChange={e => setT(e.target.value)}
-          placeholder="paste token"
+          placeholder="token (optional)"
           autoFocus
           disabled={busy}
         />
@@ -99,7 +100,7 @@ export default function Login() {
           <input type="checkbox" checked={remember} onChange={e => setR(e.target.checked)} />
           remember on this device
         </label>
-        <button type="submit" disabled={busy || !token.trim()}>
+        <button type="submit" disabled={busy}>
           {busy ? "connecting…" : "Connect"}
         </button>
         {err && <div className="error">{err}</div>}
