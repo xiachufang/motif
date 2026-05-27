@@ -19,7 +19,7 @@ pub mod wake_detector;
 pub mod wire;
 pub mod ws;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +40,69 @@ fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'st
 }
 
 pub use config::{ServerConfig, TailscaleListenConfig};
+
+/// Default embedded-tsnet hostname (`motifd-<sanitized system hostname>`).
+/// Shared by the `motifd` binary and embedding hosts (the menu-bar app) so
+/// they present as the *same* tailnet device — clients targeting
+/// `motifd-<host>` reach the node regardless of which launched it.
+pub fn default_tailscale_hostname() -> String {
+    let raw = system_hostname().unwrap_or_default();
+    let sanitized: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('-');
+    if sanitized.is_empty() {
+        "motifd".into()
+    } else {
+        format!("motifd-{sanitized}")
+    }
+}
+
+/// Default tsnet state dir (`$XDG_DATA_HOME/motifd/tsnet`, else
+/// `~/.local/share/motifd/tsnet`); `None` if neither env var is set. Shared
+/// with the menu-bar app so the embedded node reuses `motifd`'s identity.
+pub fn default_tailscale_state_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        let mut p = PathBuf::from(dir);
+        p.push("motifd");
+        p.push("tsnet");
+        return Some(p);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let mut p = PathBuf::from(home);
+        p.push(".local");
+        p.push("share");
+        p.push("motifd");
+        p.push("tsnet");
+        return Some(p);
+    }
+    None
+}
+
+#[cfg(unix)]
+fn system_hostname() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: buffer of known size; gethostname writes at most buf.len() bytes
+    // including the trailing NUL on success.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    std::str::from_utf8(&buf[..nul]).ok().map(|s| s.to_string())
+}
+
+#[cfg(not(unix))]
+fn system_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
+}
 
 /// Install the global tracing subscriber.
 ///

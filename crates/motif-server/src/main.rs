@@ -120,10 +120,16 @@ async fn run() -> anyhow::Result<()> {
     };
 
     let tailscale = if args.tailscale {
-        let hostname = args.tailscale_hostname.unwrap_or_else(default_ts_hostname);
+        let hostname = args
+            .tailscale_hostname
+            .unwrap_or_else(motif_server::default_tailscale_hostname);
         let state_dir = match args.tailscale_state_dir {
             Some(p) => p,
-            None => default_ts_state_dir()?,
+            None => motif_server::default_tailscale_state_dir().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cannot determine state dir; pass --tailscale-state-dir or set HOME / XDG_DATA_HOME"
+                )
+            })?,
         };
         Some(motif_server::TailscaleListenConfig {
             hostname,
@@ -148,63 +154,3 @@ async fn run() -> anyhow::Result<()> {
     motif_server::serve(cfg).await
 }
 
-/// Pick a sensible tsnet hostname from the system hostname so multiple
-/// motifd instances on different machines don't collide on a single tailnet
-/// device entry. Sanitized to DNS-safe lowercase.
-fn default_ts_hostname() -> String {
-    let raw = system_hostname().unwrap_or_default();
-    let sanitized: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let sanitized = sanitized.trim_matches('-');
-    if sanitized.is_empty() {
-        "motifd".into()
-    } else {
-        format!("motifd-{sanitized}")
-    }
-}
-
-fn default_ts_state_dir() -> anyhow::Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        let mut p = PathBuf::from(dir);
-        p.push("motifd");
-        p.push("tsnet");
-        return Ok(p);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".local");
-        p.push("share");
-        p.push("motifd");
-        p.push("tsnet");
-        return Ok(p);
-    }
-    anyhow::bail!(
-        "cannot determine state dir; pass --tailscale-state-dir or set HOME / XDG_DATA_HOME"
-    );
-}
-
-#[cfg(unix)]
-fn system_hostname() -> Option<String> {
-    let mut buf = [0u8; 256];
-    // SAFETY: we pass a buffer of known size; libc::gethostname writes at most
-    // buf.len() bytes including the trailing NUL on success.
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if rc != 0 {
-        return None;
-    }
-    let nul = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    std::str::from_utf8(&buf[..nul]).ok().map(|s| s.to_string())
-}
-
-#[cfg(not(unix))]
-fn system_hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty())
-}

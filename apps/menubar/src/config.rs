@@ -144,9 +144,23 @@ impl MenuConfig {
                 let k = self.tailscale.authkey.trim();
                 (!k.is_empty()).then(|| k.to_string())
             };
+            // Match motifd's defaults so the embedded node is the *same*
+            // tailnet device (hostname `motifd-<host>`, state dir
+            // `~/.local/share/motifd/tsnet`) — otherwise a client targeting
+            // motifd's tailnet name can't reach a menubar-launched server.
+            let hostname = {
+                let h = self.tailscale.hostname.trim();
+                if h.is_empty() {
+                    motif_server::default_tailscale_hostname()
+                } else {
+                    h.to_string()
+                }
+            };
+            let state_dir =
+                motif_server::default_tailscale_state_dir().unwrap_or_else(|| tsnet_dir.to_path_buf());
             Some(TailscaleListenConfig {
-                hostname: self.tailscale.hostname.trim().to_string(),
-                state_dir: tsnet_dir.to_path_buf(),
+                hostname,
+                state_dir,
                 port: self.port,
                 authkey,
                 control_url: None,
