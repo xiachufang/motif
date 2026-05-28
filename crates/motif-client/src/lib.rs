@@ -5,6 +5,7 @@
 
 pub mod coordinator;
 pub mod events;
+pub mod focus;
 pub mod http;
 pub mod palette;
 pub mod pty_ws;

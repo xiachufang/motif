@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PtyInfo, ViewInfo } from "../proto/types";
 import { useApp } from "../store/store";
 
@@ -11,7 +11,18 @@ export default function TabBar({ onNewPty }: Props) {
   const activeView = useApp(s => s.activeView);
   const client     = useApp(s => s.client);
   const ptyInfos   = useApp(s => s.ptyInfos);
+  const runningCmds = useApp(s => s.runningCmds);
   const applyViewMoved = useApp(s => s.applyViewMoved);
+
+  // A pty tab whose foreground program is still running asks for confirmation
+  // before closing. Non-pty tabs (and idle ptys) close immediately.
+  const [pendingClose, setPendingClose] = useState<{ id: string; cmd: string } | null>(null);
+  useEffect(() => {
+    if (!pendingClose) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPendingClose(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingClose]);
 
   // Drag-to-reorder state. We keep the drag id and the index the cursor is
   // currently hovering over so we can render an insertion line.
@@ -24,6 +35,15 @@ export default function TabBar({ onNewPty }: Props) {
   }
   function close(id: string) {
     client?.call("view.close",    { view_id: id }).catch(() => { /* idempotent */ });
+  }
+  // Guarded close: prompt first if this is a pty tab with a running program.
+  function requestClose(id: string) {
+    const v = views.find(x => x.id === id);
+    if (v?.spec.kind === "pty") {
+      const cmd = runningCmds.get(v.spec.pty_id);
+      if (cmd) { setPendingClose({ id, cmd }); return; }
+    }
+    close(id);
   }
 
   function onDragStart(e: React.DragEvent<HTMLDivElement>, id: string) {
@@ -81,6 +101,7 @@ export default function TabBar({ onNewPty }: Props) {
   // better (cwd, cmd basename) is known yet.
   let ptySeen = 0;
   return (
+    <>
     <div className="tab-bar" onDragOver={(e) => { if (dragIdRef.current) e.preventDefault(); }} onDrop={onDrop}>
       {views.map((v, i) => {
         const isActive = v.id === activeView;
@@ -107,7 +128,7 @@ export default function TabBar({ onNewPty }: Props) {
             onDragOver={(e) => onDragOver(e, i)}
             onDragEnd={onDragEnd}
             onClick={() => activate(v.id)}
-            onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); close(v.id); } }}
+            onAuxClick={(e) => { if (e.button === 1) { e.preventDefault(); requestClose(v.id); } }}
             title={describe(v, ptyOrdinal, ptyInfo)}
           >
             <span className="tab-kind">{glyph(v)}</span>
@@ -115,7 +136,7 @@ export default function TabBar({ onNewPty }: Props) {
             <button
               type="button"
               className="tab-close"
-              onClick={(e) => { e.stopPropagation(); close(v.id); }}
+              onClick={(e) => { e.stopPropagation(); requestClose(v.id); }}
               aria-label="close tab"
             >×</button>
           </div>
@@ -147,6 +168,31 @@ export default function TabBar({ onNewPty }: Props) {
         }}
       />
     </div>
+    {pendingClose && (
+      <div className="mdock-modal-backdrop" onClick={() => setPendingClose(null)}>
+        <div
+          className="mdock-modal confirm-modal"
+          onClick={e => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm close tab"
+        >
+          <h2>Program still running</h2>
+          <p className="muted">
+            <code>{pendingClose.cmd}</code> is still running in this terminal.
+            Closing the tab will end it.
+          </p>
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="ghost small" onClick={() => setPendingClose(null)}>Cancel</button>
+            <button
+              className="small"
+              onClick={() => { close(pendingClose.id); setPendingClose(null); }}
+            >Close anyway</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

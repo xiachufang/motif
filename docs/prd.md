@@ -118,7 +118,7 @@ Web 浏览器接入：**`motifd` 自带 Web UI 静态资源**（Vite + React 构
 
 **Mirror 一致性**
 
-- 所有事件携带递增 `seq`；client 重连时带上最后已知 seq，server 补发缺失片段（PTY 输出有限缓冲，默认每 PTY 1MB ring buffer）。
+- 所有结构化事件携带递增 `seq`；client 重连 `/events` 时带上最后已知 seq，server 补发仍在 ring 内的事件。PTY 输出走独立 byte cursor：每个 PTY 在 server 侧保留 2 MB raw-byte ring，client 用 `/pty/<id>?since=<bytes>` catch up。
 - 终端尺寸：所有 attach 同一 PTY 的 client 协商最小 (cols, rows)；server 取最小公约数发给底层 PTY，避免显示截断。
 
 详细事件清单与 wire 形状见 [`rpc.md`](./rpc.md) §7。

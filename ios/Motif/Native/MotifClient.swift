@@ -28,6 +28,10 @@ final class MotifClient {
     private(set) var ptys: [MotifProto.PtyInfo] = []
     private(set) var views: [MotifProto.ViewInfo] = []
     private(set) var activeViewID: String?
+    /// True while the app scene is `.active`. Gates PTY primary (re)claims so
+    /// a backgrounded client never steals primary from whoever is actually
+    /// using the session. Updated by `ContentView`'s scenePhase observer.
+    var isForeground = true
     /// Highest seq we've observed on the current WS — across every event
     /// kind, not just pty.output (server allocates one monotonic counter
     /// per session). Reset on attach to whatever the server returns in
@@ -52,6 +56,23 @@ final class MotifClient {
     /// auto-reattach so the user lands back in their terminal instead of
     /// the session picker.
     private var intendedSession: String?
+    /// Terminal palette this client's Ghostty surface actually renders, as the
+    /// rgb portion of an OSC 10/11 reply (e.g. `"d0d0/d0d0/d0d0"`). Sent on
+    /// `session.attach` and re-pushed via `session.set_palette` whenever the
+    /// user changes the terminal theme, so OSC 10/11 queries from PTY programs
+    /// match what the user sees. Seeded at launch by `AppState`.
+    private(set) var termFg: String?
+    private(set) var termBg: String?
+    /// This device's own resolved light/dark theme ("light"/"dark"), sent
+    /// alongside the palette to assert it as the session theme when this
+    /// client is driving.
+    private(set) var termTheme: String?
+
+    /// Session-wide effective theme broadcast by the server (set by whichever
+    /// client is driving). When non-nil the whole UI renders in this theme so
+    /// every client looks identical and PTY output colours match the
+    /// background. `nil` → fall back to this device's own preference.
+    private(set) var sessionTheme: String?
     /// Other clients attached to the same session. Seeded from
     /// `session.attach` and updated by `client.joined` / `client.left`.
     /// Excludes our own client_id (the server's attach response already
@@ -79,32 +100,57 @@ final class MotifClient {
     /// flips.
     private(set) var gitChangeTick: UInt64 = 0
 
+    /// Per-PTY byte cursors snapshotted from the dying RpcClient on an
+    /// involuntary drop, seeded into the successor on reconnect so the
+    /// `/pty/<id>` substream resumes from where we left off (no full-ring
+    /// double-print into the surviving terminal surface). One-shot: cleared
+    /// after seeding. See `handleConnectionLost` / `connect`.
+    private var carriedPtyCursors: [String: UInt64] = [:]
+
+    /// True while the live transport is up. UI uses this to gate input and
+    /// to choose server-authoritative vs local-only view switching.
+    var isLive: Bool { rpc != nil }
+
+    /// View the user switched to *locally* while offline (see
+    /// `selectViewLocally`). On reconnect we push it to the server so their
+    /// last viewing choice wins over the server's stale `active_view`,
+    /// instead of yanking focus back. Cleared after reconcile / detach.
+    private var pendingLocalViewID: String?
+
     private var rpc: RpcClient?
     private var eventTask: Task<Void, Never>?
     /// Strong reference so the URLSession delegate stays alive for the
     /// lifetime of the connection.
     private var wsDelegate: WSLogDelegate?
 
-    /// Per-PTY output channel. Keeps a small ring buffer of the most
-    /// recent bytes (so a tab switched away and back can replay scrollback
-    /// into a fresh terminal view) plus a set of live subscribers that
-    /// all receive every new chunk. Survives `pty.exited` so a tab opened
-    /// after the PTY died can still see the captured output.
+    /// Per-PTY output channel. This is only a live fan-out from the
+    /// currently subscribed `/pty/<id>` stream to whichever terminal runtime
+    /// is active. History lives on motifd; inactive tabs keep their Ghostty
+    /// surface and catch up from the server when they become active again.
     private final class PtyChannel {
-        var buffer: [Data] = []
-        var bufferBytes: Int = 0
         var subscribers: [UUID: AsyncStream<Data>.Continuation] = [:]
         var finished: Bool = false
     }
     private var ptyChannels: [String: PtyChannel] = [:]
-    /// Per-PTY replay budget. The terminal view has its own scrollback
-    /// once we feed it; this only needs to cover bytes that arrived
-    /// while the terminal view didn't exist.
-    private let maxBufferBytesPerPty = 512 * 1024
 
-    func connect(server: MotifServer, tailscale: TailscaleManager) async {
-        if case .connected = state { return }
-        if case .attached = state { return }
+    func connect(server: MotifServer, tailscale: TailscaleManager, force: Bool = false) async {
+        if !force {
+            if case .connected = state { return }
+            if case .attached = state { return }
+        } else if rpc != nil {
+            // Forced re-dial: the way we reach motifd changed (most often a
+            // tsnet node restart that moved the loopback SOCKS5 proxy to a
+            // new port, leaving our URLSession pointed at a dead one — the
+            // proxy is captured at connect time and never mutates). Tear down
+            // the stale transport so it's rebuilt below. Preserve the session
+            // view + `intendedSession` so auto-reattach lands the user back
+            // where they were.
+            if let rpc { carriedPtyCursors = await rpc.ptyCursors() }
+            eventTask?.cancel()
+            eventTask = nil
+            if let rpc { await rpc.close() }
+            rpc = nil
+        }
         state = .connecting
 
         // Pick the URLSession config based on server kind. `.tailscale`
@@ -152,23 +198,17 @@ final class MotifClient {
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
         FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
 
-        // Pre-warm the magicsock path before we ask URLSession to open
-        // anything. `state=Running` only means controlplane is up — the
-        // first data packet to a specific peer still pays NAT discovery
-        // / DERP fallback, which on a cold start can exceed URLSession's
-        // request timeout. A throwaway TCP dial through tailscale_dial
-        // provokes that setup OUTSIDE of URLSession's timeout window so
-        // the first /rpc call lands on an already-hot path.
         if case .tailscale = server.kind {
-            await preWarmTsnetPath(host: resolvedHost, port: server.port, tailscale: tailscale)
-            // Diagnostic: prove the tailnet path can carry a plain-HTTP
-            // request end-to-end without URLSession in the loop. If this
-            // returns a status line but the URLSession POST that follows
-            // times out, the bug is in URLSession's SOCKS5 routing — not
-            // the tsnet path or the server's accept loop.
-            let probe = await tailscale.rawHttpProbe(host: resolvedHost, port: server.port, path: "/")
-            log.notice("raw http probe status=\(probe.statusLine ?? "(nil)", privacy: .public) bytes=\(probe.bytesRead, privacy: .public) elapsed=\(probe.elapsedMs, privacy: .public)ms err=\(probe.error ?? "(none)", privacy: .public)")
-            FileLog.note("MotifClient", "raw http probe status=\(probe.statusLine ?? "(nil)") bytes=\(probe.bytesRead) elapsed=\(probe.elapsedMs)ms err=\(probe.error ?? "(none)")")
+            // Pre-warm the magicsock path before we ask URLSession to open
+            // anything. `state=Running` only means controlplane is up — the
+            // first data packet to a specific peer still pays NAT discovery
+            // / DERP fallback. This used to run in a background Task, which
+            // let the first /ping race ahead and fail; a manual Retry then
+            // worked because the background pre-warm had finished by then.
+            let didPreWarm = await preWarmTsnetPath(host: resolvedHost, port: server.port, tailscale: tailscale)
+            if didPreWarm {
+                startTailscaleDiagnostics(host: resolvedHost, port: server.port, tailscale: tailscale)
+            }
         }
 
         // New protocol: RPC runs over HTTP, server-pushed events / PTY
@@ -181,13 +221,33 @@ final class MotifClient {
                                   port: server.port,
                                   token: server.token,
                                   delegate: delegate)
+            let ping = try await pingWithStartupRetry(rpc: rpc, server: server)
+            guard ping.isMotifServer else {
+                let endpoint = displayEndpoint(server: server, resolvedHost: resolvedHost)
+                state = .failed(message: "A server answered at \(endpoint), but it is not motifd (service=\(ping.service)). Check the host and port.")
+                return
+            }
+            log.notice("motifd ping ok version=\(ping.version, privacy: .public)")
+            FileLog.note("MotifClient", "ping ok version=\(ping.version)")
         } catch {
+            let friendly = friendlyConnectMessage(
+                server: server,
+                resolvedHost: resolvedHost,
+                error: error
+            )
             log.error("rpc connect: \(String(describing: error), privacy: .public)")
             FileLog.note("MotifClient", "rpc connect failed: \(error)")
-            state = .failed(message: "rpc connect: \(error)")
+            state = .failed(message: friendly)
             return
         }
         self.rpc = rpc
+        // Resume per-PTY substreams from where the previous connection left
+        // off so the auto-reattach below replays only the missed delta into
+        // the surviving terminal surfaces. No-op on a first connect (empty).
+        if !carriedPtyCursors.isEmpty {
+            await rpc.seedPtyCursors(carriedPtyCursors)
+            carriedPtyCursors = [:]
+        }
         log.notice("connected to motifd as \(server.name, privacy: .public)")
         FileLog.note("MotifClient", "ws task resumed (state=connected)")
         eventTask = Task { [weak self] in
@@ -214,6 +274,16 @@ final class MotifClient {
             FileLog.note("MotifClient", "auto re-attaching to \(name)")
             do {
                 try await attach(sessionName: name)
+                // Honor the tab the user switched to while offline: attach
+                // just reseeded `activeViewID` from the server's stale
+                // `active_view`, so push the local choice back if it differs
+                // and still exists.
+                if let pending = pendingLocalViewID {
+                    if pending != activeViewID, views.contains(where: { $0.id == pending }) {
+                        await activateView(viewID: pending)
+                    }
+                    pendingLocalViewID = nil
+                }
             } catch {
                 // Session was destroyed / renamed / otherwise gone. Stop
                 // looping on the same failure; drop to `.connected` so the
@@ -221,10 +291,120 @@ final class MotifClient {
                 log.error("auto re-attach \(name, privacy: .public) failed: \(String(describing: error), privacy: .public)")
                 FileLog.note("MotifClient", "auto re-attach \(name) failed: \(error)")
                 intendedSession = nil
+                pendingLocalViewID = nil
                 state = .connected
             }
         } else {
             state = .connected
+        }
+    }
+
+    private func displayEndpoint(server: MotifServer, resolvedHost: String) -> String {
+        if resolvedHost == server.host {
+            return "\(server.host):\(server.port)"
+        }
+        return "\(server.host) (\(resolvedHost)):\(server.port)"
+    }
+
+    private func friendlyConnectMessage(
+        server: MotifServer,
+        resolvedHost: String,
+        error: any Error
+    ) -> String {
+        let endpoint = displayEndpoint(server: server, resolvedHost: resolvedHost)
+
+        if let rpcError = error as? RpcClient.RpcError {
+            switch rpcError {
+            case .decode(let message) where message.hasPrefix("ping response:"):
+                return "Something answered at \(endpoint), but it did not return motifd's /ping response. Check that this host and port point to motifd."
+            case .transport(let message) where message.contains("ping HTTP 404"):
+                return "A server answered at \(endpoint), but /ping was not found. Update motifd on that machine, or check that the port points to motifd."
+            case .transport(let message) where message.hasPrefix("ping HTTP"):
+                return "A server answered at \(endpoint), but /ping returned \(message.replacingOccurrences(of: "ping ", with: "")). Check motifd's logs on the server."
+            case .transport(let message):
+                return "Could not verify motifd at \(endpoint). \(message)"
+            case .notConnected:
+                return "Could not start the motifd connection. Please retry."
+            case .decode(let message):
+                return "motifd answered at \(endpoint), but the response could not be decoded. \(message)"
+            case .server(let code, let message):
+                return "motifd rejected the request (\(code)): \(message)"
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch URLError.Code(rawValue: nsError.code) {
+            case .cannotFindHost:
+                return "Could not find \(server.host). Check the hostname, or make sure Tailscale MagicDNS is working."
+            case .cannotConnectToHost:
+                return "Reached \(server.host), but port \(server.port) is not accepting connections. Make sure motifd is running and listening on that port."
+            case .badURL:
+                if server.kind == .tailscale {
+                    return "Could not reach motifd through Tailscale at \(endpoint). Tailscale is connected, but /ping could not be opened. Check that motifd is running and the host/port are correct."
+                }
+                return "The server address \(endpoint) could not be opened. Check the host and port."
+            case .timedOut:
+                return "Timed out while probing \(endpoint). Make sure motifd is running and reachable over \(server.kind == .tailscale ? "Tailscale" : "the network")."
+            case .networkConnectionLost:
+                return "The connection dropped while probing \(endpoint). If this server uses Tailscale, wait for Tailscale to finish connecting and retry."
+            case .notConnectedToInternet, .dataNotAllowed:
+                return "This device is offline. Connect to the network and retry."
+            case .cannotLoadFromNetwork:
+                return "iOS could not load \(endpoint) from the network. Check local network permissions and connectivity."
+            default:
+                break
+            }
+        }
+
+        return "Could not reach motifd at \(endpoint). \(String(describing: error))"
+    }
+
+    private func pingWithStartupRetry(rpc: RpcClient, server: MotifServer) async throws -> MotifProto.PingInfo {
+        do {
+            return try await rpc.ping()
+        } catch {
+            guard shouldRetryStartupPing(error) else { throw error }
+            log.notice("startup ping failed once; retrying after warm-up: \(String(describing: error), privacy: .public)")
+            FileLog.note("MotifClient", "startup ping retry after error: \(error)")
+            try? await Task.sleep(for: .milliseconds(server.kind == .tailscale ? 900 : 350))
+            return try await rpc.ping()
+        }
+    }
+
+    private func shouldRetryStartupPing(_ error: any Error) -> Bool {
+        if let rpcError = error as? RpcClient.RpcError {
+            switch rpcError {
+            case .transport(let message):
+                if message.hasPrefix("ping HTTP 4") { return false }
+                return true
+            case .notConnected:
+                return true
+            case .decode, .server:
+                return false
+            }
+        }
+
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        switch URLError.Code(rawValue: nsError.code) {
+        case .timedOut, .cannotConnectToHost, .networkConnectionLost, .cannotLoadFromNetwork:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func startTailscaleDiagnostics(host: String, port: UInt16, tailscale: TailscaleManager) {
+        Task { [weak self, tailscale, host, port] in
+            // Diagnostic: prove the tailnet path can carry a plain-HTTP
+            // request end-to-end without URLSession in the loop. Run this
+            // off the critical connect path so a wedged tailnet dial can't
+            // strand the UI on "Connecting…".
+            let probe = await tailscale.rawHttpProbe(host: host, port: port, path: "/ping")
+            guard let self else { return }
+            log.notice("raw http probe status=\(probe.statusLine ?? "(nil)", privacy: .public) bytes=\(probe.bytesRead, privacy: .public) elapsed=\(probe.elapsedMs, privacy: .public)ms err=\(probe.error ?? "(none)", privacy: .public)")
+            FileLog.note("MotifClient", "raw http probe status=\(probe.statusLine ?? "(nil)") bytes=\(probe.bytesRead) elapsed=\(probe.elapsedMs)ms err=\(probe.error ?? "(none)")")
         }
     }
 
@@ -235,29 +415,56 @@ final class MotifClient {
     /// has its own 15s URLRequest timeout). The probe connection is
     /// closed immediately; we just want the side effect of building the
     /// peer route in libtailscale.
-    private func preWarmTsnetPath(host: String, port: UInt16, tailscale: TailscaleManager) async {
+    private func preWarmTsnetPath(host: String, port: UInt16, tailscale: TailscaleManager) async -> Bool {
         let start = Date()
-        do {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
+        let result: Result<Void, any Error> = await withCheckedContinuation { continuation in
+            let completion = PreWarmCompletion()
+            Task.detached(priority: .utility) { [tailscale, host, port] in
+                do {
                     let conn = try await tailscale.dial(host: host, port: port)
                     await conn.close()
+                    completion.resume(continuation, with: .success(()))
+                } catch {
+                    completion.resume(continuation, with: .failure(error))
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 8 * 1_000_000_000)
-                    throw PreWarmTimeout()
-                }
-                _ = try await group.next()
-                group.cancelAll()
             }
+            Task {
+                try? await Task.sleep(nanoseconds: 8 * 1_000_000_000)
+                completion.resume(continuation, with: .failure(PreWarmTimeout()))
+            }
+        }
+
+        switch result {
+        case .success:
             let ms = Int(Date().timeIntervalSince(start) * 1000)
             log.notice("tsnet path pre-warmed to \(host, privacy: .public):\(port, privacy: .public) in \(ms, privacy: .public)ms")
             FileLog.note("MotifClient", "tsnet pre-warm ok \(host):\(port) (\(ms)ms)")
-        } catch {
+            return true
+        case .failure(let error):
             // Don't fail the connect; the WS attempt will surface the real
             // error if the path really is broken.
             log.warning("tsnet pre-warm dial failed: \(String(describing: error), privacy: .public)")
             FileLog.note("MotifClient", "tsnet pre-warm failed: \(error)")
+            return false
+        }
+    }
+
+    private final class PreWarmCompletion: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didResume = false
+
+        func resume(
+            _ continuation: CheckedContinuation<Result<Void, any Error>, Never>,
+            with result: Result<Void, any Error>
+        ) {
+            lock.lock()
+            let shouldResume = !didResume
+            didResume = true
+            lock.unlock()
+
+            if shouldResume {
+                continuation.resume(returning: result)
+            }
         }
     }
 
@@ -275,21 +482,28 @@ final class MotifClient {
         case .connecting, .connected, .attached:
             break
         }
-        // Snapshot the resume marker BEFORE clearing state — once we hit
-        // `clearSessionState` lastSeq is no longer meaningful for any
-        // particular session, and we still need the value to hand back
-        // to the server on the next attach.
+        // Snapshot the resume marker so the next attach replays session
+        // events from here. lastSeq stays meaningful — we deliberately do
+        // NOT clear session state on an involuntary drop (see below).
         if case .attached(let name) = state, lastSeq > 0 {
             resumeSeqs[name] = lastSeq
             log.notice("saved resume marker for \(name, privacy: .public) at seq=\(self.lastSeq, privacy: .public)")
         }
-        log.notice("connection lost — resetting state")
-        FileLog.note("MotifClient", "connection lost; resetting state")
+        log.notice("connection lost — preserving session view for offline use")
+        FileLog.note("MotifClient", "connection lost; preserving session state")
+        // Carry the per-PTY byte cursors so the successor connection resumes
+        // each substream from where it left off.
+        if let rpc { carriedPtyCursors = await rpc.ptyCursors() }
         eventTask?.cancel()
         eventTask = nil
         if let rpc { await rpc.close() }
         rpc = nil
-        clearSessionState()
+        // Unlike a voluntary disconnect/detach, do NOT clear ptys/views/
+        // channels here. Keeping them lets the terminal stay on screen with
+        // its scrollback (the Ghostty runtimes survive because `livePtyIDs`
+        // stays non-empty, so SessionView won't prune them), and the live
+        // pty pumps stay parked on their channels until `reactivate()` after
+        // reconnect feeds them again. `intendedSession` drives auto-reattach.
         state = .failed(message: "connection lost")
     }
 
@@ -304,6 +518,8 @@ final class MotifClient {
         // seq from a different server/session. Also drop the auto-reattach
         // intent so the next connect lands on the picker.
         resumeSeqs.removeAll()
+        carriedPtyCursors = [:]
+        pendingLocalViewID = nil
         intendedSession = nil
         lastSeq = 0
         state = .disconnected
@@ -362,6 +578,7 @@ final class MotifClient {
         // to leave, so a subsequent reconnect should land them on the
         // session picker, not silently rejoin the session they just left.
         intendedSession = nil
+        pendingLocalViewID = nil
         guard let rpc else {
             state = .disconnected
             return
@@ -389,16 +606,22 @@ final class MotifClient {
         }
         let r = try await rpc.call(
             "session.attach",
-            params: MotifProto.SessionAttachParams(name: sessionName, last_seq: resume, term_fg: nil, term_bg: nil),
+            // Only a foreground (in-use) client drives the session palette/theme;
+            // a background reattach adopts the server's instead of overriding.
+            params: MotifProto.SessionAttachParams(
+                name: sessionName,
+                last_seq: resume,
+                term_fg: isForeground ? termFg : nil,
+                term_bg: isForeground ? termBg : nil,
+                theme: isForeground ? termTheme : nil
+            ),
             as: MotifProto.SessionAttachResult.self
         )
         ptys = r.ptys ?? []
-        // Pre-create channels for every PTY in the attach response so
-        // pty.output bytes that arrive before any TerminalView exists are
-        // captured into the ring buffer instead of being dropped.
         for pty in ptys { _ = ensureChannel(pty.id) }
         views = r.views ?? []
         activeViewID = r.active_view
+        sessionTheme = r.theme
         clients = r.clients ?? []
         lastSeq = r.last_seq ?? 0
         // Marker has been spent. Replayed events will arrive as normal
@@ -410,6 +633,9 @@ final class MotifClient {
         intendedSession = sessionName
         state = .attached(session: sessionName)
         log.notice("attached to \(sessionName, privacy: .public): \(self.ptys.count, privacy: .public) ptys, \(self.views.count, privacy: .public) views, \(self.clients.count, privacy: .public) peers")
+        // /pty no longer claims primary on connect — re-assert our active view
+        // so this client owns primary if it's the one in the foreground.
+        reclaimPrimary()
     }
 
     /// Tear down a session entirely (kills its PTYs, drops it from the
@@ -457,6 +683,17 @@ final class MotifClient {
         }
     }
 
+    /// Change the active PTY's working directory by sending a `cd` command
+    /// to its shell (single-quote escaped so spaces / special chars survive).
+    /// Runs in the user's shell, so it respects aliases / functions and the
+    /// shell-integration hooks update `pty.cwd` afterwards.
+    func changeDirectory(ptyID: String, path: String) async {
+        let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+        var data = Data("cd '\(escaped)'".utf8)
+        data.append(0x0D) // CR = Enter
+        await write(ptyID: ptyID, data: data)
+    }
+
     func resize(ptyID: String, cols: UInt16, rows: UInt16) async {
         guard let rpc else { return }
         do {
@@ -475,6 +712,20 @@ final class MotifClient {
         }
     }
 
+    func activatePtyStream(ptyID: String) async {
+        guard let rpc else { return }
+        do {
+            try await rpc.activatePty(ptyID: ptyID)
+        } catch {
+            log.error("pty stream activate \(ptyID, privacy: .public): \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func deactivatePtyStream(ptyID: String) async {
+        guard let rpc else { return }
+        await rpc.deactivatePty(ptyID: ptyID)
+    }
+
     /// Find the view id whose spec wraps `ptyID`. Used by the tab UI to
     /// translate a PTY-tab tap into a `view.activate` RPC.
     func viewID(forPty ptyID: String) -> String? {
@@ -490,8 +741,51 @@ final class MotifClient {
     /// `mark_primary`, so the master immediately snaps to our reported
     /// dimensions instead of staying pinned to whichever client wrote
     /// most recently.
+    /// Switch the active view locally without a server round-trip. Used
+    /// while offline so the user can flip between already-open terminals and
+    /// read their retained scrollback. When the link is up we go through
+    /// `activateView` instead and let the server's `view.active_changed`
+    /// event drive `activeViewID`. On reconnect, `attach()` reseeds
+    /// `activeViewID` from the server's `active_view`.
+    func selectViewLocally(viewID: String) {
+        guard views.contains(where: { $0.id == viewID }) else { return }
+        activeViewID = viewID
+        pendingLocalViewID = viewID
+    }
+
+    /// Switch the active view server-authoritatively, but flip the local
+    /// `activeViewID` *optimistically* first so the tab changes the instant
+    /// the user taps — instead of stalling a full RTT until the server's
+    /// `view.active_changed` echo arrives. The echo (or a peer's switch)
+    /// still flows through `handleEvent` and stays authoritative; on RPC
+    /// failure we roll back, but only if nothing else moved focus meanwhile.
+    /// Update the cached terminal palette. Stores it for the next
+    /// `session.attach` and, if already attached on a live link, pushes it to
+    /// the server immediately via `session.set_palette` so programs started
+    /// after a mid-session theme change see the new colours. No-op when the
+    /// palette is unchanged so font-size edits don't trigger a needless RPC.
+    func setTerminalPalette(fg: String?, bg: String?, theme: String?) {
+        guard fg != termFg || bg != termBg || theme != termTheme else { return }
+        termFg = fg
+        termBg = bg
+        termTheme = theme
+        guard let rpc, case .attached = state else { return }
+        Task {
+            do {
+                _ = try await rpc.call(
+                    "session.set_palette",
+                    params: MotifProto.SessionSetPaletteParams(term_fg: fg, term_bg: bg, theme: theme)
+                )
+            } catch {
+                log.error("session.set_palette: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     func activateView(viewID: String) async {
         guard let rpc else { return }
+        let previous = activeViewID
+        activeViewID = viewID
         do {
             _ = try await rpc.call(
                 "view.activate",
@@ -499,6 +793,41 @@ final class MotifClient {
             )
         } catch {
             log.error("view.activate: \(String(describing: error), privacy: .public)")
+            if activeViewID == viewID { activeViewID = previous }
+        }
+    }
+
+    /// (Re)claim PTY primary by re-asserting our current active view to the
+    /// server. `/pty` no longer carries a primary flag — the client that's
+    /// actually being used reclaims primary on foreground / attach by
+    /// re-activating its view. The server skips the `view.active_changed`
+    /// broadcast when the active view is unchanged, so peers aren't disturbed;
+    /// only `mark_primary` runs. No-op when backgrounded, detached, or there's
+    /// no active view.
+    func reclaimPrimary() {
+        guard isForeground, case .attached = state, let rpc, let vid = activeViewID else { return }
+        Task {
+            do {
+                _ = try await rpc.call(
+                    "view.activate",
+                    params: MotifProto.ViewActivateParams(view_id: vid)
+                )
+            } catch {
+                log.error("view.activate (reclaim primary): \(String(describing: error), privacy: .public)")
+            }
+        }
+        // Also re-assert this device's theme + palette as the session's, so the
+        // foreground client's appearance wins and shells match what it renders.
+        guard termFg != nil || termBg != nil || termTheme != nil else { return }
+        Task {
+            do {
+                _ = try await rpc.call(
+                    "session.set_palette",
+                    params: MotifProto.SessionSetPaletteParams(term_fg: termFg, term_bg: termBg, theme: termTheme)
+                )
+            } catch {
+                log.error("session.set_palette (reclaim): \(String(describing: error), privacy: .public)")
+            }
         }
     }
 
@@ -660,14 +989,12 @@ final class MotifClient {
         )
     }
 
-    /// Subscribe to a PTY's output stream. Each call returns a fresh
-    /// AsyncStream that first replays the channel's ring buffer (so a
-    /// terminal view freshly created after a tab switch still sees recent
-    /// scrollback), then forwards every subsequent live chunk. Multiple
-    /// concurrent subscribers on the same PTY are fine — they all see the
-    /// same bytes. If the PTY has already exited, the buffer is replayed
-    /// and the stream finishes immediately after.
-    func outputs(for ptyID: String) -> AsyncStream<Data> {
+    /// Subscribe to a PTY's current live output stream. Historical bytes are
+    /// no longer cached here; the active terminal runtime opens
+    /// `/pty/<id>?since=<cursor>` through `RpcClient`, and motifd replays any
+    /// missed server buffer before live bytes.
+    func outputs(for ptyID: String, replayBuffered: Bool = true) -> AsyncStream<Data> {
+        _ = replayBuffered
         let ch = ensureChannel(ptyID)
         let (stream, cont) = AsyncStream.makeStream(of: Data.self)
         let key = UUID()
@@ -677,7 +1004,6 @@ final class MotifClient {
                 self?.ptyChannels[ptyID]?.subscribers.removeValue(forKey: key)
             }
         }
-        for chunk in ch.buffer { cont.yield(chunk) }
         if ch.finished { cont.finish() }
         return stream
     }
@@ -692,15 +1018,6 @@ final class MotifClient {
 
     private func appendOutput(ptyID: String, data: Data) {
         let ch = ensureChannel(ptyID)
-        ch.buffer.append(data)
-        ch.bufferBytes += data.count
-        // Drop oldest chunks until we're back under the per-PTY budget.
-        // Keep at least one chunk so a single oversized burst doesn't
-        // wipe the buffer entirely.
-        while ch.bufferBytes > maxBufferBytesPerPty && ch.buffer.count > 1 {
-            let removed = ch.buffer.removeFirst()
-            ch.bufferBytes -= removed.count
-        }
         for (_, sub) in ch.subscribers { sub.yield(data) }
     }
 
@@ -832,6 +1149,13 @@ final class MotifClient {
                     let rb = rank[b.id] ?? Int.max
                     return ra < rb
                 }
+            }
+
+        case "session.theme_changed":
+            // Adopt the session-wide theme set by the driving client so the
+            // whole UI renders the same way across clients.
+            if let payload = try? event.decode(MotifProto.SessionThemeChangedEvent.self) {
+                sessionTheme = payload.theme
             }
 
         case "client.joined":

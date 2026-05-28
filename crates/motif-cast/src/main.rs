@@ -155,8 +155,11 @@ async fn run(r: Run) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("session.create '{}'", r.name))?;
 
-    // 2. session.attach — required to receive pty.output events.
+    // 2. session.attach — required to receive pty.output events. Derive a
+    //    light/dark theme from the probed background luminance so GUI clients
+    //    viewing this cast render to match the host terminal's appearance.
     let (term_fg, term_bg) = palette::probe();
+    let theme = theme_from_osc_bg(term_bg.as_deref());
     let _: ses::AttachResult = client
         .call(
             "session.attach",
@@ -165,6 +168,7 @@ async fn run(r: Run) -> anyhow::Result<()> {
                 last_seq: None,
                 term_fg,
                 term_bg,
+                theme,
             },
         )
         .await
@@ -278,6 +282,24 @@ fn read_token(path: Option<&std::path::Path>) -> anyhow::Result<String> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("reading token file {}", path.display()))?;
     Ok(raw.trim().to_string())
+}
+
+/// Classify a probed terminal background as `"light"` / `"dark"` from its
+/// perceived luminance. `bg` is the rgb portion of an OSC 11 reply
+/// (`"RRRR/GGGG/BBBB"` 16-bit, or `"RR/GG/BB"` 8-bit) — we read the high byte
+/// of each channel, so both widths work. `None` (terminal didn't answer) →
+/// `None`, leaving the session theme untouched.
+fn theme_from_osc_bg(bg: Option<&str>) -> Option<String> {
+    let mut chans = bg?.split('/');
+    let hi_byte = |s: Option<&str>| -> Option<u32> {
+        u32::from_str_radix(s?.get(0..2)?, 16).ok()
+    };
+    let r = hi_byte(chans.next())?;
+    let g = hi_byte(chans.next())?;
+    let b = hi_byte(chans.next())?;
+    // Rec. 601 perceived luminance, 0..255.
+    let lum = (299 * r + 587 * g + 114 * b) / 1000;
+    Some(if lum >= 128 { "light" } else { "dark" }.to_string())
 }
 
 fn default_session_name() -> String {

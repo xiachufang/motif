@@ -22,6 +22,12 @@ final class TailscaleManager {
         case starting
         case needsAuth(url: URL)
         case running(ipv4: String?, ipv6: String?)
+        /// Node is up from tsnet's point of view but the tailnet datapath
+        /// is currently unusable (control-plane offline / health warning).
+        /// Distinct from `.running` so the dial gate and UI can react, and
+        /// distinct from `.failed` because tsnet is still trying and we
+        /// expect to recover without a fresh `start()`. See `revalidate()`.
+        case degraded(reason: String)
         case failed(message: String)
     }
 
@@ -37,6 +43,29 @@ final class TailscaleManager {
     /// instance, so an Up()-driven NeedsLogin doesn't ask the user for a
     /// fresh login URL on every bus tick.
     private var loginInteractivePushed: Bool = false
+
+    /// Polls `backendStatus()` while we believe the datapath is down so we
+    /// can flip `.degraded` back to `.running` once tsnet reconnects. Only
+    /// alive during a `.degraded` window — nil otherwise. See `revalidate()`.
+    private var healthMonitorTask: Task<Void, Never>?
+    /// Last `EngineStatus.NumLive` seen on the IPN bus. A >0→0 edge is a
+    /// cheap hint that connectivity dropped; we confirm via the LocalAPI
+    /// rather than trusting it alone (idle peers fall out of the live set).
+    private var lastNumLive: Int?
+
+    /// Count of consecutive `backendStatus()` throws. A probe that *succeeds*
+    /// (even one reporting the datapath down) resets this. It distinguishes
+    /// "datapath flapping but LocalAPI alive" (recovers via polling) from
+    /// "LocalAPI listener is dead" — the latter throws ECONNREFUSED on lo0
+    /// after a long app suspend and never recovers by polling, because the
+    /// thing we poll is gone. See `checkHealthOnce` / `restartNode`.
+    private var consecutiveProbeFailures = 0
+    /// Re-entrancy guard for `restartNode`: `checkHealthOnce` can fire from
+    /// the monitor loop, the NumLive edge, and foreground revalidate.
+    private var isRestarting = false
+    /// Consecutive probe throws that mean the LocalAPI is gone (not a one-off
+    /// blip) and we should rebuild the node rather than keep polling.
+    private static let probeFailureRestartThreshold = 3
 
     init(hostName: String = "motif-ios") {
         self.hostName = hostName
@@ -142,6 +171,10 @@ final class TailscaleManager {
     }
 
     private func teardown() async {
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
+        lastNumLive = nil
+        consecutiveProbeFailures = 0
         if let busProcessor {
             busProcessor.cancel()
         }
@@ -169,6 +202,139 @@ final class TailscaleManager {
             log.error("addrs failed: \(String(describing: error), privacy: .public)")
             FileLog.note("Tailscale", "addrs failed: \(error)")
         }
+    }
+
+    // MARK: - Datapath health
+
+    /// Reconcile `state` with tsnet's actual view of tailnet reachability.
+    ///
+    /// libtailscale exposes no push event for a dropped datapath (the IPN
+    /// `State` stays `.Running` through transient drops, and `Notify` has
+    /// no health field), so the only way to notice a connection the system
+    /// tore down — e.g. while the app was suspended in the background — is
+    /// to ask the LocalAPI. Call this on foreground (`scenePhase` → active)
+    /// and on a NumLive drop. No-op unless we believe the node is up.
+    func revalidate() async {
+        switch state {
+        case .running, .degraded: break
+        default:
+            FileLog.note("Tailscale", "revalidate: skip (state=\(state))")
+            return
+        }
+        FileLog.note("Tailscale", "revalidate: begin (state=\(state))")
+        await checkHealthOnce()
+    }
+
+    /// One `backendStatus()` probe. Healthy → `.running` (with fresh IPs);
+    /// unhealthy → `.degraded` and a recovery poll until tsnet comes back.
+    private func checkHealthOnce() async {
+        if isRestarting { return }
+        guard let api = apiClient else {
+            FileLog.note("Tailscale", "health probe: apiClient is nil — cannot probe (state=\(state))")
+            return
+        }
+        let healthy: Bool
+        let reason: String
+        var probeThrew = false
+        do {
+            let status = try await api.backendStatus()
+            let online = status.SelfStatus?.Online ?? false
+            healthy = status.BackendState == "Running" && online
+            reason = status.Health?.first ?? "tailnet \(status.BackendState)"
+            FileLog.note("Tailscale",
+                "health probe: backend=\(status.BackendState) online=\(online) "
+                + "health=\(status.Health ?? []) numLive=\(lastNumLive.map(String.init) ?? "nil") "
+                + "-> \(healthy ? "healthy" : "unhealthy")")
+        } catch {
+            healthy = false
+            probeThrew = true
+            reason = "status unavailable"
+            FileLog.note("Tailscale", "health probe failed: \(error)")
+        }
+
+        // A successful probe — even one reporting the datapath down — proves
+        // the LocalAPI is alive, so reset the dead-listener counter.
+        consecutiveProbeFailures = probeThrew ? consecutiveProbeFailures + 1 : 0
+
+        if healthy {
+            let wasDegraded: Bool
+            if case .running = state { wasDegraded = false } else { wasDegraded = true }
+            stopHealthMonitor()
+            // Avoid re-emitting `.running` (and its addr fetch) on every
+            // healthy poll — only refresh when we're recovering from a
+            // non-running state.
+            if wasDegraded {
+                FileLog.note("Tailscale", "health recovered (state=\(state)) -> running")
+                await refreshAddresses()
+            }
+            return
+        }
+
+        let next = State.degraded(reason: reason)
+        if state != next {
+            state = next
+            FileLog.note("Tailscale", "degraded: \(reason)")
+        }
+
+        // Two flavours of unhealthy:
+        //  - LocalAPI reachable but datapath down (probe succeeded, online=
+        //    false): tsnet re-establishes the tunnel on its own — keep polling.
+        //  - LocalAPI unreachable N times running (probe keeps throwing, e.g.
+        //    ECONNREFUSED on lo0 after a long suspend): the tsnet loopback
+        //    listener is gone and polling it will never recover. Rebuild.
+        if consecutiveProbeFailures >= Self.probeFailureRestartThreshold {
+            FileLog.note("Tailscale",
+                "LocalAPI unreachable \(consecutiveProbeFailures)x — restarting node")
+            await restartNode()
+        } else {
+            startHealthMonitor()
+        }
+    }
+
+    /// Tear down and re-create the tsnet node in place. Used when the LocalAPI
+    /// loopback listener has died (long app suspend) and passive polling can't
+    /// recover it. Cached credentials in the state dir let `start()` resume
+    /// without a fresh login. Existing tailnet connections drop; upper layers
+    /// reconnect on their own.
+    private func restartNode() async {
+        guard !isRestarting else { return }
+        isRestarting = true
+        FileLog.note("Tailscale", "restartNode: tearing down")
+        await teardown()  // also resets consecutiveProbeFailures
+        FileLog.note("Tailscale", "restartNode: starting fresh node")
+        // teardown() leaves state as-is (.degraded); start() guards only on
+        // .running/.starting, so it proceeds and flips state to .starting.
+        isRestarting = false
+        await start(authKey: nil)
+    }
+
+    /// Spawn the recovery poll if it isn't already running. tsnet keeps
+    /// trying to re-establish the tunnel on its own while the process is
+    /// alive, so polling `backendStatus()` here is purely to observe that
+    /// recovery and flip `state` back — no app traffic required.
+    private func startHealthMonitor() {
+        guard healthMonitorTask == nil else { return }
+        FileLog.note("Tailscale", "health monitor: started (poll every 3s)")
+        healthMonitorTask = Task { [weak self] in
+            var tick = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                tick += 1
+                FileLog.note("Tailscale", "health monitor: poll #\(tick)")
+                await self.checkHealthOnce()
+            }
+            FileLog.note("Tailscale", "health monitor: loop exited (cancelled)")
+        }
+    }
+
+    private func stopHealthMonitor() {
+        if healthMonitorTask != nil {
+            FileLog.note("Tailscale", "health monitor: stopped")
+        }
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
     }
 
     // MARK: - Outgoing connections
@@ -227,6 +393,83 @@ final class TailscaleManager {
     func makeURLSession() async throws -> URLSession {
         let config = try await makeURLSessionConfiguration()
         return URLSession(configuration: config)
+    }
+
+    enum MotifPingResult: Equatable, Sendable {
+        case reachable(version: String)
+        case unreachable(message: String)
+
+        var isReachable: Bool {
+            if case .reachable = self { return true }
+            return false
+        }
+    }
+
+    /// Probe motifd's unauthenticated `/ping` endpoint through the same
+    /// Tailscale URLSession path the app uses for real connections.
+    func pingMotifServer(host: String, port: UInt16, timeout: TimeInterval = 5) async -> MotifPingResult {
+        guard case .running = state else {
+            return .unreachable(message: "Tailscale off")
+        }
+
+        let resolvedHost = await resolveTailnetHost(host) ?? host
+        guard let url = URL(string: "http://\(resolvedHost):\(port)/ping") else {
+            return .unreachable(message: "Bad address")
+        }
+
+        let config: URLSessionConfiguration
+        do {
+            config = try await makeURLSessionConfiguration()
+        } catch {
+            return .unreachable(message: "Tailscale off")
+        }
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = timeout
+
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = timeout
+
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                return .unreachable(message: "No HTTP response")
+            }
+            guard (200...299).contains(http.statusCode) else {
+                return .unreachable(message: "HTTP \(http.statusCode)")
+            }
+            let info = try JSONDecoder().decode(MotifProto.PingInfo.self, from: data)
+            guard info.isMotifServer else {
+                return .unreachable(message: "Not motifd")
+            }
+            return .reachable(version: info.version)
+        } catch {
+            return .unreachable(message: Self.pingFailureMessage(error))
+        }
+    }
+
+    private static func pingFailureMessage(_ error: any Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            switch URLError.Code(rawValue: nsError.code) {
+            case .timedOut:
+                return "No response"
+            case .cannotFindHost:
+                return "Host not found"
+            case .cannotConnectToHost:
+                return "Port closed"
+            case .networkConnectionLost:
+                return "Connection lost"
+            case .badURL:
+                return "Cannot open /ping"
+            default:
+                break
+            }
+        }
+        return "Ping failed"
     }
 
     /// Diagnostic probe: dial host:port via `tailscale_dial` directly (no
@@ -471,6 +714,21 @@ final class TailscaleManager {
                 state = .stopped
             default:
                 break
+            }
+        }
+
+        // EngineStatus arrives every ~3s. A live-peer count dropping to
+        // zero while we think we're running is a cheap early hint that the
+        // datapath may be gone; confirm via the LocalAPI before reacting.
+        if let engine = notify.Engine {
+            let live = engine.NumLive
+            let prev = lastNumLive
+            lastNumLive = live
+            if let prev, prev != live {
+                FileLog.note("Tailscale", "engine NumLive \(prev) -> \(live) (state=\(state))")
+            }
+            if let prev, prev > 0, live == 0, case .running = state {
+                Task { await self.checkHealthOnce() }
             }
         }
     }

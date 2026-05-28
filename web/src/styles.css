@@ -1,3 +1,5 @@
+/* Default (dark) palette. The light theme overrides these under
+   :root[data-theme="light"]; App.tsx sets data-theme on <html>. */
 :root {
   color-scheme: dark;
   --bg:        #0e0e0e;
@@ -13,6 +15,33 @@
   --add:       #1f5b34;
   --del:       #5b1f1f;
   --mono:      ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Semantic chrome colors that differ between themes (were hardcoded). */
+  --btn-bg:        #2a2a2a;
+  --btn-bg-hover:  #353535;
+  --input-bg:      #1a1a1a;
+  --hover-bg:      rgba(255, 255, 255, 0.05);
+  --close-hover-bg: #444;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:        #ffffff;
+  --panel:     #f4f4f5;
+  --muted-bg:  #e9e9eb;
+  --border:    #d4d4d8;
+  --fg:        #1a1a1a;
+  --muted:     #6b6b70;
+  --accent:    #0b67d6;
+  --accent-bg: #d8e9ff;
+  --error-bg:  #fde2e2;
+  --error-fg:  #8a1a1a;
+  --add:       #b6e0c0;
+  --del:       #f0c4c4;
+  --btn-bg:        #e4e4e7;
+  --btn-bg-hover:  #d6d6da;
+  --input-bg:      #ffffff;
+  --hover-bg:      rgba(0, 0, 0, 0.05);
+  --close-hover-bg: #c8c8cc;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -27,7 +56,7 @@ html, body, #root {
 }
 
 button {
-  background: #2a2a2a;
+  background: var(--btn-bg);
   color: inherit;
   border: 1px solid var(--border);
   padding: 0.45em 0.9em;
@@ -35,7 +64,7 @@ button {
   cursor: pointer;
   font: inherit;
 }
-button:hover:not(:disabled)            { background: #353535; }
+button:hover:not(:disabled)            { background: var(--btn-bg-hover); }
 button:disabled                        { opacity: 0.55; cursor: not-allowed; }
 button.ghost                           { background: transparent; }
 button.small                           { padding: 0.25em 0.6em; font-size: 12px; }
@@ -45,7 +74,7 @@ pre {
 }
 
 input[type="text"], input[type="password"], input:not([type]) {
-  background: #1a1a1a;
+  background: var(--input-bg);
   color: inherit;
   border: 1px solid var(--border);
   padding: 0.5em 0.7em;
@@ -358,9 +387,11 @@ button.icon-btn {
   .resizer { display: none; }
 }
 
-/* Topbar visibility toggles. */
-.panel-toggle {
-  font-size: 14px;
+/* Topbar visibility toggles (▤ ⎇ ⌨ ⚙) — all share one icon size. The
+   `button.` prefix outranks `button.small`'s 12px (equal specificity, and
+   this rule comes later in the sheet). */
+button.panel-toggle {
+  font-size: 18px;
   padding: 0.15em 0.5em;
   line-height: 1;
   min-width: 28px;
@@ -408,7 +439,7 @@ button.icon-btn {
   text-overflow: ellipsis;
 }
 @media (hover: hover) {
-  .tab:not(.active):hover { background: rgba(255, 255, 255, 0.05); }
+  .tab:not(.active):hover { background: var(--hover-bg); }
 }
 .tab.active { background: var(--accent-bg); }
 .tab.dragging { opacity: 0.5; }
@@ -460,13 +491,13 @@ button.icon-btn {
 }
 @media (hover: hover) {
   .tab:hover .tab-close { opacity: 1; }
-  .tab-close:hover { background: #444; color: var(--fg); opacity: 1; }
+  .tab-close:hover { background: var(--close-hover-bg); color: var(--fg); opacity: 1; }
 }
 .tab.active .tab-close { opacity: 0.65; }
 /* Touch devices have no hover; the close button must be always reachable. */
 @media (hover: none) {
   .tab-close { opacity: 0.7; min-width: 28px; height: 28px; }
-  .tab-close:active { background: #444; color: var(--fg); }
+  .tab-close:active { background: var(--close-hover-bg); color: var(--fg); }
 }
 .tab-body {
   flex: 1 1 auto;
@@ -557,7 +588,7 @@ button.icon-btn {
 }
 .seg button + button { border-left: 1px solid var(--border); }
 @media (hover: hover) {
-  .seg button:hover:not(.on) { background: rgba(255,255,255,0.04); color: var(--fg); }
+  .seg button:hover:not(.on) { background: var(--hover-bg); color: var(--fg); }
 }
 .seg button.on {
   background: var(--accent-bg);
@@ -615,7 +646,7 @@ button.icon-btn {
   white-space: nowrap;
 }
 @media (hover: hover) {
-  .diff-file-item:hover { background: rgba(255,255,255,0.03); }
+  .diff-file-item:hover { background: var(--hover-bg); }
 }
 .diff-file-item.active {
   background: var(--accent-bg);
@@ -642,7 +673,7 @@ button.icon-btn {
   border-left: 2px solid transparent;
 }
 @media (hover: hover) {
-  .diff-tree-row:hover { background: rgba(255,255,255,0.03); }
+  .diff-tree-row:hover { background: var(--hover-bg); }
 }
 .diff-tree-row.dir { color: var(--accent); }
 .diff-tree-row.file.active {
@@ -676,7 +707,7 @@ button.icon-btn {
   border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
-  background: #2a2a2a;
+  background: var(--muted-bg);
   color: var(--fg);
   letter-spacing: 0;
 }
@@ -686,7 +717,7 @@ button.icon-btn {
 .diff-badge.st-renamed  { background: #1d3a4a; color: #8ec8e8; }
 .diff-badge.st-copied   { background: #1d3a4a; color: #8ec8e8; }
 .diff-badge.st-binary   { background: #322b1f; color: #d0a070; }
-.diff-badge.st-mode     { background: #2a2a2a; color: var(--muted); }
+.diff-badge.st-mode     { background: var(--muted-bg); color: var(--muted); }
 
 .diff-content {
   flex: 1 1 auto;
@@ -833,15 +864,17 @@ button.icon-btn {
 /* Only show the hover state on devices that actually hover. On touch the
    hover sticks after tap, which the user reads as a stuck highlight. */
 @media (hover: hover) {
-  .mdock-chip:hover:not(:disabled) { background: #2a2a2a; border-color: var(--accent); }
+  .mdock-chip:hover:not(:disabled) { background: var(--btn-bg-hover); border-color: var(--accent); }
 }
 .mdock-chip:focus { outline: none; }
 .mdock-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .mdock-chip:active { transform: translateY(1px); }
-.mdock-mgr-btn {
+/* `button.` prefix so the icon size outranks `button.small`'s 12px, matching
+   the 18px topbar toggles. */
+button.mdock-mgr-btn {
   flex: 0 0 auto;
   padding: 4px 8px;
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1;
 }
 
@@ -1076,3 +1109,89 @@ button.icon-btn {
 .pill.success { background: rgba(0,  180, 0, 0.18); border-color: #2e8b2e; }
 .pill.failure { background: rgba(220, 50, 50, 0.20); border-color: #a04040; }
 .pill.neutral { background: var(--muted-bg); }
+
+/* ── confirm dialog (e.g. close tab with a running program) ───────── */
+
+.confirm-modal {
+  width: min(420px, 100%);
+  max-height: none;
+  gap: 0.9em;
+}
+.confirm-modal h2 { margin: 0; font-size: 1.1rem; }
+.confirm-modal p { margin: 0; line-height: 1.5; }
+.confirm-modal code {
+  font-family: var(--mono);
+  background: var(--muted-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--fg);
+}
+
+/* ── settings sheet ──────────────────────────────────────────────── */
+
+.settings-sheet { gap: 1em; }
+.settings-sheet h2 { margin: 0; font-size: 1.1rem; }
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+}
+.settings-row > .settings-label { font-weight: 600; }
+.settings-stepper { display: inline-flex; align-items: center; gap: 0.6em; }
+.settings-stepper .settings-fontsize {
+  font-family: var(--mono);
+  min-width: 3.5em;
+  text-align: center;
+}
+.settings-stepper button {
+  min-width: 2em;
+  padding: 0.25em 0.6em;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ── file preview: light syntax theme ───────────────────────────────
+   FilePreviewTab statically imports atom-one-dark; under the light theme
+   we remap the code block + token colors to atom-one-light so it stays
+   readable on a white background. */
+:root[data-theme="light"] .preview .hljs {
+  background: transparent;
+  color: #383a42;
+}
+:root[data-theme="light"] .preview .hljs-comment,
+:root[data-theme="light"] .preview .hljs-quote { color: #a0a1a7; font-style: italic; }
+:root[data-theme="light"] .preview .hljs-doctag,
+:root[data-theme="light"] .preview .hljs-keyword,
+:root[data-theme="light"] .preview .hljs-formula { color: #a626a4; }
+:root[data-theme="light"] .preview .hljs-section,
+:root[data-theme="light"] .preview .hljs-name,
+:root[data-theme="light"] .preview .hljs-selector-tag,
+:root[data-theme="light"] .preview .hljs-deletion,
+:root[data-theme="light"] .preview .hljs-subst { color: #e45649; }
+:root[data-theme="light"] .preview .hljs-literal { color: #0184bc; }
+:root[data-theme="light"] .preview .hljs-string,
+:root[data-theme="light"] .preview .hljs-regexp,
+:root[data-theme="light"] .preview .hljs-addition,
+:root[data-theme="light"] .preview .hljs-attribute,
+:root[data-theme="light"] .preview .hljs-meta .hljs-string { color: #50a14f; }
+:root[data-theme="light"] .preview .hljs-attr,
+:root[data-theme="light"] .preview .hljs-variable,
+:root[data-theme="light"] .preview .hljs-template-variable,
+:root[data-theme="light"] .preview .hljs-type,
+:root[data-theme="light"] .preview .hljs-selector-class,
+:root[data-theme="light"] .preview .hljs-selector-attr,
+:root[data-theme="light"] .preview .hljs-selector-pseudo,
+:root[data-theme="light"] .preview .hljs-number { color: #986801; }
+:root[data-theme="light"] .preview .hljs-symbol,
+:root[data-theme="light"] .preview .hljs-bullet,
+:root[data-theme="light"] .preview .hljs-link,
+:root[data-theme="light"] .preview .hljs-meta,
+:root[data-theme="light"] .preview .hljs-selector-id,
+:root[data-theme="light"] .preview .hljs-title { color: #4078f2; }
+:root[data-theme="light"] .preview .hljs-built_in,
+:root[data-theme="light"] .preview .hljs-title.class_,
+:root[data-theme="light"] .preview .hljs-class .hljs-title { color: #c18401; }
+:root[data-theme="light"] .preview .hljs-emphasis { font-style: italic; }
+:root[data-theme="light"] .preview .hljs-strong { font-weight: bold; }
+:root[data-theme="light"] .preview .hljs-link { text-decoration: underline; }

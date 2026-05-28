@@ -118,6 +118,7 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
                 last_seq: None,
                 term_fg,
                 term_bg,
+                theme: None,
             },
         )
         .await?;

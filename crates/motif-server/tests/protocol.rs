@@ -482,22 +482,17 @@ async fn pty_lifecycle_and_mirror() {
             .await;
     }
 
-    // All three open /pty/<id> raw byte streams. A claims primary.
-    let mut a_ws = a.open_pty_ws(&pty_id, None, true).await.unwrap();
-    let mut b_ws = b.open_pty_ws(&pty_id, None, false).await.unwrap();
-    let mut c_ws = c.open_pty_ws(&pty_id, None, false).await.unwrap();
+    // All three open /pty/<id> raw byte streams (pure transport — primary is
+    // already A's from pty.create auto-activating the view).
+    let mut a_ws = a.open_pty_ws(&pty_id, None).await.unwrap();
+    let mut b_ws = b.open_pty_ws(&pty_id, None).await.unwrap();
+    let mut c_ws = c.open_pty_ws(&pty_id, None).await.unwrap();
 
-    // pty.write — A sends `echo motif-marker\n`; all three clients see the
-    // echoed output. Picking a deliberately unique token so we don't false-
-    // positive on the shell's prompt.
+    // pty.write — A sends `echo motif-marker\n` over its /pty WS; all three
+    // clients see the echoed output. Picking a deliberately unique token so we
+    // don't false-positive on the shell's prompt.
     let cmd = b"echo motif-marker\n";
-    let _: serde_json::Value = a
-        .call(
-            "pty.write",
-            ppty::PtyWriteParams { pty_id: pty_id.clone(), data: cmd.to_vec() },
-        )
-        .await
-        .unwrap();
+    a_ws.write(cmd).await.unwrap();
     // sh takes a moment to start + echo + run.
     let wait = Duration::from_secs(5);
     let needle = b"motif-marker";

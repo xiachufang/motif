@@ -11,17 +11,28 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useApp } from "../store/store";
 import { attachPty } from "../store/ptyBuffers";
+import { useEffectiveTheme } from "../hooks/useResolvedTheme";
+import { XTERM_THEME } from "../appearance";
 
 interface Props { ptyId: string; active: boolean }
 
 const SCROLLBACK_ROWS = 5000;
 const FONT_FAMILY = "ui-monospace, Menlo, Consolas, monospace";
-const FONT_SIZE   = 13;
 
 export default function PtyTab({ ptyId, active }: Props) {
   const ptyInfo = useApp(s => s.ptyInfos.get(ptyId));
+  const fontSize = useApp(s => s.fontSize);
+  const resolvedTheme = useEffectiveTheme();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+
+  // Latest appearance, read inside the mount effect (which must not re-run on
+  // every font/theme change — those are applied live by the effect below).
+  const fontSizeRef = useRef(fontSize);
+  const themeRef = useRef(resolvedTheme);
+  fontSizeRef.current = fontSize;
+  themeRef.current = resolvedTheme;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -29,13 +40,14 @@ export default function PtyTab({ ptyId, active }: Props) {
 
     const term = new Terminal({
       fontFamily:  FONT_FAMILY,
-      fontSize:    FONT_SIZE,
+      fontSize:    fontSizeRef.current,
       cursorBlink: true,
       scrollback:  SCROLLBACK_ROWS,
-      theme: { background: "#0e0e0e", foreground: "#e6e6e6" },
+      theme: XTERM_THEME[themeRef.current],
       allowProposedApi: true,
     });
     const fit = new FitAddon();
+    fitRef.current = fit;
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(host);
@@ -52,14 +64,13 @@ export default function PtyTab({ ptyId, active }: Props) {
       c.call("pty.write", { pty_id: ptyId, data_b64: btoa(bin) }).catch(() => { /* ignore */ });
     });
 
-    // Stream PTY bytes into the terminal. ptyBuffers replays anything
-    // that landed before mount.
+    // Stream PTY bytes into the terminal. History comes from motifd via
+    // `/pty/<id>?since=<cursor>` when this tab becomes active.
     const att = attachPty(ptyId, chunk => {
       try { term.write(chunk); } catch { /* ignore */ }
+    }, () => {
+      try { term.reset(); } catch { /* ignore */ }
     });
-    for (const c of att.initial) {
-      try { term.write(c); } catch { /* ignore */ }
-    }
 
     // Resize: keep cols/rows in sync with the host element. De-dupe so
     // SIGWINCH doesn't flood on rAF resize loops.
@@ -87,11 +98,55 @@ export default function PtyTab({ ptyId, active }: Props) {
       ro.disconnect();
       if (rafId != null) cancelAnimationFrame(rafId);
       termRef.current = null;
+      fitRef.current = null;
       // Defer dispose by a frame so any in-flight write callbacks don't
       // run against a torn-down terminal.
       requestAnimationFrame(() => { try { term.dispose(); } catch { /* ignore */ } });
     };
   }, [ptyId]);
+
+  // Apply font size + theme live to the mounted terminal. Theme is a pure
+  // restyle; font size changes the cell geometry, so we refit and push the
+  // new cols/rows. Only the active tab can be measured — inactive panes are
+  // `display: none` (0 size), and fitting a zero-size element renders the
+  // terminal blank; those are re-fit by the active effect when shown. The fit
+  // is deferred a frame so layout has settled before we measure.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontSize = fontSize;
+    term.options.theme = XTERM_THEME[resolvedTheme];
+    if (!active) return;
+    const id = requestAnimationFrame(() => {
+      const fit = fitRef.current;
+      if (!fit) return;
+      try { fit.fit(); } catch { /* ignore */ }
+      const c = useApp.getState().client;
+      if (c) c.call("pty.resize", { pty_id: ptyId, cols: term.cols, rows: term.rows })
+              .catch(() => { /* ignore */ });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [fontSize, resolvedTheme, active, ptyId]);
+
+  // Only the active PTY tab owns a live `/pty/<id>` subscription. Inactive
+  // tabs keep their xterm surface mounted; when reactivated, RpcClient uses
+  // the per-PTY byte cursor to catch up from motifd's server-side ring.
+  useEffect(() => {
+    const c = useApp.getState().client;
+    if (!c) return;
+    if (!active) {
+      c.deactivatePtyStream(ptyId);
+      return;
+    }
+    c.activatePtyStream(ptyId).catch(() => { /* ignore */ });
+    const id = requestAnimationFrame(() => {
+      try { fitRef.current?.fit(); } catch { /* ignore */ }
+    });
+    return () => {
+      cancelAnimationFrame(id);
+      c.deactivatePtyStream(ptyId);
+    };
+  }, [active, ptyId]);
 
   // Focus management: while the tab is active, the xterm should hold DOM
   // focus. (1) grab on activate, (2) re-grab on focusout unless the new

@@ -11,8 +11,10 @@ import Resizer    from "../panels/Resizer";
 import { useDragSize } from "../hooks/useDragSize";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useApp } from "../store/store";
+import { useResolvedTheme } from "../hooks/useResolvedTheme";
+import { oscPalette } from "../appearance";
 import {
-  appendOutput, clearPty, clearAll,
+  appendOutput, clearPty, clearAll, resetPty,
 } from "../store/ptyBuffers";
 
 function loadBool(key: string, fallback: boolean): boolean {
@@ -92,6 +94,8 @@ export default function Workspace({ sessionName }: Props) {
   const registerPty    = useApp(s => s.registerPty);
   const removePty      = useApp(s => s.removePty);
   const updatePtyCwd   = useApp(s => s.updatePtyCwd);
+  const ptyCommandStarted  = useApp(s => s.ptyCommandStarted);
+  const ptyCommandFinished = useApp(s => s.ptyCommandFinished);
   const clientJoined   = useApp(s => s.clientJoined);
   const clientLeft     = useApp(s => s.clientLeft);
   const setStatus      = useApp(s => s.setStatus);
@@ -101,6 +105,17 @@ export default function Workspace({ sessionName }: Props) {
   const applyViewMoved         = useApp(s => s.applyViewMoved);
   const setViewCache           = useApp(s => s.setViewCache);
   const rehydrateOnReconnect   = useApp(s => s.rehydrateOnReconnect);
+  const setSessionTheme        = useApp(s => s.setSessionTheme);
+
+  // This device's own resolved theme — the value we PUSH when driving (attach
+  // / focus / local toggle). Rendering uses the session theme instead (see
+  // `useEffectiveTheme`). Held in refs so the attach/reconnect/focus closures
+  // read the current value without re-running on every theme flip.
+  const resolvedTheme = useResolvedTheme();
+  const paletteRef = useRef(oscPalette(resolvedTheme));
+  paletteRef.current = oscPalette(resolvedTheme);
+  const themeRef = useRef(resolvedTheme);
+  themeRef.current = resolvedTheme;
 
   // Highest `seq` we've processed. Sent as `last_seq` on reconnect so the
   // server replays missed notifications. A ref (not store) to avoid a
@@ -116,12 +131,40 @@ export default function Workspace({ sessionName }: Props) {
   // same path on first mount.
   const lastFetchedCwdRef = useRef<string | null>(null);
 
+  // Claim primary for our active view whenever this window is the one being
+  // used. `/pty` no longer carries a primary flag — the focused/visible client
+  // re-asserts its active view, which the server treats as a primary claim
+  // (and skips the broadcast when the active view is unchanged). Background or
+  // unfocused clients therefore stop stealing primary out from under whoever
+  // is actually driving the terminal.
+  // Also asserts this device as the session-theme driver: pushing our palette
+  // + theme makes the focused client's theme the one every client renders.
+  const claimPrimaryIfVisible = useCallback(() => {
+    if (!client) return;
+    if (document.visibilityState !== "visible") return;
+    const vid = useApp.getState().activeView;
+    if (vid) client.call("view.activate", { view_id: vid }).catch(() => { /* idempotent */ });
+    client.call("session.set_palette", { ...paletteRef.current, theme: themeRef.current })
+      .catch(() => { /* not attached / transient */ });
+  }, [client]);
+
+  useEffect(() => {
+    if (!client) return;
+    const onFocus = () => claimPrimaryIfVisible();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [client, claimPrimaryIfVisible]);
+
   // ── attach + initial fetch ──
   useEffect(() => {
     if (!client) return;
-    // ptyBuffers is module-global and ptyId ("sh-N") is per-session, so a
-    // PtyId from the previous session can collide with a fresh one here and
-    // leak its old bytes into the new tab. Clear on entry and exit.
+    // ptyBuffers listener state is module-global and ptyId ("sh-N") is
+    // per-session. Clear on entry/exit so stale listeners from an old
+    // workspace cannot observe a fresh session that reused the same id.
     clearAll();
     seenSeqRef.current.clear();
     seenSeqOrderRef.current = [];
@@ -129,7 +172,13 @@ export default function Workspace({ sessionName }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const a = await client.call<AttachResult>("session.attach", { name: sessionName });
+        // Only a visible (in-use) client drives the session palette/theme; a
+        // hidden tab adopts whatever the server returns instead of overriding.
+        const driving = document.visibilityState === "visible";
+        const a = await client.call<AttachResult>("session.attach", {
+          name: sessionName,
+          ...(driving ? { ...paletteRef.current, theme: themeRef.current } : {}),
+        });
         lastSeqRef.current = a.last_seq;
         // Pick the active PTY's cwd if any so we don't fetch tree/git for
         // session.workdir and then immediately re-fetch for the active cwd
@@ -146,6 +195,8 @@ export default function Workspace({ sessionName }: Props) {
           git ? { branch: git.branch ?? null, files: git.files } : null,
         );
         lastFetchedCwdRef.current = initialCwd;
+        setSessionTheme(a.theme === "light" || a.theme === "dark" ? a.theme : null);
+        claimPrimaryIfVisible();
       } catch (e) {
         setStatus(`attach failed: ${e instanceof Error ? e.message : String(e)}`);
         setPage({ kind: "sessions" });
@@ -157,8 +208,10 @@ export default function Workspace({ sessionName }: Props) {
       // immediately rather than waiting for the WS to actually close.
       client.call("session.detach", {}).catch(() => { /* ignore — may not be attached yet */ });
       clearAll();
+      // Back on the sessions/login page, render with this device's own theme.
+      setSessionTheme(null);
     };
-  }, [client, sessionName, hydrate, setPage, setStatus]);
+  }, [client, sessionName, hydrate, setPage, setStatus, claimPrimaryIfVisible, setSessionTheme]);
 
   // Re-attach on transparent WS reconnect. Server replays events from
   // last_seq+1 (if the ring still has them); we soft-rehydrate the
@@ -167,15 +220,19 @@ export default function Workspace({ sessionName }: Props) {
     if (!client) return;
     client.onReconnect = async () => {
       try {
+        const driving = document.visibilityState === "visible";
         const a = await client.call<AttachResult>("session.attach", {
           name:     sessionName,
           last_seq: lastSeqRef.current,
+          ...(driving ? { ...paletteRef.current, theme: themeRef.current } : {}),
         });
         rehydrateOnReconnect(
           a.session, a.client_id, a.clients,
           a.ptys, a.views, a.active_view,
         );
         lastSeqRef.current = a.last_seq;
+        setSessionTheme(a.theme === "light" || a.theme === "dark" ? a.theme : null);
+        claimPrimaryIfVisible();
         setStatus("reconnected");
       } catch (e) {
         setStatus(`reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -183,7 +240,21 @@ export default function Workspace({ sessionName }: Props) {
       }
     };
     return () => { client.onReconnect = null; };
-  }, [client, sessionName, rehydrateOnReconnect, setPage, setStatus]);
+  }, [client, sessionName, rehydrateOnReconnect, setPage, setStatus, claimPrimaryIfVisible, setSessionTheme]);
+
+  // When the user flips this device's theme mid-session, push palette + theme:
+  // this device becomes the session-theme driver (all clients re-render) and
+  // OSC 10/11 answers for programs started afterwards match the new colours.
+  // The initial value rides along on attach, so the ref seeded with the
+  // mount-time theme makes the first run a no-op.
+  const lastPushedThemeRef = useRef(resolvedTheme);
+  useEffect(() => {
+    if (!client) return;
+    if (lastPushedThemeRef.current === resolvedTheme) return;
+    lastPushedThemeRef.current = resolvedTheme;
+    client.call("session.set_palette", { ...oscPalette(resolvedTheme), theme: resolvedTheme })
+      .catch(() => { /* not attached / transient */ });
+  }, [client, resolvedTheme]);
 
   // ── event subscription ──
   useEffect(() => {
@@ -208,15 +279,17 @@ export default function Workspace({ sessionName }: Props) {
         case "pty.created":   registerPty(e.params.info); break;
         case "pty.exited":    removePty(e.params.pty_id); clearPty(e.params.pty_id); setStatus(`pty ${e.params.pty_id} exited`); break;
         case "pty.output":    appendOutput(e.params.pty_id, decodeB64(e.params.data_b64)); break;
+        case "pty.reset":     resetPty(e.params.pty_id); ptyCommandFinished(e.params.pty_id); break;
         case "pty.cwd_changed": updatePtyCwd(e.params.pty_id, e.params.cwd); break;
 
-        // v2 shell-integration events still arrive on the wire but the
-        // web UI no longer renders blocks/chips, so we ignore them.
+        // Track the foreground command lifecycle so we can warn before
+        // closing a tab whose program is still running. The rest of the v2
+        // shell-integration events still arrive but the web UI ignores them.
+        case "pty.command_started":  ptyCommandStarted(e.params.pty_id, e.params.text); break;
+        case "pty.command_finished": ptyCommandFinished(e.params.pty_id); break;
         case "pty.shell_bootstrapped":
         case "pty.prompt_started":
         case "pty.prompt_ended":
-        case "pty.command_started":
-        case "pty.command_finished":
         case "pty.shell_context":
           break;
 
@@ -224,6 +297,10 @@ export default function Workspace({ sessionName }: Props) {
         case "view.closed":         applyViewClosed(e.params.view_id); break;
         case "view.active_changed": applyViewActiveChanged(e.params.view_id); break;
         case "view.moved":          applyViewMoved(e.params.order); break;
+
+        // Another client (or this one) set the session-wide theme. Adopt it so
+        // the whole UI renders the same way across all clients.
+        case "session.theme_changed": setSessionTheme(e.params.theme === "light" ? "light" : "dark"); break;
 
         case "tree.changed":  setStatus("tree changed");
                               {
@@ -253,8 +330,9 @@ export default function Workspace({ sessionName }: Props) {
       }
     });
   }, [client, clientJoined, clientLeft, registerPty, removePty, updatePtyCwd,
+      ptyCommandStarted, ptyCommandFinished,
       applyViewOpened, applyViewClosed, applyViewActiveChanged, applyViewMoved,
-      setDirChildren, setGit, setStatus]);
+      setDirChildren, setGit, setStatus, setSessionTheme]);
 
   // ── follow active PTY's cwd → re-root the file tree ──
   const activeViewObj = views.find(v => v.id === activeView) ?? null;

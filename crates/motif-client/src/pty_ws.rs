@@ -1,4 +1,4 @@
-//! `WS /pty/<pty_id>?session=<sid>&since=<bytes>&primary=<0|1>`
+//! `WS /pty/<pty_id>?session=<sid>&since=<bytes>`
 //! client. One per open PTY tab.
 //!
 //! Bidirectional binary stream — no envelope. Inbound frames from the
@@ -91,12 +91,11 @@ impl PtyClient {
         session_id: &str,
         pty_id: &str,
         since: u64,
-        primary: bool,
     ) -> anyhow::Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("dial {}", addr))?;
-        Self::connect_with_stream(addr, token, session_id, pty_id, since, primary, stream).await
+        Self::connect_with_stream(addr, token, session_id, pty_id, since, stream).await
     }
 
     pub async fn connect_with_stream<S>(
@@ -105,16 +104,13 @@ impl PtyClient {
         session_id: &str,
         pty_id: &str,
         since: u64,
-        primary: bool,
         stream: S,
     ) -> anyhow::Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let url = format!(
-            "ws://{authority}/pty/{pty_id}?session={session_id}&since={since}&primary={}",
-            if primary { 1 } else { 0 },
-        );
+        let url =
+            format!("ws://{authority}/pty/{pty_id}?session={session_id}&since={since}");
         let mut req = url
             .as_str()
             .into_client_request()

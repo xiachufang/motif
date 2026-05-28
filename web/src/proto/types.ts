@@ -68,6 +68,7 @@ export interface AttachResult {
   views:       ViewInfo[];
   active_view: ViewId | null;
   last_seq:    Seq;
+  theme?:      "light" | "dark";
 }
 export interface ListResult { sessions: SessionInfo[] }
 
@@ -122,6 +123,7 @@ export type Event =
   | { method: "pty.resize";     params: { pty_id: PtyId; cols: number; rows: number; seq: Seq } }
   | { method: "pty.created";    params: { info: PtyInfo; seq: Seq } }
   | { method: "pty.exited";     params: { pty_id: PtyId; exit_code: number | null; seq: Seq } }
+  | { method: "pty.reset";      params: { pty_id: PtyId } }
   | { method: "pty.cwd_changed"; params: { pty_id: PtyId; cwd: string; seq: Seq } }
   | { method: "git.changed";    params: { seq: Seq } }
   | { method: "client.joined";  params: { client_id: ClientId; since: number; seq: Seq } }
@@ -130,6 +132,7 @@ export type Event =
   | { method: "view.closed";    params: { view_id: ViewId; seq: Seq } }
   | { method: "view.active_changed"; params: { view_id: ViewId | null; seq: Seq } }
   | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } }
+  | { method: "session.theme_changed"; params: { theme: "light" | "dark"; seq: Seq } }
   // ── v2 shell-integration ──
   | { method: "pty.shell_bootstrapped"; params: { pty_id: PtyId; shell: ShellKind; seq: Seq } }
   | { method: "pty.prompt_started";     params: { pty_id: PtyId; block_id: BlockId; seq: Seq } }

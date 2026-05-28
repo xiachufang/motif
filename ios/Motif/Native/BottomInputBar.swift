@@ -80,10 +80,15 @@ struct BottomInputBar: View {
     /// the user's edit. Cleared after every stop.
     @State private var ignoreFinalTranscript: Bool = false
     @State private var editingCommands: Bool = false
+    @State private var showingCd: Bool = false
 
     private let log = Logger(subsystem: "io.allsunday.motif", category: "BottomInputBar")
 
-    private var canDispatch: Bool { activePtyID != nil }
+    /// Gate every outbound action on a live link: while disconnected the
+    /// terminal stays on screen for reading scrollback, but typing / quick
+    /// commands / voice would silently no-op against a dead socket, so we
+    /// disable them and surface "reconnecting…" in the composer instead.
+    private var canDispatch: Bool { activePtyID != nil && motif.isLive }
 
     /// Active `UITerminalView` for the focused PTY tab, if any. Used as
     /// the sticky-modifier authority — libghostty owns the per-key
@@ -91,6 +96,19 @@ struct BottomInputBar: View {
     /// state machine rather than running its own.
     private var activeTerminal: UITerminalView? {
         appState.terminals.view(for: activePtyID)
+    }
+
+    /// cwd of the PTY the bar writes to — used to root the cd picker.
+    private var activeCwd: String? {
+        motif.ptys.first(where: { $0.id == activePtyID })?.cwd
+    }
+
+    /// Command currently running in the active PTY (per shell-integration),
+    /// or nil at the prompt. Drives which quick-command set the bar shows:
+    /// a per-program override if one exists, else the global list.
+    private var runningCommand: String? {
+        guard let id = activePtyID else { return nil }
+        return motif.runningCommand[id]
     }
 
     private var ctrlState: StickyState {
@@ -114,7 +132,7 @@ struct BottomInputBar: View {
         let _ = appState.terminals.stickyVersion
         VStack(spacing: 0) {
             QuickCommandRow(
-                commands: appState.commands.commands,
+                commands: appState.commands.resolved(forRunning: runningCommand),
                 disabled: !canDispatch,
                 ctrlState: ctrlState,
                 altState: altState,
@@ -136,7 +154,24 @@ struct BottomInputBar: View {
         .animation(.easeOut(duration: 0.2), value: asrError)
         .background(.background)
         .sheet(isPresented: $editingCommands) {
-            QuickCommandEditor().environment(appState)
+            QuickCommandEditor(
+                scope: appState.commands.effectiveScope(forRunning: runningCommand),
+                runningProgram: QuickCommandStore.programKey(runningCommand)
+            )
+            .environment(appState)
+        }
+        .sheet(isPresented: $showingCd) {
+            if let cwd = activeCwd, !cwd.isEmpty {
+                ChangeDirectoryPanel(initialPath: cwd) { target in
+                    guard let id = activePtyID else { return }
+                    Task { await motif.changeDirectory(ptyID: id, path: target) }
+                }
+                .environment(motif)
+            } else {
+                Text("No active working directory.")
+                    .foregroundStyle(.secondary)
+                    .padding()
+            }
         }
         .onChange(of: buffer) { oldValue, newValue in
             // Sticky-modifier interception for the composer TextField.
@@ -168,11 +203,7 @@ struct BottomInputBar: View {
             // than firing onSubmit. Treat any inserted newline as the
             // user's "send" intent: bail out of ASR if needed and dispatch.
             if newValue.contains("\n") {
-                if isRecording {
-                    ignoreFinalTranscript = true
-                    stopASR()
-                }
-                Task { await send() }
+                submitBuffer()
                 return
             }
             // Recording in flight + buffer drifted away from what we
@@ -215,7 +246,7 @@ struct BottomInputBar: View {
             sendButton
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
     }
 
     /// Capsule-shaped composer. Houses the TextField and a live waveform
@@ -223,19 +254,20 @@ struct BottomInputBar: View {
     /// the iMessage gray-fill pill.
     private var inputPill: some View {
         HStack(spacing: 8) {
-            TextField("type or speak…", text: $buffer, axis: .vertical)
+            TextField(motif.isLive ? "type or speak…" : "reconnecting…", text: $buffer, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .submitLabel(.return)
                 .focused($focused)
+                .disabled(!motif.isLive)
             micButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
         .background(
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: 22)
                 .fill(Color(.quaternarySystemFill))
         )
         .animation(.easeOut(duration: 0.15), value: isRecording)
@@ -250,19 +282,22 @@ struct BottomInputBar: View {
                     .transition(.opacity.combined(with: .scale))
             } else {
                 Image(systemName: "mic.fill")
-                    .foregroundStyle(Color.red)
+                    .font(.title3)
+                    .tint(.primary)
             }
         }
-        .frame(height: 24)
+        .frame(width: 30, height: 28)
+        .contentShape(Rectangle())
         .disabled(!canDispatch)
         .accessibilityLabel(isRecording ? "Stop recording" : "Start recording")
     }
 
     private var sendButton: some View {
         Button("Send", systemImage: "arrow.up") {
-            Task { await send() }
+            submitBuffer()
         }
         .buttonStyle(.borderedProminent)
+        .controlSize(.large)
         .labelStyle(.iconOnly)
         .disabled(!canSend)
         .accessibilityLabel("Send")
@@ -273,6 +308,14 @@ struct BottomInputBar: View {
     }
 
     // MARK: - Send / quick dispatch
+
+    private func submitBuffer() {
+        if isRecording {
+            ignoreFinalTranscript = true
+            stopASR()
+        }
+        Task { await send() }
+    }
 
     private func send() async {
         guard let id = activePtyID else { return }
@@ -331,6 +374,14 @@ struct BottomInputBar: View {
                 buffer.append(s)
                 focusComposer()
             }
+        case .ctrl:
+            // Modifier kinds are rendered as StickyModifierButton and toggle
+            // through `onToggleModifier`, so they don't normally reach here.
+            toggleModifier(.ctrl)
+        case .alt:
+            toggleModifier(.alt)
+        case .cd:
+            showingCd = true
         }
     }
 
@@ -583,6 +634,12 @@ private extension View {
 
 // MARK: - Quick command row
 
+/// Uniform content height for every quick-command strip button so icon-only
+/// and text buttons (which have different intrinsic heights) end up the same
+/// capsule height. Padding is added around this on top — together they make a
+/// comfortably tappable (~44pt) target.
+private let qcContentHeight: CGFloat = 22
+
 private struct QuickCommandRow: View {
     let commands: [QuickCommand]
     let disabled: Bool
@@ -593,25 +650,24 @@ private struct QuickCommandRow: View {
     let onEdit: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Pinned outside the ScrollView so modifier state is always
-            // visible — a Ctrl that scrolled off-screen while armed is the
-            // sharpest failure mode for sticky modifiers.
-            HStack(spacing: 6) {
-                StickyModifierButton(label: "Ctrl", symbol: "control", state: ctrlState) {
-                    onToggleModifier(.ctrl)
-                }
-                StickyModifierButton(label: "Alt", symbol: "option", state: altState) {
-                    onToggleModifier(.alt)
-                }
-                Divider().frame(height: 18)
-            }
-            .padding(.leading, 8)
-            .padding(.vertical, 6)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(commands) { cmd in
+        // Ctrl / Alt are ordinary list entries now (kind .ctrl / .alt),
+        // rendered as sticky-modifier buttons wherever the user placed them.
+        // Everything else is a normal quick-command capsule.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(commands) { cmd in
+                    switch cmd.kind {
+                    case .ctrl:
+                        StickyModifierButton(label: cmd.label, symbol: cmd.symbol ?? "control", state: ctrlState) {
+                            onToggleModifier(.ctrl)
+                        }
+                        .disabled(disabled)
+                    case .alt:
+                        StickyModifierButton(label: cmd.label, symbol: cmd.symbol ?? "option", state: altState) {
+                            onToggleModifier(.alt)
+                        }
+                        .disabled(disabled)
+                    default:
                         Button {
                             onTap(cmd)
                         } label: {
@@ -620,29 +676,36 @@ private struct QuickCommandRow: View {
                         .buttonStyle(QuickCommandButtonStyle())
                         .disabled(disabled)
                     }
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .font(.footnote)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                        .font(.callout)
+                        .frame(height: qcContentHeight)
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
     }
 
     @ViewBuilder
     private func label(for cmd: QuickCommand) -> some View {
-        HStack(spacing: 4) {
-            if let symbol = cmd.symbol, !symbol.isEmpty {
-                Image(systemName: symbol).font(.footnote)
-            }
+        // Symbol-only when a glyph is set; fall back to the text label for
+        // commands without one (Esc, ^C, snippets, …).
+        if let symbol = cmd.symbol, !symbol.isEmpty {
+            Image(systemName: symbol)
+                .font(.callout)
+                .frame(height: qcContentHeight)
+                .accessibilityLabel(cmd.label)
+        } else {
             Text(cmd.label)
-                .font(.footnote.monospaced())
+                .font(.callout.monospaced())
                 .lineLimit(1)
+                .frame(height: qcContentHeight)
         }
     }
 }
@@ -650,8 +713,8 @@ private struct QuickCommandRow: View {
 private struct QuickCommandButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
             .background(
                 Capsule().fill(
                     Color(configuration.isPressed
@@ -660,6 +723,7 @@ private struct QuickCommandButtonStyle: ButtonStyle {
                 )
             )
             .foregroundStyle(.primary)
+            .contentShape(Capsule())
     }
 }
 
@@ -674,12 +738,11 @@ private struct StickyModifierButton: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 3) {
-                Image(systemName: symbol).font(.footnote)
-                Text(label).font(.footnote.monospaced())
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            Image(systemName: symbol)
+                .font(.callout)
+                .frame(height: qcContentHeight)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 9)
             .background(background)
             .foregroundStyle(foreground)
             .overlay(alignment: .bottom) {
@@ -690,6 +753,7 @@ private struct StickyModifierButton: View {
                         .offset(y: 3)
                 }
             }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

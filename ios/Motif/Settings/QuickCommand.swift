@@ -9,6 +9,15 @@ import OSLog
 enum QuickCommandKind: String, Codable, Sendable {
     case bytes
     case paste
+    /// Sticky Ctrl / Alt. Carry no payload — tapping toggles libghostty's
+    /// per-view sticky-modifier state so the *next* key press carries the
+    /// modifier. Kept in the command list (rather than hardcoded) so they
+    /// can be reordered / removed / re-added like any other button.
+    case ctrl
+    case alt
+    /// Opens the directory picker; on confirm sends `cd '<path>'` to the
+    /// active PTY. No payload — behavior lives in the BottomInputBar.
+    case cd
 }
 
 /// One configurable button in the BottomInputBar's quick-command row.
@@ -46,6 +55,17 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
         self.kind = kind
     }
 
+    /// Copy with a fresh `id`. Used when seeding a per-program override
+    /// from the global list so the two lists' rows stay independent.
+    init(copyOf other: QuickCommand) {
+        self.id = UUID()
+        self.label = other.label
+        self.symbol = other.symbol
+        self.payload = other.payload
+        self.sendImmediately = other.sendImmediately
+        self.kind = other.kind
+    }
+
     // Swift's synthesized Codable does not honor `var` defaults for missing
     // keys — it throws `keyNotFound`. Hand-written decoder defaults `kind`
     // to `.bytes` so v1-persisted JSON (without the field) keeps loading.
@@ -75,6 +95,22 @@ extension QuickCommand {
     /// `UIPasteboard.general.string`, so the persisted `payload` stays empty.
     static func paste(label: String = "Paste", symbol: String? = "doc.on.clipboard") -> QuickCommand {
         QuickCommand(label: label, symbol: symbol, payload: Data(), sendImmediately: true, kind: .paste)
+    }
+
+    /// Sticky Ctrl modifier button. Empty payload — behavior lives in the
+    /// BottomInputBar's modifier state machine.
+    static func ctrlModifier() -> QuickCommand {
+        QuickCommand(label: "Ctrl", symbol: "control", payload: Data(), kind: .ctrl)
+    }
+
+    /// Sticky Alt modifier button.
+    static func altModifier() -> QuickCommand {
+        QuickCommand(label: "Alt", symbol: "option", payload: Data(), kind: .alt)
+    }
+
+    /// Directory-picker button. Empty payload — tapping opens the cd sheet.
+    static func cd() -> QuickCommand {
+        QuickCommand(label: "cd", symbol: "arrow.turn.down.right", payload: Data(), kind: .cd)
     }
 }
 
@@ -188,73 +224,178 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
     }
 }
 
+/// One named quick-command set: a free display `name`, a list of program
+/// names it `matches` (compared against `programKey(running)`), and its own
+/// ordered command list. Display name and matching are decoupled — renaming
+/// a set never changes what it matches, and a set can match many programs.
+struct QuickCommandSet: Codable, Identifiable, Equatable, Sendable {
+    let id: UUID
+    var name: String
+    var matches: [String]
+    var commands: [QuickCommand]
+
+    init(id: UUID = UUID(), name: String, matches: [String] = [], commands: [QuickCommand] = []) {
+        self.id = id
+        self.name = name
+        self.matches = matches
+        self.commands = commands
+    }
+}
+
+/// Which quick-command list a mutation / lookup targets: the shared global
+/// list, or a specific named set (by id).
+enum QuickCommandScope: Identifiable, Hashable, Sendable {
+    case global
+    case set(UUID)
+
+    var id: String {
+        switch self {
+        case .global:        return "global"
+        case .set(let uuid): return "set:\(uuid.uuidString)"
+        }
+    }
+}
+
 /// Persisted, ordered list of QuickCommands. Mirrors the
 /// `MotifServerStore` shape but stores in UserDefaults — these are not
 /// secrets and persisting alongside other prefs keeps things simple.
+///
+/// Beyond the single global list, the store holds optional per-program
+/// override lists keyed by program name. The bottom bar resolves which
+/// list to show from whatever command is currently running in the active
+/// PTY (see `resolved(forRunning:)`).
 @Observable
 @MainActor
 final class QuickCommandStore {
     private let log = Logger(subsystem: "io.allsunday.motif", category: "QuickCommandStore")
     private static let listKey = "motif.quickCommands.v1"
-    private static let migrationV2Key = "motif.quickCommands.migratedTo.v2"
+    private static let setsKey = "motif.quickCommands.sets.v1"
 
     private(set) var commands: [QuickCommand] = []
+    /// Named command sets, in match-precedence order (first match wins).
+    private(set) var sets: [QuickCommandSet] = []
 
     init() {
         load()
+        // No versioned migrations: if there's nothing persisted, or the
+        // stored data can't be decoded (e.g. the schema changed), fall back
+        // to the built-in defaults rather than trying to patch old shapes.
         if commands.isEmpty {
             commands = Self.seedDefaults()
             persist()
-            UserDefaults.standard.set(true, forKey: Self.migrationV2Key)
-        } else if !UserDefaults.standard.bool(forKey: Self.migrationV2Key) {
-            migrateAppendV2Defaults()
         }
     }
 
-    /// One-shot append of v2-era seed additions (8 symbols + Paste) for users
-    /// who already had a persisted command list. Dedup by raw payload bytes /
-    /// `.paste` kind so a hand-curated list never gets duplicates.
-    private func migrateAppendV2Defaults() {
-        var changed = false
-        let existingPayloads = Set(commands.map(\.payload))
-        let v2SymbolKeys: [QuickCommandKey] = [
-            .pipe, .slash, .tilde, .dash, .underscore, .backtick, .singleQuote, .doubleQuote,
-        ]
-        for key in v2SymbolKeys where !existingPayloads.contains(Data(key.bytes)) {
-            commands.append(key.makeCommand())
-            changed = true
+    // MARK: - Resolution
+
+    /// Derive the override key (program name) from a raw running-command
+    /// string: first whitespace-delimited token, then its path basename.
+    /// `"claude --resume"` → `"claude"`, `"/usr/bin/vim f"` → `"vim"`.
+    /// Empty / nil → nil (caller falls back to global).
+    static func programKey(_ running: String?) -> String? {
+        guard let running else { return nil }
+        let trimmed = running.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let token: Substring
+        if let space = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) {
+            token = trimmed[..<space]
+        } else {
+            token = trimmed[...]
         }
-        if !commands.contains(where: { $0.kind == .paste }) {
-            commands.append(.paste())
-            changed = true
+        let noTrailingSlash = token.hasSuffix("/") ? token.dropLast() : token
+        let leaf: Substring
+        if let slash = noTrailingSlash.lastIndex(of: "/") {
+            leaf = noTrailingSlash[noTrailingSlash.index(after: slash)...]
+        } else {
+            leaf = noTrailingSlash
         }
-        UserDefaults.standard.set(true, forKey: Self.migrationV2Key)
-        if changed { persist() }
+        return leaf.isEmpty ? nil : String(leaf)
     }
 
-    func add(_ cmd: QuickCommand) {
-        commands.append(cmd)
+    /// First set (in array order) whose `matches` contains the running
+    /// program's key, if any. Array order is match precedence.
+    private func matchingSet(forRunning running: String?) -> QuickCommandSet? {
+        guard let key = Self.programKey(running) else { return nil }
+        return sets.first { $0.matches.contains(key) }
+    }
+
+    /// The effective list to render for whatever is currently running:
+    /// the first matching set if one exists, else the global list.
+    func resolved(forRunning running: String?) -> [QuickCommand] {
+        matchingSet(forRunning: running)?.commands ?? commands
+    }
+
+    /// Which scope the bottom-bar pencil should edit for the running command.
+    func effectiveScope(forRunning running: String?) -> QuickCommandScope {
+        if let s = matchingSet(forRunning: running) { return .set(s.id) }
+        return .global
+    }
+
+    // MARK: - Scope-aware access
+
+    private func setIndex(_ id: UUID) -> Int? { sets.firstIndex { $0.id == id } }
+
+    func list(_ scope: QuickCommandScope) -> [QuickCommand] {
+        switch scope {
+        case .global:      return commands
+        case .set(let id): return setIndex(id).map { sets[$0].commands } ?? []
+        }
+    }
+
+    func add(_ cmd: QuickCommand, to scope: QuickCommandScope) {
+        mutate(scope) { $0.append(cmd) }
+    }
+
+    func update(_ cmd: QuickCommand, in scope: QuickCommandScope) {
+        mutate(scope) {
+            if let i = $0.firstIndex(where: { $0.id == cmd.id }) { $0[i] = cmd }
+        }
+    }
+
+    func remove(id: UUID, from scope: QuickCommandScope) {
+        mutate(scope) { $0.removeAll { $0.id == id } }
+    }
+
+    func remove(at offsets: IndexSet, from scope: QuickCommandScope) {
+        mutate(scope) { $0.remove(atOffsets: offsets) }
+    }
+
+    func move(from source: IndexSet, to destination: Int, in scope: QuickCommandScope) {
+        mutate(scope) { $0.move(fromOffsets: source, toOffset: destination) }
+    }
+
+    /// Create a new set seeded from a copy of the global list, so the user
+    /// tweaks rather than rebuilds. Returns the new set's id so the caller
+    /// can navigate straight to its editor.
+    @discardableResult
+    func createSet(name: String, matches: [String] = []) -> UUID {
+        let new = QuickCommandSet(
+            name: name,
+            matches: matches,
+            commands: commands.map { QuickCommand(copyOf: $0) }
+        )
+        sets.append(new)
+        persist()
+        return new.id
+    }
+
+    /// Delete a set; programs it matched revert to the global list.
+    func removeSet(_ id: UUID) {
+        sets.removeAll { $0.id == id }
         persist()
     }
 
-    func update(_ cmd: QuickCommand) {
-        guard let i = commands.firstIndex(where: { $0.id == cmd.id }) else { return }
-        commands[i] = cmd
+    /// Rename a set's display name. Does not touch its matches.
+    func renameSet(_ id: UUID, name: String) {
+        guard let i = setIndex(id) else { return }
+        sets[i].name = name
         persist()
     }
 
-    func remove(id: UUID) {
-        commands.removeAll { $0.id == id }
-        persist()
-    }
-
-    func remove(at offsets: IndexSet) {
-        commands.remove(atOffsets: offsets)
-        persist()
-    }
-
-    func move(from source: IndexSet, to destination: Int) {
-        commands.move(fromOffsets: source, toOffset: destination)
+    /// Replace the program names a set matches against.
+    func updateMatches(_ id: UUID, _ matches: [String]) {
+        guard let i = setIndex(id) else { return }
+        sets[i].matches = matches
         persist()
     }
 
@@ -263,14 +404,38 @@ final class QuickCommandStore {
         persist()
     }
 
+    /// Apply an in-place edit to the list backing `scope`, then persist.
+    private func mutate(_ scope: QuickCommandScope, _ edit: (inout [QuickCommand]) -> Void) {
+        switch scope {
+        case .global:
+            edit(&commands)
+        case .set(let id):
+            guard let i = setIndex(id) else { return }
+            edit(&sets[i].commands)
+        }
+        persist()
+    }
+
     // MARK: - Persistence
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: Self.listKey) else { return }
-        do {
-            commands = try JSONDecoder().decode([QuickCommand].self, from: data)
-        } catch {
-            log.error("decode QuickCommands: \(String(describing: error), privacy: .public)")
+        if let data = UserDefaults.standard.data(forKey: Self.listKey) {
+            do {
+                commands = try JSONDecoder().decode([QuickCommand].self, from: data)
+            } catch {
+                // Unreadable (schema drift / corruption) → leave empty so the
+                // caller restores defaults.
+                log.error("decode QuickCommands: \(String(describing: error), privacy: .public)")
+                commands = []
+            }
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.setsKey) {
+            do {
+                sets = try JSONDecoder().decode([QuickCommandSet].self, from: data)
+            } catch {
+                log.error("decode QuickCommand sets: \(String(describing: error), privacy: .public)")
+                sets = []
+            }
         }
     }
 
@@ -281,6 +446,12 @@ final class QuickCommandStore {
         } catch {
             log.error("encode QuickCommands: \(String(describing: error), privacy: .public)")
         }
+        do {
+            let data = try JSONEncoder().encode(sets)
+            UserDefaults.standard.set(data, forKey: Self.setsKey)
+        } catch {
+            log.error("encode QuickCommand sets: \(String(describing: error), privacy: .public)")
+        }
     }
 
     /// Seed list installed on first launch — the user can edit / remove
@@ -289,6 +460,8 @@ final class QuickCommandStore {
     /// (ctrl-c / ctrl-d), then a couple of staple shell snippets.
     private static func seedDefaults() -> [QuickCommand] {
         var out: [QuickCommand] = []
+        out.append(.ctrlModifier())
+        out.append(.altModifier())
         out.append(QuickCommandKey.esc.makeCommand())
         out.append(QuickCommandKey.tab.makeCommand())
         out.append(QuickCommandKey.up.makeCommand())
@@ -307,6 +480,7 @@ final class QuickCommandStore {
         out.append(QuickCommandKey.backtick.makeCommand())
         out.append(QuickCommandKey.singleQuote.makeCommand())
         out.append(QuickCommandKey.doubleQuote.makeCommand())
+        out.append(.cd())
         out.append(.paste())
         return out
     }

@@ -68,6 +68,12 @@ pub struct Session {
     /// wins under multi-client mirror — colour queries are rare enough
     /// that this is fine, and matches the rest of the mirror semantics.
     term_palette: Mutex<Option<(String, String)>>,
+
+    /// Session-wide effective light/dark theme (`"light"` / `"dark"`), set by
+    /// whichever client is currently driving (focused / foreground). Broadcast
+    /// via `session.theme_changed` so every attached client renders the whole
+    /// UI the same way and PTY output colours match the rendered background.
+    theme: Mutex<Option<String>>,
 }
 
 impl Session {
@@ -90,6 +96,7 @@ impl Session {
             fswatcher: Mutex::new(None),
             fs_subscribers: Mutex::new(HashSet::new()),
             term_palette: Mutex::new(None),
+            theme: Mutex::new(None),
         });
         // pool needs a back-reference for publishing events.
         s.pty_pool.set_session(Arc::downgrade(&s));
@@ -130,6 +137,27 @@ impl Session {
         } else {
             *p = Some((new_fg, new_bg));
         }
+    }
+
+    /// The session's current effective light/dark theme, if any client has
+    /// reported one.
+    pub fn theme(&self) -> Option<String> {
+        self.theme.lock().clone()
+    }
+
+    /// Update the session-wide theme. `None` leaves it untouched. When the
+    /// value actually changes, broadcast `session.theme_changed` so every
+    /// attached client re-renders to match the driving client.
+    pub fn set_theme(&self, theme: Option<String>) {
+        let Some(theme) = theme else { return };
+        {
+            let mut t = self.theme.lock();
+            if t.as_deref() == Some(theme.as_str()) {
+                return;
+            }
+            *t = Some(theme.clone());
+        }
+        self.publish_event(|seq| Event::SessionThemeChanged { theme, seq });
     }
 
     /// Build the OSC 10/11 reply bytes for `kind` using the cached palette.

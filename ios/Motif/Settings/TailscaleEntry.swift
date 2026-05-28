@@ -34,7 +34,7 @@ struct TailscaleEntry: View {
     var body: some View {
         Button {
             switch appState.tailscale.state {
-            case .running:
+            case .running, .degraded:
                 showingDetails = true
             default:
                 showingSetup = true
@@ -102,6 +102,22 @@ struct TailscaleEntry: View {
                             .font(.footnote.monospaced())
                             .foregroundStyle(.secondary)
                     }
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .degraded(let reason):
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Tailscale reconnecting…").bold()
+                    Text(reason)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")

@@ -1,79 +1,69 @@
-// Per-PTY byte fanout. PtyTab attaches one listener per mount; this
-// module keeps a bounded local history so a newly-created Terminal can
-// replay bytes that arrived before mount.
+// Per-PTY byte fanout. PtyTab attaches one listener per mount; RpcClient
+// opens exactly one live /pty stream for the active terminal tab and pushes
+// bytes here. History lives on motifd now, not in the browser.
 //
 // State is module-global so it survives PtyTab unmount/remount (StrictMode
-// double-mount, tab switches via display:none don't unmount). Do not drain
-// history on attach: React dev StrictMode intentionally mounts effects twice,
-// and the first throwaway mount must not consume the PTY replay intended for
-// the real mount.
+// double-mount, tab switches via display:none don't unmount), but it only
+// stores listeners. Server catch-up is driven by RpcClient's per-PTY cursor.
 
 export type PtyDataListener = (chunk: Uint8Array) => void;
+export type PtyResetListener = () => void;
 
-const HISTORY_BYTES = 2 * 1024 * 1024;
-
-interface PtyBuf {
-  /** Recent bytes in arrival order. Replayed into newly-mounted terminals. */
-  history: Uint8Array[];
-  totalBytes: number;
-}
-
-const buffers   = new Map<string, PtyBuf>();
 const listeners = new Map<string, Set<PtyDataListener>>();
-
-function getBuf(ptyId: string): PtyBuf {
-  let b = buffers.get(ptyId);
-  if (!b) { b = { history: [], totalBytes: 0 }; buffers.set(ptyId, b); }
-  return b;
-}
-
-function remember(ptyId: string, chunk: Uint8Array): void {
-  const b = getBuf(ptyId);
-  b.history.push(chunk);
-  b.totalBytes += chunk.byteLength;
-  while (b.totalBytes > HISTORY_BYTES && b.history.length > 0) {
-    const old = b.history.shift()!;
-    b.totalBytes -= old.byteLength;
-  }
-}
+const resetListeners = new Map<string, Set<PtyResetListener>>();
 
 /** Workspace dispatcher -> for every `pty.output` event from the server. */
 export function appendOutput(ptyId: string, chunk: Uint8Array): void {
-  remember(ptyId, chunk);
   const ls = listeners.get(ptyId);
   if (ls && ls.size > 0) {
     ls.forEach(l => { try { l(chunk); } catch { /* ignore */ } });
   }
 }
 
+/** Tell attached terminals to discard their local surface. Used when the
+ *  server says the byte cursor is no longer replayable (4011/4012). */
+export function resetPty(ptyId: string): void {
+  const ls = resetListeners.get(ptyId);
+  if (ls && ls.size > 0) {
+    ls.forEach(l => { try { l(); } catch { /* ignore */ } });
+  }
+}
+
 export interface PtyAttachment {
-  /** Recent bytes that landed before this listener attached, in arrival order. */
-  initial: Uint8Array[];
   detach:  () => void;
 }
 
-/** Hook calls this on mount: returns any pre-mount bytes and starts
- *  delivering future ones to `listener`. */
-export function attachPty(ptyId: string, listener: PtyDataListener): PtyAttachment {
-  const b = getBuf(ptyId);
-  const initial = b.history.slice();
+/** Hook calls this on mount: starts delivering future bytes to `listener`. */
+export function attachPty(
+  ptyId: string,
+  listener: PtyDataListener,
+  onReset?: PtyResetListener,
+): PtyAttachment {
   let ls = listeners.get(ptyId);
   if (!ls) { ls = new Set(); listeners.set(ptyId, ls); }
   ls.add(listener);
+  let rs: Set<PtyResetListener> | undefined;
+  if (onReset) {
+    rs = resetListeners.get(ptyId);
+    if (!rs) { rs = new Set(); resetListeners.set(ptyId, rs); }
+    rs.add(onReset);
+  }
   return {
-    initial,
-    detach: () => { ls!.delete(listener); }
+    detach: () => {
+      ls!.delete(listener);
+      if (onReset) rs!.delete(onReset);
+    }
   };
 }
 
-/** Drop a PTY's buffer + listeners (call on `pty.exited` / session detach). */
+/** Drop a PTY's listeners (call on `pty.exited` / session detach). */
 export function clearPty(ptyId: string): void {
-  buffers.delete(ptyId);
   listeners.delete(ptyId);
+  resetListeners.delete(ptyId);
 }
 
 /** Drop everything (call on session detach / logout). */
 export function clearAll(): void {
-  buffers.clear();
   listeners.clear();
+  resetListeners.clear();
 }

@@ -5,6 +5,17 @@ import Foundation
 /// motif-proto and motif-server) so we can `JSONDecoder` straight off the
 /// wire without custom keys.
 enum MotifProto {
+    // MARK: - Identity
+
+    struct PingInfo: Codable, Sendable, Hashable {
+        var service: String
+        var version: String
+
+        var isMotifServer: Bool {
+            service == "motif-server"
+        }
+    }
+
     // MARK: - Sessions
 
     struct SessionInfo: Codable, Identifiable, Hashable, Sendable {
@@ -46,6 +57,9 @@ enum MotifProto {
         var last_seq: UInt64?
         var term_fg: String?
         var term_bg: String?
+        /// Resolved light/dark theme ("light"/"dark"). The focused/driving
+        /// client's value becomes the session-wide theme.
+        var theme: String?
     }
 
     struct SessionAttachResult: Codable {
@@ -56,10 +70,24 @@ enum MotifProto {
         var views: [ViewInfo]?
         var active_view: String?
         var last_seq: UInt64?
+        /// Session-wide effective theme to adopt for rendering, if any.
+        var theme: String?
     }
 
     struct SessionDestroyParams: Codable {
         var name: String
+    }
+
+    /// Update the cached terminal palette mid-session without re-attaching.
+    /// Sent when the user changes the terminal theme so OSC 10/11 queries from
+    /// programs started afterwards reflect the new colours. `nil` fields are
+    /// omitted (synthesized `encodeIfPresent`) and leave that side untouched.
+    struct SessionSetPaletteParams: Codable {
+        var term_fg: String?
+        var term_bg: String?
+        /// Resolved light/dark theme ("light"/"dark"); when changed the server
+        /// broadcasts `session.theme_changed` so all clients re-render.
+        var theme: String?
     }
 
     // MARK: - PTYs
@@ -441,6 +469,11 @@ enum MotifProto {
 
     struct ViewMovedEvent: Decodable {
         var order: [String]
+        var seq: UInt64?
+    }
+
+    struct SessionThemeChangedEvent: Decodable {
+        var theme: String
         var seq: UInt64?
     }
 

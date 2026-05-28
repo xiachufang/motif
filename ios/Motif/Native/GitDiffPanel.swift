@@ -1,5 +1,4 @@
 import SwiftUI
-import TalkerMacro
 import OSLog
 
 /// Git-diff page. Mirrors web/src/tabs/DiffTab.tsx in spirit:
@@ -10,9 +9,9 @@ import OSLog
 ///     tapping a file selects it (Single layout) or scrolls to the top
 ///   - native unified rendering, no diff2html / split view
 ///
-/// `@Routable("/diff")` makes this view reachable through CmRouter — the
-/// session-page toolbar's "diff" button calls `GitDiffPanel.route(...)`
-/// and `router.push`es the result.
+/// Reachable through CmRouter as `/diff` — the session-page toolbar's
+/// "diff" button calls `GitDiffPanel.route(...)` and `router.push`es the
+/// result.
 struct GitDiffPanel: View {
     @Environment(MotifClient.self) private var motif
 
@@ -40,10 +39,25 @@ struct GitDiffPanel: View {
     enum FileListMode: String { case list, tree }
     enum Layout: String, Hashable { case all, byfile }
 
-    @Routable("/diff")
     init(name: String, cwd: String? = nil) {
         self.sessionName = name
         self.cwd = cwd
+    }
+
+    static var path: String { "/diff" }
+
+    init?(_ data: [String: String]) {
+        guard let name = data["name"] else { return nil }
+        self.init(name: name, cwd: data["cwd"])
+    }
+
+    @MainActor
+    static func route(name: String, cwd: String? = nil) -> (String, [String: String]) {
+        var data: [String: String] = ["name": name]
+        if let cwd {
+            data["cwd"] = cwd
+        }
+        return (Self.path, data)
     }
 
     var body: some View {

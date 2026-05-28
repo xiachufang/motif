@@ -17,6 +17,11 @@ import type {
   TreeEntry, ViewId, ViewInfo,
 } from "../proto/types";
 import type { RpcClient } from "../ws/client";
+import type { ResolvedTheme, ThemeSetting } from "../appearance";
+import {
+  FONT_SIZE_MAX, FONT_SIZE_MIN,
+  loadFontSize, loadTheme, saveFontSize, saveTheme,
+} from "../appearance";
 
 export type Page =
   | { kind: "login" }
@@ -41,6 +46,12 @@ export interface AppState {
   gitFiles:      GitFile[];
   ptyInfos:      Map<string, PtyInfo>;
 
+  /** PTYs with a foreground command currently running, keyed by pty id →
+   *  command text. Driven by pty.command_started/finished shell-integration
+   *  events; only populated while shell integration is bootstrapped. Used to
+   *  warn before closing a tab whose program is still running. */
+  runningCmds:   Map<string, string>;
+
   /// Synced tabs from the server. Order matters (matches server's view list).
   views:         ViewInfo[];
   activeView:    ViewId | null;
@@ -57,10 +68,24 @@ export interface AppState {
 
   status:        string;
 
+  /** Global appearance, persisted in localStorage (not workspace state). */
+  fontSize:      number;
+  theme:         ThemeSetting;
+
+  /** Session-wide effective light/dark theme, broadcast by the server and
+   *  set by whichever client is currently driving. When non-null, the whole
+   *  UI renders in this theme (so a shared session looks identical and PTY
+   *  output colours match). `null` outside a session → fall back to the local
+   *  `theme` preference. */
+  sessionTheme:  ResolvedTheme | null;
+
   setPage:       (p: Page) => void;
   setToken:      (t: string | null) => void;
   setClient:     (c: RpcClient | null) => void;
   setStatus:     (s: string) => void;
+  setFontSize:   (n: number) => void;
+  setTheme:      (t: ThemeSetting) => void;
+  setSessionTheme: (t: ResolvedTheme | null) => void;
 
   hydrateWorkspace: (
     s: SessionInfo, me: string, others: ClientInfo[],
@@ -97,6 +122,10 @@ export interface AppState {
   updatePtyCwd:  (id: string, cwd: string) => void;
   setCurrentPath: (p: string) => void;
 
+  // ── running-command tracking (pty.command_started/finished) ──
+  ptyCommandStarted:  (id: string, text: string) => void;
+  ptyCommandFinished: (id: string) => void;
+
   clientJoined:  (c: ClientInfo) => void;
   clientLeft:    (id: string) => void;
 
@@ -105,9 +134,9 @@ export interface AppState {
 
 const initial = (): Pick<AppState,
   "page"|"token"|"client"|"session"|"myClientId"|"otherClients"|
-  "gitBranch"|"gitFiles"|"ptyInfos"|
+  "gitBranch"|"gitFiles"|"ptyInfos"|"runningCmds"|
   "views"|"activeView"|"viewCache"|
-  "currentPath"|"dirChildren"|"expandedDirs"|"status"
+  "currentPath"|"dirChildren"|"expandedDirs"|"status"|"fontSize"|"theme"|"sessionTheme"
 > => ({
   page:          { kind: "login" },
   token:         loadToken(),
@@ -118,6 +147,7 @@ const initial = (): Pick<AppState,
   gitBranch:     null,
   gitFiles:      [],
   ptyInfos:      new Map(),
+  runningCmds:   new Map(),
   views:         [],
   activeView:    null,
   viewCache:     new Map(),
@@ -125,6 +155,9 @@ const initial = (): Pick<AppState,
   dirChildren:   new Map(),
   expandedDirs:  new Set(),
   status:        "",
+  fontSize:      loadFontSize(),
+  theme:         loadTheme(),
+  sessionTheme:  null,
 });
 
 function loadToken(): string | null {
@@ -138,6 +171,13 @@ export const useApp = create<AppState>((set) => ({
   setToken:   (token) => set({ token }),
   setClient:  (client) => set({ client }),
   setStatus:  (status) => set({ status }),
+  setFontSize: (n) => {
+    const fontSize = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n)));
+    saveFontSize(fontSize);
+    set({ fontSize });
+  },
+  setTheme: (theme) => { saveTheme(theme); set({ theme }); },
+  setSessionTheme: (sessionTheme) => set({ sessionTheme }),
 
   hydrateWorkspace: (session, me, others, ptys, views, activeView, rootPath, rootEntries, git) => set(_s => {
     const dirChildren = new Map<string, TreeEntry[]>();
@@ -149,6 +189,7 @@ export const useApp = create<AppState>((set) => ({
       gitBranch:    git?.branch ?? null,
       gitFiles:     git?.files ?? [],
       ptyInfos:     new Map(ptys.map(p => [p.id, p])),
+      runningCmds:  new Map(),
       views,
       activeView,
       viewCache:    new Map(),
@@ -165,11 +206,19 @@ export const useApp = create<AppState>((set) => ({
     for (const [id, c] of s.viewCache) {
       if (viewIds.has(id)) viewCache.set(id, c);
     }
+    // Drop running-command entries for ptys that no longer exist; surviving
+    // commands will be re-confirmed by replayed command_* events.
+    const ptyIds = new Set(ptys.map(p => p.id));
+    const runningCmds = new Map<string, string>();
+    for (const [id, text] of s.runningCmds) {
+      if (ptyIds.has(id)) runningCmds.set(id, text);
+    }
     return {
       session,
       myClientId:   me,
       otherClients: others,
       ptyInfos:     new Map(ptys.map(p => [p.id, p])),
+      runningCmds,
       views,
       activeView,
       viewCache,
@@ -227,7 +276,9 @@ export const useApp = create<AppState>((set) => ({
   }),
   removePty: (id) => set(s => {
     const m = new Map(s.ptyInfos); m.delete(id);
-    return { ptyInfos: m };
+    if (!s.runningCmds.has(id)) return { ptyInfos: m };
+    const r = new Map(s.runningCmds); r.delete(id);
+    return { ptyInfos: m, runningCmds: r };
   }),
   updatePtyCwd: (id, cwd) => set(s => {
     const cur = s.ptyInfos.get(id);
@@ -237,6 +288,16 @@ export const useApp = create<AppState>((set) => ({
     return { ptyInfos: m };
   }),
   setCurrentPath: (currentPath) => set({ currentPath }),
+
+  ptyCommandStarted: (id, text) => set(s => {
+    const r = new Map(s.runningCmds); r.set(id, text);
+    return { runningCmds: r };
+  }),
+  ptyCommandFinished: (id) => set(s => {
+    if (!s.runningCmds.has(id)) return {};
+    const r = new Map(s.runningCmds); r.delete(id);
+    return { runningCmds: r };
+  }),
 
   clientJoined: (c)  => set(s => ({ otherClients: [...s.otherClients, c] })),
   clientLeft:   (id) => set(s => ({ otherClients: s.otherClients.filter(x => x.id !== id) })),

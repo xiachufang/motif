@@ -22,10 +22,8 @@ use crate::wire::Codec;
 pub struct AppState {
     pub manager: Arc<SessionManager>,
     pub auth: Arc<TokenStore>,
-    /// Registry of per-session_id ConnState. Used by HTTP /rpc and (in
-    /// later steps of the protocol redesign) by /events and /pty/<id>
-    /// WS upgrades. Empty for clients still on the legacy /ws path —
-    /// their state lives on the WS task, not here.
+    /// Registry of per-session_id ConnState. Used by HTTP /rpc and the
+    /// /events and /pty/<id> WS upgrades.
     pub conns: Arc<ConnRegistry>,
 }
 
@@ -139,6 +137,7 @@ pub fn event_tag(ev: &Event) -> &'static str {
         Event::ViewClosed { .. } => "evt:view.closed",
         Event::ViewActiveChanged { .. } => "evt:view.active_changed",
         Event::ViewMoved { .. } => "evt:view.moved",
+        Event::SessionThemeChanged { .. } => "evt:session.theme_changed",
         Event::Unknown => "evt:unknown",
     }
 }

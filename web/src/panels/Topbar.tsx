@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useApp } from "../store/store";
+import SettingsSheet from "./SettingsSheet";
 
 interface Toggle { visible: boolean; toggle: () => void }
 
@@ -14,6 +16,7 @@ export default function Topbar({ sessionName, fileTree, gitStatus, mobileDock }:
   const setPage      = useApp(s => s.setPage);
   const session      = useApp(s => s.session);
   const currentPath  = useApp(s => s.currentPath);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const fullPath = currentPath || session?.workdir || "";
 
@@ -49,8 +52,15 @@ export default function Topbar({ sessionName, fileTree, gitStatus, mobileDock }:
             label="⌨"
           />
         )}
+        <button
+          className="ghost small panel-toggle"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+          aria-label="Settings"
+        >⚙</button>
         <span className="pill">{others.length + 1} client{others.length === 0 ? "" : "s"}</span>
       </div>
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }

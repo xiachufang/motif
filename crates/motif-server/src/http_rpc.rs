@@ -157,23 +157,16 @@ async fn dispatch_concurrent_http(
     // Resolve the conn snapshot from the registry, if the client has
     // a session_id. Methods like session.list / session.create work
     // without one.
-    let snap = match header_session(headers) {
-        Some(sid) => match state.conns.get(&sid) {
-            Some(entry) => entry.state.lock().snapshot(),
-            None => {
-                return (
-                    motif_proto::envelope::Response::err(
-                        Id::Num(0),
-                        RpcError::new(
-                            ErrorCode::NotAttached,
-                            "unknown or expired session_id (re-attach required)",
-                        ),
-                    ),
-                    None,
-                    None,
-                );
-            }
-        },
+    //
+    // A present-but-unknown session_id (motifd restarted while the client
+    // still holds an old id, or the entry was GC'd) must NOT hard-fail every
+    // method: discovery calls like session.list have to keep working so the
+    // client can recover, and session.attach re-mints anyway. So an unknown
+    // id falls through to the same not-attached snapshot as a missing header;
+    // methods that actually need a session enforce it themselves via
+    // `attached(...)`, returning NotAttached against this empty snapshot.
+    let snap = match header_session(headers).and_then(|sid| state.conns.get(&sid)) {
+        Some(entry) => entry.state.lock().snapshot(),
         None => rpc::ConnSnapshot {
             client_id: String::new(),
             attached: None,

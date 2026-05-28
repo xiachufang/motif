@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 import TalkerCommonRouter
-import TalkerMacro
 
 /// Browse / create / attach to motif sessions. After attach, push the
 /// /session route so SessionView takes over.
@@ -358,17 +357,18 @@ enum SessionTab: Hashable, Identifiable {
 /// (pty / preview / diff / image), so opens and closes by any client
 /// propagate to every other.
 ///
-/// `@Routable("/session")` makes this view addressable as `/session` via
-/// CmRouter. The macro emits `SessionView.path`, `SessionView.route(name:)`
-/// for type-safe push, and a `init?(_ data: [String: String])` that
-/// `#routeViews` uses on the receiving end.
+/// Addressable as `/session` via CmRouter. `path`, `route(name:)`, and
+/// `init?(_:)` are kept local instead of using TalkerMacro so command-line
+/// simulator builds do not depend on the macro plugin process.
 struct SessionView: View {
     @Environment(MotifClient.self) private var motif
     @Environment(CmRouter.self) private var router
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var systemColorScheme
     let name: String
     @State private var error: String?
     @State private var showingTree: Bool = false
+    @State private var showingTermSettings: Bool = false
     @State private var quitConfirm: Bool = false
     /// Project the server's view list into our heterogeneous tab enum.
     /// Order matches `motif.views`, which the server keeps consistent
@@ -415,9 +415,53 @@ struct SessionView: View {
         return motif.ptys.first(where: { $0.alive ?? true })?.id
     }
 
-    @Routable("/session")
+    /// Program name running in the active PTY (e.g. "claude"), if any —
+    /// passed to the quick-command manager as a one-tap "customize" shortcut.
+    private var runningProgram: String? {
+        guard let id = activePtyID else { return nil }
+        return QuickCommandStore.programKey(motif.runningCommand[id])
+    }
+
+    /// PTY id that should receive the real-time `/pty/<id>` subscription.
+    /// Unlike `activePtyID`, this does not fall back while preview/diff/image
+    /// tabs are active; hidden terminals catch up from motifd when selected.
+    private var activeTerminalPtyID: String? {
+        if case .pty(_, let id) = activeTab { return id }
+        return nil
+    }
+
+    private var livePtyIDs: Set<String> {
+        Set(motif.ptys.map(\.id))
+    }
+
+    private var preferredPtySize: (cols: UInt16, rows: UInt16) {
+        if case .pty(_, let ptyID) = activeTab,
+           let pty = motif.ptys.first(where: { $0.id == ptyID }),
+           pty.cols > 0,
+           pty.rows > 0
+        {
+            return (pty.cols, pty.rows)
+        }
+        if let pty = motif.ptys.first(where: { ($0.alive ?? true) && $0.cols > 0 && $0.rows > 0 }) {
+            return (pty.cols, pty.rows)
+        }
+        return (80, 24)
+    }
+
     init(name: String) {
         self.name = name
+    }
+
+    static var path: String { "/session" }
+
+    init?(_ data: [String: String]) {
+        guard let name = data["name"] else { return nil }
+        self.init(name: name)
+    }
+
+    @MainActor
+    static func route(name: String) -> (String, [String: String]) {
+        (Self.path, ["name": name])
     }
 
     var body: some View {
@@ -429,11 +473,17 @@ struct SessionView: View {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
         }
-        .background(Color.black)
+        .background(Color(.systemBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomInputBar(activePtyID: activePtyID)
         }
         .task {
+            applyAppearance()
+            appState.terminals.syncRuntimes(
+                client: motif,
+                livePtyIDs: livePtyIDs,
+                activePtyID: activeTerminalPtyID
+            )
             // Auto-pick: if the server didn't seed an active view in the
             // attach response and there's no view yet, spawn a PTY (the
             // server auto-opens + activates a view for it). If there IS
@@ -449,7 +499,41 @@ struct SessionView: View {
                 }
             }
         }
+        .onChange(of: livePtyIDs) { _, ids in
+            appState.terminals.syncRuntimes(
+                client: motif,
+                livePtyIDs: ids,
+                activePtyID: activeTerminalPtyID
+            )
+        }
+        .onChange(of: activeTerminalPtyID) { _, ptyID in
+            appState.terminals.syncRuntimes(
+                client: motif,
+                livePtyIDs: livePtyIDs,
+                activePtyID: ptyID
+            )
+        }
+        .onChange(of: motif.state) { _, newState in
+            // Transparent reconnect: the auto-reattach in MotifClient.connect
+            // lands us back on `.attached` with the session view preserved.
+            // Re-open the active PTY's substream on the fresh connection so
+            // live output resumes into the surviving terminal surface.
+            if case .attached = newState {
+                appState.terminals.reactivate(activePtyID: activeTerminalPtyID)
+            }
+        }
+        .onChange(of: appState.terminalSettings.fontSize) { _, _ in applyAppearance() }
+        .onChange(of: appState.terminalSettings.theme) { _, _ in pushLocalThemeAsDriver(); applyAppearance() }
+        .onChange(of: systemColorScheme) { _, _ in pushLocalThemeAsDriver(); applyAppearance() }
+        // Adopt the session-wide theme broadcast by the driving client.
+        .onChange(of: motif.sessionTheme) { _, _ in applyAppearance() }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                // Post-attach route, so the chip is always "active" — a drop
+                // here shows the reconnect status in the nav bar instead of
+                // taking over the terminal.
+                ConnectionStatusChip(active: true)
+            }
             ToolbarItem(placement: .topBarLeading) {
                 Button {
                     quitConfirm = true
@@ -462,6 +546,13 @@ struct SessionView: View {
                     }
                 } message: {
                     Text("Are you sure to quit?")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingTermSettings = true
+                } label: {
+                    Image(systemName: "textformat.size")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -490,6 +581,9 @@ struct SessionView: View {
                     .foregroundStyle(.secondary)
                     .padding()
             }
+        }
+        .sheet(isPresented: $showingTermSettings) {
+            TerminalSettingsSheet().environment(appState)
         }
         .navigationBarBackButtonHidden(true)
     }
@@ -523,7 +617,47 @@ struct SessionView: View {
     }
 
     private func activate(_ tab: SessionTab) {
-        Task { await motif.activateView(viewID: tab.viewID) }
+        // Online: server-authoritative switch (mirrors across clients, claims
+        // PTY primary). Offline: switch locally so the user can still read
+        // other terminals' retained scrollback; reconnect reconciles.
+        if motif.isLive {
+            Task { await motif.activateView(viewID: tab.viewID) }
+        } else {
+            motif.selectViewLocally(viewID: tab.viewID)
+        }
+    }
+
+    /// The theme to RENDER: the session-wide theme when one is set (so every
+    /// client looks identical and PTY output colours match), else this device's
+    /// own preference.
+    private func effectiveThemeSetting() -> TerminalThemeSetting {
+        switch motif.sessionTheme {
+        case "light": return .light
+        case "dark":  return .dark
+        default:      return appState.terminalSettings.theme
+        }
+    }
+
+    /// Apply the effective appearance (font size + effective theme) to every
+    /// open terminal surface. Pure render — does not touch the session theme.
+    private func applyAppearance() {
+        appState.terminals.applyTerminalSettings(
+            fontSize: appState.terminalSettings.fontSize,
+            theme: effectiveThemeSetting(),
+            systemDark: systemColorScheme == .dark
+        )
+    }
+
+    /// Assert THIS device's own theme as the session-wide theme (+ OSC palette
+    /// for the shell). Called when the user toggles theme or the system
+    /// appearance flips — the focused/driving client's colours win. The server
+    /// broadcasts `session.theme_changed`, which re-renders every client. A
+    /// no-op when the local theme is unchanged.
+    private func pushLocalThemeAsDriver() {
+        let scheme = TerminalRegistry.resolveScheme(
+            appState.terminalSettings.theme, systemDark: systemColorScheme == .dark)
+        let palette = TerminalRegistry.oscPalette(for: scheme)
+        motif.setTerminalPalette(fg: palette.fg, bg: palette.bg, theme: scheme == .dark ? "dark" : "light")
     }
 
     // MARK: - Tab bar
@@ -545,7 +679,6 @@ struct SessionView: View {
             }
             .padding(8)
         }
-        .background(Color.black)
     }
 
     @ViewBuilder
@@ -577,16 +710,16 @@ struct SessionView: View {
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(isActive ? Color.white.opacity(0.15) : Color.white.opacity(0.05),
+        .background(isActive ? Color.primary.opacity(0.15) : Color.primary.opacity(0.06),
                     in: Capsule())
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
     }
 
     /// Tab label per kind. PTY label mirrors web/src/panels/TabBar.tsx
@@ -661,15 +794,16 @@ struct SessionView: View {
         // terminal view is itself a scroll view, and SwiftUI's hit-testing
         // didn't fully insulate the inactive scroll views' pan gestures
         // from the active one — typing into the active terminal worked,
-        // but two-finger scrollback didn't. Single-pane is simpler and
-        // the terminal scrollback replays instantly from MotifClient's
-        // per-PTY ring buffer on remount. The cost: PreviewPane edit
-        // buffers don't survive a tab switch — acceptable for v1; lift
-        // edit state into MotifClient when it becomes a problem.
+        // but two-finger scrollback didn't. Single-pane is simpler: each
+        // PTY runtime stays subscribed and keeps its Ghostty surface/state
+        // alive, while SwiftUI only mounts the currently visible UIView.
+        // PreviewPane edit buffers still do not survive a tab switch —
+        // acceptable for v1; lift edit state into MotifClient when it
+        // becomes a problem.
         if let active = activeTab {
             paneFor(active)
                 .id(active.viewID)
-                .background(Color.black)
+                .background(Color(.systemBackground))
         }
     }
 
@@ -707,7 +841,8 @@ struct SessionView: View {
             // Server auto-opens and activates a view for the new PTY,
             // which fans out through `view.opened` + `view.active_changed`
             // → activeTab updates without us touching state here.
-            _ = try await motif.createPty()
+            let size = preferredPtySize
+            _ = try await motif.createPty(cols: size.cols, rows: size.rows)
         } catch {
             self.error = "pty.create: \(error)"
         }
@@ -763,8 +898,8 @@ private struct DiffTabPane: View {
                 }
             }
         }
-        .foregroundStyle(.white)
-        .background(Color.black)
+        .foregroundStyle(.primary)
+        .background(Color(.systemBackground))
         .task { await load() }
         .onChange(of: motif.gitChangeTick) { _, _ in
             Task { await load() }
@@ -821,8 +956,8 @@ private struct ImageTabPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
-        .foregroundStyle(.white)
-        .background(Color.black)
+        .foregroundStyle(.primary)
+        .background(Color(.systemBackground))
         .task { await load() }
     }
 

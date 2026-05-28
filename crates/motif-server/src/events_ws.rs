@@ -141,7 +141,7 @@ async fn handle_events_socket(
 
     // Heartbeat. /events tends to be silent for long stretches so we
     // need Pings to keep NATs / proxies honest; same cadence as the
-    // legacy /ws handler.
+    // /pty/<id> handler.
     let last_recv = Arc::new(std::sync::Mutex::new(Instant::now()));
     let hb_out_tx = out_tx.clone();
     let hb_last = Arc::clone(&last_recv);

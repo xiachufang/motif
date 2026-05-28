@@ -1,23 +1,39 @@
-//! `GET /pty/<pty_id>?session=<sid>&since=<bytes>&primary=<0|1>` —
+//! `GET /pty/<pty_id>?session=<sid>&since=<bytes>` —
 //! per-PTY raw bytestream WebSocket.
 //!
-//! Replaces the `pty.output` event branch on the legacy `/ws` for the
-//! new protocol. Frames are bare master input/output bytes — no
-//! envelope, no codec negotiation, no JSON-RPC. Each PTY tab on a
-//! client opens one of these.
+//! Carries PTY output (and inbound stdin) as bare master input/output
+//! bytes — no envelope, no codec negotiation, no JSON-RPC. Each PTY tab
+//! on a client opens one of these.
 //!
 //! ## Replay semantics
 //!
 //! The Pty's byte-indexed ring (2 MB, see [`crate::pty::PtyRing`])
-//! supports `?since=N` reconnects. The handler distinguishes:
+//! supports `?since=N` reconnects. With an explicit `since=N` the handler
+//! distinguishes:
 //!
 //! - `since == total`              — no replay, just go live.
 //! - `origin <= since < total`     — replay the slice, then live.
 //! - `since < origin`              — close 4011 ("history truncated").
 //! - `since > total`               — close 4012 ("stale cursor").
 //!
-//! 4011/4012 tells the client "your scrollback is gone; reconnect
-//! without `since=` and clear the local terminal buffer".
+//! Omitting `since` is a **tail** request: the handler reads the ring's
+//! current `origin` atomically with the snapshot + live subscribe and serves
+//! `[origin, total)` then live.
+//!
+//! ## Meta frame
+//!
+//! Every (non-error) connection leads with a single WebSocket **Text** frame
+//! `{"since":<offset>}` — the absolute byte offset of the first data byte
+//! that follows (the honored `since` for a cursor connect, the resolved
+//! `origin` for a tail connect). All data frames are Binary, so the client
+//! tells them apart by frame type. The client adopts `offset` as its cursor;
+//! because it is resolved server-side at connect time it can never be stale
+//! by the time the client records it (no reconnect race), and the client
+//! resumes incrementally afterwards.
+//!
+//! 4011/4012 tells the client "your cursor is unusable; clear the local
+//! terminal buffer and reconnect *without* `since=`" — i.e. fall back to a
+//! tail request, which re-establishes an exact cursor via the meta frame.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,7 +48,7 @@ use motif_proto::common::{ClientId, PtyId};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::pty::{Pty, SinceOutcome};
+use crate::pty::{Pty, SinceOutcomeWithLive};
 use crate::session::Session;
 use crate::ws::{
     self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR, TIMING_TARGET,
@@ -44,14 +60,17 @@ const CLOSE_HISTORY_TRUNCATED: CloseCode = 4011;
 /// or the cursor is bogus).
 const CLOSE_STALE_CURSOR: CloseCode = 4012;
 
+/// Frame size for streaming the `?since=` replay. Small enough that a
+/// large scrollback renders progressively (and a mid-replay drop only
+/// loses one frame), large enough to amortize per-frame overhead.
+const REPLAY_CHUNK_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Default, Deserialize)]
 pub struct PtyQuery {
     pub session: Option<String>,
     pub token: Option<String>,
     #[serde(default)]
     pub since: Option<u64>,
-    #[serde(default)]
-    pub primary: Option<u8>,
 }
 
 pub async fn pty_upgrade(
@@ -88,11 +107,14 @@ pub async fn pty_upgrade(
     };
 
     let client_id = snap.client_id;
-    let since = q.since.unwrap_or_else(|| pty.snapshot_since_total());
-    let primary = q.primary == Some(1);
+    // `Some(n)` ⇒ client owns an absolute cursor (exact replay/truncate
+    // handling, pure-binary stream). `None` ⇒ "tail" request: serve the
+    // current ring atomically and hand back the resolved start offset in a
+    // leading Text meta frame. See `handle_pty_socket`.
+    let since = q.since;
 
     ws.on_upgrade(move |socket| {
-        handle_pty_socket(socket, session, pty, client_id, pty_id, since, primary, peer)
+        handle_pty_socket(socket, session, pty, client_id, pty_id, since, peer)
     })
 }
 
@@ -102,8 +124,7 @@ async fn handle_pty_socket(
     pty: Arc<Pty>,
     client_id: ClientId,
     pty_id: PtyId,
-    since: u64,
-    request_primary: bool,
+    since: Option<u64>,
     peer: PeerAddr,
 ) {
     tracing::info!(
@@ -111,86 +132,98 @@ async fn handle_pty_socket(
         client_id = %client_id,
         session   = %session.name,
         pty_id    = %pty_id,
-        since,
-        request_primary,
+        since     = ?since,
         "pty ws connected",
     );
 
-    // Apply primary request before subscribing — if a resize event
-    // ends up being emitted as a result, the new subscriber catches
-    // it on /events, not here.
-    if request_primary {
-        if let Some((cols, rows)) = pty.mark_primary(client_id.clone()) {
-            let pty_id_for_event = pty_id.clone();
-            session.publish_event(|seq| motif_proto::event::Event::PtyResize {
-                pty_id: pty_id_for_event,
-                cols,
-                rows,
-                seq,
-            });
-        }
-    }
+    // /pty is pure transport: it never claims primary. Primary ownership is
+    // driven entirely by view.open / view.activate (a client re-asserts its
+    // active view on focus/foreground). See `rpc::mark_pty_primary`.
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
 
     // ─ Replay or close-with-truncate ─
     // Server doesn't track per-client byte cursors — the client owns
-    // that state (passes its own `since=` on reconnect). The local
-    // `total` from the snapshot lives only long enough to log.
-    match pty.snapshot_since(since) {
-        SinceOutcome::Truncated { ring_origin, total } => {
-            tracing::info!(client_id = %client_id, pty_id = %pty_id, since, ring_origin, total, "pty replay truncated; closing 4011");
-            let _ = ws_tx
-                .send(Message::Close(Some(CloseFrame {
-                    code: CLOSE_HISTORY_TRUNCATED,
-                    reason: "history truncated".into(),
-                })))
-                .await;
-            return;
+    // that state (passes its own `since=` on reconnect). Replay lookup
+    // and live subscribe happen under the Pty state lock so bytes cannot
+    // fall between the two phases.
+    // `start` is the absolute byte offset of the first byte that follows the
+    // meta frame; the client adopts it as its cursor.
+    let (start, replay, mut output_rx) = match since {
+        // ── Exact cursor (`?since=N`) ──
+        Some(since) => match pty.subscribe_since(since) {
+            SinceOutcomeWithLive::Truncated { ring_origin, total } => {
+                tracing::info!(client_id = %client_id, pty_id = %pty_id, since, ring_origin, total, "pty replay truncated; closing 4011");
+                let _ = ws_tx
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CLOSE_HISTORY_TRUNCATED,
+                        reason: "history truncated".into(),
+                    })))
+                    .await;
+                return;
+            }
+            SinceOutcomeWithLive::Stale { total } => {
+                tracing::info!(client_id = %client_id, pty_id = %pty_id, since, total, "pty stale cursor; closing 4012");
+                let _ = ws_tx
+                    .send(Message::Close(Some(CloseFrame {
+                        code: CLOSE_STALE_CURSOR,
+                        reason: "stale cursor".into(),
+                    })))
+                    .await;
+                return;
+            }
+            // `since` is honored exactly (origin ≤ since ≤ total), so the
+            // first byte we serve sits at `since`.
+            SinceOutcomeWithLive::UpToDate { rx, .. } => (since, Vec::new(), rx),
+            SinceOutcomeWithLive::Replay { replay, rx, .. } => (since, replay, rx),
+        },
+        // ── Tail (`since` omitted) ──
+        // Resolve the start offset atomically with the snapshot + live
+        // subscribe so the client adopts an exact cursor without a
+        // stale-origin reconnect race.
+        None => {
+            let tail = pty.subscribe_tail();
+            (tail.start, tail.replay, tail.rx)
         }
-        SinceOutcome::Stale { total } => {
-            tracing::info!(client_id = %client_id, pty_id = %pty_id, since, total, "pty stale cursor; closing 4012");
-            let _ = ws_tx
-                .send(Message::Close(Some(CloseFrame {
-                    code: CLOSE_STALE_CURSOR,
-                    reason: "stale cursor".into(),
-                })))
-                .await;
-            return;
-        }
-        SinceOutcome::UpToDate { .. } => {}
-        SinceOutcome::Replay { replay, total } => {
-            // Send the snapshot in one binary frame. Sub-MB pushes
-            // fit comfortably; if a future ring is larger, swap to
-            // chunking here without changing the protocol.
-            let size = replay.len();
-            let _ = ws_tx.send(Message::Binary(replay.into())).await;
-            tracing::debug!(
-                target: TIMING_TARGET,
-                client_id = %client_id,
-                tag       = "pty.replay",
-                size,
-                total,
-                channel   = "pty",
-                pty_id    = %pty_id,
-                "tx",
-            );
-        }
+    };
+
+    // Lead with a Text meta frame announcing the absolute offset of the bytes
+    // that follow. Sent on every (non-error) connection so the client never
+    // has to guess where its cursor should sit; all data frames are Binary.
+    let meta = format!("{{\"since\":{start}}}");
+    if ws_tx.send(Message::Text(meta.into())).await.is_err() {
+        return;
     }
 
-    // Now subscribe to live output. Done AFTER replay snapshot so we
-    // don't double-deliver bytes that landed in the ring between
-    // snapshot and subscribe — broadcast channel only delivers bytes
-    // sent after subscribe() returns.
-    //
-    // NOTE: there's still a small race where the reader thread pushed
-    // bytes between snapshot's lock-release and broadcast::subscribe,
-    // and the snapshot already covered them. We'd then duplicate.
-    // For new protocol clients this is harmless (terminal emulators
-    // are byte-stream tolerant); a future tighten could grab both
-    // under a single critical section.
-    let mut output_rx = pty.subscribe_output();
+    // Stream the snapshot as bounded frames instead of one giant Binary
+    // message. URLSession (and most WS clients) only surface a frame once it
+    // is *fully* received, so a single multi-MB replay leaves the terminal
+    // blank until the whole ring arrives — painfully visible on a cold /
+    // DERP-relayed tailnet path. Chunking renders progressively and lets the
+    // client advance its byte cursor per frame, so a mid-replay drop resumes
+    // from where it left off instead of refetching the whole ring.
+    if !replay.is_empty() {
+        let size = replay.len();
+        for chunk in replay.chunks(REPLAY_CHUNK_BYTES) {
+            if ws_tx
+                .send(Message::Binary(chunk.to_vec().into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        tracing::debug!(
+            target: TIMING_TARGET,
+            client_id = %client_id,
+            tag       = "pty.replay",
+            size,
+            channel   = "pty",
+            pty_id    = %pty_id,
+            "tx",
+        );
+    }
 
     // ─ Writer task ─
     let writer_client_id = client_id.clone();
@@ -291,10 +324,9 @@ async fn handle_pty_socket(
     });
 
     // ─ Read loop ─
-    // Inbound binary frames are raw stdin bytes for the master.
-    // First write also lazy-marks this client as primary, mirroring
-    // the legacy `mark_pty_primary` behavior on `pty.write`.
-    let mut is_primary = request_primary;
+    // Inbound binary frames are raw stdin bytes for the master — this is the
+    // only PTY write path. Writing never claims primary (see the transport
+    // note above).
     while let Some(item) = ws_rx.next().await {
         let msg = match item {
             Ok(m) => m,
@@ -306,18 +338,6 @@ async fn handle_pty_socket(
         *last_recv.lock().unwrap() = Instant::now();
         match msg {
             Message::Binary(b) => {
-                if !is_primary {
-                    if let Some((cols, rows)) = pty.mark_primary(client_id.clone()) {
-                        let pty_id_for_event = pty_id.clone();
-                        session.publish_event(|seq| motif_proto::event::Event::PtyResize {
-                            pty_id: pty_id_for_event,
-                            cols,
-                            rows,
-                            seq,
-                        });
-                    }
-                    is_primary = true;
-                }
                 if let Err(e) = pty.write_bytes(&b) {
                     tracing::warn!(pty_id = %pty_id, "pty write: {e}");
                 }

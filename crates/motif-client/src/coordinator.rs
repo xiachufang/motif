@@ -22,7 +22,8 @@
 //! - `session.attach`     → HttpRpc::attach + spin up EventsClient + open one PtyClient per PTY in result
 //! - `session.detach`     → HttpRpc::detach + tear down events + per-pty
 //! - `pty.write`          → forward bytes to that PTY's stdin channel (NOT an HTTP call)
-//! - `pty.create`         → HttpRpc; on success, open PtyClient (primary=1)
+//! - `pty.create`         → HttpRpc; on success, open a PtyClient (the spawner
+//!                          is the PTY's initial primary, server-side)
 //! - `pty.kill`           → HttpRpc; close the PtyClient afterwards
 //! - everything else      → HttpRpc::call passthrough
 
@@ -191,7 +192,7 @@ impl Coordinator {
         if let Some(ptys) = attach_value.get("ptys").and_then(|v| v.as_array()) {
             for p in ptys {
                 if let Some(pty_id) = p.get("id").and_then(|v| v.as_str()) {
-                    let _ = self.open_pty(pty_id.to_string(), false).await;
+                    let _ = self.open_pty(pty_id.to_string()).await;
                 }
             }
         }
@@ -248,7 +249,7 @@ impl Coordinator {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         if let Some(pid) = pty_id {
-            let _ = self.open_pty(pid, true).await;
+            let _ = self.open_pty(pid).await;
         }
         serde_json::from_value(result_value).map_err(|e| anyhow!("decode pty.create result: {e}"))
     }
@@ -331,10 +332,10 @@ impl Coordinator {
                 return Ok(());
             }
         }
-        self.open_pty(pty_id.to_string(), false).await
+        self.open_pty(pty_id.to_string()).await
     }
 
-    async fn open_pty(&self, pty_id: PtyId, primary: bool) -> Result<()> {
+    async fn open_pty(&self, pty_id: PtyId) -> Result<()> {
         let session_id = self
             .rpc
             .session_id()
@@ -346,7 +347,6 @@ impl Coordinator {
             &session_id,
             &pty_id,
             0,
-            primary,
             stream,
         )
         .await?;
@@ -372,7 +372,6 @@ impl Coordinator {
         &self,
         pty_id: &str,
         since: u64,
-        primary: bool,
         stream: S,
     ) -> Result<PtyClient>
     where
@@ -388,7 +387,6 @@ impl Coordinator {
             &session_id,
             pty_id,
             since,
-            primary,
             stream,
         )
         .await

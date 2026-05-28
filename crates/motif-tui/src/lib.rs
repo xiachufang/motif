@@ -116,6 +116,7 @@ pub async fn cmd_pty_run(
                 last_seq: None,
                 term_fg,
                 term_bg,
+                theme: None,
             },
         )
         .await?;
@@ -179,6 +180,7 @@ pub async fn cmd_attach_log(
                 last_seq: None,
                 term_fg,
                 term_bg,
+                theme: None,
             },
         )
         .await?;

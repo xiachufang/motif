@@ -1,6 +1,5 @@
 import SwiftUI
 import TalkerCommonRouter
-import TalkerMacro
 
 /// Top-level native router after a server is configured. Owns the
 /// MotifClient lifecycle: connect → list/attach a session → present the
@@ -20,13 +19,15 @@ struct NativeRoot: View {
     /// Failed-connect counter feeding the backoff schedule. Resets on a
     /// successful `.connected`/`.attached` or on a connectKey change.
     @State private var retryAttempt: Int = 0
-
-    /// Generates `view(_ path: String, query: [String: String]) -> some View`
-    /// at compile time: a switch on `SessionView.path` that calls the
-    /// `init?(_:)` peer the `@Routable` macro added on each registered
-    /// view. Adding a new destination = adding a `@Routable("/x")` view
-    /// here, no manual switch maintenance.
-    #routeViews(SessionView.self, GitDiffPanel.self)
+    /// Whether the *current server* has connected at least once. Gates two
+    /// things: (1) auto-retry — on first launch a blind retry would hide the
+    /// real failure page behind "Connecting…"; (2) the full-screen overlay —
+    /// once we've shown the terminal, a later drop must NOT take over the
+    /// screen (status moves to the nav-bar chip and content stays usable).
+    /// Reset only when the server identity changes — deliberately NOT on a
+    /// Tailscale flap (which re-keys `connectKey`), so a tsnet drop after a
+    /// successful connect doesn't resurrect the takeover.
+    @State private var hasConnectedThisServer: Bool = false
 
     /// Re-key the connection .task whenever the active server changes,
     /// its kind flips, OR tsnet flips to .running. The tsnet flag matters
@@ -58,8 +59,28 @@ struct NativeRoot: View {
     /// Single gate consumed by both the view switch and the connect task.
     private var blocked: Bool { requiresTailscale && !isTailscaleRunning }
 
+    /// Drive the whole native UI's light/dark appearance from the terminal
+    /// theme setting so the chrome matches the terminal surface. `.system`
+    /// returns nil → follow iOS.
+    private var terminalPreferredScheme: ColorScheme? {
+        // Inside a session, follow the session-wide theme so the chrome matches
+        // every other client (and the terminal surface); otherwise this
+        // device's own preference.
+        switch appState.motif.sessionTheme {
+        case "light": return .light
+        case "dark":  return .dark
+        default:      break
+        }
+        switch appState.terminalSettings.theme {
+        case .light:  return .light
+        case .dark:   return .dark
+        case .system: return nil
+        }
+    }
+
     var body: some View {
         routerView
+            .preferredColorScheme(terminalPreferredScheme)
             .task(id: connectKey) {
                 // A connectKey change means the prereqs for "who/how we
                 // dial" have shifted (server swap, kind flip, tsnet flip).
@@ -70,10 +91,21 @@ struct NativeRoot: View {
                 retryAttempt = 0
                 guard !blocked else { return }
                 guard let server = appState.servers.activeServer else { return }
-                await motif.connect(server: server, tailscale: appState.tailscale)
+                // connectKey changed ⇒ the dial prerequisites moved (server
+                // swap, kind flip, or a tsnet up/down that may have rotated
+                // the loopback proxy port). Force a fresh dial so we don't
+                // keep using a stale URLSession that a `.connected` guard
+                // would otherwise preserve.
+                await motif.connect(server: server, tailscale: appState.tailscale, force: true)
             }
             .onChange(of: motif.state) { _, newState in
                 onStateChange(newState)
+            }
+            .onChange(of: appState.servers.activeServer?.id) { _, _ in
+                // A genuinely different server — forget that we've ever
+                // connected so its first connect shows the full-screen
+                // setup/failure flow again.
+                hasConnectedThisServer = false
             }
     }
 
@@ -86,11 +118,13 @@ struct NativeRoot: View {
     private func onStateChange(_ s: MotifClient.State) {
         switch s {
         case .connected, .attached:
+            hasConnectedThisServer = true
             retryTask?.cancel()
             retryTask = nil
             retryAttempt = 0
         case .failed:
             guard !blocked else { return }
+            guard hasConnectedThisServer else { return }
             scheduleRetry()
         case .connecting, .disconnected:
             break
@@ -144,6 +178,30 @@ struct NativeRoot: View {
         }
     }
 
+    @ViewBuilder
+    private func view(_ path: String, query: [String: String]) -> some View {
+        switch path {
+        case SessionView.path:
+            if let v = SessionView(query) {
+                v
+            } else {
+                routeNotFound(path, query: query)
+            }
+        case GitDiffPanel.path:
+            if let v = GitDiffPanel(query) {
+                v
+            } else {
+                routeNotFound(path, query: query)
+            }
+        default:
+            routeNotFound(path, query: query)
+        }
+    }
+
+    private func routeNotFound(_ path: String, query: [String: String]) -> some View {
+        Text(verbatim: "Not found: \(path), \(query). Did you forget to register the View.")
+    }
+
     /// Connection status painted on top of the root SessionListView. The
     /// nav-bar toolbar (server picker + info) is rendered by the
     /// navigation stack and is NOT covered by this overlay, so the user
@@ -154,7 +212,13 @@ struct NativeRoot: View {
     /// scary "Connection failed".
     @ViewBuilder
     private var rootConnectionOverlay: some View {
-        if blocked {
+        if hasConnectedThisServer {
+            // We've shown the terminal at least once on this server. A later
+            // drop (WS death or Tailscale flap) must NOT take over the screen
+            // — keep the session list / terminal visible and interactive, and
+            // let `ConnectionStatusChip` in the nav bar carry the status.
+            EmptyView()
+        } else if blocked {
             connectionOverlayContainer {
                 VStack(spacing: 12) {
                     ProgressView()
@@ -177,13 +241,20 @@ struct NativeRoot: View {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 32))
                             .foregroundStyle(.yellow)
-                        Text("Connection failed").font(.headline)
+                        Text("Can’t connect to motifd").font(.headline)
                         Text(m)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 32)
-                        Button("Retry") { triggerRetry() }
+                        HStack(spacing: 12) {
+                            Button("Retry now") { triggerRetry() }
+                                .buttonStyle(.borderedProminent)
+                            Button("Server settings") {
+                                appState.isShowingConnection = true
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                 }
             case .connected, .attached:
@@ -207,6 +278,7 @@ struct NativeRoot: View {
         case .starting:          return "joining tailnet…"
         case .needsAuth:         return "needs login (open Settings)"
         case .running:           return ""
+        case .degraded(let r):   return "reconnecting… (\(r))"
         case .failed(let m):     return m
         }
     }
@@ -241,6 +313,9 @@ struct NativeRoot: View {
     @ToolbarContentBuilder
     private func rootToolbar() -> some ToolbarContent {
         principalServerButton()
+        ToolbarItem(placement: .topBarTrailing) {
+            ConnectionStatusChip(active: hasConnectedThisServer)
+        }
         infoButton()
     }
 
@@ -302,6 +377,48 @@ final class AttachDetachDelegate: CmRouterDelegateProtocol {
         // routes are no-ops at the connection level.
         if path.path == "/session" {
             Task { await motif.detach() }
+        }
+    }
+}
+
+/// Compact nav-bar status pill shown while reconnecting, replacing the old
+/// full-screen takeover. Hidden when the link is healthy. `active` gates it
+/// to the post-first-connect phase — before that the full-screen overlay
+/// owns the status, so the chip stays out of the way.
+struct ConnectionStatusChip: View {
+    let active: Bool
+    @Environment(MotifClient.self) private var motif
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        if active, let status = statusText {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(status).font(.caption2.weight(.medium))
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.orange.opacity(0.18)))
+            .foregroundStyle(.orange)
+            .accessibilityLabel(status)
+        }
+    }
+
+    /// nil ⇒ healthy ⇒ chip hidden. Tailscale prerequisite takes precedence
+    /// for `.tailscale` servers since a dead tailnet is *why* motifd is
+    /// unreachable.
+    private var statusText: String? {
+        if appState.servers.activeServer?.kind == .tailscale {
+            switch appState.tailscale.state {
+            case .running:             break
+            case .degraded, .starting: return "Tailscale…"
+            case .needsAuth:           return "Tailscale login"
+            case .stopped, .failed:    return "Tailscale off"
+            }
+        }
+        switch motif.state {
+        case .connected, .attached, .disconnected: return nil
+        case .connecting, .failed:                 return "Reconnecting…"
         }
     }
 }

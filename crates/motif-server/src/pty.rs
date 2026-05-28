@@ -4,7 +4,7 @@
 //!   - the master pty handle (for resize)
 //!   - a writer (sync; clients call `pty.write` rarely enough that brief lock
 //!     contention is fine)
-//!   - a 1MB ring buffer of recent stdout bytes for replay on attach
+//!   - a 2MB ring buffer of recent stdout bytes for replay on attach
 //!   - per-client (cols, rows) preferences. The master follows the
 //!     currently-active client's size: `primary` is set on creation, on
 //!     `pty.write`, and on `view.activate`, so whoever is most recently
@@ -66,9 +66,8 @@ pub struct Pty {
     pub(crate) state: Mutex<PtyState>,
     /// Fan-out of every master-output chunk to currently-attached
     /// `/pty/<id>` WS subscribers. Each subscriber gets its own
-    /// receiver via [`Pty::subscribe_output`]. The Sender lives as
-    /// long as the Pty; closing the Pty drops it, signalling EOF to
-    /// receivers.
+    /// receiver via [`Pty::subscribe_since`]. The Sender lives as long
+    /// as the Pty; closing the Pty drops it, signalling EOF to receivers.
     output_tx: broadcast::Sender<Bytes>,
     /// v2 shell-integration. `Some` when motifd injected a bootstrap
     /// script; the contained tmpdir lives as long as the Pty does, so
@@ -111,8 +110,8 @@ impl PtyRing {
     }
 }
 
-/// Result of `Pty::snapshot_since` — what the /pty/<id> handler needs
-/// to decide between replay-then-live, live-only, or close-with-code.
+/// Result of `Pty::snapshot_since` — the replay-only form of a
+/// byte-indexed ring query.
 pub enum SinceOutcome {
     /// Client is up to date; nothing to replay.
     UpToDate { total: u64 },
@@ -125,6 +124,42 @@ pub enum SinceOutcome {
     /// Client's `since` is newer than `total` — server restarted or
     /// the client is lying. Handler should close with 4012.
     Stale { total: u64 },
+}
+
+/// Result of `Pty::subscribe_since` — same replay decision as
+/// [`SinceOutcome`], plus the live receiver for valid cursors.
+pub enum SinceOutcomeWithLive {
+    /// Client is up to date; nothing to replay.
+    UpToDate {
+        total: u64,
+        rx: broadcast::Receiver<Bytes>,
+    },
+    /// Replay these bytes then go live. `replay` is contiguous from
+    /// `since` to `total`.
+    Replay {
+        replay: Vec<u8>,
+        total: u64,
+        rx: broadcast::Receiver<Bytes>,
+    },
+    /// Client's `since` is older than the ring's `origin` — history
+    /// has been overwritten. Handler should close with 4011.
+    Truncated { ring_origin: u64, total: u64 },
+    /// Client's `since` is newer than `total` — server restarted or
+    /// the client is lying. Handler should close with 4012.
+    Stale { total: u64 },
+}
+
+/// Result of `Pty::subscribe_tail` — a `since`-less connect that takes
+/// whatever scrollback the ring currently holds, then goes live.
+pub struct TailOutcome {
+    /// Absolute byte index of the first replayed byte (the current ring
+    /// `origin`). The client adopts this as its resume cursor; once it has
+    /// consumed `replay` the cursor equals `total`.
+    pub start: u64,
+    /// The ring's current contents — `[start, total)`. Empty when the
+    /// master hasn't produced anything yet.
+    pub replay: Vec<u8>,
+    pub rx: broadcast::Receiver<Bytes>,
 }
 
 pub(crate) struct PtyState {
@@ -159,14 +194,6 @@ impl Pty {
         }
     }
 
-    /// Returns a snapshot of the ring buffer for replay on attach.
-    /// (Legacy /ws path uses this; new /pty/<id> path goes through
-    /// `snapshot_since` for byte-indexed replay.)
-    pub fn ring_snapshot(&self) -> Vec<u8> {
-        let s = self.state.lock();
-        s.ring.bytes.iter().copied().collect()
-    }
-
     /// Byte-indexed replay query for the new `/pty/<id>?since=N` path.
     /// See [`SinceOutcome`] for the four cases the handler distinguishes.
     pub fn snapshot_since(&self, since: u64) -> SinceOutcome {
@@ -190,19 +217,59 @@ impl Pty {
         SinceOutcome::Replay { replay, total }
     }
 
-    /// Subscribe to live master output. Each `/pty/<id>` WS handler
-    /// takes one of these and forwards binary frames to its client.
-    /// Receiver dropped when the WS closes — no GC needed on the Pty.
-    pub fn subscribe_output(&self) -> broadcast::Receiver<Bytes> {
-        self.output_tx.subscribe()
+    /// Atomically combine byte-indexed replay lookup and live
+    /// subscription for `/pty/<id>?since=N`.
+    ///
+    /// The PTY reader appends to the ring and broadcasts while holding
+    /// the same state lock, so a handler that creates its receiver here
+    /// cannot miss bytes between replay and live forwarding.
+    pub fn subscribe_since(&self, since: u64) -> SinceOutcomeWithLive {
+        let s = self.state.lock();
+        let total = s.ring.total();
+        let origin = s.ring.origin;
+        if since > total {
+            return SinceOutcomeWithLive::Stale { total };
+        }
+        if since < origin {
+            return SinceOutcomeWithLive::Truncated {
+                ring_origin: origin,
+                total,
+            };
+        }
+        if since == total {
+            return SinceOutcomeWithLive::UpToDate {
+                total,
+                rx: self.output_tx.subscribe(),
+            };
+        }
+        let skip = (since - origin) as usize;
+        let replay: Vec<u8> = s.ring.bytes.iter().skip(skip).copied().collect();
+        SinceOutcomeWithLive::Replay {
+            replay,
+            total,
+            rx: self.output_tx.subscribe(),
+        }
     }
 
-    /// Cheap helper for callers that just want the absolute byte
-    /// index of "next byte the master will produce". Used by
-    /// `/pty/<id>` connect-without-`since` to set the live cursor
-    /// without taking a slice.
-    pub fn snapshot_since_total(&self) -> u64 {
-        self.state.lock().ring.total()
+    /// Atomic "tail" subscribe for a `/pty/<id>` connect that omits
+    /// `since`: replay whatever the ring currently holds, then go live.
+    ///
+    /// Unlike a two-step "read origin, then `subscribe_since(origin)`",
+    /// the start offset, replay slice, and live receiver are all taken
+    /// under the same state lock — and `publish_output` appends + broadcasts
+    /// under that same lock — so fast output cannot roll the ring between
+    /// resolving the offset and subscribing. The caller reports `start` to
+    /// the client (leading meta frame) as its resume cursor; because it was
+    /// read here, it can never be stale by the time the client records it.
+    pub fn subscribe_tail(&self) -> TailOutcome {
+        let s = self.state.lock();
+        let start = s.ring.origin;
+        let replay: Vec<u8> = s.ring.bytes.iter().copied().collect();
+        TailOutcome {
+            start,
+            replay,
+            rx: self.output_tx.subscribe(),
+        }
     }
 
     pub fn write_bytes(&self, data: &[u8]) -> std::io::Result<()> {
@@ -255,19 +322,13 @@ impl Pty {
     pub fn is_alive(&self) -> bool {
         self.state.lock().alive
     }
-}
 
-/// Three-segment view of a finalized block. Retained as a type so any
-/// remaining references compile until block-history tracking moves to
-/// clients in Phase 5b.
-#[allow(dead_code)]
-pub struct BlockSegments {
-    pub prompt: Vec<u8>,
-    pub prompt_truncated: bool,
-    pub command: Vec<u8>,
-    pub command_truncated: bool,
-    pub output: Vec<u8>,
-    pub output_truncated: bool,
+    fn publish_output(&self, data: &[u8]) {
+        let bytes = Bytes::copy_from_slice(data);
+        let mut s = self.state.lock();
+        s.ring.append(data);
+        let _ = self.output_tx.send(bytes);
+    }
 }
 
 /// Pick the master size: the currently-active client's reported size, or
@@ -547,11 +608,7 @@ fn reader_loop(
                                 // OSC; clients do it themselves off the
                                 // /pty/<id> stream. Pass the raw bytes
                                 // through so client-side parsers see them.
-                                {
-                                    let mut s = pty.state.lock();
-                                    s.ring.append(&raw);
-                                }
-                                let _ = pty.output_tx.send(Bytes::copy_from_slice(&raw));
+                                pty.publish_output(&raw);
                             } else {
                                 // Capability query — write canonical or
                                 // client-palette response back to the
@@ -569,17 +626,13 @@ fn reader_loop(
                             }
                         }
                         ScanItem::Bytes(bytes) => {
-                            {
-                                let mut s = pty.state.lock();
-                                s.ring.append(&bytes);
-                            }
                             // New protocol fan-out. Cheap-clone via Bytes;
                             // broadcast::Sender drops the frame for any
                             // subscriber that's > PTY_BROADCAST_CAPACITY
                             // frames behind. Slow subscribers get a
                             // `Lagged` on `recv()` and the WS handler
                             // closes them with a truncate code.
-                            let _ = pty.output_tx.send(Bytes::copy_from_slice(&bytes));
+                            pty.publish_output(&bytes);
                         }
                     }
                 }
@@ -643,4 +696,174 @@ pub enum PtyError {
     OpenFailed(String),
     #[error("pty spawn failed: {0}")]
     SpawnFailed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use tokio::sync::broadcast::error::TryRecvError;
+
+    struct NoopMasterPty;
+
+    impl MasterPty for NoopMasterPty {
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+        }
+
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Ok(Box::new(Cursor::new(Vec::<u8>::new())))
+        }
+
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::sink()))
+        }
+
+        #[cfg(unix)]
+        fn process_group_leader(&self) -> Option<libc::pid_t> {
+            None
+        }
+
+        #[cfg(unix)]
+        fn as_raw_fd(&self) -> Option<portable_pty::unix::RawFd> {
+            None
+        }
+
+        #[cfg(unix)]
+        fn tty_name(&self) -> Option<PathBuf> {
+            None
+        }
+    }
+
+    fn test_pty() -> Pty {
+        let (output_tx, _) = broadcast::channel::<Bytes>(PTY_BROADCAST_CAPACITY);
+        Pty {
+            id: "test-pty".into(),
+            cmd: "/bin/sh".into(),
+            cwd: PathBuf::from("/tmp"),
+            created_at: 0,
+            pid: None,
+            master: Mutex::new(Box::new(NoopMasterPty) as Box<dyn MasterPty + Send>),
+            writer: Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>),
+            killer: Mutex::new(None),
+            state: Mutex::new(PtyState {
+                cols: 80,
+                rows: 24,
+                sizes: HashMap::new(),
+                primary: None,
+                alive: true,
+                ring: PtyRing::new(),
+            }),
+            output_tx,
+            _bootstrap: None,
+        }
+    }
+
+    #[test]
+    fn subscribe_since_up_to_date_receives_future_output() {
+        let pty = test_pty();
+        pty.publish_output(b"abc");
+
+        let mut rx = match pty.subscribe_since(3) {
+            SinceOutcomeWithLive::UpToDate { total, rx } => {
+                assert_eq!(total, 3);
+                rx
+            }
+            other => panic!("expected UpToDate, got {}", outcome_name(&other)),
+        };
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        pty.publish_output(b"d");
+        let got = rx.try_recv().unwrap();
+        assert_eq!(&got[..], b"d");
+    }
+
+    #[test]
+    fn subscribe_since_replays_tail_and_receives_future_once() {
+        let pty = test_pty();
+        pty.publish_output(b"abcdef");
+
+        let mut rx = match pty.subscribe_since(2) {
+            SinceOutcomeWithLive::Replay { replay, total, rx } => {
+                assert_eq!(replay.as_slice(), b"cdef");
+                assert_eq!(total, 6);
+                rx
+            }
+            other => panic!("expected Replay, got {}", outcome_name(&other)),
+        };
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        pty.publish_output(b"gh");
+        let got = rx.try_recv().unwrap();
+        assert_eq!(&got[..], b"gh");
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn subscribe_since_reports_truncated_cursor() {
+        let pty = test_pty();
+        {
+            let mut s = pty.state.lock();
+            s.ring.origin = 5;
+            s.ring.bytes.extend(b"abc");
+        }
+
+        match pty.subscribe_since(4) {
+            SinceOutcomeWithLive::Truncated { ring_origin, total } => {
+                assert_eq!(ring_origin, 5);
+                assert_eq!(total, 8);
+            }
+            other => panic!("expected Truncated, got {}", outcome_name(&other)),
+        }
+    }
+
+    #[test]
+    fn subscribe_since_reports_stale_cursor() {
+        let pty = test_pty();
+        pty.publish_output(b"abc");
+
+        match pty.subscribe_since(4) {
+            SinceOutcomeWithLive::Stale { total } => assert_eq!(total, 3),
+            other => panic!("expected Stale, got {}", outcome_name(&other)),
+        }
+    }
+
+    #[test]
+    fn subscribe_since_preserves_replay_live_boundary() {
+        let pty = test_pty();
+        pty.publish_output(b"before");
+
+        let (replay, mut rx) = match pty.subscribe_since(0) {
+            SinceOutcomeWithLive::Replay { replay, total, rx } => {
+                assert_eq!(total, 6);
+                (replay, rx)
+            }
+            other => panic!("expected Replay, got {}", outcome_name(&other)),
+        };
+        assert_eq!(replay.as_slice(), b"before");
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+
+        pty.publish_output(b"after");
+        let got = rx.try_recv().unwrap();
+        assert_eq!(&got[..], b"after");
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    fn outcome_name(outcome: &SinceOutcomeWithLive) -> &'static str {
+        match outcome {
+            SinceOutcomeWithLive::UpToDate { .. } => "UpToDate",
+            SinceOutcomeWithLive::Replay { .. } => "Replay",
+            SinceOutcomeWithLive::Truncated { .. } => "Truncated",
+            SinceOutcomeWithLive::Stale { .. } => "Stale",
+        }
+    }
 }

@@ -15,6 +15,7 @@ import { parseUnifiedDiff, type FileDiff, type FileStatus } from "./diffParse";
 import Resizer from "../panels/Resizer";
 import { useDragSize } from "../hooks/useDragSize";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useEffectiveTheme } from "../hooks/useResolvedTheme";
 
 interface Props { patch: string }
 
@@ -500,6 +501,7 @@ const FileBlock = memo(function FileBlock({ file, format, collapsible }: FileBlo
   const [open, setOpen] = useState(true);
   const ref = useRef<HTMLDivElement | null>(null);
   const badge = STATUS_BADGE[file.status];
+  const resolvedTheme = useEffectiveTheme();
 
   // Use layout effect so the diff html is in the DOM before paint, avoiding
   // a flash of empty content when toggling format/file.
@@ -523,11 +525,11 @@ const FileBlock = memo(function FileBlock({ file, format, collapsible }: FileBlo
       matching:     "lines",
       outputFormat: format,
       // diff2html has its own dark/light styles toggled by attribute. The
-      // class is added on the wrapper element it renders.
-      colorScheme:  "dark" as never,
+      // class is added on the wrapper element it renders; follow our theme.
+      colorScheme:  resolvedTheme as never,
     } as never);
     ref.current.innerHTML = out;
-  }, [file.patch, file.isBinary, file.status, format, open]);
+  }, [file.patch, file.isBinary, file.status, format, open, resolvedTheme]);
 
   return (
     <section className={"diff-file-block st-" + file.status}>

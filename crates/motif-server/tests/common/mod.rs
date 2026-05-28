@@ -56,12 +56,27 @@ impl TestServer {
             conns: motif_server::conn_registry::ConnRegistry::new(),
         };
         let app = motif_server::ws::router(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind 127.0.0.1:0");
-        let addr = listener.local_addr().expect("local_addr");
+        // Serve through motif-net's Listener (like motifd does) so the
+        // `into_make_service_with_connect_info::<PeerAddr>()` connect-info is
+        // injected — handlers extract `ConnectInfo<PeerAddr>` and a plain
+        // `axum::serve(TcpListener, app)` would 500 with "missing extension".
+        let listener = motif_net::Listener::bind(&motif_net::ListenConfig {
+            tcp: Some("127.0.0.1:0".parse().expect("parse loopback addr")),
+            tailscale: None,
+        })
+        .await
+        .expect("bind 127.0.0.1:0");
+        let addr: SocketAddr = listener
+            .bound_addrs()
+            .iter()
+            .find_map(|s| s.strip_prefix("tcp://").and_then(|a| a.parse().ok()))
+            .expect("resolve bound tcp addr");
         let shutdown = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<motif_net::PeerAddr>(),
+            )
+            .await;
         });
         Self {
             addr,
@@ -231,6 +246,7 @@ impl TestClient {
             last_seq: Some(0),
             term_fg: None,
             term_bg: None,
+            theme: None,
         };
         let (status, headers, body) = http_request(
             server.addr,
@@ -379,18 +395,10 @@ impl TestClient {
     }
 
     /// Open a `/pty/<id>` WebSocket for this client's session.
-    pub async fn open_pty_ws(
-        &self,
-        pty_id: &str,
-        since: Option<u64>,
-        primary: bool,
-    ) -> Result<PtyWs> {
+    pub async fn open_pty_ws(&self, pty_id: &str, since: Option<u64>) -> Result<PtyWs> {
         let mut q = format!("session={}", self.session_id);
         if let Some(s) = since {
             q.push_str(&format!("&since={s}"));
-        }
-        if primary {
-            q.push_str("&primary=1");
         }
         let url = format!("ws://{}/pty/{pty_id}?{q}", self.addr);
         let mut req = url.into_client_request().context("build pty ws request")?;
@@ -466,6 +474,17 @@ impl PtyWs {
             timeout_total,
             String::from_utf8_lossy(&buf),
         );
+    }
+
+    /// Send raw input bytes to the PTY as a binary frame — the same path
+    /// the web/iOS clients use for keystrokes now that the HTTP `pty.write`
+    /// fallback is gone.
+    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+        use futures_util::SinkExt;
+        self.ws
+            .send(Message::Binary(Bytes::copy_from_slice(data)))
+            .await?;
+        Ok(())
     }
 }
 
@@ -543,6 +562,7 @@ fn dummy_attach_result() -> ses::AttachResult {
         views: vec![],
         active_view: None,
         last_seq: 0,
+        theme: None,
     }
 }
 

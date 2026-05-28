@@ -1,5 +1,5 @@
 // New-protocol web client. fetch() for /rpc/<method>, WebSocket for
-// /events, one WebSocket per open PTY for /pty/<id>. Synthesizes legacy
+// /events, one active WebSocket for /pty/<id>. Synthesizes legacy
 // `pty.output` events from per-PTY byte streams so existing consumers
 // (Workspace.tsx and friends) don't need rewires beyond the new
 // connect API.
@@ -52,11 +52,17 @@ export class RpcClient {
   private sessionID: string | null = null;
   private eventsWs: WebSocket | null = null;
   private ptyWs   = new Map<string, WebSocket>();
-  /// Per-PTY shell-integration parser. Drives block-state machine
-  /// off shell-integration OSC markers in the /pty/<id> byte stream and
-  /// emits the same shape of structured notifications the server
-  /// used to push.
+  // Per-PTY absolute byte cursor. History lives on motifd; when a tab becomes
+  // active we reconnect `/pty/<id>?since=<cursor>` and motifd replays the
+  // missed bytes before switching to live. A PTY with *no* cursor entry has
+  // never synced (fresh, or its cursor rolled off motifd's ring): we then
+  // connect *without* `since` — a "tail" request. Either way motifd's leading
+  // Text meta frame hands us the offset to adopt. See `applyPtyMeta`.
+  private ptyCursor = new Map<string, number>();
+  // Per-PTY shell-integration parser. This survives inactive-tab WS closes so
+  // replay bytes continue the parser state at the same byte cursor.
   private ptyShell = new Map<string, ShellState>();
+  private activePtyID: string | null = null;
   private handlers = new Set<EventHandler>();
   private closed = false;
   private reconnectDelay = RECONNECT_MIN_MS;
@@ -128,16 +134,17 @@ export class RpcClient {
     return this.serializeAttach(async () => {
       const { body, sessionID } = await this.httpCallRaw("session.attach", params);
       if (!sessionID) throw new Error("attach: server didn't return X-Motif-Session");
-      this.sessionID = sessionID;
       const result = body ? JSON.parse(new TextDecoder().decode(body)) : null;
       const lastSeq = (result && typeof result === "object" && "last_seq" in result) ? Number(result.last_seq) || 0 : 0;
+      const prevSessionID = this.sessionID;
+      this.sessionID = sessionID;
+      const sessionIDChanged = Boolean(prevSessionID && prevSessionID !== sessionID);
+      if (sessionIDChanged) {
+        this.closeAllPtyConnections(false);
+      }
       await this.openEvents(lastSeq);
-      const ptys = (result && typeof result === "object" && Array.isArray((result as Record<string, unknown>).ptys))
-        ? ((result as Record<string, unknown>).ptys as Array<Record<string, unknown>>)
-        : [];
-      for (const p of ptys) {
-        const pid = typeof p.id === "string" ? p.id : null;
-        if (pid) await this.openPty(pid, /*primary=*/false);
+      if (this.activePtyID && !this.hasOpenPty(this.activePtyID)) {
+        await this.openPty(this.activePtyID);
       }
       return result as T;
     });
@@ -156,7 +163,6 @@ export class RpcClient {
     const pid  = typeof params.pty_id === "string" ? params.pty_id : "";
     const dataField = params.data ?? params.data_b64;
     if (!pid) throw new Error("pty.write: missing pty_id");
-    await this.ensurePtyOpen(pid);
     let bytes: Uint8Array;
     if (typeof dataField === "string") {
       // already base64 (legacy path)
@@ -171,27 +177,27 @@ export class RpcClient {
       throw new Error("pty.write: data/data_b64 must be string|number[]|Uint8Array");
     }
     const ws = this.ptyWs.get(pid);
-    if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error(`pty.write: WS not open for ${pid}`);
-    // Forward a fresh ArrayBuffer slice; ws.send wants ArrayBuffer-y
-    // shapes and the TS types don't accept a Uint8Array view of
-    // SharedArrayBuffer without a copy.
-    ws.send(bytes.slice().buffer);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Forward a fresh ArrayBuffer slice; ws.send wants ArrayBuffer-y
+      // shapes and the TS types don't accept a Uint8Array view of
+      // SharedArrayBuffer without a copy.
+      ws.send(bytes.slice().buffer);
+    }
+    // No fallback: writes only target the active PTY, whose /pty stream is
+    // open. A keystroke arriving in the sub-frame window before the stream
+    // connects is dropped rather than routed over a separate HTTP call.
     return ({} as T);
   }
 
   private async doPtyCreate<T>(params: Record<string, unknown>): Promise<T> {
     const body = await this.httpCall<Record<string, unknown>>("pty.create", params);
-    const info = (body && typeof body === "object" && (body as Record<string, unknown>).info) as Record<string, unknown> | undefined;
-    const pid  = info && typeof info.id === "string" ? info.id : null;
-    if (pid) await this.openPty(pid, /*primary=*/true);
     return body as T;
   }
 
   private async doPtyKill<T>(params: Record<string, unknown>): Promise<T> {
     const pid = typeof params.pty_id === "string" ? params.pty_id : "";
     const body = await this.httpCall<T>("pty.kill", params);
-    const ws = this.ptyWs.get(pid);
-    if (ws) { try { ws.close(); } catch {} this.ptyWs.delete(pid); }
+    this.closePtyConnection(pid, true);
     return body;
   }
 
@@ -298,17 +304,34 @@ export class RpcClient {
 
   // ─────────────────────────── /pty/<id> ───────────────────────────
 
-  private async ensurePtyOpen(pid: string): Promise<void> {
-    if (this.ptyWs.has(pid)) return;
-    await this.openPty(pid, /*primary=*/false);
+  async activatePtyStream(pid: string): Promise<void> {
+    if (this.closed) return;
+    if (this.activePtyID !== pid) {
+      this.activePtyID = pid;
+      for (const id of Array.from(this.ptyWs.keys())) {
+        if (id !== pid) this.closePtyConnection(id, false);
+      }
+    }
+    await this.openPty(pid);
   }
 
-  private async openPty(pid: string, primary: boolean): Promise<void> {
+  deactivatePtyStream(pid: string): void {
+    if (this.activePtyID === pid) this.activePtyID = null;
+    this.closePtyConnection(pid, false);
+  }
+
+  private async openPty(pid: string): Promise<void> {
+    if (!this.sessionID) throw new Error("pty stream: not attached");
+    if (this.hasOpenPty(pid)) return;
+    const sessionID = this.sessionID;
+    // No cursor for this PTY ⇒ "tail" request: omit `since`. With a cursor we
+    // resume exactly from it. Either way motifd's first frame is a Text meta
+    // frame carrying the absolute offset of the bytes that follow.
+    const haveCursor = this.ptyCursor.has(pid);
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const url = new URL(`${proto}://${location.host}/pty/${encodeURIComponent(pid)}`);
-    url.searchParams.set("session", this.sessionID ?? "");
-    url.searchParams.set("since", "0");
-    url.searchParams.set("primary", primary ? "1" : "0");
+    url.searchParams.set("session", sessionID);
+    if (haveCursor) url.searchParams.set("since", String(this.ptyCursor.get(pid)!));
     if (this.token) url.searchParams.set("token", this.token);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -316,6 +339,10 @@ export class RpcClient {
       ws.addEventListener("open",  () => res(),                                              { once: true });
       ws.addEventListener("error", () => rej(new Error(`/pty/${pid} open failed`)),          { once: true });
     });
+    if (this.closed || this.sessionID !== sessionID || this.activePtyID !== pid) {
+      try { ws.close(); } catch { /* ignore */ }
+      return;
+    }
     // Swap-then-close. The displaced socket's handlers compare the map entry
     // against their own captured `ws` and bail when displaced — so its late
     // ring-replay frames (and live bytes already in flight) don't get fed
@@ -326,14 +353,21 @@ export class RpcClient {
     // into xterm — the visible "lss" + duplicated prompts symptom.
     const prev = this.ptyWs.get(pid);
     this.ptyWs.set(pid, ws);
-    this.ptyShell.set(pid, new ShellState());
+    if (!this.ptyShell.has(pid)) this.ptyShell.set(pid, new ShellState());
+    // Every /pty connection leads with a Text meta frame: consume it once to
+    // (re)seed the cursor, then treat everything as data bytes.
+    let awaitingMeta = true;
     ws.addEventListener("message", e => {
       if (this.ptyWs.get(pid) !== ws) return;
+      if (awaitingMeta) {
+        awaitingMeta = false;
+        if (typeof e.data === "string") { this.applyPtyMeta(pid, e.data); return; }
+      }
       this.onPtyMessage(pid, e.data);
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", e => {
       if (this.ptyWs.get(pid) !== ws) return;
-      this.handlePtyClose(pid);
+      this.handlePtyClose(pid, e);
     });
     if (prev) { try { prev.close(); } catch { /* ignore */ } }
   }
@@ -347,6 +381,11 @@ export class RpcClient {
     } else {
       return;
     }
+    // Advance only a cursor the meta frame already seeded — never fabricate a
+    // 0-based one, or a dropped/oversized meta frame would leave us resuming
+    // from a bogus offset and looping on 4011.
+    const cur = this.ptyCursor.get(pid);
+    if (cur !== undefined) this.ptyCursor.set(pid, cur + bytes.byteLength);
     const shell = this.ptyShell.get(pid);
     if (!shell) return;
     const { passthrough, events } = shell.feed(bytes);
@@ -369,7 +408,28 @@ export class RpcClient {
     }
   }
 
-  private handlePtyClose(pid: string) {
+  private handlePtyClose(pid: string, ev: CloseEvent) {
+    this.ptyWs.delete(pid);
+    if (ev.code === 4011 || ev.code === 4012) {
+      // Our byte cursor rolled off motifd's ring (4011) or is ahead of it
+      // (4012). Drop the cursor so the reconnect is a tail request — motifd's
+      // meta frame re-establishes an exact one — discard the now-misaligned
+      // local surface, and reconnect.
+      this.ptyCursor.delete(pid);
+      this.ptyShell.set(pid, new ShellState());
+      this.handlers.forEach(h => h({
+        method: "pty.reset",
+        params: { pty_id: pid },
+      } as unknown as Event));
+      if (!this.closed && this.activePtyID === pid) {
+        window.setTimeout(() => {
+          if (!this.closed && this.activePtyID === pid) {
+            this.openPty(pid).catch(() => {});
+          }
+        }, 250);
+      }
+      return;
+    }
     const shell = this.ptyShell.get(pid);
     if (shell) {
       const tail = shell.onClose();
@@ -378,13 +438,50 @@ export class RpcClient {
         this.handlers.forEach(h => h(wire));
       }
     }
-    this.ptyShell.delete(pid);
-    this.ptyWs.delete(pid);
-    const ev = {
+    const closedEvent = {
       method: "pty.ws.closed",
       params: { pty_id: pid },
     } as unknown as Event;
-    this.handlers.forEach(h => h(ev));
+    this.handlers.forEach(h => h(closedEvent));
+  }
+
+  /** Parse the leading Text meta frame motifd sends on every /pty connection
+   *  (`{"since":<offset>}`) and adopt the offset as the absolute byte cursor.
+   *  From here the cursor is exact, so later reconnects resume incrementally
+   *  with `?since=<cursor>` instead of re-fetching the whole ring. */
+  private applyPtyMeta(pid: string, raw: string): void {
+    try {
+      const meta = JSON.parse(raw) as { since?: number };
+      if (typeof meta.since === "number" && Number.isSafeInteger(meta.since)) {
+        this.ptyCursor.set(pid, meta.since);
+      }
+    } catch { /* ignore malformed meta */ }
+  }
+
+  private closePtyConnection(pid: string, removeState: boolean): void {
+    const ws = this.ptyWs.get(pid);
+    this.ptyWs.delete(pid);
+    try { ws?.close(); } catch { /* ignore */ }
+    if (removeState) {
+      this.ptyCursor.delete(pid);
+      this.ptyShell.delete(pid);
+      if (this.activePtyID === pid) this.activePtyID = null;
+    }
+  }
+
+  private closeAllPtyConnections(removeState: boolean): void {
+    for (const pid of Array.from(this.ptyWs.keys())) {
+      this.closePtyConnection(pid, removeState);
+    }
+    if (removeState) {
+      this.ptyCursor.clear();
+      this.ptyShell.clear();
+      this.activePtyID = null;
+    }
+  }
+
+  private hasOpenPty(pid: string): boolean {
+    return this.ptyWs.get(pid)?.readyState === WebSocket.OPEN;
   }
 
   private tearDownEventsAndPty() {
@@ -394,12 +491,9 @@ export class RpcClient {
     // succeed unconditionally — the close is intentional and must not
     // schedule a reconnect or emit a stale pty.ws.closed event.
     const eventsWs = this.eventsWs;
-    const ptyWses = Array.from(this.ptyWs.values());
     this.eventsWs = null;
-    this.ptyWs.clear();
-    this.ptyShell.clear();
+    this.closeAllPtyConnections(true);
     try { eventsWs?.close(); } catch { /* ignore */ }
-    for (const ws of ptyWses) { try { ws.close(); } catch { /* ignore */ } }
   }
 }
 

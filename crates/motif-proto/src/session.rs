@@ -68,6 +68,12 @@ pub struct AttachParams {
     /// `term_fg`. Used to answer OSC 11 queries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_bg: Option<String>,
+    /// Optional: the client's resolved light/dark theme (`"light"` / `"dark"`).
+    /// Drives the session-wide UI theme: the focused/foreground client's value
+    /// becomes the session theme and is broadcast so every client renders the
+    /// same way. `None` leaves the session theme untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +85,35 @@ pub struct AttachResult {
     pub views: Vec<ViewInfo>,
     pub active_view: Option<ViewId>,
     pub last_seq: Seq,
+    /// The session's current effective light/dark theme, if any client has
+    /// reported one. The attaching client adopts this for rendering (then
+    /// re-asserts its own when it becomes the focused driver).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
+
+// ────────────────────────────────────────────────────── session.set_palette
+
+/// Update the cached terminal palette mid-session, without re-attaching.
+/// Sent by clients when the user changes their light/dark theme while
+/// attached so subsequent OSC 10/11 queries reflect the new colours.
+/// Same encoding as `AttachParams::term_fg` / `term_bg`; `None` leaves
+/// that side untouched.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SetPaletteParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term_fg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term_bg: Option<String>,
+    /// Resolved light/dark theme (`"light"` / `"dark"`). When present and
+    /// changed, the server broadcasts `session.theme_changed` so all clients
+    /// re-render. `None` leaves the session theme untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SetPaletteResult {}
 
 // ────────────────────────────────────────────────────── session.detach
 

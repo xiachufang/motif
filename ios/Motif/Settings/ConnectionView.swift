@@ -92,10 +92,12 @@ struct ConnectionView: View {
 // MARK: - Server list row + edit sheet
 
 struct ServerRow: View {
+    @Environment(AppState.self) private var appState
     let server: MotifServer
     let isActive: Bool
     let onTap: () -> Void
     let onEdit: () -> Void
+    @State private var pingIndicator: ServerPingIndicator = .idle
 
     var body: some View {
         Button(action: onTap) {
@@ -115,9 +117,14 @@ struct ServerRow: View {
                         Text(server.name)
                             .foregroundStyle(.primary)
                     }
-                    Text(server.endpoint)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text(server.endpoint)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if server.kind == .tailscale {
+                            ServerPingBadge(indicator: pingIndicator)
+                        }
+                    }
                 }
                 Spacer()
                 Button { onEdit() } label: {
@@ -129,6 +136,139 @@ struct ServerRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .task(id: serverPingTaskKey) {
+            await refreshPingIndicator()
+        }
+    }
+
+    private var serverPingTaskKey: String {
+        "\(server.id.uuidString)|\(server.host)|\(server.port)|\(server.kind.rawValue)|\(tailscaleReady ? "up" : "down")"
+    }
+
+    private var tailscaleReady: Bool {
+        if case .running = appState.tailscale.state { return true }
+        return false
+    }
+
+    private func refreshPingIndicator() async {
+        guard server.kind == .tailscale else {
+            pingIndicator = .notApplicable
+            return
+        }
+        guard tailscaleReady else {
+            pingIndicator = .unavailable(message: "Tailscale off")
+            return
+        }
+
+        pingIndicator = .checking
+        let result = await appState.tailscale.pingMotifServer(host: server.host, port: server.port)
+        guard !Task.isCancelled else { return }
+        pingIndicator = ServerPingIndicator(result)
+    }
+}
+
+private enum ServerPingIndicator: Equatable {
+    case idle
+    case checking
+    case reachable(version: String)
+    case unreachable(message: String)
+    case unavailable(message: String)
+    case notApplicable
+
+    init(_ result: TailscaleManager.MotifPingResult) {
+        switch result {
+        case .reachable(let version):
+            self = .reachable(version: version)
+        case .unreachable(let message):
+            self = .unreachable(message: message)
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .idle, .checking:
+            return "Checking"
+        case .reachable:
+            return "Reachable"
+        case .unreachable:
+            return "No ping"
+        case .unavailable(let message):
+            return message
+        case .notApplicable:
+            return ""
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .reachable:
+            return "checkmark.circle.fill"
+        case .unreachable:
+            return "xmark.circle.fill"
+        case .unavailable:
+            return "minus.circle.fill"
+        case .idle, .checking, .notApplicable:
+            return "circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .reachable:
+            return .green
+        case .unreachable:
+            return .red
+        case .unavailable:
+            return .secondary
+        case .idle, .checking, .notApplicable:
+            return .secondary
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case .reachable(let version):
+            return "motifd \(version)"
+        case .unreachable(let message):
+            return message
+        default:
+            return label
+        }
+    }
+}
+
+private struct ServerPingBadge: View {
+    let indicator: ServerPingIndicator
+
+    var body: some View {
+        if indicator != .notApplicable {
+            HStack(spacing: 4) {
+                if indicator == .checking || indicator == .idle {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: indicator.systemImage)
+                        .font(.caption2)
+                }
+                Text(indicator.label)
+                    .lineLimit(1)
+            }
+            .font(.caption2)
+            .foregroundStyle(indicator.tint)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Tailscale ping")
+            .accessibilityValue(indicator.accessibilityValue)
+        }
+    }
+}
+
+private struct ServerPingDot: View {
+    let indicator: ServerPingIndicator
+
+    var body: some View {
+        Circle()
+            .fill(indicator.tint)
+            .frame(width: 8, height: 8)
+        .accessibilityHidden(true)
     }
 }
 
@@ -158,6 +298,7 @@ struct ServerEditSheet: View {
     @State private var discovered: [TailscaleManager.DiscoveredPeer] = []
     @State private var discoveryState: DiscoveryState = .idle
     @State private var showAllPeers: Bool = false
+    @State private var peerPing: [String: ServerPingIndicator] = [:]
 
     enum DiscoveryState: Equatable {
         case idle
@@ -218,6 +359,9 @@ struct ServerEditSheet: View {
             .task(id: isNew) {
                 if isNew { await loadDiscovery() }
             }
+            .task(id: discoveryPingKey) {
+                await refreshVisiblePeerPings()
+            }
         }
     }
 
@@ -225,6 +369,18 @@ struct ServerEditSheet: View {
     /// expanded to all peers when the user flips the toggle.
     private var visiblePeers: [TailscaleManager.DiscoveredPeer] {
         showAllPeers ? discovered : discovered.filter { $0.isLikelyMotifd }
+    }
+
+    private var discoveryPingKey: String {
+        guard isNew && kind == .tailscale else { return "off" }
+        let ids = visiblePeers.map(\.id).joined(separator: "|")
+        let ts = tailscaleReady ? "up" : "down"
+        return "\(ids)|\(portText)|\(showAllPeers)|\(ts)"
+    }
+
+    private var tailscaleReady: Bool {
+        if case .running = appState.tailscale.state { return true }
+        return false
     }
 
     @ViewBuilder
@@ -257,9 +413,7 @@ struct ServerEditSheet: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
-                                        Image(systemName: peer.isOnline ? "circle.fill" : "circle")
-                                            .font(.system(size: 8))
-                                            .foregroundStyle(peer.isOnline ? .green : .secondary)
+                                        ServerPingDot(indicator: peerPing[peer.id] ?? .idle)
                                         Text(peer.hostname).foregroundStyle(.primary)
                                         if peer.isLikelyMotifd {
                                             Text("motifd")
@@ -268,6 +422,7 @@ struct ServerEditSheet: View {
                                                 .padding(.vertical, 2)
                                                 .background(.tint.opacity(0.18), in: Capsule())
                                         }
+                                        ServerPingBadge(indicator: peerPing[peer.id] ?? .idle)
                                     }
                                     Text(peer.preferredAddress)
                                         .font(.footnote)
@@ -325,7 +480,32 @@ struct ServerEditSheet: View {
         }
         let peers = await appState.tailscale.discoverPeers()
         discovered = peers
+        peerPing = [:]
         discoveryState = .loaded(count: peers.count)
+        await refreshVisiblePeerPings()
+    }
+
+    private func refreshVisiblePeerPings() async {
+        guard isNew && kind == .tailscale else { return }
+        guard case .loaded = discoveryState else { return }
+        let peers = visiblePeers
+        guard !peers.isEmpty else { return }
+        guard tailscaleReady else {
+            for peer in peers {
+                peerPing[peer.id] = .unavailable(message: "Tailscale off")
+            }
+            return
+        }
+        guard let port = UInt16(portText) else { return }
+
+        for peer in peers {
+            peerPing[peer.id] = .checking
+        }
+        for peer in peers {
+            let result = await appState.tailscale.pingMotifServer(host: peer.preferredAddress, port: port)
+            guard !Task.isCancelled else { return }
+            peerPing[peer.id] = ServerPingIndicator(result)
+        }
     }
 
     private var isNew: Bool {
@@ -384,6 +564,9 @@ struct TailscaleStatusRow: View {
                 LabeledContent("Status", value: "Connected")
                 if let v4 { LabeledContent("IPv4", value: v4) }
                 if let v6 { LabeledContent("IPv6", value: v6) }
+            case .degraded(let reason):
+                LabeledContent("Status", value: "Reconnecting…").foregroundStyle(.orange)
+                Text(reason).font(.footnote).foregroundStyle(.secondary)
             case .failed(let m):
                 LabeledContent("Status", value: "Failed").foregroundStyle(.red)
                 Text(m).font(.footnote).foregroundStyle(.secondary)
@@ -391,4 +574,3 @@ struct TailscaleStatusRow: View {
         }
     }
 }
-

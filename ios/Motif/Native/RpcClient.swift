@@ -9,20 +9,20 @@ import TalkerCommonSync
 /// beyond the connect path:
 ///
 ///   - `connect(urlSession:host:port:token:delegate:)` — opens HTTP +
-///      /events WS. PTY WSes are opened lazily on attach response /
-///      pty.create.
+///      /events WS. PTY WSes are opened only for the active terminal tab.
 ///   - `call<P, R>(method:params:as:)` — same shape as before.
 ///   - `events: AsyncStream<Event>` — receives both /events frames AND
 ///      synthesized `pty.output` events from per-PTY WSes.
 ///   - `close()` — tears down everything.
 ///
 /// Routing rules (mirror the Rust Coordinator):
-///   - `session.attach` → HTTP POST; on success, store session_id, open
-///      /events, open one /pty/<id> per attached PTY.
+///   - `session.attach` → HTTP POST; on success, store session_id and open
+///      /events. The visible terminal runtime opens `/pty/<id>` on demand.
 ///   - `session.detach` → close PTY WSes + events WS, then HTTP POST.
-///   - `pty.write`      → bytes pushed to the matching PTY's stdin
-///      channel (NOT an HTTP call).
-///   - `pty.create`     → HTTP POST; on success, open /pty/<id> as primary.
+///   - `pty.write`      → bytes pushed to the active PTY WS as a binary frame.
+///      Writes only target the active PTY, whose stream is open.
+///   - `pty.create`     → HTTP POST; the server's view.active_changed event
+///      will cause the visible terminal runtime to open `/pty/<id>`.
 ///   - `pty.kill`       → HTTP POST; afterwards close the PTY WS.
 ///   - everything else  → HTTP POST passthrough.
 
@@ -180,16 +180,24 @@ actor RpcClient {
     private var eventsHeartbeat: Task<Void, Never>?
     private var eventsLastRecv:  Date = Date()
 
-    /// Per-PTY connection state. Lazily filled when MotifClient
-    /// observes a PTY (attach response or pty.created).
+    /// Per-PTY stream state. The byte cursor and shell parser survive
+    /// disconnecting an inactive tab so the next active subscribe can
+    /// catch up with `/pty/<id>?since=<cursor>`.
     private struct PtyChannel {
-        var task:        URLSessionWebSocketTask
-        var recvTask:    Task<Void, Never>
-        var heartbeat:   Task<Void, Never>
-        var lastRecv:    Date
-        var shell:       ShellState
+        var task:        URLSessionWebSocketTask?
+        var recvTask:    Task<Void, Never>?
+        var heartbeat:   Task<Void, Never>?
+        var lastRecv:    Date = Date()
+        var shell:       ShellState = ShellState()
+        var cursor:      UInt64 = 0
+        /// Every `/pty/<id>` connection leads with a Text meta frame
+        /// (`{"since":<offset>}`). Reset true on each (re)open; the recv loop
+        /// consumes the first frame to (re)seed `cursor` instead of rendering
+        /// it as terminal bytes.
+        var awaitingMeta: Bool = true
     }
     private var ptys: [String: PtyChannel] = [:]
+    private var activePtyID: String?
 
     private var eventContinuation: AsyncStream<Event>.Continuation?
     let events: AsyncStream<Event>
@@ -218,17 +226,50 @@ actor RpcClient {
         FileLog.note("RpcClient", "connect target=\(host):\(port) tokenLen=\(token.count)")
     }
 
+    /// GET /ping — unauthenticated motif-server identity probe.
+    func ping() async throws -> MotifProto.PingInfo {
+        guard let urlSession else { throw RpcError.notConnected }
+        guard let url = URL(string: "http://\(host):\(port)/ping") else {
+            throw RpcError.transport("bad ping url")
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 8
+
+        let proxyCount = urlSession.configuration.proxyConfigurations.count
+        log.info("ping.send url=\(url.absoluteString, privacy: .public) proxyCount=\(proxyCount, privacy: .public)")
+        FileLog.note("RpcClient", "ping.send url=\(url.absoluteString) proxyCount=\(proxyCount)")
+
+        let start = Date()
+        let (data, response) = try await urlSession.data(for: req)
+        let elapsed = Date().timeIntervalSince(start) * 1000
+        guard let http = response as? HTTPURLResponse else {
+            throw RpcError.transport("ping: non-HTTP response")
+        }
+        log.info("ping.done status=\(http.statusCode, privacy: .public) resp_size=\(data.count, privacy: .public) total_ms=\(elapsed, privacy: .public)")
+        FileLog.note("RpcClient", "ping.done status=\(http.statusCode) resp=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
+
+        guard (200...299).contains(http.statusCode) else {
+            throw RpcError.transport("ping HTTP \(http.statusCode)")
+        }
+        do {
+            return try JSONDecoder().decode(MotifProto.PingInfo.self, from: data)
+        } catch {
+            throw RpcError.decode("ping response: \(error)")
+        }
+    }
+
     func close() {
         log.notice("rpc closing")
         eventsRecvTask?.cancel();  eventsRecvTask  = nil
         eventsHeartbeat?.cancel(); eventsHeartbeat = nil
         eventsTask?.cancel(with: .goingAway, reason: nil); eventsTask = nil
-        for (_, ch) in ptys {
-            ch.recvTask.cancel()
-            ch.heartbeat.cancel()
-            ch.task.cancel(with: .goingAway, reason: nil)
+        for ptyID in Array(ptys.keys) {
+            closePtyConnection(ptyID: ptyID, removeState: true)
         }
         ptys.removeAll()
+        activePtyID = nil
         sessionID = nil
         eventContinuation?.finish()
         eventContinuation = nil
@@ -280,26 +321,18 @@ actor RpcClient {
         let since = (lastSeq?["last_seq"] as? UInt64) ?? 0
         try await openEvents(since: since)
 
-        // Open one /pty/<id> for every PTY already in the session.
-        if let dict = (try? JSONSerialization.jsonObject(with: body) as? [String: Any]),
-           let ptyList = dict["ptys"] as? [[String: Any]] {
-            for p in ptyList {
-                if let pid = p["id"] as? String {
-                    try? await openPty(ptyID: pid, primary: false)
-                }
-            }
-        }
         return body
     }
 
     private func doDetach() async throws -> Data {
-        // Tear down per-pty + events first so the server-side primary
-        // bookkeeping clears as the WSes close.
-        for (_, ch) in ptys {
-            ch.recvTask.cancel(); ch.heartbeat.cancel()
-            ch.task.cancel(with: .goingAway, reason: nil)
+        // Tear down per-pty + events WSes before the HTTP detach so we leave
+        // cleanly; the server clears this client's primary/size bookkeeping in
+        // detach_client (driven by session.detach / the events WS closing).
+        for ptyID in Array(ptys.keys) {
+            closePtyConnection(ptyID: ptyID, removeState: true)
         }
         ptys.removeAll()
+        activePtyID = nil
         eventsRecvTask?.cancel();  eventsRecvTask  = nil
         eventsHeartbeat?.cancel(); eventsHeartbeat = nil
         eventsTask?.cancel(with: .goingAway, reason: nil); eventsTask = nil
@@ -309,10 +342,12 @@ actor RpcClient {
     }
 
     private func doPtyWrite<P: Encodable>(params: P) async throws -> Data {
-        // Decode params to extract pty_id + data, route bytes to that
-        // PTY's WS instead of doing an HTTP call. The wire field is
-        // `data_b64` — `PtyWriteParams` uses a CodingKey to rename
-        // `data` on encode, so JSONSerialization sees `data_b64` here.
+        // Decode params to extract pty_id + data, then send over the PTY's
+        // WS as a binary frame — the only write path. Writes only target the
+        // active PTY, whose stream is open; a write arriving before the stream
+        // connects is dropped. The wire field is `data_b64` — `PtyWriteParams`
+        // uses a CodingKey to rename `data` on encode, so JSONSerialization
+        // sees `data_b64` here.
         let raw = try JSONEncoder().encode(params)
         guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
               let pid = obj["pty_id"] as? String,
@@ -321,29 +356,24 @@ actor RpcClient {
         else {
             throw RpcError.decode("pty.write: missing pty_id / data_b64")
         }
-        try await ensurePtyOpen(ptyID: pid)
-        try await sendPtyBytes(ptyID: pid, data: data)
+        if ptys[pid]?.task != nil {
+            try await sendPtyBytes(ptyID: pid, data: data)
+        }
         return "{}".data(using: .utf8)!
     }
 
     private func doPtyCreate<P: Encodable>(params: P) async throws -> Data {
-        let body = try await httpCall(method: "pty.create", params: params)
-        // Pull the new pty_id out and open its WS as primary.
-        if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-           let info = obj["info"] as? [String: Any],
-           let pid = info["id"] as? String {
-            try? await openPty(ptyID: pid, primary: true)
-        }
-        return body
+        return try await httpCall(method: "pty.create", params: params)
     }
 
     private func doPtyKill<P: Encodable>(params: P) async throws -> Data {
         let raw = try JSONEncoder().encode(params)
         let pid = (try? JSONSerialization.jsonObject(with: raw) as? [String: Any])?["pty_id"] as? String
         let body = try await httpCall(method: "pty.kill", params: params)
-        if let pid, let ch = ptys.removeValue(forKey: pid) {
-            ch.recvTask.cancel(); ch.heartbeat.cancel()
-            ch.task.cancel(with: .goingAway, reason: nil)
+        if let pid {
+            closePtyConnection(ptyID: pid, removeState: true)
+            ptys.removeValue(forKey: pid)
+            if activePtyID == pid { activePtyID = nil }
         }
         return body
     }
@@ -458,20 +488,65 @@ actor RpcClient {
         return (try? JSONDecoder().decode(Peek.self, from: data))?.method
     }
 
+    /// Parse the absolute byte offset out of a `/pty/<id>` leading meta frame
+    /// (`{"since":<offset>}`). Returns nil for any non-meta / malformed text.
+    private static func parsePtyMetaSince(_ s: String) -> UInt64? {
+        guard let data = s.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return (obj["since"] as? NSNumber)?.uint64Value
+    }
+
     private func yieldEvent(method: String, frame: Data) {
         eventContinuation?.yield(Event(method: method, frame: frame))
     }
 
     // ─────────────────────────── /pty/<id> ───────────────────────────
 
-    private func ensurePtyOpen(ptyID: String) async throws {
-        if ptys[ptyID] != nil { return }
-        try await openPty(ptyID: ptyID, primary: false)
+    func activatePty(ptyID: String) async throws {
+        if activePtyID != ptyID {
+            activePtyID = ptyID
+            for id in Array(ptys.keys) where id != ptyID {
+                closePtyConnection(ptyID: id, removeState: false)
+            }
+        }
+        try await openPty(ptyID: ptyID)
     }
 
-    private func openPty(ptyID: String, primary: Bool) async throws {
+    func deactivatePty(ptyID: String) {
+        if activePtyID == ptyID {
+            activePtyID = nil
+        }
+        closePtyConnection(ptyID: ptyID, removeState: false)
+    }
+
+    /// Snapshot the per-PTY byte cursors so a successor RpcClient (built
+    /// after a reconnect) can resume `/pty/<id>?since=<cursor>` from where
+    /// this connection left off — replaying only the missed delta instead
+    /// of the full ring. See `MotifClient.handleConnectionLost`.
+    func ptyCursors() -> [String: UInt64] {
+        ptys.mapValues { $0.cursor }
+    }
+
+    /// Seed cursors carried over from a previous connection. Only applied
+    /// when no live `/pty` task exists for that id (fresh post-reconnect
+    /// state), so an already-open channel is never rewound.
+    func seedPtyCursors(_ cursors: [String: UInt64]) {
+        for (id, cursor) in cursors {
+            var ch = ptys[id] ?? PtyChannel()
+            guard ch.task == nil else { continue }
+            ch.cursor = cursor
+            ptys[id] = ch
+        }
+    }
+
+    private func openPty(ptyID: String) async throws {
         guard let urlSession, let delegate, let sid = sessionID else { throw RpcError.notConnected }
-        guard let url = URL(string: "ws://\(host):\(port)/pty/\(ptyID)?session=\(sid)&since=0&primary=\(primary ? 1 : 0)") else {
+        if ptys[ptyID]?.task != nil { return }
+
+        var ch = ptys[ptyID] ?? PtyChannel()
+        let since = ch.cursor
+        guard let url = URL(string: "ws://\(host):\(port)/pty/\(ptyID)?session=\(sid)&since=\(since)") else {
             throw RpcError.transport("bad pty url")
         }
         var req = URLRequest(url: url)
@@ -483,37 +558,58 @@ actor RpcClient {
 
         let recvTask  = Task { await self.ptyRecvLoop(ptyID: ptyID, task: task) }
         let heartbeat = Task { await self.ptyHeartbeatLoop(ptyID: ptyID, task: task) }
-        ptys[ptyID] = PtyChannel(
-            task: task,
-            recvTask: recvTask,
-            heartbeat: heartbeat,
-            lastRecv: Date(),
-            shell: ShellState(),
-        )
+        ch.task = task
+        ch.recvTask = recvTask
+        ch.heartbeat = heartbeat
+        ch.lastRecv = Date()
+        ch.awaitingMeta = true
+        ptys[ptyID] = ch
     }
 
     private func sendPtyBytes(ptyID: String, data: Data) async throws {
-        guard let ch = ptys[ptyID] else { throw RpcError.transport("pty.write: no channel for `\(ptyID)`") }
-        try await ch.task.send(.data(data))
+        guard let task = ptys[ptyID]?.task else { throw RpcError.transport("pty.write: no channel for `\(ptyID)`") }
+        try await task.send(.data(data))
     }
 
     private func ptyRecvLoop(ptyID: String, task: URLSessionWebSocketTask) async {
         while !Task.isCancelled {
             do {
                 let msg = try await task.receive()
-                if var ch = ptys[ptyID] { ch.lastRecv = Date(); ptys[ptyID] = ch }
+                guard var ch = ptys[ptyID],
+                      let current = ch.task,
+                      current === task
+                else { return }
+                ch.lastRecv = Date()
+
+                // Leading Text meta frame: adopt the authoritative start
+                // offset and don't render it. One per connection.
+                if ch.awaitingMeta {
+                    ch.awaitingMeta = false
+                    if case .string(let s) = msg {
+                        if let since = Self.parsePtyMetaSince(s) { ch.cursor = since }
+                        ptys[ptyID] = ch
+                        continue
+                    }
+                    // No meta (older server / unexpected) — treat as data.
+                }
+
                 let data: Data
                 switch msg {
                 case .data(let d):
                     data = d
                 case .string(let s):
                     data = s.data(using: .utf8) ?? Data()
-                @unknown default: continue
+                @unknown default:
+                    ptys[ptyID] = ch
+                    continue
                 }
+                ch.cursor &+= UInt64(data.count)
+                ptys[ptyID] = ch
                 processPtyBytes(ptyID: ptyID, bytes: data)
             } catch {
                 if Task.isCancelled { return }
                 log.notice("pty `\(ptyID, privacy: .public)` recv: \(String(describing: error), privacy: .public)")
+                closePtyConnection(ptyID: ptyID, matching: task, removeState: false)
                 return
             }
         }
@@ -550,7 +646,11 @@ actor RpcClient {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: tickNs)
             if Task.isCancelled { return }
-            let idle = Date().timeIntervalSince(ptys[ptyID]?.lastRecv ?? Date())
+            guard let ch = ptys[ptyID],
+                  let current = ch.task,
+                  current === task
+            else { return }
+            let idle = Date().timeIntervalSince(ch.lastRecv)
             if idle > idleTimeout {
                 log.error("pty `\(ptyID, privacy: .public)` idle; closing")
                 task.cancel(with: .goingAway, reason: nil)
@@ -558,13 +658,40 @@ actor RpcClient {
             }
             task.sendPing { [weak self] err in
                 if err != nil { return }
-                Task { await self?.bumpPtyLiveness(ptyID: ptyID) }
+                Task { await self?.bumpPtyLiveness(ptyID: ptyID, task: task) }
             }
         }
     }
 
-    private func bumpPtyLiveness(ptyID: String) {
-        if var ch = ptys[ptyID] { ch.lastRecv = Date(); ptys[ptyID] = ch }
+    private func bumpPtyLiveness(ptyID: String, task: URLSessionWebSocketTask) {
+        guard var ch = ptys[ptyID],
+              let current = ch.task,
+              current === task
+        else { return }
+        ch.lastRecv = Date()
+        ptys[ptyID] = ch
+    }
+
+    private func closePtyConnection(
+        ptyID: String,
+        matching task: URLSessionWebSocketTask? = nil,
+        removeState: Bool
+    ) {
+        guard var ch = ptys[ptyID] else { return }
+        if let task {
+            guard let current = ch.task, current === task else { return }
+        }
+        ch.recvTask?.cancel()
+        ch.heartbeat?.cancel()
+        ch.task?.cancel(with: .goingAway, reason: nil)
+        ch.task = nil
+        ch.recvTask = nil
+        ch.heartbeat = nil
+        if removeState {
+            ptys.removeValue(forKey: ptyID)
+        } else {
+            ptys[ptyID] = ch
+        }
     }
 
     private func synthesizePtyOutputFrame(

@@ -93,11 +93,15 @@ pub fn dispatch_concurrent(
             id,
             RpcError::internal("mutating method routed to concurrent dispatcher"),
         ),
+        "session.set_palette" => attached(manager, conn, id, req.params, |s, p: ses::SetPaletteParams| {
+            s.set_terminal_palette(p.term_fg, p.term_bg);
+            s.set_theme(p.theme);
+            Ok(ses::SetPaletteResult::default())
+        }),
 
         // pty.*
         "pty.create" => handle_pty_create(manager, conn, id, req.params),
         "pty.list" => handle_pty_list(manager, conn, id),
-        "pty.write" => handle_pty_write(manager, conn, id, req.params),
         "pty.resize" => handle_pty_resize(manager, conn, id, req.params),
         "pty.kill" => handle_pty_kill(manager, conn, id, req.params),
         // (pty.list_blocks / pty.get_block_output removed — block history
@@ -253,12 +257,15 @@ fn handle_attach(
     // for the ws layer to drain after this response goes out.
     conn.pending_replay_since = Some(p.last_seq.unwrap_or(0));
     // Update the cached terminal palette so OSC 10/11 queries from the
-    // shell get answered with the user's actual terminal colours.
+    // shell get answered with the user's actual terminal colours, and adopt
+    // this client's theme as the session theme (broadcast if it changed).
     s.set_terminal_palette(p.term_fg.clone(), p.term_bg.clone());
+    s.set_theme(p.theme.clone());
 
     let ptys = s.pty_pool.list();
     let views = s.views_snapshot();
     let active_view = s.active_view();
+    let theme = s.theme();
 
     Response::ok(
         id,
@@ -270,6 +277,7 @@ fn handle_attach(
             views,
             active_view,
             last_seq: outcome.last_seq,
+            theme,
         },
     )
 }
@@ -354,32 +362,6 @@ fn handle_pty_list(mgr: &Arc<SessionManager>, conn: &ConnSnapshot, id: Id) -> Re
             ptys: s.pty_pool.list(),
         },
     )
-}
-
-fn handle_pty_write(
-    mgr: &Arc<SessionManager>,
-    conn: &ConnSnapshot,
-    id: Id,
-    params: Value,
-) -> Response {
-    let Some(s) = current_session(mgr, conn) else {
-        return Response::err(
-            id,
-            RpcError::new(ErrorCode::NotAttached, "must session.attach first"),
-        );
-    };
-    let p: ppty::PtyWriteParams = match parse(params) {
-        Ok(p) => p,
-        Err(e) => return Response::err(id, e),
-    };
-    let Some(pty) = s.pty_pool.get(&p.pty_id) else {
-        return Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found"));
-    };
-    if let Err(e) = pty.write_bytes(&p.data) {
-        return Response::err(id, RpcError::internal(format!("pty write: {e}")));
-    }
-    mark_pty_primary(&s, &p.pty_id, conn.client_id.clone());
-    Response::ok(id, EmptyOk {})
 }
 
 fn handle_pty_resize(

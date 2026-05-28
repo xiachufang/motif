@@ -17,10 +17,10 @@
 //! * **Shell-integration markers** (`canonical_response()` returns `None`):
 //!   motif's bootstrap script emits a VS Code-style private protocol under
 //!   `OSC 777;A/B/C/D/E/P` (block boundaries, explicit command text, and
-//!   properties such as cwd/context). The scanner also accepts the older
-//!   `OSC 133`, `OSC 7`, `OSC 7770`, and `OSC 7771` forms as compatibility
-//!   input. Shell-integration markers are consumed and never reach client
-//!   emulators.
+//!   properties such as cwd/context). The scanner also accepts the standard
+//!   `OSC 133` and `OSC 7` forms emitted natively by other shells (e.g.
+//!   fish 4.x) so their integration keeps working. Shell-integration markers
+//!   are consumed and never reach client emulators.
 //!
 //! Anything not matched falls through `passthrough` byte-for-byte so
 //! unrelated OSC / CSI / DCS sequences (alt-screen, OSC 9, OSC 1337, …)
@@ -92,14 +92,12 @@ pub enum QueryKind {
     Osc133CmdEnd { exit: Option<i32> },
     /// `ESC ] 777 ; E ; <hex_command> ST` — explicit command text, matching
     /// VS Code's `E` role but using Motif's private OSC code and existing
-    /// hex payload encoding. The legacy `ESC ] 7770 ; <hex_command> ST`
-    /// form is accepted as compatibility input.
+    /// hex payload encoding.
     Osc7770Cmd { text: String },
     /// `ESC ] 777 ; P ; Context=<hex_json> ST` — precmd context JSON.
     /// Successfully parsed into a typed `ShellContext`; if the inner JSON is
     /// malformed, the scanner drops the whole sequence to passthrough rather
-    /// than surfacing a half-typed structure. The legacy
-    /// `ESC ] 7771 ; <hex_json> ST` form is accepted as compatibility input.
+    /// than surfacing a half-typed structure.
     Osc7771Context { ctx: crate::pty::ShellContext },
 }
 
@@ -559,22 +557,6 @@ impl QueryScanner {
             };
         }
 
-        // OSC 7770 ; <hex>  (legacy preexec command text)
-        if let Some(hex) = body.strip_prefix(b"7770;") {
-            return match decode_hex(hex).and_then(|bs| String::from_utf8(bs).ok()) {
-                Some(text) => Decision::Match(QueryKind::Osc7770Cmd { text }),
-                None => Decision::Reject,
-            };
-        }
-
-        // OSC 7771 ; <hex>  (legacy precmd context JSON)
-        if let Some(hex) = body.strip_prefix(b"7771;") {
-            return match parse_context_hex(hex) {
-                Some(ctx) => Decision::Match(QueryKind::Osc7771Context { ctx }),
-                None => Decision::Reject,
-            };
-        }
-
         Decision::Reject
     }
 }
@@ -967,59 +949,6 @@ mod tests {
             [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/path/with space"),
             other => panic!("expected Osc7Cwd with decoded space, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn osc7770_hex_decodes_command_text() {
-        // hex of "echo hi" = 6563686f206869
-        let r = scan_one(b"\x1b]7770;6563686f206869\x07");
-        match &r.queries[..] {
-            [QueryKind::Osc7770Cmd { text }] => assert_eq!(text, "echo hi"),
-            other => panic!("expected Osc7770Cmd, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn osc7770_odd_length_hex_is_passthrough() {
-        // Odd hex length is malformed — better to surface the bytes than
-        // make up a value.
-        let bytes = b"\x1b]7770;abc\x07";
-        let r = scan_one(bytes);
-        assert!(r.queries.is_empty());
-        assert_eq!(r.passthrough, bytes);
-    }
-
-    #[test]
-    fn osc7771_hex_decodes_to_shell_context() {
-        // hex of {"branch":"main","venv":"work"}
-        let json = r#"{"branch":"main","venv":"work"}"#;
-        let hex: String = json.bytes().map(|b| format!("{b:02x}")).collect();
-        let mut bytes = b"\x1b]7771;".to_vec();
-        bytes.extend_from_slice(hex.as_bytes());
-        bytes.push(0x07);
-        let r = scan_one(&bytes);
-        match &r.queries[..] {
-            [QueryKind::Osc7771Context { ctx }] => {
-                assert_eq!(ctx.branch.as_deref(), Some("main"));
-                assert_eq!(ctx.venv.as_deref(), Some("work"));
-                assert!(ctx.head.is_none());
-            }
-            other => panic!("expected Osc7771Context, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn osc7771_invalid_json_is_passthrough() {
-        // Hex valid, but the decoded bytes aren't JSON-parseable. The
-        // scanner shouldn't surface a half-typed ShellContext — rejecting
-        // gives the downstream renderer a chance to ignore the OSC.
-        let hex = "6e6f742d6a736f6e"; // "not-json"
-        let mut bytes = b"\x1b]7771;".to_vec();
-        bytes.extend_from_slice(hex.as_bytes());
-        bytes.push(0x07);
-        let r = scan_one(&bytes);
-        assert!(r.queries.is_empty());
-        assert_eq!(r.passthrough, bytes);
     }
 
     #[test]
