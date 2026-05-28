@@ -138,7 +138,6 @@ pub fn event_tag(ev: &Event) -> &'static str {
         Event::ViewActiveChanged { .. } => "evt:view.active_changed",
         Event::ViewMoved { .. } => "evt:view.moved",
         Event::SessionThemeChanged { .. } => "evt:session.theme_changed",
-        Event::Unknown => "evt:unknown",
     }
 }
 

@@ -79,17 +79,10 @@ pub enum Event {
     #[serde(rename = "session.theme_changed")]
     SessionThemeChanged { theme: String, seq: Seq },
 
-    /// Catch-all so older clients can ignore newly added variants without
-    /// the JSON-RPC parse failing. Required because we use `tag = "method"`
-    /// — without this, an unknown method string aborts deserialization.
-    #[serde(other)]
-    Unknown,
 }
 
 impl Event {
-    /// Sequence number for this event. `Unknown` (forward-compat fallback)
-    /// has no seq on the wire — return 0 so callers can still total-order
-    /// known events without crashing on an unknown one.
+    /// Sequence number for this event.
     pub fn seq(&self) -> Seq {
         match self {
             Self::TreeChanged { seq, .. } => *seq,
@@ -104,7 +97,6 @@ impl Event {
             Self::ViewActiveChanged { seq, .. } => *seq,
             Self::ViewMoved { seq, .. } => *seq,
             Self::SessionThemeChanged { seq, .. } => *seq,
-            Self::Unknown => 0,
         }
     }
 }

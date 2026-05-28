@@ -2,23 +2,25 @@
 //! my terminal" entrypoint).
 //!
 //! Behaves like a tmux client: puts the local terminal into raw mode,
-//! forwards stdin → `pty.write`, paints `pty.output` events to stdout, and
-//! sends `pty.resize` on SIGWINCH. The PTY itself lives inside motifd, so
-//! closing the local terminal does NOT kill the program — the host CLI
-//! decides whether to destroy the session on exit (via its own guard).
+//! forwards stdin → `/pty/<id>` WS, paints the WS's output bytes to
+//! stdout, and sends `pty.resize` on SIGWINCH. The PTY itself lives
+//! inside motifd, so closing the local terminal does NOT kill the
+//! program — the host CLI decides whether to destroy the session on
+//! exit (via its own guard).
 //!
-//! The pump takes the notification stream by value (extracted from
-//! [`crate::client::Client::take_notifications`]) and the rest of the
-//! `Client` behind `Arc<Mutex<…>>`. That split is what lets the caller's
-//! drop-time `session.destroy` happen on the same `Client` while the pump
-//! is running — without it we'd deadlock the mutex on every notification.
+//! Wire-protocol shape (post-redesign): PTY bytes are not events — they
+//! flow over the `/pty/<id>` binary frames the caller passes in via
+//! [`PtyClient`]. The notification stream (taken from
+//! `Coordinator::take_notifications`) is only for the structured
+//! `view.opened` (to learn our auto-opened view id) and `pty.exited`
+//! signals.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::Context;
+use bytes::Bytes;
 use motif_proto::common::PtyId;
 use motif_proto::envelope::Notification;
 use motif_proto::pty as ppty;
@@ -28,6 +30,7 @@ use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::focus::{FocusEvent, InputFocusFilter, OutputFocusFilter};
+use crate::pty_ws::PtyClient;
 
 /// Fallback re-assert cadence for terminals without focus reporting: local
 /// typing stands in for "focus", re-claiming primary at most this often (not
@@ -67,12 +70,17 @@ pub fn current_size() -> (u16, u16) {
 }
 
 /// Run the I/O loop for a single PTY until it exits or the connection drops.
-/// `pty_id` must already exist on the server; the caller is responsible for
-/// `session.attach` + `pty.create`. Returns `Ok(())` on the inner PTY's
-/// `pty.exited`, on stdin EOF, or when the WebSocket reader signals close.
+/// `pty` must already be open (`Coordinator::open_pty`). The caller is
+/// responsible for `session.attach` + `pty.create`.
+///
+/// Returns `Ok(())` when:
+///   * a `pty.exited` notification arrives for this PTY,
+///   * the `/pty/<id>` WS closes (server-side hangup),
+///   * stdin EOFs.
 pub async fn pump(
     client: Arc<Mutex<crate::coordinator::Coordinator>>,
     mut events: mpsc::UnboundedReceiver<Notification>,
+    mut pty: PtyClient,
     pty_id: PtyId,
 ) -> anyhow::Result<()> {
     let _guard = RawGuard::enable()?;
@@ -126,28 +134,28 @@ pub async fn pump(
             // responsive when the user is just watching.
             biased;
 
+            bytes_opt = pty.outputs.recv() => {
+                let bytes = match bytes_opt {
+                    Some(b) => b,
+                    None    => return Ok(()), // WS closed → PTY done
+                };
+                // Strip the inner program's 1004 toggles before writing
+                // to the local terminal (we own its 1004 state), and
+                // record whether it wants focus events forwarded.
+                let mut cleaned = Vec::with_capacity(bytes.len());
+                let mut toggles = Vec::new();
+                out_filter.feed(&bytes, &mut cleaned, &mut toggles);
+                if let Some(&last) = toggles.last() { inner_wants_focus = last; }
+                stdout.write_all(&cleaned)?;
+                stdout.flush()?;
+            }
+
             n_opt = events.recv() => {
                 let n = match n_opt {
                     Some(n) => n,
-                    None    => return Ok(()), // ws reader closed
+                    None    => continue, // events stream gone; PTY may still run
                 };
                 match n.method.as_str() {
-                    "pty.output" => {
-                        let pid = n.params.get("pty_id").and_then(Value::as_str);
-                        if pid != Some(pty_id.as_str()) { continue; }
-                        let Some(b64) = n.params.get("data_b64").and_then(Value::as_str) else { continue; };
-                        let bytes = BASE64.decode(b64.as_bytes())
-                            .map_err(|e| anyhow!("decode pty.output: {e}"))?;
-                        // Strip the inner program's 1004 toggles before writing
-                        // to the local terminal (we own its 1004 state), and
-                        // record whether it wants focus events forwarded.
-                        let mut cleaned = Vec::with_capacity(bytes.len());
-                        let mut toggles = Vec::new();
-                        out_filter.feed(&bytes, &mut cleaned, &mut toggles);
-                        if let Some(&last) = toggles.last() { inner_wants_focus = last; }
-                        stdout.write_all(&cleaned)?;
-                        stdout.flush()?;
-                    }
                     "pty.exited" => {
                         let pid = n.params.get("pty_id").and_then(Value::as_str);
                         if pid == Some(pty_id.as_str()) { return Ok(()); }
@@ -182,15 +190,11 @@ pub async fn pump(
                 in_filter.feed(&bytes, inner_wants_focus, &mut forward, &mut focus);
                 let forwarded = !forward.is_empty();
 
-                let c = client.lock().await;
-                if forwarded {
-                    let _: Value = c.call(
-                        "pty.write",
-                        ppty::PtyWriteParams {
-                            pty_id: pty_id.clone(),
-                            data:   forward,
-                        },
-                    ).await?;
+                if forwarded
+                    && pty.stdin.send(Bytes::from(forward)).is_err()
+                {
+                    // PTY writer task closed — treat as session over.
+                    return Ok(());
                 }
                 // Reclaim primary: precisely on focus-in, with local typing as a
                 // throttled fallback for terminals without focus reporting.
@@ -200,6 +204,7 @@ pub async fn pump(
                 if let Some(vid) = &view_id {
                     if focus_in || typed {
                         last_reclaim = Instant::now();
+                        let c = client.lock().await;
                         let _ = c.call::<_, Value>(
                             "view.activate",
                             pview::ActivateParams { view_id: Some(vid.clone()) },

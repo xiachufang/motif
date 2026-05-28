@@ -1,6 +1,15 @@
 // Hand-written TypeScript mirrors of motif-proto. Keep these in sync with
 // crates/motif-proto/src/*.rs. Future work: derive via `ts-rs`.
 
+/** Frozen `service` magic string returned by `GET /ping`. Mirrors
+ *  `motif_proto::ping::PING_SERVICE`. Identity probe, not a version check. */
+export const PING_SERVICE = "motif-server";
+
+export interface PingInfo {
+  service: string;
+  version: string;
+}
+
 export type SessionId = string;
 export type ClientId  = string;
 export type PtyId     = string;

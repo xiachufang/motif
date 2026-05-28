@@ -39,6 +39,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/ping":   { target: MOTIFD,    changeOrigin: true },
       "/rpc":    { target: MOTIFD,    changeOrigin: true },
       "/events": { target: WS_MOTIFD, ws: true,  changeOrigin: true },
       "/pty":    { target: WS_MOTIFD, ws: true,  changeOrigin: true }

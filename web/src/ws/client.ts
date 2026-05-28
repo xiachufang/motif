@@ -15,13 +15,54 @@
 // Same-origin assumption: this client targets `location.origin` —
 // motifd itself.
 
-import type { Event } from "../proto/types";
+import { PING_SERVICE, type Event, type PingInfo } from "../proto/types";
 import { ShellState, type ShellEvent } from "../shellIntegration";
 
 export type EventHandler = (ev: Event) => void;
 
+/// Carries the HTTP status alongside the error message so callers can
+/// branch on 401 (bad/expired token → bounce to login) without parsing
+/// the string. Thrown by `httpCall` for any non-2xx response.
+export class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
+
+/// `/ping` HTTP probe timeout — used both at connect for the identity check
+/// and by the `/events` liveness watchdog. Tight enough that a hung probe
+/// still leaves headroom under the server's 45s IDLE_TIMEOUT.
+const PING_PROBE_TIMEOUT_MS = 5_000;
+/// How often the `/events` watchdog re-evaluates whether to probe. Matches
+/// the server's HEARTBEAT_TICK so the two sides poll at similar granularity.
+const WATCHDOG_TICK_MS = 10_000;
+/// Silence threshold on `/events` before the watchdog issues a `/ping` probe.
+/// Chosen below the server's 45s IDLE_TIMEOUT so we detect a wedged link
+/// before the server gives up and closes us.
+const IDLE_PROBE_MS = 30_000;
+
+/// `GET /ping` identity probe. Confirms the target is a motif-server (vs.
+/// any other HTTP service on the same host/port) and is reachable. Browsers
+/// don't surface WebSocket Ping/Pong frames to JS, so this HTTP probe is the
+/// only application-visible liveness signal available to the watchdog.
+async function pingProbe(timeoutMs: number): Promise<void> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(`${location.origin}/ping`, { signal: ctrl.signal });
+    if (!resp.ok) throw new Error(`/ping HTTP ${resp.status}`);
+    const info = await resp.json() as PingInfo;
+    if (info.service !== PING_SERVICE) {
+      throw new Error(`not a motif-server (got service=${JSON.stringify(info.service)})`);
+    }
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 function normalizeToken(token: string): string | null {
   const t = token.trim();
@@ -67,6 +108,15 @@ export class RpcClient {
   private closed = false;
   private reconnectDelay = RECONNECT_MIN_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /// Wall-clock timestamp of the most recent frame received on `/events`,
+  /// refreshed by the message handler. The watchdog compares against this
+  /// to decide when to issue a `/ping` probe. Initialized lazily when
+  /// `openEvents` succeeds, not at construction time.
+  private eventsLastRxAt = 0;
+  /// Periodic timer that triggers liveness probes on `/events`. Lives
+  /// only while a /events socket is installed; cleared on close,
+  /// teardown, or replacement by a fresh `openEvents`.
+  private eventsWatchdog: ReturnType<typeof setInterval> | null = null;
   /// Serializes session.attach / session.detach so a mount → unmount →
   /// mount cycle (React StrictMode in dev) can't run two attaches
   /// concurrently. Without this, attach #1's HTTP could land *after* the
@@ -83,13 +133,13 @@ export class RpcClient {
     this.token = normalizeToken(token);
   }
 
-  /** Probe the new endpoint by calling `session.list`. The server
-   *  rejects missing/invalid auth when auth is enabled; success means
-   *  the token choice is accepted and the new-protocol routes are wired. */
+  /** Identity probe only. `/ping` is unauthenticated, so this never
+   *  validates the token — the first authenticated call (Sessions page's
+   *  `session.list`, or `session.attach`) is what surfaces a bad token.
+   *  That's deliberate: we don't want a redundant pre-login RPC. */
   static async connect(token: string): Promise<RpcClient> {
-    const c = new RpcClient(token);
-    await c.httpCall("session.list", {});  // throws on auth failure
-    return c;
+    await pingProbe(PING_PROBE_TIMEOUT_MS);
+    return new RpcClient(token);
   }
 
   /** New shape: routes by method name. */
@@ -226,13 +276,19 @@ export class RpcClient {
     const buf = await resp.arrayBuffer();
     console.log(`[rpc ←] ${method} status=${resp.status} ${Math.round(performance.now() - t0)}ms ${buf.byteLength}B`);
     if (!resp.ok) {
+      // Two error-body shapes: the pre-dispatch auth check returns plain
+      // text ("missing or invalid Bearer token"), while RPC-layer errors
+      // return a JSON envelope. Try JSON first; fall back to the status
+      // line. Either way the HttpError preserves `status` for branchable
+      // 401 handling.
+      let msg = `HTTP ${resp.status}`;
       try {
         const err = JSON.parse(new TextDecoder().decode(buf));
-        throw new Error(`rpc ${err.code}: ${err.message}`);
-      } catch (e) {
-        if (e instanceof Error && /^rpc /.test(e.message)) throw e;
-        throw new Error(`HTTP ${resp.status}`);
-      }
+        if (err && typeof err === "object" && "message" in err) {
+          msg = `rpc ${(err as { code?: unknown }).code}: ${(err as { message?: unknown }).message}`;
+        }
+      } catch { /* not JSON — keep "HTTP <status>" */ }
+      throw new HttpError(resp.status, msg);
     }
     return { body: buf, sessionID: resp.headers.get("x-motif-session") };
   }
@@ -260,18 +316,69 @@ export class RpcClient {
     // /pty leak below.
     const prev = this.eventsWs;
     this.eventsWs = ws;
+    this.eventsLastRxAt = Date.now();
+    this.startEventsWatchdog();
     ws.addEventListener("message", e => {
       if (this.eventsWs !== ws) return;
+      this.eventsLastRxAt = Date.now();
       this.onEventsMessage(e.data);
     });
     ws.addEventListener("close", () => {
       if (this.eventsWs !== ws) return;
       this.eventsWs = null;
+      this.stopEventsWatchdog();
       if (this.closed) return;
       this.scheduleReconnect();
     });
     if (prev) { try { prev.close(); } catch { /* ignore */ } }
     this.reconnectDelay = RECONNECT_MIN_MS;
+  }
+
+  // ─────────────────────────── liveness watchdog ───────────────────────────
+
+  /// Start (or restart) the `/events` liveness watchdog. Browsers don't
+  /// expose WebSocket Ping/Pong to JS, so a healthy-but-idle `/events`
+  /// socket looks identical to a wedged one from here. We close that gap
+  /// by issuing an HTTP `/ping` whenever no `/events` frame has arrived in
+  /// `IDLE_PROBE_MS`; a probe failure force-closes the WS, which routes
+  /// into the existing `scheduleReconnect` path.
+  private startEventsWatchdog() {
+    this.stopEventsWatchdog();
+    this.eventsWatchdog = setInterval(() => {
+      void this.eventsWatchdogTick();
+    }, WATCHDOG_TICK_MS);
+  }
+
+  private stopEventsWatchdog() {
+    if (this.eventsWatchdog) {
+      clearInterval(this.eventsWatchdog);
+      this.eventsWatchdog = null;
+    }
+  }
+
+  private async eventsWatchdogTick(): Promise<void> {
+    if (this.closed) return;
+    const ws = this.eventsWs;
+    if (!ws) return;
+    const idle = Date.now() - this.eventsLastRxAt;
+    if (idle <= IDLE_PROBE_MS) return;
+    try {
+      await pingProbe(PING_PROBE_TIMEOUT_MS);
+      // Server alive — /events is just quiet (no events to deliver).
+      // Reset the watermark so we don't probe again on the next tick.
+      this.eventsLastRxAt = Date.now();
+    } catch (e) {
+      console.warn(
+        `[events] liveness probe failed after ${idle}ms idle:`,
+        e instanceof Error ? e.message : String(e),
+      );
+      // The watchdog awaited across a network roundtrip; bail if the
+      // socket has been replaced or torn down in the meantime so we
+      // don't close someone else's WS.
+      if (this.eventsWs === ws) {
+        try { ws.close(); } catch { /* ignore */ }
+      }
+    }
   }
 
   private onEventsMessage(raw: unknown) {
@@ -492,6 +599,7 @@ export class RpcClient {
     // schedule a reconnect or emit a stale pty.ws.closed event.
     const eventsWs = this.eventsWs;
     this.eventsWs = null;
+    this.stopEventsWatchdog();
     this.closeAllPtyConnections(true);
     try { eventsWs?.close(); } catch { /* ignore */ }
   }

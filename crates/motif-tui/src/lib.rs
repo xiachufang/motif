@@ -1,14 +1,14 @@
 //! Motif TUI client library.
 
+pub mod picker;
 pub mod pty_view;
 pub mod ui;
 
 pub use motif_client::{palette, transport};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::Context;
-use motif_proto::session as ses;
+use anyhow::{anyhow, Context};
 
 pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
     let Some(path) = path else {
@@ -19,193 +19,44 @@ pub fn read_token(path: Option<&Path>) -> anyhow::Result<String> {
     Ok(raw.trim().to_string())
 }
 
-/// Helper: connect with optional SSH tunneling and return the live
-/// `ConnectedV2`. The TUI runs on the new HTTP-split protocol; the
-/// legacy `transport::connect` (and `Client`) are still exported for
-/// motif-cast until Phase 5.
+/// Helper: connect with optional SSH tunneling and probe `/ping` before
+/// handing the [`transport::ConnectedV2`] to the caller. The probe is
+/// unauthenticated, so it works before the token gets checked — it
+/// catches the "wrong port / some other HTTP service on this host"
+/// failure with a clear message instead of an opaque RPC decode error
+/// on the first real call. (Same shape as `motif-cast`.)
 pub async fn connect(
     url: &str,
     token: &str,
     via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<transport::ConnectedV2> {
-    transport::connect_v2(url, token, via, ssh_remote_port).await
-}
-
-pub async fn cmd_list(
-    url: &str,
-    token: &str,
-    via: Option<&str>,
-    ssh_remote_port: Option<u16>,
-) -> anyhow::Result<()> {
-    let tr = connect(url, token, via, ssh_remote_port).await?;
-    let r: ses::ListResult = tr
+    let tr = transport::connect_v2(url, token, via, ssh_remote_port).await?;
+    let info = tr
         .client
-        .call("session.list", ses::ListParams::default())
-        .await?;
-    if r.sessions.is_empty() {
-        println!("(no sessions)");
-        return Ok(());
+        .ping()
+        .await
+        .with_context(|| format!("no motif-server responding at {url}"))?;
+    if !info.is_motif_server() {
+        return Err(anyhow!(
+            "{url} is not a motif-server (service={:?})",
+            info.service
+        ));
     }
-    println!("{:<20} {:<28} CLIENTS  WORKDIR", "NAME", "ID");
-    for s in &r.sessions {
-        println!(
-            "{:<20} {:<28} {:<8} {}",
-            s.name,
-            s.id,
-            s.client_count,
-            s.workdir.display()
-        );
-    }
-    Ok(())
+    Ok(tr)
 }
 
-pub async fn cmd_new(
+/// Top-level entrypoint: connect + drop into the interactive session
+/// picker. On Enter the picker hands off to [`ui::run_with`]; on `q`
+/// the picker exits cleanly.
+pub async fn cmd_picker(
     url: &str,
     token: &str,
-    name: String,
-    workdir: PathBuf,
     via: Option<&str>,
     ssh_remote_port: Option<u16>,
 ) -> anyhow::Result<()> {
     let tr = connect(url, token, via, ssh_remote_port).await?;
-    let r: ses::CreateResult = tr
-        .client
-        .call("session.create", ses::CreateParams { name, workdir })
-        .await?;
-    println!("session created: {} (id={})", r.session.name, r.session.id);
-    Ok(())
-}
-
-pub async fn cmd_destroy(
-    url: &str,
-    token: &str,
-    name: String,
-    via: Option<&str>,
-    ssh_remote_port: Option<u16>,
-) -> anyhow::Result<()> {
-    let tr = connect(url, token, via, ssh_remote_port).await?;
-    let _: ses::DestroyResult = tr
-        .client
-        .call("session.destroy", ses::DestroyParams { name: name.clone() })
-        .await?;
-    println!("session destroyed: {name}");
-    Ok(())
-}
-
-pub async fn cmd_pty_run(
-    url: &str,
-    token: &str,
-    name: String,
-    cmd: String,
-    via: Option<&str>,
-    ssh_remote_port: Option<u16>,
-) -> anyhow::Result<()> {
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-    use motif_proto::pty as ppty;
-    use std::io::Write;
-
-    let tr = connect(url, token, via, ssh_remote_port).await?;
-    let (term_fg, term_bg) = palette::probe();
-    let _: ses::AttachResult = tr
-        .client
-        .call(
-            "session.attach",
-            ses::AttachParams {
-                name: name.clone(),
-                last_seq: None,
-                term_fg,
-                term_bg,
-                theme: None,
-            },
-        )
-        .await?;
-    let r: ppty::PtyCreateResult = tr
-        .client
-        .call(
-            "pty.create",
-            ppty::PtyCreateParams {
-                cmd: Some(cmd),
-                cwd: None,
-                env: vec![],
-                cols: 120,
-                rows: 40,
-            },
-        )
-        .await?;
-    let want = r.info.id;
-
-    let mut stdout = std::io::stdout();
-    while let Some(n) = tr.client.recv_notification().await {
-        match n.method.as_str() {
-            "pty.output" => {
-                if let (Some(pid), Some(b64)) = (
-                    n.params.get("pty_id").and_then(|v| v.as_str()),
-                    n.params.get("data_b64").and_then(|v| v.as_str()),
-                ) {
-                    if pid == want {
-                        if let Ok(b) = BASE64.decode(b64.as_bytes()) {
-                            stdout.write_all(&b)?;
-                            stdout.flush()?;
-                        }
-                    }
-                }
-            }
-            "pty.exited" => {
-                if n.params.get("pty_id").and_then(|v| v.as_str()) == Some(want.as_str()) {
-                    return Ok(());
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-pub async fn cmd_attach_log(
-    url: &str,
-    token: &str,
-    name: String,
-    via: Option<&str>,
-    ssh_remote_port: Option<u16>,
-) -> anyhow::Result<()> {
-    let tr = connect(url, token, via, ssh_remote_port).await?;
-    let (term_fg, term_bg) = palette::probe();
-    let r: ses::AttachResult = tr
-        .client
-        .call(
-            "session.attach",
-            ses::AttachParams {
-                name: name.clone(),
-                last_seq: None,
-                term_fg,
-                term_bg,
-                theme: None,
-            },
-        )
-        .await?;
-    println!(
-        "attached: session={} client_id={} other-clients={}",
-        r.session.name,
-        r.client_id,
-        r.clients.len()
-    );
-    while let Some(n) = tr.client.recv_notification().await {
-        let p = serde_json::to_string(&n.params).unwrap_or_default();
-        println!("event {}  {}", n.method, p);
-    }
-    Ok(())
-}
-
-pub async fn cmd_attach(
-    url: &str,
-    token: &str,
-    name: String,
-    via: Option<&str>,
-    ssh_remote_port: Option<u16>,
-) -> anyhow::Result<()> {
-    let tr = connect(url, token, via, ssh_remote_port).await?;
-    ui::run_with(tr, name).await
+    picker::run(tr, url.to_string()).await
 }
 
 /// Bring up an embedded tsnet client node, query its LocalAPI, and list

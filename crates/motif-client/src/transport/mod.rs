@@ -23,6 +23,24 @@ pub struct ConnectedV2 {
     pub _keepalive: Vec<Box<dyn Any + Send + Sync>>,
 }
 
+/// Turn the user-supplied `--host` argument into a URL [`connect_v2`]
+/// accepts. The auto-default points at the local loopback so clients
+/// can come up with no flags at all when they're sharing a host with
+/// motifd.
+///
+/// - `None`              → `ws://127.0.0.1:7777`
+/// - already a full URL  → passed through (must include scheme)
+/// - `host:port`         → `ws://host:port`
+/// - bare `host`         → `ws://host:7777`
+pub fn normalize_target(host: Option<&str>) -> String {
+    match host {
+        None => "ws://127.0.0.1:7777".to_string(),
+        Some(h) if h.contains("://") => h.to_string(),
+        Some(h) if h.contains(':') => format!("ws://{h}"),
+        Some(h) => format!("ws://{h}:7777"),
+    }
+}
+
 /// New-protocol connect: returns a [`Coordinator`] that fans RPC over
 /// HTTP and PTY/events over independent WebSockets. URL accepts the
 /// same `ws://` / `http://` shapes the old transport did — the scheme

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ListResult, SessionInfo } from "../proto/types";
 import { useApp } from "../store/store";
+import { HttpError } from "../ws/client";
 
 export default function Sessions() {
   const client    = useApp(s => s.client);
   const setPage   = useApp(s => s.setPage);
+  const setToken  = useApp(s => s.setToken);
   const [list,    setList]    = useState<SessionInfo[]>([]);
   const [error,   setError]   = useState<string | null>(null);
   const [name,    setName]    = useState("");
@@ -40,6 +42,14 @@ export default function Sessions() {
       }
       setError(null);
     } catch (e) {
+      if (e instanceof HttpError && e.status === 401) {
+        // Token was rejected (revoked, rotated, or never valid).
+        // `connect()` no longer pre-validates auth, so this is the first
+        // place we learn — bounce back to login rather than stranding
+        // the user on an empty sessions page.
+        logout();
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -87,6 +97,10 @@ export default function Sessions() {
   function logout() {
     localStorage.removeItem("motif.token");
     sessionStorage.removeItem("motif.token");
+    // Clear the in-memory token too; otherwise Login.tsx's auto-connect
+    // effect reads the stale store value and re-authenticates against the
+    // still-valid server-side token, bouncing the user right back here.
+    setToken(null);
     client?.close();
     setPage({ kind: "login" });
   }

@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     run(Run {
-        url: normalize_target(cli.host.as_deref()),
+        url: transport::normalize_target(cli.host.as_deref()),
         token,
         name,
         workdir,
@@ -191,10 +191,14 @@ async fn run(r: Run) -> anyhow::Result<()> {
         .context("pty.create")?;
     let pty_id: PtyId = pty.info.id.clone();
 
-    // 4. Hand the rest of the Client to a shared Arc<Mutex>; pull events
-    //    out as a free-standing receiver so the pump's notification arm
-    //    doesn't conflict with `pty.write` / `pty.resize` calls under the
-    //    mutex.
+    // 4. Open the `/pty/<id>` WS for raw bytes, and pull the structured
+    //    notification stream out as a free-standing receiver. The PTY's
+    //    bytes flow over `pty.outputs` / `pty.stdin`; notifications still
+    //    carry `view.opened` (so we can reclaim primary) and `pty.exited`.
+    let pty_ws = client
+        .open_pty(pty_id.as_str(), 0)
+        .await
+        .with_context(|| format!("open /pty/{pty_id} WS"))?;
     let events = client
         .take_notifications()
         .await
@@ -210,7 +214,7 @@ async fn run(r: Run) -> anyhow::Result<()> {
         r.name, pty_id, cols, rows,
     );
 
-    raw_pty::pump(client, events, pty_id).await
+    raw_pty::pump(client, events, pty_ws, pty_id).await
 }
 
 /// Tear-down on drop: best-effort `session.destroy`. We move the work onto
@@ -257,21 +261,6 @@ impl Drop for SessionGuard {
             });
         })
         .join();
-    }
-}
-
-/// Turn the `--host` argument into a URL `connect_v2` accepts.
-///
-/// - `None` → `ws://127.0.0.1:7777` (the auto-probe default).
-/// - already a `scheme://…` URL → passed through untouched.
-/// - `host:port` → `ws://host:port`.
-/// - bare `host` → `ws://host:7777` (motifd's default port).
-fn normalize_target(host: Option<&str>) -> String {
-    match host {
-        None => "ws://127.0.0.1:7777".to_string(),
-        Some(h) if h.contains("://") => h.to_string(),
-        Some(h) if h.contains(':') => format!("ws://{h}"),
-        Some(h) => format!("ws://{h}:7777"),
     }
 }
 

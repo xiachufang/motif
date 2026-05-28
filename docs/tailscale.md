@@ -17,7 +17,7 @@
 `libtailscale` 是 Tailscale 官方的 C 封装，把 Go 实现的 `tsnet` 包装成 C-ABI，链接进 motif 二进制后该二进制本身就是 tailnet 上的一个节点：
 
 - 用户机器**不需要装 Tailscale daemon**
-- `motif-tui attach ws://placeholder/ --via tailscale://my-mac --session work` 在任意机器上即开即用（前提是该 motif-tui 用 `--features tailscale-bundled` 构建）
+- `motif-tui --via tailscale://my-mac` 在任意机器上即开即用（前提是该 motif-tui 用 `--features tailscale-bundled` 构建）
 - motifd 也可以自己加入 tailnet（`motifd --tailscale --tailscale-port 7777 ...`），让所有 client 通过 tailnet 反向接入私网中的 motifd；浏览器则连 motifd 内嵌的 Web UI（`crates/motif-server/src/embed.rs`）
 
 ---
@@ -243,22 +243,24 @@ motifd-workstation                       100.64.1.5         yes     linux
 
 ### 7.2 attach 走向
 
-`motif-tui` 的所有子命令（`attach` / `list` / `new` / `destroy` / `pty-run`）都带一个统一的 `--via` flag（见 `Cli::ViaOpts`），目前只识别三个 scheme：
+`motif-tui` 顶层有一个统一的 `--via` flag（见 `crates/motif-tui/src/main.rs::Cli`），目前只识别三个 scheme：
 
 | `--via` 值 | 行为 |
 |---|---|
-| 不传 / `direct` | 直接对 URL 里的 host:port 做 TCP connect |
-| `ssh://[user@]host[:port]` | 起 SSH 子进程 local-forward，URL 的 host 被换成 `127.0.0.1:<本地端口>`，见 [`ssh-tunnel.md`](./ssh-tunnel.md) |
+| 不传 / `direct` | 对 `--host` 解析出的 host:port 做 TCP connect（不传 `--host` 时默认 `ws://127.0.0.1:7777`） |
+| `ssh://[user@]host[:port]` | 起 SSH 子进程 local-forward，连接目标被换成 `127.0.0.1:<本地端口>`，见 [`ssh-tunnel.md`](./ssh-tunnel.md) |
 | `tailscale://hostname[:port]` | 起嵌入式 tsnet 节点，用 `TsServer::dial_tcp` 直接连 tailnet 上的 `hostname:port`（默认 7777） |
 
-`tailscale://` 与 `ssh://` 都会让位置参数 URL 的 host 失效；建议填 `ws://placeholder/` 之类的占位（保留 URL 解析的形态）。例：
+`tailscale://` 与 `ssh://` 都让 `--host` 失效（连接目标由 `--via` 决定）。例：
 
 ```bash
-$ motif-tui attach ws://placeholder/ --via tailscale://motifd-laptop --session work
-$ motif-tui attach ws://placeholder/ --via tailscale://motifd-laptop:7777 --session work
+$ motif-tui --via tailscale://motifd-laptop
+$ motif-tui --via tailscale://motifd-laptop:7777
 ```
 
-> 启发式自动 fallback（基于 host 形态、ssh_config 命中等）是计划中的能力，**当前未实现** —— 没传 `--via` 就是直连，host 必须是 motifd 实际监听的地址。
+`motif-cast --via tailscale://...` 同理。
+
+> 启发式自动 fallback（基于 host 形态、ssh_config 命中等）是计划中的能力，**当前未实现** —— 没传 `--via` 就是直连，`--host` 必须指向 motifd 实际监听的地址。
 
 ---
 

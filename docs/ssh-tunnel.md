@@ -29,8 +29,8 @@ SSH 本身就是个能透传 TCP 的隧道工具（`-L` 端口转发），motif-
 $ ssh -N -L 17777:127.0.0.1:7777 user@server.example.com
 # (此 SSH 进程保持前台，转发本地 17777 → server 上 motifd)
 
-# 另开一个终端
-$ motif-tui attach ws://127.0.0.1:17777/ --session work
+# 另开一个终端 —— picker 自动探测 127.0.0.1，所以显式指定本地转发口即可
+$ motif-tui --host 127.0.0.1:17777
 
 # 或者直接用浏览器打开 motifd 内嵌的 Web UI：
 $ open http://127.0.0.1:17777/
@@ -45,12 +45,14 @@ motifd 完全不知道连接是从哪条物理路径来的，只看到 `127.0.0.
 `motif-tui`（实现在 `motif-client` 中，见 `crates/motif-client/src/transport/ssh.rs`）自带"开 SSH 隧道并把它跑成子进程"的封装，**不**重写 SSH 协议——直接调用系统 `ssh` 二进制，完整复用用户的 `~/.ssh/config`、ssh-agent、known_hosts、ProxyJump 等设置：
 
 ```bash
-$ motif-tui attach ws://placeholder/ --via ssh://user@server.example.com --session work
+$ motif-tui --via ssh://user@server.example.com
 [ssh tunnel established: 127.0.0.1:54321 ↔ server.example.com:7777]
-[client A attached]
+[motif picker — select a session and press Enter to attach]
 ```
 
-`--via` 是子命令上的全局 flag（见 `crates/motif-tui/src/main.rs::ViaOpts`），`attach` / `list` / `new` / `destroy` / `pty-run` 都支持。子进程生命周期与 motif-tui 进程绑定：motif-tui 退出时 `SshTunnel::Drop` 触发 SIGTERM，SSH 自动被 kill。
+`--via` 是 `motif-tui` 顶层的全局 flag（见 `crates/motif-tui/src/main.rs::Cli`）。motif-tui 启动后直接进 picker，所以指定 `--via` 一次即可对全部 session 管理 + attach 生效。子进程生命周期与 motif-tui 进程绑定：motif-tui 退出时 `SshTunnel::Drop` 触发 SIGTERM，SSH 自动被 kill。
+
+`motif-cast` 的 `--via` 同样是顶层 flag，启动时打开一次 SSH 隧道、cast 结束随进程退出。
 
 ---
 
@@ -67,16 +69,16 @@ ssh://[user@]host[:ssh-port]
 - `user`：可省，默认与系统 `ssh` 同源（取 `~/.ssh/config` 或 `$USER`）
 - `host`：可以是 ssh_config 中的 Host alias（推荐），或 IP/域名
 - `ssh-port`：SSH 端口，默认 22（也可放 ssh_config）
-- 远端 motifd 端口：默认 7777，可被子命令上的 `--ssh-remote-port <N>` 覆盖（位置参数 URL 与 `--via` 平级，参考 `Cli::ViaOpts`）
+- 远端 motifd 端口：默认 7777，可被顶层 `--ssh-remote-port <N>` 覆盖（参考 `crates/motif-tui/src/main.rs::Cli`）
 
 例：
 
 ```bash
-$ motif-tui attach ws://placeholder/ --via ssh://prod-jumpbox --session work
-$ motif-tui attach ws://placeholder/ --via ssh://fei@10.0.0.5:2222 --ssh-remote-port 17777 --session work
+$ motif-tui --via ssh://prod-jumpbox
+$ motif-tui --via ssh://fei@10.0.0.5:2222 --ssh-remote-port 17777
 ```
 
-> 注：`attach` 仍要求一个位置 URL 参数（CLI 兼容性），`--via ssh://...` 启用时这个 URL 的 host 会被替换为 `127.0.0.1:<本地转发端口>`，因此填 `ws://placeholder/` 之类的占位即可。
+> 注：`--via ssh://...` 启用时 motif-tui 内部把连接 URL 替换为 `127.0.0.1:<本地转发端口>`；顶层 `--host` 与 `--via` 互斥地决定目标，`--via` 启用时 `--host` 被忽略。
 
 ### 3.2 spawn 流程
 

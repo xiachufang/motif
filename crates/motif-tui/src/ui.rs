@@ -9,6 +9,11 @@
 //! a terminal multiplexer's pane. There is no separate "input mode": you're
 //! always typing into the active pane unless you've pressed the prefix.
 //!
+//! Exception: when the active tab is **not** a PTY (preview / diff), arrow
+//! keys, `PageUp` / `PageDown`, and `Home` / `End` scroll the body instead
+//! of being swallowed. PTY tabs still forward those keys to the shell
+//! (so `less` / `vim` work normally).
+//!
 //! **Prefix** is `Ctrl-g`. It deliberately avoids `Ctrl-b` (tmux),
 //! `Ctrl-a` (screen) and `Ctrl-x` (bash readline + emacs prefix), which
 //! means a motif TUI running inside any of those won't fight over the
@@ -18,17 +23,25 @@
 //!
 //!   - `c`              create a new PTY tab (tmux: new-window)
 //!   - `n` / `p`        next / previous tab
-//!   - `&`              close current tab (tmux: kill-window)
+//!   - `w`              close current tab (tmux: kill-window — rebound from `&`)
 //!   - `1`..`9`         jump to tab N (1-based, matches displayed labels)
 //!   - `d`              detach (close motif TUI, server keeps running)
 //!   - `?`              show help line
 //!   - `r`              refresh tree + git
 //!   - `g`              re-anchor file tree to active PTY's cwd
 //!   - `D`              open diff tab (Shift+d so it doesn't collide with detach)
-//!   - `t`              enter Tree mode (file-tree navigation)
+//!   - `t` / `T`        enter Tree mode  /  toggle tree panel visibility
+//!   - `s` / `S`        enter Git mode   /  toggle git panel visibility
 //!   - `[`              enter Scroll mode (PTY scrollback; tmux: copy-mode)
+//!   - `b` / `f`        jump to previous / next shell block (enters Scroll)
 //!   - `Ctrl-g`         send a literal Ctrl-g to the active PTY
 //!   - `Ctrl-c`         quit (emacs `C-x C-c`)
+//!
+//! Capitalised toggles (`T`, `S`) are one-shot visibility flips paired
+//! with the lowercase "enter mode" key. Entering Tree or Git mode
+//! auto-shows the corresponding panel so the cursor always has a
+//! visible home. When both panels are hidden the body claims the full
+//! width — useful when the user just wants terminals on screen.
 //!
 //! **Tree mode** (after `Ctrl-g t`) — emacs movement keys:
 //!
@@ -43,6 +56,17 @@
 //!   - `q`                    leave Tree mode (back to Pane)
 //!   - `Ctrl-g`               leave Tree mode and start a Prefix sequence
 //!
+//! **Git mode** (after `Ctrl-g s`) — emacs movement, Enter opens diff:
+//!
+//!   - `Ctrl-n` / `↓`     select next changed file
+//!   - `Ctrl-p` / `↑`     select previous changed file
+//!   - `Ctrl-v` / `Alt-v` page down / up
+//!   - `Alt-<` / `Alt->`  jump to top / bottom of file list
+//!   - `Ctrl-m` / `Enter` open the selected file's diff in a new tab
+//!                        (`ViewSpec::Diff { staged: false, path: Some(<file>) }`)
+//!   - `q`                leave Git mode (back to Pane)
+//!   - `Ctrl-g`           leave Git mode and start a Prefix sequence
+//!
 //! **Scroll mode** (after `Ctrl-g [`) — emacs scrolling for the active PTY:
 //!
 //!   - `Ctrl-v`         page down
@@ -51,15 +75,19 @@
 //!   - `Alt->`          jump back to live
 //!   - `Ctrl-n` / `↓`   line down
 //!   - `Ctrl-p` / `↑`   line up
+//!   - `b` / `f`        walk between shell-integration block starts
 //!   - `q`              leave Scroll mode (and jump back to live, tmux-style)
 //!   - `Ctrl-g`         leave Scroll mode and start a Prefix sequence
 //!
 //! ## File tree follows active PTY's cwd
 //!
-//! When a PTY tab is active and that PTY's cwd changes (the server polls
-//! `proc_pidinfo` / `/proc/<pid>/cwd` every ~1.5s and emits `pty.cwd_changed`),
-//! the file tree retargets to the new cwd. If the user has manually navigated
-//! in Tree mode (`Backspace`/`Enter`-into-subdir), auto-follow pauses until
+//! When a PTY tab is active and that PTY's cwd changes, the file tree
+//! retargets to the new cwd. Post-protocol-redesign the cwd signal is
+//! derived client-side: the per-PTY `ShellState` (lifted from the old
+//! server module into `motif_client::shell_integration`) consumes shell-
+//! integration OSC markers off the `/pty/<id>` byte stream and emits
+//! `ShellEvent::CwdChanged`. If the user has manually navigated in Tree
+//! mode (`Backspace` / `Enter`-into-subdir), auto-follow pauses until
 //! they press `Ctrl-g g` to re-anchor or switch tabs.
 
 use std::collections::HashMap;
@@ -69,6 +97,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use bytes::Bytes;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
     KeyModifiers,
@@ -83,8 +112,9 @@ use motif_proto::event::Event;
 use motif_proto::fs as pfs;
 use motif_proto::git as pgit;
 use motif_proto::pty as ppty;
+use motif_proto::pty::ShellKind;
 use motif_proto::session as ses;
-use motif_proto::terminal_query::QueryScanner;
+use motif_proto::terminal_query::{QueryScanner, ScanItem};
 use motif_proto::view::{self as pview, ViewId, ViewInfo, ViewSpec};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -92,13 +122,74 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use ratatui::Terminal;
+use tokio::sync::mpsc;
 
 use tui_term::widget::PseudoTerminal;
 
 use crate::pty_view::{BlockMark, BlockStatus, PtyView};
 use motif_client::coordinator::Coordinator as Client;
+use motif_client::pty_ws::{CloseReason, PtyClient};
+use motif_client::shell_integration::{ShellEvent, ShellState};
 
 type TermBackend = CrosstermBackend<Stdout>;
+
+/// Per-PTY client-side state. Owns the stdin sender (cloned out of
+/// `PtyClient.stdin`) and the OSC parsers that turn raw `/pty/<id>`
+/// bytes into block lifecycle events. The forwarder task pulls
+/// `PtyClient.outputs` and emits [`PtyByteFrame`]s into the unified
+/// main-loop channel.
+struct PtyStream {
+    stdin: mpsc::UnboundedSender<Bytes>,
+    shell: ShellState,
+    scanner: QueryScanner,
+    forwarder: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for PtyStream {
+    fn drop(&mut self) {
+        self.forwarder.abort();
+    }
+}
+
+/// Time-ordered frame the main loop pulls off the unified `pty_byte_rx`.
+/// Bytes interleave with `Closed` so the consumer can flush any
+/// trailing buffer before tearing down per-PTY state.
+enum PtyByteFrame {
+    Bytes(PtyId, Bytes),
+    Closed(PtyId, Option<CloseReason>),
+}
+
+/// Spawn the per-PTY forwarder that drains `PtyClient.outputs` into the
+/// unified `pty_byte_tx`. Returns the [`PtyStream`] handle (stdin
+/// sender + ShellState/QueryScanner placeholders + the forwarder
+/// JoinHandle) for the caller to register in `AppState.pty_streams`.
+fn spawn_pty_stream(
+    pty_id: PtyId,
+    pty: PtyClient,
+    initial_cwd: Option<PathBuf>,
+    tx: mpsc::UnboundedSender<PtyByteFrame>,
+) -> PtyStream {
+    let stdin = pty.stdin.clone();
+    let pty_id_for_task = pty_id.clone();
+    let forwarder = tokio::spawn(async move {
+        let mut pty = pty;
+        while let Some(bytes) = pty.outputs.recv().await {
+            if tx
+                .send(PtyByteFrame::Bytes(pty_id_for_task.clone(), bytes))
+                .is_err()
+            {
+                return;
+            }
+        }
+        let _ = tx.send(PtyByteFrame::Closed(pty_id_for_task, pty.close_reason()));
+    });
+    PtyStream {
+        stdin,
+        shell: ShellState::new(ShellKind::Unknown, std::time::Instant::now(), initial_cwd),
+        scanner: QueryScanner::new(),
+        forwarder,
+    }
+}
 
 pub async fn run(url: &str, token: &str, session: String) -> Result<()> {
     let tr = crate::transport::connect_v2(url, token, None, None).await?;
@@ -122,6 +213,16 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
             },
         )
         .await?;
+
+    // `tree.changed` / `git.changed` only fire while at least one client
+    // has subscribed (see `docs/rpc.md` §5.4). The TUI's left panels —
+    // file tree + git — are always visible during a session, so we
+    // subscribe right after attach and best-effort `fs.unwatch` on exit.
+    let _: pfs::WatchResult = tr
+        .client
+        .call("fs.watch", pfs::WatchParams::default())
+        .await
+        .unwrap_or_default();
     // Initial tree root: active PTY's cwd if there's one already running,
     // otherwise the session's workdir. Either way it's an absolute path.
     let initial_root: PathBuf = attach
@@ -164,7 +265,18 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
         .await
         .ok();
 
-    let mut state = AppState::new(session, attach, initial_root, tree, git_status);
+    let (pty_byte_tx, pty_byte_rx) = mpsc::unbounded_channel::<PtyByteFrame>();
+    let mut state = AppState::new(session, attach, initial_root, tree, git_status, pty_byte_tx);
+
+    // Open `/pty/<id>` WS for every PTY that already existed at attach.
+    // Subsequent `pty.created` events queue into `pending_pty_opens`
+    // and are processed at the top of the main loop.
+    let initial_ptys: Vec<ppty::PtyInfo> = state.attach_ptys.drain(..).collect();
+    for info in initial_ptys {
+        if let Err(e) = open_and_register_pty(&mut state, &tr.client, &info).await {
+            state.status = format!("open /pty/{}: {e}", info.id);
+        }
+    }
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -172,7 +284,7 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
-    let result = main_loop(&mut term, &mut tr.client, &mut state).await;
+    let result = main_loop(&mut term, &mut tr.client, &mut state, pty_byte_rx).await;
 
     disable_raw_mode()?;
     execute!(
@@ -182,13 +294,47 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
     )?;
     term.show_cursor()?;
 
+    // Best-effort unsubscribe so the server can tear down its file
+    // watcher if no other client still wants it. `session.detach`
+    // would clean up anyway, but the TUI doesn't always detach — when
+    // it doesn't, leaving the watcher running costs CPU for nothing.
+    let _: pfs::UnwatchResult = tr
+        .client
+        .call("fs.unwatch", pfs::UnwatchParams::default())
+        .await
+        .unwrap_or_default();
+
     result
+}
+
+/// Open a `/pty/<id>` WS, spawn the forwarder, and register the
+/// resulting [`PtyStream`] under `state.pty_streams`. Idempotent: if
+/// we're already tracking this PTY, the call is a no-op (the existing
+/// forwarder stays).
+async fn open_and_register_pty(
+    state: &mut AppState,
+    client: &Client,
+    info: &ppty::PtyInfo,
+) -> Result<()> {
+    if state.pty_streams.contains_key(&info.id) {
+        return Ok(());
+    }
+    let pty = client.open_pty(info.id.as_str(), 0).await?;
+    let stream = spawn_pty_stream(
+        info.id.clone(),
+        pty,
+        Some(info.cwd.clone()),
+        state.pty_byte_tx.clone(),
+    );
+    state.pty_streams.insert(info.id.clone(), stream);
+    Ok(())
 }
 
 async fn main_loop(
     term: &mut Terminal<TermBackend>,
     client: &mut Client,
     state: &mut AppState,
+    mut pty_byte_rx: mpsc::UnboundedReceiver<PtyByteFrame>,
 ) -> Result<()> {
     loop {
         term.draw(|f| draw(f, state))?;
@@ -203,26 +349,42 @@ async fn main_loop(
                 .unwrap_or(serde_json::Value::Null);
         }
 
-        // Push out canonical responses to terminal capability queries that
-        // came in with the last batch of pty.output events. Same deferred
-        // pattern as resizes — we don't want to send these synchronously
-        // from inside `apply_frame`.
-        let writes: Vec<(PtyId, Vec<u8>)> = state.pending_pty_writes.drain(..).collect();
-        for (pty_id, data) in writes {
-            let _: serde_json::Value = client
-                .call("pty.write", ppty::PtyWriteParams { pty_id, data })
-                .await
-                .unwrap_or(serde_json::Value::Null);
+        // Open `/pty/<id>` WS for every PTY that surfaced via a
+        // `pty.created` event since the last tick. Done out here (not
+        // inside `apply_notification`) because open_pty is async and
+        // we need access to the Coordinator.
+        let opens: Vec<ppty::PtyInfo> = state.pending_pty_opens.drain(..).collect();
+        for info in opens {
+            if let Err(e) = open_and_register_pty(state, client, &info).await {
+                state.status = format!("open /pty/{}: {e}", info.id);
+            }
         }
 
         // Lazy-load the active view's body cache (preview text / diff patch).
-        // PTYs and images don't need this — PTYs stream via pty.output, and
-        // images aren't in the TUI body for now.
+        // PTYs and images don't need this — PTY bytes arrive on the
+        // raw `/pty/<id>` WS, and images aren't in the TUI body for now.
         load_active_view_if_needed(state, client).await;
 
+        // Drain PTY raw-byte frames first so the rendered terminal stays
+        // ahead of the structured event/key flow.
+        for _ in 0..64 {
+            match pty_byte_rx.try_recv() {
+                Ok(PtyByteFrame::Bytes(pid, bytes)) => apply_pty_bytes(state, pid, bytes),
+                Ok(PtyByteFrame::Closed(pid, _reason)) => {
+                    // `/pty/<id>` WS closed (server-side hangup, lag,
+                    // 4011/4012). Drop our per-PTY state; the matching
+                    // `pty.exited` event will catch up on its own
+                    // schedule and clean up `pty_views`/`pty_blocks`.
+                    state.pty_streams.remove(&pid);
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+
         // Drain incoming server notifications quickly. Responses are routed
-        // by id inside `Client` and never show up here — this loop only sees
-        // server-pushed events (pty.output, view.opened, …).
+        // by id inside `Client` and never show up here — this loop only
+        // sees the 12 real server-pushed events.
         for _ in 0..64 {
             match tokio::time::timeout(Duration::from_millis(0), client.recv_notification()).await {
                 Ok(Some(n)) => apply_notification(state, n),
@@ -271,6 +433,15 @@ struct AppState {
     files: Vec<pfs::TreeEntry>,
     tree_state: ListState,
     git: Option<pgit::StatusResult>,
+    /// Selection in the git panel's file list. Independent of `tree_state`
+    /// so each panel keeps its own cursor. Only consulted in `Mode::Git`.
+    git_state: ListState,
+
+    /// Per-panel visibility. Hidden panels are skipped at draw time and
+    /// the left column collapses; both hidden → body takes full width.
+    /// Defaults are both visible to match the legacy layout.
+    show_tree: bool,
+    show_git: bool,
 
     /// Synced from server.
     views: Vec<ViewInfo>,
@@ -300,16 +471,23 @@ struct AppState {
     pty_last_size: HashMap<PtyId, (u16, u16)>,
     pending_resizes: Vec<(PtyId, u16, u16)>,
 
-    /// Per-PTY scanner that strips fish-style terminal capability queries
-    /// from the byte stream and lets us answer them. The server already
-    /// filters its broadcast so this is a defence-in-depth path: if the
-    /// server filter were ever bypassed (e.g. older server, query split
-    /// across the broadcast boundary in a way the server's scanner missed),
-    /// the TUI still keeps fish unstuck.
-    pty_scanners: HashMap<PtyId, QueryScanner>,
-    /// Bytes destined for `pty.write` calls, drained by the main loop.
-    /// Mirrors the deferred-RPC pattern used for `pending_resizes`.
-    pending_pty_writes: Vec<(PtyId, Vec<u8>)>,
+    /// Active `/pty/<id>` WebSocket connections + per-PTY OSC parsers.
+    /// Owns the forwarder JoinHandle (aborted on Drop) and the stdin
+    /// sender — keyboard input and canonical capability-query replies
+    /// both flow back to the server through `pty_streams[id].stdin`.
+    pty_streams: HashMap<PtyId, PtyStream>,
+    /// Producer end of the unified PTY byte stream. Cloned into each
+    /// forwarder spawned by `open_and_register_pty`. Receiver end lives
+    /// in `main_loop` as a local.
+    pty_byte_tx: mpsc::UnboundedSender<PtyByteFrame>,
+    /// PTYs surfaced by `pty.created` events that haven't yet been
+    /// opened on the `/pty/<id>` WS. Drained at the top of each main
+    /// loop tick (open_pty is async).
+    pending_pty_opens: Vec<ppty::PtyInfo>,
+    /// PTYs present at attach time, drained by `run_with` before the
+    /// main loop starts (same shape as `pending_pty_opens` but with
+    /// the initial snapshot from `session.attach`).
+    attach_ptys: Vec<ppty::PtyInfo>,
 
     /// Per-view client cache for preview/diff content. Hydrated lazily when
     /// the view becomes active.
@@ -334,11 +512,19 @@ enum Mode {
     Tree,
     /// PTY scrollback navigation (tmux's copy-mode equivalent).
     Scroll,
+    /// Git-panel navigation: select a changed file, press Enter to open
+    /// its diff tab. Same emacs movement vocabulary as `Tree`.
+    Git,
 }
 
 enum ViewBodyCache {
-    Preview { content: String },
-    Diff { patch: String },
+    /// `scroll` is the top-line offset rendered (passed to ratatui's
+    /// `Paragraph::scroll((scroll, 0))`). Mutated in-place by the Pane-mode
+    /// arrow / page keys when a non-PTY view is active; clamped to
+    /// `0..line_count(content)-1` on every render so a freshly-shrunk
+    /// content can't leave the cursor pointing past the end.
+    Preview { content: String, scroll: u16 },
+    Diff { patch: String, scroll: u16 },
 }
 
 #[derive(Default, Debug, Clone)]
@@ -377,14 +563,16 @@ impl AppState {
         initial_root: PathBuf,
         tree: pfs::TreeResult,
         git: Option<pgit::StatusResult>,
+        pty_byte_tx: mpsc::UnboundedSender<PtyByteFrame>,
     ) -> Self {
         let mut tree_state = ListState::default();
         if !tree.entries.is_empty() {
             tree_state.select(Some(0));
         }
 
-        // Pre-allocate PTY screen state + cwd map for any PTYs already in the
-        // session; output will replay via the broadcast ring after attach.
+        // Pre-allocate PTY screen state + cwd map for any PTYs already in
+        // the session; bytes will arrive on `/pty/<id>` once `run_with`
+        // opens those WS connections.
         let mut pty_views = HashMap::new();
         let mut pty_cwds = HashMap::new();
         let mut pty_cmds = HashMap::new();
@@ -395,6 +583,15 @@ impl AppState {
         }
 
         let session_workdir = attach.session.workdir.clone();
+        let attach_ptys = attach.ptys;
+        let mut git_state = ListState::default();
+        if git
+            .as_ref()
+            .map(|g| !g.files.is_empty())
+            .unwrap_or(false)
+        {
+            git_state.select(Some(0));
+        }
         Self {
             session_name,
             session_workdir,
@@ -403,6 +600,9 @@ impl AppState {
             files: tree.entries,
             tree_state,
             git,
+            git_state,
+            show_tree: true,
+            show_git: true,
             views: attach.views,
             active_view: attach.active_view,
             pty_cwds,
@@ -412,8 +612,10 @@ impl AppState {
             pty_views,
             pty_last_size: HashMap::new(),
             pending_resizes: Vec::new(),
-            pty_scanners: HashMap::new(),
-            pending_pty_writes: Vec::new(),
+            pty_streams: HashMap::new(),
+            pty_byte_tx,
+            pending_pty_opens: Vec::new(),
+            attach_ptys,
             view_cache: HashMap::new(),
             mode: Mode::Pane,
             status: format!(
@@ -523,6 +725,8 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 state.pty_cwds.insert(info.id.clone(), info.cwd.clone());
                 state.pty_cmds.insert(info.id.clone(), info.cmd.clone());
                 state.status = format!("pty {} created", info.id);
+                // open_pty needs the Coordinator; defer to main_loop.
+                state.pending_pty_opens.push(info);
             }
         }
         "pty.exited" => {
@@ -533,59 +737,9 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 state.pty_cwds.remove(&pid_owned);
                 state.pty_cmds.remove(&pid_owned);
                 state.pty_blocks.remove(&pid_owned);
-                state.pty_scanners.remove(&pid_owned);
-                state.pending_pty_writes.retain(|(p, _)| p != &pid_owned);
+                state.pty_streams.remove(&pid_owned);
+                state.pending_pty_opens.retain(|p| p.id != pid_owned);
                 state.status = format!("pty {pid_owned} exited");
-            }
-        }
-        // v2 shell-integration: track running command + last-finished
-        // flash for the header chip and PTY tab label, AND register the
-        // start row in PtyView so Ctrl-g b/f can jump to it later.
-        "pty.command_started" => {
-            if let (Some(pid), Some(block_id), Some(text)) = (
-                n.params.get("pty_id").and_then(|v| v.as_str()),
-                n.params.get("block_id").and_then(|v| v.as_str()),
-                n.params.get("text").and_then(|v| v.as_str()),
-            ) {
-                state.pty_blocks.entry(pid.to_string()).or_default().running =
-                    Some(text.to_string());
-                if let Some(view) = state.pty_views.get_mut(pid) {
-                    view.mark_block_start(block_id.to_string());
-                }
-            }
-        }
-        "pty.command_finished" => {
-            if let Some(pid) = n.params.get("pty_id").and_then(|v| v.as_str()) {
-                let exit = n.params.get("exit_code").and_then(|v| {
-                    if v.is_null() {
-                        None
-                    } else {
-                        v.as_i64().map(|x| x as i32)
-                    }
-                });
-                let entry = state.pty_blocks.entry(pid.to_string()).or_default();
-                let cmd = entry.running.take().unwrap_or_default();
-                entry.flash = Some((cmd, exit, std::time::Instant::now()));
-                if let (Some(block_id), Some(view)) = (
-                    n.params.get("block_id").and_then(|v| v.as_str()),
-                    state.pty_views.get_mut(pid),
-                ) {
-                    view.mark_block_end(block_id, exit);
-                }
-            }
-        }
-        // shell_bootstrapped / shell_context don't need stored state for
-        // the TUI — bootstrap status only matters for log noise, and
-        // shell_context (git branch / venv) duplicates what the git pane
-        // already shows on a longer cadence.
-        "pty.shell_bootstrapped" | "pty.shell_context" => {}
-        "pty.cwd_changed" => {
-            if let Some(pid) = n.params.get("pty_id").and_then(|v| v.as_str()) {
-                if let Some(cwd) = n.params.get("cwd").and_then(|v| v.as_str()) {
-                    state.pty_cwds.insert(pid.to_string(), PathBuf::from(cwd));
-                }
-                // Tree retargeting happens in main_loop (needs &mut Client
-                // for the refresh fetch).
             }
         }
         "pty.resize" => {
@@ -599,38 +753,86 @@ fn apply_notification(state: &mut AppState, n: Notification) {
                 }
             }
         }
-        "pty.output" => {
-            if let (Some(pid), Some(b64)) = (
-                n.params.get("pty_id").and_then(|v| v.as_str()),
-                n.params.get("data_b64").and_then(|v| v.as_str()),
-            ) {
-                if let Ok(bytes) = BASE64.decode(b64.as_bytes()) {
-                    let pid_owned = pid.to_string();
-                    // Strip terminal capability queries before they reach
-                    // vt100; queue a `pty.write` with the canonical reply
-                    // so fish doesn't hang on its 10s timeout. Queries
-                    // must be answered as a single response per query —
-                    // no batching across queries, since each shell-side
-                    // consumer reads them with strict framing.
-                    let scanner = state.pty_scanners.entry(pid_owned.clone()).or_default();
-                    let scan = scanner.feed(&bytes);
-                    // shell-integration markers have no canonical response — server already
-                    // consumed them into block events. Only capability
-                    // queries reach this defence-in-depth path.
-                    for q in scan.queries {
-                        if let Some(reply) = q.canonical_response() {
-                            state.pending_pty_writes.push((pid_owned.clone(), reply));
-                        }
+        _ => {}
+    }
+}
+
+// ─────────────────────────── PTY byte handling ───────────────────────────
+
+/// Drive the per-PTY OSC parser + block state machine off a raw byte
+/// burst, then feed the passthrough portion to the vt100 buffer.
+/// Capability queries (cursor position, OSC 10/11 colour, XTVERSION,
+/// etc.) get answered synchronously by sending the canonical reply
+/// straight back to PTY stdin — the same defence-in-depth the
+/// previous server-side scanner provided.
+fn apply_pty_bytes(state: &mut AppState, pty_id: PtyId, bytes: Bytes) {
+    // Pull the per-PTY OSC scan + shell-event derivation out under a
+    // narrow borrow of `pty_streams`, then dispatch into the rest of
+    // AppState afterwards (which also touches `pty_views` / `pty_cwds`
+    // / `pty_blocks`).
+    let (passthrough, shell_events): (Vec<u8>, Vec<ShellEvent>) = {
+        let Some(stream) = state.pty_streams.get_mut(&pty_id) else {
+            return;
+        };
+        let scan = stream.scanner.feed(&bytes);
+        let mut shell_events: Vec<ShellEvent> = Vec::new();
+        for item in &scan.items {
+            match item {
+                ScanItem::Bytes(b) => stream.shell.record_output(b),
+                ScanItem::Query { kind, .. } => {
+                    if kind.is_shell_integration() {
+                        shell_events.extend(stream.shell.on_osc(kind));
+                    } else if let Some(reply) = kind.canonical_response() {
+                        let _ = stream.stdin.send(Bytes::from(reply));
                     }
-                    let view = state
-                        .pty_views
-                        .entry(pid_owned)
-                        .or_insert_with(|| PtyView::new(24, 80));
-                    view.process(&scan.passthrough);
                 }
             }
         }
-        _ => {}
+        (scan.passthrough, shell_events)
+    };
+
+    if !passthrough.is_empty() {
+        let view = state
+            .pty_views
+            .entry(pty_id.clone())
+            .or_insert_with(|| PtyView::new(24, 80));
+        view.process(&passthrough);
+    }
+
+    for ev in shell_events {
+        apply_shell_event(state, &pty_id, ev);
+    }
+}
+
+/// Apply a single decoded [`ShellEvent`] to AppState. Mirrors the old
+/// `pty.command_*` / `pty.cwd_changed` notification handlers exactly.
+/// `Bootstrapped`, `PromptStarted/Ended`, and `Context` carry no UI
+/// state the TUI surfaces today — they're consumed silently.
+fn apply_shell_event(state: &mut AppState, pty_id: &PtyId, ev: ShellEvent) {
+    match ev {
+        ShellEvent::CommandStarted { id, text, .. } => {
+            state.pty_blocks.entry(pty_id.clone()).or_default().running = Some(text.clone());
+            if let Some(view) = state.pty_views.get_mut(pty_id) {
+                view.mark_block_start(id);
+            }
+        }
+        ShellEvent::CommandFinished {
+            id, cmd, exit, ..
+        } => {
+            let entry = state.pty_blocks.entry(pty_id.clone()).or_default();
+            entry.running = None;
+            entry.flash = Some((cmd, exit, std::time::Instant::now()));
+            if let Some(view) = state.pty_views.get_mut(pty_id) {
+                view.mark_block_end(&id, exit);
+            }
+        }
+        ShellEvent::CwdChanged { cwd } => {
+            state.pty_cwds.insert(pty_id.clone(), cwd);
+        }
+        ShellEvent::Bootstrapped
+        | ShellEvent::PromptStarted { .. }
+        | ShellEvent::PromptEnded { .. }
+        | ShellEvent::Context { .. } => {}
     }
 }
 
@@ -743,7 +945,7 @@ async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
                 };
                 state
                     .view_cache
-                    .insert(vid, ViewBodyCache::Preview { content });
+                    .insert(vid, ViewBodyCache::Preview { content, scroll: 0 });
             }
         }
         ViewSpec::Diff { staged, path } => {
@@ -757,7 +959,7 @@ async fn load_active_view_if_needed(state: &mut AppState, client: &mut Client) {
             {
                 state
                     .view_cache
-                    .insert(vid, ViewBodyCache::Diff { patch: r.patch });
+                    .insert(vid, ViewBodyCache::Diff { patch: r.patch, scroll: 0 });
             }
         }
         ViewSpec::Pty { .. } | ViewSpec::Image { .. } => {
@@ -792,26 +994,82 @@ async fn handle_key(
             handle_prefix_key(state, client, code, mods).await
         }
         Mode::Tree => handle_tree_mode_key(state, client, code, mods).await,
+        Mode::Git => handle_git_mode_key(state, client, code, mods).await,
         Mode::Scroll => handle_scroll_mode_key(state, client, code, mods).await,
         Mode::Pane => handle_pane_key(state, client, code, mods).await,
     }
 }
 
-/// Default mode: every key (other than the prefix `Ctrl-g`) is forwarded to
-/// the active PTY, exactly like a tmux pane.
+/// Default mode: keys flow to the active PTY (tmux pane), **except**:
+///   * `Ctrl-g` — enter Prefix
+///   * arrow / PageUp / PageDown / Home / End — scroll the body when
+///     the active view is non-PTY (preview / diff). PTY views fall
+///     through so those keys still reach the shell (e.g., `less`, `vim`).
 async fn handle_pane_key(
     state: &mut AppState,
-    client: &mut Client,
+    _client: &mut Client,
     code: KeyCode,
     mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
     if matches!(code, KeyCode::Char('g')) && mods.contains(KeyModifiers::CONTROL) {
         state.mode = Mode::Prefix;
         state.status =
-            "prefix · c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll ?=help".into();
+            "prefix · c=newpty n/p=tab w=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t/T=tree s/S=git [=scroll ?=help".into();
         return Ok(KeyOutcome::Stay);
     }
-    forward_to_pty(state, client, code, mods).await
+    if matches!(
+        code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+    ) {
+        if let Some(out) = scroll_active_body(state, code) {
+            return Ok(out);
+        }
+    }
+    forward_to_pty(state, code, mods)
+}
+
+/// One half-screen page in lines for PageUp / PageDown over preview /
+/// diff bodies. Same rationale as `TREE_PAGE_LINES`: we don't know the
+/// real height here, so this is a reasonable fixed compromise.
+const BODY_PAGE_LINES: i32 = 10;
+
+/// Scroll the active view's body cache by `code`'s direction. Returns
+/// `None` when there's nothing to scroll (active view is a PTY / image,
+/// no cache yet, etc.) so the caller can fall through to PTY input.
+fn scroll_active_body(state: &mut AppState, code: KeyCode) -> Option<KeyOutcome> {
+    let vid = state.active_view.clone()?;
+    let spec = state.views.iter().find(|v| v.id == vid).map(|v| &v.spec)?;
+    if matches!(spec, ViewSpec::Pty { .. } | ViewSpec::Image { .. }) {
+        return None;
+    }
+    let cache = state.view_cache.get_mut(&vid)?;
+    let (scroll_ref, max_line) = match cache {
+        ViewBodyCache::Preview { content, scroll } => {
+            (scroll, content.lines().count().saturating_sub(1))
+        }
+        ViewBodyCache::Diff { patch, scroll } => {
+            (scroll, patch.lines().count().saturating_sub(1))
+        }
+    };
+    let max = max_line.min(u16::MAX as usize) as i32;
+    let step: i32 = match code {
+        KeyCode::Up => -1,
+        KeyCode::Down => 1,
+        KeyCode::PageUp => -BODY_PAGE_LINES,
+        KeyCode::PageDown => BODY_PAGE_LINES,
+        KeyCode::Home => i32::MIN,
+        KeyCode::End => i32::MAX,
+        _ => return None,
+    };
+    let cur = *scroll_ref as i32;
+    let next = cur.saturating_add(step).clamp(0, max);
+    *scroll_ref = next as u16;
+    Some(KeyOutcome::Stay)
 }
 
 /// One-shot prefix dispatcher. Entered after `Ctrl-g` from any mode; falls
@@ -848,8 +1106,10 @@ async fn handle_prefix_key(
         // tmux: prefix-n / prefix-p → next/prev window
         (KeyCode::Char('n'), false) => cycle_tabs(state, client, 1).await,
         (KeyCode::Char('p'), false) => cycle_tabs(state, client, -1).await,
-        // tmux: prefix-& → kill window
-        (KeyCode::Char('&'), _) => {
+        // prefix-w → close current tab (tmux's kill-window is `&`, but
+        // requiring shift on most keyboards makes it awkward; `w` matches
+        // the "close window" mnemonic from many editors).
+        (KeyCode::Char('w'), false) => {
             if let Some(vid) = state.active_view.clone() {
                 close_view_id(client, vid).await;
                 state.status = "closed tab".into();
@@ -869,7 +1129,7 @@ async fn handle_prefix_key(
         // tmux: prefix-? → list keys
         (KeyCode::Char('?'), _) => {
             state.status =
-                "prefix · c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll b/f=block Ctrl-g=literal Ctrl-c=quit".into();
+                "prefix · c=newpty n/p=tab w=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t/T=tree s/S=git [=scroll b/f=block Ctrl-g=literal Ctrl-c=quit".into();
         }
         // refresh tree + git (motif-specific)
         (KeyCode::Char('r'), false) => refresh_tree(state, client).await,
@@ -887,11 +1147,44 @@ async fn handle_prefix_key(
             )
             .await;
         }
-        // enter Tree mode (file-tree navigation, emacs keys)
+        // enter Tree mode (file-tree navigation, emacs keys). Auto-show the
+        // panel if it was hidden so the cursor has somewhere visible to land.
         (KeyCode::Char('t'), false) => {
+            state.show_tree = true;
             state.mode = Mode::Tree;
             state.status =
                 "tree · Ctrl-n/Ctrl-p select · Ctrl-m open · Ctrl-h up · Ctrl-v/Alt-v page · Alt-</Alt-> top/bottom · q or Ctrl-g leave".into();
+        }
+        // Toggle tree panel visibility (paired with `t` = enter Tree mode).
+        (KeyCode::Char('T'), false) => {
+            state.show_tree = !state.show_tree;
+            if !state.show_tree && state.mode == Mode::Tree {
+                state.mode = Mode::Pane;
+            }
+            state.status = if state.show_tree { "tree shown".into() } else { "tree hidden".into() };
+        }
+        // enter Git mode (changed-file navigation; Enter opens diff for the
+        // selected file). Auto-show the panel.
+        (KeyCode::Char('s'), false) => {
+            state.show_git = true;
+            // Seed selection if it was empty (e.g., entering for the first
+            // time, or after the file list grew from empty).
+            if state.git_state.selected().is_none()
+                && state.git.as_ref().is_some_and(|g| !g.files.is_empty())
+            {
+                state.git_state.select(Some(0));
+            }
+            state.mode = Mode::Git;
+            state.status =
+                "git · Ctrl-n/Ctrl-p select · Ctrl-m open diff · q or Ctrl-g leave".into();
+        }
+        // Toggle git panel visibility (paired with `s` = enter Git mode).
+        (KeyCode::Char('S'), false) => {
+            state.show_git = !state.show_git;
+            if !state.show_git && state.mode == Mode::Git {
+                state.mode = Mode::Pane;
+            }
+            state.status = if state.show_git { "git shown".into() } else { "git hidden".into() };
         }
         // enter Scroll mode (tmux's copy-mode equivalent)
         (KeyCode::Char('['), _) => {
@@ -910,7 +1203,7 @@ async fn handle_prefix_key(
         (KeyCode::Char('f'), false) => jump_block(state, /* forward */ true),
         // tmux: prefix-prefix → send literal prefix to the PTY
         (KeyCode::Char('g'), true) => {
-            forward_to_pty(state, client, KeyCode::Char('g'), KeyModifiers::CONTROL).await?;
+            forward_to_pty(state, KeyCode::Char('g'), KeyModifiers::CONTROL)?;
         }
         _ => state.status = "prefix cancelled".into(),
     }
@@ -999,6 +1292,79 @@ async fn handle_tree_mode_key(
     Ok(KeyOutcome::Stay)
 }
 
+/// Git-panel navigation. Mirrors Tree mode's emacs vocabulary; Enter
+/// opens the selected file's diff in a new tab. Branch / index lines
+/// aren't selectable — only entries in `git.files`.
+async fn handle_git_mode_key(
+    state: &mut AppState,
+    client: &mut Client,
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> Result<KeyOutcome> {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    match (code, ctrl, alt) {
+        (KeyCode::Char('g'), true, false) => {
+            state.mode = Mode::Prefix;
+            state.status = "git → prefix".into();
+        }
+        (KeyCode::Char('q'), false, false) => {
+            state.mode = Mode::Pane;
+            state.status = "left git".into();
+        }
+        (KeyCode::Char('n'), true, false) | (KeyCode::Down, false, false) => {
+            move_git(state, 1)
+        }
+        (KeyCode::Char('p'), true, false) | (KeyCode::Up, false, false) => move_git(state, -1),
+        (KeyCode::Char('v'), true, false) => move_git(state, TREE_PAGE_LINES),
+        (KeyCode::Char('v'), false, true) => move_git(state, -TREE_PAGE_LINES),
+        (KeyCode::Char('<'), false, true) => move_git(state, i32::MIN),
+        (KeyCode::Char('>'), false, true) => move_git(state, i32::MAX),
+        (KeyCode::Char('m'), true, false) | (KeyCode::Enter, false, false) => {
+            if let Some(path) = selected_git_path(state) {
+                open_view(
+                    client,
+                    ViewSpec::Diff {
+                        staged: false,
+                        path: Some(path),
+                    },
+                    true,
+                )
+                .await;
+                // Drop to Pane so focus follows the newly-opened diff tab;
+                // the user can scroll it with arrow / PageUp / PageDown.
+                state.mode = Mode::Pane;
+                state.status = "opened diff".into();
+            } else {
+                state.status = "no file selected".into();
+            }
+        }
+        _ => {}
+    }
+    Ok(KeyOutcome::Stay)
+}
+
+fn move_git(state: &mut AppState, delta: i32) {
+    let total = state.git.as_ref().map(|g| g.files.len()).unwrap_or(0);
+    if total == 0 {
+        state.git_state.select(None);
+        return;
+    }
+    let max = total as i32 - 1;
+    let cur = state.git_state.selected().unwrap_or(0) as i32;
+    let new = cur.saturating_add(delta).clamp(0, max);
+    state.git_state.select(Some(new as usize));
+}
+
+/// Path of the currently-selected git file, or `None` if the selection
+/// is out of bounds (e.g., the file list was emptied by an external
+/// commit between selection and Enter).
+fn selected_git_path(state: &AppState) -> Option<String> {
+    let g = state.git.as_ref()?;
+    let idx = state.git_state.selected()?;
+    g.files.get(idx).map(|f| f.path.clone())
+}
+
 /// Active-PTY scrollback. Same emacs movement vocabulary as Tree mode.
 async fn handle_scroll_mode_key(
     state: &mut AppState,
@@ -1063,29 +1429,21 @@ async fn cycle_tabs(state: &AppState, client: &mut Client, delta: i32) {
     activate_view_id(client, id).await;
 }
 
-async fn forward_to_pty(
+fn forward_to_pty(
     state: &AppState,
-    client: &mut Client,
     code: KeyCode,
     mods: KeyModifiers,
 ) -> Result<KeyOutcome> {
-    let Some(pty_id) = active_pty_id(state).cloned() else {
+    let Some(pty_id) = active_pty_id(state) else {
         return Ok(KeyOutcome::Stay);
     };
     let bytes = key_to_bytes(code, mods);
     if bytes.is_empty() {
         return Ok(KeyOutcome::Stay);
     }
-    let _: serde_json::Value = client
-        .call(
-            "pty.write",
-            ppty::PtyWriteParams {
-                pty_id,
-                data: bytes,
-            },
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
+    if let Some(stream) = state.pty_streams.get(pty_id) {
+        let _ = stream.stdin.send(Bytes::from(bytes));
+    }
     Ok(KeyOutcome::Stay)
 }
 
@@ -1227,6 +1585,16 @@ async fn refresh_tree(state: &mut AppState, client: &mut Client) {
         )
         .await
         .ok();
+    // Keep git_state in bounds — a refresh after the user committed a
+    // file can shrink the list past the previously-selected index.
+    let git_count = state.git.as_ref().map(|g| g.files.len()).unwrap_or(0);
+    if git_count == 0 {
+        state.git_state.select(None);
+    } else if state.git_state.selected().unwrap_or(0) >= git_count {
+        state.git_state.select(Some(git_count - 1));
+    } else if state.git_state.selected().is_none() {
+        state.git_state.select(Some(0));
+    }
     state.status = format!("refreshed @ {path_str}");
 }
 
@@ -1265,6 +1633,11 @@ async fn on_enter_in_tree(state: &mut AppState, client: &mut Client) {
             // clients add the tab and (since activate=true) jump to it.
             let path_str = abs_path.to_string_lossy().into_owned();
             open_view(client, ViewSpec::Preview { path: path_str }, true).await;
+            // Drop back to Pane mode so the newly-active preview body
+            // takes focus immediately — keys (incl. arrow-key scroll)
+            // flow into it rather than continuing to drive the tree.
+            state.mode = Mode::Pane;
+            state.status = "opened preview".into();
         }
     }
 }
@@ -1315,6 +1688,7 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         Mode::Pane => {}
         Mode::Prefix => spans.push(Span::raw("  [PREFIX]")),
         Mode::Tree => spans.push(Span::raw("  [TREE]")),
+        Mode::Git => spans.push(Span::raw("  [GIT]")),
         Mode::Scroll => spans.push(Span::raw("  [SCROLL]")),
     }
     if state.manual_nav {
@@ -1337,85 +1711,130 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         outer[0],
     );
 
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(28), Constraint::Min(1)])
-        .split(outer[1]);
-
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Min(1)])
-        .split(main[0]);
+    // ── left column layout (conditional on which panels are visible) ──
+    // When both panels are hidden the right column claims the full width,
+    // so the user can keep terminals open with no UI chrome stealing
+    // space. `Ctrl-g T` / `Ctrl-g S` toggle visibility; entering Tree or
+    // Git mode auto-reveals the corresponding panel.
+    let (tree_area, git_area, body_outer): (Option<Rect>, Option<Rect>, Rect) =
+        match (state.show_tree, state.show_git) {
+            (false, false) => (None, None, outer[1]),
+            (tree, git) => {
+                let main = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(28), Constraint::Min(1)])
+                    .split(outer[1]);
+                let body = main[1];
+                let (t, g) = match (tree, git) {
+                    (true, true) => {
+                        let l = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Percentage(60), Constraint::Min(1)])
+                            .split(main[0]);
+                        (Some(l[0]), Some(l[1]))
+                    }
+                    (true, false) => (Some(main[0]), None),
+                    (false, true) => (None, Some(main[0])),
+                    (false, false) => unreachable!(),
+                };
+                (t, g, body)
+            }
+        };
 
     // ── files panel ──
-    let mut rows: Vec<ListItem> = Vec::with_capacity(state.files.len() + 1);
-    if state.current_path.parent().is_some() {
-        rows.push(ListItem::new(".. (parent)").style(Style::default().fg(Color::DarkGray)));
+    if let Some(tree_area) = tree_area {
+        let mut rows: Vec<ListItem> = Vec::with_capacity(state.files.len() + 1);
+        if state.current_path.parent().is_some() {
+            rows.push(ListItem::new(".. (parent)").style(Style::default().fg(Color::DarkGray)));
+        }
+        for e in &state.files {
+            let glyph = match e.kind {
+                pfs::FileType::Dir => "📁 ",
+                pfs::FileType::Symlink => "↳ ",
+                pfs::FileType::File => "  ",
+            };
+            let style = if matches!(e.kind, pfs::FileType::Dir) {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            rows.push(ListItem::new(format!("{glyph}{}", e.name)).style(style));
+        }
+        // Show only the leaf segment in the panel title to keep it compact;
+        // the full absolute path is in the header bar.
+        let leaf = state
+            .current_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| state.current_path.to_string_lossy().into_owned());
+        let title = format!("files · {leaf}");
+        let list = List::new(rows)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        f.render_stateful_widget(list, tree_area, &mut state.tree_state);
     }
-    for e in &state.files {
-        let glyph = match e.kind {
-            pfs::FileType::Dir => "📁 ",
-            pfs::FileType::Symlink => "↳ ",
-            pfs::FileType::File => "  ",
-        };
-        let style = if matches!(e.kind, pfs::FileType::Dir) {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-        rows.push(ListItem::new(format!("{glyph}{}", e.name)).style(style));
-    }
-    // Show only the leaf segment in the panel title to keep it compact;
-    // the full absolute path is in the header bar.
-    let leaf = state
-        .current_path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| state.current_path.to_string_lossy().into_owned());
-    let title = format!("files · {leaf}");
-    let list = List::new(rows)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(list, left[0], &mut state.tree_state);
 
     // ── git panel ──
-    let git_lines: Vec<Line> = match &state.git {
-        Some(g) => {
-            let mut v = Vec::new();
-            v.push(Line::from(vec![
-                Span::styled("branch ", Style::default().fg(Color::DarkGray)),
-                Span::raw(g.branch.clone().unwrap_or_else(|| "(detached)".into())),
-            ]));
-            for f in &g.files {
-                let symbol = format!("{}{}", short_status(f.staged), short_status(f.unstaged));
-                v.push(Line::from(vec![
-                    Span::styled(symbol, Style::default().fg(Color::Yellow)),
-                    Span::raw(" "),
-                    Span::raw(f.path.clone()),
-                ]));
-                if v.len() > 200 {
-                    break;
-                }
+    if let Some(git_area) = git_area {
+        let branch_line = match &state.git {
+            Some(g) => format!(
+                "branch {}",
+                g.branch.clone().unwrap_or_else(|| "(detached)".into())
+            ),
+            None => "(not a git repo)".into(),
+        };
+        let title = format!("git · {branch_line}");
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let inner = block.inner(git_area);
+        f.render_widget(block, git_area);
+
+        match &state.git {
+            Some(g) if !g.files.is_empty() => {
+                let rows: Vec<ListItem> = g
+                    .files
+                    .iter()
+                    .take(200)
+                    .map(|fe| {
+                        let symbol =
+                            format!("{}{}", short_status(fe.staged), short_status(fe.unstaged));
+                        ListItem::new(Line::from(vec![
+                            Span::styled(symbol, Style::default().fg(Color::Yellow)),
+                            Span::raw(" "),
+                            Span::raw(fe.path.clone()),
+                        ]))
+                    })
+                    .collect();
+                // Highlight only when the user has focused the git panel.
+                // Outside Git mode the same selection renders as a normal
+                // row so the panel doesn't visually compete with Tree mode.
+                let highlight = if state.mode == Mode::Git {
+                    Style::default()
+                        .add_modifier(Modifier::REVERSED)
+                        .fg(Color::LightYellow)
+                } else {
+                    Style::default()
+                };
+                let list = List::new(rows).highlight_style(highlight);
+                f.render_stateful_widget(list, inner, &mut state.git_state);
             }
-            v
+            Some(_) => {
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "(working tree clean)",
+                        Style::default().fg(Color::DarkGray),
+                    ))),
+                    inner,
+                );
+            }
+            None => { /* title already says "(not a git repo)" */ }
         }
-        None => vec![Line::from(Span::styled(
-            "(not a git repo)",
-            Style::default().fg(Color::DarkGray),
-        ))],
-    };
-    f.render_widget(
-        Paragraph::new(git_lines)
-            .block(Block::default().borders(Borders::ALL).title("git"))
-            .wrap(Wrap { trim: false }),
-        left[1],
-    );
+    }
 
     // ── tabs + body ──
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(1)])
-        .split(main[1]);
+        .split(body_outer);
 
     // Tabs are labelled 1..N by current position. PTY tabs additionally show
     // a 1-based ordinal among PTYs (matches the web TabBar) instead of the
@@ -1457,21 +1876,24 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
         .borders(Borders::ALL)
         .title(match state.mode {
             Mode::Pane => {
-                "Ctrl-g c=newpty · Ctrl-g n/p=tab · Ctrl-g t=tree · Ctrl-g [=scroll · Ctrl-g ?=help"
+                "Ctrl-g c=newpty · Ctrl-g n/p=tab · Ctrl-g t=tree · Ctrl-g s=git · Ctrl-g [=scroll · Ctrl-g ?=help"
             }
             Mode::Prefix => "[prefix] · waiting for command key",
             Mode::Tree => "[tree mode] · Ctrl-n/p select · Ctrl-m open · Ctrl-h up · q to leave",
+            Mode::Git => "[git mode] · Ctrl-n/p select · Ctrl-m open diff · q to leave",
             Mode::Scroll => "[scroll mode] · Ctrl-v/Alt-v page · Alt-</Alt-> top/live · q to leave",
         });
     let inner = body_block.inner(right[1]);
     f.render_widget(body_block, right[1]);
 
     // Snapshot the active view so we don't hold a borrow of state.views
-    // while passing &mut state to render_pty_tab.
+    // while passing &mut state to render_pty_tab. Preview/Diff also
+    // carry the saved `scroll` offset; arrow / page keys mutate it in
+    // place via `scroll_active_body`.
     enum ActiveBody {
         Pty(PtyId),
-        Preview(String),
-        Diff(String),
+        Preview(String, u16),
+        Diff(String, u16),
         Loading(&'static str),
         None,
     }
@@ -1483,8 +1905,8 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
                 .as_ref()
                 .and_then(|vid| state.view_cache.get(vid))
             {
-                Some(ViewBodyCache::Preview { content, .. }) => {
-                    ActiveBody::Preview(content.clone())
+                Some(ViewBodyCache::Preview { content, scroll }) => {
+                    ActiveBody::Preview(content.clone(), *scroll)
                 }
                 _ => ActiveBody::Loading("loading file…"),
             }
@@ -1495,7 +1917,9 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
                 .as_ref()
                 .and_then(|vid| state.view_cache.get(vid))
             {
-                Some(ViewBodyCache::Diff { patch }) => ActiveBody::Diff(patch.clone()),
+                Some(ViewBodyCache::Diff { patch, scroll }) => {
+                    ActiveBody::Diff(patch.clone(), *scroll)
+                }
                 _ => ActiveBody::Loading("loading diff…"),
             }
         }
@@ -1506,10 +1930,15 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
     };
     match active_body {
         ActiveBody::Pty(id) => render_pty_tab(f, state, &id, inner),
-        ActiveBody::Preview(content) => {
-            f.render_widget(Paragraph::new(content).wrap(Wrap { trim: false }), inner);
+        ActiveBody::Preview(content, scroll) => {
+            f.render_widget(
+                Paragraph::new(content)
+                    .wrap(Wrap { trim: false })
+                    .scroll((scroll, 0)),
+                inner,
+            );
         }
-        ActiveBody::Diff(patch) => {
+        ActiveBody::Diff(patch, scroll) => {
             let lines: Vec<Line> = patch
                 .lines()
                 .map(|l| {
@@ -1525,7 +1954,7 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
                     Line::from(Span::styled(l.to_string(), style))
                 })
                 .collect();
-            f.render_widget(Paragraph::new(lines), inner);
+            f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
         }
         ActiveBody::Loading(msg) => {
             f.render_widget(
@@ -1538,8 +1967,9 @@ fn draw(f: &mut ratatui::Frame, state: &mut AppState) {
 
     let help = match state.mode {
         Mode::Pane   => " Ctrl-g prefix · keys flow to active PTY ",
-        Mode::Prefix => " prefix: c=newpty n/p=tab &=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t=tree [=scroll ?=help · Ctrl-g=send literal Ctrl-g ",
+        Mode::Prefix => " prefix: c=newpty n/p=tab w=close 1-9=jump d=detach r=refresh g=re-anchor D=diff t/T=tree s/S=git [=scroll ?=help · Ctrl-g=send literal Ctrl-g ",
         Mode::Tree   => " tree: Ctrl-n/p select · Ctrl-m open · Ctrl-h up · Ctrl-v/M-v page · M-</M-> top/bot · q leave · Ctrl-g chain prefix ",
+        Mode::Git    => " git: Ctrl-n/p select · Ctrl-m open diff · Ctrl-v/M-v page · M-</M-> top/bot · q leave · Ctrl-g chain prefix ",
         Mode::Scroll => " scroll: Ctrl-v/M-v page · M-</M-> top/live · Ctrl-n/p line · b/f block · q leave · Ctrl-g chain prefix ",
     };
     f.render_widget(
