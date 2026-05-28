@@ -1,5 +1,8 @@
 [workspace]
 members  = ["crates/*", "apps/*"]
+# apps/web (React/Vite) and apps/ios (Swift/Xcode) live alongside the Rust
+# apps under apps/ but aren't Cargo packages; exclude so the glob skips them.
+exclude  = ["apps/web", "apps/ios"]
 resolver = "2"
 
 [workspace.package]

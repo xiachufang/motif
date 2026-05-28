@@ -4,9 +4,9 @@
 use std::path::Path;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../web/dist");
-    println!("cargo:rerun-if-changed=../../web/index.html");
-    println!("cargo:rerun-if-changed=../../web/src");
+    println!("cargo:rerun-if-changed=../../apps/web/dist");
+    println!("cargo:rerun-if-changed=../../apps/web/index.html");
+    println!("cargo:rerun-if-changed=../../apps/web/src");
 
     let crate_root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let static_dir = Path::new(&crate_root).join("static");
@@ -31,6 +31,7 @@ fn main() {
         .unwrap()
         .parent()
         .unwrap()
+        .join("apps")
         .join("web");
     let dist = web_dir.join("dist");
 
@@ -39,7 +40,7 @@ fn main() {
     } else {
         let placeholder = b"<!doctype html><meta charset=utf-8><title>motif</title>\
             <h1>motif</h1><p>frontend not built. \
-            Run <code>pnpm --dir web build</code>, then rebuild <code>motifd</code>.</p>";
+            Run <code>pnpm --dir apps/web build</code>, then rebuild <code>motifd</code>.</p>";
         std::fs::write(static_dir.join("index.html"), placeholder).unwrap();
     }
 }

@@ -20,12 +20,12 @@ motif-rpc.log
 .idea/
 
 # Xcode / iOS build artifacts
-ios/build/
-ios/DerivedData/
-ios/.swiftpm/
-ios/**/*.xcuserstate
-ios/**/xcuserdata/
-ios/**/xcshareddata/IDEWorkspaceChecks.plist
-ios/Motif.xcodeproj/
-ios/Motif/Resources/web/
-ios/vendor
+apps/ios/build/
+apps/ios/DerivedData/
+apps/ios/.swiftpm/
+apps/ios/**/*.xcuserstate
+apps/ios/**/xcuserdata/
+apps/ios/**/xcshareddata/IDEWorkspaceChecks.plist
+apps/ios/Motif.xcodeproj/
+apps/ios/Motif/Resources/web/
+apps/ios/vendor

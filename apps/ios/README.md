@@ -10,7 +10,7 @@ motif 的 iOS native App，包含：
 
 ```bash
 brew install xcodegen
-cd ios
+cd apps/ios
 ./scripts/sync-web.sh           # 把 ../web/dist/ 拷到 Motif/Resources/web/
 xcodegen                        # 由 Project.yml 生成 Motif.xcodeproj
 open Motif.xcodeproj
@@ -26,7 +26,7 @@ xcodebuild -project Motif.xcodeproj -scheme Motif \
 ## 目录
 
 ```
-ios/
+apps/ios/
 ├── Project.yml              xcodegen 工程定义
 ├── Motif/                   App 源码
 │   ├── MotifApp.swift

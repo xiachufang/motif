@@ -12,7 +12,7 @@
 	"argv": [
 		"/opt/homebrew/bin/xcode-build-server"
 	],
-	"workspace": "/Users/feichao/AllSunday/claude-proj/motif/ios/Motif.xcodeproj/project.xcworkspace",
+	"workspace": "/Users/feichao/AllSunday/claude-proj/motif/apps/ios/Motif.xcodeproj/project.xcworkspace",
 	"build_root": "/Users/feichao/Library/Developer/Xcode/DerivedData/Motif-eakshmoefurtshadnpwtfmzsajep",
 	"scheme": "Motif",
 	"kind": "xcode"
