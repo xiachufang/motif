@@ -1,22 +1,21 @@
 # Motif iOS
 
-motif 的 iOS native App，包含：
+motif 的 iOS native App,包含:
 
-- WKWebView 加载 web bundle（从本地 127.0.0.1 的 HTTP 服务器加载资源）
-- TailscaleKit (tsnet) 让 App 自身加入 tailnet，反代访问远端 motifd
-- Doubao ASR（gfreezy/DoubaoASR SwiftPM 包），给网页里的"按住说话"提供原生语音识别
+- 纯 SwiftUI + libghostty 的原生终端 UI(`Motif/Native/`),通过 WebSocket/RPC 接入远端 motifd
+- TailscaleKit (tsnet) 让 App 自身加入 tailnet,反代访问远端 motifd
+- Doubao ASR(gfreezy/DoubaoASR SwiftPM 包),给底部输入栏的"按住说话"提供原生语音识别
 
 ## 第一次构建
 
 ```bash
 brew install xcodegen
 cd apps/ios
-./scripts/sync-web.sh           # 把 ../web/dist/ 拷到 Motif/Resources/web/
 xcodegen                        # 由 Project.yml 生成 Motif.xcodeproj
 open Motif.xcodeproj
 ```
 
-或者纯命令行：
+或者纯命令行:
 
 ```bash
 xcodebuild -project Motif.xcodeproj -scheme Motif \
@@ -31,17 +30,14 @@ apps/ios/
 ├── Motif/                   App 源码
 │   ├── MotifApp.swift
 │   ├── ContentView.swift
-│   ├── WebView/             WKWebView + 本地 HTTP server
-│   ├── Tailscale/           TailscaleKit 包装（待实现）
-│   ├── ASR/                 AVAudioSession glue（识别本身由 DoubaoASR 包实现）
+│   ├── Native/              SwiftUI + libghostty 的原生终端 UI
+│   ├── Tailscale/           TailscaleKit 包装
+│   ├── ASR/                 AVAudioSession glue(识别本身由 DoubaoASR 包实现)
 │   ├── Settings/            全局状态
-│   ├── Info.plist
-│   └── Resources/web/       同步自 ../web/dist（ignore）
-├── scripts/
-│   └── sync-web.sh          web 资源同步
-└── vendor/                  外部 xcframework（ignore，由 build 脚本产出）
+│   └── Info.plist
+└── vendor/                  外部 xcframework(ignore,由 build 脚本产出)
 ```
 
 ## 路线图
 
-详见 `~/.claude/plans/sharded-tinkering-nest.md`：P0 → P6。
+详见 `~/.claude/plans/sharded-tinkering-nest.md`:P0 → P6。

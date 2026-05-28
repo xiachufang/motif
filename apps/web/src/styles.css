@@ -48,11 +48,17 @@
 
 html, body, #root {
   height: 100%;
+  width: 100%;
+  max-width: 100%;
   margin: 0;
   background: var(--bg);
   color: var(--fg);
   font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
+}
+body {
+  position: fixed;
+  inset: 0;
 }
 
 button {
@@ -112,6 +118,8 @@ a { color: var(--accent); }
 
 .centered {
   min-height: 100%;
+  width: 100%;
+  max-width: 100%;
   display: grid;
   place-items: center;
   padding:
@@ -125,8 +133,9 @@ a { color: var(--accent); }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1.4rem;
-  width: 100%;
+  width: calc(100vw - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
   max-width: 540px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
@@ -139,13 +148,44 @@ a { color: var(--accent); }
   margin: 0;
 }
 .card.sessions header { display: flex; justify-content: space-between; align-items: center; }
-.session-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.session-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
 .session-list li {
   background: var(--muted-bg);
   border: 1px solid var(--border);
   padding: 0.7em 0.9em;
   border-radius: 6px;
   cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+}
+.session-list li > .row.tight {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.session-list li > .row.tight > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-list .session-path,
+.session-list .session-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-list .session-path {
+  direction: rtl;
+  text-align: left;
 }
 @media (hover: hover) {
   .session-list li:hover { border-color: var(--accent); }
@@ -155,6 +195,7 @@ a { color: var(--accent); }
   padding: 0 0.5em;
   line-height: 1.4;
   color: var(--muted);
+  font-family: var(--mono);
 }
 @media (hover: hover) {
   .session-list .destroy:hover:not(:disabled) {
@@ -169,7 +210,7 @@ a { color: var(--accent); }
   align-items: center;
   justify-content: center;
 }
-.create input { flex: 1; }
+.create input { flex: 1; min-width: 0; }
 
 /* ── workspace ── */
 
@@ -178,10 +219,13 @@ a { color: var(--accent); }
   top: var(--vv-top, 0px);
   left: 0;
   right: 0;
+  width: 100%;
+  max-width: 100%;
   height: var(--app-height, 100%);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 .topbar {
   background: var(--panel);
@@ -200,22 +244,13 @@ a { color: var(--accent); }
   overflow: hidden;
 }
 .topbar > .row { flex-wrap: nowrap; min-width: 0; }
-/* Left side (session name + cwd) takes all remaining space and truncates,
+/* Left side (session name) takes all remaining space and truncates,
    so the toggle buttons + client pill on the right always stay visible. */
 .topbar > .row:first-child { flex: 1 1 auto; overflow: hidden; }
 .topbar > .row:first-child > strong { flex: 0 0 auto; }
 /* Right side must never shrink — if it did, its (non-clipped) contents would
    spill past the topbar and create a body-level horizontal scrollbar. */
 .topbar > .row:last-child { flex: 0 0 auto; }
-.topbar .topbar-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-}
-.topbar .topbar-path::before { content: "📂 "; }
 .topbar .status {
   background: var(--muted-bg);
   border: 1px solid var(--border);
@@ -228,7 +263,11 @@ a { color: var(--accent); }
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   position: relative;
+  overflow: hidden;
   /* Push sidebar/content past horizontal safe-area (landscape notch) — the
      drawer below is `position: absolute; left: 0`, which on a padded
      containing block resolves to the inner padding edge, so the drawer
@@ -389,8 +428,10 @@ button.icon-btn {
 
 /* Topbar visibility toggles (▤ ⎇ ⌨ ⚙) — all share one icon size. The
    `button.` prefix outranks `button.small`'s 12px (equal specificity, and
-   this rule comes later in the sheet). */
+   this rule comes later in the sheet). Monospace font keeps glyph widths
+   uniform across the toggle row. */
 button.panel-toggle {
+  font-family: var(--mono);
   font-size: 18px;
   padding: 0.15em 0.5em;
   line-height: 1;
@@ -514,11 +555,20 @@ button.panel-toggle {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .pane.hidden { display: none; }
 .pane.active { display: flex; }
 
-.pty-tab { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.pty-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
 .pty-meta { padding: 4px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 
 /* xterm host: fills the remaining tab area. FitAddon reads clientWidth
@@ -527,10 +577,19 @@ button.panel-toggle {
 .pty-host {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   overflow: hidden;
   background: var(--bg);
+  contain: layout paint size;
 }
-.pty-host .xterm { height: 100%; }
+.pty-host .xterm {
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
 .pty-host .xterm .xterm-viewport { background: transparent; }
 
 .preview {
@@ -996,6 +1055,349 @@ button.mdock-mgr-btn {
 }
 .mdock-mgr-add legend { padding: 0 0.4em; }
 
+/* ── mobile input dock v2 (capsule + sticky chips) ────────────────── */
+
+.mdock-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Sticky Ctrl/Alt visual states. Armed = accent ring + slight tint; locked
+   = filled accent + a small dot under the chip to disambiguate from
+   "armed once". */
+.mdock-chip.sticky-armed {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, var(--muted-bg));
+}
+.mdock-chip.sticky-locked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg, #fff);
+  position: relative;
+}
+.mdock-chip.sticky-locked::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Capsule composer pill — iMessage-style host for the textarea. The pill
+   grows vertically with the textarea's rows (1..5) and clamps its width
+   to the available row space; the circular send button sits next to it. */
+.mdock-pill {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 4px 12px;
+}
+.mdock-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg);
+  padding: 4px 0;
+}
+.mdock-textarea::placeholder { color: var(--muted); }
+.mdock-textarea:disabled { color: var(--muted); cursor: not-allowed; }
+
+.mdock-send-circle {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  border: 1px solid var(--accent);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+.mdock-send-circle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--muted-bg);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+/* ── change-directory panel ───────────────────────────────────────── */
+
+.cdpanel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: grid;
+  place-items: center;
+  padding:
+    calc(1rem + env(safe-area-inset-top, 0px))
+    calc(1rem + env(safe-area-inset-right, 0px))
+    calc(1rem + env(safe-area-inset-bottom, 0px))
+    calc(1rem + env(safe-area-inset-left, 0px));
+  z-index: 60;
+}
+.cdpanel-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cdpanel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6em 0.8em;
+  border-bottom: 1px solid var(--border);
+}
+.cdpanel-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.cdpanel-input input {
+  flex: 1 1 auto;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.cdpanel-prompt {
+  color: var(--accent);
+  font-weight: 700;
+  user-select: none;
+}
+.cdpanel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.cdpanel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.cdpanel-row:hover { background: var(--muted-bg); }
+.cdpanel-row:last-child { border-bottom: none; }
+.cdpanel-parent { color: var(--muted); }
+.cdpanel-icon {
+  flex: 0 0 22px;
+  text-align: center;
+  color: var(--accent);
+}
+.cdpanel-parent .cdpanel-icon { color: var(--muted); }
+.cdpanel-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cdpanel-hint { margin-left: 8px; }
+.cdpanel-enter { color: var(--accent); font-weight: 700; }
+.cdpanel-empty { padding: 12px; }
+.cdpanel-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.cdpanel-confirm {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.cdpanel-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--muted-bg);
+  color: var(--muted);
+  border-color: var(--border);
+}
+.cdpanel-confirm-glyph { flex: 0 0 auto; font-size: 16px; }
+.cdpanel-confirm-cd { flex: 0 0 auto; font-weight: 700; }
+.cdpanel-confirm-path {
+  flex: 1 1 auto;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl; /* keep the tail (the directory you're entering) visible */
+}
+
+/* ── quick-command editor (replaces inline manager) ──────────────── */
+
+.qce-modal {
+  width: min(620px, 100%);
+}
+.qce-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.qce-list {
+  /* Inherit .mdock-mgr-list scrollbar/border treatment but allow more room. */
+  max-height: 50vh;
+}
+.qce-empty { padding: 0.6em; }
+.qce-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+.qce-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+.qce-glyph {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: center;
+  margin-right: 0.4em;
+  color: var(--accent);
+}
+.qce-add {
+  position: relative;
+}
+.qce-add-summary {
+  cursor: pointer;
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  user-select: none;
+  list-style: none;
+}
+.qce-add-summary::-webkit-details-marker { display: none; }
+.qce-add-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  z-index: 1;
+}
+.qce-add-menu button {
+  text-align: left;
+}
+.qce-sub-backdrop { z-index: 70; }
+.qce-preset-modal { width: min(480px, 100%); }
+.qce-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  overflow: auto;
+  padding: 4px;
+}
+.qce-preset-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 4px;
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--mono);
+}
+.qce-preset-cell:hover { border-color: var(--accent); }
+.qce-preset-glyph { font-size: 16px; }
+.qce-snippet-modal { width: min(520px, 100%); }
+.qce-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qce-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.qce-form-row input,
+.qce-form-row textarea {
+  background: var(--muted-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg);
+}
+.qce-form-row textarea { resize: vertical; }
+.qce-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.qce-sets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  max-height: 50vh;
+}
+.qce-sets-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.qce-sets-row:last-child { border-bottom: none; }
+.qce-sets-row:hover { background: var(--muted-bg); }
+.qce-sets-name { font-weight: 600; }
+
 /* ── workspace sidebar drawer (mobile) ─────────────────────────────── */
 
 .sidebar-backdrop {
@@ -1046,8 +1448,11 @@ button.mdock-mgr-btn {
 @media (max-width: 540px) {
   /* iOS auto-zooms any input < 16px on focus. Apply globally here so card
      forms (login / sessions / dock manager) all dodge the jump. */
-  input[type="text"], input[type="password"], input:not([type]),
-  .mdock-text {
+  input,
+  textarea,
+  select,
+  .mdock-text,
+  .mdock-textarea {
     font-size: 16px;
   }
 
@@ -1060,9 +1465,6 @@ button.mdock-mgr-btn {
     gap: 0.4em;
   }
   .topbar .row.tight { gap: 0.3em; }
-  /* Compact path glyph on phones — the directory itself is what matters,
-     and the leading 📂 emoji wastes precious horizontal space. */
-  .topbar .topbar-path::before { content: ""; }
 
   /* File-tree / git rows: ellipsis instead of horizontal scroll. The
      surrounding scroll container still allows horizontal panning when

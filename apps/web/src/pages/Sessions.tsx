@@ -134,8 +134,8 @@ export default function Sessions() {
                   ×
                 </button>
               </div>
-              <div className="muted small">{s.workdir}</div>
-              <div className="muted small">id: {s.id}</div>
+              <div className="muted small session-path" title={s.workdir}>{s.workdir}</div>
+              <div className="muted small session-id" title={s.id}>id: {s.id}</div>
             </li>
           ))}
         </ul>

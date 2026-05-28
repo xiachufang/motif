@@ -10,7 +10,7 @@ struct ContentView: View {
                 WelcomeView()
             } else {
                 NativeRoot()
-                    .id(appState.webViewReloadKey)
+                    .id(appState.nativeReloadKey)
                     .environment(appState.motif)
             }
         }

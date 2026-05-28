@@ -27,7 +27,7 @@ final class AppState {
     /// Bumped to force NativeRoot to rebuild + re-task the connection when
     /// something other than the active server changes (e.g. Tailscale flips
     /// from .stopped to .running and the previous connection bailed early).
-    private(set) var webViewReloadKey: Int = 0
+    private(set) var nativeReloadKey: Int = 0
 
     init() {
         self.tailscale = TailscaleManager()
@@ -51,8 +51,8 @@ final class AppState {
 
     /// Called by ConnectionView after switching the active server, so
     /// NativeRoot drops any in-flight WS to the previous target.
-    func bumpWebViewReload() {
-        webViewReloadKey &+= 1
+    func bumpNativeReload() {
+        nativeReloadKey &+= 1
     }
 }
 

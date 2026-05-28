@@ -68,6 +68,12 @@ export interface AppState {
 
   status:        string;
 
+  /** Live connectivity flag. True while the `/events` WS is open and we
+   *  have a successfully-attached session; false during initial connect,
+   *  reconnect, and after the server has gone away. Drives the mobile
+   *  input dock's "reconnecting…" placeholder + disable. */
+  isLive:        boolean;
+
   /** Global appearance, persisted in localStorage (not workspace state). */
   fontSize:      number;
   theme:         ThemeSetting;
@@ -83,6 +89,7 @@ export interface AppState {
   setToken:      (t: string | null) => void;
   setClient:     (c: RpcClient | null) => void;
   setStatus:     (s: string) => void;
+  setIsLive:     (v: boolean) => void;
   setFontSize:   (n: number) => void;
   setTheme:      (t: ThemeSetting) => void;
   setSessionTheme: (t: ResolvedTheme | null) => void;
@@ -136,7 +143,7 @@ const initial = (): Pick<AppState,
   "page"|"token"|"client"|"session"|"myClientId"|"otherClients"|
   "gitBranch"|"gitFiles"|"ptyInfos"|"runningCmds"|
   "views"|"activeView"|"viewCache"|
-  "currentPath"|"dirChildren"|"expandedDirs"|"status"|"fontSize"|"theme"|"sessionTheme"
+  "currentPath"|"dirChildren"|"expandedDirs"|"status"|"isLive"|"fontSize"|"theme"|"sessionTheme"
 > => ({
   page:          { kind: "login" },
   token:         loadToken(),
@@ -155,6 +162,7 @@ const initial = (): Pick<AppState,
   dirChildren:   new Map(),
   expandedDirs:  new Set(),
   status:        "",
+  isLive:        false,
   fontSize:      loadFontSize(),
   theme:         loadTheme(),
   sessionTheme:  null,
@@ -171,6 +179,7 @@ export const useApp = create<AppState>((set) => ({
   setToken:   (token) => set({ token }),
   setClient:  (client) => set({ client }),
   setStatus:  (status) => set({ status }),
+  setIsLive:  (isLive) => set({ isLive }),
   setFontSize: (n) => {
     const fontSize = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(n)));
     saveFontSize(fontSize);

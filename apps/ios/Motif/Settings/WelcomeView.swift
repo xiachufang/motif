@@ -3,7 +3,7 @@ import SwiftUI
 /// Shown on launch when no motifd server is configured. Surfaces Tailscale
 /// status (so the user knows whether peer discovery will work) plus the
 /// add-server flow front and center, instead of dumping the user into a
-/// blank WebView and forcing them to find the gear icon.
+/// blank session and forcing them to find the gear icon.
 struct WelcomeView: View {
     @Environment(AppState.self) private var appState
     @State private var serverEditTarget: ServerEdit?
@@ -43,7 +43,7 @@ struct WelcomeView: View {
                                 isActive: appState.servers.activeID == server.id,
                                 onTap: {
                                     appState.servers.setActive(id: server.id)
-                                    appState.bumpWebViewReload()
+                                    appState.bumpNativeReload()
                                 },
                                 onEdit: { serverEditTarget = .existing(server) }
                             )
@@ -81,7 +81,7 @@ struct WelcomeView: View {
                     switch target {
                     case .new:
                         appState.servers.add(updated)
-                        appState.bumpWebViewReload()
+                        appState.bumpNativeReload()
                     case .existing:
                         appState.servers.update(updated)
                     }

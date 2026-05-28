@@ -502,6 +502,11 @@ struct BottomInputBar: View {
         a.start(
             onPartial: { text in
                 MainActor.assumeIsolated {
+                    // Late partials can land after `stopASR` (e.g. user
+                    // tapped Send mid-recording): if we let them write
+                    // here, they'd race `send()` clearing the buffer and
+                    // leave a stale transcript behind.
+                    guard isRecording else { return }
                     let new = mergePartial(base: partialBase, text: text)
                     // Set `expectedBuffer` BEFORE the buffer mutation so
                     // SwiftUI's `onChange(of: buffer)` (which fires
@@ -534,6 +539,12 @@ struct BottomInputBar: View {
         // state and might be re-set by another trigger before the async
         // completion fires.
         let ignore = ignoreFinalTranscript
+        // Flip `isRecording` synchronously so any `onPartial` callbacks
+        // still in-flight (DoubaoASR delivers them on the main queue, so
+        // they may already be enqueued behind us) are dropped. Otherwise
+        // a late partial races `send()` clearing the buffer and the
+        // transcript reappears in the field.
+        isRecording = false
         a.stop { final in
             Task { @MainActor in
                 if !ignore {
@@ -542,7 +553,6 @@ struct BottomInputBar: View {
                     buffer = merged
                 }
                 ignoreFinalTranscript = false
-                isRecording = false
                 audioLevel = 0
                 AudioSessionHelper.deactivate()
                 asr = nil

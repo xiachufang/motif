@@ -14,18 +14,13 @@ interface Props {
 export default function Topbar({ sessionName, fileTree, gitStatus, mobileDock }: Props) {
   const others       = useApp(s => s.otherClients);
   const setPage      = useApp(s => s.setPage);
-  const session      = useApp(s => s.session);
-  const currentPath  = useApp(s => s.currentPath);
   const [settingsOpen, setSettingsOpen] = useState(false);
-
-  const fullPath = currentPath || session?.workdir || "";
 
   return (
     <div className="topbar">
       <div className="row tight">
         <button className="ghost small" onClick={() => setPage({ kind: "sessions" })}>← sessions</button>
         <strong>{sessionName}</strong>
-        <span className="muted small topbar-path" title={fullPath}>{fullPath}</span>
       </div>
       <div className="row tight">
         {fileTree && (

@@ -34,7 +34,8 @@ packages:
     url: https://github.com/Flight-School/MessagePack.git
     from: "1.2.4"
   libghostty-spm:
-    path: ../../libghostty-spm
+    url: https://github.com/gfreezy/libghostty-spm.git
+    from: "1.0.1779949513"
 
 targets:
   Motif:
@@ -43,12 +44,7 @@ targets:
     sources:
       - path: Motif
         excludes:
-          - "Resources/web"
-          - "Resources/web/**"
           - "Info.plist"
-      - path: Motif/Resources/web
-        type: folder
-        buildPhase: resources
     info:
       path: Motif/Info.plist
       properties:

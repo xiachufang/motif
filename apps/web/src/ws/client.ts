@@ -127,6 +127,10 @@ export class RpcClient {
   /** Fires after a transparent reconnect of `/events`. Workspace
    *  calls `session.attach` with the last seen seq for replay. */
   public onReconnect: (() => void | Promise<void>) | null = null;
+  /** Fires once each time the `/events` WS drops and we enter reconnect
+   *  backoff. Workspace flips `isLive=false` so the mobile dock disables
+   *  input and shows "reconnecting…". */
+  public onDisconnect: (() => void) | null = null;
   public onClose:     (() => void) | null = null;
 
   private constructor(token: string) {
@@ -393,6 +397,7 @@ export class RpcClient {
 
   private scheduleReconnect() {
     if (this.reconnectTimer) return;
+    try { this.onDisconnect?.(); } catch { /* ignore */ }
     const delay = this.reconnectDelay;
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
     this.reconnectTimer = setTimeout(async () => {

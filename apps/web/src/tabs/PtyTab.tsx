@@ -11,6 +11,8 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useApp } from "../store/store";
 import { attachPty } from "../store/ptyBuffers";
+import { consumeArmed, getSticky, resetSticky } from "../store/stickyModifiers";
+import { applyModifiers, bytesToB64, keyEventToPayload } from "../util/applyModifiers";
 import { useEffectiveTheme } from "../hooks/useResolvedTheme";
 import { XTERM_THEME } from "../appearance";
 
@@ -53,6 +55,30 @@ export default function PtyTab({ ptyId, active }: Props) {
     term.open(host);
     try { fit.fit(); } catch { /* ignore */ }
     termRef.current = term;
+
+    // Sticky-modifier interception. xterm's `onData` only sees the *output*
+    // bytes after its own modifier handling, which is too late to fold in
+    // our chip-armed Ctrl/Alt state — by the time onData fires xterm has
+    // already converted e.g. plain "c" to 0x63. Hook the key event so we
+    // can synthesize the modifier-transformed bytes ourselves and swallow
+    // xterm's default emit. When no sticky modifier is armed we always
+    // return true so xterm's normal path runs unchanged (desktop users
+    // without armed modifiers see no behavior change at all).
+    term.attachCustomKeyEventHandler((ev: KeyboardEvent): boolean => {
+      if (ev.type !== "keydown") return true;
+      if (ev.isComposing) return true;
+      if (ev.key === "Control" || ev.key === "Alt" || ev.key === "Meta" || ev.key === "Shift") return true;
+      const { ctrl, alt } = getSticky(ptyId);
+      if (ctrl === "inactive" && alt === "inactive") return true;
+      const payload = keyEventToPayload(ev);
+      if (!payload) return true;
+      const out = applyModifiers(payload, ctrl !== "inactive", alt !== "inactive");
+      const c = useApp.getState().client;
+      c?.call("pty.write", { pty_id: ptyId, data_b64: bytesToB64(out) }).catch(() => { /* ignore */ });
+      consumeArmed(ptyId);
+      ev.preventDefault();
+      return false;
+    });
 
     // Forward user input to the server.
     const onData = term.onData(data => {
@@ -99,6 +125,9 @@ export default function PtyTab({ ptyId, active }: Props) {
       if (rafId != null) cancelAnimationFrame(rafId);
       termRef.current = null;
       fitRef.current = null;
+      // Clear any sticky Ctrl/Alt state for this PTY so a re-used id can't
+      // inherit an "armed" or "locked" flag from a previous mount.
+      resetSticky(ptyId);
       // Defer dispose by a frame so any in-flight write callbacks don't
       // run against a torn-down terminal.
       requestAnimationFrame(() => { try { term.dispose(); } catch { /* ignore */ } });

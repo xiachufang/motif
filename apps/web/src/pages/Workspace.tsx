@@ -99,6 +99,7 @@ export default function Workspace({ sessionName }: Props) {
   const clientJoined   = useApp(s => s.clientJoined);
   const clientLeft     = useApp(s => s.clientLeft);
   const setStatus      = useApp(s => s.setStatus);
+  const setIsLive      = useApp(s => s.setIsLive);
   const applyViewOpened        = useApp(s => s.applyViewOpened);
   const applyViewClosed        = useApp(s => s.applyViewClosed);
   const applyViewActiveChanged = useApp(s => s.applyViewActiveChanged);
@@ -106,6 +107,7 @@ export default function Workspace({ sessionName }: Props) {
   const setViewCache           = useApp(s => s.setViewCache);
   const rehydrateOnReconnect   = useApp(s => s.rehydrateOnReconnect);
   const setSessionTheme        = useApp(s => s.setSessionTheme);
+  const setTheme               = useApp(s => s.setTheme);
 
   // This device's own resolved theme — the value we PUSH when driving (attach
   // / focus / local toggle). Rendering uses the session theme instead (see
@@ -197,6 +199,7 @@ export default function Workspace({ sessionName }: Props) {
         lastFetchedCwdRef.current = initialCwd;
         setSessionTheme(a.theme === "light" || a.theme === "dark" ? a.theme : null);
         claimPrimaryIfVisible();
+        setIsLive(true);
       } catch (e) {
         setStatus(`attach failed: ${e instanceof Error ? e.message : String(e)}`);
         setPage({ kind: "sessions" });
@@ -211,13 +214,14 @@ export default function Workspace({ sessionName }: Props) {
       // Back on the sessions/login page, render with this device's own theme.
       setSessionTheme(null);
     };
-  }, [client, sessionName, hydrate, setPage, setStatus, claimPrimaryIfVisible, setSessionTheme]);
+  }, [client, sessionName, hydrate, setPage, setStatus, setIsLive, claimPrimaryIfVisible, setSessionTheme]);
 
   // Re-attach on transparent WS reconnect. Server replays events from
   // last_seq+1 (if the ring still has them); we soft-rehydrate the
   // server-authoritative bits and let those events bring blocks current.
   useEffect(() => {
     if (!client) return;
+    client.onDisconnect = () => setIsLive(false);
     client.onReconnect = async () => {
       try {
         const driving = document.visibilityState === "visible";
@@ -233,14 +237,18 @@ export default function Workspace({ sessionName }: Props) {
         lastSeqRef.current = a.last_seq;
         setSessionTheme(a.theme === "light" || a.theme === "dark" ? a.theme : null);
         claimPrimaryIfVisible();
+        setIsLive(true);
         setStatus("reconnected");
       } catch (e) {
         setStatus(`reconnect failed: ${e instanceof Error ? e.message : String(e)}`);
         setPage({ kind: "sessions" });
       }
     };
-    return () => { client.onReconnect = null; };
-  }, [client, sessionName, rehydrateOnReconnect, setPage, setStatus, claimPrimaryIfVisible, setSessionTheme]);
+    return () => {
+      client.onReconnect  = null;
+      client.onDisconnect = null;
+    };
+  }, [client, sessionName, rehydrateOnReconnect, setPage, setStatus, setIsLive, claimPrimaryIfVisible, setSessionTheme]);
 
   // When the user flips this device's theme mid-session, push palette + theme:
   // this device becomes the session-theme driver (all clients re-render) and
@@ -300,7 +308,19 @@ export default function Workspace({ sessionName }: Props) {
 
         // Another client (or this one) set the session-wide theme. Adopt it so
         // the whole UI renders the same way across all clients.
-        case "session.theme_changed": setSessionTheme(e.params.theme === "light" ? "light" : "dark"); break;
+        case "session.theme_changed": {
+          // The session-wide theme just changed (this client or another). Mirror it
+          // into the local preference too, so SettingsSheet's selected button
+          // reflects what the user is actually looking at. Without this, a peer
+          // tab's flip repaints the page (via sessionTheme) but leaves our radio
+          // stuck on the stale Light/Dark/System choice — a "did my click do
+          // anything?" footgun. The local setTheme call is idempotent when this
+          // tab was the one driving the change, so no echo loop.
+          const t = e.params.theme === "light" ? "light" : "dark";
+          setSessionTheme(t);
+          setTheme(t);
+          break;
+        }
 
         case "tree.changed":  setStatus("tree changed");
                               {
@@ -332,7 +352,7 @@ export default function Workspace({ sessionName }: Props) {
   }, [client, clientJoined, clientLeft, registerPty, removePty, updatePtyCwd,
       ptyCommandStarted, ptyCommandFinished,
       applyViewOpened, applyViewClosed, applyViewActiveChanged, applyViewMoved,
-      setDirChildren, setGit, setStatus, setSessionTheme]);
+      setDirChildren, setGit, setStatus, setSessionTheme, setTheme]);
 
   // ── follow active PTY's cwd → re-root the file tree ──
   const activeViewObj = views.find(v => v.id === activeView) ?? null;

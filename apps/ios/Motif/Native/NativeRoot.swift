@@ -107,6 +107,27 @@ struct NativeRoot: View {
                 // setup/failure flow again.
                 hasConnectedThisServer = false
             }
+            // Mirror the session-wide theme broadcast into the local preference
+            // so TerminalSettingsSheet's Appearance picker reflects what the user
+            // is actually looking at. Without this, a peer client's flip repaints
+            // the chrome (via `terminalPreferredScheme`) but the segmented control
+            // stays stuck on the stale Light/Dark/System choice — same footgun as
+            // the web SettingsSheet had. Collapses `.system` to a concrete value;
+            // accepting that as the trade-off for "what you see is what you set".
+            .onChange(of: motif.sessionTheme) { _, newValue in
+                switch newValue {
+                case "light":
+                    if appState.terminalSettings.theme != .light {
+                        appState.terminalSettings.theme = .light
+                    }
+                case "dark":
+                    if appState.terminalSettings.theme != .dark {
+                        appState.terminalSettings.theme = .dark
+                    }
+                default:
+                    break
+                }
+            }
     }
 
     /// Reactive bridge between MotifClient.state and the retry loop.

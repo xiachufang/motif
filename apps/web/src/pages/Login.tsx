@@ -37,6 +37,7 @@ export default function Login() {
       setClient(c);
       c.onClose = () => {
         setClient(null);
+        useApp.getState().setIsLive(false);
         setPage({ kind: "login" });
       };
       setPage({ kind: "sessions" });

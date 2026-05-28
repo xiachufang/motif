@@ -33,7 +33,7 @@ struct ConnectionView: View {
                                       onTap: {
                                           if appState.servers.activeID != server.id {
                                               appState.servers.setActive(id: server.id)
-                                              appState.bumpWebViewReload()
+                                              appState.bumpNativeReload()
                                           }
                                       },
                                       onEdit: {
@@ -45,7 +45,7 @@ struct ConnectionView: View {
                                 let id = appState.servers.servers[idx].id
                                 appState.servers.delete(id: id)
                             }
-                            appState.bumpWebViewReload()
+                            appState.bumpNativeReload()
                         }
                     }
                 } header: {
@@ -76,11 +76,11 @@ struct ConnectionView: View {
                     switch target {
                     case .new:
                         appState.servers.add(updated)
-                        appState.bumpWebViewReload()
+                        appState.bumpNativeReload()
                     case .existing:
                         appState.servers.update(updated)
                         if appState.servers.activeID == updated.id {
-                            appState.bumpWebViewReload()
+                            appState.bumpNativeReload()
                         }
                     }
                 }

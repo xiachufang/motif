@@ -1,89 +1,216 @@
-// Mobile-friendly bottom dock for an active PTY view. Provides:
-//   - a horizontally-scrollable, customizable quick-command chip bar
-//   - a text input with a Send button that writes to the PTY via the same
-//     `pty.write` RPC xterm uses, so server-side state stays the source
-//     of truth
+// Mobile-friendly bottom dock for an active PTY view. iOS-parity feature set:
 //
-// The dock is rendered by Workspace only when the active view is a PTY,
-// and gated by a topbar visibility toggle so desktop users can hide it.
+//   - Horizontally-scrollable quick-command chips with five kinds:
+//       bytes (preset key / text snippet), paste (bracketed paste from
+//       clipboard), ctrl / alt (sticky modifier toggles), cd (open the
+//       directory picker).
+//   - Three-state sticky Ctrl / Alt: tap cycles inactive → armed → locked.
+//     The same sticky state applies to xterm-typed keys (see PtyTab's
+//     `attachCustomKeyEventHandler`) and to composer-typed letters here.
+//   - Per-program quick-command sets: when the active PTY's running
+//     command's basename matches a set's `matches[]`, that set's commands
+//     replace the global list. The pencil button opens the editor scoped
+//     to whichever list is currently effective.
+//   - Connection-aware: when the WS is reconnecting the textarea + chips
+//     disable and the placeholder becomes "reconnecting…".
+//   - Composer is a textarea (1..5 rows). Enter sends (matches iOS:
+//     literal "\n" in the buffer is the submit intent); Shift+Enter
+//     inserts a newline.
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 import { useApp } from "../store/store";
 import {
-  addQuickCommand, decodeEscapes, deleteQuickCommand,
-  resetQuickCommands, setQuickCommands, updateQuickCommand,
-  useQuickCommands, type QuickCommand,
+  payloadBytes, programKey, resolvedQuickCommands, effectiveScope,
+  useQuickCommandStore,
+  type QuickCommand,
 } from "../store/quickCommands";
+import {
+  consumeArmed, toggleSticky, useSticky, type StickyState,
+} from "../store/stickyModifiers";
+import {
+  applyModifiers, BRACKETED_PASTE_END, BRACKETED_PASTE_START,
+  bytesToB64, concatBytes,
+} from "../util/applyModifiers";
+
+const QuickCommandEditor   = lazy(() => import("./QuickCommandEditor"));
+const ChangeDirectoryPanel = lazy(() => import("./ChangeDirectoryPanel"));
 
 interface Props { ptyId: string }
 
-function encodeToB64(s: string): string {
-  const u8 = new TextEncoder().encode(s);
-  let bin = "";
-  for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-  return btoa(bin);
-}
-
 export default function MobileInputDock({ ptyId }: Props) {
-  const client    = useApp(s => s.client);
-  const commands  = useQuickCommands();
+  const client     = useApp(s => s.client);
+  const isLive     = useApp(s => s.isLive);
+  const ptyInfo    = useApp(s => s.ptyInfos.get(ptyId));
+  const runningCmd = useApp(s => s.runningCmds.get(ptyId) ?? null);
+  const sticky     = useSticky(ptyId);
+  // Subscribing to the store ensures the dock re-renders when the user edits
+  // commands or switches sets. We use the side-effect of the subscription —
+  // the actual resolved list is computed via the helper below so memoization
+  // keys it on the relevant inputs only.
+  const storeShape = useQuickCommandStore();
+  const commands   = useMemo(
+    () => resolvedQuickCommands(runningCmd),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [storeShape, runningCmd],
+  );
 
-  const [text, setText]   = useState("");
-  const [showMgr, setMgr] = useState(false);
+  const [text, setText] = useState("");
+  const [showCd,     setShowCd]     = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
 
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const textRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const send = useCallback((bytes: string) => {
-    if (!client || !bytes) return;
-    client.call("pty.write", { pty_id: ptyId, data_b64: encodeToB64(bytes) })
+  const canDispatch = !!client && isLive;
+
+  // ── send helpers ────────────────────────────────────────────────────
+
+  const sendBytes = useCallback((u8: Uint8Array) => {
+    if (!client || u8.length === 0) return;
+    client.call("pty.write", { pty_id: ptyId, data_b64: bytesToB64(u8) })
       .catch(() => { /* ignore — pty may have exited */ });
   }, [client, ptyId]);
 
-  const onSendInput = useCallback(() => {
-    const value = text;
-    if (!value) return;
-    // Use CR — this is what xterm sends for the Enter key, and the PTY's
-    // ICRNL line discipline translates it to NL for the shell. Sending a
-    // bare NL bypasses that path and some shells don't execute on it.
-    send(value + "\r");
-    setText("");
-    // Keep focus so the user can keep typing without re-tapping.
-    inputRef.current?.focus();
-  }, [text, send]);
+  const sendText = useCallback((s: string) => {
+    if (!s) return;
+    sendBytes(new TextEncoder().encode(s));
+  }, [sendBytes]);
 
-  /** Insert a quick command into the input. If `appendNewline` is set we
-   *  send-and-clear straight away — that's the natural read of "tap `ls`
-   *  to run ls". Otherwise we just inject the bytes at the caret so the
-   *  user can build up a command (e.g. an arrow key plus Enter). */
-  const onTapCommand = useCallback((c: QuickCommand) => {
-    const decoded = decodeEscapes(c.value);
-    if (c.appendNewline) {
-      send(decoded + "\r");
-      return;
-    }
-    const el = inputRef.current;
-    if (!el) {
-      setText(prev => prev + decoded);
-      return;
-    }
+  // ── chip dispatch ───────────────────────────────────────────────────
+
+  /** Insert decoded payload text into the composer at the caret. Used by
+   *  `bytes` commands with `sendImmediately: false`. */
+  const insertAtCaret = useCallback((s: string) => {
+    const el = textRef.current;
+    if (!el) { setText(prev => prev + s); return; }
     const start = el.selectionStart ?? el.value.length;
     const end   = el.selectionEnd   ?? el.value.length;
-    const next  = el.value.slice(0, start) + decoded + el.value.slice(end);
+    const next  = el.value.slice(0, start) + s + el.value.slice(end);
     setText(next);
-    // Position caret after the inserted text on the next tick so React
-    // commits the new value first.
     requestAnimationFrame(() => {
-      const pos = start + decoded.length;
+      const pos = start + s.length;
       try { el.setSelectionRange(pos, pos); el.focus(); } catch { /* ignore */ }
     });
-  }, [send]);
+  }, []);
 
-  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      onSendInput();
+  const onTapCommand = useCallback(async (c: QuickCommand) => {
+    if (!canDispatch) return;
+    switch (c.kind) {
+      case "bytes": {
+        const bytes = payloadBytes(c);
+        if (c.sendImmediately) {
+          const out = applyModifiers(bytes,
+            sticky.ctrl !== "inactive",
+            sticky.alt  !== "inactive");
+          sendBytes(out);
+          consumeArmed(ptyId);
+        } else {
+          // Insert decoded payload as text. Modifier consume is NOT triggered
+          // here — a snippet insert isn't a "key press" in the modifier sense.
+          try { insertAtCaret(new TextDecoder("utf-8", { fatal: false }).decode(bytes)); }
+          catch { /* binary payloads don't make sense to insert; ignore */ }
+        }
+        break;
+      }
+      case "paste": {
+        let s = "";
+        try { s = await navigator.clipboard.readText(); } catch { /* permission denied / unsupported */ }
+        if (!s) { consumeArmed(ptyId); break; }
+        const utf8 = new TextEncoder().encode(s);
+        sendBytes(concatBytes(BRACKETED_PASTE_START, utf8, BRACKETED_PASTE_END));
+        consumeArmed(ptyId);
+        break;
+      }
+      case "ctrl":
+        toggleSticky(ptyId, "ctrl");
+        break;
+      case "alt":
+        toggleSticky(ptyId, "alt");
+        break;
+      case "cd":
+        setShowCd(true);
+        break;
     }
-  }, [onSendInput]);
+  }, [canDispatch, sticky, sendBytes, insertAtCaret, ptyId]);
+
+  // ── composer ────────────────────────────────────────────────────────
+
+  const submit = useCallback(() => {
+    const value = text.replace(/\n/g, "");
+    setText("");
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    // Use CR — that's what xterm sends for the Enter key, which the PTY's
+    // ICRNL line discipline translates to NL. Sending a bare NL bypasses
+    // that path and some shells don't execute on it.
+    sendText(value + "\r");
+    textRef.current?.focus();
+  }, [text, sendText]);
+
+  const onChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const next = e.target.value;
+    const nativeEvent = e.nativeEvent as InputEvent;
+    // Sticky-modifier interception for single-char appends — mirrors iOS.
+    // IME composition fires multi-char inserts AND sets isComposing; skip
+    // both paths so Chinese / Japanese input survives unmodified.
+    if (
+      !nativeEvent.isComposing &&
+      (sticky.ctrl !== "inactive" || sticky.alt !== "inactive") &&
+      canDispatch &&
+      !next.includes("\n") &&
+      next.length === text.length + 1 &&
+      next.startsWith(text)
+    ) {
+      const last = next.slice(-1);
+      const out = applyModifiers(
+        new TextEncoder().encode(last),
+        sticky.ctrl !== "inactive",
+        sticky.alt  !== "inactive",
+      );
+      sendBytes(out);
+      consumeArmed(ptyId);
+      return; // do NOT setText — bail out of the keystroke entirely.
+    }
+    // Multi-line TextField appends "\n" for Enter rather than firing
+    // onSubmit. Treat any inserted newline as the user's "send" intent —
+    // matches iOS behavior.
+    if (next.includes("\n") && !nativeEvent.isComposing) {
+      setText(next);
+      // submit after state settles so the cleared buffer reflects properly.
+      requestAnimationFrame(() => submit());
+      return;
+    }
+    setText(next);
+  }, [canDispatch, sticky, text, sendBytes, ptyId, submit]);
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Capture Enter explicitly too so desktop keyboard users get instant
+    // submit; the onChange newline path is a fallback for software
+    // keyboards that don't trigger keydown for Enter.
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      submit();
+    }
+  }, [submit]);
+
+  const rowsForText = useMemo(() => {
+    const lines = text.split("\n").length;
+    return Math.max(1, Math.min(5, lines));
+  }, [text]);
+
+  // ── cd panel handler ───────────────────────────────────────────────
+
+  const onConfirmCd = useCallback((path: string) => {
+    const escaped = path.replace(/'/g, "'\\''");
+    sendText(`cd '${escaped}'\r`);
+    setShowCd(false);
+  }, [sendText]);
+
+  // ── editor wiring ──────────────────────────────────────────────────
+
+  const editorScope     = useMemo(() => effectiveScope(runningCmd), [runningCmd]);
+  const editorProgKey   = useMemo(() => programKey(runningCmd),     [runningCmd]);
+
+  const placeholder = isLive ? "type a command — Enter to send" : "reconnecting…";
 
   return (
     <>
@@ -94,19 +221,18 @@ export default function MobileInputDock({ ptyId }: Props) {
               <span className="muted small">no quick commands — tap ⚙ to add</span>
             )}
             {commands.map(c => (
-              <button
+              <ChipButton
                 key={c.id}
-                className="mdock-chip"
-                onClick={(e) => { onTapCommand(c); e.currentTarget.blur(); }}
-                title={c.appendNewline ? `${c.value} ↵` : c.value}
-              >
-                {c.label}
-              </button>
+                cmd={c}
+                sticky={c.kind === "ctrl" ? sticky.ctrl : c.kind === "alt" ? sticky.alt : "inactive"}
+                disabled={!canDispatch}
+                onTap={() => onTapCommand(c)}
+              />
             ))}
           </div>
           <button
             className="ghost small mdock-mgr-btn"
-            onClick={() => setMgr(true)}
+            onClick={() => setShowEditor(true)}
             title="Manage quick commands"
             aria-label="Manage quick commands"
           >
@@ -115,263 +241,78 @@ export default function MobileInputDock({ ptyId }: Props) {
         </div>
 
         <div className="mdock-input">
-          <input
-            ref={inputRef}
-            className="mdock-text"
-            type="text"
-            value={text}
-            placeholder="type a command — Enter to send"
-            onChange={e => setText(e.target.value)}
-            onKeyDown={onKeyDown}
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-            // Keep the mobile keyboard's submit button labeled "send".
-            enterKeyHint="send"
-          />
+          <div className="mdock-pill">
+            <textarea
+              ref={textRef}
+              className="mdock-textarea"
+              value={text}
+              placeholder={placeholder}
+              onChange={onChange}
+              onKeyDown={onKeyDown}
+              rows={rowsForText}
+              disabled={!isLive}
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              enterKeyHint="send"
+            />
+          </div>
           <button
-            className="mdock-send"
-            onClick={onSendInput}
-            disabled={!text}
+            className="mdock-send-circle"
+            onClick={submit}
+            disabled={!canDispatch || text.trim().length === 0}
             title="Send (Enter)"
+            aria-label="Send"
           >
-            Send
+            ↑
           </button>
         </div>
       </div>
 
-      {showMgr && (
-        <QuickCommandsManager onClose={() => setMgr(false)} />
+      {showCd && (
+        <Suspense fallback={null}>
+          <ChangeDirectoryPanel
+            initialPath={ptyInfo?.cwd && ptyInfo.cwd !== "" ? ptyInfo.cwd : "/"}
+            onConfirm={onConfirmCd}
+            onCancel={() => setShowCd(false)}
+          />
+        </Suspense>
+      )}
+
+      {showEditor && (
+        <Suspense fallback={null}>
+          <QuickCommandEditor
+            initialScope={editorScope}
+            runningProgram={editorProgKey}
+            onClose={() => setShowEditor(false)}
+          />
+        </Suspense>
       )}
     </>
   );
 }
 
-// ── manager modal ───────────────────────────────────────────────────
+// ─── Chip ──────────────────────────────────────────────────────────
 
-function QuickCommandsManager({ onClose }: { onClose: () => void }) {
-  const commands = useQuickCommands();
-  const [draftLabel, setDraftLabel] = useState("");
-  const [draftValue, setDraftValue] = useState("");
-  const [draftNl,    setDraftNl]    = useState(true);
-
-  // Pointer-based drag-and-drop reorder. PointerEvents covers mouse, pen,
-  // and touch in one path; HTML5 dnd doesn't fire on iOS touch.
-  const listRef = useRef<HTMLUListElement | null>(null);
-  const [drag, setDrag] = useState<{ id: string; toIdx: number } | null>(null);
-
-  const findDropIdx = useCallback((clientY: number): number => {
-    const ul = listRef.current;
-    if (!ul) return commands.length;
-    const rows = ul.querySelectorAll<HTMLLIElement>("[data-cmd-id]");
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i].getBoundingClientRect();
-      if (clientY < r.top + r.height / 2) return i;
-    }
-    return rows.length;
-  }, [commands.length]);
-
-  const onHandleDown = useCallback((e: React.PointerEvent<HTMLElement>, id: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-    setDrag({ id, toIdx: commands.findIndex(c => c.id === id) });
-  }, [commands]);
-
-  const onHandleMove = useCallback((e: React.PointerEvent<HTMLElement>) => {
-    setDrag(d => {
-      if (!d) return d;
-      const idx = findDropIdx(e.clientY);
-      return idx === d.toIdx ? d : { ...d, toIdx: idx };
-    });
-  }, [findDropIdx]);
-
-  const onHandleUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    setDrag(d => {
-      if (!d) return null;
-      const fIdx = commands.findIndex(c => c.id === d.id);
-      let tIdx = d.toIdx;
-      // toIdx == fIdx or fIdx+1 means "drop where it already is" — no-op.
-      if (fIdx >= 0 && tIdx !== fIdx && tIdx !== fIdx + 1) {
-        const next = commands.slice();
-        const [item] = next.splice(fIdx, 1);
-        if (tIdx > fIdx) tIdx -= 1;
-        tIdx = Math.max(0, Math.min(tIdx, next.length));
-        next.splice(tIdx, 0, item);
-        setQuickCommands(next);
-      }
-      return null;
-    });
-  }, [commands]);
-
-  const fromIdx = drag ? commands.findIndex(c => c.id === drag.id) : -1;
-  const showDropLine = drag != null
-    && drag.toIdx !== fromIdx
-    && drag.toIdx !== fromIdx + 1;
-
-  const onAdd = useCallback(() => {
-    const label = draftLabel.trim();
-    const value = draftValue;
-    if (!label || !value) return;
-    addQuickCommand({ label, value, appendNewline: draftNl });
-    setDraftLabel("");
-    setDraftValue("");
-    setDraftNl(true);
-  }, [draftLabel, draftValue, draftNl]);
-
+function ChipButton({
+  cmd, sticky, disabled, onTap,
+}: { cmd: QuickCommand; sticky: StickyState; disabled: boolean; onTap: () => void }) {
+  const isModifier = cmd.kind === "ctrl" || cmd.kind === "alt";
+  const stateClass = isModifier
+    ? (sticky === "armed" ? " sticky-armed" : sticky === "locked" ? " sticky-locked" : "")
+    : "";
+  const title = cmd.kind === "bytes" && cmd.sendImmediately ? `${cmd.label} ↵` : cmd.label;
   return (
-    <div className="mdock-modal-backdrop" onClick={onClose}>
-      <div className="mdock-modal" onClick={e => e.stopPropagation()} role="dialog" aria-label="Quick commands">
-        <header className="row" style={{ justifyContent: "space-between" }}>
-          <strong>Quick commands</strong>
-          <button className="ghost small" onClick={onClose}>✕</button>
-        </header>
-
-        <ul ref={listRef} className="mdock-mgr-list">
-          {commands.map((c, i) => (
-            <Fragment key={c.id}>
-              {showDropLine && drag!.toIdx === i && <li className="mdock-drop-line" aria-hidden />}
-              <ManagerRow
-                cmd={c}
-                isDragging={drag?.id === c.id}
-                onHandlePointerDown={(e) => onHandleDown(e, c.id)}
-                onHandlePointerMove={onHandleMove}
-                onHandlePointerUp={onHandleUp}
-              />
-            </Fragment>
-          ))}
-          {showDropLine && drag!.toIdx === commands.length && (
-            <li className="mdock-drop-line" aria-hidden />
-          )}
-          {commands.length === 0 && <li className="muted small" style={{ padding: "0.5em" }}>no commands yet</li>}
-        </ul>
-
-        <fieldset className="mdock-mgr-add">
-          <legend className="small muted">Add new</legend>
-          <div className="row tight">
-            <input
-              type="text"
-              placeholder="label (e.g. ls)"
-              value={draftLabel}
-              onChange={e => setDraftLabel(e.target.value)}
-              style={{ flex: "1 1 8em" }}
-            />
-            <input
-              type="text"
-              placeholder="value (e.g. ls -al, \\x03 for ^C)"
-              value={draftValue}
-              onChange={e => setDraftValue(e.target.value)}
-              style={{ flex: "2 1 12em" }}
-            />
-          </div>
-          <label className="row tight small" style={{ marginTop: "0.4em" }}>
-            <input
-              type="checkbox"
-              checked={draftNl}
-              onChange={e => setDraftNl(e.target.checked)}
-            />
-            run on tap (append newline)
-          </label>
-          <div className="row tight" style={{ marginTop: "0.5em", justifyContent: "flex-end" }}>
-            <button className="small" onClick={onAdd} disabled={!draftLabel.trim() || !draftValue}>
-              Add
-            </button>
-          </div>
-        </fieldset>
-
-        <footer className="row" style={{ justifyContent: "space-between", marginTop: "0.4em" }}>
-          <button
-            className="ghost small"
-            onClick={() => {
-              if (confirm("Reset quick commands to defaults?")) resetQuickCommands();
-            }}
-          >
-            reset to defaults
-          </button>
-          <button className="small" onClick={onClose}>Done</button>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
-interface ManagerRowProps {
-  cmd:                 QuickCommand;
-  isDragging:          boolean;
-  onHandlePointerDown: (e: React.PointerEvent<HTMLElement>) => void;
-  onHandlePointerMove: (e: React.PointerEvent<HTMLElement>) => void;
-  onHandlePointerUp:   (e: React.PointerEvent<HTMLElement>) => void;
-}
-
-function ManagerRow({
-  cmd, isDragging,
-  onHandlePointerDown, onHandlePointerMove, onHandlePointerUp,
-}: ManagerRowProps) {
-  const [editing, setEditing] = useState(false);
-  const [label,   setLabel]   = useState(cmd.label);
-  const [value,   setValue]   = useState(cmd.value);
-  const [nl,      setNl]      = useState(cmd.appendNewline ?? false);
-
-  // Keep the local editing buffer in sync if the underlying command
-  // changes from elsewhere (e.g. reset).
-  useEffect(() => { setLabel(cmd.label); setValue(cmd.value); setNl(cmd.appendNewline ?? false); }, [cmd]);
-
-  const save = () => {
-    if (!label.trim() || !value) { setEditing(false); return; }
-    updateQuickCommand(cmd.id, { label: label.trim(), value, appendNewline: nl });
-    setEditing(false);
-  };
-
-  return (
-    <li
-      className={"mdock-mgr-row" + (isDragging ? " dragging" : "")}
-      data-cmd-id={cmd.id}
+    <button
+      className={"mdock-chip" + stateClass}
+      onClick={(e) => { onTap(); e.currentTarget.blur(); }}
+      disabled={disabled}
+      title={title}
+      aria-label={cmd.label}
+      aria-pressed={isModifier ? sticky !== "inactive" : undefined}
     >
-      {editing ? (
-        <>
-          <input
-            type="text"
-            value={label}
-            onChange={e => setLabel(e.target.value)}
-            style={{ flex: "1 1 8em" }}
-          />
-          <input
-            type="text"
-            value={value}
-            onChange={e => setValue(e.target.value)}
-            style={{ flex: "2 1 12em" }}
-          />
-          <label className="small" title="append newline on tap">
-            <input type="checkbox" checked={nl} onChange={e => setNl(e.target.checked)} /> ↵
-          </label>
-          <button className="small" onClick={save}>save</button>
-          <button className="ghost small" onClick={() => setEditing(false)}>cancel</button>
-        </>
-      ) : (
-        <>
-          <button
-            className="mdock-mgr-handle"
-            onPointerDown={onHandlePointerDown}
-            onPointerMove={onHandlePointerMove}
-            onPointerUp={onHandlePointerUp}
-            onPointerCancel={onHandlePointerUp}
-            title="Drag to reorder"
-            aria-label="Drag to reorder"
-          >≡</button>
-          <span className="mdock-mgr-label">{cmd.label}</span>
-          <code className="mdock-mgr-value">{cmd.value}</code>
-          {cmd.appendNewline && <span className="pill small">↵</span>}
-          <span style={{ flex: "1 1 auto" }} />
-          <button className="ghost small" onClick={() => setEditing(true)}>edit</button>
-          <button
-            className="ghost small"
-            onClick={() => { if (confirm(`Delete "${cmd.label}"?`)) deleteQuickCommand(cmd.id); }}
-            title="Delete"
-          >✕</button>
-        </>
-      )}
-    </li>
+      {cmd.symbol ? <span aria-hidden>{cmd.symbol}</span> : <span>{cmd.label}</span>}
+    </button>
   );
 }
