@@ -105,8 +105,8 @@ struct ServerRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         if isActive {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                            Image(systemName: activeMarker.name)
+                                .foregroundStyle(activeMarker.color)
                         } else {
                             Image(systemName: "circle")
                                 .foregroundStyle(MotifTheme.textSecondary)
@@ -138,6 +138,26 @@ struct ServerRow: View {
         .buttonStyle(.plain)
         .task(id: serverPingTaskKey) {
             await refreshPingIndicator()
+        }
+    }
+
+    /// Leading marker for the *active* server. Its color tracks live
+    /// reachability so a green check means the server is actually responding —
+    /// not merely the one selected. Previously this was always green-when-
+    /// active, which read as "connected" even while the ping badge said "No
+    /// ping". Inactive rows keep the plain hollow circle.
+    private var activeMarker: (name: String, color: Color) {
+        switch pingIndicator {
+        case .reachable:
+            return ("checkmark.circle.fill", .green)
+        case .unreachable:
+            return ("exclamationmark.circle.fill", .orange)
+        case .idle, .checking:
+            return ("circle.dotted", MotifTheme.textSecondary)
+        case .unavailable, .notApplicable:
+            // Tailscale off, or a direct server we never ping: selected, but we
+            // can't confirm reachability — stay neutral rather than green.
+            return ("circle.fill", MotifTheme.accent)
         }
     }
 

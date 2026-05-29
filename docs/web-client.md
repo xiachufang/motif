@@ -184,7 +184,12 @@ OSC 流单独解析成结构化通知。
 
 `new WebSocket(url)` 在浏览器里没法设 `Authorization` header，所以 motifd 在 `/events` 和 `/pty/<id>` 的握手处接受 `?token=...` query 参数，走和 Bearer header 同一个 token 比较函数（`crates/motif-server/src/auth.rs`）。HTTP `/rpc/*` 在 token 非空时继续用 Bearer header；空 token 表示连接到 no-auth motifd，HTTP 和 WS 都不附带 token。
 
-Token 怎么到浏览器：**没有任何 cookie 或一次性令牌机制**。用户在登录页 `apps/web/src/pages/Login.tsx` 手动填写 motifd 配置的 token 字符串；如果服务端关闭鉴权，可以留空连接。按"remember on this device"勾选与否分别存到 `localStorage` / `sessionStorage`（key `motif.token`，no-auth 模式会存空字符串）。下次访问时登录页的 effect 自动取出尝试重连。
+Token 怎么到浏览器：**没有任何 cookie 或一次性令牌机制**，只有两条入口——
+
+1. **登录页手填**：用户在 `apps/web/src/pages/Login.tsx` 填写 motifd 配置的 token 字符串；服务端关闭鉴权则留空。按"remember on this device"勾选与否分别存到 `localStorage` / `sessionStorage`（key `motif.token`，no-auth 模式会存空字符串）。
+2. **URL 参数**：用 `…/?token=<value>` 打开页面时，`apps/web/src/store/store.ts` 的 `loadToken()` 优先取该参数，存入 `localStorage` 后用 `history.replaceState` 把它从地址栏抹掉（避免残留在浏览历史 / 书签 / 分享链接里）。menubar 的 "Open Web UI…" / "Open in Browser…"（`apps/menubar/src/tray.rs`，鉴权开启时）就靠这条把本机配置的 token 直接带进去，省掉手填。
+
+两条入口都落到同一个 `motif.token`；下次访问时登录页的 effect 自动取出尝试重连。
 
 > 注：iOS Native 容器有一条特殊路径——`window.motifNative.isNative === true` 时（`apps/web/src/pages/Login.tsx:5`）跳过 token 表单，由本地代理在 WS 升级时注入 Authorization。这是 native 壳的事情，浏览器场景与它无关。
 
