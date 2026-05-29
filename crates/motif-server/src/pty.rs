@@ -731,14 +731,14 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
 /// terminal modes (alt-screen, DECCKM, mouse, bracketed paste, …), the cursor
 /// position, and its visibility are read back via the C API and re-issued here.
 fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
-    // Entire active screen + scrollback (selection: None == "entire screen").
+    // Entire active screen + scrollback (the Formatter defaults to the whole
+    // terminal — libghostty-vt 0.1.1 has no selection option).
     let content = match Formatter::new(
         term,
         FormatterOptions {
             format: Format::Vt,
             trim: false,
             unwrap: false,
-            selection: None,
         },
     ) {
         Ok(mut f) => {
