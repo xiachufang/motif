@@ -16,8 +16,8 @@ struct WelcomeView: View {
                         Text("Welcome to motif")
                             .font(.title2.bold())
                         Text("Add a motifd server to start. The app will connect to it through your tailnet.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.callout)
+                            .foregroundStyle(MotifTheme.textSecondary)
                     }
                     .padding(.vertical, 4)
                 }
@@ -28,14 +28,14 @@ struct WelcomeView: View {
                     Text("Tailscale")
                 } footer: {
                     Text("motifd is reached over the tailnet. Connect first to discover servers automatically.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
 
                 Section {
                     if appState.servers.servers.isEmpty {
                         Text("No servers yet.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.footnote)
+                            .foregroundStyle(MotifTheme.textSecondary)
                     } else {
                         ForEach(appState.servers.servers) { server in
                             ServerRow(
@@ -59,7 +59,7 @@ struct WelcomeView: View {
                         serverEditTarget = .new
                     } label: {
                         Label("Add Server", systemImage: "plus.circle.fill")
-                            .font(.headline)
+                            .font(MotifTheme.Typography.headline)
                     }
                 } header: {
                     Text("Servers")
@@ -70,9 +70,9 @@ struct WelcomeView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        appState.isShowingAbout = true
+                        appState.isShowingSettings = true
                     } label: {
-                        Image(systemName: "info.circle")
+                        Image(systemName: "gearshape")
                     }
                 }
             }

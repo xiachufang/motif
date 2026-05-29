@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import TalkerCommonLogging
 import UIKit
 import GhosttyTerminal
 
@@ -21,8 +22,8 @@ final class AppState {
     /// from the Welcome screen.
     var isShowingConnection: Bool = false
 
-    /// Drives the About sheet (bundle id + version).
-    var isShowingAbout: Bool = false
+    /// Drives the Settings sheet (bundle id + version + diagnostics).
+    var isShowingSettings: Bool = false
 
     /// Bumped to force NativeRoot to rebuild + re-task the connection when
     /// something other than the active server changes (e.g. Tailscale flips
@@ -30,6 +31,12 @@ final class AppState {
     private(set) var nativeReloadKey: Int = 0
 
     init() {
+        // TalkerCommonLogging writes a rotating per-bundle log under
+        // Documents/logs/. Set up before anything that might log — tsnet
+        // and RpcClient both fire entries from inside their inits/early
+        // tasks. Idempotent across re-init; safe to call once at process
+        // start.
+        setupLogger()
         self.tailscale = TailscaleManager()
         self.servers = MotifServerStore()
         self.commands = QuickCommandStore()

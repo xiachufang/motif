@@ -2,19 +2,22 @@ import SwiftUI
 import UIKit
 import GhosttyTerminal
 import OSLog
+#if DEBUG
+import TalkerCommonLogging
+#endif
 
 private let ptyLog = Logger(subsystem: "io.allsunday.motif", category: "PtyView")
 
 #if DEBUG
-/// DEBUG-only: route libghostty-spm's `TerminalDebugLog` into `FileLog` so
-/// metric/lifecycle/action events land in `Documents/motif.log` alongside
-/// the rest of our diagnostics. Categories deliberately exclude `.render`
-/// and `.output` — they fire per-frame / per-byte and would drown the file.
-/// Initialized lazily on the first Ghostty coordinator so non-Ghostty
-/// sessions pay nothing.
+/// DEBUG-only: route libghostty-spm's `TerminalDebugLog` into
+/// TalkerCommonLogging so metric/lifecycle/action events land in
+/// `Documents/logs/<bundle>.log` alongside the rest of our diagnostics.
+/// Categories deliberately exclude `.render` and `.output` — they fire
+/// per-frame / per-byte and would drown the file. Initialized lazily on
+/// the first Ghostty coordinator so non-Ghostty sessions pay nothing.
 private let ghosttyDebugLogOnce: Void = {
     TerminalDebugLog.sink = { message in
-        FileLog.note("Ghostty", message)
+        infoLog("[Ghostty] \(message)")
     }
     TerminalDebugLog.enable([.lifecycle, .metrics, .actions])
 }()

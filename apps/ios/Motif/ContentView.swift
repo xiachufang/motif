@@ -1,4 +1,5 @@
 import SwiftUI
+import TalkerCommonLogging
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
@@ -21,10 +22,10 @@ struct ContentView: View {
             ConnectionView().environment(appState)
         }
         .sheet(isPresented: Binding(
-            get: { appState.isShowingAbout },
-            set: { appState.isShowingAbout = $0 }
+            get: { appState.isShowingSettings },
+            set: { appState.isShowingSettings = $0 }
         )) {
-            AboutView().environment(appState)
+            SettingsView().environment(appState)
         }
         .task {
             // Auto-resume Tailscale. With cached creds tsnet skips the
@@ -39,7 +40,7 @@ struct ContentView: View {
             #endif
         }
         .onChange(of: scenePhase) { old, phase in
-            FileLog.note("Tailscale", "scenePhase \(String(describing: old)) -> \(String(describing: phase))")
+            infoLog("[Tailscale] scenePhase \(String(describing: old)) -> \(String(describing: phase))")
             // Track foreground so a backgrounded client never claims PTY
             // primary; on return to foreground, reclaim it for our active view.
             appState.motif.isForeground = (phase == .active)

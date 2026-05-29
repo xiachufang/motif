@@ -193,16 +193,16 @@ struct QuickCommandListEditor: View {
                     .foregroundStyle(.tint)
             } else {
                 Text(cmd.label.isEmpty ? "·" : String(cmd.label.prefix(2)))
-                    .font(.caption.bold().monospaced())
+                    .font(MotifTheme.Typography.caption.bold().monospaced())
                     .frame(width: 20)
                     .foregroundStyle(.tint)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(cmd.label)
-                    .font(.body)
+                    .font(MotifTheme.Typography.body)
                 Text(subtitle(cmd))
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.caption.monospaced())
+                    .foregroundStyle(MotifTheme.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -210,8 +210,8 @@ struct QuickCommandListEditor: View {
             // The send/insert glyph only means something for byte payloads.
             if cmd.kind == .bytes {
                 Image(systemName: cmd.sendImmediately ? "paperplane.fill" : "text.insert")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
+                    .foregroundStyle(MotifTheme.textSecondary)
+                    .font(MotifTheme.Typography.caption)
             }
         }
     }
@@ -307,9 +307,9 @@ private struct SpecialKeyPicker: View {
                     Image(systemName: s).frame(width: 22)
                 } else {
                     Text(key.label).frame(width: 22, alignment: .leading)
-                        .font(.caption.bold().monospaced())
+                        .font(MotifTheme.Typography.caption.bold().monospaced())
                 }
-                Text(key.label).foregroundStyle(.primary)
+                Text(key.label).foregroundStyle(MotifTheme.textPrimary)
                 Spacer()
             }
         }
@@ -333,7 +333,7 @@ private struct MatchedProgramsEditor: View {
         NavigationStack {
             List {
                 Section {
-                    ForEach(matches, id: \.self) { Text($0).font(.body.monospaced()) }
+                    ForEach(matches, id: \.self) { Text($0).font(MotifTheme.Typography.body.monospaced()) }
                         .onDelete { matches.remove(atOffsets: $0) }
                     HStack {
                         TextField("Program name (e.g. claude)", text: $newEntry)
@@ -393,7 +393,7 @@ private struct QuickCommandRowEditor: View {
                 }
                 Section {
                     TextEditor(text: $payloadText)
-                        .font(.system(.body, design: .monospaced))
+                        .font(MotifTheme.Typography.body.monospaced())
                         .frame(minHeight: 80)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)

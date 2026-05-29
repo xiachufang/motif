@@ -21,7 +21,7 @@ struct TerminalSettingsSheet: View {
                             Text("Size")
                             Spacer()
                             Text("\(Int(settings.fontSize)) pt")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MotifTheme.textSecondary)
                                 .monospacedDigit()
                         }
                     }

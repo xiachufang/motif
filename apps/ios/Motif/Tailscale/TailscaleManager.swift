@@ -3,6 +3,7 @@ import Foundation
 import Network
 import Observation
 import OSLog
+import TalkerCommonLogging
 @preconcurrency import TailscaleKit
 
 /// Owns the lifecycle of a single TailscaleNode + its IPN bus subscription.
@@ -197,10 +198,10 @@ final class TailscaleManager {
         do {
             let ips = try await node.addrs()
             state = .running(ipv4: ips.ip4, ipv6: ips.ip6)
-            FileLog.note("Tailscale", "running ipv4=\(ips.ip4 ?? "nil") ipv6=\(ips.ip6 ?? "nil")")
+            infoLog("[Tailscale] running ipv4=\(ips.ip4 ?? "nil") ipv6=\(ips.ip6 ?? "nil")")
         } catch {
             log.error("addrs failed: \(String(describing: error), privacy: .public)")
-            FileLog.note("Tailscale", "addrs failed: \(error)")
+            infoLog("[Tailscale] addrs failed: \(error)")
         }
     }
 
@@ -218,10 +219,10 @@ final class TailscaleManager {
         switch state {
         case .running, .degraded: break
         default:
-            FileLog.note("Tailscale", "revalidate: skip (state=\(state))")
+            infoLog("[Tailscale] revalidate: skip (state=\(state))")
             return
         }
-        FileLog.note("Tailscale", "revalidate: begin (state=\(state))")
+        infoLog("[Tailscale] revalidate: begin (state=\(state))")
         await checkHealthOnce()
     }
 
@@ -230,7 +231,7 @@ final class TailscaleManager {
     private func checkHealthOnce() async {
         if isRestarting { return }
         guard let api = apiClient else {
-            FileLog.note("Tailscale", "health probe: apiClient is nil — cannot probe (state=\(state))")
+            infoLog("[Tailscale] health probe: apiClient is nil — cannot probe (state=\(state))")
             return
         }
         let healthy: Bool
@@ -241,15 +242,15 @@ final class TailscaleManager {
             let online = status.SelfStatus?.Online ?? false
             healthy = status.BackendState == "Running" && online
             reason = status.Health?.first ?? "tailnet \(status.BackendState)"
-            FileLog.note("Tailscale",
-                "health probe: backend=\(status.BackendState) online=\(online) "
+            infoLog(
+                "[Tailscale] health probe: backend=\(status.BackendState) online=\(online) "
                 + "health=\(status.Health ?? []) numLive=\(lastNumLive.map(String.init) ?? "nil") "
                 + "-> \(healthy ? "healthy" : "unhealthy")")
         } catch {
             healthy = false
             probeThrew = true
             reason = "status unavailable"
-            FileLog.note("Tailscale", "health probe failed: \(error)")
+            infoLog("[Tailscale] health probe failed: \(error)")
         }
 
         // A successful probe — even one reporting the datapath down — proves
@@ -264,7 +265,7 @@ final class TailscaleManager {
             // healthy poll — only refresh when we're recovering from a
             // non-running state.
             if wasDegraded {
-                FileLog.note("Tailscale", "health recovered (state=\(state)) -> running")
+                infoLog("[Tailscale] health recovered (state=\(state)) -> running")
                 await refreshAddresses()
             }
             return
@@ -273,7 +274,7 @@ final class TailscaleManager {
         let next = State.degraded(reason: reason)
         if state != next {
             state = next
-            FileLog.note("Tailscale", "degraded: \(reason)")
+            infoLog("[Tailscale] degraded: \(reason)")
         }
 
         // Two flavours of unhealthy:
@@ -283,8 +284,8 @@ final class TailscaleManager {
         //    ECONNREFUSED on lo0 after a long suspend): the tsnet loopback
         //    listener is gone and polling it will never recover. Rebuild.
         if consecutiveProbeFailures >= Self.probeFailureRestartThreshold {
-            FileLog.note("Tailscale",
-                "LocalAPI unreachable \(consecutiveProbeFailures)x — restarting node")
+            infoLog(
+                "[Tailscale] LocalAPI unreachable \(consecutiveProbeFailures)x — restarting node")
             await restartNode()
         } else {
             startHealthMonitor()
@@ -299,9 +300,9 @@ final class TailscaleManager {
     private func restartNode() async {
         guard !isRestarting else { return }
         isRestarting = true
-        FileLog.note("Tailscale", "restartNode: tearing down")
+        infoLog("[Tailscale] restartNode: tearing down")
         await teardown()  // also resets consecutiveProbeFailures
-        FileLog.note("Tailscale", "restartNode: starting fresh node")
+        infoLog("[Tailscale] restartNode: starting fresh node")
         // teardown() leaves state as-is (.degraded); start() guards only on
         // .running/.starting, so it proceeds and flips state to .starting.
         isRestarting = false
@@ -314,7 +315,7 @@ final class TailscaleManager {
     /// recovery and flip `state` back — no app traffic required.
     private func startHealthMonitor() {
         guard healthMonitorTask == nil else { return }
-        FileLog.note("Tailscale", "health monitor: started (poll every 3s)")
+        infoLog("[Tailscale] health monitor: started (poll every 3s)")
         healthMonitorTask = Task { [weak self] in
             var tick = 0
             while !Task.isCancelled {
@@ -322,16 +323,16 @@ final class TailscaleManager {
                 if Task.isCancelled { return }
                 guard let self else { return }
                 tick += 1
-                FileLog.note("Tailscale", "health monitor: poll #\(tick)")
+                infoLog("[Tailscale] health monitor: poll #\(tick)")
                 await self.checkHealthOnce()
             }
-            FileLog.note("Tailscale", "health monitor: loop exited (cancelled)")
+            infoLog("[Tailscale] health monitor: loop exited (cancelled)")
         }
     }
 
     private func stopHealthMonitor() {
         if healthMonitorTask != nil {
-            FileLog.note("Tailscale", "health monitor: stopped")
+            infoLog("[Tailscale] health monitor: stopped")
         }
         healthMonitorTask?.cancel()
         healthMonitorTask = nil
@@ -379,7 +380,7 @@ final class TailscaleManager {
             throw DialError.notRunning
         }
         log.notice("tsnet loopback proxy at \(ipStr, privacy: .public):\(portU16, privacy: .public) (cred=\(loopback.proxyCredential.prefix(6), privacy: .public)…)")
-        FileLog.note("Tailscale", "loopback socks5 \(ipStr):\(portU16) cred=\(loopback.proxyCredential.prefix(6))…")
+        infoLog("[Tailscale] loopback socks5 \(ipStr):\(portU16) cred=\(loopback.proxyCredential.prefix(6))…")
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ipStr),
                                             port: NWEndpoint.Port(rawValue: portU16)!)
         let proxy = ProxyConfiguration(socksv5Proxy: endpoint)
@@ -669,7 +670,7 @@ final class TailscaleManager {
     /// to mutate `state` on the manager.
     fileprivate func busDidReceive(notify: Ipn.Notify) {
         if let s = notify.State {
-            FileLog.note("Tailscale", "ipn=\(s) self=\(state)")
+            infoLog("[Tailscale] ipn=\(s) self=\(state)")
         }
         // Diagnostic: log every Notify field present so we can see exactly
         // what tsnet on iOS emits during the handshake. Trim down once the
@@ -725,7 +726,7 @@ final class TailscaleManager {
             let prev = lastNumLive
             lastNumLive = live
             if let prev, prev != live {
-                FileLog.note("Tailscale", "engine NumLive \(prev) -> \(live) (state=\(state))")
+                infoLog("[Tailscale] engine NumLive \(prev) -> \(live) (state=\(state))")
             }
             if let prev, prev > 0, live == 0, case .running = state {
                 Task { await self.checkHealthOnce() }
@@ -747,17 +748,26 @@ private struct SilentLogger: LogSink {
     func log(_ message: String) {}
 }
 
-/// LogSink that routes tsnet's internal Go logs to a file under Documents/.
-/// stderr from the simulator is unreliable to capture, so we open a real
-/// fd and read the file out of band.
+/// LogSink that routes tsnet's internal Go logs to a file under
+/// Documents/logs/. We co-locate this with TalkerCommonLogging's directory
+/// so SettingsView's Export Logs picks both up in one zip. stderr from the
+/// simulator is unreliable to capture, so we open a real fd and read the
+/// file out of band.
 private final class TsnetFileLogger: LogSink {
     let logFileHandle: Int32?
     private static let logURL: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return docs.appendingPathComponent("tsnet.log", isDirectory: false)
+        return docs
+            .appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("tsnet.log", isDirectory: false)
     }()
 
     init() {
+        // Logs/ might not exist yet if AppState's setupLogger hasn't created
+        // it; createDirectory is a no-op if the path is already there.
+        try? FileManager.default.createDirectory(
+            at: Self.logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
         // Truncate previous run, then open for writing.
         FileManager.default.createFile(atPath: Self.logURL.path, contents: nil)
         let path = Self.logURL.path

@@ -62,18 +62,18 @@ struct TailscaleEntry: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Setup Tailscale").bold()
                     Text("Sign in so motif can reach your servers")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         case .starting:
             HStack(spacing: 12) {
                 ProgressView().controlSize(.small)
-                Text("Connecting Tailscale…").foregroundStyle(.secondary)
+                Text("Connecting Tailscale…").foregroundStyle(MotifTheme.textSecondary)
                 Spacer()
             }
         case .needsAuth:
@@ -83,13 +83,13 @@ struct TailscaleEntry: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Tailscale needs login").bold()
                     Text("Tap to finish signing in")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         case .running(let v4, _):
             HStack(spacing: 12) {
@@ -100,13 +100,13 @@ struct TailscaleEntry: View {
                     if let v4 {
                         Text(v4)
                             .font(.footnote.monospaced())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MotifTheme.textSecondary)
                     }
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         case .degraded(let reason):
             HStack(spacing: 12) {
@@ -115,30 +115,30 @@ struct TailscaleEntry: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Tailscale reconnecting…").bold()
                     Text(reason)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                         .lineLimit(2)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         case .failed(let m):
             HStack(spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(MotifTheme.danger)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Tailscale failed").bold()
                     Text(m)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                         .lineLimit(2)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         }
     }
@@ -173,7 +173,7 @@ struct TailscaleSetupSheet: View {
                     Text("Web auth")
                 } footer: {
                     Text("Opens Tailscale's sign-in page in an in-app browser. Supports SSO / MFA.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
 
                 Section {
@@ -195,7 +195,7 @@ struct TailscaleSetupSheet: View {
                     Text("Auth key")
                 } footer: {
                     Text("Pre-shared key from your Tailscale admin console. Headless — no browser needed.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
             }
             .navigationTitle("Setup Tailscale")
@@ -251,10 +251,14 @@ struct TailscaleDetailsSheet: View {
                     } label: {
                         Label("Disconnect", systemImage: "power")
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            // iOS Form quirk: destructive role colors the text
+                            // red but the icon inherits the env `.tint`. Force
+                            // both to danger so text + icon stay one color.
+                            .foregroundStyle(MotifTheme.danger)
                     }
                 } footer: {
                     Text("Disconnect drops the tsnet session. Cached credentials stay on device — sign in again to resume.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
             }
             .navigationTitle("Tailscale")

@@ -65,10 +65,10 @@ struct ChangeDirectoryPanel: View {
         HStack(spacing: 8) {
             // Terminal-prompt glyph signals "this is a path you type into".
             Image(systemName: "chevron.right")
-                .font(.callout.bold())
+                .font(MotifTheme.Typography.callout.bold())
                 .foregroundStyle(.tint)
             TextField("path", text: $input)
-                .font(.system(.body, design: .monospaced))
+                .font(MotifTheme.Typography.body.monospaced())
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .focused($focused)
@@ -90,8 +90,8 @@ struct ChangeDirectoryPanel: View {
             }
             if candidates.isEmpty, cache[baseDir] != nil, !loading.contains(baseDir) {
                 Text(query.isEmpty ? "No subdirectories" : "No match")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
                     .listRowSeparator(.hidden)
             }
             ForEach(Array(candidates.enumerated()), id: \.element.id) { idx, entry in
@@ -108,13 +108,13 @@ struct ChangeDirectoryPanel: View {
     private var parentRow: some View {
         HStack(spacing: 10) {
             Image(systemName: "arrowshape.turn.up.left.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MotifTheme.textSecondary)
                 .frame(width: 22)
             Text("..")
-                .font(.system(.body, design: .monospaced).weight(.medium))
+                .font(MotifTheme.Typography.body.monospaced().weight(.medium))
             Text("parent")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(MotifTheme.Typography.caption)
+                .foregroundStyle(MotifTheme.textTertiary)
             Spacer()
         }
         .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
@@ -130,18 +130,18 @@ struct ChangeDirectoryPanel: View {
                 .foregroundStyle(.tint)
                 .frame(width: 22)
             Text(name)
-                .font(.system(.body, design: .monospaced))
+                .font(MotifTheme.Typography.body.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
             if isFirst {
                 Image(systemName: "return")
-                    .font(.caption.bold())
+                    .font(MotifTheme.Typography.caption.bold())
                     .foregroundStyle(.tint)
             }
             Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(MotifTheme.Typography.caption)
+                .foregroundStyle(MotifTheme.textTertiary)
         }
     }
 
@@ -154,12 +154,12 @@ struct ChangeDirectoryPanel: View {
         } label: {
             HStack(alignment: .center, spacing: 8) {
                 Image(systemName: "arrow.turn.down.right")
-                    .font(.callout)
+                    .font(MotifTheme.Typography.callout)
                 // "cd" stays fixed; the path truncates from the front so the
                 // tail (the directory you're entering) is always visible.
-                Text("cd").font(.callout.monospaced())
+                Text("cd").font(MotifTheme.Typography.callout.monospaced())
                 Text(displayPath)
-                    .font(.callout.monospaced())
+                    .font(MotifTheme.Typography.callout.monospaced())
                     .lineLimit(1)
                     .truncationMode(.head)
                 Spacer(minLength: 0)
@@ -167,9 +167,9 @@ struct ChangeDirectoryPanel: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(MotifButtonStyle(role: .filled, size: .medium))
         .disabled(resolvedTarget == nil)
-        .padding(16)
+        .padding(MotifTheme.Spacing.lg)
     }
 
     // MARK: - Derived state

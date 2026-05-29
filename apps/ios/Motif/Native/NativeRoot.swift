@@ -241,40 +241,43 @@ struct NativeRoot: View {
             EmptyView()
         } else if blocked {
             connectionOverlayContainer {
-                VStack(spacing: 12) {
+                VStack(spacing: MotifTheme.Spacing.md) {
                     ProgressView()
-                    Text("Waiting for Tailscale…").foregroundStyle(.secondary)
-                    Text(tailscaleStatusHint).font(.footnote).foregroundStyle(.secondary)
+                    Text("Waiting for Tailscale…").foregroundStyle(MotifTheme.textSecondary)
+                    Text(tailscaleStatusHint)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
             }
         } else {
             switch motif.state {
             case .disconnected, .connecting:
                 connectionOverlayContainer {
-                    VStack(spacing: 12) {
+                    VStack(spacing: MotifTheme.Spacing.md) {
                         ProgressView()
-                        Text("Connecting…").foregroundStyle(.secondary)
+                        Text("Connecting…").foregroundStyle(MotifTheme.textSecondary)
                     }
                 }
             case .failed(let m):
                 connectionOverlayContainer {
-                    VStack(spacing: 12) {
+                    VStack(spacing: MotifTheme.Spacing.md) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 32))
+                            .font(MotifTheme.Typography.symbol(size: 32))
+                            // Warning hue — not in the brand palette by design.
                             .foregroundStyle(.yellow)
-                        Text("Can’t connect to motifd").font(.headline)
+                        Text("Can’t connect to motifd").font(MotifTheme.Typography.headline)
                         Text(m)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.callout)
+                            .foregroundStyle(MotifTheme.textSecondary)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 32)
-                        HStack(spacing: 12) {
+                            .padding(.horizontal, MotifTheme.Spacing.xxl)
+                        HStack(spacing: MotifTheme.Spacing.md) {
                             Button("Retry now") { triggerRetry() }
-                                .buttonStyle(.borderedProminent)
+                                .buttonStyle(MotifButtonStyle(role: .filled, size: .medium))
                             Button("Server settings") {
                                 appState.isShowingConnection = true
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(MotifButtonStyle(role: .bordered, size: .medium))
                         }
                     }
                 }
@@ -288,7 +291,7 @@ struct NativeRoot: View {
     /// the list underneath isn't accidentally driven while disconnected.
     private func connectionOverlayContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
+            MotifTheme.background.ignoresSafeArea()
             content()
         }
     }
@@ -346,13 +349,13 @@ struct NativeRoot: View {
             Button {
                 appState.isShowingConnection = true
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "server.rack").font(.footnote)
+                HStack(spacing: MotifTheme.Spacing.xs) {
+                    Image(systemName: "server.rack").font(MotifTheme.Typography.footnote)
                     Text(serverLabel(sessionName: sessionName))
-                        .font(.headline)
+                        .font(MotifTheme.Typography.headline)
                     Image(systemName: "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.caption2)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
             }
             .buttonStyle(.plain)
@@ -363,9 +366,9 @@ struct NativeRoot: View {
     private func infoButton() -> some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Button {
-                appState.isShowingAbout = true
+                appState.isShowingSettings = true
             } label: {
-                Image(systemName: "info.circle")
+                Image(systemName: "gearshape")
             }
         }
     }
@@ -415,10 +418,12 @@ struct ConnectionStatusChip: View {
         if active, let status = statusText {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
-                Text(status).font(.caption2.weight(.medium))
+                Text(status).font(MotifTheme.Typography.caption2.weight(.medium))
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.vertical, MotifTheme.Spacing.xs)
+            // Warning hue — pill stays orange to read as "reconnecting", separate
+            // from the brand accent.
             .background(Capsule().fill(Color.orange.opacity(0.18)))
             .foregroundStyle(.orange)
             .accessibilityLabel(status)

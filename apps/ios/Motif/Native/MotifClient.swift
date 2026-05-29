@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import TalkerCommonLogging
 
 /// High-level client around RpcClient that owns the active session +
 /// PTY list and surfaces protocol events as observable state.
@@ -179,7 +180,7 @@ final class MotifClient {
         let proxyCount = urlSessionConfig.proxyConfigurations.count
         let proxyDesc = urlSessionConfig.proxyConfigurations.first.map { String(describing: $0) } ?? "(none)"
         log.notice("urlSession proxyCount=\(proxyCount, privacy: .public) first=\(proxyDesc, privacy: .public)")
-        FileLog.note("MotifClient", "urlSession proxyCount=\(proxyCount) first=\(proxyDesc)")
+        infoLog("[MotifClient] urlSession proxyCount=\(proxyCount) first=\(proxyDesc)")
 
         // For `.tailscale` we rewrite MagicDNS names to peer IPs as a
         // safety net for build/config combos where DNS resolves locally.
@@ -196,7 +197,7 @@ final class MotifClient {
         }
 
         log.notice("motifd target=\(server.name, privacy: .public) host=\(server.host, privacy: .public) resolved=\(resolvedHost, privacy: .public) port=\(server.port, privacy: .public) tokenLen=\(server.token.count, privacy: .public)")
-        FileLog.note("MotifClient", "connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
+        infoLog("[MotifClient] connect target=\(server.name) host=\(server.host) resolved=\(resolvedHost) port=\(server.port) tokenLen=\(server.token.count)")
 
         if case .tailscale = server.kind {
             // Pre-warm the magicsock path before we ask URLSession to open
@@ -228,7 +229,7 @@ final class MotifClient {
                 return
             }
             log.notice("motifd ping ok version=\(ping.version, privacy: .public)")
-            FileLog.note("MotifClient", "ping ok version=\(ping.version)")
+            infoLog("[MotifClient] ping ok version=\(ping.version)")
         } catch {
             let friendly = friendlyConnectMessage(
                 server: server,
@@ -236,7 +237,7 @@ final class MotifClient {
                 error: error
             )
             log.error("rpc connect: \(String(describing: error), privacy: .public)")
-            FileLog.note("MotifClient", "rpc connect failed: \(error)")
+            infoLog("[MotifClient] rpc connect failed: \(error)")
             state = .failed(message: friendly)
             return
         }
@@ -249,7 +250,7 @@ final class MotifClient {
             carriedPtyCursors = [:]
         }
         log.notice("connected to motifd as \(server.name, privacy: .public)")
-        FileLog.note("MotifClient", "ws task resumed (state=connected)")
+        infoLog("[MotifClient] ws task resumed (state=connected)")
         eventTask = Task { [weak self] in
             guard let stream = self?.rpc?.events else { return }
             for await event in stream {
@@ -271,7 +272,7 @@ final class MotifClient {
         // rather than flashing a blank session picker mid-cycle.
         if let name = intendedSession {
             log.notice("auto re-attaching to \(name, privacy: .public)")
-            FileLog.note("MotifClient", "auto re-attaching to \(name)")
+            infoLog("[MotifClient] auto re-attaching to \(name)")
             do {
                 try await attach(sessionName: name)
                 // Honor the tab the user switched to while offline: attach
@@ -289,7 +290,7 @@ final class MotifClient {
                 // looping on the same failure; drop to `.connected` so the
                 // user lands on the picker on their next interaction.
                 log.error("auto re-attach \(name, privacy: .public) failed: \(String(describing: error), privacy: .public)")
-                FileLog.note("MotifClient", "auto re-attach \(name) failed: \(error)")
+                infoLog("[MotifClient] auto re-attach \(name) failed: \(error)")
                 intendedSession = nil
                 pendingLocalViewID = nil
                 state = .connected
@@ -366,7 +367,7 @@ final class MotifClient {
         } catch {
             guard shouldRetryStartupPing(error) else { throw error }
             log.notice("startup ping failed once; retrying after warm-up: \(String(describing: error), privacy: .public)")
-            FileLog.note("MotifClient", "startup ping retry after error: \(error)")
+            infoLog("[MotifClient] startup ping retry after error: \(error)")
             try? await Task.sleep(for: .milliseconds(server.kind == .tailscale ? 900 : 350))
             return try await rpc.ping()
         }
@@ -404,7 +405,7 @@ final class MotifClient {
             let probe = await tailscale.rawHttpProbe(host: host, port: port, path: "/ping")
             guard let self else { return }
             log.notice("raw http probe status=\(probe.statusLine ?? "(nil)", privacy: .public) bytes=\(probe.bytesRead, privacy: .public) elapsed=\(probe.elapsedMs, privacy: .public)ms err=\(probe.error ?? "(none)", privacy: .public)")
-            FileLog.note("MotifClient", "raw http probe status=\(probe.statusLine ?? "(nil)") bytes=\(probe.bytesRead) elapsed=\(probe.elapsedMs)ms err=\(probe.error ?? "(none)")")
+            infoLog("[MotifClient] raw http probe status=\(probe.statusLine ?? "(nil)") bytes=\(probe.bytesRead) elapsed=\(probe.elapsedMs)ms err=\(probe.error ?? "(none)")")
         }
     }
 
@@ -438,13 +439,13 @@ final class MotifClient {
         case .success:
             let ms = Int(Date().timeIntervalSince(start) * 1000)
             log.notice("tsnet path pre-warmed to \(host, privacy: .public):\(port, privacy: .public) in \(ms, privacy: .public)ms")
-            FileLog.note("MotifClient", "tsnet pre-warm ok \(host):\(port) (\(ms)ms)")
+            infoLog("[MotifClient] tsnet pre-warm ok \(host):\(port) (\(ms)ms)")
             return true
         case .failure(let error):
             // Don't fail the connect; the WS attempt will surface the real
             // error if the path really is broken.
             log.warning("tsnet pre-warm dial failed: \(String(describing: error), privacy: .public)")
-            FileLog.note("MotifClient", "tsnet pre-warm failed: \(error)")
+            infoLog("[MotifClient] tsnet pre-warm failed: \(error)")
             return false
         }
     }
@@ -490,7 +491,7 @@ final class MotifClient {
             log.notice("saved resume marker for \(name, privacy: .public) at seq=\(self.lastSeq, privacy: .public)")
         }
         log.notice("connection lost — preserving session view for offline use")
-        FileLog.note("MotifClient", "connection lost; preserving session state")
+        infoLog("[MotifClient] connection lost; preserving session state")
         // Carry the per-PTY byte cursors so the successor connection resumes
         // each substream from where it left off.
         if let rpc { carriedPtyCursors = await rpc.ptyCursors() }

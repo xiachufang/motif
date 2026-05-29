@@ -31,7 +31,7 @@ struct PreviewPane: View {
             toolbar
             Divider()
             ZStack {
-                Color(.systemBackground)
+                MotifTheme.background
                 content_
             }
         }
@@ -55,14 +55,14 @@ struct PreviewPane: View {
     private var toolbar: some View {
         HStack(spacing: 12) {
             Text(basename(path))
-                .font(.caption.monospaced())
+                .font(MotifTheme.Typography.caption.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
             if let saveError {
                 Text(saveError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+                    .font(MotifTheme.Typography.caption2)
+                    .foregroundStyle(MotifTheme.danger)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -70,7 +70,7 @@ struct PreviewPane: View {
                 Button {
                     Task { await load() }
                 } label: {
-                    Image(systemName: "arrow.clockwise").font(.footnote)
+                    Image(systemName: "arrow.clockwise").font(MotifTheme.Typography.footnote)
                 }
                 if !isBinary {
                     Button {
@@ -78,7 +78,7 @@ struct PreviewPane: View {
                         editing = true
                         saveError = nil
                     } label: {
-                        Image(systemName: "pencil").font(.footnote)
+                        Image(systemName: "pencil").font(MotifTheme.Typography.footnote)
                     }
                 }
             } else {
@@ -87,14 +87,14 @@ struct PreviewPane: View {
                     buffer = ""
                     saveError = nil
                 }
-                .font(.caption)
+                .font(MotifTheme.Typography.caption)
                 Button {
                     Task { await save(force: false) }
                 } label: {
                     if saving {
                         ProgressView().controlSize(.mini)
                     } else {
-                        Text("Save").font(.caption.bold())
+                        Text("Save").font(MotifTheme.Typography.caption.bold())
                     }
                 }
                 .disabled(saving || buffer == content)
@@ -114,14 +114,14 @@ struct PreviewPane: View {
             binaryStub
         } else if editing {
             TextEditor(text: $buffer)
-                .font(.system(.footnote, design: .monospaced))
+                .font(MotifTheme.Typography.footnote.monospaced())
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(8)
         } else if !content.isEmpty {
             ScrollView([.vertical, .horizontal]) {
                 Text(content)
-                    .font(.system(.footnote, design: .monospaced))
+                    .font(MotifTheme.Typography.footnote.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .textSelection(.enabled)
@@ -129,7 +129,7 @@ struct PreviewPane: View {
             .overlay(alignment: .topTrailing) {
                 if truncated {
                     Text("truncated")
-                        .font(.caption2.bold())
+                        .font(MotifTheme.Typography.caption2.bold())
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.yellow.opacity(0.7), in: Capsule())
                         .foregroundStyle(.black)
@@ -138,23 +138,23 @@ struct PreviewPane: View {
             }
         } else {
             Text("(empty)")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MotifTheme.textSecondary)
         }
     }
 
     private var binaryStub: some View {
         VStack(spacing: 12) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
+                .font(MotifTheme.Typography.symbol(size: 36))
+                .foregroundStyle(MotifTheme.textSecondary)
             Text(basename(path))
-                .font(.callout.monospaced())
+                .font(MotifTheme.Typography.callout.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .padding(.horizontal, 24)
             Text(binarySummary)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(MotifTheme.Typography.footnote)
+                .foregroundStyle(MotifTheme.textSecondary)
         }
     }
 
@@ -169,11 +169,11 @@ struct PreviewPane: View {
     private func failureView(_ message: String) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28))
+                .font(MotifTheme.Typography.symbol(size: 28))
                 .foregroundStyle(.yellow)
             Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(MotifTheme.Typography.callout)
+                .foregroundStyle(MotifTheme.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             Button("Retry") { Task { await load() } }

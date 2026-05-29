@@ -108,7 +108,7 @@ struct GitDiffPanel: View {
     /// so we host the staged + layout segmented controls in an inline
     /// header right under the nav bar.
     private var modeBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: MotifTheme.Spacing.md) {
             Picker("", selection: $staged) {
                 Text("Working").tag(false)
                 Text("Staged").tag(true)
@@ -124,9 +124,9 @@ struct GitDiffPanel: View {
             .frame(maxWidth: 140)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.gray.opacity(0.08))
+        .padding(.horizontal, MotifTheme.Spacing.md)
+        .padding(.vertical, MotifTheme.Spacing.sm)
+        .background(MotifTheme.textPrimary.opacity(0.08))
     }
 
     @ViewBuilder
@@ -138,7 +138,7 @@ struct GitDiffPanel: View {
             failureView(error)
         } else if files.isEmpty {
             Text("(no changes)")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MotifTheme.textSecondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             diffList
@@ -151,7 +151,7 @@ struct GitDiffPanel: View {
         // just shows files[selected] alone — no scroll needed.
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: MotifTheme.Spacing.lg) {
                     summaryRow
                     switch layout {
                     case .byfile:
@@ -166,9 +166,9 @@ struct GitDiffPanel: View {
                         }
                     }
                 }
-                .padding(12)
+                .padding(MotifTheme.Spacing.md)
             }
-            .background(Color(.systemBackground))
+            .background(MotifTheme.background)
             .onChange(of: selected) { _, new in
                 if layout == .all, files.indices.contains(new) {
                     withAnimation { proxy.scrollTo("all-\(new)", anchor: .top) }
@@ -188,16 +188,19 @@ struct GitDiffPanel: View {
     }
 
     private var summaryRow: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: MotifTheme.Spacing.md) {
             Text(summaryBadge)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.gray.opacity(0.18), in: Capsule())
+                .padding(.horizontal, MotifTheme.Spacing.sm).padding(.vertical, 3)
+                .background(MotifTheme.textPrimary.opacity(0.18), in: Capsule())
             let (totalAdd, totalDel) = totalCounts()
+            // .green / .red here and below are semantic git statuses, intentionally
+            // outside the brand palette so adds/removes read the same as in every
+            // other diff UI on the planet.
             if totalAdd > 0 { Text("+\(totalAdd)").foregroundStyle(.green) }
             if totalDel > 0 { Text("−\(totalDel)").foregroundStyle(.red) }
             Spacer()
         }
-        .font(.callout.monospaced())
+        .font(MotifTheme.Typography.callout.monospaced())
     }
 
     /// Sum across every file, preferring the server's `git.diffSummary`
@@ -223,48 +226,51 @@ struct GitDiffPanel: View {
     private func fileBlock(_ f: DiffParser.FileDiff) -> some View {
         let (add, del) = summaryByPath[f.displayPath] ?? (f.additions, f.deletions)
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: MotifTheme.Spacing.sm) {
                 StatusBadge(status: f.status)
                 Text(f.displayPath)
-                    .font(.callout.monospaced())
+                    .font(MotifTheme.Typography.callout.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                if add > 0 { Text("+\(add)").foregroundStyle(.green).font(.caption.monospaced()) }
-                if del > 0 { Text("−\(del)").foregroundStyle(.red).font(.caption.monospaced()) }
+                if add > 0 { Text("+\(add)").foregroundStyle(.green).font(MotifTheme.Typography.caption.monospaced()) }
+                if del > 0 { Text("−\(del)").foregroundStyle(.red).font(MotifTheme.Typography.caption.monospaced()) }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .background(Color.gray.opacity(0.15))
+            .padding(.horizontal, MotifTheme.Spacing.sm).padding(.vertical, 6)
+            .background(MotifTheme.textPrimary.opacity(0.15))
 
             if f.isBinary {
                 Text("Binary file — no textual diff")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(8)
+                    .font(MotifTheme.Typography.caption).foregroundStyle(MotifTheme.textSecondary)
+                    .padding(MotifTheme.Spacing.sm)
             } else if f.lines.isEmpty {
                 Text("(empty diff)")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(8)
+                    .font(MotifTheme.Typography.caption).foregroundStyle(MotifTheme.textSecondary)
+                    .padding(MotifTheme.Spacing.sm)
             } else {
                 ForEach(Array(f.lines.enumerated()), id: \.offset) { _, line in
                     diffLineView(line)
                 }
             }
         }
-        .background(Color.gray.opacity(0.05))
+        .background(MotifTheme.textPrimary.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
     private func diffLineView(_ line: DiffParser.DiffLine) -> some View {
         Text(line.text.isEmpty ? " " : line.text)
-            .font(.system(.footnote, design: .monospaced))
+            .font(MotifTheme.Typography.footnote.monospaced())
             .foregroundStyle(lineFg(line.kind))
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8).padding(.vertical, 1)
+            .padding(.horizontal, MotifTheme.Spacing.sm).padding(.vertical, 1)
             .background(lineBg(line.kind))
             .textSelection(.enabled)
     }
 
+    // Diff-line backgrounds and foregrounds are semantic git colours (the
+    // universal +green/-red/hunk-blue palette) rather than the brand palette
+    // by design — they need to read the same as in every other diff viewer.
     private func lineBg(_ k: DiffParser.DiffLine.Kind) -> Color {
         switch k {
         case .add:    return Color.green.opacity(0.18)
@@ -279,19 +285,20 @@ struct GitDiffPanel: View {
         case .add:    return .green
         case .remove: return .red
         case .hunk:   return .blue
-        case .meta:   return .secondary
-        case .context: return .primary
+        case .meta:   return MotifTheme.textSecondary
+        case .context: return MotifTheme.textPrimary
         }
     }
 
     private func failureView(_ message: String) -> some View {
-        VStack(spacing: 12) {
+        VStack(spacing: MotifTheme.Spacing.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28))
+                .font(MotifTheme.Typography.symbol(size: 28))
+                // Warning hue — not in the brand palette by design.
                 .foregroundStyle(.yellow)
-            Text(message).font(.callout).foregroundStyle(.secondary)
+            Text(message).font(MotifTheme.Typography.callout).foregroundStyle(MotifTheme.textSecondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+                .padding(.horizontal, MotifTheme.Spacing.xl)
             Button("Retry") { Task { await load() } }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -507,7 +514,7 @@ struct StatusBadge: View {
     let status: DiffParser.FileStatus
     var body: some View {
         Text(status.glyph)
-            .font(.caption.bold())
+            .font(MotifTheme.Typography.caption.bold())
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(status.tint.opacity(0.25), in: RoundedRectangle(cornerRadius: 3))
             .foregroundStyle(status.tint)
@@ -571,7 +578,7 @@ struct DiffFileListSheet: View {
                     .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                     .contentShape(Rectangle())
                     .onTapGesture { onSelect(i) }
-                    .listRowBackground(i == selected ? Color.accentColor.opacity(0.18) : Color.clear)
+                    .listRowBackground(i == selected ? MotifTheme.accent.opacity(0.18) : Color.clear)
             }
         }
         .listStyle(.plain)
@@ -583,12 +590,12 @@ struct DiffFileListSheet: View {
         HStack(spacing: 6) {
             StatusBadge(status: file.status)
             Text(file.displayPath)
-                .font(.callout.monospaced())
+                .font(MotifTheme.Typography.callout.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if add > 0 { Text("+\(add)").foregroundStyle(.green).font(.caption.monospaced()) }
-            if del > 0 { Text("−\(del)").foregroundStyle(.red).font(.caption.monospaced()) }
+            if add > 0 { Text("+\(add)").foregroundStyle(.green).font(MotifTheme.Typography.caption.monospaced()) }
+            if del > 0 { Text("−\(del)").foregroundStyle(.red).font(MotifTheme.Typography.caption.monospaced()) }
         }
     }
 
@@ -619,7 +626,7 @@ struct DiffFileListSheet: View {
 
     private func rowBg(_ row: DiffTree.Row) -> Color {
         if case .file(let i, _) = row.kind, i == selected {
-            return Color.accentColor.opacity(0.18)
+            return MotifTheme.accent.opacity(0.18)
         }
         return .clear
     }
@@ -631,11 +638,11 @@ struct DiffFileListSheet: View {
             HStack(spacing: 6) {
                 Spacer().frame(width: CGFloat(row.depth) * 14)
                 Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.caption).foregroundStyle(MotifTheme.textSecondary)
                     .frame(width: 12)
                 Image(systemName: "folder").foregroundStyle(.tint)
                 Text("\(name)/")
-                    .font(.callout.monospaced())
+                    .font(MotifTheme.Typography.callout.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
@@ -646,12 +653,12 @@ struct DiffFileListSheet: View {
                 Spacer().frame(width: CGFloat(row.depth) * 14 + 12)
                 StatusBadge(status: f.status)
                 Text(basename(f.displayPath))
-                    .font(.callout.monospaced())
+                    .font(MotifTheme.Typography.callout.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 4)
-                if add > 0 { Text("+\(add)").foregroundStyle(.green).font(.caption.monospaced()) }
-                if del > 0 { Text("−\(del)").foregroundStyle(.red).font(.caption.monospaced()) }
+                Spacer(minLength: MotifTheme.Spacing.xs)
+                if add > 0 { Text("+\(add)").foregroundStyle(.green).font(MotifTheme.Typography.caption.monospaced()) }
+                if del > 0 { Text("−\(del)").foregroundStyle(.red).font(MotifTheme.Typography.caption.monospaced()) }
             }
         }
     }

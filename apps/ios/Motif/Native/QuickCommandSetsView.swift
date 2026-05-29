@@ -32,7 +32,7 @@ struct QuickCommandSetsView: View {
             Section("Sets") {
                 if appState.commands.sets.isEmpty {
                     Text("No sets yet.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
                 ForEach(appState.commands.sets) { set in
                     NavigationLink {
@@ -109,16 +109,16 @@ struct QuickCommandSetsView: View {
                     .font(mono ? .body.monospaced() : .body)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.caption)
+                        .foregroundStyle(MotifTheme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
             }
             Spacer()
             Text("\(count)")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .font(MotifTheme.Typography.caption.monospaced())
+                .foregroundStyle(MotifTheme.textSecondary)
         }
     }
 }

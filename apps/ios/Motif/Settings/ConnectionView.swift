@@ -24,8 +24,8 @@ struct ConnectionView: View {
                 Section {
                     if appState.servers.servers.isEmpty {
                         Text("No servers configured. Tap + to add one.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.footnote)
+                            .foregroundStyle(MotifTheme.textSecondary)
                     } else {
                         ForEach(appState.servers.servers) { server in
                             ServerRow(server: server,
@@ -109,18 +109,18 @@ struct ServerRow: View {
                                 .foregroundStyle(.green)
                         } else {
                             Image(systemName: "circle")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MotifTheme.textSecondary)
                         }
                         Image(systemName: server.kind == .tailscale ? "network" : "globe")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.footnote)
+                            .foregroundStyle(MotifTheme.textSecondary)
                         Text(server.name)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(MotifTheme.textPrimary)
                     }
                     HStack(spacing: 8) {
                         Text(server.endpoint)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(MotifTheme.Typography.footnote)
+                            .foregroundStyle(MotifTheme.textSecondary)
                         if server.kind == .tailscale {
                             ServerPingBadge(indicator: pingIndicator)
                         }
@@ -247,12 +247,12 @@ private struct ServerPingBadge: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: indicator.systemImage)
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
                 Text(indicator.label)
                     .lineLimit(1)
             }
-            .font(.caption2)
+            .font(MotifTheme.Typography.caption2)
             .foregroundStyle(indicator.tint)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Tailscale ping")
@@ -341,7 +341,7 @@ struct ServerEditSheet: View {
                     Text("Token")
                 } footer: {
                     Text("Required only if motifd was started with a non-empty token. Leave blank for an unauthenticated server.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
                 }
             }
             .navigationTitle(isNew ? "Add Server" : "Edit Server")
@@ -390,21 +390,21 @@ struct ServerEditSheet: View {
             case .idle, .loading:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Scanning tailnet…").foregroundStyle(.secondary).font(.footnote)
+                    Text("Scanning tailnet…").foregroundStyle(MotifTheme.textSecondary).font(MotifTheme.Typography.footnote)
                 }
             case .unavailable(let reason):
-                Text(reason).font(.footnote).foregroundStyle(.secondary)
+                Text(reason).font(.footnote).foregroundStyle(MotifTheme.textSecondary)
             case .loaded(let total):
                 if total == 0 {
                     Text("No peers visible on the tailnet.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 } else if visiblePeers.isEmpty {
                     // Total > 0 but filter hid them all — surface the toggle
                     // explanation instead of an unhelpful empty state.
                     Text("No motifd-named peers. Toggle “Show all peers” below to pick a non-default host.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.footnote)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 } else {
                     ForEach(visiblePeers) { peer in
                         Button {
@@ -414,10 +414,10 @@ struct ServerEditSheet: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
                                         ServerPingDot(indicator: peerPing[peer.id] ?? .idle)
-                                        Text(peer.hostname).foregroundStyle(.primary)
+                                        Text(peer.hostname).foregroundStyle(MotifTheme.textPrimary)
                                         if peer.isLikelyMotifd {
                                             Text("motifd")
-                                                .font(.caption2)
+                                                .font(MotifTheme.Typography.caption2)
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 2)
                                                 .background(.tint.opacity(0.18), in: Capsule())
@@ -425,8 +425,8 @@ struct ServerEditSheet: View {
                                         ServerPingBadge(indicator: peerPing[peer.id] ?? .idle)
                                     }
                                     Text(peer.preferredAddress)
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
+                                        .font(MotifTheme.Typography.footnote)
+                                        .foregroundStyle(MotifTheme.textSecondary)
                                 }
                                 Spacer()
                                 Image(systemName: "arrow.right.circle")
@@ -449,18 +449,18 @@ struct ServerEditSheet: View {
                         Image(systemName: showAllPeers ? "checkmark.square.fill" : "square")
                         Text("Show all")
                     }
-                    .font(.footnote)
+                    .font(MotifTheme.Typography.footnote)
                 }
                 Button {
                     Task { await loadDiscovery() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.footnote)
+                        .font(MotifTheme.Typography.footnote)
                 }
             }
         } footer: {
             Text("Tap a peer to fill in the address. Token still has to be entered manually.")
-                .font(.caption2)
+                .font(MotifTheme.Typography.caption2)
         }
     }
 
@@ -566,10 +566,10 @@ struct TailscaleStatusRow: View {
                 if let v6 { LabeledContent("IPv6", value: v6) }
             case .degraded(let reason):
                 LabeledContent("Status", value: "Reconnecting…").foregroundStyle(.orange)
-                Text(reason).font(.footnote).foregroundStyle(.secondary)
+                Text(reason).font(.footnote).foregroundStyle(MotifTheme.textSecondary)
             case .failed(let m):
-                LabeledContent("Status", value: "Failed").foregroundStyle(.red)
-                Text(m).font(.footnote).foregroundStyle(.secondary)
+                LabeledContent("Status", value: "Failed").foregroundStyle(MotifTheme.danger)
+                Text(m).font(.footnote).foregroundStyle(MotifTheme.textSecondary)
             }
         }
     }

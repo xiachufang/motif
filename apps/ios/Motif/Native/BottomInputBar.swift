@@ -61,8 +61,18 @@ struct BottomInputBar: View {
     @Environment(MotifClient.self) private var motif
     @Environment(AppState.self) private var appState
 
-    @FocusState private var focused: Bool
+    /// Focus state for the composer text view. Plain `@State` rather than
+    /// `@FocusState` because we drive the underlying UIKit responder
+    /// ourselves (see `ComposerTextView`) — `@FocusState` only binds to
+    /// SwiftUI's built-in TextField, which we replaced to gain access to
+    /// `textViewDidChangeSelection`.
+    @State private var focused: Bool = false
     @State private var buffer: String = ""
+    /// Intrinsic content height of `ComposerTextView`, reported by its
+    /// coordinator each layout pass. The composer frame clamps this to
+    /// `[lineHeight, lineHeight * 5]` to reproduce the old SwiftUI
+    /// `.lineLimit(1...5)` behaviour.
+    @State private var composerHeight: CGFloat = Self.composerSingleLineHeight
     @State private var isRecording: Bool = false
     @State private var asr: DoubaoASR?
     @State private var asrError: String?
@@ -81,6 +91,12 @@ struct BottomInputBar: View {
     @State private var ignoreFinalTranscript: Bool = false
     @State private var editingCommands: Bool = false
     @State private var showingCd: Bool = false
+    /// Window-level gesture monitor armed while recording. Any tap / pan /
+    /// long-press anywhere on screen (incl. hardware-keyboard keys, since
+    /// those still fire UIKey events that bubble through hit-tested views)
+    /// fires `bailOutOfASR`. Lazily initialized so non-recording sessions
+    /// pay nothing. See `ASRBailGestureMonitor`.
+    @State private var bailMonitor = ASRBailGestureMonitor()
 
     private let log = Logger(subsystem: "io.allsunday.motif", category: "BottomInputBar")
 
@@ -144,10 +160,10 @@ struct BottomInputBar: View {
             inputRow
             if let asrError {
                 Text(asrError)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+                    .font(MotifTheme.Typography.caption2)
+                    .foregroundStyle(MotifTheme.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.bottom, 4)
+                    .padding(.horizontal, MotifTheme.Spacing.md).padding(.bottom, MotifTheme.Spacing.xs)
                     .transition(.opacity)
             }
         }
@@ -169,7 +185,7 @@ struct BottomInputBar: View {
                 .environment(motif)
             } else {
                 Text("No active working directory.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MotifTheme.textSecondary)
                     .padding()
             }
         }
@@ -210,8 +226,7 @@ struct BottomInputBar: View {
             // last wrote = user is editing. Hand the field back to them
             // and drop the imminent final transcript.
             guard isRecording, newValue != expectedBuffer else { return }
-            ignoreFinalTranscript = true
-            stopASR()
+            bailOutOfASR()
         }
         .onChange(of: focused) { _, newValue in
             // Focus left the composer (terminal took FR or all resigned)
@@ -245,33 +260,60 @@ struct BottomInputBar: View {
             inputPill
             sendButton
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, MotifTheme.Spacing.md)
         .padding(.vertical, 10)
     }
 
-    /// Capsule-shaped composer. Houses the TextField and a live waveform
-    /// indicator on the trailing edge while recording. Visual target is
-    /// the iMessage gray-fill pill.
+    /// Capsule-shaped composer. Houses the multiline UITextView-backed
+    /// editor and a live waveform indicator on the trailing edge while
+    /// recording. Visual target is the iMessage gray-fill pill.
+    ///
+    /// We dropped SwiftUI's `TextField(..., axis: .vertical)` here so we
+    /// can observe `textViewDidChangeSelection` — that's the only
+    /// notification UIKit gives us when the user moves the caret without
+    /// changing the text (tap-to-place, magnifier drag, hardware arrow
+    /// keys). Any selection move while recording = "I want to edit, not
+    /// dictate", so it routes through `bailOutOfASR()` like a typed key.
     private var inputPill: some View {
-        HStack(spacing: 8) {
-            TextField(motif.isLive ? "type or speak…" : "reconnecting…", text: $buffer, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...5)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .submitLabel(.return)
-                .focused($focused)
-                .disabled(!motif.isLive)
+        let clampedHeight = min(
+            max(composerHeight, Self.composerSingleLineHeight),
+            Self.composerSingleLineHeight * 5
+        )
+        return HStack(alignment: .bottom, spacing: MotifTheme.Spacing.sm) {
+            ZStack(alignment: .topLeading) {
+                if buffer.isEmpty {
+                    Text(motif.isLive ? "type or speak…" : "reconnecting…")
+                        .foregroundStyle(MotifTheme.textTertiary)
+                        // The placeholder must not intercept taps — touches
+                        // need to fall through to the UITextView underneath
+                        // so the caret lands on the first tap.
+                        .allowsHitTesting(false)
+                }
+                ComposerTextView(
+                    text: $buffer,
+                    isEnabled: motif.isLive,
+                    isFocused: $focused,
+                    contentHeight: $composerHeight,
+                    onSelectionChange: { handleComposerSelectionChange() }
+                )
+                .frame(height: clampedHeight)
+            }
             micButton
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(
             RoundedRectangle(cornerRadius: 22)
-                .fill(Color(.quaternarySystemFill))
+                .fill(MotifTheme.Fill.subtle)
         )
         .animation(.easeOut(duration: 0.15), value: isRecording)
     }
+
+    /// One line of UITextView body text, used both for the placeholder
+    /// metrics and the composer's min/max clamp. `body` is the SwiftUI
+    /// TextField default — keep them aligned so the row doesn't visibly
+    /// shift on the switch.
+    static let composerSingleLineHeight: CGFloat = UIFont.preferredFont(forTextStyle: .body).lineHeight
 
     private var micButton: some View {
         Button {
@@ -283,7 +325,7 @@ struct BottomInputBar: View {
             } else {
                 Image(systemName: "mic.fill")
                     .font(.title3)
-                    .tint(.primary)
+                    .tint(MotifTheme.textPrimary)
             }
         }
         .frame(width: 30, height: 28)
@@ -296,9 +338,7 @@ struct BottomInputBar: View {
         Button("Send", systemImage: "arrow.up") {
             submitBuffer()
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .labelStyle(.iconOnly)
+        .buttonStyle(MotifIconButtonStyle(role: .filled, size: .large))
         .disabled(!canSend)
         .accessibilityLabel("Send")
     }
@@ -310,10 +350,7 @@ struct BottomInputBar: View {
     // MARK: - Send / quick dispatch
 
     private func submitBuffer() {
-        if isRecording {
-            ignoreFinalTranscript = true
-            stopASR()
-        }
+        bailOutOfASR()
         Task { await send() }
     }
 
@@ -332,6 +369,7 @@ struct BottomInputBar: View {
     }
 
     private func handleQuickTap(_ cmd: QuickCommand) {
+        bailOutOfASR()
         guard canDispatch, let id = activePtyID else { return }
         // Snapshot before we send: needed both for `applyModifiers` and
         // to know which armed states to consume afterwards. Locked states
@@ -392,6 +430,7 @@ struct BottomInputBar: View {
     /// installed by `TerminalRegistry` will bump `stickyVersion`, which
     /// re-renders this view's modifier UI.
     private func toggleModifier(_ kind: ModifierKind) {
+        bailOutOfASR()
         activeTerminal?.toggleStickyModifier(kind.ghostty)
     }
 
@@ -483,6 +522,27 @@ struct BottomInputBar: View {
         }
     }
 
+    /// Any deliberate user action other than a manual mic re-tap (Send,
+    /// typed key, quick command tap, sticky-modifier toggle, …) counts as
+    /// "I'm done dictating, do this instead." Drop the in-flight final
+    /// transcript so it doesn't get merged on top of whatever the action
+    /// just produced (typed char, pasted bytes, sent payload, etc.).
+    /// No-op when not recording.
+    private func bailOutOfASR() {
+        guard isRecording else { return }
+        ignoreFinalTranscript = true
+        stopASR()
+    }
+
+    /// Fired by ComposerTextView whenever UIKit reports a user-driven
+    /// caret/selection change (tap-to-place, magnifier drag, arrow keys,
+    /// extend-selection). Programmatic `.text =` writes from ASR partials
+    /// don't reach the delegate, so this is the right signal for "user
+    /// reached for the field even though the text didn't change."
+    private func handleComposerSelectionChange() {
+        bailOutOfASR()
+    }
+
     private func startASR() async {
         asrError = nil
         if let err = await AudioSessionHelper.prepareForRecording() {
@@ -499,6 +559,10 @@ struct BottomInputBar: View {
         // Surface the keyboard + caret so the user can see partials land
         // (and so a stray tap on the field doesn't fight us).
         focusComposer()
+        // Arm the global "any-gesture = stop" net. The recognizers run with
+        // cancelsTouchesInView=false so buttons / scroll views underneath
+        // still receive their normal touches.
+        bailMonitor.install { bailOutOfASR() }
         a.start(
             onPartial: { text in
                 MainActor.assumeIsolated {
@@ -545,6 +609,9 @@ struct BottomInputBar: View {
         // a late partial races `send()` clearing the buffer and the
         // transcript reappears in the field.
         isRecording = false
+        // Pull the window-level recognizers off before the async stop —
+        // a delayed second tap shouldn't re-enter this same teardown.
+        bailMonitor.uninstall()
         a.stop { final in
             Task { @MainActor in
                 if !ignore {
@@ -564,6 +631,7 @@ struct BottomInputBar: View {
     /// the WS teardown — we don't update UI from it since the view is gone.
     private func stopASRSync() {
         if let a = asr, isRecording {
+            bailMonitor.uninstall()
             a.stop { _ in
                 Task {@MainActor in
                     AudioSessionHelper.deactivate()
@@ -620,9 +688,247 @@ private struct WaveformIndicator: View {
         let overlay  = level * (0.5 + 0.5 * sin(t * 11 + phase * 1.7)) * 0.35
         let scale = max(0.2, min(1.0, baseline + overlay))
         return Capsule()
-            .fill(Color.accentColor)
+            .fill(MotifTheme.accent)
             .frame(width: 3)
             .scaleEffect(y: CGFloat(scale), anchor: .center)
+    }
+}
+
+// MARK: - Composer text view
+
+/// UIKit-backed multiline editor for the composer pill. We use this in
+/// place of SwiftUI's `TextField(..., axis: .vertical)` so the delegate
+/// can hand us `textViewDidChangeSelection` — the only signal UIKit
+/// emits for "the user touched the caret/selection without changing the
+/// text" (tap-to-place, magnifier drag, hardware arrow keys). That's the
+/// last piece BottomInputBar's "any user activity ends recording" net
+/// needs; the window-level `ASRBailGestureMonitor` covers everything
+/// outside the text view.
+///
+/// Design points:
+///
+/// - `textContainerInset = .zero` and `lineFragmentPadding = 0` so the
+///   placeholder Text overlay in SwiftUI aligns pixel-perfect with the
+///   first character.
+/// - `isScrollEnabled = true` so multi-page content can scroll instead
+///   of getting clipped; height is clamped externally to `1..5` lines
+///   via `contentHeight`, which the coordinator reports from
+///   `sizeThatFits`.
+/// - Programmatic writes (`uiView.text = text`) DON'T trigger the
+///   selection-change delegate per UIKit's documented contract, so ASR
+///   partials won't accidentally bail themselves out. A coordinator
+///   `isApplyingExternalText` flag is kept anyway as a defensive shim
+///   in case Apple changes that behaviour in a future release.
+/// - Focus syncs both directions: external `isFocused = true` triggers
+///   `becomeFirstResponder()`; the delegate's begin/end-editing
+///   callbacks write back into the binding so `.onChange(of: focused)`
+///   in BottomInputBar still fires when the user dismisses the keyboard.
+struct ComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let isEnabled: Bool
+    @Binding var isFocused: Bool
+    @Binding var contentHeight: CGFloat
+    let onSelectionChange: () -> Void
+
+    func makeUIView(context: Context) -> UITextView {
+        let tv = UITextView()
+        tv.delegate = context.coordinator
+        tv.font = UIFont.preferredFont(forTextStyle: .body)
+        tv.adjustsFontForContentSizeCategory = true
+        tv.backgroundColor = .clear
+        tv.textContainerInset = .zero
+        tv.textContainer.lineFragmentPadding = 0
+        tv.autocorrectionType = .no
+        tv.autocapitalizationType = .none
+        tv.smartQuotesType = .no
+        tv.smartDashesType = .no
+        tv.smartInsertDeleteType = .no
+        tv.spellCheckingType = .no
+        // Allow internal scrolling once the content exceeds the clamp the
+        // SwiftUI parent applies. Without this, lines beyond row 5 would
+        // simply get clipped behind the capsule.
+        tv.isScrollEnabled = true
+        // Trim a bit of UITextView's default vertical text inset so a
+        // single line lines up with the placeholder overlay.
+        return tv
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        if uiView.text != text {
+            context.coordinator.isApplyingExternalText = true
+            uiView.text = text
+            context.coordinator.isApplyingExternalText = false
+        }
+        uiView.isEditable = isEnabled
+
+        if isFocused, !uiView.isFirstResponder, isEnabled {
+            uiView.becomeFirstResponder()
+        } else if !isFocused, uiView.isFirstResponder {
+            uiView.resignFirstResponder()
+        }
+
+        // Report intrinsic height. `sizeThatFits` ignores `isScrollEnabled`
+        // and returns the actual content height for the given width, which
+        // is exactly what we want to clamp on the SwiftUI side. Dispatched
+        // so we don't mutate a @Binding from inside the SwiftUI update pass.
+        let target = uiView.sizeThatFits(
+            CGSize(width: max(1, uiView.bounds.width), height: .greatestFiniteMagnitude)
+        ).height
+        if abs(target - contentHeight) > 0.5 {
+            DispatchQueue.main.async {
+                contentHeight = target
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ComposerTextView
+        /// True while `updateUIView` is pushing the SwiftUI binding back
+        /// into the UITextView. Used as a defensive guard inside the
+        /// selection-change delegate: UIKit documents programmatic
+        /// `.text =` writes as NOT triggering this delegate, but we'd
+        /// rather not bet the recording-stop semantics on undocumented
+        /// invariants.
+        var isApplyingExternalText: Bool = false
+
+        init(parent: ComposerTextView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            // Only mutate the binding when the user actually typed —
+            // otherwise the assignment from `updateUIView` would echo
+            // back through here and cause an unnecessary SwiftUI pass.
+            if parent.text != textView.text {
+                parent.text = textView.text
+            }
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isApplyingExternalText else { return }
+            parent.onSelectionChange()
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !parent.isFocused { parent.isFocused = true }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if parent.isFocused { parent.isFocused = false }
+        }
+    }
+}
+
+// MARK: - ASR bail-out gesture monitor
+
+/// Window-level gesture net armed while ASR is recording. Any tap, pan,
+/// or long-press anywhere on screen invokes `onBail`. The recognizers run
+/// with `cancelsTouchesInView=false` and a permissive delegate, so they
+/// observe-but-don't-eat the touch: every underlying button / TextField /
+/// scroll view still receives its normal events. We fire `onBail` on
+/// `.began` only, so a long pan doesn't spam the callback.
+///
+/// Coverage notes:
+/// - Anywhere on the app's own UI (buttons, terminal, lists): tap / pan /
+///   long-press are caught here.
+/// - Hardware keyboard character keys: still flow through the focused
+///   TextField and mutate `buffer`, which the existing `onChange(of:
+///   buffer)` watcher converts into a bail.
+/// - Soft keyboard taps and the keyboard's own surface live in the
+///   *keyboard* UIWindow, which UIKit hides from app-level gesture
+///   recognizers. Character keys still go through buffer changes; pure
+///   cursor moves (tap-to-place, magnifier drag) inside the focused
+///   TextField don't surface a SwiftUI event and are NOT caught here —
+///   covering those requires swapping the TextField for a
+///   UIViewRepresentable wrapper around UITextView and watching
+///   `textViewDidChangeSelection`.
+@MainActor
+final class ASRBailGestureMonitor: NSObject, UIGestureRecognizerDelegate {
+    private var recognizers: [UIGestureRecognizer] = []
+    private weak var window: UIWindow?
+    private var onBail: (() -> Void)?
+
+    func install(onBail: @escaping () -> Void) {
+        guard window == nil else { return }
+        guard let win = Self.activeKeyWindow() else { return }
+        self.window = win
+        self.onBail = onBail
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handle(_:)))
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handle(_:)))
+        // 0s long-press == "any touch held" — fires on press-and-hold cases
+        // that tap alone misses (pressing inside a scroll view without
+        // dragging far enough to count as a pan).
+        longPress.minimumPressDuration = 0
+        let recs: [UIGestureRecognizer] = [tap, pan, longPress]
+        for r in recs {
+            r.cancelsTouchesInView = false
+            r.delaysTouchesBegan = false
+            r.delaysTouchesEnded = false
+            r.delegate = self
+            win.addGestureRecognizer(r)
+        }
+        recognizers = recs
+    }
+
+    func uninstall() {
+        if let win = window {
+            for r in recognizers { win.removeGestureRecognizer(r) }
+        }
+        recognizers.removeAll()
+        window = nil
+        onBail = nil
+    }
+
+    @objc private func handle(_ rec: UIGestureRecognizer) {
+        // Continuous recognizers (pan, longPress) cycle through .began →
+        // .changed → .ended. Only fire on the first state transition so a
+        // long drag doesn't call the closure on every frame. Tap is
+        // discrete and lands in .recognized.
+        switch rec.state {
+        case .began, .recognized:
+            onBail?()
+        default:
+            break
+        }
+    }
+
+    // MARK: UIGestureRecognizerDelegate
+
+    func gestureRecognizer(
+        _ g: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        // Critical — we're observing, not stealing. Returning true here is
+        // what lets tableviews keep scrolling, buttons keep clicking, and
+        // the TextField's own selection gestures keep working while our
+        // monitor also fires.
+        true
+    }
+
+    func gestureRecognizer(
+        _ g: UIGestureRecognizer,
+        shouldRequireFailureOf other: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
+    func gestureRecognizer(
+        _ g: UIGestureRecognizer,
+        shouldBeRequiredToFailBy other: UIGestureRecognizer
+    ) -> Bool {
+        false
+    }
+
+    private static func activeKeyWindow() -> UIWindow? {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        let active = scenes.first(where: { $0.activationState == .foregroundActive })
+            ?? scenes.first
+        return active?.windows.first(where: \.isKeyWindow) ?? active?.windows.first
     }
 }
 
@@ -689,16 +995,16 @@ private struct QuickCommandRow: View {
                 }
                 Button(action: onEdit) {
                     Image(systemName: "pencil")
-                        .font(.callout)
+                        .font(MotifTheme.Typography.callout)
                         .frame(height: qcContentHeight)
-                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .padding(.horizontal, MotifTheme.Spacing.md).padding(.vertical, 9)
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MotifTheme.textSecondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, MotifTheme.Spacing.md)
+            .padding(.vertical, MotifTheme.Spacing.sm)
         }
     }
 
@@ -708,12 +1014,12 @@ private struct QuickCommandRow: View {
         // commands without one (Esc, ^C, snippets, …).
         if let symbol = cmd.symbol, !symbol.isEmpty {
             Image(systemName: symbol)
-                .font(.callout)
+                .font(MotifTheme.Typography.callout)
                 .frame(height: qcContentHeight)
                 .accessibilityLabel(cmd.label)
         } else {
             Text(cmd.label)
-                .font(.callout.monospaced())
+                .font(MotifTheme.Typography.callout.monospaced())
                 .lineLimit(1)
                 .frame(height: qcContentHeight)
         }
@@ -723,16 +1029,14 @@ private struct QuickCommandRow: View {
 private struct QuickCommandButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 16)
+            .padding(.horizontal, MotifTheme.Spacing.lg)
             .padding(.vertical, 9)
             .background(
                 Capsule().fill(
-                    Color(configuration.isPressed
-                        ? .secondarySystemFill
-                        : .tertiarySystemFill)
+                    configuration.isPressed ? MotifTheme.Fill.pressed : MotifTheme.Fill.subtle
                 )
             )
-            .foregroundStyle(.primary)
+            .foregroundStyle(MotifTheme.textPrimary)
             .contentShape(Capsule())
     }
 }
@@ -749,16 +1053,16 @@ private struct StickyModifierButton: View {
     var body: some View {
         Button(action: onTap) {
             Image(systemName: symbol)
-                .font(.callout)
+                .font(MotifTheme.Typography.callout)
                 .frame(height: qcContentHeight)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, MotifTheme.Spacing.lg)
                 .padding(.vertical, 9)
             .background(background)
             .foregroundStyle(foreground)
             .overlay(alignment: .bottom) {
                 if state == .locked {
                     Circle()
-                        .fill(Color.accentColor)
+                        .fill(MotifTheme.accent)
                         .frame(width: 3, height: 3)
                         .offset(y: 3)
                 }
@@ -774,18 +1078,18 @@ private struct StickyModifierButton: View {
     private var background: some View {
         switch state {
         case .inactive:
-            Capsule().fill(Color(.tertiarySystemFill))
+            Capsule().fill(MotifTheme.Fill.subtle)
         case .armed:
             Capsule()
-                .fill(Color.accentColor.opacity(0.18))
-                .overlay(Capsule().strokeBorder(Color.accentColor, lineWidth: 1.2))
+                .fill(MotifTheme.accent.opacity(0.18))
+                .overlay(Capsule().strokeBorder(MotifTheme.accent, lineWidth: 1.2))
         case .locked:
-            Capsule().fill(Color.accentColor)
+            Capsule().fill(MotifTheme.accent)
         }
     }
 
     private var foreground: Color {
-        state == .locked ? .white : .primary
+        state == .locked ? MotifTheme.textOnAccent : MotifTheme.textPrimary
     }
 
     private var accessibilityValue: String {

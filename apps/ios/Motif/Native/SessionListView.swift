@@ -24,12 +24,12 @@ struct SessionListView: View {
         List {
             if let error {
                 Section {
-                    HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .top, spacing: MotifTheme.Spacing.sm) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(MotifTheme.danger)
                         Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
+                            .font(MotifTheme.Typography.footnote)
+                            .foregroundStyle(MotifTheme.danger)
                     }
                 }
             }
@@ -115,49 +115,49 @@ struct SessionListView: View {
         Button {
             Task { await attach(session.name) }
         } label: {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: MotifTheme.Spacing.md) {
+                VStack(alignment: .leading, spacing: MotifTheme.Spacing.xs) {
                     Text(session.name)
-                        .font(.body)
-                        .foregroundStyle(.primary)
+                        .font(MotifTheme.Typography.body)
+                        .foregroundStyle(MotifTheme.textPrimary)
                         .lineLimit(1)
                     if let wd = session.workdir, !wd.isEmpty {
                         Label {
                             Text(wd)
-                                .font(.caption.monospaced())
+                                .font(MotifTheme.Typography.caption.monospaced())
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         } icon: {
                             Image(systemName: "folder")
-                                .font(.caption2)
+                                .font(MotifTheme.Typography.caption2)
                         }
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MotifTheme.textSecondary)
                     }
                     HStack(spacing: 10) {
                         if let count = session.client_count, count > 0 {
                             Label("\(count) attached", systemImage: "person.2.fill")
                                 .labelStyle(.titleAndIcon)
-                                .font(.caption2)
+                                .font(MotifTheme.Typography.caption2)
                                 .foregroundStyle(.tint)
                         }
                         if let ms = session.created_at, ms > 0 {
                             Text(relativeTime(unixMs: ms))
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+                                .font(MotifTheme.Typography.caption2)
+                                .foregroundStyle(MotifTheme.textTertiary)
                         }
                     }
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: MotifTheme.Spacing.sm)
                 if attaching == session.name {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .font(MotifTheme.Typography.footnote.weight(.semibold))
+                        .foregroundStyle(MotifTheme.textTertiary)
                 }
             }
             .contentShape(Rectangle())
-            .padding(.vertical, 4)
+            .padding(.vertical, MotifTheme.Spacing.xs)
         }
         .buttonStyle(.plain)
         .disabled(attaching != nil)
@@ -178,16 +178,16 @@ struct SessionListView: View {
     /// its own list section above, but we mirror it here too so users
     /// reading the empty-state copy don't miss it.
     private var emptyStateRow: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: MotifTheme.Spacing.lg) {
             Image(systemName: "rectangle.stack.badge.plus")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(.tertiary)
-            VStack(spacing: 4) {
+                .font(MotifTheme.Typography.symbol(size: 44, weight: .light))
+                .foregroundStyle(MotifTheme.textTertiary)
+            VStack(spacing: MotifTheme.Spacing.xs) {
                 Text("No sessions yet")
-                    .font(.headline)
+                    .font(MotifTheme.Typography.headline)
                 Text("Create one to attach a workspace on this server.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(MotifTheme.Typography.footnote)
+                    .foregroundStyle(MotifTheme.textSecondary)
                     .multilineTextAlignment(.center)
             }
             Button {
@@ -195,9 +195,9 @@ struct SessionListView: View {
             } label: {
                 Label("Create session", systemImage: "plus.circle.fill")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(MotifButtonStyle(role: .filled, size: .medium))
         }
-        .padding(.vertical, 32)
+        .padding(.vertical, MotifTheme.Spacing.xxl)
         .frame(maxWidth: .infinity)
     }
 
@@ -470,10 +470,13 @@ struct SessionView: View {
             Divider()
             paneArea
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red).padding(8)
+                Text(error)
+                    .font(MotifTheme.Typography.caption)
+                    .foregroundStyle(MotifTheme.danger)
+                    .padding(MotifTheme.Spacing.sm)
             }
         }
-        .background(Color(.systemBackground))
+        .background(MotifTheme.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomInputBar(activePtyID: activePtyID)
         }
@@ -578,7 +581,7 @@ struct SessionView: View {
                     .environment(motif)
             } else {
                 Text("No active working directory.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MotifTheme.textSecondary)
                     .padding()
             }
         }
@@ -664,7 +667,7 @@ struct SessionView: View {
 
     private var tabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: MotifTheme.Spacing.sm) {
                 ForEach(Array(allTabs.enumerated()), id: \.element.id) { idx, tab in
                     tabButton(tab: tab, ordinal: idx + 1)
                 }
@@ -677,7 +680,7 @@ struct SessionView: View {
                 }
                 .foregroundStyle(.tint)
             }
-            .padding(8)
+            .padding(MotifTheme.Spacing.sm)
         }
     }
 
@@ -691,14 +694,14 @@ struct SessionView: View {
             return true
         }()
 
-        HStack(spacing: 4) {
+        HStack(spacing: MotifTheme.Spacing.xs) {
             Button {
                 activate(tab)
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: MotifTheme.Spacing.xs) {
                     Image(systemName: tabIcon(tab))
                     Text(tabLabel(tab, ordinal: ordinal))
-                        .font(.caption.monospaced())
+                        .font(MotifTheme.Typography.caption.monospaced())
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -709,17 +712,18 @@ struct SessionView: View {
                     closeTab(tab)
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(MotifTheme.Typography.caption2)
+                        .foregroundStyle(MotifTheme.textSecondary)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(isActive ? Color.primary.opacity(0.15) : Color.primary.opacity(0.06),
-                    in: Capsule())
-        .foregroundStyle(.primary)
+        .background(isActive ? MotifTheme.accent.opacity(0.18) : MotifTheme.Fill.subtle, in: Capsule())
+        // Active tab promotes label + icon to accent; close button overrides
+        // back to textSecondary explicitly so it stays muted regardless.
+        .foregroundStyle(isActive ? MotifTheme.accent : MotifTheme.textPrimary)
     }
 
     /// Tab label per kind. PTY label mirrors web/src/panels/TabBar.tsx
@@ -803,7 +807,7 @@ struct SessionView: View {
         if let active = activeTab {
             paneFor(active)
                 .id(active.viewID)
-                .background(Color(.systemBackground))
+                .background(MotifTheme.background)
         }
     }
 
@@ -828,10 +832,10 @@ struct SessionView: View {
         case .image(_, let path):
             ImageTabPane(path: path)
         case .unknown(_, let kind):
-            VStack(spacing: 8) {
-                Image(systemName: "questionmark.square").font(.largeTitle)
+            VStack(spacing: MotifTheme.Spacing.sm) {
+                Image(systemName: "questionmark.square").font(MotifTheme.Typography.largeTitle)
                 Text("Unsupported view kind: \(kind)")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MotifTheme.textSecondary)
             }
         }
     }
@@ -869,37 +873,37 @@ private struct DiffTabPane: View {
         VStack(spacing: 0) {
             HStack {
                 Text(staged ? "Staged" : "Working tree")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let path { Text(path).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
+                    .font(MotifTheme.Typography.caption)
+                    .foregroundStyle(MotifTheme.textSecondary)
+                if let path { Text(path).font(MotifTheme.Typography.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
                 Spacer()
                 Button {
                     Task { await load() }
                 } label: {
-                    Image(systemName: "arrow.clockwise").font(.footnote)
+                    Image(systemName: "arrow.clockwise").font(MotifTheme.Typography.footnote)
                 }
             }
-            .padding(8)
+            .padding(MotifTheme.Spacing.sm)
             Divider()
             if loading && patch.isEmpty {
                 ProgressView().padding()
                 Spacer()
             } else if let err = loadError {
-                Text(err).foregroundStyle(.red).padding()
+                Text(err).foregroundStyle(MotifTheme.danger).padding()
                 Spacer()
             } else if patch.isEmpty {
-                Text("No changes").foregroundStyle(.secondary).padding()
+                Text("No changes").foregroundStyle(MotifTheme.textSecondary).padding()
                 Spacer()
             } else {
-                ScrollView { Text(patch).font(.caption.monospaced())
+                ScrollView { Text(patch).font(MotifTheme.Typography.caption.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .padding(8)
+                    .padding(MotifTheme.Spacing.sm)
                 }
             }
         }
-        .foregroundStyle(.primary)
-        .background(Color(.systemBackground))
+        .foregroundStyle(MotifTheme.textPrimary)
+        .background(MotifTheme.background)
         .task { await load() }
         .onChange(of: motif.gitChangeTick) { _, _ in
             Task { await load() }
@@ -932,7 +936,7 @@ private struct ImageTabPane: View {
     @State private var loading: Bool = true
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: MotifTheme.Spacing.sm) {
             if loading && image == nil {
                 ProgressView()
             } else if let image {
@@ -944,20 +948,21 @@ private struct ImageTabPane: View {
                 }
                 if truncated {
                     Text("Image was truncated by fs.read; preview may be incomplete.")
-                        .font(.caption2)
+                        .font(MotifTheme.Typography.caption2)
+                        // Warning hue — separate from brand accent.
                         .foregroundStyle(.orange)
                 }
             } else if let err = loadError {
-                VStack(spacing: 4) {
-                    Image(systemName: "photo.badge.exclamationmark").font(.largeTitle)
-                    Text(err).font(.footnote).foregroundStyle(.red)
+                VStack(spacing: MotifTheme.Spacing.xs) {
+                    Image(systemName: "photo.badge.exclamationmark").font(MotifTheme.Typography.largeTitle)
+                    Text(err).font(MotifTheme.Typography.footnote).foregroundStyle(MotifTheme.danger)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
-        .foregroundStyle(.primary)
-        .background(Color(.systemBackground))
+        .foregroundStyle(MotifTheme.textPrimary)
+        .background(MotifTheme.background)
         .task { await load() }
     }
 

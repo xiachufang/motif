@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import TalkerCommonLogging
 import TalkerCommonSync
 
 /// Coordinator-style client for the new motif protocol.
@@ -90,14 +91,14 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol proto: String?) {
         log.notice("ws didOpen (protocol=\(proto ?? "(none)", privacy: .public))")
-        FileLog.note("ws", "didOpen protocol=\(proto ?? "(none)")")
+        infoLog("[ws] didOpen protocol=\(proto ?? "(none)")")
         resolveOpen(.success(()))
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "(none)"
         log.error("ws didClose code=\(closeCode.rawValue, privacy: .public) reason=\(reasonStr, privacy: .public)")
-        FileLog.note("ws", "didClose code=\(closeCode.rawValue) reason=\(reasonStr)")
+        infoLog("[ws] didClose code=\(closeCode.rawValue) reason=\(reasonStr)")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
@@ -108,7 +109,7 @@ final class WSLogDelegate: NSObject, URLSessionWebSocketDelegate, URLSessionTask
         }
         if let error {
             log.error("ws task didComplete error: \(String(describing: error), privacy: .public)")
-            FileLog.note("ws", "didComplete err \(error)")
+            infoLog("[ws] didComplete err \(error)")
         } else {
             log.notice("ws task didComplete (no error)")
         }
@@ -190,6 +191,15 @@ actor RpcClient {
         var lastRecv:    Date = Date()
         var shell:       ShellState = ShellState()
         var cursor:      UInt64 = 0
+        /// Whether `cursor` is an authoritative absolute byte offset we may
+        /// resume from with `?since=<cursor>`. False until a meta frame (or a
+        /// carried cursor from `seedPtyCursors`) seeds it — a *fresh* open
+        /// with no real cursor must use a **tail** request (omit `since`),
+        /// because `?since=0` is rejected with 4011 the moment the server's
+        /// 2 MB ring has rolled past byte 0 (i.e. any PTY that has printed
+        /// more than the ring holds). Tail always serves `[origin, total)`,
+        /// so it can never truncate. See `openPty` / `pty_ws.rs`.
+        var hasCursor:   Bool = false
         /// Every `/pty/<id>` connection leads with a Text meta frame
         /// (`{"since":<offset>}`). Reset true on each (re)open; the recv loop
         /// consumes the first frame to (re)seed `cursor` instead of rendering
@@ -223,7 +233,7 @@ actor RpcClient {
         self.token = token
         self.delegate = delegate
         log.notice("rpc.connect target=\(host, privacy: .public):\(port, privacy: .public) tokenLen=\(token.count, privacy: .public)")
-        FileLog.note("RpcClient", "connect target=\(host):\(port) tokenLen=\(token.count)")
+        infoLog("[RpcClient] connect target=\(host):\(port) tokenLen=\(token.count)")
     }
 
     /// GET /ping — unauthenticated motif-server identity probe.
@@ -239,7 +249,7 @@ actor RpcClient {
 
         let proxyCount = urlSession.configuration.proxyConfigurations.count
         log.info("ping.send url=\(url.absoluteString, privacy: .public) proxyCount=\(proxyCount, privacy: .public)")
-        FileLog.note("RpcClient", "ping.send url=\(url.absoluteString) proxyCount=\(proxyCount)")
+        infoLog("[RpcClient] ping.send url=\(url.absoluteString) proxyCount=\(proxyCount)")
 
         let start = Date()
         let (data, response) = try await urlSession.data(for: req)
@@ -248,7 +258,7 @@ actor RpcClient {
             throw RpcError.transport("ping: non-HTTP response")
         }
         log.info("ping.done status=\(http.statusCode, privacy: .public) resp_size=\(data.count, privacy: .public) total_ms=\(elapsed, privacy: .public)")
-        FileLog.note("RpcClient", "ping.done status=\(http.statusCode) resp=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
+        infoLog("[RpcClient] ping.done status=\(http.statusCode) resp=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
 
         guard (200...299).contains(http.statusCode) else {
             throw RpcError.transport("ping HTTP \(http.statusCode)")
@@ -402,7 +412,7 @@ actor RpcClient {
 
         let proxyCount = urlSession.configuration.proxyConfigurations.count
         log.info("rpc.send method=\(method, privacy: .public) url=\(url.absoluteString, privacy: .public) proxyCount=\(proxyCount, privacy: .public)")
-        FileLog.note("RpcClient", "rpc.send method=\(method) url=\(url.absoluteString) proxyCount=\(proxyCount)")
+        infoLog("[RpcClient] rpc.send method=\(method) url=\(url.absoluteString) proxyCount=\(proxyCount)")
 
         let start = Date()
         let (data, response) = try await urlSession.data(for: req)
@@ -412,7 +422,7 @@ actor RpcClient {
         }
         let sidHeader = http.value(forHTTPHeaderField: "X-Motif-Session")
         log.info("rpc.done method=\(method, privacy: .public) status=\(http.statusCode, privacy: .public) req_size=\(req.httpBody?.count ?? 0, privacy: .public) resp_size=\(data.count, privacy: .public) total_ms=\(elapsed, privacy: .public)")
-        FileLog.note("RpcClient", "rpc.done method=\(method) status=\(http.statusCode) resp=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
+        infoLog("[RpcClient] rpc.done method=\(method) status=\(http.statusCode) resp=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
         if !(200...299).contains(http.statusCode) {
             if let err = try? JSONDecoder().decode(RpcErrorPayload.self, from: data) {
                 throw RpcError.server(code: err.code, message: err.message)
@@ -536,6 +546,7 @@ actor RpcClient {
             var ch = ptys[id] ?? PtyChannel()
             guard ch.task == nil else { continue }
             ch.cursor = cursor
+            ch.hasCursor = true
             ptys[id] = ch
         }
     }
@@ -545,8 +556,12 @@ actor RpcClient {
         if ptys[ptyID]?.task != nil { return }
 
         var ch = ptys[ptyID] ?? PtyChannel()
-        let since = ch.cursor
-        guard let url = URL(string: "ws://\(host):\(port)/pty/\(ptyID)?session=\(sid)&since=\(since)") else {
+        // Resume from an authoritative cursor with `?since=<cursor>`; otherwise
+        // (fresh open, or after a 4011/4012 reset) make a *tail* request by
+        // omitting `since` so the server serves its current ring instead of
+        // rejecting `since=0` with 4011 on a PTY whose ring has rolled.
+        let sinceQuery = ch.hasCursor ? "&since=\(ch.cursor)" : ""
+        guard let url = URL(string: "ws://\(host):\(port)/pty/\(ptyID)?session=\(sid)\(sinceQuery)") else {
             throw RpcError.transport("bad pty url")
         }
         var req = URLRequest(url: url)
@@ -586,7 +601,15 @@ actor RpcClient {
                 if ch.awaitingMeta {
                     ch.awaitingMeta = false
                     if case .string(let s) = msg {
-                        if let since = Self.parsePtyMetaSince(s) { ch.cursor = since }
+                        if let since = Self.parsePtyMetaSince(s) {
+                            // The server resolved an exact offset for the bytes
+                            // that follow (the honored `since`, or the ring
+                            // `origin` for a tail connect). Adopt it as our
+                            // authoritative cursor so a later reactivate resumes
+                            // incrementally with `?since=`.
+                            ch.cursor = since
+                            ch.hasCursor = true
+                        }
                         ptys[ptyID] = ch
                         continue
                     }
@@ -608,8 +631,25 @@ actor RpcClient {
                 processPtyBytes(ptyID: ptyID, bytes: data)
             } catch {
                 if Task.isCancelled { return }
-                log.notice("pty `\(ptyID, privacy: .public)` recv: \(String(describing: error), privacy: .public)")
+                // 4011 (history truncated) / 4012 (stale cursor): our `since`
+                // cursor is unusable — the server's ring rolled past it, or it
+                // is ahead of the server total. Per the `/pty` contract, drop
+                // the cursor and reconnect as a *tail* request so the terminal
+                // resyncs from the current ring instead of staying blank.
+                let closeCode = task.closeCode.rawValue
+                let cursorUnusable = closeCode == 4011 || closeCode == 4012
+                log.notice("pty `\(ptyID, privacy: .public)` recv: \(String(describing: error), privacy: .public) closeCode=\(closeCode, privacy: .public)")
                 closePtyConnection(ptyID: ptyID, matching: task, removeState: false)
+                if cursorUnusable, activePtyID == ptyID, ptys[ptyID] != nil {
+                    ptys[ptyID]?.cursor = 0
+                    ptys[ptyID]?.hasCursor = false
+                    log.notice("pty `\(ptyID, privacy: .public)` cursor unusable (\(closeCode, privacy: .public)); reconnecting as tail")
+                    do {
+                        try await openPty(ptyID: ptyID)
+                    } catch {
+                        log.error("pty `\(ptyID, privacy: .public)` tail reconnect: \(String(describing: error), privacy: .public)")
+                    }
+                }
                 return
             }
         }

@@ -200,9 +200,9 @@ struct FileTreePanel: View {
     private func failureView(_ message: String) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28))
+                .font(MotifTheme.Typography.symbol(size: 28))
                 .foregroundStyle(.yellow)
-            Text(message).font(.callout).foregroundStyle(.secondary)
+            Text(message).font(.callout).foregroundStyle(MotifTheme.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             Button("Retry") { Task { await load(rootPath, force: true) } }
@@ -241,13 +241,13 @@ struct FileTreePanel: View {
             chevron(for: row)
             icon(for: row)
             Text(row.entry.type == .dir ? "\(row.entry.name)/" : row.entry.name)
-                .font(.system(.body, design: .monospaced))
+                .font(MotifTheme.Typography.body.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 4)
             if let badge = statusBadge(row.entry.git_status) {
                 Text(badge.glyph)
-                    .font(.caption.monospaced().bold())
+                    .font(MotifTheme.Typography.caption.monospaced().bold())
                     .foregroundStyle(badge.color)
             }
             if row.entry.type == .dir, expanded.contains(row.path), loading.contains(row.path) {
@@ -260,8 +260,8 @@ struct FileTreePanel: View {
     private func chevron(for row: Row) -> some View {
         if row.entry.type == .dir {
             Image(systemName: expanded.contains(row.path) ? "chevron.down" : "chevron.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(MotifTheme.Typography.caption)
+                .foregroundStyle(MotifTheme.textSecondary)
                 .frame(width: 12)
         } else {
             Spacer().frame(width: 12)
@@ -272,8 +272,8 @@ struct FileTreePanel: View {
     private func icon(for row: Row) -> some View {
         switch row.entry.type {
         case .dir:     Image(systemName: "folder").foregroundStyle(.tint)
-        case .file:    Image(systemName: "doc").foregroundStyle(.secondary)
-        case .symlink: Image(systemName: "link").foregroundStyle(.secondary)
+        case .file:    Image(systemName: "doc").foregroundStyle(MotifTheme.textSecondary)
+        case .symlink: Image(systemName: "link").foregroundStyle(MotifTheme.textSecondary)
         }
     }
 
