@@ -36,6 +36,17 @@ docs/                    architecture + protocol
 
 ## Build
 
+**Prerequisite (motif-server only):** `motifd` depends on `libghostty-vt`, which
+builds the [ghostty](https://github.com/ghostty-org/ghostty) VT engine from source
+via **Zig 0.15.2** (pinned by ghostty; 0.16 is rejected). Put a matching `zig` on
+`PATH`:
+- Linux: install Zig 0.15.x (official tarball works).
+- macOS 26 (Tahoe): the official 0.15.x tarball can't link libSystem — use
+  `brew install zig@0.15` and build with
+  `PATH="/opt/homebrew/opt/zig@0.15/bin:$PATH" SDKROOT="$(xcrun --show-sdk-path)" cargo build`.
+- Offline/CI: set `GHOSTTY_SOURCE_DIR` / `GHOSTTY_ZIG_SYSTEM_DIR` to vendor the
+  ghostty source and Zig packages.
+
 ```bash
 # Rust binaries (motifd / motif-tui / motif-cast / motif-menubar)
 cargo build --release

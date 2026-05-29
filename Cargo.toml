@@ -77,6 +77,11 @@ ratatui            = "0.30"
 crossterm          = "0.29"
 vt100              = "0.16"
 tui-term           = "0.3"
+# Headless VT engine (same libghostty the iOS client renders with) for
+# server-side screen+scrollback VT snapshots on PTY replay. Builds
+# libghostty-vt from source via Zig 0.15.2 — see the zig-ghostty-build-tahoe
+# memory for local macOS (Tahoe) builds; Linux uses zig 0.15.x natively.
+libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "8e1b0f775932d9018fd9a641cb261f5867cb2e68" }
 notify             = "8"
 notify-debouncer-full = "0.7"
 

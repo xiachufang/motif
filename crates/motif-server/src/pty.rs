@@ -20,18 +20,22 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{sync_channel, Receiver as MpscReceiver, SyncSender};
 use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+use libghostty_vt::terminal::Mode;
+use libghostty_vt::{Terminal, TerminalOptions};
 use motif_proto::common::{ClientId, PtyId, UnixMs};
 use motif_proto::event::Event;
 use motif_proto::pty::{PtyCreateParams, PtyInfo};
 use motif_proto::terminal_query::{QueryScanner, ScanItem};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::session::Session;
 
@@ -44,6 +48,15 @@ use crate::session::Session;
 const RING_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PTYS: usize = 32;
 const READ_CHUNK: usize = 8 * 1024;
+
+/// Lines of scrollback the per-PTY headless emulator (libghostty-vt) keeps
+/// for the VT snapshot served on a cold/truncated `/pty/<id>` connect.
+const MAX_SCROLLBACK: usize = 2000;
+
+/// Depth of the reader→emulator command channel. Bounded so a slow emulator
+/// applies backpressure to the PTY reader (and thus the OS pty buffer / the
+/// program) instead of growing unboundedly. ~256 chunks at READ_CHUNK ≈ 2 MB.
+const EMU_CHANNEL_CAPACITY: usize = 256;
 
 /// Fan-out depth for per-PTY broadcast::Sender<Bytes>. Each `/pty/<id>`
 /// subscriber holds one slot; lagged subscribers get `RecvError::Lagged`
@@ -64,11 +77,13 @@ pub struct Pty {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     pub(crate) state: Mutex<PtyState>,
-    /// Fan-out of every master-output chunk to currently-attached
-    /// `/pty/<id>` WS subscribers. Each subscriber gets its own
-    /// receiver via [`Pty::subscribe_since`]. The Sender lives as long
-    /// as the Pty; closing the Pty drops it, signalling EOF to receivers.
-    output_tx: broadcast::Sender<Bytes>,
+    /// Command channel to this PTY's dedicated **emulator thread**, which
+    /// owns the byte ring, the live `broadcast::Sender`, AND a headless
+    /// `libghostty_vt::Terminal` (which is `!Send`, so it can never leave that
+    /// one thread). All output fan-out, replay/snapshot, and resize go through
+    /// here so they stay serialized with `vt_write` on a single thread — see
+    /// [`emulator_loop`]. `SyncSender` gives backpressure to the reader.
+    emu_tx: SyncSender<EmuCmd>,
     /// v2 shell-integration. `Some` when motifd injected a bootstrap
     /// script; the contained tmpdir lives as long as the Pty does, so
     /// the rcfile copies stay on disk while the child shell sources
@@ -110,54 +125,35 @@ impl PtyRing {
     }
 }
 
-/// Result of `Pty::snapshot_since` — the replay-only form of a
-/// byte-indexed ring query.
-pub enum SinceOutcome {
-    /// Client is up to date; nothing to replay.
-    UpToDate { total: u64 },
-    /// Replay these bytes then go live. `replay` is contiguous from
-    /// `since` to `total`.
-    Replay { replay: Vec<u8>, total: u64 },
-    /// Client's `since` is older than the ring's `origin` — history
-    /// has been overwritten. Handler should close with 4011.
-    Truncated { ring_origin: u64, total: u64 },
-    /// Client's `since` is newer than `total` — server restarted or
-    /// the client is lying. Handler should close with 4012.
-    Stale { total: u64 },
+/// Commands sent to a PTY's [`emulator_loop`] thread. That thread owns the
+/// `!Send` `Terminal`, the byte ring, and the live `broadcast::Sender`, so
+/// every mutation/query is serialized here.
+enum EmuCmd {
+    /// A chunk of master output: feed the emulator, append the ring, broadcast.
+    Feed(Bytes),
+    /// The effective grid changed; resize the headless terminal to match.
+    Resize { cols: u16, rows: u16 },
+    /// A `/pty/<id>` client wants to (re)attach. The reply carries the bytes to
+    /// send before going live plus the live receiver, taken atomically on the
+    /// emulator thread so no output is lost or duplicated across the boundary.
+    Subscribe {
+        since: Option<u64>,
+        reply: oneshot::Sender<SubscribeReply>,
+    },
 }
 
-/// Result of `Pty::subscribe_since` — same replay decision as
-/// [`SinceOutcome`], plus the live receiver for valid cursors.
-pub enum SinceOutcomeWithLive {
-    /// Client is up to date; nothing to replay.
-    UpToDate {
-        total: u64,
-        rx: broadcast::Receiver<Bytes>,
-    },
-    /// Replay these bytes then go live. `replay` is contiguous from
-    /// `since` to `total`.
-    Replay {
-        replay: Vec<u8>,
-        total: u64,
-        rx: broadcast::Receiver<Bytes>,
-    },
-    /// Client's `since` is older than the ring's `origin` — history
-    /// has been overwritten. Handler should close with 4011.
-    Truncated { ring_origin: u64, total: u64 },
-    /// Client's `since` is newer than `total` — server restarted or
-    /// the client is lying. Handler should close with 4012.
-    Stale { total: u64 },
-}
-
-/// Result of `Pty::subscribe_tail` — a `since`-less connect that takes
-/// whatever scrollback the ring currently holds, then goes live.
-pub struct TailOutcome {
-    /// Absolute byte index of the first replayed byte (the current ring
-    /// `origin`). The client adopts this as its resume cursor; once it has
-    /// consumed `replay` the cursor equals `total`.
+/// Reply to [`EmuCmd::Subscribe`]. The client adopts `start` as its byte
+/// cursor, renders `replay`, then consumes live frames from `rx`.
+///
+/// `replay` is **either**:
+///   - a raw byte delta `[since, total)` for a warm incremental resume
+///     (`since` lands inside the ring), `start == since`; or
+///   - a full VT **snapshot** (current screen + scrollback + mode/cursor
+///     prelude) for a cold / truncated / stale cursor, `start == total`.
+/// The client treats both identically — bytes to feed into its terminal — so
+/// the distinction stays internal to [`emulator_loop`].
+pub struct SubscribeReply {
     pub start: u64,
-    /// The ring's current contents — `[start, total)`. Empty when the
-    /// master hasn't produced anything yet.
     pub replay: Vec<u8>,
     pub rx: broadcast::Receiver<Bytes>,
 }
@@ -175,7 +171,6 @@ pub(crate) struct PtyState {
     /// engages.
     pub primary: Option<ClientId>,
     pub alive: bool,
-    pub ring: PtyRing,
 }
 
 impl Pty {
@@ -194,82 +189,25 @@ impl Pty {
         }
     }
 
-    /// Byte-indexed replay query for the new `/pty/<id>?since=N` path.
-    /// See [`SinceOutcome`] for the four cases the handler distinguishes.
-    pub fn snapshot_since(&self, since: u64) -> SinceOutcome {
-        let s = self.state.lock();
-        let total = s.ring.total();
-        let origin = s.ring.origin;
-        if since > total {
-            return SinceOutcome::Stale { total };
-        }
-        if since < origin {
-            return SinceOutcome::Truncated {
-                ring_origin: origin,
-                total,
-            };
-        }
-        if since == total {
-            return SinceOutcome::UpToDate { total };
-        }
-        let skip = (since - origin) as usize;
-        let replay: Vec<u8> = s.ring.bytes.iter().skip(skip).copied().collect();
-        SinceOutcome::Replay { replay, total }
-    }
-
-    /// Atomically combine byte-indexed replay lookup and live
-    /// subscription for `/pty/<id>?since=N`.
+    /// (Re)attach a `/pty/<id>` client. Routes through the emulator thread so
+    /// the replay decision (warm byte-delta vs. cold VT snapshot), the byte
+    /// cursor, and the live `broadcast::Receiver` are taken atomically with
+    /// `vt_write` on a single thread — no output can fall between them.
     ///
-    /// The PTY reader appends to the ring and broadcasts while holding
-    /// the same state lock, so a handler that creates its receiver here
-    /// cannot miss bytes between replay and live forwarding.
-    pub fn subscribe_since(&self, since: u64) -> SinceOutcomeWithLive {
-        let s = self.state.lock();
-        let total = s.ring.total();
-        let origin = s.ring.origin;
-        if since > total {
-            return SinceOutcomeWithLive::Stale { total };
-        }
-        if since < origin {
-            return SinceOutcomeWithLive::Truncated {
-                ring_origin: origin,
-                total,
-            };
-        }
-        if since == total {
-            return SinceOutcomeWithLive::UpToDate {
-                total,
-                rx: self.output_tx.subscribe(),
-            };
-        }
-        let skip = (since - origin) as usize;
-        let replay: Vec<u8> = s.ring.bytes.iter().skip(skip).copied().collect();
-        SinceOutcomeWithLive::Replay {
-            replay,
-            total,
-            rx: self.output_tx.subscribe(),
-        }
-    }
-
-    /// Atomic "tail" subscribe for a `/pty/<id>` connect that omits
-    /// `since`: replay whatever the ring currently holds, then go live.
+    /// `since`:
+    ///   - `Some(n)` inside the ring → raw delta `[n, total)`, `start = n`.
+    ///   - `None` (tail), `n < origin` (truncated), or `n > total` (stale) →
+    ///     a full VT snapshot of the current screen+scrollback, `start = total`.
     ///
-    /// Unlike a two-step "read origin, then `subscribe_since(origin)`",
-    /// the start offset, replay slice, and live receiver are all taken
-    /// under the same state lock — and `publish_output` appends + broadcasts
-    /// under that same lock — so fast output cannot roll the ring between
-    /// resolving the offset and subscribing. The caller reports `start` to
-    /// the client (leading meta frame) as its resume cursor; because it was
-    /// read here, it can never be stale by the time the client records it.
-    pub fn subscribe_tail(&self) -> TailOutcome {
-        let s = self.state.lock();
-        let start = s.ring.origin;
-        let replay: Vec<u8> = s.ring.bytes.iter().copied().collect();
-        TailOutcome {
-            start,
-            replay,
-            rx: self.output_tx.subscribe(),
+    /// Returns `None` if the emulator thread is gone (PTY already exited).
+    pub async fn subscribe(&self, since: Option<u64>) -> Option<SubscribeReply> {
+        let (tx, rx) = oneshot::channel();
+        // Non-blocking unless the bounded channel is full (slow emulator);
+        // a failed send means the emulator thread has exited.
+        if self.emu_tx.send(EmuCmd::Subscribe { since, reply: tx }).is_err() {
+            return None;
         }
+        rx.await.ok()
     }
 
     pub fn write_bytes(&self, data: &[u8]) -> std::io::Result<()> {
@@ -284,7 +222,7 @@ impl Pty {
         s.sizes.insert(client, (cols, rows));
         let (eff_c, eff_r) =
             compute_effective(&s.sizes, s.primary.as_ref()).unwrap_or((cols, rows));
-        apply_size(&mut s, &self.master, eff_c, eff_r)
+        apply_size(&mut s, &self.master, &self.emu_tx, eff_c, eff_r)
     }
 
     pub fn forget_client(&self, client: &ClientId) -> Option<(u16, u16)> {
@@ -298,7 +236,7 @@ impl Pty {
             s.primary = None;
         }
         let (eff_c, eff_r) = compute_effective(&s.sizes, s.primary.as_ref())?;
-        apply_size(&mut s, &self.master, eff_c, eff_r)
+        apply_size(&mut s, &self.master, &self.emu_tx, eff_c, eff_r)
     }
 
     /// Mark `client` as the interactive owner. Returns the new effective size
@@ -310,7 +248,7 @@ impl Pty {
         }
         s.primary = Some(client);
         let (eff_c, eff_r) = compute_effective(&s.sizes, s.primary.as_ref())?;
-        apply_size(&mut s, &self.master, eff_c, eff_r)
+        apply_size(&mut s, &self.master, &self.emu_tx, eff_c, eff_r)
     }
 
     pub fn kill(&self) {
@@ -323,11 +261,13 @@ impl Pty {
         self.state.lock().alive
     }
 
-    fn publish_output(&self, data: &[u8]) {
-        let bytes = Bytes::copy_from_slice(data);
-        let mut s = self.state.lock();
-        s.ring.append(data);
-        let _ = self.output_tx.send(bytes);
+    /// Hand a chunk of master output to the emulator thread, which feeds the
+    /// headless terminal, appends the ring, and broadcasts to live subscribers
+    /// (all serialized there). Blocks the reader thread if the bounded command
+    /// channel is full (backpressure); a closed channel (emulator gone) drops
+    /// the chunk silently — the PTY is exiting.
+    fn feed(&self, data: &[u8]) {
+        let _ = self.emu_tx.send(EmuCmd::Feed(Bytes::copy_from_slice(data)));
     }
 }
 
@@ -346,10 +286,13 @@ fn compute_effective(
     primary.and_then(|p| sizes.get(p).copied())
 }
 
-/// Bump state + resize the master if the target differs from current.
+/// Bump state + resize the master if the target differs from current. Also
+/// mirrors the new grid into the headless emulator so its snapshot reflows to
+/// match what the program now renders at.
 fn apply_size(
     state: &mut PtyState,
     master: &Mutex<Box<dyn MasterPty + Send>>,
+    emu_tx: &SyncSender<EmuCmd>,
     eff_c: u16,
     eff_r: u16,
 ) -> Option<(u16, u16)> {
@@ -364,6 +307,10 @@ fn apply_size(
         rows: eff_r,
         pixel_width: 0,
         pixel_height: 0,
+    });
+    let _ = emu_tx.send(EmuCmd::Resize {
+        cols: eff_c,
+        rows: eff_r,
     });
     Some((eff_c, eff_r))
 }
@@ -491,7 +438,17 @@ impl PtyPool {
         let mut sizes = HashMap::new();
         sizes.insert(owner_client.clone(), (cols, rows));
 
-        let (output_tx, _) = broadcast::channel::<Bytes>(PTY_BROADCAST_CAPACITY);
+        // Per-PTY emulator thread: owns the byte ring, the live broadcast
+        // Sender, and the `!Send` headless Terminal. Reader → Feed → here.
+        let (emu_tx, emu_rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
+        {
+            let emu_pty_id = id.clone();
+            std::thread::Builder::new()
+                .name(format!("motif-emu-{}", emu_pty_id))
+                .spawn(move || emulator_loop(emu_rx, cols, rows))
+                .map_err(|e| PtyError::OpenFailed(e.to_string()))?;
+        }
+
         let pty = Arc::new(Pty {
             id: id.clone(),
             cmd: cmd_str,
@@ -507,9 +464,8 @@ impl PtyPool {
                 sizes,
                 primary: Some(owner_client),
                 alive: true,
-                ring: PtyRing::new(),
             }),
-            output_tx,
+            emu_tx,
             _bootstrap: bootstrap,
         });
 
@@ -608,7 +564,7 @@ fn reader_loop(
                                 // OSC; clients do it themselves off the
                                 // /pty/<id> stream. Pass the raw bytes
                                 // through so client-side parsers see them.
-                                pty.publish_output(&raw);
+                                pty.feed(&raw);
                             } else {
                                 // Capability query — write canonical or
                                 // client-palette response back to the
@@ -626,13 +582,15 @@ fn reader_loop(
                             }
                         }
                         ScanItem::Bytes(bytes) => {
-                            // New protocol fan-out. Cheap-clone via Bytes;
-                            // broadcast::Sender drops the frame for any
-                            // subscriber that's > PTY_BROADCAST_CAPACITY
-                            // frames behind. Slow subscribers get a
-                            // `Lagged` on `recv()` and the WS handler
-                            // closes them with a truncate code.
-                            pty.publish_output(&bytes);
+                            // New protocol fan-out, via the emulator thread:
+                            // it feeds the headless terminal, appends the ring,
+                            // and broadcasts. The bounded command channel drops
+                            // frames for no one — instead a slow emulator blocks
+                            // this reader (backpressure to the OS pty buffer).
+                            // Live WS subscribers that fall > PTY_BROADCAST_CAPACITY
+                            // behind still get a `Lagged` and are closed by the
+                            // WS handler.
+                            pty.feed(&bytes);
                         }
                     }
                 }
@@ -675,6 +633,166 @@ fn reader_loop(
     }
 }
 
+/// Per-PTY emulator thread. Owns the byte ring, the live `broadcast::Sender`,
+/// and a headless `libghostty_vt::Terminal` (`!Send`/`!Sync` — must stay on
+/// this one thread). Handles `Feed`/`Resize`/`Subscribe` in arrival order, so a
+/// `Subscribe` observes ring + terminal state exactly as of the feeds before
+/// it and the live receiver it returns begins right after — nothing falls
+/// between the snapshot/delta and the live stream. Exits when every sender
+/// (the `Pty` and its reader thread) has dropped.
+/// Build a headless emulator terminal as a passive observer: it never writes
+/// query responses back into the PTY (the reader's QueryScanner already answers
+/// capability queries). Returns `None` if libghostty can't allocate it — the
+/// caller then degrades to byte-delta replay only (no cold-attach snapshot).
+fn new_emulator_terminal(cols: u16, rows: u16) -> Option<Terminal<'static, 'static>> {
+    let mut term = Terminal::new(TerminalOptions {
+        cols,
+        rows,
+        max_scrollback: MAX_SCROLLBACK,
+    })
+    .ok()?;
+    let _ = term.on_pty_write(|_t, _d| {});
+    Some(term)
+}
+
+fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
+    let (output_tx, _) = broadcast::channel::<Bytes>(PTY_BROADCAST_CAPACITY);
+    let mut ring = PtyRing::new();
+    let mut cur_cols = cols;
+    // If the headless terminal can't be created we still serve byte deltas;
+    // only the cold-attach VT snapshot degrades (to empty).
+    let mut term = new_emulator_terminal(cols, rows);
+
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            EmuCmd::Feed(bytes) => {
+                if let Some(t) = term.as_mut() {
+                    t.vt_write(&bytes);
+                }
+                ring.append(&bytes);
+                let _ = output_tx.send(bytes);
+            }
+            EmuCmd::Resize { cols, rows } => {
+                if cols == cur_cols {
+                    // Rows-only change: ghostty's row resize is safe.
+                    if let Some(t) = term.as_mut() {
+                        let _ = t.resize(cols, rows, 0, 0);
+                    }
+                } else {
+                    // Column change: ghostty's `PageList.resizeCols` integer-
+                    // overflows (and hard-aborts the process — a Zig panic is
+                    // not a catchable Rust unwind) when shrinking columns with a
+                    // large scrollback. Sidestep that reflow path entirely by
+                    // rebuilding the terminal at the new width and replaying the
+                    // ring — laying content out by feeding is overflow-proof and
+                    // reflows scrollback to the new width correctly.
+                    let mut fresh = new_emulator_terminal(cols, rows);
+                    if let Some(t) = fresh.as_mut() {
+                        let bytes: Vec<u8> = ring.bytes.iter().copied().collect();
+                        t.vt_write(&bytes);
+                    }
+                    term = fresh;
+                    cur_cols = cols;
+                }
+            }
+            EmuCmd::Subscribe { since, reply } => {
+                let total = ring.total();
+                let origin = ring.origin;
+                let (start, replay) = match since {
+                    // Warm incremental resume: raw byte delta `[s, total)`.
+                    Some(s) if s >= origin && s <= total => {
+                        let skip = (s - origin) as usize;
+                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>())
+                    }
+                    // Cold (None) / truncated (s<origin) / stale (s>total):
+                    // full VT snapshot; resume live from the current end.
+                    _ => {
+                        let snap = term.as_ref().map(formatter_vt_snapshot).unwrap_or_default();
+                        (total, snap)
+                    }
+                };
+                let _ = reply.send(SubscribeReply {
+                    start,
+                    replay,
+                    rx: output_tx.subscribe(),
+                });
+            }
+        }
+    }
+}
+
+/// Serialize the emulator's current screen + scrollback into a self-contained
+/// VT byte stream that, fed to a fresh client terminal, reproduces the visible
+/// state and leaves it correctly set up for the subsequent live byte stream.
+///
+/// Shape: mode/cursor **prelude** → content (`Format::Vt`, per-cell SGR, incl.
+/// scrollback) → mode/cursor **postlude**. The Formatter emits content only, so
+/// terminal modes (alt-screen, DECCKM, mouse, bracketed paste, …), the cursor
+/// position, and its visibility are read back via the C API and re-issued here.
+fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
+    // Entire active screen + scrollback (selection: None == "entire screen").
+    let content = match Formatter::new(
+        term,
+        FormatterOptions {
+            format: Format::Vt,
+            trim: false,
+            unwrap: false,
+            selection: None,
+        },
+    ) {
+        Ok(mut f) => {
+            let len = f.format_len().unwrap_or(0);
+            let mut buf = vec![0u8; len];
+            match f.format_buf(&mut buf) {
+                Ok(n) => {
+                    buf.truncate(n);
+                    buf
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+
+    let alt = term.mode(Mode::ALT_SCREEN_SAVE).unwrap_or(false);
+    let mut out: Vec<u8> = Vec::with_capacity(content.len() + 96);
+
+    // ── Prelude: known, matching state before painting ──
+    out.extend_from_slice(b"\x1b[!p"); // DECSTR soft reset (modes/SGR/margins → defaults)
+    out.extend_from_slice(if alt { b"\x1b[?1049h" } else { b"\x1b[?1049l" });
+    out.extend_from_slice(b"\x1b[H\x1b[2J\x1b[0m"); // home + clear + reset SGR
+
+    // ── Content (current screen + scrollback) ──
+    out.extend_from_slice(&content);
+
+    // ── Postlude: restore the modes a live TUI/shell stream depends on ──
+    let modes: [(Mode, &[u8], &[u8]); 8] = [
+        (Mode::DECCKM, b"\x1b[?1h", b"\x1b[?1l"),
+        (Mode::WRAPAROUND, b"\x1b[?7h", b"\x1b[?7l"),
+        (Mode::BRACKETED_PASTE, b"\x1b[?2004h", b"\x1b[?2004l"),
+        (Mode::NORMAL_MOUSE, b"\x1b[?1000h", b"\x1b[?1000l"),
+        (Mode::BUTTON_MOUSE, b"\x1b[?1002h", b"\x1b[?1002l"),
+        (Mode::ANY_MOUSE, b"\x1b[?1003h", b"\x1b[?1003l"),
+        (Mode::SGR_MOUSE, b"\x1b[?1006h", b"\x1b[?1006l"),
+        (Mode::FOCUS_EVENT, b"\x1b[?1004h", b"\x1b[?1004l"),
+    ];
+    for (mode, on_seq, off_seq) in modes {
+        let on = term.mode(mode).unwrap_or(false);
+        out.extend_from_slice(if on { on_seq } else { off_seq });
+    }
+
+    // Cursor position (1-indexed, active-area coords) + visibility.
+    if let (Ok(cx), Ok(cy)) = (term.cursor_x(), term.cursor_y()) {
+        out.extend_from_slice(format!("\x1b[{};{}H", cy + 1, cx + 1).as_bytes());
+    }
+    out.extend_from_slice(match term.is_cursor_visible() {
+        Ok(false) => b"\x1b[?25l",
+        _ => b"\x1b[?25h",
+    });
+
+    out
+}
+
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
 }
@@ -701,169 +819,122 @@ pub enum PtyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use tokio::sync::broadcast::error::TryRecvError;
 
-    struct NoopMasterPty;
-
-    impl MasterPty for NoopMasterPty {
-        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
-            Ok(())
-        }
-
-        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-            Ok(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-        }
-
-        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-            Ok(Box::new(Cursor::new(Vec::<u8>::new())))
-        }
-
-        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-            Ok(Box::new(std::io::sink()))
-        }
-
-        #[cfg(unix)]
-        fn process_group_leader(&self) -> Option<libc::pid_t> {
-            None
-        }
-
-        #[cfg(unix)]
-        fn as_raw_fd(&self) -> Option<portable_pty::unix::RawFd> {
-            None
-        }
-
-        #[cfg(unix)]
-        fn tty_name(&self) -> Option<PathBuf> {
-            None
-        }
+    fn spawn_emu(cols: u16, rows: u16) -> SyncSender<EmuCmd> {
+        let (tx, rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
+        std::thread::spawn(move || emulator_loop(rx, cols, rows));
+        tx
     }
 
-    fn test_pty() -> Pty {
-        let (output_tx, _) = broadcast::channel::<Bytes>(PTY_BROADCAST_CAPACITY);
-        Pty {
-            id: "test-pty".into(),
-            cmd: "/bin/sh".into(),
-            cwd: PathBuf::from("/tmp"),
-            created_at: 0,
-            pid: None,
-            master: Mutex::new(Box::new(NoopMasterPty) as Box<dyn MasterPty + Send>),
-            writer: Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>),
-            killer: Mutex::new(None),
-            state: Mutex::new(PtyState {
-                cols: 80,
-                rows: 24,
-                sizes: HashMap::new(),
-                primary: None,
-                alive: true,
-                ring: PtyRing::new(),
-            }),
-            output_tx,
-            _bootstrap: None,
-        }
+    fn feed(tx: &SyncSender<EmuCmd>, b: &[u8]) {
+        tx.send(EmuCmd::Feed(Bytes::copy_from_slice(b))).unwrap();
+    }
+
+    /// Blocking subscribe for tests. Feed and Subscribe share one ordered
+    /// channel, so every feed sent before this call is already reflected when
+    /// the reply arrives — which also makes it a barrier (see `flush`).
+    fn subscribe(tx: &SyncSender<EmuCmd>, since: Option<u64>) -> SubscribeReply {
+        let (rtx, rrx) = oneshot::channel();
+        tx.send(EmuCmd::Subscribe { since, reply: rtx }).unwrap();
+        rrx.blocking_recv().unwrap()
+    }
+
+    /// Barrier: when this returns, every prior Feed has been processed and
+    /// broadcast by the emulator thread.
+    fn flush(tx: &SyncSender<EmuCmd>) {
+        let _ = subscribe(tx, Some(0));
+    }
+
+    fn find(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
     }
 
     #[test]
-    fn subscribe_since_up_to_date_receives_future_output() {
-        let pty = test_pty();
-        pty.publish_output(b"abc");
+    fn warm_delta_replays_tail_then_streams_live_once() {
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"abcdef");
+        let r = subscribe(&tx, Some(2));
+        assert_eq!(r.start, 2);
+        assert_eq!(r.replay, b"cdef");
 
-        let mut rx = match pty.subscribe_since(3) {
-            SinceOutcomeWithLive::UpToDate { total, rx } => {
-                assert_eq!(total, 3);
-                rx
-            }
-            other => panic!("expected UpToDate, got {}", outcome_name(&other)),
-        };
-
+        let mut rx = r.rx;
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        pty.publish_output(b"d");
-        let got = rx.try_recv().unwrap();
-        assert_eq!(&got[..], b"d");
-    }
-
-    #[test]
-    fn subscribe_since_replays_tail_and_receives_future_once() {
-        let pty = test_pty();
-        pty.publish_output(b"abcdef");
-
-        let mut rx = match pty.subscribe_since(2) {
-            SinceOutcomeWithLive::Replay { replay, total, rx } => {
-                assert_eq!(replay.as_slice(), b"cdef");
-                assert_eq!(total, 6);
-                rx
-            }
-            other => panic!("expected Replay, got {}", outcome_name(&other)),
-        };
-
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-        pty.publish_output(b"gh");
-        let got = rx.try_recv().unwrap();
-        assert_eq!(&got[..], b"gh");
+        feed(&tx, b"gh");
+        flush(&tx); // ensure "gh" was processed + broadcast
+        assert_eq!(&rx.try_recv().unwrap()[..], b"gh");
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]
-    fn subscribe_since_reports_truncated_cursor() {
-        let pty = test_pty();
-        {
-            let mut s = pty.state.lock();
-            s.ring.origin = 5;
-            s.ring.bytes.extend(b"abc");
-        }
-
-        match pty.subscribe_since(4) {
-            SinceOutcomeWithLive::Truncated { ring_origin, total } => {
-                assert_eq!(ring_origin, 5);
-                assert_eq!(total, 8);
-            }
-            other => panic!("expected Truncated, got {}", outcome_name(&other)),
-        }
+    fn up_to_date_cursor_has_empty_delta() {
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"abc");
+        let r = subscribe(&tx, Some(3));
+        assert_eq!(r.start, 3);
+        assert!(r.replay.is_empty());
     }
 
     #[test]
-    fn subscribe_since_reports_stale_cursor() {
-        let pty = test_pty();
-        pty.publish_output(b"abc");
-
-        match pty.subscribe_since(4) {
-            SinceOutcomeWithLive::Stale { total } => assert_eq!(total, 3),
-            other => panic!("expected Stale, got {}", outcome_name(&other)),
-        }
+    fn stale_cursor_falls_back_to_snapshot() {
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"abc");
+        // since > total → cold path: resume from the current end with a snapshot.
+        let r = subscribe(&tx, Some(9999));
+        assert_eq!(r.start, 3);
+        assert!(!r.replay.is_empty());
     }
 
     #[test]
-    fn subscribe_since_preserves_replay_live_boundary() {
-        let pty = test_pty();
-        pty.publish_output(b"before");
-
-        let (replay, mut rx) = match pty.subscribe_since(0) {
-            SinceOutcomeWithLive::Replay { replay, total, rx } => {
-                assert_eq!(total, 6);
-                (replay, rx)
-            }
-            other => panic!("expected Replay, got {}", outcome_name(&other)),
-        };
-        assert_eq!(replay.as_slice(), b"before");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-
-        pty.publish_output(b"after");
-        let got = rx.try_recv().unwrap();
-        assert_eq!(&got[..], b"after");
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    fn column_shrink_with_scrollback_does_not_crash() {
+        // Regression: ghostty's PageList.resizeCols integer-overflows (and
+        // hard-aborts the process) when shrinking columns with a large
+        // scrollback. The emulator rebuilds from the ring on column change to
+        // avoid that reflow path. If the bug regressed, this test aborts the
+        // whole test process rather than failing — that's the intended alarm.
+        let tx = spawn_emu(80, 24);
+        for i in 0..5000u32 {
+            feed(&tx, format!("line {i}\r\n").as_bytes());
+        }
+        tx.send(EmuCmd::Resize { cols: 40, rows: 20 }).unwrap();
+        let r = subscribe(&tx, None);
+        assert!(!r.replay.is_empty());
+        // Scrollback survives the rebuild (most-recent line is present).
+        assert!(find(&r.replay, b"line 4999"), "snapshot lost recent scrollback after reflow");
     }
 
-    fn outcome_name(outcome: &SinceOutcomeWithLive) -> &'static str {
-        match outcome {
-            SinceOutcomeWithLive::UpToDate { .. } => "UpToDate",
-            SinceOutcomeWithLive::Replay { .. } => "Replay",
-            SinceOutcomeWithLive::Truncated { .. } => "Truncated",
-            SinceOutcomeWithLive::Stale { .. } => "Stale",
+    #[test]
+    fn cold_attach_snapshot_includes_scrollback_and_collapses_churn() {
+        let tx = spawn_emu(80, 24);
+        let mut fed = 0usize;
+        // 200 distinct lines → scrollback (well past 24 visible rows).
+        for i in 0..200u32 {
+            let line = format!("scrollback line {i}\r\n");
+            fed += line.len();
+            feed(&tx, line.as_bytes());
         }
+        // In-place redraw churn on a single line.
+        for i in 0..4000u32 {
+            let p = format!("\rprogress {i}");
+            fed += p.len();
+            feed(&tx, p.as_bytes());
+        }
+
+        let r = subscribe(&tx, None);
+        // Cold attach → snapshot; resume live from the current end of stream.
+        assert_eq!(r.start as usize, fed);
+        assert!(!r.replay.is_empty());
+        // Redraw churn collapses: the snapshot is a tiny fraction of fed bytes.
+        assert!(
+            r.replay.len() < fed / 10,
+            "snapshot {} not << fed {}",
+            r.replay.len(),
+            fed
+        );
+        // Scrollback is captured: the oldest line survives into the snapshot.
+        assert!(
+            find(&r.replay, b"scrollback line 0"),
+            "snapshot should contain the oldest scrollback line"
+        );
     }
 }

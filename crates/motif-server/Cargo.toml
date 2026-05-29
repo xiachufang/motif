@@ -34,6 +34,7 @@ base64             = { workspace = true }
 dashmap            = { workspace = true }
 parking_lot        = { workspace = true }
 portable-pty       = { workspace = true }
+libghostty-vt      = { workspace = true }
 walkdir            = { workspace = true }
 mime_guess         = { workspace = true }
 notify             = { workspace = true }

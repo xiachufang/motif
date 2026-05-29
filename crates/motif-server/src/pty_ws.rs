@@ -7,33 +7,31 @@
 //!
 //! ## Replay semantics
 //!
-//! The Pty's byte-indexed ring (2 MB, see [`crate::pty::PtyRing`])
-//! supports `?since=N` reconnects. With an explicit `since=N` the handler
-//! distinguishes:
+//! Each PTY has a dedicated emulator thread (see [`crate::pty`]) owning a 2 MB
+//! byte ring AND a headless libghostty terminal. On connect the handler asks it
+//! (via `Pty::subscribe`) for the bytes to send before going live:
 //!
-//! - `since == total`              — no replay, just go live.
-//! - `origin <= since < total`     — replay the slice, then live.
-//! - `since < origin`              — close 4011 ("history truncated").
-//! - `since > total`               — close 4012 ("stale cursor").
+//! - `origin <= since <= total`    — warm resume: raw byte delta `[since, total)`.
+//! - `since` omitted / `< origin` / `> total` — cold/truncated/stale: a full VT
+//!   **snapshot** of the current screen + scrollback (with a mode/cursor
+//!   prelude), resuming live from `total`.
 //!
-//! Omitting `since` is a **tail** request: the handler reads the ring's
-//! current `origin` atomically with the snapshot + live subscribe and serves
-//! `[origin, total)` then live.
+//! The snapshot collapses in-place redraw churn (progress bars, full-screen
+//! TUIs) to its rendered result, so a busy PTY replays kilobytes instead of
+//! megabytes. The replay slice and the live receiver are taken atomically on
+//! the emulator thread, so no output falls between them.
 //!
 //! ## Meta frame
 //!
-//! Every (non-error) connection leads with a single WebSocket **Text** frame
-//! `{"since":<offset>}` — the absolute byte offset of the first data byte
-//! that follows (the honored `since` for a cursor connect, the resolved
-//! `origin` for a tail connect). All data frames are Binary, so the client
-//! tells them apart by frame type. The client adopts `offset` as its cursor;
-//! because it is resolved server-side at connect time it can never be stale
-//! by the time the client records it (no reconnect race), and the client
-//! resumes incrementally afterwards.
+//! Every connection leads with a single WebSocket **Text** frame
+//! `{"since":<offset>}` — the absolute byte offset of the first data byte that
+//! follows (`since` for a warm delta, `total` for a snapshot). All data frames
+//! are Binary, so the client tells them apart by frame type and adopts
+//! `offset` as its resume cursor. Both replay kinds are opaque bytes the client
+//! feeds into its terminal identically.
 //!
-//! 4011/4012 tells the client "your cursor is unusable; clear the local
-//! terminal buffer and reconnect *without* `since=`" — i.e. fall back to a
-//! tail request, which re-establishes an exact cursor via the meta frame.
+//! A live subscriber that lags past the broadcast capacity is closed with 4011;
+//! the client reconnects without `since=` and gets a fresh snapshot.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -48,17 +46,17 @@ use motif_proto::common::{ClientId, PtyId};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use crate::pty::{Pty, SinceOutcomeWithLive};
+use crate::pty::Pty;
 use crate::session::Session;
 use crate::ws::{
     self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
-/// 4011 — server's per-PTY ring rolled past the client's `since`.
+/// 4011 — a live subscriber fell too far behind and the broadcast channel
+/// lagged (skipped bytes). The client reconnects without `since=` and gets a
+/// fresh VT snapshot. (Cold/truncated/stale cursors no longer close the
+/// socket — the emulator serves a snapshot inline instead.)
 const CLOSE_HISTORY_TRUNCATED: CloseCode = 4011;
-/// 4012 — client's `since` is ahead of server total (server restarted
-/// or the cursor is bogus).
-const CLOSE_STALE_CURSOR: CloseCode = 4012;
 
 /// Frame size for streaming the `?since=` replay. Small enough that a
 /// large scrollback renders progressively (and a mid-replay drop only
@@ -143,50 +141,25 @@ async fn handle_pty_socket(
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
 
-    // ─ Replay or close-with-truncate ─
-    // Server doesn't track per-client byte cursors — the client owns
-    // that state (passes its own `since=` on reconnect). Replay lookup
-    // and live subscribe happen under the Pty state lock so bytes cannot
-    // fall between the two phases.
-    // `start` is the absolute byte offset of the first byte that follows the
-    // meta frame; the client adopts it as its cursor.
-    let (start, replay, mut output_rx) = match since {
-        // ── Exact cursor (`?since=N`) ──
-        Some(since) => match pty.subscribe_since(since) {
-            SinceOutcomeWithLive::Truncated { ring_origin, total } => {
-                tracing::info!(client_id = %client_id, pty_id = %pty_id, since, ring_origin, total, "pty replay truncated; closing 4011");
-                let _ = ws_tx
-                    .send(Message::Close(Some(CloseFrame {
-                        code: CLOSE_HISTORY_TRUNCATED,
-                        reason: "history truncated".into(),
-                    })))
-                    .await;
-                return;
-            }
-            SinceOutcomeWithLive::Stale { total } => {
-                tracing::info!(client_id = %client_id, pty_id = %pty_id, since, total, "pty stale cursor; closing 4012");
-                let _ = ws_tx
-                    .send(Message::Close(Some(CloseFrame {
-                        code: CLOSE_STALE_CURSOR,
-                        reason: "stale cursor".into(),
-                    })))
-                    .await;
-                return;
-            }
-            // `since` is honored exactly (origin ≤ since ≤ total), so the
-            // first byte we serve sits at `since`.
-            SinceOutcomeWithLive::UpToDate { rx, .. } => (since, Vec::new(), rx),
-            SinceOutcomeWithLive::Replay { replay, rx, .. } => (since, replay, rx),
-        },
-        // ── Tail (`since` omitted) ──
-        // Resolve the start offset atomically with the snapshot + live
-        // subscribe so the client adopts an exact cursor without a
-        // stale-origin reconnect race.
-        None => {
-            let tail = pty.subscribe_tail();
-            (tail.start, tail.replay, tail.rx)
-        }
+    // ─ Replay ─
+    // The PTY's emulator thread decides what to send before live: a raw byte
+    // **delta** `[since, total)` when `since` lands inside the ring (warm
+    // incremental resume), or a full VT **snapshot** of the current screen +
+    // scrollback when the cursor is cold (`since` omitted), truncated
+    // (`< origin`), or stale (`> total`). Both arrive as opaque bytes here —
+    // the client feeds either into its terminal identically. The replay slice
+    // and the live receiver are taken atomically on the emulator thread, so no
+    // output can fall between them. `start` is the absolute byte offset of the
+    // first byte after the meta frame; the client adopts it as its cursor.
+    let Some(reply) = pty.subscribe(since).await else {
+        // Emulator thread is gone — the PTY has already exited. Nothing to
+        // serve; let the socket close.
+        tracing::info!(client_id = %client_id, pty_id = %pty_id, "pty subscribe: emulator gone");
+        return;
     };
+    let start = reply.start;
+    let replay = reply.replay;
+    let mut output_rx = reply.rx;
 
     // Lead with a Text meta frame announcing the absolute offset of the bytes
     // that follow. Sent on every (non-error) connection so the client never
@@ -196,13 +169,13 @@ async fn handle_pty_socket(
         return;
     }
 
-    // Stream the snapshot as bounded frames instead of one giant Binary
-    // message. URLSession (and most WS clients) only surface a frame once it
-    // is *fully* received, so a single multi-MB replay leaves the terminal
-    // blank until the whole ring arrives — painfully visible on a cold /
-    // DERP-relayed tailnet path. Chunking renders progressively and lets the
-    // client advance its byte cursor per frame, so a mid-replay drop resumes
-    // from where it left off instead of refetching the whole ring.
+    // Stream the replay (byte delta or VT snapshot) as bounded frames instead
+    // of one giant Binary message. URLSession (and most WS clients) only
+    // surface a frame once it is *fully* received, so a single multi-MB replay
+    // leaves the terminal blank until the whole thing arrives — painfully
+    // visible on a cold / DERP-relayed tailnet path. Chunking renders
+    // progressively and lets the client advance its byte cursor per frame, so a
+    // mid-replay drop resumes from where it left off.
     if !replay.is_empty() {
         let size = replay.len();
         for chunk in replay.chunks(REPLAY_CHUNK_BYTES) {
