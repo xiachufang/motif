@@ -29,7 +29,7 @@ import {
 } from "../store/stickyModifiers";
 import {
   applyModifiers, BRACKETED_PASTE_END, BRACKETED_PASTE_START,
-  bytesToB64, concatBytes,
+  concatBytes,
 } from "../util/applyModifiers";
 
 const QuickCommandEditor   = lazy(() => import("./QuickCommandEditor"));
@@ -66,8 +66,7 @@ export default function MobileInputDock({ ptyId }: Props) {
 
   const sendBytes = useCallback((u8: Uint8Array) => {
     if (!client || u8.length === 0) return;
-    client.call("pty.write", { pty_id: ptyId, data_b64: bytesToB64(u8) })
-      .catch(() => { /* ignore — pty may have exited */ });
+    client.writePty(ptyId, u8);
   }, [client, ptyId]);
 
   const sendText = useCallback((s: string) => {

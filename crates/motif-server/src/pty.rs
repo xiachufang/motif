@@ -2,13 +2,14 @@
 //!
 //! Each Pty holds:
 //!   - the master pty handle (for resize)
-//!   - a writer (sync; clients call `pty.write` rarely enough that brief lock
+//!   - a writer (sync; stdin frames arrive rarely enough that brief lock
 //!     contention is fine)
 //!   - a 2MB ring buffer of recent stdout bytes for replay on attach
 //!   - per-client (cols, rows) preferences. The master follows the
 //!     currently-active client's size: `primary` is set on creation, on
-//!     `pty.write`, and on `view.activate`, so whoever is most recently
-//!     typing or focusing the tab decides the grid. Non-primary clients'
+//!     PTY input (any `/pty/<id>` stdin frame), and on `view.activate`, so
+//!     whoever is most recently typing or focusing the tab decides the grid.
+//!     Non-primary clients'
 //!     sizes are stashed but ignored, and if the active client hasn't
 //!     reported a size yet (just marked, no `pty.resize` in flight) the
 //!     master is left at its last value rather than falling back to a

@@ -677,11 +677,7 @@ final class MotifClient {
 
     func write(ptyID: String, data: Data) async {
         guard let rpc else { return }
-        do {
-            _ = try await rpc.call("pty.write", params: MotifProto.PtyWriteParams(pty_id: ptyID, data: data))
-        } catch {
-            log.error("pty.write: \(String(describing: error), privacy: .public)")
-        }
+        await rpc.writePty(ptyID: ptyID, data: data)
     }
 
     /// Change the active PTY's working directory by sending a `cd` command

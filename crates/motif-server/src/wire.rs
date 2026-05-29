@@ -10,8 +10,9 @@
 //! boundary — base64-encoding any byte fields — so the rest of the
 //! dispatch path can stay JSON-shaped and the typed param decoders (which
 //! use the `bytes_base64_or_native` adapter) round-trip the bytes back
-//! through base64. The only field on the wire that takes this hit is
-//! `PtyWriteParams.data`; everything else is JSON-compatible.
+//! through base64. No inbound RPC param currently carries raw bytes (PTY
+//! stdin goes over the dedicated `/pty/<id>` byte stream, not an RPC), so this
+//! is a no-op for today's requests but kept for any future byte-bearing param.
 //!
 //! Outbound responses and events are serialized straight from their typed
 //! Rust shape via `rmp_serde::to_vec_named`, so byte fields stay native
@@ -95,8 +96,8 @@ mod tests {
         let j = rmpv_to_json(v);
         let obj = j.as_object().expect("object");
         assert_eq!(obj["pty_id"], serde_json::Value::from("p1"));
-        // data_b64 base64-encoded under the same key — typed PtyWriteParams
-        // deserializer will decode back to Vec<u8> via the wire adapter.
+        // A msgpack `bin` field is base64-encoded under the same key, so a
+        // typed `bytes_base64_or_native` decoder round-trips it back to Vec<u8>.
         assert_eq!(
             obj["data_b64"],
             serde_json::Value::String(BASE64.encode(&[1u8, 2, 3]))

@@ -12,7 +12,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useApp } from "../store/store";
 import { attachPty } from "../store/ptyBuffers";
 import { consumeArmed, getSticky, resetSticky } from "../store/stickyModifiers";
-import { applyModifiers, bytesToB64, keyEventToPayload } from "../util/applyModifiers";
+import { applyModifiers, keyEventToPayload } from "../util/applyModifiers";
 import { useEffectiveTheme } from "../hooks/useResolvedTheme";
 import { XTERM_THEME } from "../appearance";
 
@@ -73,8 +73,7 @@ export default function PtyTab({ ptyId, active }: Props) {
       const payload = keyEventToPayload(ev);
       if (!payload) return true;
       const out = applyModifiers(payload, ctrl !== "inactive", alt !== "inactive");
-      const c = useApp.getState().client;
-      c?.call("pty.write", { pty_id: ptyId, data_b64: bytesToB64(out) }).catch(() => { /* ignore */ });
+      useApp.getState().client?.writePty(ptyId, out);
       consumeArmed(ptyId);
       ev.preventDefault();
       return false;
@@ -82,12 +81,7 @@ export default function PtyTab({ ptyId, active }: Props) {
 
     // Forward user input to the server.
     const onData = term.onData(data => {
-      const c = useApp.getState().client;
-      if (!c) return;
-      const u8 = new TextEncoder().encode(data);
-      let bin = "";
-      for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
-      c.call("pty.write", { pty_id: ptyId, data_b64: btoa(bin) }).catch(() => { /* ignore */ });
+      useApp.getState().client?.writePty(ptyId, new TextEncoder().encode(data));
     });
 
     // Stream PTY bytes into the terminal. History comes from motifd via

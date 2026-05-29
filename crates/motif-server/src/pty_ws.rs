@@ -43,6 +43,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use motif_net::PeerAddr;
 use motif_proto::common::{ClientId, PtyId};
+use motif_proto::event::Event;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -134,9 +135,11 @@ async fn handle_pty_socket(
         "pty ws connected",
     );
 
-    // /pty is pure transport: it never claims primary. Primary ownership is
-    // driven entirely by view.open / view.activate (a client re-asserts its
-    // active view on focus/foreground). See `rpc::mark_pty_primary`.
+    // Primary ownership (which client's size the master follows) is claimed by
+    // view.open / view.activate (tab switch / focus, see `rpc::mark_pty_primary`)
+    // AND by sending input on this stream — see the read loop below, where each
+    // inbound frame marks this client primary so the device you type on drives
+    // the grid.
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
@@ -297,9 +300,13 @@ async fn handle_pty_socket(
     });
 
     // ─ Read loop ─
-    // Inbound binary frames are raw stdin bytes for the master — this is the
-    // only PTY write path. Writing never claims primary (see the transport
-    // note above).
+    // Inbound binary frames are raw stdin bytes for the master — the only PTY
+    // write path. Typing also claims primary: the client actively sending
+    // input drives the shared master grid size (so output is laid out for the
+    // device you're typing on). `mark_primary` is a cheap lock+compare no-op
+    // once this client already owns primary, so calling it per input frame is
+    // free in the steady state and only resizes + broadcasts on an actual
+    // handover.
     while let Some(item) = ws_rx.next().await {
         let msg = match item {
             Ok(m) => m,
@@ -313,6 +320,15 @@ async fn handle_pty_socket(
             Message::Binary(b) => {
                 if let Err(e) = pty.write_bytes(&b) {
                     tracing::warn!(pty_id = %pty_id, "pty write: {e}");
+                }
+                if let Some((cols, rows)) = pty.mark_primary(client_id.clone()) {
+                    let pid = pty_id.clone();
+                    session.publish_event(|seq| Event::PtyResize {
+                        pty_id: pid,
+                        cols,
+                        rows,
+                        seq,
+                    });
                 }
             }
             Message::Close(_) => break,

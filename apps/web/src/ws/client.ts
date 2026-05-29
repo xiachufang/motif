@@ -152,7 +152,6 @@ export class RpcClient {
     switch (method) {
       case "session.attach": return this.doAttach<T>(params);
       case "session.detach": return this.doDetach<T>();
-      case "pty.write":      return this.doPtyWrite<T>(params);
       case "pty.create":     return this.doPtyCreate<T>(params);
       case "pty.kill":       return this.doPtyKill<T>(params);
       default:               return this.httpCall<T>(method, params);
@@ -213,34 +212,18 @@ export class RpcClient {
     });
   }
 
-  private async doPtyWrite<T>(params: Record<string, unknown>): Promise<T> {
-    const pid  = typeof params.pty_id === "string" ? params.pty_id : "";
-    const dataField = params.data ?? params.data_b64;
-    if (!pid) throw new Error("pty.write: missing pty_id");
-    let bytes: Uint8Array;
-    if (typeof dataField === "string") {
-      // already base64 (legacy path)
-      const bin = atob(dataField);
-      bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    } else if (Array.isArray(dataField)) {
-      bytes = new Uint8Array(dataField as number[]);
-    } else if (dataField instanceof Uint8Array) {
-      bytes = dataField;
-    } else {
-      throw new Error("pty.write: data/data_b64 must be string|number[]|Uint8Array");
-    }
+  /// Write raw PTY input (stdin) to a PTY's `/pty/<id>` stream as a binary
+  /// frame — the only PTY write path. Best-effort: writes only target a PTY
+  /// whose stream is open; a keystroke arriving in the sub-frame window before
+  /// the stream connects is dropped (no HTTP fallback).
+  writePty(pid: string, bytes: Uint8Array): void {
     const ws = this.ptyWs.get(pid);
     if (ws && ws.readyState === WebSocket.OPEN) {
-      // Forward a fresh ArrayBuffer slice; ws.send wants ArrayBuffer-y
-      // shapes and the TS types don't accept a Uint8Array view of
-      // SharedArrayBuffer without a copy.
+      // Forward a fresh ArrayBuffer slice; ws.send wants ArrayBuffer-y shapes
+      // and the TS types don't accept a Uint8Array view of SharedArrayBuffer
+      // without a copy.
       ws.send(bytes.slice().buffer);
     }
-    // No fallback: writes only target the active PTY, whose /pty stream is
-    // open. A keystroke arriving in the sub-frame window before the stream
-    // connects is dropped rather than routed over a separate HTTP call.
-    return ({} as T);
   }
 
   private async doPtyCreate<T>(params: Record<string, unknown>): Promise<T> {

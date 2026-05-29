@@ -154,13 +154,6 @@ pub struct PtyListResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PtyWriteParams {
-    pub pty_id: PtyId,
-    #[serde(rename = "data_b64", with = "crate::wire::bytes_base64_or_native")]
-    pub data: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyResizeParams {
     pub pty_id: PtyId,
     pub cols: u16,

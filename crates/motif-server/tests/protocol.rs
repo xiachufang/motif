@@ -488,7 +488,7 @@ async fn pty_lifecycle_and_mirror() {
     let mut b_ws = b.open_pty_ws(&pty_id, None).await.unwrap();
     let mut c_ws = c.open_pty_ws(&pty_id, None).await.unwrap();
 
-    // pty.write — A sends `echo motif-marker\n` over its /pty WS; all three
+    // PTY input — A sends `echo motif-marker\n` over its /pty WS; all three
     // clients see the echoed output. Picking a deliberately unique token so we
     // don't false-positive on the shell's prompt.
     let cmd = b"echo motif-marker\n";

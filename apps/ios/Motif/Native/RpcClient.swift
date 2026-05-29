@@ -20,8 +20,6 @@ import TalkerCommonSync
 ///   - `session.attach` → HTTP POST; on success, store session_id and open
 ///      /events. The visible terminal runtime opens `/pty/<id>` on demand.
 ///   - `session.detach` → close PTY WSes + events WS, then HTTP POST.
-///   - `pty.write`      → bytes pushed to the active PTY WS as a binary frame.
-///      Writes only target the active PTY, whose stream is open.
 ///   - `pty.create`     → HTTP POST; the server's view.active_changed event
 ///      will cause the visible terminal runtime to open `/pty/<id>`.
 ///   - `pty.kill`       → HTTP POST; afterwards close the PTY WS.
@@ -292,7 +290,6 @@ actor RpcClient {
         switch method {
         case "session.attach":  return try await doAttach(params: params)
         case "session.detach":  return try await doDetach()
-        case "pty.write":       return try await doPtyWrite(params: params)
         case "pty.create":      return try await doPtyCreate(params: params)
         case "pty.kill":        return try await doPtyKill(params: params)
         default:                return try await httpCall(method: method, params: params)
@@ -351,25 +348,17 @@ actor RpcClient {
         return body
     }
 
-    private func doPtyWrite<P: Encodable>(params: P) async throws -> Data {
-        // Decode params to extract pty_id + data, then send over the PTY's
-        // WS as a binary frame — the only write path. Writes only target the
-        // active PTY, whose stream is open; a write arriving before the stream
-        // connects is dropped. The wire field is `data_b64` — `PtyWriteParams`
-        // uses a CodingKey to rename `data` on encode, so JSONSerialization
-        // sees `data_b64` here.
-        let raw = try JSONEncoder().encode(params)
-        guard let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
-              let pid = obj["pty_id"] as? String,
-              let dataB64 = obj["data_b64"] as? String,
-              let data = Data(base64Encoded: dataB64)
-        else {
-            throw RpcError.decode("pty.write: missing pty_id / data_b64")
+    /// Write raw PTY input (stdin) over the PTY's `/pty/<id>` WS as a binary
+    /// frame — the only PTY write path. Best-effort: writes only target a PTY
+    /// whose stream is open; a write arriving in the window before the stream
+    /// connects is dropped (no fallback).
+    func writePty(ptyID: String, data: Data) async {
+        guard ptys[ptyID]?.task != nil else { return }
+        do {
+            try await sendPtyBytes(ptyID: ptyID, data: data)
+        } catch {
+            log.notice("pty write `\(ptyID, privacy: .public)`: \(String(describing: error), privacy: .public)")
         }
-        if ptys[pid]?.task != nil {
-            try await sendPtyBytes(ptyID: pid, data: data)
-        }
-        return "{}".data(using: .utf8)!
     }
 
     private func doPtyCreate<P: Encodable>(params: P) async throws -> Data {
@@ -582,7 +571,7 @@ actor RpcClient {
     }
 
     private func sendPtyBytes(ptyID: String, data: Data) async throws {
-        guard let task = ptys[ptyID]?.task else { throw RpcError.transport("pty.write: no channel for `\(ptyID)`") }
+        guard let task = ptys[ptyID]?.task else { throw RpcError.transport("pty write: no channel for `\(ptyID)`") }
         try await task.send(.data(data))
     }
 

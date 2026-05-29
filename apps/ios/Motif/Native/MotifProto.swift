@@ -134,18 +134,6 @@ enum MotifProto {
         var info: PtyInfo
     }
 
-    struct PtyWriteParams: Codable {
-        var pty_id: String
-        /// Wire field is named `data_b64` for backward compat with older
-        /// JSON clients; JSONEncoder base64-encodes Data automatically and
-        /// MessagePackEncoder writes it as native bin.
-        var data: Data
-        enum CodingKeys: String, CodingKey {
-            case pty_id
-            case data = "data_b64"
-        }
-    }
-
     struct PtyResizeParams: Codable {
         var pty_id: String
         var cols: UInt16

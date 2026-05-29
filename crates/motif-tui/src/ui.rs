@@ -99,8 +99,8 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CtEvent, KeyCode, KeyEventKind,
-    KeyModifiers,
+    self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+    Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -280,7 +280,9 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
 
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // EnableFocusChange: the terminal emits FocusGained/FocusLost so we can
+    // reclaim PTY primary when this TUI's window regains focus (see main_loop).
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
     let backend = CrosstermBackend::new(stdout);
     let mut term = Terminal::new(backend)?;
 
@@ -290,7 +292,8 @@ pub async fn run_with(mut tr: crate::transport::ConnectedV2, session: String) ->
     execute!(
         term.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableFocusChange
     )?;
     term.show_cursor()?;
 
@@ -336,6 +339,13 @@ async fn main_loop(
     state: &mut AppState,
     mut pty_byte_rx: mpsc::UnboundedReceiver<PtyByteFrame>,
 ) -> Result<()> {
+    // Claim PTY primary on attach so the shared master grid sizes to this
+    // terminal from the start — the server doesn't auto-promote an attaching
+    // client, and FocusGained only fires on a *later* refocus. Mirrors the iOS
+    // client reclaiming primary right after attach.
+    if let Some(vid) = state.active_view.clone() {
+        activate_view_id(client, vid).await;
+    }
     loop {
         term.draw(|f| draw(f, state))?;
 
@@ -406,14 +416,27 @@ async fn main_loop(
         }
 
         if event::poll(Duration::from_millis(20))? {
-            if let CtEvent::Key(k) = event::read()? {
-                if k.kind != KeyEventKind::Press {
-                    continue;
+            match event::read()? {
+                CtEvent::Key(k) => {
+                    if k.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match handle_key(state, client, k.code, k.modifiers).await? {
+                        KeyOutcome::Quit => return Ok(()),
+                        KeyOutcome::Stay => {}
+                    }
                 }
-                match handle_key(state, client, k.code, k.modifiers).await? {
-                    KeyOutcome::Quit => return Ok(()),
-                    KeyOutcome::Stay => {}
+                // Window regained focus: reclaim PTY primary for this client so
+                // the shared master grid resizes back to this terminal's size.
+                // Re-activating the current view runs the server's mark_primary
+                // without disturbing peers (a no-op broadcast when unchanged) —
+                // the same "I'm driving" signal a tab switch or iOS focus sends.
+                CtEvent::FocusGained => {
+                    if let Some(vid) = state.active_view.clone() {
+                        activate_view_id(client, vid).await;
+                    }
                 }
+                _ => {}
             }
         }
     }
