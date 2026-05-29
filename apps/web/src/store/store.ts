@@ -169,7 +169,28 @@ const initial = (): Pick<AppState,
 });
 
 function loadToken(): string | null {
+  const fromUrl = takeUrlToken();
+  if (fromUrl !== null) return fromUrl;
   return localStorage.getItem("motif.token") ?? sessionStorage.getItem("motif.token");
+}
+
+// Allow passing the token directly in the URL, e.g. `?token=abc`. When present
+// we persist it and strip it from the address bar so it isn't left in browser
+// history, bookmarks, or a shared link.
+function takeUrlToken(): string | null {
+  try {
+    const url = new URL(location.href);
+    const t = url.searchParams.get("token");
+    if (t === null) return null;
+    localStorage.removeItem("motif.token");
+    sessionStorage.removeItem("motif.token");
+    localStorage.setItem("motif.token", t);
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return t;
+  } catch {
+    return null;
+  }
 }
 
 export const useApp = create<AppState>((set) => ({
