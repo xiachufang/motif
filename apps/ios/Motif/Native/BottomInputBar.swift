@@ -812,11 +812,11 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            if !parent.isFocused { parent.isFocused = true }
+            if !parent.isFocused { Task {@MainActor in parent.isFocused = true }}
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
-            if parent.isFocused { parent.isFocused = false }
+            if parent.isFocused { Task {@MainActor in parent.isFocused = false }}
         }
     }
 }

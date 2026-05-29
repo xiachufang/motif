@@ -184,6 +184,14 @@ final class PtyTerminalRuntime {
             self?.applyTerminalSettings()
         }
 
+        // Claim PTY primary for this client when the surface gains focus, so
+        // the shared master grid resizes to *this* device. Routes through
+        // `view.activate` (server-side `mark_primary`) the same way a tab tap
+        // does — focusing to type is as much an "I'm driving" signal as
+        // switching tabs, and without it a focused terminal can keep rendering
+        // at another client's width. See `terminalDidChangeFocus`.
+        view.delegate = self
+
         // Pick up the current global font size + theme before the surface
         // renders its first frame.
         applyTerminalSettings()
@@ -253,6 +261,7 @@ final class PtyTerminalRuntime {
         stopPump()
         pendingResize?.cancel()
         view.windowAttachmentHandler = nil
+        view.delegate = nil
         view.removeFromSuperview()
         view.controller = nil
         terminals.unregister(ptyID: ptyID)
@@ -261,6 +270,26 @@ final class PtyTerminalRuntime {
     deinit {
         MainActor.assumeIsolated {
             dispose()
+        }
+    }
+}
+
+extension PtyTerminalRuntime: TerminalSurfaceFocusDelegate {
+    /// Ghostty surface gained/lost keyboard focus. On gaining focus, claim PTY
+    /// primary for this client (server `mark_primary` → resize the shared
+    /// master to this device's grid) by re-activating this PTY's view — the
+    /// same path a tab tap takes. Losing focus is a no-op: whichever client
+    /// focuses next reclaims primary then.
+    func terminalDidChangeFocus(_ focused: Bool) {
+        guard focused, !disposed else { return }
+        let client = self.client
+        let ptyID = self.ptyID
+        Task { @MainActor in
+            if let vid = client.viewID(forPty: ptyID) {
+                await client.activateView(viewID: vid)
+            } else {
+                client.reclaimPrimary()
+            }
         }
     }
 }
