@@ -899,6 +899,29 @@ fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
     // ── Content (current screen + scrollback) ──
     out.extend_from_slice(&content);
 
+    // ── Re-pad the active screen's trimmed trailing blank rows ──
+    // The Formatter drops trailing blank rows of the active screen (even with
+    // `trim:false`). When the content has scrolled, feeding it bottom-aligns the
+    // last *non-blank* row to the screen's bottom, so the whole active screen
+    // lands `K` rows too low (K = trimmed trailing blanks) while the absolute
+    // cursor restore below does not move — the client's cursor ends up K rows
+    // above where it belongs. This bites full-screen TUIs that render relative
+    // to the cursor (e.g. claude/Ink): the first keystroke lands on the wrong
+    // row. Emit K newlines so the content scrolls up into its true position and
+    // the cursor restore lands correctly. `content_rows = scrollback + (rows-K)`,
+    // so `K = scrollback + rows - content_rows`.
+    let rows = term.rows().unwrap_or(0) as usize;
+    let scrollback = term.scrollback_rows().unwrap_or(0);
+    let content_rows = if content.is_empty() {
+        0
+    } else {
+        content.iter().filter(|&&b| b == b'\n').count() + 1
+    };
+    let trailing_blank = (scrollback + rows).saturating_sub(content_rows);
+    for _ in 0..trailing_blank {
+        out.extend_from_slice(b"\r\n");
+    }
+
     // ── Postlude: restore the modes a live TUI/shell stream depends on ──
     let modes: [(Mode, &[u8], &[u8]); 8] = [
         (Mode::DECCKM, b"\x1b[?1h", b"\x1b[?1l"),
@@ -982,6 +1005,42 @@ mod tests {
 
     fn find(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn snapshot_repads_trimmed_trailing_blank_rows() {
+        // Regression for the cold-replay cursor off-by-one. The libghostty
+        // Formatter drops the active screen's trailing blank rows (even with
+        // `trim:false`). When content has scrolled, feeding the snapshot
+        // bottom-aligns the last *non-blank* row to the screen bottom, shifting
+        // the active screen down by the number of trimmed rows while the
+        // absolute cursor restore does not move — so a full-screen TUI that
+        // renders relative to the cursor (claude/Ink) drew its next keystroke on
+        // the wrong row. `formatter_vt_snapshot` re-pads those rows; a faithful
+        // snapshot must round-trip to the SAME scrollback depth and cursor row.
+        let mut term = new_emulator_terminal(54, 35).unwrap();
+        for i in 0..200u32 {
+            term.vt_write(format!("line{i}\r\n").as_bytes()); // overflow → scrollback
+        }
+        // Cursor mid-screen, erase to end → real trailing blank rows below it.
+        term.vt_write(b"\x1b[20;5H\x1b[J");
+        let orig_cy = term.cursor_y().unwrap();
+        let orig_sb = term.scrollback_rows().unwrap();
+        assert!(orig_cy < 34, "test needs blank rows below the cursor");
+        assert!(orig_sb > 0, "test needs content to have scrolled");
+
+        let snap = formatter_vt_snapshot(&term);
+        let mut echo = new_emulator_terminal(54, 35).unwrap();
+        echo.vt_write(&snap);
+
+        // Without the re-pad, the trimmed blank rows make `echo` scroll fewer
+        // lines (smaller scrollback) and land the content a row too low.
+        assert_eq!(echo.cursor_y().unwrap(), orig_cy, "cursor row drifted across snapshot");
+        assert_eq!(
+            echo.scrollback_rows().unwrap(),
+            orig_sb,
+            "trailing blank rows lost → active screen shifted relative to the cursor",
+        );
     }
 
     /// Blocking CPR query for tests. Ordered behind every prior Feed, so the
