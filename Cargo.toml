@@ -81,7 +81,14 @@ tui-term           = "0.3"
 # server-side screen+scrollback VT snapshots on PTY replay. Builds
 # libghostty-vt from source via Zig 0.15.2 — see the zig-ghostty-build-tahoe
 # memory for local macOS (Tahoe) builds; Linux uses zig 0.15.x natively.
-libghostty-vt      = "0.1.1"
+#
+# Pinned to our fork of uzaaft/libghostty-rs at master HEAD instead of the
+# crates.io 0.1.1 release: the published crate is frozen at a March-2026
+# snapshot whose bundled ghostty predates the PageList column-reflow fixes
+# (ghostty #10297 / #10337), so shrinking a PTY's columns with large
+# scrollback aborts the process. This rev's build.rs pins ghostty b869a6e5
+# (2026-05-25), which is 2392 commits past that fix.
+libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "8e1b0f7" }
 notify             = "8"
 notify-debouncer-full = "0.7"
 
