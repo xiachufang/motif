@@ -91,6 +91,10 @@
     <label class="lead">Auth key</label>
     <input type="text" id="ts_authkey" placeholder="(optional — else browser login)" />
   </div>
+  <div class="row indent">
+    <label class="lead">Control URL</label>
+    <input type="text" id="ts_control_url" placeholder="(default: Tailscale — set for Headscale)" />
+  </div>
 
   <h2>General</h2>
   <div class="row">
@@ -168,6 +172,7 @@
           enabled: $("ts_enabled").checked,
           hostname: $("ts_hostname").value,
           authkey: $("ts_authkey").value,
+          control_url: $("ts_control_url").value,
         },
         auth: {
           enabled: $("auth_enabled").checked,
@@ -184,6 +189,7 @@
       $("ts_enabled").checked = !!c.tailscale?.enabled;
       $("ts_hostname").value = c.tailscale?.hostname || "";
       $("ts_authkey").value = c.tailscale?.authkey || "";
+      $("ts_control_url").value = c.tailscale?.control_url || "";
       $("auth_enabled").checked = !!c.auth?.enabled;
       $("auth_token").value = c.auth?.token || "";
       $("autostart").checked = !!c.autostart;
@@ -236,7 +242,7 @@
     }
 
     // Auto-save on any field change (text fields fire on blur/enter).
-    ["listen_mode", "port", "ts_enabled", "ts_hostname", "ts_authkey", "auth_enabled", "auth_token", "autostart"]
+    ["listen_mode", "port", "ts_enabled", "ts_hostname", "ts_authkey", "ts_control_url", "auth_enabled", "auth_token", "autostart"]
       .forEach((id) => $(id).addEventListener("change", saveConfig));
 
     $("gen_token").onclick = async () => {

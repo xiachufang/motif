@@ -162,12 +162,20 @@ async fn handle_pty_socket(
     };
     let start = reply.start;
     let replay = reply.replay;
+    let is_snapshot = reply.snapshot;
     let mut output_rx = reply.rx;
 
     // Lead with a Text meta frame announcing the absolute offset of the bytes
     // that follow. Sent on every (non-error) connection so the client never
     // has to guess where its cursor should sit; all data frames are Binary.
-    let meta = format!("{{\"since\":{start}}}");
+    //
+    // `snapshot` + `replay` let the client account its resume cursor correctly:
+    // a delta's bytes ARE ring bytes (count them, since → total), but a
+    // snapshot is synthetic with `since` already at `total`, so the client must
+    // render its `replay` bytes WITHOUT advancing the cursor. Older clients
+    // that ignore these fields keep the previous (delta-correct) behavior.
+    let replay_len = replay.len();
+    let meta = format!("{{\"since\":{start},\"snapshot\":{is_snapshot},\"replay\":{replay_len}}}");
     if ws_tx.send(Message::Text(meta.into())).await.is_err() {
         return;
     }

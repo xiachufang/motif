@@ -135,6 +135,10 @@ struct QuickCommandListEditor: View {
                     } label: { Label("Alt modifier", systemImage: "option") }
                         .disabled(items.contains { $0.kind == .alt })
                     Button {
+                        appState.commands.add(.shiftModifier(), to: scope)
+                    } label: { Label("Shift modifier", systemImage: "shift") }
+                        .disabled(items.contains { $0.kind == .shift })
+                    Button {
                         appState.commands.add(.cd(), to: scope)
                     } label: { Label("Change directory", systemImage: "arrow.turn.down.right") }
                         .disabled(items.contains { $0.kind == .cd })
@@ -221,7 +225,7 @@ struct QuickCommandListEditor: View {
     private func subtitle(_ cmd: QuickCommand) -> String {
         switch cmd.kind {
         case .paste:      return "clipboard"
-        case .ctrl, .alt: return "sticky modifier"
+        case .ctrl, .alt, .shift: return "sticky modifier"
         case .cd:         return "directory picker"
         case .bytes:      return payloadPreview(cmd.payload)
         }

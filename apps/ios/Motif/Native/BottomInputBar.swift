@@ -4,13 +4,13 @@ import OSLog
 import DoubaoASR
 import GhosttyTerminal
 
-/// Sticky-modifier lifecycle for Ctrl / Alt on the QuickCommandRow.
+/// Sticky-modifier lifecycle for Ctrl / Alt / Shift on the QuickCommandRow.
 /// Mirrors libghostty's `TerminalPublicStickyActivation` — that's the
 /// source of truth (per `UITerminalView`); we re-declare it locally so
 /// the row UI doesn't have to import GhosttyTerminal types.
 enum StickyState: Sendable { case inactive, armed, locked }
 
-enum ModifierKind: Sendable { case ctrl, alt }
+enum ModifierKind: Sendable { case ctrl, alt, shift }
 
 private extension StickyState {
     init(_ ghostty: TerminalPublicStickyActivation) {
@@ -25,8 +25,9 @@ private extension StickyState {
 private extension ModifierKind {
     var ghostty: TerminalPublicStickyModifier {
         switch self {
-        case .ctrl: return .ctrl
-        case .alt:  return .alt
+        case .ctrl:  return .ctrl
+        case .alt:   return .alt
+        case .shift: return .shift
         }
     }
 }
@@ -98,6 +99,11 @@ struct BottomInputBar: View {
     /// pay nothing. See `ASRBailGestureMonitor`.
     @State private var bailMonitor = ASRBailGestureMonitor()
 
+    /// Window-space frame of the mic button, fed to `bailMonitor` so a tap on
+    /// the mic toggles recording instead of being swallowed as a bail. See
+    /// `ASRBailGestureMonitor.excludedFrame`.
+    @State private var micButtonFrame: CGRect = .zero
+
     private let log = Logger(subsystem: "io.allsunday.motif", category: "BottomInputBar")
 
     /// Gate every outbound action on a live link: while disconnected the
@@ -137,6 +143,11 @@ struct BottomInputBar: View {
         return StickyState(tv.stickyActivation(for: .alt))
     }
 
+    private var shiftState: StickyState {
+        guard let tv = activeTerminal else { return .inactive }
+        return StickyState(tv.stickyActivation(for: .shift))
+    }
+
     var body: some View {
         // Hoisted out of the computed properties so SwiftUI's @Observable
         // tracker definitely sees the read during body evaluation. Without
@@ -152,6 +163,7 @@ struct BottomInputBar: View {
                 disabled: !canDispatch,
                 ctrlState: ctrlState,
                 altState: altState,
+                shiftState: shiftState,
                 onTap: { handleQuickTap($0) },
                 onToggleModifier: { toggleModifier($0) },
                 onEdit: { editingCommands = true }
@@ -168,7 +180,14 @@ struct BottomInputBar: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: asrError)
-        .background(.background)
+        // Bleed the bar's fill into the bottom safe area (home-indicator
+        // region) so it doesn't expose the parent's `MotifTheme.background`
+        // as a color seam below the composer.
+        .background {
+            Rectangle()
+                .fill(.background)
+                .ignoresSafeArea(edges: .bottom)
+        }
         .sheet(isPresented: $editingCommands) {
             QuickCommandEditor(
                 scope: appState.commands.effectiveScope(forRunning: runningCommand),
@@ -200,9 +219,10 @@ struct BottomInputBar: View {
             // current Ctrl/Alt, send transformed bytes to the active PTY,
             // and roll the buffer back. Multi-char inserts (paste, IME
             // commits) pass through unmodified.
-            let ctrl = ctrlState
-            let alt  = altState
-            if (ctrl != .inactive || alt != .inactive),
+            let ctrl  = ctrlState
+            let alt   = altState
+            let shift = shiftState
+            if (ctrl != .inactive || alt != .inactive || shift != .inactive),
                canDispatch,
                !newValue.contains("\n"),
                newValue != expectedBuffer,
@@ -212,7 +232,7 @@ struct BottomInputBar: View {
             {
                 buffer = oldValue
                 expectedBuffer = oldValue
-                sendModifiedCharacter(last, ctrlWas: ctrl, altWas: alt)
+                sendModifiedCharacter(last, ctrlWas: ctrl, altWas: alt, shiftWas: shift)
                 return
             }
             // Multi-line TextField turns Return into a literal "\n" rather
@@ -229,6 +249,14 @@ struct BottomInputBar: View {
             bailOutOfASR()
         }
         .onChange(of: focused) { _, newValue in
+            if newValue {
+                // Focusing the composer to type means the user wants to act on
+                // the live prompt — snap the terminal back to the latest output
+                // so they see where their input lands. The composer is a
+                // separate view, so typing never reaches the surface to
+                // auto-pin it; do it explicitly here.
+                activeTerminal?.scrollToBottom()
+            }
             // Focus left the composer (terminal took FR or all resigned)
             // = "I'm done dictating". Let the final transcript merge in.
             if isRecording && !newValue {
@@ -330,6 +358,7 @@ struct BottomInputBar: View {
         }
         .frame(width: 30, height: 28)
         .contentShape(Rectangle())
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { micButtonFrame = $0 }
         .disabled(!canDispatch)
         .accessibilityLabel(isRecording ? "Stop recording" : "Start recording")
     }
@@ -374,30 +403,32 @@ struct BottomInputBar: View {
         // Snapshot before we send: needed both for `applyModifiers` and
         // to know which armed states to consume afterwards. Locked states
         // are preserved across the consume.
-        let ctrl = ctrlState
-        let alt  = altState
+        let ctrl  = ctrlState
+        let alt   = altState
+        let shift = shiftState
         switch cmd.kind {
         case .paste:
             // Read clipboard at tap time; empty / non-string clipboards no-op.
             // Wrap in xterm bracketed-paste so fish/zsh treat it as a paste
             // (no autosuggest fight, no per-line history pollution).
             guard let s = UIPasteboard.general.string, !s.isEmpty else {
-                consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
+                consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
                 return
             }
             var data = Data([0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])           // ESC [ 200 ~
             data.append(Data(s.utf8))
             data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])   // ESC [ 201 ~
             Task { await motif.write(ptyID: id, data: data) }
-            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
+            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
         case .bytes where cmd.sendImmediately:
             let out = applyModifiers(
                 payload: cmd.payload,
-                ctrl: ctrl != .inactive,
-                alt:  alt  != .inactive
+                ctrl:  ctrl  != .inactive,
+                alt:   alt   != .inactive,
+                shift: shift != .inactive
             )
             Task { await motif.write(ptyID: id, data: out) }
-            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
+            consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
         case .bytes:
             // Insert decoded payload into the buffer. v1: append at end;
             // SwiftUI's TextField doesn't expose a stable cursor position
@@ -418,6 +449,8 @@ struct BottomInputBar: View {
             toggleModifier(.ctrl)
         case .alt:
             toggleModifier(.alt)
+        case .shift:
+            toggleModifier(.shift)
         case .cd:
             showingCd = true
         }
@@ -437,24 +470,25 @@ struct BottomInputBar: View {
     /// TextField composer's modifier interception. The same `applyModifiers`
     /// transform the QuickCommand byte path uses, then armed consume via
     /// libghostty's per-view state machine.
-    private func sendModifiedCharacter(_ char: Character, ctrlWas ctrl: StickyState, altWas alt: StickyState) {
+    private func sendModifiedCharacter(_ char: Character, ctrlWas ctrl: StickyState, altWas alt: StickyState, shiftWas shift: StickyState) {
         guard let id = activePtyID else { return }
         let payload = Data(String(char).utf8)
         let out = applyModifiers(
             payload: payload,
-            ctrl: ctrl != .inactive,
-            alt:  alt  != .inactive
+            ctrl:  ctrl  != .inactive,
+            alt:   alt   != .inactive,
+            shift: shift != .inactive
         )
         Task { await motif.write(ptyID: id, data: out) }
-        consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt)
+        consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
     }
 
     /// Consume armed modifiers in libghostty after a QuickCommand byte
     /// send. The public API only exposes `toggle` and `resetStickyModifiers`
     /// (no `consumeForNextKey`), so we reset all and re-toggle to put
     /// previously-locked states back. Has no effect when nothing was armed.
-    private func consumeArmedOnTerminal(ctrlWas ctrl: StickyState, altWas alt: StickyState) {
-        guard ctrl == .armed || alt == .armed else { return }
+    private func consumeArmedOnTerminal(ctrlWas ctrl: StickyState, altWas alt: StickyState, shiftWas shift: StickyState) {
+        guard ctrl == .armed || alt == .armed || shift == .armed else { return }
         guard let tv = activeTerminal else { return }
         tv.resetStickyModifiers()
         if ctrl == .locked {
@@ -466,19 +500,30 @@ struct BottomInputBar: View {
             tv.toggleStickyModifier(.alt)
             tv.toggleStickyModifier(.alt)
         }
+        if shift == .locked {
+            tv.toggleStickyModifier(.shift)
+            tv.toggleStickyModifier(.shift)
+        }
     }
 
-    /// Apply Ctrl / Alt modifiers to a QuickCommand payload. Handles the
-    /// common cases — ASCII letters & `[\]^_` for Ctrl, ESC-prefix for Alt,
-    /// xterm CSI modifier form (`ESC [ 1 ; mod X`) for arrows + Home/End,
-    /// and readline-style word-jump (`ESC b` / `ESC f`) for Alt-only +
-    /// Left/Right since bash/zsh bind those by default but ignore the CSI form.
-    /// Unrecognized payloads pass through; Alt-only still prepends ESC.
-    private func applyModifiers(payload: Data, ctrl: Bool, alt: Bool) -> Data {
-        guard ctrl || alt else { return payload }
+    /// Apply Ctrl / Alt / Shift modifiers to a QuickCommand payload. Handles
+    /// the common cases — ASCII letters & `[\]^_` for Ctrl, ESC-prefix for Alt,
+    /// back-tab (`ESC [ Z`) for Shift+Tab, xterm CSI modifier form
+    /// (`ESC [ 1 ; mod X`) for arrows + Home/End, and readline-style word-jump
+    /// (`ESC b` / `ESC f`) for Alt-only + Left/Right since bash/zsh bind those
+    /// by default but ignore the CSI form. Shift on a fixed printable byte is a
+    /// no-op (the payload already is the literal byte). Unrecognized payloads
+    /// pass through; Alt-only still prepends ESC.
+    private func applyModifiers(payload: Data, ctrl: Bool, alt: Bool, shift: Bool) -> Data {
+        guard ctrl || alt || shift else { return payload }
 
         if payload.count == 1 {
             var byte = payload[0]
+            // Shift+Tab → back-tab (ESC [ Z). Common in TUIs / readline for
+            // reverse completion cycling; plain Tab has no CSI modifier form.
+            if shift && !ctrl && byte == 0x09 {
+                return Data([0x1B, 0x5B, 0x5A])
+            }
             if ctrl {
                 switch byte {
                 case 0x61...0x7A, 0x41...0x5A, 0x5B...0x5F:
@@ -495,11 +540,12 @@ struct BottomInputBar: View {
             let finalByte = payload[2]
             let isModifiable = (0x41...0x44).contains(finalByte) || finalByte == 0x48 || finalByte == 0x46
             if isModifiable {
-                if alt && !ctrl {
+                if alt && !ctrl && !shift {
                     if finalByte == 0x44 { return Data([0x1B, 0x62]) }  // Alt+Left  → ESC b
                     if finalByte == 0x43 { return Data([0x1B, 0x66]) }  // Alt+Right → ESC f
                 }
-                let mod: UInt8 = 1 + (alt ? 2 : 0) + (ctrl ? 4 : 0)
+                // xterm modifier param: 1 + shift(1) + alt(2) + ctrl(4).
+                let mod: UInt8 = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0)
                 return Data([0x1B, 0x5B, 0x31, 0x3B, 0x30 + mod, finalByte])
             }
         }
@@ -562,7 +608,7 @@ struct BottomInputBar: View {
         // Arm the global "any-gesture = stop" net. The recognizers run with
         // cancelsTouchesInView=false so buttons / scroll views underneath
         // still receive their normal touches.
-        bailMonitor.install { bailOutOfASR() }
+        bailMonitor.install(excludedFrame: { micButtonFrame }) { bailOutOfASR() }
         a.start(
             onPartial: { text in
                 MainActor.assumeIsolated {
@@ -849,12 +895,19 @@ final class ASRBailGestureMonitor: NSObject, UIGestureRecognizerDelegate {
     private var recognizers: [UIGestureRecognizer] = []
     private weak var window: UIWindow?
     private var onBail: (() -> Void)?
+    /// Latest window-space rect of the mic button, queried per touch. Touches
+    /// inside it are the explicit stop control and must NOT trip the bail net
+    /// (otherwise a stop-tap bails on touch-down, the button then sees
+    /// `isRecording == false` on touch-up and restarts — recording never
+    /// actually stops). Provider closure so we always read the current frame.
+    private var excludedFrame: (() -> CGRect)?
 
-    func install(onBail: @escaping () -> Void) {
+    func install(excludedFrame: @escaping () -> CGRect, onBail: @escaping () -> Void) {
         guard window == nil else { return }
         guard let win = Self.activeKeyWindow() else { return }
         self.window = win
         self.onBail = onBail
+        self.excludedFrame = excludedFrame
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handle(_:)))
         let pan = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
@@ -881,6 +934,7 @@ final class ASRBailGestureMonitor: NSObject, UIGestureRecognizerDelegate {
         recognizers.removeAll()
         window = nil
         onBail = nil
+        excludedFrame = nil
     }
 
     @objc private func handle(_ rec: UIGestureRecognizer) {
@@ -897,6 +951,18 @@ final class ASRBailGestureMonitor: NSObject, UIGestureRecognizerDelegate {
     }
 
     // MARK: UIGestureRecognizerDelegate
+
+    func gestureRecognizer(
+        _ g: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        // Let the mic button's own tap through untouched — it's the explicit
+        // start/stop toggle, not a "user did something else" bail trigger.
+        guard let rect = excludedFrame?(), !rect.isEmpty else { return true }
+        // `location(in: nil)` is window coordinates, which line up with
+        // SwiftUI's `.global` space the frame was captured in.
+        return !rect.contains(touch.location(in: nil))
+    }
 
     func gestureRecognizer(
         _ g: UIGestureRecognizer,
@@ -961,14 +1027,15 @@ private struct QuickCommandRow: View {
     let disabled: Bool
     let ctrlState: StickyState
     let altState: StickyState
+    let shiftState: StickyState
     let onTap: (QuickCommand) -> Void
     let onToggleModifier: (ModifierKind) -> Void
     let onEdit: () -> Void
 
     var body: some View {
-        // Ctrl / Alt are ordinary list entries now (kind .ctrl / .alt),
-        // rendered as sticky-modifier buttons wherever the user placed them.
-        // Everything else is a normal quick-command capsule.
+        // Ctrl / Alt / Shift are ordinary list entries now (kind .ctrl /
+        // .alt / .shift), rendered as sticky-modifier buttons wherever the
+        // user placed them. Everything else is a normal quick-command capsule.
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 ForEach(commands) { cmd in
@@ -981,6 +1048,11 @@ private struct QuickCommandRow: View {
                     case .alt:
                         StickyModifierButton(label: cmd.label, symbol: cmd.symbol ?? "option", state: altState) {
                             onToggleModifier(.alt)
+                        }
+                        .disabled(disabled)
+                    case .shift:
+                        StickyModifierButton(label: cmd.label, symbol: cmd.symbol ?? "shift", state: shiftState) {
+                            onToggleModifier(.shift)
                         }
                         .disabled(disabled)
                     default:
@@ -1041,7 +1113,7 @@ private struct QuickCommandButtonStyle: ButtonStyle {
     }
 }
 
-/// Sticky Ctrl / Alt button. Inactive blends with the regular QuickCommand
+/// Sticky Ctrl / Alt / Shift button. Inactive blends with the regular QuickCommand
 /// strip; armed shows an accent stroke; locked is an accent fill with a
 /// small dot below to disambiguate "armed once" from "latched on".
 private struct StickyModifierButton: View {

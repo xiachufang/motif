@@ -151,6 +151,7 @@ struct TailscaleSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var authKey: String = ""
+    @State private var controlURL: String = ""
     @State private var openedAuthURL: URL?
     @State private var safariURL: AuthURL?
 
@@ -159,6 +160,21 @@ struct TailscaleSetupSheet: View {
             Form {
                 Section("Status") {
                     TailscaleStatusRow(state: appState.tailscale.state)
+                }
+
+                Section {
+                    TextField("https://controlplane.tailscale.com", text: $controlURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .onChange(of: controlURL) { _, new in
+                            appState.tailscale.setControlURL(new)
+                        }
+                } header: {
+                    Text("Control server")
+                } footer: {
+                    Text("Leave blank for Tailscale. Set your Headscale URL to self-host the control server.")
+                        .font(MotifTheme.Typography.caption2)
                 }
 
                 Section {
@@ -205,6 +221,7 @@ struct TailscaleSetupSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .onAppear { controlURL = appState.tailscale.controlURL }
             .onChange(of: appState.tailscale.state) { _, newState in
                 // Auto-pop the sign-in browser once tsnet emits a URL.
                 if case .needsAuth(let url) = newState, openedAuthURL != url {
@@ -240,6 +257,10 @@ struct TailscaleDetailsSheet: View {
             Form {
                 Section("Connection") {
                     TailscaleStatusRow(state: appState.tailscale.state)
+                    if !appState.tailscale.controlURL.isEmpty {
+                        LabeledContent("Control server", value: appState.tailscale.controlURL)
+                            .font(MotifTheme.Typography.footnote)
+                    }
                 }
 
                 Section {

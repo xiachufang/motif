@@ -32,7 +32,7 @@ packages:
     from: "1.2.4"
   libghostty-spm:
     url: https://github.com/gfreezy/libghostty-spm.git
-    from: "1.0.1779949513"
+    from: "1.0.1780060391"
 
 targets:
   Motif:

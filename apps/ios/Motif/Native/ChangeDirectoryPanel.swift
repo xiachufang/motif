@@ -97,6 +97,7 @@ struct ChangeDirectoryPanel: View {
             ForEach(Array(candidates.enumerated()), id: \.element.id) { idx, entry in
                 dirRow(name: entry.name, isFirst: idx == 0)
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(idx == 0 ? Color.accentColor.opacity(0.12) : Color.clear)
                     .contentShape(Rectangle())
                     .onTapGesture { drill(into: entry.name) }
             }

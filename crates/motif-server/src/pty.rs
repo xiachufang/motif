@@ -163,6 +163,13 @@ enum EmuCmd {
 pub struct SubscribeReply {
     pub start: u64,
     pub replay: Vec<u8>,
+    /// True when `replay` is a synthetic VT snapshot (cold/truncated/stale
+    /// cursor) rather than a raw ring-byte delta. The client renders both
+    /// identically, but must NOT advance its resume cursor by the snapshot's
+    /// length — `start` already equals the live-resume offset (`total`).
+    /// Counting snapshot bytes (as a delta would be) pushes the cursor past
+    /// `total`, so every subsequent resume looks "stale" and re-snapshots.
+    pub snapshot: bool,
     pub rx: broadcast::Receiver<Bytes>,
 }
 
@@ -743,22 +750,28 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
             EmuCmd::Subscribe { since, reply } => {
                 let total = ring.total();
                 let origin = ring.origin;
-                let (start, replay) = match since {
+                let (start, replay, snapshot) = match since {
                     // Warm incremental resume: raw byte delta `[s, total)`.
+                    // These ARE ring bytes, so the client counts them toward
+                    // its resume cursor (since → total).
                     Some(s) if s >= origin && s <= total => {
                         let skip = (s - origin) as usize;
-                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>())
+                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>(), false)
                     }
                     // Cold (None) / truncated (s<origin) / stale (s>total):
-                    // full VT snapshot; resume live from the current end.
+                    // full VT snapshot; resume live from the current end. The
+                    // snapshot is SYNTHETIC (not ring bytes) and `start` is
+                    // already `total`, so the client must NOT count it toward
+                    // its cursor — see the `snapshot` flag in the meta frame.
                     _ => {
                         let snap = term.as_ref().map(formatter_vt_snapshot).unwrap_or_default();
-                        (total, snap)
+                        (total, snap, true)
                     }
                 };
                 let _ = reply.send(SubscribeReply {
                     start,
                     replay,
+                    snapshot,
                     rx: output_tx.subscribe(),
                 });
             }

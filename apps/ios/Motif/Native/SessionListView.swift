@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import OSLog
 import TalkerCommonRouter
 
 /// Browse / create / attach to motif sessions. After attach, push the
@@ -370,6 +371,27 @@ struct SessionView: View {
     @State private var showingTree: Bool = false
     @State private var showingTermSettings: Bool = false
     @State private var quitConfirm: Bool = false
+    /// How far to slide the terminal up so its bottom stays visible above the
+    /// keyboard. The terminal *ignores* the keyboard safe area so its grid
+    /// (rows/cols) never changes when the keyboard shows — this manual offset
+    /// reveals the bottom of the fixed grid + the composer, clipping the top
+    /// off-screen. Pinning the grid is the whole point: a keyboard-driven
+    /// resize would SIGWINCH the PTY and force the remote TUI (e.g. Claude)
+    /// to re-layout on every keyboard toggle.
+    @State private var keyboardOverlap: CGFloat = 0
+
+    private static let kbLog = Logger(subsystem: "io.allsunday.motif", category: "Keyboard")
+
+    /// The key window's bottom safe-area inset (home-indicator height). Read
+    /// from the window so it reflects the true device inset regardless of how
+    /// nested SwiftUI safe-area handling reports it.
+    private static var windowBottomInset: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
+        let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first
+        return window?.safeAreaInsets.bottom ?? 0
+    }
+
     /// Project the server's view list into our heterogeneous tab enum.
     /// Order matches `motif.views`, which the server keeps consistent
     /// across clients via `view.opened` / `view.moved` events.
@@ -468,17 +490,53 @@ struct SessionView: View {
         VStack(spacing: 0) {
             tabBar
             Divider()
-            paneArea
-            if let error {
-                Text(error)
-                    .font(MotifTheme.Typography.caption)
-                    .foregroundStyle(MotifTheme.danger)
-                    .padding(MotifTheme.Spacing.sm)
+            // Sliding unit: the terminal + composer move up together when the
+            // keyboard shows. The whole screen opts out of SwiftUI's keyboard
+            // avoidance (`.ignoresSafeArea(.keyboard)` below) — that's what
+            // keeps the terminal's *frame* (and therefore the PTY grid) fixed,
+            // since avoidance is otherwise consumed at this VStack level and
+            // shrinks the pane no matter what a nested child ignores. We slide
+            // manually with `.offset`, a render-only translation that never
+            // changes the frame → no grid recompute → no SIGWINCH → no remote
+            // re-layout. The top rows clip under the tab bar while typing.
+            VStack(spacing: 0) {
+                paneArea
+                if let error {
+                    Text(error)
+                        .font(MotifTheme.Typography.caption)
+                        .foregroundStyle(MotifTheme.danger)
+                        .padding(MotifTheme.Spacing.sm)
+                }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                BottomInputBar(activePtyID: activePtyID)
+            }
+            .offset(y: -keyboardOverlap)
+            .clipped()
+            .animation(.easeOut(duration: 0.25), value: keyboardOverlap)
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(MotifTheme.background)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomInputBar(activePtyID: activePtyID)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            // iPhone keyboards dock at the bottom, so the end-frame height is
+            // its overlap with the window. The composer's `.safeAreaInset`
+            // already clears the home indicator, so we slide only by the part
+            // *above* that — subtracting the window's bottom inset. (Reading it
+            // off the window, not a GeometryReader nested inside a safe-area-
+            // respecting view, which reports 0 and over-slides by ~34pt.)
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let inset = Self.windowBottomInset
+            keyboardOverlap = max(0, frame.height - inset)
+            Self.kbLog.notice("[kb] willChangeFrame kbHeight=\(String(format: "%.0f", frame.height), privacy: .public) bottomInset=\(String(format: "%.0f", inset), privacy: .public) -> overlap=\(String(format: "%.0f", self.keyboardOverlap), privacy: .public)")
+            // Don't snap-to-bottom on every keyboard appearance: the terminal
+            // surface raises the keyboard too (it's first responder when
+            // focused), and focusing the terminal must NOT jump the viewport.
+            // Only focusing the composer scrolls to bottom — handled in
+            // BottomInputBar's `onChange(of: focused)`.
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            Self.kbLog.notice("[kb] willHide -> overlap=0")
+            keyboardOverlap = 0
         }
         .task {
             applyAppearance()

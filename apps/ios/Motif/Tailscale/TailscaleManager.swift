@@ -35,6 +35,17 @@ final class TailscaleManager {
     private(set) var state: State = .stopped
     private(set) var hostName: String
 
+    /// User-chosen control plane. Empty → Tailscale SaaS (`kDefaultControlURL`).
+    /// A tsnet node joins exactly one control plane, so this is an app-global
+    /// setting (not per-server). Persisted in UserDefaults; read at init and
+    /// applied on the next `start()`.
+    private(set) var controlURL: String
+    /// The control plane the live / in-flight node was started against
+    /// (resolved, never empty). Lets `start()` notice a plane change while a
+    /// node is already running and rebuild against the new one.
+    private var activeControlURL: String?
+    private static let controlURLDefaultsKey = "tailscaleControlURL"
+
     private let log = Logger(subsystem: "io.allsunday.motif", category: "Tailscale")
     private var node: TailscaleNode?
     private var apiClient: LocalAPIClient?
@@ -70,13 +81,33 @@ final class TailscaleManager {
 
     init(hostName: String = "motif-ios") {
         self.hostName = hostName
+        self.controlURL = UserDefaults.standard.string(forKey: Self.controlURLDefaultsKey) ?? ""
     }
 
-    /// Persist the state directory under Documents/tailscale so node keys
-    /// survive app restarts.
-    private static var statePath: String {
+    /// Update the control plane (empty → Tailscale SaaS). Persisted. Takes
+    /// effect on the next `start()`; if a node is already running on a
+    /// different plane, `start()` tears it down and rebuilds against this one.
+    func setControlURL(_ url: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != controlURL else { return }
+        controlURL = trimmed
+        UserDefaults.standard.set(trimmed, forKey: Self.controlURLDefaultsKey)
+        log.notice("control URL set (custom=\(trimmed.isEmpty ? "no" : "yes", privacy: .public))")
+    }
+
+    /// Persistent state directory for tsnet node keys (survives app restarts).
+    ///
+    /// The default control plane (Tailscale SaaS) keeps the legacy top-level
+    /// `Documents/tailscale` dir so existing installs resume from cached creds
+    /// on upgrade. A custom (Headscale) plane gets an isolated subdir keyed by
+    /// a stable hash of its URL — creds never collide with SaaS, and switching
+    /// back and forth doesn't force a re-login.
+    private static func statePath(for controlURL: String) -> String {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let dir = docs.appendingPathComponent("tailscale", isDirectory: true)
+        var dir = docs.appendingPathComponent("tailscale", isDirectory: true)
+        if controlURL != kDefaultControlURL {
+            dir.appendPathComponent("ctl-\(stableHash(controlURL))", isDirectory: true)
+        }
         if !FileManager.default.fileExists(atPath: dir.path) {
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -88,19 +119,41 @@ final class TailscaleManager {
         return dir.path
     }
 
+    /// Deterministic FNV-1a 64-bit hash (hex). `String.hashValue` is salted
+    /// per process, so it can't name a directory that must be stable across
+    /// launches — this can.
+    private static func stableHash(_ s: String) -> String {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in s.utf8 {
+            h = (h ^ UInt64(b)) &* 0x0000_0100_0000_01b3
+        }
+        return String(h, radix: 16)
+    }
+
     /// Start the node. Idempotent — calling while running is a no-op.
     /// `authKey` skips the interactive login round-trip; pass nil to go through
     /// web auth (we'll publish the BrowseToURL we observe on the IPN bus).
     func start(authKey: String? = nil) async {
-        if case .running = state { return }
-        if case .starting = state { return }
+        let control = controlURL.isEmpty ? kDefaultControlURL : controlURL
+        // Already up (or coming up): no-op if it's the same control plane;
+        // otherwise the user switched planes (e.g. SaaS → Headscale) — tear the
+        // old node down and rebuild against the new one below.
+        switch state {
+        case .running, .starting:
+            if activeControlURL == control { return }
+            log.notice("control plane changed; restarting node")
+            await teardown()
+        default:
+            break
+        }
+        activeControlURL = control
         state = .starting
 
         let config = Configuration(
             hostName: hostName,
-            path: Self.statePath,
+            path: Self.statePath(for: control),
             authKey: authKey,
-            controlURL: kDefaultControlURL,
+            controlURL: control,
             ephemeral: false
         )
 

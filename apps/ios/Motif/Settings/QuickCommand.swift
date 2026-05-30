@@ -9,12 +9,13 @@ import OSLog
 enum QuickCommandKind: String, Codable, Sendable {
     case bytes
     case paste
-    /// Sticky Ctrl / Alt. Carry no payload — tapping toggles libghostty's
-    /// per-view sticky-modifier state so the *next* key press carries the
-    /// modifier. Kept in the command list (rather than hardcoded) so they
-    /// can be reordered / removed / re-added like any other button.
+    /// Sticky Ctrl / Alt / Shift. Carry no payload — tapping toggles
+    /// libghostty's per-view sticky-modifier state so the *next* key press
+    /// carries the modifier. Kept in the command list (rather than hardcoded)
+    /// so they can be reordered / removed / re-added like any other button.
     case ctrl
     case alt
+    case shift
     /// Opens the directory picker; on confirm sends `cd '<path>'` to the
     /// active PTY. No payload — behavior lives in the BottomInputBar.
     case cd
@@ -106,6 +107,11 @@ extension QuickCommand {
     /// Sticky Alt modifier button.
     static func altModifier() -> QuickCommand {
         QuickCommand(label: "Alt", symbol: "option", payload: Data(), kind: .alt)
+    }
+
+    /// Sticky Shift modifier button.
+    static func shiftModifier() -> QuickCommand {
+        QuickCommand(label: "Shift", symbol: "shift", payload: Data(), kind: .shift)
     }
 
     /// Directory-picker button. Empty payload — tapping opens the cd sheet.
@@ -462,6 +468,7 @@ final class QuickCommandStore {
         var out: [QuickCommand] = []
         out.append(.ctrlModifier())
         out.append(.altModifier())
+        out.append(.shiftModifier())
         out.append(QuickCommandKey.esc.makeCommand())
         out.append(QuickCommandKey.tab.makeCommand())
         out.append(QuickCommandKey.up.makeCommand())

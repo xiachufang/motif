@@ -214,7 +214,11 @@ final class PtyTerminalRuntime {
     private func handleResize(_ viewport: InMemoryTerminalViewport) {
         let cols = viewport.columns
         let rows = viewport.rows
-        if cols == lastSize.cols, rows == lastSize.rows { return }
+        ptyLog.notice("[grid] handleResize cols=\(cols) rows=\(rows) (was \(self.lastSize.cols)x\(self.lastSize.rows)) viewBounds=\(String(format: "%.0fx%.0f", self.view.bounds.width, self.view.bounds.height), privacy: .public) pty=\(self.ptyID, privacy: .public)")
+        if cols == lastSize.cols, rows == lastSize.rows {
+            ptyLog.notice("[grid] handleResize no-op (unchanged) pty=\(self.ptyID, privacy: .public)")
+            return
+        }
         lastSize = (cols, rows)
         pendingResize?.cancel()
         let client = self.client
@@ -222,6 +226,7 @@ final class PtyTerminalRuntime {
         pendingResize = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(50))
             guard !Task.isCancelled else { return }
+            ptyLog.notice("[grid] -> client.resize cols=\(cols) rows=\(rows) pty=\(ptyID, privacy: .public)")
             await client.resize(ptyID: ptyID, cols: cols, rows: rows)
         }
     }
