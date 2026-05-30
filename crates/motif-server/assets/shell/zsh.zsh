@@ -17,9 +17,9 @@ __motif_hex() {
 
 __motif_emit_si() {
     if [[ $# -gt 1 ]]; then
-        printf '\e]777;%s;%s\a' "$1" "$2"
+        printf '\e]7777;%s;%s\a' "$1" "$2"
     else
-        printf '\e]777;%s\a' "$1"
+        printf '\e]7777;%s\a' "$1"
     fi
 }
 

@@ -17,7 +17,7 @@ function __motif_hex
 end
 
 function __motif_emit_si
-    printf '\e]777;%s\a' (string join ';' -- $argv)
+    printf '\e]7777;%s\a' (string join ';' -- $argv)
 end
 
 function __motif_json_escape

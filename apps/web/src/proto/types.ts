@@ -31,7 +31,7 @@ export interface ShellContext {
 /** Which segment of a block a chunk of bytes belongs to.
  *
  *  `passthrough` is for bytes that aren't part of any block — pre-bootstrap
- *  banners, between-block housekeeping (`777;D` to next `777;A`), or shells
+ *  banners, between-block housekeeping (`7777;D` to next `7777;A`), or shells
  *  with shell-integration disabled. `block_id` is always null for these.
  *  `prompt` / `command` / `output` correspond to shell-integration zones. */
 export type OutputScope = "passthrough" | "prompt" | "command" | "output";

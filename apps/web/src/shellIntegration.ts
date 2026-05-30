@@ -237,10 +237,10 @@ function parseOscBody(body: number[]): OscMarker | null {
     if (s === "133;B") return { kind: "osc133PromptEnd" };
     if (s === "133;C") return { kind: "osc133CmdStart", cmdlineUrl: null };
     if (s === "133;D") return { kind: "osc133CmdEnd", exit: null };
-    if (s === "777;A") return { kind: "osc133PromptStart" };
-    if (s === "777;B") return { kind: "osc133PromptEnd" };
-    if (s === "777;C") return { kind: "osc133CmdStart", cmdlineUrl: null };
-    if (s === "777;D") return { kind: "osc133CmdEnd", exit: null };
+    if (s === "7777;A") return { kind: "osc133PromptStart" };
+    if (s === "7777;B") return { kind: "osc133PromptEnd" };
+    if (s === "7777;C") return { kind: "osc133CmdStart", cmdlineUrl: null };
+    if (s === "7777;D") return { kind: "osc133CmdEnd", exit: null };
     return null;
   }
   const kind = s.slice(0, semi);
@@ -256,7 +256,7 @@ function parseOscBody(body: number[]): OscMarker | null {
       }
     }
     case "133":   return parse133(rest);
-    case "777":   return parse777(rest);
+    case "7777":  return parse7777(rest);
     case "7770": {
       const text = decodeHexString(rest);
       return text == null ? null : { kind: "osc7770Cmd", text };
@@ -289,7 +289,7 @@ function parse133(rest: string): OscMarker | null {
   }
 }
 
-function parse777(rest: string): OscMarker | null {
+function parse7777(rest: string): OscMarker | null {
   const semi = rest.indexOf(";");
   const head = semi < 0 ? rest : rest.slice(0, semi);
   const tail = semi < 0 ? null : rest.slice(semi + 1);

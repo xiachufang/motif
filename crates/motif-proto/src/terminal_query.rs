@@ -16,7 +16,7 @@
 //!
 //! * **Shell-integration markers** (`canonical_response()` returns `None`):
 //!   motif's bootstrap script emits a VS Code-style private protocol under
-//!   `OSC 777;A/B/C/D/E/P` (block boundaries, explicit command text, and
+//!   `OSC 7777;A/B/C/D/E/P` (block boundaries, explicit command text, and
 //!   properties such as cwd/context). The scanner also accepts the standard
 //!   `OSC 133` and `OSC 7` forms emitted natively by other shells (e.g.
 //!   fish 4.x) so their integration keeps working. Shell-integration markers
@@ -66,13 +66,13 @@ pub enum QueryKind {
     /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
     /// The host segment is ignored; path is URL-decoded.
     Osc7Cwd { path: std::path::PathBuf },
-    /// `ESC ] 777 ; A ST` — prompt about to render. Legacy `133;A` is
+    /// `ESC ] 7777 ;A ST` — prompt about to render. Legacy `133;A` is
     /// accepted as compatibility input.
     Osc133PromptStart,
-    /// `ESC ] 777 ; B ST` — prompt rendered, user input phase begins.
+    /// `ESC ] 7777 ;B ST` — prompt rendered, user input phase begins.
     /// Legacy `133;B` is accepted as compatibility input.
     Osc133PromptEnd,
-    /// `ESC ] 777 ; C ST` — command starting to execute. Legacy
+    /// `ESC ] 7777 ;C ST` — command starting to execute. Legacy
     /// `133;C[;cmdline_url=<percent>]` is also accepted; fish 4.x's native
     /// marker carries the literal commandline
     /// percent-encoded as `cmdline_url`; that's the *authoritative* cmd
@@ -85,16 +85,16 @@ pub enum QueryKind {
     /// `EscapeStringStyle::Url` (only `[A-Za-z0-9/.~_-]` left literal;
     /// everything else is `%HH`).
     Osc133CmdStart { cmdline_url: Option<String> },
-    /// `ESC ] 777 ; D [;<exit>] ST` — command finished, exit code is the
+    /// `ESC ] 7777 ;D [;<exit>] ST` — command finished, exit code is the
     /// `$?` shell observed on the *previous* command. `None` means the
     /// shell sent the terminator without a code. Legacy `133;D` is accepted
     /// as compatibility input.
     Osc133CmdEnd { exit: Option<i32> },
-    /// `ESC ] 777 ; E ; <hex_command> ST` — explicit command text, matching
+    /// `ESC ] 7777 ;E ; <hex_command> ST` — explicit command text, matching
     /// VS Code's `E` role but using Motif's private OSC code and existing
     /// hex payload encoding.
     Osc7770Cmd { text: String },
-    /// `ESC ] 777 ; P ; Context=<hex_json> ST` — precmd context JSON.
+    /// `ESC ] 7777 ;P ; Context=<hex_json> ST` — precmd context JSON.
     /// Successfully parsed into a typed `ShellContext`; if the inner JSON is
     /// malformed, the scanner drops the whole sequence to passthrough rather
     /// than surfacing a half-typed structure.
@@ -490,13 +490,19 @@ impl QueryScanner {
             };
         }
 
-        // OSC 777 ; <sub>[;<payload>...]  (Motif private shell integration)
+        // OSC 7777 ; <sub>[;<payload>...]  (Motif private shell integration)
+        //
+        // 7777 (not 777): OSC 777 is rxvt-unicode's extension namespace, which
+        // ghostty/libghostty-vt actively parses — feeding it our A/B/C/D/E/P
+        // sub-codes made every client + the server emulator log
+        // `unknown rxvt extension: <X>`. 7777 is unclaimed by ghostty's OSC
+        // table, so it's silently ignored (`.invalid`) by every renderer.
         //
         // Mirroring VS Code's private protocol shape:
         //   A/B/C/D = prompt/command lifecycle
         //   E       = explicit command line
         //   P       = properties, currently Cwd and Context
-        if let Some(rest) = body.strip_prefix(b"777;") {
+        if let Some(rest) = body.strip_prefix(b"7777;") {
             return parse_motif_private_osc(rest);
         }
 
@@ -879,20 +885,20 @@ mod tests {
     }
 
     #[test]
-    fn osc777_private_markers_match_vscode_style_subcommands() {
+    fn osc7777_private_markers_match_vscode_style_subcommands() {
         for (bytes, kind) in [
-            (&b"\x1b]777;A\x07"[..], QueryKind::Osc133PromptStart),
-            (&b"\x1b]777;B\x07"[..], QueryKind::Osc133PromptEnd),
+            (&b"\x1b]7777;A\x07"[..], QueryKind::Osc133PromptStart),
+            (&b"\x1b]7777;B\x07"[..], QueryKind::Osc133PromptEnd),
             (
-                &b"\x1b]777;C\x07"[..],
+                &b"\x1b]7777;C\x07"[..],
                 QueryKind::Osc133CmdStart { cmdline_url: None },
             ),
             (
-                &b"\x1b]777;D\x07"[..],
+                &b"\x1b]7777;D\x07"[..],
                 QueryKind::Osc133CmdEnd { exit: None },
             ),
             (
-                &b"\x1b]777;D;42\x1b\\"[..],
+                &b"\x1b]7777;D;42\x1b\\"[..],
                 QueryKind::Osc133CmdEnd { exit: Some(42) },
             ),
         ] {
@@ -903,8 +909,8 @@ mod tests {
     }
 
     #[test]
-    fn osc777_private_explicit_command_hex_decodes() {
-        let r = scan_one(b"\x1b]777;E;6563686f206869\x07");
+    fn osc7777_private_explicit_command_hex_decodes() {
+        let r = scan_one(b"\x1b]7777;E;6563686f206869\x07");
         match &r.queries[..] {
             [QueryKind::Osc7770Cmd { text }] => assert_eq!(text, "echo hi"),
             other => panic!("expected explicit command marker, got {other:?}"),
@@ -912,8 +918,8 @@ mod tests {
     }
 
     #[test]
-    fn osc777_private_properties_parse_cwd_and_context() {
-        let r = scan_one(b"\x1b]777;P;Cwd=file:///path/with%20space\x07");
+    fn osc7777_private_properties_parse_cwd_and_context() {
+        let r = scan_one(b"\x1b]7777;P;Cwd=file:///path/with%20space\x07");
         match &r.queries[..] {
             [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/path/with space"),
             other => panic!("expected cwd property, got {other:?}"),
@@ -921,7 +927,7 @@ mod tests {
 
         let json = r#"{"branch":"main","venv":"work"}"#;
         let hex: String = json.bytes().map(|b| format!("{b:02x}")).collect();
-        let mut bytes = b"\x1b]777;P;Context=".to_vec();
+        let mut bytes = b"\x1b]7777;P;Context=".to_vec();
         bytes.extend_from_slice(hex.as_bytes());
         bytes.push(0x07);
         let r = scan_one(&bytes);
@@ -990,12 +996,12 @@ mod tests {
     fn full_command_lifecycle_in_one_chunk() {
         // Realistic precmd → preexec → cmd → finish burst.
         // Hex of "ls -la" = 6c73202d6c61
-        let burst = b"\x1b]777;D;0\x07\
-                      \x1b]777;A\x07\
-                      \x1b]777;P;Cwd=file:///tmp\x07\
-                      \x1b]777;B\x07\
-                      \x1b]777;E;6c73202d6c61\x07\
-                      \x1b]777;C\x07";
+        let burst = b"\x1b]7777;D;0\x07\
+                      \x1b]7777;A\x07\
+                      \x1b]7777;P;Cwd=file:///tmp\x07\
+                      \x1b]7777;B\x07\
+                      \x1b]7777;E;6c73202d6c61\x07\
+                      \x1b]7777;C\x07";
         let r = scan_one(burst);
         assert!(
             r.passthrough.is_empty(),

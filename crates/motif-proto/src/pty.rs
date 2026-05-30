@@ -45,19 +45,19 @@ pub struct ShellContext {
 #[serde(rename_all = "lowercase")]
 pub enum OutputScope {
     /// Bytes that don't belong to any block segment: shell hasn't been
-    /// bootstrapped yet (pre-first-`777;A` welcome banner / MOTD), the
+    /// bootstrapped yet (pre-first-`7777;A` welcome banner / MOTD), the
     /// previous block has finished and the next prompt hasn't started
-    /// (between `777;D` and the next `777;A` — fish's window-title /
+    /// (between `7777;D` and the next `7777;A` — fish's window-title /
     /// mode-toggle housekeeping), or shell-integration is disabled
     /// entirely. `block_id` is always `null` for these. Frontend treats
     /// them as raw passthrough (FloatTerm only, no `BlockTerm` routing).
     Passthrough,
-    /// `777;A..777;B` — shell-rendered PS1.
+    /// `7777;A..7777;B` — shell-rendered PS1.
     Prompt,
-    /// `777;B..777;C` — user-typed command echo (syntax highlight,
+    /// `7777;B..7777;C` — user-typed command echo (syntax highlight,
     /// autosuggest, PS2 continuation).
     Command,
-    /// `777;C..777;D` — command stdout/stderr.
+    /// `7777;C..7777;D` — command stdout/stderr.
     Output,
 }
 
