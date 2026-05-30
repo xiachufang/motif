@@ -955,6 +955,37 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_roundtrip_is_faithful_with_trailing_blank_rows() {
+        // Tall content that scrolls, then cursor parked mid-screen with BLANK
+        // rows below it (the claude/TUI shape). If the snapshot trims trailing
+        // blank rows but still emits an absolute cursor, the active screen lands
+        // bottom-aligned instead of top-aligned → vertical drift. Detect it by
+        // round-tripping: feed the snapshot into a fresh emulator of the same
+        // size; a faithful snapshot reproduces the same state (same cursor, same
+        // re-snapshot bytes).
+        let orig = spawn_emu(20, 8);
+        for i in 0..20u32 {
+            feed(&orig, format!("line{i:02}\r\n").as_bytes());
+        }
+        feed(&orig, b"\x1b[3;5H\x1b[J"); // cursor row3 col5, erase to end of screen
+        let snap = subscribe(&orig, None).replay;
+
+        let echo = spawn_emu(20, 8);
+        feed(&echo, &snap);
+
+        assert_eq!(
+            answer_cpr(&echo),
+            answer_cpr(&orig),
+            "cursor drifted after replaying the snapshot"
+        );
+        assert_eq!(
+            subscribe(&echo, None).replay,
+            snap,
+            "re-snapshot differs → the snapshot is not a faithful reconstruction"
+        );
+    }
+
+    #[test]
     fn cpr_reports_real_cursor_position() {
         let tx = spawn_emu(80, 24);
         // CUP to row 5, col 10 (1-indexed), then query CPR. The emulator
