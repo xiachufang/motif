@@ -682,14 +682,22 @@ fn reader_loop(
 /// capability queries). Returns `None` if libghostty can't allocate it — the
 /// caller then degrades to byte-delta replay only (no cold-attach snapshot).
 fn new_emulator_terminal(cols: u16, rows: u16) -> Option<Terminal<'static, 'static>> {
-    let mut term = Terminal::new(TerminalOptions {
+    // Deliberately register NO effect handlers. libghostty-vt's `on_*`
+    // registration hands the C side a pointer to `self.vtable` (a field inside
+    // this `Terminal`) as the callback userdata — but we move the `Terminal`
+    // out of here, into `emulator_loop`'s local, and again on every resize
+    // rebuild (`term = fresh`). Each move relocates `vtable`, leaving the C
+    // side holding a dangling userdata pointer. A query that triggers a pty
+    // write (e.g. DECRQM `ESC[?…$p` → sendModeReport) would then dereference
+    // it inside `vt_write` and SIGBUS. We don't need the callback anyway: the
+    // reader's QueryScanner answers capability queries server-side, and
+    // unhandled pty-write effects are silently ignored (which is what we want).
+    Terminal::new(TerminalOptions {
         cols,
         rows,
         max_scrollback: MAX_SCROLLBACK,
     })
-    .ok()?;
-    let _ = term.on_pty_write(|_t, _d| {});
-    Some(term)
+    .ok()
 }
 
 fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
@@ -924,6 +932,21 @@ mod tests {
     fn cpr_on_fresh_terminal_is_home() {
         let tx = spawn_emu(80, 24);
         assert_eq!(answer_cpr(&tx), b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn decrqm_query_does_not_crash_emulator() {
+        // DECRQM (`ESC[?2026$p`, sync-output mode probe) drives libghostty's
+        // sendModeReport → pty-write effect. With an `on_pty_write` handler
+        // registered on a moved `Terminal`, that path dereferenced a dangling
+        // vtable userdata pointer and SIGBUS'd the emulator thread. We now
+        // register no handlers, so the report is silently ignored. Feeding it
+        // then getting a live subscribe reply proves the thread survived.
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"\x1b[?2026$p");
+        feed(&tx, b"hello");
+        let r = subscribe(&tx, None);
+        assert!(find(&r.replay, b"hello"));
     }
 
     #[test]
