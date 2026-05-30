@@ -175,6 +175,13 @@ struct SessionView: View {
         if let pty = motif.ptys.first(where: { ($0.alive ?? true) && $0.cols > 0 && $0.rows > 0 }) {
             return (pty.cols, pty.rows)
         }
+        // No existing PTY to borrow a size from — use the last settled grid
+        // (persisted across launches) so the new PTY is created at the device's
+        // real size and the server never has to column-shrink it. Only an
+        // absolute first-ever launch (empty cache) falls back to 80×24.
+        if let g = appState.terminals.lastSettledGrid {
+            return g
+        }
         return (80, 24)
     }
 

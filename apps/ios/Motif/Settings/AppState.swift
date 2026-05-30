@@ -122,6 +122,34 @@ final class TerminalRegistry {
         return runtime
     }
 
+    // MARK: - Settled-grid cache (for sizing pty.create)
+
+    /// The most recent settled terminal grid, persisted across launches.
+    /// A new PTY is created at this size so the server doesn't have to shrink it
+    /// from the default (80×24) down to the device's real grid — that column
+    /// shrink re-wraps full-width lines (e.g. zsh's `%` PROMPT_SP line), shifts
+    /// content down a row, and desyncs the cursor from its content (cold-replay
+    /// "typing lands on the wrong row"). Sizing create correctly avoids the
+    /// shrink entirely. Recorded by `PtyTerminalRuntime.handleResize` once the
+    /// grid settles; read by `SessionView.preferredPtySize`.
+    private static let settledColsKey = "motif.lastSettledCols"
+    private static let settledRowsKey = "motif.lastSettledRows"
+
+    var lastSettledGrid: (cols: UInt16, rows: UInt16)? {
+        let d = UserDefaults.standard
+        let c = d.integer(forKey: Self.settledColsKey)
+        let r = d.integer(forKey: Self.settledRowsKey)
+        guard c > 0, r > 0, c <= Int(UInt16.max), r <= Int(UInt16.max) else { return nil }
+        return (UInt16(c), UInt16(r))
+    }
+
+    func recordSettledGrid(cols: UInt16, rows: UInt16) {
+        guard cols > 0, rows > 0 else { return }
+        let d = UserDefaults.standard
+        d.set(Int(cols), forKey: Self.settledColsKey)
+        d.set(Int(rows), forKey: Self.settledRowsKey)
+    }
+
     // MARK: - Terminal appearance
 
     /// Current global terminal appearance, applied to each runtime's Ghostty

@@ -270,6 +270,10 @@ final class PtyTerminalRuntime {
             // it — release the first-open gate so the cold snapshot is generated
             // at (and fed into) this grid. See `gridSettled`.
             self?.markGridSettled()
+            // Cache this settled grid so the next pty.create is born at the
+            // device's real size — avoiding the 80×24→real column shrink that
+            // re-wraps wide lines and desyncs the cursor. See `recordSettledGrid`.
+            self?.terminals.recordSettledGrid(cols: cols, rows: rows)
         }
     }
 
@@ -295,11 +299,23 @@ final class PtyTerminalRuntime {
 
         let stream = client.outputs(for: ptyID)
 
-        // Fallback: if the surface never resizes (e.g. it's offscreen and never
-        // lays out), release the gate anyway so the terminal doesn't stay blank.
+        // Deadlock backstop only. The normal release is the first settled
+        // resize (handleResize → client.resize → markGridSettled), which for a
+        // visible tab fires within ~1s. We POLL rather than release on a fixed
+        // short timeout: a fixed timeout (the old 750ms) could fire *before* the
+        // surface even laid out — opening the cold stream into a still-default-
+        // sized terminal, so the server's grid-specific snapshot gets fed at the
+        // wrong grid and never recovers (the probabilistic cold-replay 错位).
+        // Polling lets an eventual-but-slow first layout always win; we only
+        // force-release if the grid genuinely never settles (~10s).
         if !gridSettled {
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(750))
+                for _ in 0..<100 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard let self else { return }
+                    if self.gridSettled { return }
+                }
+                ptyLog.notice("[grid] gate fallback force-released after ~10s (surface never settled) pty=\(self?.ptyID ?? "", privacy: .public)")
                 self?.markGridSettled()
             }
         }
