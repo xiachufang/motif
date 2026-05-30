@@ -126,19 +126,27 @@ struct QuickCommandRow: View {
 
     @ViewBuilder
     private func label(for cmd: QuickCommand) -> some View {
-        // Symbol-only when a glyph is set; fall back to the text label for
-        // commands without one (Esc, ^C, snippets, …).
-        if let symbol = cmd.symbol, !symbol.isEmpty {
-            Image(systemName: symbol)
-                .font(MotifTheme.Typography.callout)
-                .frame(height: qcContentHeight)
-                .accessibilityLabel(cmd.label)
-        } else {
-            Text(cmd.label)
-                .font(MotifTheme.Typography.callout.monospaced())
-                .lineLimit(1)
-                .frame(height: qcContentHeight)
+        // Baked-in modifiers render as a ⌃⌥⇧ prefix so a "Ctrl+Alt+Del"
+        // button reads as such at a glance, whether it's symbol- or text-based.
+        let glyphs = cmd.modifiers.glyphs
+        HStack(spacing: 2) {
+            if !glyphs.isEmpty {
+                Text(glyphs)
+                    .font(MotifTheme.Typography.callout.monospaced())
+            }
+            // Symbol-only when a glyph is set; fall back to the text label for
+            // commands without one (Esc, ^C, snippets, …).
+            if let symbol = cmd.symbol, !symbol.isEmpty {
+                Image(systemName: symbol)
+                    .font(MotifTheme.Typography.callout)
+            } else {
+                Text(cmd.label)
+                    .font(MotifTheme.Typography.callout.monospaced())
+                    .lineLimit(1)
+            }
         }
+        .frame(height: qcContentHeight)
+        .accessibilityLabel(glyphs.isEmpty ? cmd.label : "\(glyphs) \(cmd.label)")
     }
 }
 

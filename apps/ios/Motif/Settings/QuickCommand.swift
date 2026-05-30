@@ -21,6 +21,38 @@ enum QuickCommandKind: String, Codable, Sendable {
     case cd
 }
 
+/// Modifiers *baked into* a QuickCommand, applied on every tap regardless of
+/// the sticky Ctrl/Alt/Shift state. Lets a single button send e.g. Ctrl+Alt+Del
+/// in one tap. OR-ed with whatever sticky modifiers are armed at tap time.
+///
+/// Codable as `{ "rawValue": N }` (synthesized) — `decodeIfPresent` in
+/// QuickCommand's decoder defaults it to `[]` so pre-modifier JSON still loads.
+struct QuickCommandModifiers: OptionSet, Codable, Hashable, Sendable {
+    let rawValue: Int
+    static let ctrl  = QuickCommandModifiers(rawValue: 1 << 0)
+    static let alt   = QuickCommandModifiers(rawValue: 1 << 1)
+    static let shift = QuickCommandModifiers(rawValue: 1 << 2)
+
+    /// Compact ⌃⌥⇧ glyph string in canonical order; "" when empty.
+    var glyphs: String {
+        var s = ""
+        if contains(.ctrl)  { s += "⌃" }
+        if contains(.alt)   { s += "⌥" }
+        if contains(.shift) { s += "⇧" }
+        return s
+    }
+
+    /// Spelled-out names in canonical order, e.g. ["ctrl", "alt"]. Joined with
+    /// " + " they read as "ctrl + alt"; empty when no modifiers are set.
+    var names: [String] {
+        var out: [String] = []
+        if contains(.ctrl)  { out.append("ctrl") }
+        if contains(.alt)   { out.append("alt") }
+        if contains(.shift) { out.append("shift") }
+        return out
+    }
+}
+
 /// One configurable button in the BottomInputBar's quick-command row.
 ///
 /// `payload` is the raw byte sequence sent to the active PTY's stdin.
@@ -39,6 +71,9 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
     var payload: Data
     var sendImmediately: Bool
     var kind: QuickCommandKind
+    /// Modifiers applied to `payload` on every tap (in addition to any sticky
+    /// modifier armed at tap time). Empty for the vast majority of commands.
+    var modifiers: QuickCommandModifiers
 
     init(
         id: UUID = UUID(),
@@ -46,7 +81,8 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
         symbol: String? = nil,
         payload: Data,
         sendImmediately: Bool = true,
-        kind: QuickCommandKind = .bytes
+        kind: QuickCommandKind = .bytes,
+        modifiers: QuickCommandModifiers = []
     ) {
         self.id = id
         self.label = label
@@ -54,6 +90,7 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
         self.payload = payload
         self.sendImmediately = sendImmediately
         self.kind = kind
+        self.modifiers = modifiers
     }
 
     /// Copy with a fresh `id`. Used when seeding a per-program override
@@ -65,6 +102,7 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
         self.payload = other.payload
         self.sendImmediately = other.sendImmediately
         self.kind = other.kind
+        self.modifiers = other.modifiers
     }
 
     // Swift's synthesized Codable does not honor `var` defaults for missing
@@ -78,6 +116,7 @@ struct QuickCommand: Codable, Identifiable, Equatable, Hashable, Sendable {
         payload = try c.decode(Data.self, forKey: .payload)
         sendImmediately = try c.decode(Bool.self, forKey: .sendImmediately)
         kind = try c.decodeIfPresent(QuickCommandKind.self, forKey: .kind) ?? .bytes
+        modifiers = try c.decodeIfPresent(QuickCommandModifiers.self, forKey: .modifiers) ?? []
     }
 }
 
@@ -124,18 +163,22 @@ extension QuickCommand {
 /// to a fixed byte payload. Splitting them out as an enum lets the
 /// editor offer a typed picker rather than free-form payload entry.
 enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
-    case esc, tab, enter
+    case esc, tab, backTab, enter
     case up, down, left, right
     case home, end
     case pageUp, pageDown
+    case backspace, forwardDelete, space
+    case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
     case ctrlA, ctrlB, ctrlC, ctrlD, ctrlE, ctrlF, ctrlG, ctrlK, ctrlL
-    case ctrlN, ctrlP, ctrlR, ctrlT, ctrlU, ctrlW, ctrlY, ctrlZ
+    case ctrlN, ctrlO, ctrlP, ctrlR, ctrlS, ctrlT, ctrlU, ctrlW, ctrlX, ctrlY, ctrlZ
+    case ctrlQ, ctrlBackslash, ctrlSpace
     case pipe, slash, tilde, dash, underscore, backtick, singleQuote, doubleQuote
 
     var label: String {
         switch self {
         case .esc:         return "Esc"
         case .tab:         return "Tab"
+        case .backTab:     return "⇤"
         case .enter:       return "↵"
         case .up:          return "↑"
         case .down:        return "↓"
@@ -145,6 +188,21 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
         case .end:         return "End"
         case .pageUp:      return "PgUp"
         case .pageDown:    return "PgDn"
+        case .backspace:   return "⌫"
+        case .forwardDelete: return "⌦"
+        case .space:       return "Space"
+        case .f1:          return "F1"
+        case .f2:          return "F2"
+        case .f3:          return "F3"
+        case .f4:          return "F4"
+        case .f5:          return "F5"
+        case .f6:          return "F6"
+        case .f7:          return "F7"
+        case .f8:          return "F8"
+        case .f9:          return "F9"
+        case .f10:         return "F10"
+        case .f11:         return "F11"
+        case .f12:         return "F12"
         case .ctrlA:       return "^A"
         case .ctrlB:       return "^B"
         case .ctrlC:       return "^C"
@@ -155,13 +213,19 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
         case .ctrlK:       return "^K"
         case .ctrlL:       return "^L"
         case .ctrlN:       return "^N"
+        case .ctrlO:       return "^O"
         case .ctrlP:       return "^P"
         case .ctrlR:       return "^R"
+        case .ctrlS:       return "^S"
         case .ctrlT:       return "^T"
         case .ctrlU:       return "^U"
         case .ctrlW:       return "^W"
+        case .ctrlX:       return "^X"
         case .ctrlY:       return "^Y"
         case .ctrlZ:       return "^Z"
+        case .ctrlQ:       return "^Q"
+        case .ctrlBackslash: return "^\\"
+        case .ctrlSpace:   return "^Spc"
         case .pipe:        return "|"
         case .slash:       return "/"
         case .tilde:       return "~"
@@ -175,12 +239,15 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
 
     var symbol: String? {
         switch self {
-        case .up:    return "arrow.up"
-        case .down:  return "arrow.down"
-        case .left:  return "arrow.left"
-        case .right: return "arrow.right"
-        case .tab:   return "arrow.right.to.line"
-        default:     return nil
+        case .up:           return "arrow.up"
+        case .down:         return "arrow.down"
+        case .left:         return "arrow.left"
+        case .right:        return "arrow.right"
+        case .tab:          return "arrow.right.to.line"
+        case .backTab:      return "arrow.left.to.line"
+        case .backspace:    return "delete.left"
+        case .forwardDelete: return "delete.right"
+        default:            return nil
         }
     }
 
@@ -188,6 +255,7 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
         switch self {
         case .esc:         return [0x1B]
         case .tab:         return [0x09]
+        case .backTab:     return [0x1B, 0x5B, 0x5A]              // ESC [ Z (back-tab)
         case .enter:       return [0x0D]
         case .up:          return [0x1B, 0x5B, 0x41]
         case .down:        return [0x1B, 0x5B, 0x42]
@@ -197,6 +265,21 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
         case .end:         return [0x1B, 0x5B, 0x46]
         case .pageUp:      return [0x1B, 0x5B, 0x35, 0x7E]
         case .pageDown:    return [0x1B, 0x5B, 0x36, 0x7E]
+        case .backspace:   return [0x7F]                          // DEL — what xterm/ghostty send for Backspace
+        case .forwardDelete: return [0x1B, 0x5B, 0x33, 0x7E]      // ESC [ 3 ~
+        case .space:       return [0x20]
+        case .f1:          return [0x1B, 0x4F, 0x50]              // ESC O P
+        case .f2:          return [0x1B, 0x4F, 0x51]
+        case .f3:          return [0x1B, 0x4F, 0x52]
+        case .f4:          return [0x1B, 0x4F, 0x53]
+        case .f5:          return [0x1B, 0x5B, 0x31, 0x35, 0x7E]  // ESC [ 15 ~
+        case .f6:          return [0x1B, 0x5B, 0x31, 0x37, 0x7E]
+        case .f7:          return [0x1B, 0x5B, 0x31, 0x38, 0x7E]
+        case .f8:          return [0x1B, 0x5B, 0x31, 0x39, 0x7E]
+        case .f9:          return [0x1B, 0x5B, 0x32, 0x30, 0x7E]
+        case .f10:         return [0x1B, 0x5B, 0x32, 0x31, 0x7E]
+        case .f11:         return [0x1B, 0x5B, 0x32, 0x33, 0x7E]
+        case .f12:         return [0x1B, 0x5B, 0x32, 0x34, 0x7E]
         case .ctrlA:       return [0x01]
         case .ctrlB:       return [0x02]
         case .ctrlC:       return [0x03]
@@ -207,13 +290,19 @@ enum QuickCommandKey: String, CaseIterable, Codable, Sendable {
         case .ctrlK:       return [0x0B]
         case .ctrlL:       return [0x0C]
         case .ctrlN:       return [0x0E]
+        case .ctrlO:       return [0x0F]
         case .ctrlP:       return [0x10]
         case .ctrlR:       return [0x12]
+        case .ctrlS:       return [0x13]
         case .ctrlT:       return [0x14]
         case .ctrlU:       return [0x15]
         case .ctrlW:       return [0x17]
+        case .ctrlX:       return [0x18]
         case .ctrlY:       return [0x19]
         case .ctrlZ:       return [0x1A]
+        case .ctrlQ:       return [0x11]
+        case .ctrlBackslash: return [0x1C]                        // ^\ (SIGQUIT)
+        case .ctrlSpace:   return [0x00]                          // NUL (^Space)
         case .pipe:        return [0x7C]
         case .slash:       return [0x2F]
         case .tilde:       return [0x7E]
@@ -461,34 +550,39 @@ final class QuickCommandStore {
     }
 
     /// Seed list installed on first launch — the user can edit / remove
-    /// any of these. Order matches what most users tap most often:
-    /// movement first (esc / tab / arrows), then process control
-    /// (ctrl-c / ctrl-d), then a couple of staple shell snippets.
+    /// any of these. Ordered so the highest-value keys sit leftmost — the
+    /// first ~6 are visible without horizontal scrolling on a phone, so they
+    /// front-load what a terminal user reaches for most: Ctrl, Tab, Esc, and
+    /// the arrows. Lower-frequency modifiers (Alt / Shift) and shell symbols
+    /// follow; rarely-tapped symbols (_, `, ', ") are omitted from the seed
+    /// but remain one tap away in the add sheet.
     private static func seedDefaults() -> [QuickCommand] {
         var out: [QuickCommand] = []
+        // Prime real estate: the no-scroll set.
         out.append(.ctrlModifier())
-        out.append(.altModifier())
-        out.append(.shiftModifier())
-        out.append(QuickCommandKey.esc.makeCommand())
         out.append(QuickCommandKey.tab.makeCommand())
+        out.append(QuickCommandKey.esc.makeCommand())
         out.append(QuickCommandKey.up.makeCommand())
         out.append(QuickCommandKey.down.makeCommand())
         out.append(QuickCommandKey.left.makeCommand())
         out.append(QuickCommandKey.right.makeCommand())
         out.append(QuickCommandKey.ctrlC.makeCommand())
+        // High-value actions, promoted up front so they don't need scrolling.
+        out.append(.cd())
+        out.append(.text(label: "ls", "ls\n"))
+        out.append(.paste())
+        // Editing / process control.
+        out.append(QuickCommandKey.backspace.makeCommand())
         out.append(QuickCommandKey.ctrlD.makeCommand())
-        out.append(.text(label: "cd ..", "cd ..\n"))
-        out.append(.text(label: "ls",    "ls\n"))
+        // Secondary modifiers — available but out of the prime slots.
+        out.append(.altModifier())
+        out.append(.shiftModifier())
+        // Shell symbols that are awkward to reach on the soft keyboard.
         out.append(QuickCommandKey.pipe.makeCommand())
         out.append(QuickCommandKey.slash.makeCommand())
-        out.append(QuickCommandKey.tilde.makeCommand())
         out.append(QuickCommandKey.dash.makeCommand())
-        out.append(QuickCommandKey.underscore.makeCommand())
-        out.append(QuickCommandKey.backtick.makeCommand())
-        out.append(QuickCommandKey.singleQuote.makeCommand())
-        out.append(QuickCommandKey.doubleQuote.makeCommand())
-        out.append(.cd())
-        out.append(.paste())
+        out.append(QuickCommandKey.tilde.makeCommand())
+        out.append(.text(label: "cd ..", "cd ..\n"))
         return out
     }
 }

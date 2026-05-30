@@ -43,16 +43,11 @@ struct QuickCommandListEditor: View {
     let scope: QuickCommandScope
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
-    @State private var addType: AddType?
+    @State private var showingAdd = false
     @State private var editing: QuickCommand?
     @State private var showingRename = false
     @State private var renameTarget = ""
     @State private var showingMatches = false
-
-    private enum AddType: Identifiable {
-        case key, snippet
-        var id: String { self == .key ? "key" : "snippet" }
-    }
 
     private var items: [QuickCommand] { appState.commands.list(scope) }
 
@@ -117,11 +112,8 @@ struct QuickCommandListEditor: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        addType = .key
-                    } label: { Label("Special key", systemImage: "keyboard") }
-                    Button {
-                        addType = .snippet
-                    } label: { Label("Text snippet", systemImage: "text.cursor") }
+                        showingAdd = true
+                    } label: { Label("Key or text snippet", systemImage: "keyboard") }
                     Button {
                         appState.commands.add(.paste(), to: scope)
                     } label: { Label("Paste from clipboard", systemImage: "doc.on.clipboard") }
@@ -147,19 +139,11 @@ struct QuickCommandListEditor: View {
                 }
             }
         }
-        .sheet(item: $addType) { kind in
-            switch kind {
-            case .key:
-                SpecialKeyPicker { key in
-                    appState.commands.add(key.makeCommand(), to: scope)
-                    addType = nil
-                } onCancel: { addType = nil }
-            case .snippet:
-                QuickCommandRowEditor(initial: nil) { cmd in
-                    appState.commands.add(cmd, to: scope)
-                    addType = nil
-                } onCancel: { addType = nil }
-            }
+        .sheet(isPresented: $showingAdd) {
+            AddCommandSheet { cmd in
+                appState.commands.add(cmd, to: scope)
+                showingAdd = false
+            } onCancel: { showingAdd = false }
         }
         .sheet(item: $editing) { cmd in
             QuickCommandRowEditor(initial: cmd) { updated in
@@ -227,7 +211,10 @@ struct QuickCommandListEditor: View {
         case .paste:      return "clipboard"
         case .ctrl, .alt, .shift: return "sticky modifier"
         case .cd:         return "directory picker"
-        case .bytes:      return payloadPreview(cmd.payload)
+        case .bytes:
+            let preview = payloadPreview(cmd.payload)
+            let g = cmd.modifiers.glyphs
+            return g.isEmpty ? preview : "\(g) \(preview)"
         }
     }
 
@@ -257,55 +244,177 @@ struct QuickCommandListEditor: View {
 
 // MARK: - Special key picker
 
-private struct SpecialKeyPicker: View {
-    let onPick: (QuickCommandKey) -> Void
+/// Unified "add a command" sheet. A segmented control flips between two
+/// modes that used to be separate menu entries:
+///   • Key — tap any special key, function key, or printable character to add
+///     it immediately (one byte / escape sequence each).
+///   • Snippet — free-form label + payload + modifiers, committed via "Add".
+private struct AddCommandSheet: View {
+    let onAdd: (QuickCommand) -> Void
     let onCancel: () -> Void
+
+    private enum Mode: String, CaseIterable, Identifiable {
+        case key = "Key", snippet = "Snippet"
+        var id: String { rawValue }
+    }
+    @State private var mode: Mode = .key
+
+    // Snippet-mode fields.
+    @State private var label = ""
+    @State private var symbol = ""
+    @State private var payloadText = ""
+    @State private var sendImmediately = true
+    @State private var modCtrl = false
+    @State private var modAlt = false
+    @State private var modShift = false
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Movement") {
-                    keyButton(.esc)
-                    keyButton(.tab)
-                    keyButton(.enter)
-                    keyButton(.up)
-                    keyButton(.down)
-                    keyButton(.left)
-                    keyButton(.right)
-                    keyButton(.home)
-                    keyButton(.end)
-                    keyButton(.pageUp)
-                    keyButton(.pageDown)
+            VStack(spacing: 0) {
+                Picker("Type", selection: $mode) {
+                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Section("Process control") {
-                    keyButton(.ctrlC)
-                    keyButton(.ctrlD)
-                    keyButton(.ctrlZ)
-                }
-                Section("Editing") {
-                    keyButton(.ctrlA); keyButton(.ctrlE); keyButton(.ctrlK); keyButton(.ctrlU); keyButton(.ctrlW); keyButton(.ctrlY)
-                }
-                Section("Other") {
-                    keyButton(.ctrlL); keyButton(.ctrlR); keyButton(.ctrlT)
-                    keyButton(.ctrlB); keyButton(.ctrlF)
-                    keyButton(.ctrlG); keyButton(.ctrlN); keyButton(.ctrlP)
-                }
-                Section("Symbols") {
-                    keyButton(.pipe); keyButton(.slash); keyButton(.tilde); keyButton(.dash)
-                    keyButton(.underscore); keyButton(.backtick); keyButton(.singleQuote); keyButton(.doubleQuote)
+                .pickerStyle(.segmented)
+                .padding([.horizontal, .top])
+                .padding(.bottom, 4)
+
+                switch mode {
+                case .key:
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            modChip("Ctrl", isOn: $modCtrl)
+                            modChip("Alt", isOn: $modAlt)
+                            modChip("Shift", isOn: $modShift)
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+                        comboPreview
+                        KeyCatalog(modifiers: selectedModifiers, onPick: onAdd)
+                    }
+                case .snippet:
+                    Form {
+                        SnippetFields(
+                            label: $label, symbol: $symbol, payloadText: $payloadText,
+                            sendImmediately: $sendImmediately,
+                            modCtrl: $modCtrl, modAlt: $modAlt, modShift: $modShift
+                        )
+                    }
                 }
             }
-            .navigationTitle("Pick a key")
+            .navigationTitle("Add command")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { onCancel() } }
+                if mode == .snippet {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Add") { addSnippet() }
+                            .disabled(label.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
             }
         }
     }
 
+    /// Modifiers selected by the Ctrl/Alt/Shift toggles, shared by both modes.
+    private var selectedModifiers: QuickCommandModifiers {
+        var mods: QuickCommandModifiers = []
+        if modCtrl  { mods.insert(.ctrl) }
+        if modAlt   { mods.insert(.alt) }
+        if modShift { mods.insert(.shift) }
+        return mods
+    }
+
+    /// Compact toggle chip, sized to its label. Selected state is an accent
+    /// fill so it reads clearly as "armed"; unselected is the subtle strip fill.
     @ViewBuilder
-    private func keyButton(_ key: QuickCommandKey) -> some View {
-        Button { onPick(key) } label: {
+    private func modChip(_ title: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            Text(title)
+                .font(MotifTheme.Typography.caption.monospaced())
+                .padding(.horizontal, MotifTheme.Spacing.md)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule().fill(isOn.wrappedValue ? MotifTheme.accent : MotifTheme.Fill.subtle)
+                )
+                .foregroundStyle(isOn.wrappedValue ? MotifTheme.textOnAccent : MotifTheme.textPrimary)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Live "ctrl + alt + key" line showing exactly what tapping a key adds.
+    /// Hidden when no modifier is armed (the key is added bare).
+    @ViewBuilder
+    private var comboPreview: some View {
+        if !selectedModifiers.names.isEmpty {
+            Text((selectedModifiers.names + ["key"]).joined(separator: " + "))
+                .font(MotifTheme.Typography.caption.monospaced())
+                .foregroundStyle(MotifTheme.accent)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+        }
+    }
+
+    private func addSnippet() {
+        let trimmed = label.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        onAdd(QuickCommand(
+            label: trimmed,
+            symbol: symbol.trimmingCharacters(in: .whitespaces).isEmpty ? nil : symbol,
+            payload: qcEncode(payloadText),
+            sendImmediately: sendImmediately,
+            modifiers: selectedModifiers
+        ))
+    }
+}
+
+/// Exhaustive key catalog for the add sheet's "Key" mode: the curated
+/// `QuickCommandKey` set (movement / function / control / editing) plus every
+/// printable ASCII character as a one-tap button. Each tap builds a
+/// send-immediately QuickCommand and hands it back via `onPick`.
+private struct KeyCatalog: View {
+    /// Baked into every command this catalog produces (from the add sheet's
+    /// Ctrl/Alt/Shift toggles).
+    let modifiers: QuickCommandModifiers
+    let onPick: (QuickCommand) -> Void
+
+    var body: some View {
+        List {
+            // Only keys that a modifier + character can't reproduce. Ctrl-letter
+            // combos (^C, ^D, …) are intentionally absent — arm the Ctrl chip
+            // above and tap the letter instead.
+            Section("Movement") {
+                keyRow(.esc); keyRow(.tab); keyRow(.backTab); keyRow(.enter)
+                keyRow(.up); keyRow(.down); keyRow(.left); keyRow(.right)
+                keyRow(.home); keyRow(.end); keyRow(.pageUp); keyRow(.pageDown)
+            }
+            Section("Editing") {
+                keyRow(.backspace); keyRow(.forwardDelete)
+            }
+            Section("Function keys") {
+                keyRow(.f1); keyRow(.f2); keyRow(.f3); keyRow(.f4)
+                keyRow(.f5); keyRow(.f6); keyRow(.f7); keyRow(.f8)
+                keyRow(.f9); keyRow(.f10); keyRow(.f11); keyRow(.f12)
+            }
+            Section("Digits") { charGrid("0123456789") }
+            Section("Lowercase") { charGrid("abcdefghijklmnopqrstuvwxyz") }
+            Section("Uppercase") { charGrid("ABCDEFGHIJKLMNOPQRSTUVWXYZ") }
+            // Every remaining printable ASCII symbol (0x21–0x7E minus the
+            // alphanumerics above). Space has its own `.space` key.
+            Section("Symbols") { charGrid("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~") }
+        }
+    }
+
+    @ViewBuilder
+    private func keyRow(_ key: QuickCommandKey) -> some View {
+        Button {
+            var cmd = key.makeCommand()
+            cmd.modifiers = modifiers
+            onPick(cmd)
+        } label: {
             HStack {
                 if let s = key.symbol {
                     Image(systemName: s).frame(width: 22)
@@ -313,8 +422,76 @@ private struct SpecialKeyPicker: View {
                     Text(key.label).frame(width: 22, alignment: .leading)
                         .font(MotifTheme.Typography.caption.bold().monospaced())
                 }
-                Text(key.label).foregroundStyle(MotifTheme.textPrimary)
+                // Spell the full combo so the row reads as the command it adds,
+                // e.g. "ctrl + alt + Esc"; bare key label when no modifier.
+                Text((modifiers.names + [key.label]).joined(separator: " + "))
+                    .foregroundStyle(MotifTheme.textPrimary)
                 Spacer()
+            }
+        }
+    }
+
+    /// A wrapping grid of single-character buttons. Each sends that one
+    /// character verbatim (plus any selected modifiers) when tapped.
+    @ViewBuilder
+    private func charGrid(_ chars: String) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 42), spacing: 8)], spacing: 8) {
+            ForEach(Array(chars), id: \.self) { c in
+                Button {
+                    onPick(QuickCommand(label: String(c), payload: Data(String(c).utf8), sendImmediately: true, modifiers: modifiers))
+                } label: {
+                    Text(String(c))
+                        .font(MotifTheme.Typography.body.monospaced())
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// Shared label / symbol / modifiers / payload form sections, reused by both
+/// the add sheet's Snippet mode and the per-row editor. Embed inside a `Form`.
+private struct SnippetFields: View {
+    @Binding var label: String
+    @Binding var symbol: String
+    @Binding var payloadText: String
+    @Binding var sendImmediately: Bool
+    @Binding var modCtrl: Bool
+    @Binding var modAlt: Bool
+    @Binding var modShift: Bool
+
+    var body: some View {
+        Group {
+            Section("Display") {
+                TextField("Label", text: $label)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("SF Symbol (optional)", text: $symbol)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            Section {
+                Toggle("Ctrl", isOn: $modCtrl)
+                Toggle("Alt / Option", isOn: $modAlt)
+                Toggle("Shift", isOn: $modShift)
+            } header: {
+                Text("Modifiers")
+            } footer: {
+                Text("Applied to the payload on every tap, in addition to any sticky Ctrl/Alt/Shift armed at tap time. Ignored unless \"Send immediately\" is on.")
+            }
+            Section {
+                TextEditor(text: $payloadText)
+                    .font(MotifTheme.Typography.body.monospaced())
+                    .frame(minHeight: 80)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Toggle("Send immediately", isOn: $sendImmediately)
+            } header: {
+                Text("Payload")
+            } footer: {
+                Text("Sent verbatim to the active PTY when this button is tapped. \\n / \\t / \\e are interpreted as newline / tab / escape.")
             }
         }
     }
@@ -383,30 +560,18 @@ private struct QuickCommandRowEditor: View {
     @State private var symbol: String = ""
     @State private var payloadText: String = ""
     @State private var sendImmediately: Bool = true
+    @State private var modCtrl = false
+    @State private var modAlt = false
+    @State private var modShift = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Display") {
-                    TextField("Label", text: $label)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("SF Symbol (optional)", text: $symbol)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                Section {
-                    TextEditor(text: $payloadText)
-                        .font(MotifTheme.Typography.body.monospaced())
-                        .frame(minHeight: 80)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Toggle("Send immediately", isOn: $sendImmediately)
-                } header: {
-                    Text("Payload")
-                } footer: {
-                    Text("Sent verbatim to the active PTY when this button is tapped. \\n / \\t / \\e are interpreted as newline / tab / escape.")
-                }
+                SnippetFields(
+                    label: $label, symbol: $symbol, payloadText: $payloadText,
+                    sendImmediately: $sendImmediately,
+                    modCtrl: $modCtrl, modAlt: $modAlt, modShift: $modShift
+                )
             }
             .navigationTitle(initial == nil ? "New snippet" : "Edit")
             .navigationBarTitleDisplayMode(.inline)
@@ -421,8 +586,11 @@ private struct QuickCommandRowEditor: View {
                 if let initial {
                     label = initial.label
                     symbol = initial.symbol ?? ""
-                    payloadText = decode(initial.payload)
+                    payloadText = qcDecode(initial.payload)
                     sendImmediately = initial.sendImmediately
+                    modCtrl = initial.modifiers.contains(.ctrl)
+                    modAlt = initial.modifiers.contains(.alt)
+                    modShift = initial.modifiers.contains(.shift)
                 }
             }
         }
@@ -431,56 +599,60 @@ private struct QuickCommandRowEditor: View {
     private func submit() {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        let payload = encode(payloadText)
+        var modifiers: QuickCommandModifiers = []
+        if modCtrl  { modifiers.insert(.ctrl) }
+        if modAlt   { modifiers.insert(.alt) }
+        if modShift { modifiers.insert(.shift) }
         let cmd = QuickCommand(
             id: initial?.id ?? UUID(),
             label: trimmed,
             symbol: symbol.trimmingCharacters(in: .whitespaces).isEmpty ? nil : symbol,
-            payload: payload,
-            sendImmediately: sendImmediately
+            payload: qcEncode(payloadText),
+            sendImmediately: sendImmediately,
+            modifiers: modifiers
         )
         onSubmit(cmd)
     }
+}
 
-    /// Interpret the small set of escapes (\\n / \\t / \\r / \\e) so the
-    /// user can type "ls\\n" in the field and have it actually send
-    /// `ls<LF>`. Anything else passes through as raw UTF-8.
-    private func encode(_ s: String) -> Data {
-        var out: [UInt8] = []
-        var i = s.startIndex
-        while i < s.endIndex {
-            let c = s[i]
-            if c == "\\", let next = s.index(i, offsetBy: 1, limitedBy: s.endIndex), next < s.endIndex {
-                switch s[next] {
-                case "n":  out.append(0x0A); i = s.index(after: next); continue
-                case "t":  out.append(0x09); i = s.index(after: next); continue
-                case "r":  out.append(0x0D); i = s.index(after: next); continue
-                case "e":  out.append(0x1B); i = s.index(after: next); continue
-                case "\\": out.append(0x5C); i = s.index(after: next); continue
-                default: break
-                }
-            }
-            out.append(contentsOf: Array(String(c).utf8))
-            i = s.index(after: i)
-        }
-        return Data(out)
-    }
-
-    /// Round-trip back into the editor — show printable bytes verbatim,
-    /// escape control bytes that `encode` knows about, hex-escape the rest.
-    private func decode(_ data: Data) -> String {
-        var out = ""
-        for b in data {
-            switch b {
-            case 0x0A: out += "\\n"
-            case 0x09: out += "\\t"
-            case 0x0D: out += "\\r"
-            case 0x1B: out += "\\e"
-            case 0x5C: out += "\\\\"
-            case 0x20...0x7E: out.append(Character(UnicodeScalar(b)))
-            default:   out += String(format: "\\x%02x", b)
+/// Interpret the small set of escapes (\\n / \\t / \\r / \\e) so the user can
+/// type "ls\\n" in the field and have it actually send `ls<LF>`. Anything else
+/// passes through as raw UTF-8. Shared by the add sheet and the row editor.
+private func qcEncode(_ s: String) -> Data {
+    var out: [UInt8] = []
+    var i = s.startIndex
+    while i < s.endIndex {
+        let c = s[i]
+        if c == "\\", let next = s.index(i, offsetBy: 1, limitedBy: s.endIndex), next < s.endIndex {
+            switch s[next] {
+            case "n":  out.append(0x0A); i = s.index(after: next); continue
+            case "t":  out.append(0x09); i = s.index(after: next); continue
+            case "r":  out.append(0x0D); i = s.index(after: next); continue
+            case "e":  out.append(0x1B); i = s.index(after: next); continue
+            case "\\": out.append(0x5C); i = s.index(after: next); continue
+            default: break
             }
         }
-        return out
+        out.append(contentsOf: Array(String(c).utf8))
+        i = s.index(after: i)
     }
+    return Data(out)
+}
+
+/// Round-trip back into the editor — show printable bytes verbatim, escape
+/// control bytes `qcEncode` knows about, hex-escape the rest.
+private func qcDecode(_ data: Data) -> String {
+    var out = ""
+    for b in data {
+        switch b {
+        case 0x0A: out += "\\n"
+        case 0x09: out += "\\t"
+        case 0x0D: out += "\\r"
+        case 0x1B: out += "\\e"
+        case 0x5C: out += "\\\\"
+        case 0x20...0x7E: out.append(Character(UnicodeScalar(b)))
+        default:   out += String(format: "\\x%02x", b)
+        }
+    }
+    return out
 }

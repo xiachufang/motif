@@ -50,11 +50,14 @@ extension BottomInputBar {
             Task { await motif.write(ptyID: id, data: data) }
             consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
         case .bytes where cmd.sendImmediately:
+            // Baked-in modifiers (cmd.modifiers) OR the sticky armed/locked
+            // state, so a "Ctrl+Alt+Del" button fires its modifiers on every
+            // tap and still composes with anything the user armed first.
             let out = applyModifiers(
                 payload: cmd.payload,
-                ctrl:  ctrl  != .inactive,
-                alt:   alt   != .inactive,
-                shift: shift != .inactive
+                ctrl:  ctrl  != .inactive || cmd.modifiers.contains(.ctrl),
+                alt:   alt   != .inactive || cmd.modifiers.contains(.alt),
+                shift: shift != .inactive || cmd.modifiers.contains(.shift)
             )
             Task { await motif.write(ptyID: id, data: out) }
             consumeArmedOnTerminal(ctrlWas: ctrl, altWas: alt, shiftWas: shift)
