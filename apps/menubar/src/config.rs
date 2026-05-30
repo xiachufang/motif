@@ -31,6 +31,10 @@ pub struct TsConfig {
     /// Empty → interactive browser login (URL surfaced in the UI).
     #[serde(default)]
     pub authkey: String,
+    /// Empty → Tailscale SaaS (controlplane.tailscale.com). Set to a
+    /// Headscale base URL (e.g. https://hs.example.com) to self-host control.
+    #[serde(default)]
+    pub control_url: String,
 }
 
 impl Default for TsConfig {
@@ -39,6 +43,7 @@ impl Default for TsConfig {
             enabled: false,
             hostname: String::new(),
             authkey: String::new(),
+            control_url: String::new(),
         }
     }
 }
@@ -163,7 +168,10 @@ impl MenuConfig {
                 state_dir,
                 port: self.port,
                 authkey,
-                control_url: None,
+                control_url: {
+                    let u = self.tailscale.control_url.trim();
+                    (!u.is_empty()).then(|| u.to_string())
+                },
                 ephemeral: false,
             })
         } else {
@@ -174,8 +182,6 @@ impl MenuConfig {
             listen,
             tailscale,
             token,
-            cert: None,
-            key: None,
             allow_insecure_no_auth,
         })
     }

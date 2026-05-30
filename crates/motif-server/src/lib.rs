@@ -371,12 +371,6 @@ impl RunningServer {
 pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     cfg.validate()?;
 
-    if cfg.cert.is_some() {
-        anyhow::bail!(
-            "TLS support not yet implemented (M1 supports loopback plaintext only); see prd.md §7"
-        );
-    }
-
     let manager = session::manager::SessionManager::new();
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),

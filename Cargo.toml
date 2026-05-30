@@ -15,11 +15,11 @@ authors      = ["Motif contributors"]
 [workspace.dependencies]
 # Async runtime / IO
 tokio              = { version = "1.52", features = ["full"] }
-tokio-tungstenite  = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+# WS over caller-supplied plaintext streams (tailnet / loopback / proxied TLS).
+# motifd never terminates TLS itself, so no rustls/native-tls connector here —
+# that also keeps aws-lc-sys out of the build (its asm trips the macOS linker).
+tokio-tungstenite  = { version = "0.29", default-features = false, features = ["handshake"] }
 axum               = { version = "0.8", features = ["ws"] }
-tokio-rustls       = "0.26"
-rustls             = "0.23"
-rustls-pemfile     = "2"
 tokio-util         = "0.7"
 
 # Streams / pinning

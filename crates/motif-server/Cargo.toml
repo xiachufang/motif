@@ -17,9 +17,6 @@ motif-net          = { path = "../motif-net", features = ["tailscale-bundled"] }
 tokio              = { workspace = true }
 tokio-util         = { workspace = true }
 tokio-tungstenite  = { workspace = true }
-tokio-rustls       = { workspace = true }
-rustls             = { workspace = true }
-rustls-pemfile     = { workspace = true }
 axum               = { workspace = true }
 
 futures-util       = { workspace = true }

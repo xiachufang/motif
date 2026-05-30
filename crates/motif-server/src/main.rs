@@ -8,9 +8,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "motifd", version, about = "motif remote dev agent — server")]
 struct Args {
-    /// TCP listen address. Omit to run tailscale-only. Non-loopback requires
-    /// --cert/--key (M1 not yet wired). At least one of --listen /
-    /// --tailscale must be set.
+    /// TCP listen address. Omit to run tailscale-only. Non-loopback without
+    /// --token-file requires --insecure-no-auth. At least one of --listen /
+    /// --tailscale must be set. motifd does not terminate TLS — front it with
+    /// a proxy, or use the tailnet, if you need encryption.
     #[arg(long)]
     listen: Option<SocketAddr>,
 
@@ -62,14 +63,6 @@ struct Args {
     /// startup.
     #[arg(long)]
     insecure_no_auth: bool,
-
-    /// TLS cert (PEM). M1 does not yet implement TLS; rejected on startup if set.
-    #[arg(long)]
-    cert: Option<PathBuf>,
-
-    /// TLS private key (PEM). See --cert.
-    #[arg(long)]
-    key: Option<PathBuf>,
 
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
@@ -147,8 +140,6 @@ async fn run() -> anyhow::Result<()> {
         listen: args.listen,
         tailscale,
         token,
-        cert: args.cert,
-        key: args.key,
         allow_insecure_no_auth: args.insecure_no_auth,
     };
     motif_server::serve(cfg).await

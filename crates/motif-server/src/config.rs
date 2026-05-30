@@ -1,7 +1,6 @@
 //! Server-side configuration.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 pub use motif_net::TailscaleListenConfig;
 
@@ -17,8 +16,6 @@ pub struct ServerConfig {
     /// auth — only allowed when no public TCP surface is exposed (loopback or
     /// tailscale-only); see `validate`.
     pub token: Option<String>,
-    pub cert: Option<PathBuf>,
-    pub key: Option<PathBuf>,
     /// Explicit opt-out of the token-less non-loopback guard in `validate`.
     /// When set, a network-reachable TCP port without auth is permitted (with
     /// a loud startup warning). Off by default; operators must consciously
@@ -29,18 +26,15 @@ pub struct ServerConfig {
 impl ServerConfig {
     /// Reject misconfigurations:
     /// - At least one of `listen` / `tailscale` must be set.
-    /// - `--cert` and `--key` must come together.
     /// - Token-less mode is rejected on non-loopback TCP (no auth on a
     ///   network-reachable port is never what the operator means), unless
     ///   `allow_insecure_no_auth` is set as an explicit override.
     ///   Loopback or tailscale-only is fine: tailnet membership is the
     ///   auth boundary.
     ///
-    /// Note: we used to also require TLS for non-loopback TCP. That was
-    /// removed by user request — operators terminating TLS at an
-    /// upstream proxy (or running on a trusted segment) shouldn't be
-    /// forced to wire cert/key through motifd itself. The token guard
-    /// below remains as the actual auth boundary.
+    /// motifd itself never terminates TLS: operators expose it on loopback /
+    /// a trusted segment / the tailnet, and terminate TLS at an upstream
+    /// proxy if they need it. The token guard below is the auth boundary.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.listen.is_none() && self.tailscale.is_none() {
             anyhow::bail!("must specify at least one of --listen / --tailscale-hostname");
@@ -63,9 +57,6 @@ impl ServerConfig {
                     );
                 }
             }
-        }
-        if self.cert.is_some() != self.key.is_some() {
-            anyhow::bail!("--cert and --key must be specified together");
         }
         Ok(())
     }
