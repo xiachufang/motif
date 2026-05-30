@@ -106,6 +106,19 @@ final class PtyTerminalRuntime {
     private var streaming = false
     private var disposed = false
     private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
+    /// One-shot gate for the *first* `/pty` stream open. The libghostty surface
+    /// sizes its terminal core only as it lays out, churning through several
+    /// grids in a few ms (0×0 → 32×11 → 54×43 → 54×35). Opening the cold stream
+    /// during that churn lets the server's VT snapshot — which is laid out for
+    /// the final grid (width-exact box drawing, absolute cursor `ESC[r;cH`) —
+    /// get fed into a still-resizing terminal, where it wraps/scrolls wrong and
+    /// the later reflow can't undo it (hard `\r\n` wraps don't re-merge). So we
+    /// hold the first open until the grid settles AND that size has been sent to
+    /// the server (`client.resize`), guaranteeing the snapshot is generated at —
+    /// and fed into — the right grid. Only gates the first open; subsequent live
+    /// resizes flow through `handleResize` as usual.
+    private var gridSettled = false
+    private var gridSettledWaiters: [CheckedContinuation<Void, Never>] = []
     /// Trailing-edge debounce for `client.resize`. On first attach,
     /// libghostty's grid reflows three times in ~10ms: ghostty's own
     /// default size on surface create, then `synchronizeMetrics` from
@@ -248,12 +261,33 @@ final class PtyTerminalRuntime {
         pendingResize?.cancel()
         let client = self.client
         let ptyID = self.ptyID
-        pendingResize = Task { @MainActor in
+        pendingResize = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(50))
             guard !Task.isCancelled else { return }
             ptyLog.notice("[grid] -> client.resize cols=\(cols) rows=\(rows) pty=\(ptyID, privacy: .public)")
             await client.resize(ptyID: ptyID, cols: cols, rows: rows)
+            // The grid has settled to its final size AND the server now knows
+            // it — release the first-open gate so the cold snapshot is generated
+            // at (and fed into) this grid. See `gridSettled`.
+            self?.markGridSettled()
         }
+    }
+
+    /// Suspend until the surface's grid has settled for the first time (see
+    /// `gridSettled`); returns immediately once it has.
+    private func awaitGridSettled() async {
+        if gridSettled { return }
+        await withCheckedContinuation { gridSettledWaiters.append($0) }
+    }
+
+    /// Latch the grid as settled and wake anyone waiting on the first open.
+    /// Idempotent; later live resizes don't re-gate.
+    private func markGridSettled() {
+        guard !gridSettled else { return }
+        gridSettled = true
+        let waiters = gridSettledWaiters
+        gridSettledWaiters = []
+        for w in waiters { w.resume() }
     }
 
     private func startPump() {
@@ -261,8 +295,21 @@ final class PtyTerminalRuntime {
 
         let stream = client.outputs(for: ptyID)
 
+        // Fallback: if the surface never resizes (e.g. it's offscreen and never
+        // lays out), release the gate anyway so the terminal doesn't stay blank.
+        if !gridSettled {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(750))
+                self?.markGridSettled()
+            }
+        }
+
         pumpTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard !Task.isCancelled else { return }
+            // Hold the first open until the grid has settled (see `gridSettled`).
+            // No-op once settled, so warm reactivate / tab re-switch is instant.
+            await self.awaitGridSettled()
             guard !Task.isCancelled else { return }
             await client.activatePtyStream(ptyID: ptyID)
             guard !Task.isCancelled else { return }
