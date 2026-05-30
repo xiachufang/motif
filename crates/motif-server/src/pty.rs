@@ -33,7 +33,7 @@ use libghostty_vt::{Terminal, TerminalOptions};
 use motif_proto::common::{ClientId, PtyId, UnixMs};
 use motif_proto::event::Event;
 use motif_proto::pty::{PtyCreateParams, PtyInfo};
-use motif_proto::terminal_query::{QueryScanner, ScanItem};
+use motif_proto::terminal_query::{QueryKind, QueryScanner, ScanItem};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::{broadcast, oneshot};
@@ -141,6 +141,13 @@ enum EmuCmd {
         since: Option<u64>,
         reply: oneshot::Sender<SubscribeReply>,
     },
+    /// CPR (`ESC [ 6 n`) answer. Read the headless terminal's real cursor
+    /// position and reply with `ESC [ row ; col R`. Routed through this
+    /// ordered channel so it's processed *after* every preceding `Feed`,
+    /// i.e. the cursor reflects exactly the bytes seen before the query.
+    AnswerCpr {
+        reply: oneshot::Sender<Vec<u8>>,
+    },
 }
 
 /// Reply to [`EmuCmd::Subscribe`]. The client adopts `start` as its byte
@@ -215,6 +222,25 @@ impl Pty {
         let mut w = self.writer.lock();
         w.write_all(data)?;
         w.flush()
+    }
+
+    /// CPR (`ESC [ 6 n`) response bytes, answered from the headless emulator's
+    /// real cursor position rather than a fixed sentinel. Synchronously asks
+    /// the emulator thread (ordered behind every prior `Feed`, so the cursor
+    /// is as of the bytes seen before this query). Falls back to the static
+    /// `ESC [ 1 ; 1 R` if the emulator thread is gone or doesn't reply — same
+    /// behaviour as before this fix.
+    fn cpr_response(&self) -> Vec<u8> {
+        let fallback = || {
+            QueryKind::Cpr
+                .canonical_response()
+                .unwrap_or_else(|| b"\x1b[1;1R".to_vec())
+        };
+        let (tx, rx) = oneshot::channel();
+        if self.emu_tx.send(EmuCmd::AnswerCpr { reply: tx }).is_err() {
+            return fallback();
+        }
+        rx.blocking_recv().unwrap_or_else(|_| fallback())
     }
 
     /// Returns Some(actually-applied size) if it changed.
@@ -566,6 +592,16 @@ fn reader_loop(
                                 // /pty/<id> stream. Pass the raw bytes
                                 // through so client-side parsers see them.
                                 pty.feed(&raw);
+                            } else if matches!(kind, QueryKind::Cpr) {
+                                // Cursor Position Report must reflect the real
+                                // cursor, not a fixed sentinel: full-screen TUIs
+                                // (claude/Ink) use CPR for cursor tracking and
+                                // width probing, so a constant 1;1 mangles their
+                                // layout. Answer from the headless emulator's
+                                // live position (ordered behind the bytes fed
+                                // above). Bytes stay server-side, same as the
+                                // other capability queries.
+                                let _ = pty.write_bytes(&pty.cpr_response());
                             } else {
                                 // Capability query — write canonical or
                                 // client-palette response back to the
@@ -718,6 +754,21 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                     rx: output_tx.subscribe(),
                 });
             }
+            EmuCmd::AnswerCpr { reply } => {
+                // CPR is 1-indexed active-area coords; cursor_x/cursor_y are
+                // 0-indexed (same convention the snapshot postlude uses to
+                // re-issue `ESC[H`). Fall back to home if the terminal failed
+                // to build or the C API errors.
+                let bytes = match term.as_ref() {
+                    Some(t) => {
+                        let cx = t.cursor_x().unwrap_or(0);
+                        let cy = t.cursor_y().unwrap_or(0);
+                        format!("\x1b[{};{}R", cy + 1, cx + 1).into_bytes()
+                    }
+                    None => b"\x1b[1;1R".to_vec(),
+                };
+                let _ = reply.send(bytes);
+            }
         }
     }
 }
@@ -849,6 +900,30 @@ mod tests {
 
     fn find(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Blocking CPR query for tests. Ordered behind every prior Feed, so the
+    /// reply reflects the cursor as of the bytes fed before this call.
+    fn answer_cpr(tx: &SyncSender<EmuCmd>) -> Vec<u8> {
+        let (rtx, rrx) = oneshot::channel();
+        tx.send(EmuCmd::AnswerCpr { reply: rtx }).unwrap();
+        rrx.blocking_recv().unwrap()
+    }
+
+    #[test]
+    fn cpr_reports_real_cursor_position() {
+        let tx = spawn_emu(80, 24);
+        // CUP to row 5, col 10 (1-indexed), then query CPR. The emulator
+        // tracks the cursor, so the reply must echo that position — not the
+        // old fixed 1;1 sentinel.
+        feed(&tx, b"\x1b[5;10H");
+        assert_eq!(answer_cpr(&tx), b"\x1b[5;10R");
+    }
+
+    #[test]
+    fn cpr_on_fresh_terminal_is_home() {
+        let tx = spawn_emu(80, 24);
+        assert_eq!(answer_cpr(&tx), b"\x1b[1;1R");
     }
 
     #[test]

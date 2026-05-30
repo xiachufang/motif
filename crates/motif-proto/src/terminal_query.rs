@@ -112,9 +112,12 @@ impl QueryKind {
             Self::Da1 => b"\x1b[?6c".to_vec(),
             Self::Da2 => b"\x1b[>0;0;0c".to_vec(),
             Self::Dsr5 => b"\x1b[0n".to_vec(),
-            // We don't track screen cursor position server-side; (1,1) is
-            // a sentinel that callers (starship etc.) treat as "the
-            // terminal answered, move on".
+            // Fallback only. The real CPR answer is produced in motif-server's
+            // emulator thread from the live cursor position (see
+            // `Pty::cpr_response`) — full-screen TUIs (claude/Ink) use CPR for
+            // cursor tracking and width probing, so a fixed sentinel mangles
+            // their layout. This (1,1) is used only when the emulator is
+            // unavailable, or by consumers (e.g. tests) without an emulator.
             Self::Cpr => b"\x1b[1;1R".to_vec(),
             // Match the dark theme used by the web UI's xterm.js so prompt
             // frameworks pick a colour scheme consistent with the visible
