@@ -737,7 +737,19 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
     // only the cold-attach VT snapshot degrades (to empty).
     let mut term = new_emulator_terminal(cols, rows);
 
-    while let Ok(cmd) = rx.recv() {
+    // Carry-over slot for one command pulled off the channel during resize
+    // coalescing (see the `Resize` arm). std's mpsc can't un-receive, so the
+    // non-`Resize` command that ends a coalesced burst is stashed here and
+    // processed next instead of blocking on `recv`.
+    let mut pending: Option<EmuCmd> = None;
+    loop {
+        let cmd = match pending.take() {
+            Some(c) => c,
+            None => match rx.recv() {
+                Ok(c) => c,
+                Err(_) => break,
+            },
+        };
         match cmd {
             EmuCmd::Feed(bytes) => {
                 if let Some(t) = term.as_mut() {
@@ -746,7 +758,30 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                 ring.append(&bytes);
                 let _ = output_tx.send(bytes);
             }
-            EmuCmd::Resize { cols, rows } => {
+            EmuCmd::Resize { mut cols, mut rows } => {
+                // Coalesce a burst of resizes. A web client dragging the window
+                // edge emits a `Resize` per character-cell the grid crosses;
+                // each *column* change below rebuilds the terminal and replays
+                // the whole ring (up to 2 MB), so an un-collapsed burst pins
+                // this thread and — because `Feed` shares this bounded channel —
+                // back-pressures the PTY reader into a stall. Drain `Resize`
+                // commands already queued behind this one, keeping only the last
+                // target, so a drag does a single rebuild at the final size. The
+                // first non-`Resize` we peek is stashed in `pending` (we can't
+                // un-receive it) and handled next, preserving the ordering
+                // `Feed`/`Subscribe`/`AnswerCpr` depend on.
+                while let Ok(next) = rx.try_recv() {
+                    match next {
+                        EmuCmd::Resize { cols: c, rows: r } => {
+                            cols = c;
+                            rows = r;
+                        }
+                        other => {
+                            pending = Some(other);
+                            break;
+                        }
+                    }
+                }
                 if cols == cur_cols {
                     // Rows-only change: ghostty's row resize is safe.
                     if let Some(t) = term.as_mut() {
@@ -834,6 +869,9 @@ fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
             format: Format::Vt,
             trim: false,
             unwrap: false,
+            // None = format the whole screen + scrollback (the old behavior
+            // before libghostty-vt added the selection-restriction option).
+            selection: None,
         },
     ) {
         Ok(mut f) => {
@@ -1133,5 +1171,33 @@ mod tests {
             find(&r.replay, b"scrollback line 0"),
             "snapshot should contain the oldest scrollback line"
         );
+    }
+
+    #[test]
+    fn burst_resizes_coalesce_to_last_without_dropping_commands() {
+        // A drag emits many `Resize`s back-to-back; the emulator coalesces a
+        // queued burst to its last target (one rebuild) and must NOT drop the
+        // non-`Resize` command that ends the burst. Queue several resizes then
+        // a Feed, all without yielding, so they're all sitting in the channel
+        // when the emulator wakes. The final width must be the last resize's,
+        // and the trailing Feed must survive into the snapshot.
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"before-resize\r\n");
+        // All sent before the emulator can drain them → one coalesced burst.
+        for w in [70u16, 60, 50, 40] {
+            tx.send(EmuCmd::Resize { cols: w, rows: 24 }).unwrap();
+        }
+        feed(&tx, b"after-resize\r\n");
+
+        // `subscribe` is ordered behind everything above, so by the time it
+        // replies the burst has been coalesced and the trailing feed applied.
+        let r = subscribe(&tx, None);
+        // The post-burst Feed wasn't swallowed by coalescing.
+        assert!(
+            find(&r.replay, b"after-resize"),
+            "the command ending a coalesced resize burst was dropped"
+        );
+        // Content from before the burst survived the single rebuild+replay.
+        assert!(find(&r.replay, b"before-resize"));
     }
 }
