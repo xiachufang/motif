@@ -156,7 +156,10 @@ impl Drop for PtyStream {
 /// trailing buffer before tearing down per-PTY state.
 enum PtyByteFrame {
     Bytes(PtyId, Bytes),
-    Closed(PtyId, Option<CloseReason>),
+    /// The `/pty/<id>` WS closed. Carries why (for the reconnect decision)
+    /// and the last absolute resume cursor (`resume_cursor()`), so a warm
+    /// reconnect can pass it back as `?since=`.
+    Closed(PtyId, Option<CloseReason>, Option<u64>),
 }
 
 /// Spawn the per-PTY forwarder that drains `PtyClient.outputs` into the
@@ -181,7 +184,9 @@ fn spawn_pty_stream(
                 return;
             }
         }
-        let _ = tx.send(PtyByteFrame::Closed(pty_id_for_task, pty.close_reason()));
+        let reason = pty.close_reason();
+        let cursor = pty.resume_cursor();
+        let _ = tx.send(PtyByteFrame::Closed(pty_id_for_task, reason, cursor));
     });
     PtyStream {
         stdin,
@@ -333,6 +338,43 @@ async fn open_and_register_pty(
     Ok(())
 }
 
+/// Re-open a `/pty/<id>` WS whose previous connection dropped. `since` is the
+/// resume offset: `Some(cursor)` warm-resumes the exact byte delta we missed;
+/// `None` reconnects cold (fresh VT snapshot) and first resets the local
+/// `PtyView` so the snapshot's scrollback doesn't stack on the stale screen.
+/// A failed reconnect just leaves the PTY without a stream (surfaced in the
+/// status line) — it does not reschedule, so the loop can't spin.
+async fn reconnect_pty(
+    state: &mut AppState,
+    client: &Client,
+    pty_id: PtyId,
+    since: Option<u64>,
+) {
+    if since.is_none() {
+        if let Some(view) = state.pty_views.get(&pty_id) {
+            let (rows, cols) = view.current_size();
+            state.pty_views.insert(pty_id.clone(), PtyView::new(rows, cols));
+        }
+    }
+    // `open_pty` takes an absolute offset; 0 == tail (server treats it as
+    // below the ring origin and serves a snapshot), which is exactly our
+    // cold case.
+    let pty = match client.open_pty(pty_id.as_str(), since.unwrap_or(0)).await {
+        Ok(p) => p,
+        Err(e) => {
+            state.status = format!("reconnect /pty/{pty_id}: {e}");
+            return;
+        }
+    };
+    let initial_cwd = state.pty_cwds.get(&pty_id).cloned();
+    let stream = spawn_pty_stream(pty_id.clone(), pty, initial_cwd, state.pty_byte_tx.clone());
+    state.pty_streams.insert(pty_id.clone(), stream);
+    state.status = match since {
+        Some(c) => format!("/pty/{pty_id} reconnected (resumed @ {c})"),
+        None => format!("/pty/{pty_id} reconnected (fresh snapshot)"),
+    };
+}
+
 async fn main_loop(
     term: &mut Terminal<TermBackend>,
     client: &mut Client,
@@ -380,16 +422,48 @@ async fn main_loop(
         for _ in 0..64 {
             match pty_byte_rx.try_recv() {
                 Ok(PtyByteFrame::Bytes(pid, bytes)) => apply_pty_bytes(state, pid, bytes),
-                Ok(PtyByteFrame::Closed(pid, _reason)) => {
-                    // `/pty/<id>` WS closed (server-side hangup, lag,
-                    // 4011/4012). Drop our per-PTY state; the matching
-                    // `pty.exited` event will catch up on its own
-                    // schedule and clean up `pty_views`/`pty_blocks`.
+                Ok(PtyByteFrame::Closed(pid, reason, cursor)) => {
+                    // `/pty/<id>` WS closed. Drop the dead stream, then decide
+                    // whether to reconnect based on why it closed:
+                    //
+                    //   Normal / None — PTY exited or session detached. Don't
+                    //     reconnect; the matching `pty.exited` event cleans up
+                    //     `pty_views`/`pty_blocks` on its own schedule.
+                    //   Transport — network blip, PTY still alive server-side.
+                    //     Warm-resume from our last cursor (`?since=<cursor>`)
+                    //     so we pick up exactly the bytes we missed.
+                    //   HistoryTruncated (4011) / StaleCursor (4012) — the
+                    //     server says our cursor is invalid. Reconnect cold
+                    //     (no `since=`) for a fresh VT snapshot; reset the
+                    //     local screen first so it doesn't double scrollback.
+                    //
+                    // Each close schedules at most one reconnect, and a failed
+                    // reconnect doesn't reschedule — so a dead server can't
+                    // spin us in a tight loop.
                     state.pty_streams.remove(&pid);
+                    match reason {
+                        None | Some(CloseReason::Normal) => {}
+                        Some(CloseReason::Transport) => {
+                            state.pending_pty_reconnects.push((pid, cursor));
+                        }
+                        Some(CloseReason::HistoryTruncated)
+                        | Some(CloseReason::StaleCursor) => {
+                            state.pending_pty_reconnects.push((pid, None));
+                        }
+                    }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
             }
+        }
+
+        // Re-open any `/pty/<id>` WS that dropped this tick (warm or cold per
+        // the close reason recorded above). Done out here because reconnect is
+        // async and needs the Coordinator — same shape as `pending_pty_opens`.
+        let reconnects: Vec<(PtyId, Option<u64>)> =
+            state.pending_pty_reconnects.drain(..).collect();
+        for (pid, since) in reconnects {
+            reconnect_pty(state, client, pid, since).await;
         }
 
         // Drain incoming server notifications quickly. Responses are routed
@@ -507,6 +581,11 @@ struct AppState {
     /// opened on the `/pty/<id>` WS. Drained at the top of each main
     /// loop tick (open_pty is async).
     pending_pty_opens: Vec<ppty::PtyInfo>,
+    /// `/pty/<id>` WSes that dropped and want re-opening this tick, with the
+    /// resume offset to use (`Some` = warm `?since=<cursor>`, `None` = cold
+    /// snapshot). Populated by the `PtyByteFrame::Closed` handler, drained by
+    /// the main loop (reconnect is async).
+    pending_pty_reconnects: Vec<(PtyId, Option<u64>)>,
     /// PTYs present at attach time, drained by `run_with` before the
     /// main loop starts (same shape as `pending_pty_opens` but with
     /// the initial snapshot from `session.attach`).
@@ -638,6 +717,7 @@ impl AppState {
             pty_streams: HashMap::new(),
             pty_byte_tx,
             pending_pty_opens: Vec::new(),
+            pending_pty_reconnects: Vec::new(),
             attach_ptys,
             view_cache: HashMap::new(),
             mode: Mode::Pane,
