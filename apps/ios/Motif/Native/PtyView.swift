@@ -8,6 +8,13 @@ import TalkerCommonLogging
 
 private let ptyLog = Logger(subsystem: "io.allsunday.motif", category: "PtyView")
 
+extension Notification.Name {
+    /// Posted (trailing-debounced) after the active PTY applies output, so the
+    /// host can re-evaluate cursor-dependent layout (e.g. the keyboard lift).
+    /// `userInfo["ptyID"]` carries the PTY id.
+    static let motifTerminalDidRender = Notification.Name("motifTerminalDidRender")
+}
+
 #if DEBUG
 /// DEBUG-only: route libghostty-spm's `TerminalDebugLog` into
 /// TalkerCommonLogging so metric/lifecycle/action events land in
@@ -29,6 +36,19 @@ private let ghosttyDebugLogOnce: Void = {
 /// Ghostty's default implementation.
 final class MotifTerminalView: UITerminalView {
     override var inputAccessoryView: UIView? { nil }
+
+    /// Points from the bottom of the cursor cell to the bottom edge of the view.
+    /// Large when the prompt sits near the top with blank rows below (fresh
+    /// shell), ~0 once output fills the screen. nil if the surface/caret isn't
+    /// ready. Reads the cursor cell via the public UITextInput `caretRect`,
+    /// which (with no marked IME text) resolves to libghostty's `imePoint` in
+    /// this view's coordinate space (points, top-left origin).
+    func cursorDistanceFromBottom() -> CGFloat? {
+        guard bounds.height > 0 else { return nil }
+        let caret = caretRect(for: endOfDocument)
+        guard caret.height > 0, caret.maxY.isFinite, caret.maxY > 0 else { return nil }
+        return max(0, bounds.height - caret.maxY)
+    }
 }
 
 /// libghostty-vt backed PTY surface. Wraps GhosttyTerminal's `UITerminalView`
@@ -96,6 +116,11 @@ final class PtyTerminalRuntime {
     /// the content "jittering up and down" the user reports. Coalescing
     /// inside 50ms collapses all three into one final resize.
     private var pendingResize: Task<Void, Never>?
+    /// Trailing-edge debounce for the `.motifTerminalDidRender` post. Output
+    /// arrives byte-burst by byte-burst; coalescing inside ~80ms keeps the
+    /// host's cursor-driven relayout to a few ticks per second instead of one
+    /// per chunk.
+    private var pendingRenderNotify: Task<Void, Never>?
 
     init(client: MotifClient, ptyID: String, terminals: TerminalRegistry) {
         self.client = client
@@ -244,10 +269,28 @@ final class PtyTerminalRuntime {
             for await data in stream {
                 guard !Task.isCancelled else { return }
                 session.receive(data)
+                scheduleRenderNotify()
             }
             if !Task.isCancelled {
                 pumpTask = nil
             }
+        }
+    }
+
+    /// Trailing-debounced `.motifTerminalDidRender` post. The cursor may have
+    /// moved as output landed; the active host view recomputes its keyboard
+    /// lift off the new cursor position.
+    private func scheduleRenderNotify() {
+        pendingRenderNotify?.cancel()
+        let ptyID = self.ptyID
+        pendingRenderNotify = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let self, !self.disposed, !Task.isCancelled else { return }
+            NotificationCenter.default.post(
+                name: .motifTerminalDidRender,
+                object: nil,
+                userInfo: ["ptyID": ptyID]
+            )
         }
     }
 
@@ -265,6 +308,7 @@ final class PtyTerminalRuntime {
         streaming = false
         stopPump()
         pendingResize?.cancel()
+        pendingRenderNotify?.cancel()
         view.windowAttachmentHandler = nil
         view.delegate = nil
         view.removeFromSuperview()

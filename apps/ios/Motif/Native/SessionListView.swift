@@ -379,6 +379,16 @@ struct SessionView: View {
     /// resize would SIGWINCH the PTY and force the remote TUI (e.g. Claude)
     /// to re-layout on every keyboard toggle.
     @State private var keyboardOverlap: CGFloat = 0
+    /// Actual upward slide applied to the sliding unit. Derived from
+    /// `keyboardOverlap` but reduced by the blank space below the terminal
+    /// cursor, so a near-empty terminal (prompt at the top) doesn't get its
+    /// content clipped off the top when the keyboard pushes it up. See
+    /// `recomputeLift()`.
+    @State private var effectiveLift: CGFloat = 0
+
+    /// Breathing room kept between the cursor and the keyboard/input bar so the
+    /// cursor never sits flush against them.
+    private static let cursorKeyboardGap: CGFloat = 16
 
     private static let kbLog = Logger(subsystem: "io.allsunday.motif", category: "Keyboard")
 
@@ -390,6 +400,21 @@ struct SessionView: View {
         let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
         let window = scene?.windows.first(where: { $0.isKeyWindow }) ?? scene?.windows.first
         return window?.safeAreaInsets.bottom ?? 0
+    }
+
+    /// Recompute `effectiveLift` from the current keyboard overlap and the
+    /// active terminal's cursor position. We lift the sliding unit by only as
+    /// much as needed to keep the cursor clear of the keyboard (plus a small
+    /// gap): when there's lots of blank terminal below the cursor (fresh
+    /// shell, prompt near the top) the keyboard simply covers that blank space
+    /// and we lift little or nothing — which avoids clipping the prompt off the
+    /// top. As output fills the screen the cursor nears the bottom, `blankBelow`
+    /// shrinks, and the lift grows back toward the full keyboard height.
+    private func recomputeLift() {
+        guard keyboardOverlap > 0 else { effectiveLift = 0; return }
+        let blankBelow = (appState.terminals.view(for: activeTerminalPtyID) as? MotifTerminalView)?
+            .cursorDistanceFromBottom() ?? 0
+        effectiveLift = max(0, keyboardOverlap - blankBelow + Self.cursorKeyboardGap)
     }
 
     /// Project the server's view list into our heterogeneous tab enum.
@@ -511,9 +536,9 @@ struct SessionView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 BottomInputBar(activePtyID: activePtyID)
             }
-            .offset(y: -keyboardOverlap)
+            .offset(y: -effectiveLift)
             .clipped()
-            .animation(.easeOut(duration: 0.25), value: keyboardOverlap)
+            .animation(.easeOut(duration: 0.25), value: effectiveLift)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(MotifTheme.background)
@@ -527,7 +552,8 @@ struct SessionView: View {
             guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
             let inset = Self.windowBottomInset
             keyboardOverlap = max(0, frame.height - inset)
-            Self.kbLog.notice("[kb] willChangeFrame kbHeight=\(String(format: "%.0f", frame.height), privacy: .public) bottomInset=\(String(format: "%.0f", inset), privacy: .public) -> overlap=\(String(format: "%.0f", self.keyboardOverlap), privacy: .public)")
+            recomputeLift()
+            Self.kbLog.notice("[kb] willChangeFrame kbHeight=\(String(format: "%.0f", frame.height), privacy: .public) bottomInset=\(String(format: "%.0f", inset), privacy: .public) -> overlap=\(String(format: "%.0f", self.keyboardOverlap), privacy: .public) lift=\(String(format: "%.0f", self.effectiveLift), privacy: .public)")
             // Don't snap-to-bottom on every keyboard appearance: the terminal
             // surface raises the keyboard too (it's first responder when
             // focused), and focusing the terminal must NOT jump the viewport.
@@ -537,6 +563,18 @@ struct SessionView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             Self.kbLog.notice("[kb] willHide -> overlap=0")
             keyboardOverlap = 0
+            effectiveLift = 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .motifTerminalDidRender)) { note in
+            // Output moved the cursor while the keyboard is up — re-evaluate the
+            // lift so a filling terminal keeps the prompt clear of the keyboard.
+            // No animation: the offset should track output without a visible
+            // creeping slide.
+            guard keyboardOverlap > 0,
+                  note.userInfo?["ptyID"] as? String == activeTerminalPtyID else { return }
+            var tx = Transaction()
+            tx.disablesAnimations = true
+            withTransaction(tx) { recomputeLift() }
         }
         .task {
             applyAppearance()
