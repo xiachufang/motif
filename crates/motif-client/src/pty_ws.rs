@@ -1,8 +1,12 @@
 //! `WS /pty/<pty_id>?session=<sid>&since=<bytes>`
 //! client. One per open PTY tab.
 //!
-//! Bidirectional binary stream — no envelope. Inbound frames from the
-//! server are raw PTY output bytes; outbound frames are stdin bytes.
+//! Bidirectional binary stream — no envelope. Each connection leads with a
+//! single Text meta frame `{"since":<offset>}` (the absolute byte offset of
+//! the first data byte that follows); every subsequent frame is raw PTY
+//! output bytes, and outbound frames are stdin bytes. We adopt that offset
+//! and advance it per Binary frame so [`PtyClient::resume_cursor`] hands the
+//! caller an absolute `?since=` to warm-resume from on the next connect.
 //! On close-with-code 4011 / 4012 the caller is expected to clear its
 //! local terminal buffer and reconnect without `since=`.
 
@@ -62,7 +66,12 @@ pub struct PtyClient {
     reader: tokio::task::JoinHandle<()>,
     writer: tokio::task::JoinHandle<()>,
     heartbeat: tokio::task::JoinHandle<()>,
-    bytes_seen: Arc<std::sync::atomic::AtomicU64>,
+    /// Absolute byte offset of the next byte we expect — the value to pass
+    /// as `?since=` on reconnect. Seeded from the leading `{"since":N}` meta
+    /// frame, then advanced by each Binary frame's length. `None` until the
+    /// meta frame arrives.
+    cursor: Arc<std::sync::atomic::AtomicU64>,
+    cursor_set: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for PtyClient {
@@ -74,11 +83,19 @@ impl Drop for PtyClient {
 }
 
 impl PtyClient {
-    /// Total bytes received since the connection opened. Add to the
-    /// `?since=` you passed to compute the cursor for a subsequent
-    /// reconnect.
-    pub fn bytes_received(&self) -> u64 {
-        self.bytes_seen.load(std::sync::atomic::Ordering::Relaxed)
+    /// Absolute byte offset to resume from on reconnect — pass it verbatim
+    /// as `?since=`. Adopted from the leading `{"since":N}` meta frame (so it
+    /// is correct for both a warm byte-delta, where the server honors the
+    /// requested `since`, and a cold VT snapshot, where the server reports
+    /// `start = total - snapshot.len()` and counting the snapshot's bytes
+    /// still lands the cursor exactly on `total`). `None` until the meta
+    /// frame arrives (e.g. the connection dropped before the leading frame).
+    pub fn resume_cursor(&self) -> Option<u64> {
+        if self.cursor_set.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(self.cursor.load(std::sync::atomic::Ordering::Relaxed))
+        } else {
+            None
+        }
     }
 
     pub fn close_reason(&self) -> Option<CloseReason> {
@@ -129,14 +146,16 @@ impl PtyClient {
         let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<Bytes>();
         let liveness = Arc::new(Mutex::new(Instant::now()));
         let closed = Arc::new(Mutex::new(None::<CloseReason>));
-        let bytes_seen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cursor = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cursor_set = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let reader = tokio::spawn(reader_task(
             Box::pin(rx),
             out_tx,
             Arc::clone(&closed),
             Arc::clone(&liveness),
-            Arc::clone(&bytes_seen),
+            Arc::clone(&cursor),
+            Arc::clone(&cursor_set),
         ));
         let writer = tokio::spawn(writer_task(Box::pin(tx), stdin_rx));
         let hb_tx_for_close = stdin_tx.clone();
@@ -149,7 +168,8 @@ impl PtyClient {
             reader,
             writer,
             heartbeat,
-            bytes_seen,
+            cursor,
+            cursor_set,
         })
     }
 }
@@ -159,8 +179,10 @@ async fn reader_task(
     out_tx: mpsc::UnboundedSender<Bytes>,
     closed: Arc<Mutex<Option<CloseReason>>>,
     liveness: Arc<Mutex<Instant>>,
-    bytes_seen: Arc<std::sync::atomic::AtomicU64>,
+    cursor: Arc<std::sync::atomic::AtomicU64>,
+    cursor_set: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    use std::sync::atomic::Ordering::Relaxed;
     while let Some(item) = ws_rx.next().await {
         let msg = match item {
             Ok(m) => m,
@@ -173,7 +195,12 @@ async fn reader_task(
         *liveness.lock().unwrap() = Instant::now();
         match msg {
             Message::Binary(b) => {
-                bytes_seen.fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                // Advance the resume cursor only once the leading meta frame
+                // has seeded its absolute base — otherwise we'd be counting
+                // from 0 and undershoot a snapshot's true `total`.
+                if cursor_set.load(Relaxed) {
+                    cursor.fetch_add(b.len() as u64, Relaxed);
+                }
                 if out_tx.send(Bytes::from(b.to_vec())).is_err() {
                     break;
                 }
@@ -187,8 +214,55 @@ async fn reader_task(
                 *closed.lock().unwrap() = Some(reason);
                 break;
             }
-            Message::Text(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            // Leading `{"since":N}` meta frame: adopt N as the absolute base
+            // for the resume cursor. It's the sole Text frame the server
+            // sends; counting the Binary frames that follow lands the cursor
+            // on the ring `total` for both warm deltas and cold snapshots.
+            Message::Text(s) => {
+                if !cursor_set.load(Relaxed) {
+                    if let Some(since) = parse_meta_since(&s) {
+                        cursor.store(since, Relaxed);
+                        cursor_set.store(true, Relaxed);
+                    }
+                }
+            }
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
         }
+    }
+}
+
+/// Pull the absolute byte offset out of a `/pty/<id>` leading meta frame
+/// (`{"since":<offset>}`). Returns `None` for any non-meta / malformed text.
+fn parse_meta_since(s: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(s)
+        .ok()?
+        .get("since")?
+        .as_u64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_meta_since;
+
+    #[test]
+    fn parses_well_formed_meta() {
+        assert_eq!(parse_meta_since(r#"{"since":0}"#), Some(0));
+        assert_eq!(parse_meta_since(r#"{"since":1717171717}"#), Some(1_717_171_717));
+        // The server seeds the ring origin from MAX_SCROLLBACK (~1.6 GiB),
+        // so a snapshot's reported offset is large — must survive as u64.
+        assert_eq!(
+            parse_meta_since(r#"{"since":1610612736}"#),
+            Some(1_610_612_736)
+        );
+    }
+
+    #[test]
+    fn rejects_non_meta_or_malformed() {
+        assert_eq!(parse_meta_since("not json"), None);
+        assert_eq!(parse_meta_since("{}"), None);
+        assert_eq!(parse_meta_since(r#"{"other":5}"#), None);
+        assert_eq!(parse_meta_since(r#"{"since":-1}"#), None);
+        assert_eq!(parse_meta_since(r#"{"since":"x"}"#), None);
     }
 }
 
