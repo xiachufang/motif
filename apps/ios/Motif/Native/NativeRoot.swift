@@ -1,5 +1,6 @@
 import SwiftUI
 import TalkerCommonRouter
+import TalkerMacro
 
 /// Top-level native router after a server is configured. Owns the
 /// MotifClient lifecycle: connect → list/attach a session → present the
@@ -199,29 +200,9 @@ struct NativeRoot: View {
         }
     }
 
-    @ViewBuilder
-    private func view(_ path: String, query: [String: String]) -> some View {
-        switch path {
-        case SessionView.path:
-            if let v = SessionView(query) {
-                v
-            } else {
-                routeNotFound(path, query: query)
-            }
-        case GitDiffPanel.path:
-            if let v = GitDiffPanel(query) {
-                v
-            } else {
-                routeNotFound(path, query: query)
-            }
-        default:
-            routeNotFound(path, query: query)
-        }
-    }
-
-    private func routeNotFound(_ path: String, query: [String: String]) -> some View {
-        Text(verbatim: "Not found: \(path), \(query). Did you forget to register the View.")
-    }
+    // Route registry: synthesizes `view(_:query:)` switching each `@Routable`
+    // view's `path` to its `init?(_ data:)`, with a built-in not-found fallback.
+    #routeViews(SessionView.self, GitDiffPanel.self)
 
     /// Connection status painted on top of the root SessionListView. The
     /// nav-bar toolbar (server picker + info) is rendered by the

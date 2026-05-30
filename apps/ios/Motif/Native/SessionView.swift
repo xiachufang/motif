@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import OSLog
 import TalkerCommonRouter
+import TalkerMacro
 
 /// Heterogeneous tab kind held in `SessionView`. Each case carries the
 /// server-issued ViewId so tab taps route through `view.activate` and
@@ -31,9 +32,8 @@ enum SessionTab: Hashable, Identifiable {
 /// (pty / preview / diff / image), so opens and closes by any client
 /// propagate to every other.
 ///
-/// Addressable as `/session` via CmRouter. `path`, `route(name:)`, and
-/// `init?(_:)` are kept local instead of using TalkerMacro so command-line
-/// simulator builds do not depend on the macro plugin process.
+/// Addressable as `/session` via CmRouter — `@Routable("/session")` on the
+/// designated init synthesizes `path`, `route(name:)`, and `init?(_:)`.
 ///
 /// Implementation is split across `SessionView+Tabs`, `SessionView+Panes`,
 /// and `SessionView+Appearance`; members those files touch are `internal`
@@ -94,7 +94,10 @@ struct SessionView: View {
         guard keyboardOverlap > 0 else { effectiveLift = 0; return }
         let blankBelow = (appState.terminals.view(for: activeTerminalPtyID) as? MotifTerminalView)?
             .cursorDistanceFromBottom() ?? 0
-        effectiveLift = max(0, keyboardOverlap - blankBelow + Self.cursorKeyboardGap)
+        // Cap at `keyboardOverlap`: the pane never needs to rise higher than the
+        // keyboard, and going higher would open a gap between the terminal's
+        // bottom and the input bar (which is pinned at the keyboard's top edge).
+        effectiveLift = min(keyboardOverlap, max(0, keyboardOverlap - blankBelow + Self.cursorKeyboardGap))
     }
 
     /// Project the server's view list into our heterogeneous tab enum.
@@ -175,51 +178,66 @@ struct SessionView: View {
         return (80, 24)
     }
 
+    @Routable("/session")
     init(name: String) {
         self.name = name
-    }
-
-    static var path: String { "/session" }
-
-    init?(_ data: [String: String]) {
-        guard let name = data["name"] else { return nil }
-        self.init(name: name)
-    }
-
-    @MainActor
-    static func route(name: String) -> (String, [String: String]) {
-        (Self.path, ["name": name])
     }
 
     var body: some View {
         VStack(spacing: 0) {
             tabBar
             Divider()
-            // Sliding unit: the terminal + composer move up together when the
-            // keyboard shows. The whole screen opts out of SwiftUI's keyboard
+            // Sliding unit: the whole screen opts out of SwiftUI's keyboard
             // avoidance (`.ignoresSafeArea(.keyboard)` below) — that's what
             // keeps the terminal's *frame* (and therefore the PTY grid) fixed,
             // since avoidance is otherwise consumed at this VStack level and
             // shrinks the pane no matter what a nested child ignores. We slide
             // manually with `.offset`, a render-only translation that never
             // changes the frame → no grid recompute → no SIGWINCH → no remote
-            // re-layout. The top rows clip under the tab bar while typing.
-            VStack(spacing: 0) {
-                paneArea
-                if let error {
-                    Text(error)
-                        .font(MotifTheme.Typography.caption)
-                        .foregroundStyle(MotifTheme.danger)
-                        .padding(MotifTheme.Spacing.sm)
+            // re-layout.
+            //
+            // The terminal and the input bar lift by DIFFERENT amounts:
+            //  - The VStack (terminal) lifts by `effectiveLift` — the
+            //    cursor-aware amount (≤ keyboardOverlap), so a near-empty
+            //    terminal isn't clipped off the top. Its top rows clip under
+            //    the tab bar once content is tall enough to need a full lift.
+            //  - The input bar lifts by the *full* `keyboardOverlap` via an
+            //    extra `-(keyboardOverlap - effectiveLift)` offset, so it always
+            //    sits flush on top of the keyboard regardless of cursor
+            //    position. When the pane lifts less than the bar, the (opaque)
+            //    bar simply overlaps the terminal's blank/lower bottom rows.
+            ZStack(alignment: .bottom) {
+                // Fill the area below the input bar with the bar's own
+                // `.background` colour (not the parent `MotifTheme.background`),
+                // so lifting the bar above the keyboard — or a transient gap
+                // during the keyboard show/hide animation — never exposes a
+                // colour seam beneath it. It sits behind the terminal and the
+                // bar (both opaque), so it only shows through that bottom strip.
+                Rectangle()
+                    .fill(.background)
+                    .ignoresSafeArea(edges: .bottom)
+                VStack(spacing: 0) {
+                    paneArea
+                    if let error {
+                        Text(error)
+                            .font(MotifTheme.Typography.caption)
+                            .foregroundStyle(MotifTheme.danger)
+                            .padding(MotifTheme.Spacing.sm)
+                    }
+                    BottomInputBar(activePtyID: activePtyID)
+                        // Top up the bar's lift to the full keyboard overlap so it
+                        // never hides behind the keyboard. `effectiveLift` is capped
+                        // at `keyboardOverlap`, so this delta is always ≥ 0.
+                        .offset(y: -(keyboardOverlap - effectiveLift))
                 }
-                BottomInputBar(activePtyID: activePtyID)
+                .offset(y: -effectiveLift)
+                .clipped()
+                .animation(.easeOut(duration: 0.25), value: keyboardOverlap)
+                .animation(.easeOut(duration: 0.25), value: effectiveLift)
             }
-            .offset(y: -effectiveLift)
-            .clipped()
-            .animation(.easeOut(duration: 0.25), value: effectiveLift)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .background(MotifTheme.background)
+        .background(MotifTheme.background.ignoresSafeArea())
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
             // iPhone keyboards dock at the bottom, so the end-frame height is
             // its overlap with the window. The composer's `.safeAreaInset`

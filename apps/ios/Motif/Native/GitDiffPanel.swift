@@ -1,5 +1,6 @@
 import SwiftUI
 import OSLog
+import TalkerMacro
 
 /// Git-diff page. Mirrors web/src/tabs/DiffTab.tsx in spirit:
 ///   - layout switch: All (every file concatenated) vs Single (one file
@@ -39,25 +40,10 @@ struct GitDiffPanel: View {
     enum FileListMode: String { case list, tree }
     enum Layout: String, Hashable { case all, byfile }
 
+    @Routable("/diff")
     init(name: String, cwd: String? = nil) {
         self.sessionName = name
         self.cwd = cwd
-    }
-
-    static var path: String { "/diff" }
-
-    init?(_ data: [String: String]) {
-        guard let name = data["name"] else { return nil }
-        self.init(name: name, cwd: data["cwd"])
-    }
-
-    @MainActor
-    static func route(name: String, cwd: String? = nil) -> (String, [String: String]) {
-        var data: [String: String] = ["name": name]
-        if let cwd {
-            data["cwd"] = cwd
-        }
-        return (Self.path, data)
     }
 
     var body: some View {
