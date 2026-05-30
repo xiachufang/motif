@@ -50,6 +50,28 @@ const RING_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PTYS: usize = 32;
 const READ_CHUNK: usize = 8 * 1024;
 
+/// Worst-case size of a cold-attach VT snapshot, used to size `RING_ORIGIN_BASE`.
+/// `formatter_vt_snapshot` serializes the whole scrollback + active screen as
+/// per-cell VT, so the bound is (scrollback + a generous screen height) rows ×
+/// max width × worst-case bytes per cell. Per-cell worst case is a full SGR run
+/// (`ESC[0;1;3;4;5;7;9;38;2;r;g;b;48;2;r;g;b;58;2;r;g;b m`) plus a 4-byte UTF-8
+/// grapheme — ~96 bytes; round to 128. Width is capped generously (no real
+/// surface is near 1024 cols). A ×4 margin covers the prelude/postlude and any
+/// estimate slack.
+const MAX_SNAPSHOT_BYTES: u64 =
+    (MAX_SCROLLBACK as u64 + 1024) * 1024 /* cols */ * 128 /* bytes/cell */ * 4 /* margin */;
+
+/// Starting value for a ring's absolute byte counter (`origin`/`total`), instead
+/// of 0. A cold-attach VT snapshot reports its resume offset as `total -
+/// snapshot.len()` so a byte-counting client lands exactly on `total`; when the
+/// snapshot is larger than the bytes written so far (common early on — a few
+/// bytes can paint a full styled screen that re-serializes to kilobytes) that
+/// subtraction would underflow from 0. Basing the counter at `MAX_SNAPSHOT_BYTES`
+/// guarantees `total >= snapshot.len()` always. The value (~1.6 GiB) is trivially
+/// within u64 and JS `Number.MAX_SAFE_INTEGER`; byte offsets are opaque cursors
+/// to every client, nothing assumes they start at 0.
+const RING_ORIGIN_BASE: u64 = MAX_SNAPSHOT_BYTES;
+
 /// Lines of scrollback the per-PTY headless emulator (libghostty-vt) keeps
 /// for the VT snapshot served on a cold/truncated `/pty/<id>` connect.
 const MAX_SCROLLBACK: usize = 2000;
@@ -110,7 +132,7 @@ impl PtyRing {
     fn new() -> Self {
         Self {
             bytes: VecDeque::with_capacity(RING_BYTES.min(64 * 1024)),
-            origin: 0,
+            origin: RING_ORIGIN_BASE,
         }
     }
     pub fn total(&self) -> u64 {
@@ -161,15 +183,15 @@ enum EmuCmd {
 /// The client treats both identically — bytes to feed into its terminal — so
 /// the distinction stays internal to [`emulator_loop`].
 pub struct SubscribeReply {
+    /// Absolute byte offset the client adopts as its resume cursor, chosen so
+    /// that after the client counts the `replay` bytes it lands exactly on the
+    /// ring `total` (where the live stream resumes). For a warm delta that's
+    /// the requested `since`; for a synthetic snapshot it's `total - replay.len()`
+    /// (a base offset on the ring keeps that from underflowing). This lets every
+    /// client keep the same dead-simple accounting — `cursor = start; cursor +=
+    /// each frame` — for both replay kinds, with no snapshot flag on the wire.
     pub start: u64,
     pub replay: Vec<u8>,
-    /// True when `replay` is a synthetic VT snapshot (cold/truncated/stale
-    /// cursor) rather than a raw ring-byte delta. The client renders both
-    /// identically, but must NOT advance its resume cursor by the snapshot's
-    /// length — `start` already equals the live-resume offset (`total`).
-    /// Counting snapshot bytes (as a delta would be) pushes the cursor past
-    /// `total`, so every subsequent resume looks "stale" and re-snapshots.
-    pub snapshot: bool,
     pub rx: broadcast::Receiver<Bytes>,
 }
 
@@ -750,28 +772,29 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
             EmuCmd::Subscribe { since, reply } => {
                 let total = ring.total();
                 let origin = ring.origin;
-                let (start, replay, snapshot) = match since {
+                let (start, replay) = match since {
                     // Warm incremental resume: raw byte delta `[s, total)`.
-                    // These ARE ring bytes, so the client counts them toward
-                    // its resume cursor (since → total).
+                    // start == s == total - delta.len(), so the client counting
+                    // the delta lands on `total`.
                     Some(s) if s >= origin && s <= total => {
                         let skip = (s - origin) as usize;
-                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>(), false)
+                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>())
                     }
                     // Cold (None) / truncated (s<origin) / stale (s>total):
-                    // full VT snapshot; resume live from the current end. The
-                    // snapshot is SYNTHETIC (not ring bytes) and `start` is
-                    // already `total`, so the client must NOT count it toward
-                    // its cursor — see the `snapshot` flag in the meta frame.
+                    // full VT snapshot. The snapshot is SYNTHETIC (not ring
+                    // bytes), but the client counts every frame it receives, so
+                    // report start = total - snapshot.len(): after counting the
+                    // snapshot the cursor lands on `total` and the next resume is
+                    // a warm delta. `RING_ORIGIN_BASE` keeps this from
+                    // underflowing when the snapshot is larger than `total`.
                     _ => {
                         let snap = term.as_ref().map(formatter_vt_snapshot).unwrap_or_default();
-                        (total, snap, true)
+                        (total.saturating_sub(snap.len() as u64), snap)
                     }
                 };
                 let _ = reply.send(SubscribeReply {
                     start,
                     replay,
-                    snapshot,
                     rx: output_tx.subscribe(),
                 });
             }
@@ -966,8 +989,8 @@ mod tests {
     fn warm_delta_replays_tail_then_streams_live_once() {
         let tx = spawn_emu(80, 24);
         feed(&tx, b"abcdef");
-        let r = subscribe(&tx, Some(2));
-        assert_eq!(r.start, 2);
+        let r = subscribe(&tx, Some(RING_ORIGIN_BASE + 2));
+        assert_eq!(r.start, RING_ORIGIN_BASE + 2);
         assert_eq!(r.replay, b"cdef");
 
         let mut rx = r.rx;
@@ -982,8 +1005,8 @@ mod tests {
     fn up_to_date_cursor_has_empty_delta() {
         let tx = spawn_emu(80, 24);
         feed(&tx, b"abc");
-        let r = subscribe(&tx, Some(3));
-        assert_eq!(r.start, 3);
+        let r = subscribe(&tx, Some(RING_ORIGIN_BASE + 3));
+        assert_eq!(r.start, RING_ORIGIN_BASE + 3);
         assert!(r.replay.is_empty());
     }
 
@@ -991,10 +1014,39 @@ mod tests {
     fn stale_cursor_falls_back_to_snapshot() {
         let tx = spawn_emu(80, 24);
         feed(&tx, b"abc");
-        // since > total → cold path: resume from the current end with a snapshot.
-        let r = subscribe(&tx, Some(9999));
-        assert_eq!(r.start, 3);
+        let total = RING_ORIGIN_BASE + 3;
+        // since > total → cold path: snapshot, with start chosen so counting the
+        // snapshot bytes lands the client's cursor on `total`.
+        let r = subscribe(&tx, Some(total + 100));
         assert!(!r.replay.is_empty());
+        assert_eq!(r.start + r.replay.len() as u64, total);
+    }
+
+    #[test]
+    fn snapshot_then_resume_is_warm_not_another_snapshot() {
+        // Tab-switch regression: a client that counts every byte it receives
+        // must, after a cold snapshot, land its cursor exactly on `total` so the
+        // next resume is a warm delta. Previously the snapshot reported
+        // start=total, so counting the snapshot bytes overshot total → every
+        // reactivate was classified stale → perpetual full-screen snapshots
+        // (which scrambled the cursor on tab switch).
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"hello world");
+        flush(&tx);
+        let r1 = subscribe(&tx, None); // cold → snapshot
+        assert!(!r1.replay.is_empty());
+        // Emulate the client's accounting: adopt start, then count rendered bytes.
+        let client_cursor = r1.start + r1.replay.len() as u64;
+
+        // More output arrives while the tab is "inactive".
+        feed(&tx, b" more");
+        flush(&tx);
+
+        // Reactivate with the landed cursor: must be a warm delta of just the
+        // new bytes, not another snapshot.
+        let r2 = subscribe(&tx, Some(client_cursor));
+        assert_eq!(r2.start, client_cursor);
+        assert_eq!(r2.replay, b" more");
     }
 
     #[test]
@@ -1033,8 +1085,10 @@ mod tests {
         }
 
         let r = subscribe(&tx, None);
-        // Cold attach → snapshot; resume live from the current end of stream.
-        assert_eq!(r.start as usize, fed);
+        // Cold attach → snapshot. start is chosen so that after the client
+        // counts the snapshot bytes its cursor lands on `total` (= base + fed),
+        // making the next resume a warm delta.
+        assert_eq!(r.start + r.replay.len() as u64, RING_ORIGIN_BASE + fed as u64);
         assert!(!r.replay.is_empty());
         // Redraw churn collapses: the snapshot is a tiny fraction of fed bytes.
         assert!(
