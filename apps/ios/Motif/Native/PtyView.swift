@@ -30,6 +30,57 @@ private let ghosttyDebugLogOnce: Void = {
 }()
 #endif
 
+/// One-shot async gate: callers `await wait()` until `signal()` fires, then
+/// return immediately forever after. `signal()` is idempotent and wakes every
+/// pending waiter. `signal(after:)` arms a backstop timer that force-opens the
+/// gate if nothing has signaled it by the deadline — so a caller can't wedge
+/// on a gate that never legitimately opens.
+///
+/// MainActor-isolated: waiters and the signaller share the same isolation, so
+/// the latch + continuation list need no locking. `wait()` parks on a plain
+/// `CheckedContinuation` (no per-waiter timeout), so there's no "cancelled task
+/// leaves a continuation un-resumed" hazard — the deadline path opens the gate
+/// for everyone via `signal()` rather than releasing one waiter.
+@MainActor
+final class OneShotGate {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var backstop: Task<Void, Never>?
+
+    var isOpen: Bool { open }
+
+    /// Suspend until the gate opens; returns immediately if already open.
+    func wait() async {
+        if open { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Open the gate, wake all waiters, and cancel any pending backstop.
+    /// Idempotent — the first caller (real signal or the backstop) wins.
+    func signal() {
+        guard !open else { return }
+        open = true
+        backstop?.cancel()
+        backstop = nil
+        let pending = waiters
+        waiters = []
+        for w in pending { w.resume() }
+    }
+
+    /// Arm a backstop that force-opens the gate after `delay` unless `signal()`
+    /// happens first. `onTimeout` runs only if the backstop actually fires (for
+    /// diagnostics). No-op if the gate is already open or a backstop is armed.
+    func signal(after delay: Duration, onTimeout: (() -> Void)? = nil) {
+        guard !open, backstop == nil else { return }
+        backstop = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !self.open, !Task.isCancelled else { return }
+            onTimeout?()
+            self.signal()
+        }
+    }
+}
+
 /// Motif-specific UITerminalView subclass. It suppresses ghostty's
 /// bundled chip bar so Motif's BottomInputBar stays the single input
 /// authority; touch and first-responder behavior otherwise stays with
@@ -106,6 +157,15 @@ final class PtyTerminalRuntime {
     private var streaming = false
     private var disposed = false
     private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
+
+    /// `client.resize` trailing-debounce window — collapses libghostty's burst
+    /// of first-attach reflows into one final resize. See `handleResize`.
+    private static let gridResizeDebounceMs = 50
+    /// `.motifTerminalDidRender` trailing-debounce window. See `scheduleRenderNotify`.
+    private static let renderNotifyDebounceMs = 80
+    /// Backstop for `firstOpenGate`: force-open if the surface never settles.
+    private static let gridSettleBackstop: Duration = .seconds(10)
+
     /// One-shot gate for the *first* `/pty` stream open. The libghostty surface
     /// sizes its terminal core only as it lays out, churning through several
     /// grids in a few ms (0×0 → 32×11 → 54×43 → 54×35). Opening the cold stream
@@ -115,10 +175,12 @@ final class PtyTerminalRuntime {
     /// the later reflow can't undo it (hard `\r\n` wraps don't re-merge). So we
     /// hold the first open until the grid settles AND that size has been sent to
     /// the server (`client.resize`), guaranteeing the snapshot is generated at —
-    /// and fed into — the right grid. Only gates the first open; subsequent live
+    /// and fed into — the right grid. `handleResize`'s settled resize opens it;
+    /// `startPump` arms a ~10s backstop so a surface that never lays out can't
+    /// wedge the open forever. Only gates the first open — once open, warm
+    /// reactivate / tab re-switch returns from `wait()` instantly; later live
     /// resizes flow through `handleResize` as usual.
-    private var gridSettled = false
-    private var gridSettledWaiters: [CheckedContinuation<Void, Never>] = []
+    private let firstOpenGate = OneShotGate()
     /// Trailing-edge debounce for `client.resize`. On first attach,
     /// libghostty's grid reflows three times in ~10ms: ghostty's own
     /// default size on surface create, then `synchronizeMetrics` from
@@ -262,14 +324,14 @@ final class PtyTerminalRuntime {
         let client = self.client
         let ptyID = self.ptyID
         pendingResize = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(for: .milliseconds(Self.gridResizeDebounceMs))
             guard !Task.isCancelled else { return }
             ptyLog.notice("[grid] -> client.resize cols=\(cols) rows=\(rows) pty=\(ptyID, privacy: .public)")
             await client.resize(ptyID: ptyID, cols: cols, rows: rows)
             // The grid has settled to its final size AND the server now knows
-            // it — release the first-open gate so the cold snapshot is generated
-            // at (and fed into) this grid. See `gridSettled`.
-            self?.markGridSettled()
+            // it — open the first-open gate so the cold snapshot is generated
+            // at (and fed into) this grid. See `firstOpenGate`.
+            self?.firstOpenGate.signal()
             // Cache this settled grid so the next pty.create is born at the
             // device's real size — avoiding the 80×24→real column shrink that
             // re-wraps wide lines and desyncs the cursor. See `recordSettledGrid`.
@@ -277,55 +339,31 @@ final class PtyTerminalRuntime {
         }
     }
 
-    /// Suspend until the surface's grid has settled for the first time (see
-    /// `gridSettled`); returns immediately once it has.
-    private func awaitGridSettled() async {
-        if gridSettled { return }
-        await withCheckedContinuation { gridSettledWaiters.append($0) }
-    }
-
-    /// Latch the grid as settled and wake anyone waiting on the first open.
-    /// Idempotent; later live resizes don't re-gate.
-    private func markGridSettled() {
-        guard !gridSettled else { return }
-        gridSettled = true
-        let waiters = gridSettledWaiters
-        gridSettledWaiters = []
-        for w in waiters { w.resume() }
-    }
-
     private func startPump() {
         guard pumpTask == nil else { return }
 
         let stream = client.outputs(for: ptyID)
 
-        // Deadlock backstop only. The normal release is the first settled
-        // resize (handleResize → client.resize → markGridSettled), which for a
-        // visible tab fires within ~1s. We POLL rather than release on a fixed
-        // short timeout: a fixed timeout (the old 750ms) could fire *before* the
-        // surface even laid out — opening the cold stream into a still-default-
-        // sized terminal, so the server's grid-specific snapshot gets fed at the
-        // wrong grid and never recovers (the probabilistic cold-replay 错位).
-        // Polling lets an eventual-but-slow first layout always win; we only
-        // force-release if the grid genuinely never settles (~10s).
-        if !gridSettled {
-            Task { @MainActor [weak self] in
-                for _ in 0..<100 {
-                    try? await Task.sleep(for: .milliseconds(100))
-                    guard let self else { return }
-                    if self.gridSettled { return }
-                }
-                ptyLog.notice("[grid] gate fallback force-released after ~10s (surface never settled) pty=\(self?.ptyID ?? "", privacy: .public)")
-                self?.markGridSettled()
-            }
+        // Arm the first-open backstop: the normal open is the first settled
+        // resize (handleResize → client.resize → firstOpenGate.signal), which
+        // for a visible tab fires within ~1s. If the surface genuinely never
+        // lays out, force the gate open after ~10s so the pump can't wedge.
+        // (A short fixed timeout is wrong here — it could fire *before* the
+        // surface lays out, opening the cold stream into a still-default-sized
+        // terminal and feeding the grid-specific snapshot at the wrong grid,
+        // which never recovers. The long backstop only covers "never settles".)
+        let ptyID = self.ptyID
+        firstOpenGate.signal(after: Self.gridSettleBackstop) {
+            ptyLog.notice("[grid] first-open gate force-released after backstop (surface never settled) pty=\(ptyID, privacy: .public)")
         }
 
         pumpTask = Task { @MainActor [weak self] in
             guard let self else { return }
             guard !Task.isCancelled else { return }
-            // Hold the first open until the grid has settled (see `gridSettled`).
-            // No-op once settled, so warm reactivate / tab re-switch is instant.
-            await self.awaitGridSettled()
+            // Hold the first open until the grid has settled (see `firstOpenGate`).
+            // Returns instantly once open, so warm reactivate / tab re-switch is
+            // instant.
+            await self.firstOpenGate.wait()
             guard !Task.isCancelled else { return }
             await client.activatePtyStream(ptyID: ptyID)
             guard !Task.isCancelled else { return }
@@ -347,7 +385,7 @@ final class PtyTerminalRuntime {
         pendingRenderNotify?.cancel()
         let ptyID = self.ptyID
         pendingRenderNotify = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(Self.renderNotifyDebounceMs))
             guard let self, !self.disposed, !Task.isCancelled else { return }
             NotificationCenter.default.post(
                 name: .motifTerminalDidRender,
