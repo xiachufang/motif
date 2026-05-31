@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import OSLog
+import PhotosUI
 import DoubaoASR
 import GhosttyTerminal
 
@@ -97,6 +98,12 @@ struct BottomInputBar: View {
     @State var ignoreFinalTranscript: Bool = false
     @State private var editingCommands: Bool = false
     @State var showingCd: Bool = false
+    @State var showingPhotoPicker: Bool = false
+    @State var photoItems: [PhotosPickerItem] = []
+    @State var isUploading: Bool = false
+    @State var uploadDone: Int = 0
+    @State var uploadTotal: Int = 0
+    @State var uploadTask: Task<Void, Never>?
     /// Window-level gesture monitor armed while recording. Any tap / pan /
     /// long-press anywhere on screen (incl. hardware-keyboard keys, since
     /// those still fire UIKey events that bubble through hit-tested views)
@@ -290,6 +297,7 @@ struct BottomInputBar: View {
 
     private var inputRow: some View {
         HStack(spacing: 10) {
+            photoButton
             inputPill
             sendButton
         }
@@ -375,6 +383,50 @@ struct BottomInputBar: View {
         .buttonStyle(MotifIconButtonStyle(role: .filled, size: .large))
         .disabled(!canSend)
         .accessibilityLabel("Send")
+    }
+
+    /// Attach photos: pick from the library, upload to the server, and paste
+    /// each one's path so claude ingests them as `[Image #N]`. Uses a real
+    /// Button + `.photosPicker` modifier (rather than `PhotosPicker` directly)
+    /// so it picks up `MotifIconButtonStyle`. PhotosPicker needs no photo-
+    /// library permission — it runs out of process.
+    @ViewBuilder
+    private var photoButton: some View {
+        Group {
+            if isUploading {
+                // Loading state doubles as the cancel control: tap to abort the
+                // in-flight upload (already-pasted images stay).
+                Button(action: cancelUpload) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(MotifTheme.textSecondary)
+                }
+                .buttonStyle(MotifIconButtonStyle(role: .bordered, size: .large))
+                .accessibilityLabel(uploadTotal > 1
+                    ? "Cancel upload (\(uploadDone) of \(uploadTotal))"
+                    : "Cancel upload")
+            } else {
+                Button {
+                    showingPhotoPicker = true
+                } label: {
+                    Image(systemName: "photo")
+                }
+                .buttonStyle(MotifIconButtonStyle(role: .bordered, size: .large))
+                .disabled(!canDispatch)
+                .accessibilityLabel("Attach photos")
+            }
+        }
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $photoItems,
+            maxSelectionCount: 10,
+            matching: .images
+        )
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            attachPickedImages(items)
+            photoItems = []
+        }
     }
 
     private var canSend: Bool {

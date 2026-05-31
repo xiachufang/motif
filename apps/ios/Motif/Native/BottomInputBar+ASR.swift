@@ -51,6 +51,7 @@ extension BottomInputBar {
         let a = DoubaoASR()
         asr = a
         isRecording = true
+        Haptics.recordStart()
         audioLevel = 0
         // Surface the keyboard + caret so the user can see partials land
         // (and so a stray tap on the field doesn't fight us).
@@ -95,6 +96,7 @@ extension BottomInputBar {
 
     func stopASR() {
         guard let a = asr else { return }
+        Haptics.recordStop()
         // Capture the gate flag now — `ignoreFinalTranscript` is shared
         // state and might be re-set by another trigger before the async
         // completion fires.

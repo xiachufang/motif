@@ -100,12 +100,11 @@ struct QuickCommandRow: View {
                         }
                         .disabled(disabled)
                     default:
-                        Button {
+                        QuickCommandButton(repeatEnabled: repeatEnabled(for: cmd)) {
                             onTap(cmd)
                         } label: {
                             label(for: cmd)
                         }
-                        .buttonStyle(QuickCommandButtonStyle())
                         .disabled(disabled)
                     }
                 }
@@ -122,6 +121,20 @@ struct QuickCommandRow: View {
             .padding(.horizontal, MotifTheme.Spacing.md)
             .padding(.vertical, MotifTheme.Spacing.sm)
         }
+    }
+
+    /// No sticky Ctrl/Alt/Shift currently armed or locked. Auto-repeat is only
+    /// offered in this state — a modifier is consumed by the first key press,
+    /// so repeating a modified key isn't meaningful.
+    private var noStickyModifier: Bool {
+        ctrlState == .inactive && altState == .inactive && shiftState == .inactive
+    }
+
+    /// Hold-to-repeat applies to immediate "key" commands (arrows, Esc, ^C,
+    /// function keys) with no baked-in or armed modifier — not to snippet
+    /// inserts, paste, or the directory picker.
+    private func repeatEnabled(for cmd: QuickCommand) -> Bool {
+        cmd.kind == .bytes && cmd.sendImmediately && cmd.modifiers.isEmpty && noStickyModifier
     }
 
     @ViewBuilder
@@ -151,6 +164,12 @@ struct QuickCommandRow: View {
 }
 
 private struct QuickCommandButtonStyle: ButtonStyle {
+    /// Called when the press state flips (true = finger down, false = up /
+    /// cancelled). Drives hold-to-repeat without firing on press-down (which
+    /// would break scroll-over-button), since the Button's own action still
+    /// owns the single-tap fire.
+    var onPressChange: ((Bool) -> Void)? = nil
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .padding(.horizontal, MotifTheme.Spacing.lg)
@@ -162,6 +181,71 @@ private struct QuickCommandButtonStyle: ButtonStyle {
             )
             .foregroundStyle(MotifTheme.textPrimary)
             .contentShape(Capsule())
+            .onChange(of: configuration.isPressed) { _, pressed in
+                onPressChange?(pressed)
+            }
+    }
+}
+
+/// A quick-command capsule that single-fires on tap and — when `repeatEnabled`
+/// — auto-repeats while held down (key-repeat style). Lives inside a horizontal
+/// ScrollView, so repeat is driven by a `LongPressGesture` (which fails if the
+/// finger moves to scroll) plus the button style's press-state callback to stop
+/// on release; a stationary hold repeats, a swipe still scrolls.
+private struct QuickCommandButton<Label: View>: View {
+    let repeatEnabled: Bool
+    let fire: () -> Void
+    let label: Label
+
+    @State private var repeatTask: Task<Void, Never>?
+    @State private var didRepeat = false
+
+    init(repeatEnabled: Bool, fire: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+        self.repeatEnabled = repeatEnabled
+        self.fire = fire
+        self.label = label()
+    }
+
+    var body: some View {
+        Button {
+            // The trailing tap-up after a hold that already auto-repeated would
+            // be a spurious extra fire — swallow it.
+            if didRepeat { return }
+            fire()
+        } label: {
+            label
+        }
+        .buttonStyle(QuickCommandButtonStyle(onPressChange: { pressed in
+            if pressed {
+                didRepeat = false   // new press
+            } else {
+                stopRepeat()
+            }
+        }))
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.35).onEnded { _ in
+                guard repeatEnabled else { return }
+                didRepeat = true
+                startRepeat()
+            }
+        )
+        .onDisappear { stopRepeat() }
+    }
+
+    private func startRepeat() {
+        repeatTask?.cancel()
+        repeatTask = Task { @MainActor in
+            // First auto-fire lands at the hold threshold, then a steady ~11/s.
+            while !Task.isCancelled {
+                fire()
+                try? await Task.sleep(for: .milliseconds(90))
+            }
+        }
+    }
+
+    private func stopRepeat() {
+        repeatTask?.cancel()
+        repeatTask = nil
     }
 }
 

@@ -124,18 +124,32 @@ pub fn read(s: &Session, p: &ReadParams) -> Result<ReadResult, RpcError> {
 }
 
 pub fn write(s: &Session, p: &WriteParams) -> Result<WriteResult, RpcError> {
-    let path = resolve(&s.workdir, &p.path)?;
     let bytes = BASE64
         .decode(p.content_b64.as_bytes())
         .map_err(|e| RpcError::invalid_params(format!("bad base64: {e}")))?;
+    write_bytes(s, &p.path, &bytes, p.expected_sha256.as_deref(), p.force)
+}
 
-    if let Some(expected) = &p.expected_sha256 {
+/// Write raw bytes to `rel_path` (resolved against the session workdir),
+/// applying the same optimistic-sha guard and parent-dir creation as the
+/// base64 [`write`]. Shared by the JSON `fs.write` RPC and its binary
+/// (`application/octet-stream`) variant, which skips base64 entirely.
+pub fn write_bytes(
+    s: &Session,
+    rel_path: &str,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+    force: bool,
+) -> Result<WriteResult, RpcError> {
+    let path = resolve(&s.workdir, rel_path)?;
+
+    if let Some(expected) = expected_sha256 {
         let current = if path.exists() {
             sha256_hex(&std::fs::read(&path).map_err(io_to_rpc_err)?)
         } else {
             sha256_hex(&[])
         };
-        if &current != expected && !p.force {
+        if current.as_str() != expected && !force {
             return Err(RpcError::new(
                 ErrorCode::Conflict,
                 format!("sha256 mismatch (current={current}, expected={expected})"),
@@ -148,9 +162,9 @@ pub fn write(s: &Session, p: &WriteParams) -> Result<WriteResult, RpcError> {
             std::fs::create_dir_all(parent).map_err(io_to_rpc_err)?;
         }
     }
-    std::fs::write(&path, &bytes).map_err(io_to_rpc_err)?;
+    std::fs::write(&path, bytes).map_err(io_to_rpc_err)?;
     Ok(WriteResult {
-        sha256: sha256_hex(&bytes),
+        sha256: sha256_hex(bytes),
     })
 }
 

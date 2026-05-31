@@ -384,6 +384,45 @@ actor RpcClient {
         return body
     }
 
+    /// Binary `fs.write`: posts the raw bytes to `/rpc/fs.write` as
+    /// `application/octet-stream` (params in the query string), skipping the
+    /// ~33% base64 inflation of the JSON form. Same auth + session headers;
+    /// returns the written content's sha256.
+    func writeFileBinary(path: String, data: Data, force: Bool = true, expectedSha256: String? = nil) async throws -> String {
+        guard let urlSession else { throw RpcError.notConnected }
+        var comps = URLComponents()
+        comps.scheme = "http"
+        comps.host = host
+        comps.port = Int(port)
+        comps.path = "/rpc/fs.write"
+        var items = [URLQueryItem(name: "path", value: path)]
+        if force { items.append(URLQueryItem(name: "force", value: "true")) }
+        if let sha = expectedSha256 { items.append(URLQueryItem(name: "expected_sha256", value: sha)) }
+        comps.queryItems = items
+        guard let url = comps.url else { throw RpcError.transport("bad fs.write url for `\(path)`") }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        if let sid = sessionID {
+            req.setValue(sid, forHTTPHeaderField: "X-Motif-Session")
+        }
+        req.timeoutInterval = 60
+
+        let start = Date()
+        let (respData, response) = try await urlSession.upload(for: req, from: data)
+        let elapsed = Date().timeIntervalSince(start) * 1000
+        guard let http = response as? HTTPURLResponse else {
+            throw RpcError.transport("non-HTTP fs.write response for `\(path)`")
+        }
+        infoLog("[RpcClient] fs.write(bin) status=\(http.statusCode) req=\(data.count) total_ms=\(String(format: "%.1f", elapsed))")
+        guard http.statusCode == 200 else {
+            throw RpcError.transport("fs.write (binary) failed: HTTP \(http.statusCode)")
+        }
+        return try JSONDecoder().decode(MotifProto.FsWriteResult.self, from: respData).sha256
+    }
+
     private func rawCallWithSession<P: Encodable>(method: String, params: P) async throws -> (Data, String?) {
         guard let urlSession else { throw RpcError.notConnected }
         guard let url = URL(string: "http://\(host):\(port)/rpc/\(method)") else {
@@ -397,7 +436,10 @@ actor RpcClient {
             req.setValue(sid, forHTTPHeaderField: "X-Motif-Session")
         }
         req.httpBody = try JSONEncoder().encode(params)
-        req.timeoutInterval = 30
+        // fs.write carries base64 file payloads (image uploads) that can be
+        // large and slow over the tailnet — give it more headroom than the
+        // default RPC budget.
+        req.timeoutInterval = method == "fs.write" ? 60 : 30
 
         let proxyCount = urlSession.configuration.proxyConfigurations.count
         log.info("rpc.send method=\(method, privacy: .public) url=\(url.absoluteString, privacy: .public) proxyCount=\(proxyCount, privacy: .public)")

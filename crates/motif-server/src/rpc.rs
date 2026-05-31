@@ -522,7 +522,7 @@ fn handle_view_move(
 /// skip both when no client has called `fs.watch`. Per-session subscriber
 /// state lives in `Session::fs_subscribers`; the events themselves still go
 /// through `publish_event` so seq stays monotonic for everyone else.
-fn publish_fs_change(s: &Arc<Session>, paths: Vec<String>) {
+pub(crate) fn publish_fs_change(s: &Arc<Session>, paths: Vec<String>) {
     if !s.any_fs_subscriber() {
         return;
     }
@@ -550,7 +550,7 @@ fn mark_pty_primary(s: &Arc<Session>, pty_id: &str, client: motif_proto::common:
     }
 }
 
-fn current_session(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) -> Option<Arc<Session>> {
+pub(crate) fn current_session(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) -> Option<Arc<Session>> {
     let name = conn.attached.as_ref()?;
     mgr.get(name)
 }

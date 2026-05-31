@@ -30,6 +30,28 @@ extension MotifClient {
         await write(ptyID: ptyID, data: data)
     }
 
+    /// Write raw bytes to a path on the server. Absolute paths are used
+    /// as-is; relative paths are joined against the session workdir. Parent
+    /// dirs are created server-side. Returns the written content's sha256.
+    /// Used by image attach. Goes through `fs.write`'s binary variant (raw
+    /// bytes over `application/octet-stream`), avoiding base64 inflation.
+    @discardableResult
+    func writeFile(path: String, data: Data) async throws -> String {
+        guard let rpc else { throw RpcClient.RpcError.notConnected }
+        return try await rpc.writeFileBinary(path: path, data: data)
+    }
+
+    /// Send `text` to the PTY as an xterm bracketed paste
+    /// (ESC[200~ … ESC[201~) — the same wrapping the `.paste` quick command
+    /// uses, and the shape a terminal emits when a file is dragged in. Claude
+    /// Code's paste handler inspects bracketed-paste content for image paths.
+    func bracketedPaste(ptyID: String, text: String) async {
+        var data = Data([0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E])           // ESC [ 200 ~
+        data.append(Data(text.utf8))
+        data.append(contentsOf: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E])   // ESC [ 201 ~
+        await write(ptyID: ptyID, data: data)
+    }
+
     func resize(ptyID: String, cols: UInt16, rows: UInt16) async {
         guard let rpc else { return }
         do {

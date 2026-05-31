@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path as AxumPath, State};
+use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use motif_net::PeerAddr;
@@ -44,10 +44,30 @@ use crate::ws::{AppState, TIMING_TARGET};
 /// Lowercase per HTTP/2 conventions; axum normalizes.
 pub const SESSION_HEADER: &str = "x-motif-session";
 
+/// Query string for `fs.write`'s binary variant (`?path=&force=&expected_sha256=`).
+/// Empty/absent on every other RPC (all fields optional), so the extractor is
+/// harmless on the shared `/rpc/{method}` route.
+#[derive(serde::Deserialize, Default)]
+pub struct RpcQuery {
+    path: Option<String>,
+    #[serde(default)]
+    force: bool,
+    expected_sha256: Option<String>,
+}
+
+fn is_octet_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("application/octet-stream"))
+        .unwrap_or(false)
+}
+
 pub async fn rpc_dispatch(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<PeerAddr>,
     AxumPath(method): AxumPath<String>,
+    Query(q): Query<RpcQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -64,6 +84,13 @@ pub async fn rpc_dispatch(
     if !state.auth.verify_header(&headers) {
         tracing::warn!(peer = %peer, method = %method, "rpc auth rejected");
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
+    }
+
+    // `fs.write` extra encoding: an octet-stream body carries the raw file
+    // bytes (no base64), with path/force/expected in the query string. The
+    // JSON+base64 form keeps working for every other client.
+    if method == "fs.write" && is_octet_stream(&headers) {
+        return fs_write_binary(state, &headers, peer, q, body, req_recv_at).await;
     }
 
     // Body is just the params object; the JSON-RPC envelope is
@@ -140,6 +167,81 @@ pub async fn rpc_dispatch(
     }
 
     http
+}
+
+/// Binary `fs.write`: same auth + session + workdir/conflict/mkdir semantics
+/// as the JSON RPC, but the body is the raw file bytes and the params ride in
+/// the query string. Returns the same `WriteResult` JSON.
+async fn fs_write_binary(
+    state: AppState,
+    headers: &HeaderMap,
+    peer: PeerAddr,
+    q: RpcQuery,
+    body: Bytes,
+    req_recv_at: Instant,
+) -> Response {
+    let Some(path) = q.path else {
+        return err_response(
+            RpcError::invalid_params("fs.write (binary): missing ?path="),
+            req_recv_at,
+            "fs.write",
+            None,
+            peer,
+        );
+    };
+    let expected = q.expected_sha256;
+    let force = q.force;
+
+    // Same conn/session resolution as the concurrent RPC path.
+    let snap = match header_session(headers).and_then(|sid| state.conns.get(&sid)) {
+        Some(entry) => entry.state.lock().snapshot(),
+        None => rpc::ConnSnapshot {
+            client_id: String::new(),
+            attached: None,
+        },
+    };
+
+    let manager = Arc::clone(&state.manager);
+    let path_for_event = path.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_, RpcError> {
+        let Some(s) = rpc::current_session(&manager, &snap) else {
+            return Err(RpcError::new(
+                ErrorCode::NotAttached,
+                "must session.attach first",
+            ));
+        };
+        let r = crate::fs::write_bytes(&s, &path, &body, expected.as_deref(), force)?;
+        rpc::publish_fs_change(&s, vec![path_for_event]);
+        Ok(r)
+    })
+    .await
+    .unwrap_or_else(|e| Err(RpcError::internal(format!("fs.write binary panic: {e}"))));
+
+    match result {
+        Ok(r) => {
+            let body_bytes = serde_json::to_vec(&r).unwrap_or_else(|_| b"{}".to_vec());
+            tracing::info!(
+                target: TIMING_TARGET,
+                peer = %peer,
+                method = "fs.write",
+                resp_size = body_bytes.len(),
+                total_ms = us_to_ms(req_recv_at.elapsed().as_micros() as u64),
+                error = false,
+                transport = "http-bin",
+                "rpc done",
+            );
+            let mut http = (StatusCode::OK, body_bytes).into_response();
+            http.headers_mut()
+                .insert("content-type", HeaderValue::from_static("application/json"));
+            if let Some(sid) = header_session(headers) {
+                if let Ok(v) = HeaderValue::from_str(&sid) {
+                    http.headers_mut().insert(SESSION_HEADER, v);
+                }
+            }
+            http
+        }
+        Err(err) => err_response(err, req_recv_at, "fs.write", None, peer),
+    }
 }
 
 /// Run an immutable method on the blocking pool. Returns the dispatch

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::Message;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::get;
 use axum::Router;
 use motif_proto::envelope::Notification;
@@ -32,7 +33,13 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(crate::embed::serve_index))
         .route("/ping", get(ping))
         .route("/assets/{*p}", get(crate::embed::serve_assets))
-        .route("/rpc/{method}", axum::routing::post(http_rpc::rpc_dispatch))
+        .route(
+            "/rpc/{method}",
+            axum::routing::post(http_rpc::rpc_dispatch)
+                // Binary fs.write carries raw image bytes that can exceed
+                // axum's 2 MB default body cap; allow up to 16 MB.
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
         .route("/events", get(crate::events_ws::events_upgrade))
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
