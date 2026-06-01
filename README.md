@@ -78,17 +78,29 @@ For deployments behind a TLS terminator or on a tailnet, see
 
 ## Dev mode
 
-`Procfile` runs motifd with `cargo watch` plus the Vite dev server in parallel
-(`overmind start` / `foreman start`):
+Two Procfiles (run with `overmind start -f <file>` / `foreman start -f <file>`):
+
+**`Procfile.watch`** — fast iteration. motifd + relay under `cargo watch`
+(auto-rebuild on Rust changes) plus the Vite dev server:
 
 ```
-motifd: cargo watch ... -x "run -p motif-server --bin motifd -- --listen 0.0.0.0:7777 --insecure-no-auth --tailscale"
+motifd: cargo watch ... -x "run -p motif-server --bin motifd -- --listen 0.0.0.0:7777 --insecure-no-auth --tailscale ..."
+relay:  cargo watch -w crates/motif-push-relay -x "run -p motif-push-relay -- ..."
 vite:   cd apps/web && pnpm dev --host 0.0.0.0 --port 5173
 ```
 
 Vite proxies `/rpc`, `/events`, `/pty`, `/ping` to motifd, so browsing
 `http://localhost:5173/` gives you a hot-reloading web client against the
-locally running motifd.
+locally running motifd. Note: motifd's own `:7777` serves the *embedded* web
+snapshot from the last `pnpm build` — under `Procfile.watch` it's stale; use
+`:5173` for web work.
+
+**`Procfile.dev`** — no `cargo watch`. Runs `pnpm --dir apps/web build` first,
+then `cargo run` motifd (whose `build.rs` embeds the freshly-built `apps/web/dist`),
+so `http://localhost:7777/` serves the current web — the same path a release
+binary takes. No Vite, no auto-rebuild: restart the Procfile to pick up changes.
+Use this to exercise the real embedded `:7777` path (and to avoid the session/
+device-registration churn that `cargo watch` restarts cause).
 
 ## License
 
