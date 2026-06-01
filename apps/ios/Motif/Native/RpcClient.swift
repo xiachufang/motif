@@ -206,6 +206,11 @@ actor RpcClient {
     }
     private var ptys: [String: PtyChannel] = [:]
     private var activePtyID: String?
+    /// PTY ids whose `/pty` stream we *want* open. In single-active mode this is
+    /// just the active tab; in background mode it's every streaming tab. Drives
+    /// the 4011/4012 auto-tail-reconnect decision so a backgrounded tab that lags
+    /// recovers too — not only the active one. Cleared on detach/disconnect.
+    private var streamingPtys: Set<String> = []
 
     private var eventContinuation: AsyncStream<Event>.Continuation?
     let events: AsyncStream<Event>
@@ -278,6 +283,7 @@ actor RpcClient {
         }
         ptys.removeAll()
         activePtyID = nil
+        streamingPtys.removeAll()
         sessionID = nil
         eventContinuation?.finish()
         eventContinuation = nil
@@ -340,6 +346,7 @@ actor RpcClient {
         }
         ptys.removeAll()
         activePtyID = nil
+        streamingPtys.removeAll()
         eventsRecvTask?.cancel();  eventsRecvTask  = nil
         eventsHeartbeat?.cancel(); eventsHeartbeat = nil
         eventsTask?.cancel(with: .goingAway, reason: nil); eventsTask = nil
@@ -549,10 +556,15 @@ actor RpcClient {
 
     // ─────────────────────────── /pty/<id> ───────────────────────────
 
-    func activatePty(ptyID: String) async throws {
-        if activePtyID != ptyID {
+    /// Open `ptyID`'s `/pty` stream. `exclusive` (single-active mode) also closes
+    /// every other PTY socket; non-exclusive (background mode) leaves them open
+    /// so multiple tabs stream at once.
+    func activatePty(ptyID: String, exclusive: Bool = true) async throws {
+        streamingPtys.insert(ptyID)
+        if exclusive {
             activePtyID = ptyID
             for id in Array(ptys.keys) where id != ptyID {
+                streamingPtys.remove(id)
                 closePtyConnection(ptyID: id, removeState: false)
             }
         }
@@ -560,6 +572,7 @@ actor RpcClient {
     }
 
     func deactivatePty(ptyID: String) {
+        streamingPtys.remove(ptyID)
         if activePtyID == ptyID {
             activePtyID = nil
         }
@@ -676,7 +689,7 @@ actor RpcClient {
                 let cursorUnusable = closeCode == 4011 || closeCode == 4012
                 log.notice("pty `\(ptyID, privacy: .public)` recv: \(String(describing: error), privacy: .public) closeCode=\(closeCode, privacy: .public)")
                 closePtyConnection(ptyID: ptyID, matching: task, removeState: false)
-                if cursorUnusable, activePtyID == ptyID, ptys[ptyID] != nil {
+                if cursorUnusable, streamingPtys.contains(ptyID), ptys[ptyID] != nil {
                     ptys[ptyID]?.cursor = 0
                     ptys[ptyID]?.hasCursor = false
                     log.notice("pty `\(ptyID, privacy: .public)` cursor unusable (\(closeCode, privacy: .public)); reconnecting as tail")

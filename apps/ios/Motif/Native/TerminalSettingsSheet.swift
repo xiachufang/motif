@@ -44,22 +44,20 @@ struct TerminalSettingsSheet: View {
                 } footer: {
                     Text("Applies to all terminals immediately. System follows your iOS appearance.")
                 }
-                Section {
-                    Toggle("Push Notifications", isOn: Binding(
-                        get: { PushManager.shared.pushEnabled },
-                        set: { PushManager.shared.setPushEnabled($0) }
-                    ))
-                    if let session = attachedSession {
+                if let session = attachedSession {
+                    Section {
                         Toggle("Notify for “\(session)”", isOn: Binding(
                             get: { !PushManager.shared.isSessionMuted(session) },
                             set: { PushManager.shared.setSessionMuted(session, muted: !$0) }
                         ))
                         .disabled(!PushManager.shared.pushEnabled)
+                    } header: {
+                        Text("Notifications")
+                    } footer: {
+                        Text(PushManager.shared.pushEnabled
+                            ? "Mute just this session’s notifications. The device-wide switch lives in the app settings (gear on the session list)."
+                            : "Device notifications are off. Turn them on in the app settings (gear on the session list) to get notified for this session.")
                     }
-                } header: {
-                    Text("Notifications")
-                } footer: {
-                    Text("Get notified on this device when Claude needs your input or finishes — even when Motif is closed. Turn off the top switch to stop all notifications here; turn off a session to mute just that one.")
                 }
             }
             .navigationTitle("Terminal")

@@ -32,11 +32,16 @@ final class TerminalSettingsStore {
 
     var fontSize: Double { didSet { persist() } }
     var theme: TerminalThemeSetting { didSet { persist() } }
+    /// Whether non-active terminal tabs keep their `/pty` stream open and keep
+    /// advancing their (off-screen) surface in the background, vs. disconnecting
+    /// and catching up on re-select. Default on — see `TerminalRegistry.syncRuntimes`.
+    var keepInactiveTabsLive: Bool { didSet { persist() } }
 
     init() {
         let loaded = Self.load()
         fontSize = loaded?.fontSize ?? Self.defaultFontSize
         theme = loaded?.theme ?? .system
+        keepInactiveTabsLive = loaded?.keepInactiveTabsLive ?? true
     }
 
     // MARK: - Persistence
@@ -44,6 +49,10 @@ final class TerminalSettingsStore {
     private struct Persisted: Codable {
         var fontSize: Double
         var theme: TerminalThemeSetting
+        // Optional so blobs persisted before this field still decode (they'd
+        // otherwise fail the whole struct and reset font/theme too). Absent ⇒
+        // default-on, applied in `init`.
+        var keepInactiveTabsLive: Bool?
     }
 
     /// Missing or undecodable data → defaults (no migration).
@@ -53,7 +62,7 @@ final class TerminalSettingsStore {
     }
 
     private func persist() {
-        let p = Persisted(fontSize: fontSize, theme: theme)
+        let p = Persisted(fontSize: fontSize, theme: theme, keepInactiveTabsLive: keepInactiveTabsLive)
         do {
             UserDefaults.standard.set(try JSONEncoder().encode(p), forKey: Self.key)
         } catch {

@@ -142,13 +142,19 @@ query-string token。
    做法是使用 `session.attach` 返回的 `last_seq`，因为 attach 响应已经给了
    当前快照；之后所有 `seq > last_seq` 的事件从 WS 进入。若客户端选择用更早
    的本地 `last_seq` 做事件级回放，也要对 attach 快照已覆盖的事件做幂等处理。
-6. **按 active PTY 订阅 raw bytes**：客户端不需要同时订阅所有 PTY。推荐为每个
-   PTY 保存一个本地 byte cursor 和 shell parser 状态；只有当前 active terminal
-   tab 打开 `GET /pty/<id>?session=<sid>&since=<cursor>`。`/pty` 是纯传输,不再
-   认领 primary——primary 由 `view.open` / `view.activate` 决定:谁的 active view
-   是该 PTY 且在前台/焦点(客户端转前台/获得焦点时重新 `view.activate` 当前 view),
-   谁就是 primary。切到非终端 tab 或另一个 PTY 时关闭旧 `/pty` WS，但保留本地
-   terminal surface、cursor 和 parser 状态。
+6. **按 PTY 订阅 raw bytes**：每个 PTY 保存一个本地 byte cursor 和 shell parser
+   状态，按需打开 `GET /pty/<id>?session=<sid>&since=<cursor>`。`/pty` 是纯传输,
+   不再认领 primary——primary 由 `view.open` / `view.activate` 决定:谁的 active
+   view 是该 PTY 且在前台/焦点(客户端转前台/获得焦点时重新 `view.activate` 当前
+   view),谁就是 primary。打开一条 `/pty` 流**不**认领 primary,所以同一 session
+   的多条 `/pty/<id>` 流可以并存(服务端每个 PTY 用 broadcast 扇出,见 §1.6)。
+   客户端有两种订阅策略:
+   - **单活跃(省电/省流量)**:只有当前 active terminal tab 打开 `/pty`,切到非
+     终端 tab 或另一个 PTY 时关闭旧 `/pty` WS,但保留本地 terminal surface、
+     cursor 和 parser 状态;切回时按 §7 catch-up。
+   - **后台常连**:为多个/全部 PTY 同时保持 `/pty` 流,让非活跃 tab 的 surface
+     在后台继续推进(off-screen 不渲染,但 VT 状态实时更新),切回即最新。
+   iOS client 用「Keep background tabs live」设置在两者间切换,**默认后台常连**。
 7. **server buffer catch-up**：重新激活某 PTY 时，用保存的 cursor 连接同一个
    `/pty` endpoint。服务端先回放该 cursor 之后仍在 2 MB ring 内的 bytes，再
    切到 live。客户端把 replay 和 live 都喂给同一个 terminal surface，并按收到
@@ -161,9 +167,10 @@ query-string token。
    增量状态，然后不带 `since` 重新连接进入 live-only；如果产品想展示历史，应
    明确提示 scrollback 已被服务端 ring 覆盖。
 
-这套流程让 server 成为历史 bytes 的唯一缓存点。客户端只保留当前展示需要的
-terminal surface、byte cursor 和 shell parser 状态；inactive tab 不占用 live
-订阅，切回时通过 `/pty/<id>?since=<cursor>` 补齐。
+这套流程让 server 成为历史 bytes 的唯一缓存点。客户端只保留展示需要的 terminal
+surface、byte cursor 和 shell parser 状态。inactive tab 是否占用 live 订阅由订阅
+策略决定(见步骤 6):单活跃模式下不占用、切回时用 `/pty/<id>?since=<cursor>` 补
+齐;后台常连模式下保持订阅、随时最新。
 
 ---
 

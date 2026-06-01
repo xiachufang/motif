@@ -205,22 +205,50 @@ final class TerminalRegistry {
         }
     }
 
-    func syncRuntimes(client: MotifClient, livePtyIDs: Set<String>, activePtyID: String?) {
+    /// Reconcile which PTY runtimes stream. The active tab always streams. When
+    /// `keepInactiveLive`, every other live PTY also streams (non-exclusively),
+    /// keeping its off-screen surface current; otherwise only the active tab
+    /// streams and it does so exclusively (closing the other `/pty` sockets).
+    func syncRuntimes(
+        client: MotifClient,
+        livePtyIDs: Set<String>,
+        activePtyID: String?,
+        keepInactiveLive: Bool
+    ) {
         pruneRuntimes(keeping: livePtyIDs)
+        let exclusive = !keepInactiveLive
+        // Reconcile runtimes that already exist.
         for (ptyID, runtime) in runtimes {
-            runtime.setStreaming(ptyID == activePtyID)
+            if ptyID == activePtyID {
+                runtime.setStreaming(true, exclusive: exclusive)
+            } else if keepInactiveLive && livePtyIDs.contains(ptyID) {
+                runtime.setStreaming(true, exclusive: false)
+            } else {
+                runtime.setStreaming(false, exclusive: exclusive)
+            }
         }
+        // Ensure the active tab has a streaming runtime.
         if let activePtyID, livePtyIDs.contains(activePtyID) {
-            runtime(client: client, ptyID: activePtyID).setStreaming(true)
+            runtime(client: client, ptyID: activePtyID).setStreaming(true, exclusive: exclusive)
+        }
+        // In background mode, materialize a streaming runtime for every other
+        // live PTY so its surface keeps advancing while hidden. (In disconnect
+        // mode we deliberately don't create surfaces for inactive tabs.)
+        if keepInactiveLive {
+            for ptyID in livePtyIDs where ptyID != activePtyID {
+                runtime(client: client, ptyID: ptyID).setStreaming(true, exclusive: false)
+            }
         }
     }
 
-    /// After a reconnect, re-open the active PTY's substream on the new
-    /// connection so its live output resumes. Only the streaming (active)
-    /// runtime needs this; inactive tabs catch up when next selected.
-    func reactivate(activePtyID: String?) {
-        guard let activePtyID, let runtime = runtimes[activePtyID] else { return }
-        runtime.reactivate()
+    /// After a reconnect, re-open every streaming PTY's substream on the new
+    /// connection so live output resumes. Each runtime no-ops unless it's
+    /// streaming, so in disconnect mode this only touches the active tab and in
+    /// background mode it resumes all of them.
+    func reactivateStreaming() {
+        for (_, runtime) in runtimes {
+            runtime.reactivate()
+        }
     }
 
     func pruneRuntimes(keeping livePtyIDs: Set<String>) {

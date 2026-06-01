@@ -290,7 +290,8 @@ struct SessionView: View {
             appState.terminals.syncRuntimes(
                 client: motif,
                 livePtyIDs: livePtyIDs,
-                activePtyID: activeTerminalPtyID
+                activePtyID: activeTerminalPtyID,
+                keepInactiveLive: appState.terminalSettings.keepInactiveTabsLive
             )
             // Auto-pick: if the server didn't seed an active view in the
             // attach response and there's no view yet, spawn a PTY (the
@@ -311,23 +312,35 @@ struct SessionView: View {
             appState.terminals.syncRuntimes(
                 client: motif,
                 livePtyIDs: ids,
-                activePtyID: activeTerminalPtyID
+                activePtyID: activeTerminalPtyID,
+                keepInactiveLive: appState.terminalSettings.keepInactiveTabsLive
             )
         }
         .onChange(of: activeTerminalPtyID) { _, ptyID in
             appState.terminals.syncRuntimes(
                 client: motif,
                 livePtyIDs: livePtyIDs,
-                activePtyID: ptyID
+                activePtyID: ptyID,
+                keepInactiveLive: appState.terminalSettings.keepInactiveTabsLive
+            )
+        }
+        .onChange(of: appState.terminalSettings.keepInactiveTabsLive) { _, keep in
+            // Toggling the policy live: opens background streams (and their
+            // surfaces) when turned on, tears them down when turned off.
+            appState.terminals.syncRuntimes(
+                client: motif,
+                livePtyIDs: livePtyIDs,
+                activePtyID: activeTerminalPtyID,
+                keepInactiveLive: keep
             )
         }
         .onChange(of: motif.state) { _, newState in
             // Transparent reconnect: the auto-reattach in MotifClient.connect
             // lands us back on `.attached` with the session view preserved.
-            // Re-open the active PTY's substream on the fresh connection so
-            // live output resumes into the surviving terminal surface.
+            // Re-open every streaming PTY's substream on the fresh connection so
+            // live output resumes into the surviving terminal surfaces.
             if case .attached = newState {
-                appState.terminals.reactivate(activePtyID: activeTerminalPtyID)
+                appState.terminals.reactivateStreaming()
             }
         }
         .onChange(of: appState.terminalSettings.fontSize) { _, _ in applyAppearance() }

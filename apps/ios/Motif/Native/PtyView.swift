@@ -155,6 +155,11 @@ final class PtyTerminalRuntime {
     private var pumpTask: Task<Void, Never>?
     private var configured = false
     private var streaming = false
+    /// Whether this runtime's stream is *exclusive* — i.e. opening it closes the
+    /// other PTY sockets (single-active mode). False in background mode, where
+    /// several PTYs stream at once. Carried into `activatePtyStream` from
+    /// `startPump` and on `reactivate()` after a reconnect.
+    private var exclusive = true
     private var disposed = false
     private var lastSize: (cols: UInt16, rows: UInt16) = (0, 0)
 
@@ -218,9 +223,15 @@ final class PtyTerminalRuntime {
         configureIfNeeded()
     }
 
-    func setStreaming(_ active: Bool) {
+    func setStreaming(_ active: Bool, exclusive: Bool) {
         guard !disposed else { return }
         configureIfNeeded()
+        // The exclusivity can change without the on/off state changing (e.g. the
+        // active tab going from single-active to background mode). Record it so a
+        // later reactivate uses the right policy, but only (re)issue the open
+        // when streaming actually toggles on — an already-open stream doesn't
+        // need re-opening just because the flag flipped.
+        self.exclusive = exclusive
         guard streaming != active else { return }
         streaming = active
         if active {
@@ -241,7 +252,8 @@ final class PtyTerminalRuntime {
         guard streaming, !disposed else { return }
         let client = self.client
         let ptyID = self.ptyID
-        Task { await client.activatePtyStream(ptyID: ptyID) }
+        let exclusive = self.exclusive
+        Task { await client.activatePtyStream(ptyID: ptyID, exclusive: exclusive) }
     }
 
     private func makeSession() -> InMemoryTerminalSession {
@@ -365,7 +377,7 @@ final class PtyTerminalRuntime {
             // instant.
             await self.firstOpenGate.wait()
             guard !Task.isCancelled else { return }
-            await client.activatePtyStream(ptyID: ptyID)
+            await client.activatePtyStream(ptyID: ptyID, exclusive: self.exclusive)
             guard !Task.isCancelled else { return }
             for await data in stream {
                 guard !Task.isCancelled else { return }

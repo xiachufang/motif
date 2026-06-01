@@ -74,10 +74,13 @@ extension MotifClient {
         }
     }
 
-    func activatePtyStream(ptyID: String) async {
+    /// Open this PTY's `/pty` substream. `exclusive` (single-active mode) also
+    /// closes the other PTY sockets; non-exclusive keeps them open so several
+    /// tabs can stream at once (background mode).
+    func activatePtyStream(ptyID: String, exclusive: Bool = true) async {
         guard let rpc else { return }
         do {
-            try await rpc.activatePty(ptyID: ptyID)
+            try await rpc.activatePty(ptyID: ptyID, exclusive: exclusive)
         } catch {
             log.error("pty stream activate \(ptyID, privacy: .public): \(String(describing: error), privacy: .public)")
         }

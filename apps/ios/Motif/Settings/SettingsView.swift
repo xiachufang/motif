@@ -18,8 +18,28 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        @Bindable var settings = appState.terminalSettings
         NavigationStack {
             Form {
+                Section {
+                    Toggle("Push Notifications", isOn: Binding(
+                        get: { PushManager.shared.pushEnabled },
+                        set: { PushManager.shared.setPushEnabled($0) }
+                    ))
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Get notified on this device when Claude needs your input or finishes — even when Motif is closed. Mute individual sessions from each session’s terminal settings.")
+                }
+
+                Section {
+                    Toggle("Keep background tabs live", isOn: $settings.keepInactiveTabsLive)
+                } header: {
+                    Text("Terminal")
+                } footer: {
+                    Text("Keep inactive terminal tabs streaming so they stay current when you switch back. Turn off to disconnect them and catch up on select — saves battery and data, especially on cellular or with noisy background output.")
+                }
+
                 Section {
                     LabeledContent("Bundle", value: Bundle.main.bundleIdentifier ?? "?")
                     LabeledContent("Version") {
