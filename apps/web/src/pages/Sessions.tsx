@@ -91,6 +91,12 @@ export default function Sessions() {
   }
 
   function attach(s: SessionInfo) {
+    // Ask for desktop-notification permission here: opening a session is a
+    // real user gesture (browsers reject requestPermission outside one), and
+    // it's the natural opt-in point. One-shot — only when still undecided.
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
     setPage({ kind: "workspace", sessionName: s.name });
   }
 

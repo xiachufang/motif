@@ -79,22 +79,16 @@ function affectedDirs(paths: string[], cached: Map<string, unknown>): string[] {
   return [...out];
 }
 
-/** Raise a desktop notification when the tab is visible and permission is
- *  granted. Lazily requests permission the first time (best-effort; browsers
- *  may ignore a non-gesture request). No-op where the Notification API is
- *  unavailable. This is the web "live" channel only — there is no background
- *  push (the tab must be open). */
+/** Raise an OS desktop notification. Used when the tab is hidden/unfocused
+ *  (the in-app toast covers the visible case). Permission is requested ahead
+ *  of time on a user gesture (see ensureNotifyPermission) — we can't request
+ *  it here because this runs while the tab is in the background, outside any
+ *  gesture. No-op without permission, or where the Notification API is
+ *  unavailable (notably non-secure contexts: needs https:// or localhost).
+ *  Still requires the browser process to be running — no background push. */
 function notifyDesktop(title: string, body: string): void {
-  if (typeof Notification === "undefined") return;
-  const show = () => {
-    if (document.visibilityState !== "visible") return;
-    try { new Notification(title, { body }); } catch { /* ignore */ }
-  };
-  if (Notification.permission === "granted") {
-    show();
-  } else if (Notification.permission === "default") {
-    Notification.requestPermission().then(p => { if (p === "granted") show(); }).catch(() => {});
-  }
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try { new Notification(title, { body }); } catch { /* ignore */ }
 }
 
 export default function Workspace({ sessionName }: Props) {
@@ -150,6 +144,17 @@ export default function Workspace({ sessionName }: Props) {
   // attach effect so the cwd-follow effect below won't re-fetch the very
   // same path on first mount.
   const lastFetchedCwdRef = useRef<string | null>(null);
+
+  // In-app live notification toast (Claude Code hooks). Declared before the
+  // event subscription below so `setLiveToast` is in scope in its deps array.
+  // Always shown in-app — notifyDesktop is a best-effort extra (needs
+  // permission + a focused tab), so it can't be relied on alone.
+  const [liveToast, setLiveToast] = useState<{ id: number; title: string; body: string } | null>(null);
+  useEffect(() => {
+    if (!liveToast) return;
+    const t = window.setTimeout(() => setLiveToast(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [liveToast]);
 
   // Claim primary for our active view whenever this window is the one being
   // used. `/pty` no longer carries a primary flag — the focused/visible client
@@ -374,7 +379,14 @@ export default function Workspace({ sessionName }: Props) {
                                 const title = e.params.title || "Claude Code";
                                 const body = e.params.body || "";
                                 setStatus(body ? `🔔 ${title}: ${body}` : `🔔 ${title}`);
-                                notifyDesktop(title, body);
+                                // Visible → in-app toast; hidden/unfocused → OS
+                                // desktop notification (so you see it on another
+                                // tab/app). Status line covers both.
+                                if (document.visibilityState === "visible") {
+                                  setLiveToast({ id: e.params.seq ?? 0, title, body });
+                                } else {
+                                  notifyDesktop(title, body);
+                                }
                               }
                               break;
       }
@@ -382,7 +394,7 @@ export default function Workspace({ sessionName }: Props) {
   }, [client, clientJoined, clientLeft, registerPty, removePty, updatePtyCwd,
       ptyCommandStarted, ptyCommandFinished,
       applyViewOpened, applyViewClosed, applyViewActiveChanged, applyViewMoved,
-      setDirChildren, setGit, setStatus, setSessionTheme, setTheme]);
+      setDirChildren, setGit, setStatus, setSessionTheme, setTheme, setLiveToast]);
 
   // ── follow active PTY's cwd → re-root the file tree ──
   const activeViewObj = views.find(v => v.id === activeView) ?? null;
@@ -569,6 +581,17 @@ export default function Workspace({ sessionName }: Props) {
 
   return (
     <div className={"workspace" + (isMobile ? " is-mobile" : "")}>
+      {liveToast && (
+        <div
+          className="live-toast"
+          role="status"
+          onClick={() => setLiveToast(null)}
+          title="dismiss"
+        >
+          <div className="live-toast-title">🔔 {liveToast.title}</div>
+          {liveToast.body && <div className="live-toast-body">{liveToast.body}</div>}
+        </div>
+      )}
       <Topbar
         sessionName={sessionName}
         fileTree={{   visible: fileTreeVisible,   toggle: () => setFileTreeVisible(v => !v) }}

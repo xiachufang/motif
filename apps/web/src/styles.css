@@ -1597,3 +1597,37 @@ button.mdock-mgr-btn {
 :root[data-theme="light"] .preview .hljs-emphasis { font-style: italic; }
 :root[data-theme="light"] .preview .hljs-strong { font-weight: bold; }
 :root[data-theme="light"] .preview .hljs-link { text-decoration: underline; }
+
+/* ── Live notification toast (Claude Code hooks) ───────────────────────────
+   In-app banner shown on a `notification` event. Centered near the top,
+   above the workspace chrome; click to dismiss (also auto-dismisses). */
+.live-toast {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  max-width: min(520px, calc(100vw - 24px));
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  animation: live-toast-in 0.22s ease-out;
+}
+.live-toast-title { font-size: 13px; font-weight: 600; color: var(--fg); }
+.live-toast-body {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+@keyframes live-toast-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
