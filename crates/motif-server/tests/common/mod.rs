@@ -54,6 +54,10 @@ impl TestServer {
             manager: motif_server::session::manager::SessionManager::new(),
             auth: Arc::new(motif_server::auth::TokenStore::required(token.clone())),
             conns: motif_server::conn_registry::ConnRegistry::new(),
+            devices: motif_server::relay::DeviceState {
+                store: motif_server::devices::DeviceStore::new(),
+                relay: None,
+            },
         };
         let app = motif_server::ws::router(state);
         // Serve through motif-net's Listener (like motifd does) so the

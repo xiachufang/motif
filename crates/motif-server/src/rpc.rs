@@ -80,6 +80,7 @@ pub fn is_mutating_method(method: &str) -> bool {
 pub fn dispatch_concurrent(
     manager: &Arc<SessionManager>,
     conn: &ConnSnapshot,
+    devices: &crate::relay::DeviceState,
     req: Request,
 ) -> Response {
     let id = req.id.clone();
@@ -88,6 +89,10 @@ pub fn dispatch_concurrent(
         "session.list" => handle_list(manager, id, req.params),
         "session.create" => handle_create(manager, id, req.params),
         "session.destroy" => handle_destroy(manager, id, req.params),
+
+        // device.* (push-notification registration; global, no attach needed)
+        "device.register" => handle_device_register(devices, id, req.params),
+        "device.unregister" => handle_device_unregister(devices, id, req.params),
         // mutating methods belong on the serial path
         "session.attach" | "session.detach" => Response::err(
             id,
@@ -225,6 +230,42 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         ),
         Err(e) => Response::err(id, RpcError::internal(e.to_string())),
     }
+}
+
+// ─────────────────────────── device handlers ───────────────────────────
+
+fn handle_device_register(devices: &crate::relay::DeviceState, id: Id, params: Value) -> Response {
+    let p: motif_proto::device::RegisterParams = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    devices.store.register(crate::devices::DeviceEntry {
+        device_token: p.device_token,
+        platform: p.platform,
+        environment: p.environment,
+        enc_key: p.enc_key,
+        app_version: p.app_version,
+        registered_at: 0,
+    });
+    Response::ok(
+        id,
+        motif_proto::device::RegisterResult {
+            instance_id: devices.instance_id(),
+        },
+    )
+}
+
+fn handle_device_unregister(
+    devices: &crate::relay::DeviceState,
+    id: Id,
+    params: Value,
+) -> Response {
+    let p: motif_proto::device::UnregisterParams = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    devices.store.unregister(&p.device_token);
+    Response::ok(id, motif_proto::device::UnregisterResult::default())
 }
 
 fn handle_attach(

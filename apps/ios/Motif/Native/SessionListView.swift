@@ -7,6 +7,7 @@ import TalkerCommonRouter
 /// /session route so SessionView takes over.
 struct SessionListView: View {
     @Environment(MotifClient.self) private var motif
+    @Environment(AppState.self) private var appState
     @Environment(CmRouter.self) private var router
 
     @State private var loading: Bool = false
@@ -69,6 +70,12 @@ struct SessionListView: View {
             if case .connected = newState {
                 Task { await refresh() }
             }
+            // A connect (possibly after switching servers for a deep link) is
+            // also when a pending notification tap can finally route.
+            consumeDeepLinkIfReady()
+        }
+        .onChange(of: appState.pendingDeepLink) { _, _ in
+            consumeDeepLinkIfReady()
         }
         .toolbar {
             // Leading slot — NativeRoot's `rootToolbar` already owns the
@@ -209,6 +216,32 @@ struct SessionListView: View {
         error = nil
         await motif.refreshSessions()
         loading = false
+    }
+
+    /// Route a tapped push notification to its session, once we're connected to
+    /// the right server. If the link maps to a different configured server,
+    /// switch to it first (this re-keys NativeRoot's connect task); the
+    /// motif.state change after reconnect re-invokes this and completes the nav.
+    private func consumeDeepLinkIfReady() {
+        guard let link = appState.pendingDeepLink, let name = link.sessionName, !name.isEmpty else {
+            return
+        }
+        // If the link names a server we know and it isn't active, switch first.
+        if let inst = link.instanceID,
+           let sid = PushManager.shared.server(forInstance: inst),
+           let target = UUID(uuidString: sid),
+           appState.servers.activeServer?.id != target
+        {
+            appState.servers.setActive(id: target)
+            return // wait for the reconnect; re-entered via onChange(of: motif.state)
+        }
+        // Need a live connection on the (now-correct) server before attaching.
+        switch motif.state {
+        case .connected, .attached: break
+        default: return
+        }
+        appState.pendingDeepLink = nil // clear before awaiting to avoid re-entry
+        Task { await attach(name) }
     }
 
     private func attach(_ name: String) async {

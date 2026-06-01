@@ -42,6 +42,23 @@ targets:
       - path: Motif
         excludes:
           - "Info.plist"
+          - "Motif.entitlements"
+    # Push Notifications + App Groups. The App Group is shared with the
+    # MotifNotifyService extension and doubles as the keychain access group
+    # (iOS treats every App Group as one of your keychain access groups), so the
+    # extension can read the per-device AES key and decrypt payloads on device.
+    # A dedicated keychain-sharing group was tried but securityd refused it at
+    # runtime (errSecMissingEntitlement); the App Group is honored reliably.
+    # Use "production" for aps-environment in App Store / TestFlight builds.
+    entitlements:
+      path: Motif/Motif.entitlements
+      properties:
+        # Driven by MOTIF_APS_ENV (development in Debug, production in Release)
+        # so the token's APNs world always matches PushManager's #if DEBUG hint.
+        # Expanded at code-signing time.
+        aps-environment: $(MOTIF_APS_ENV)
+        com.apple.security.application-groups:
+          - group.io.allsunday.motif
     info:
       path: Motif/Info.plist
       properties:
@@ -81,6 +98,13 @@ targets:
           - $(SRCROOT)/vendor
         OTHER_LDFLAGS:
           - "-ObjC"
+        # APNs environment, matched to the build config (and thus to
+        # PushManager's #if DEBUG hint). Drives aps-environment in the
+        # entitlements above.
+        MOTIF_APS_ENV: development
+      configs:
+        Release:
+          MOTIF_APS_ENV: production
     dependencies:
       - framework: vendor/TailscaleKit.xcframework
         embed: true
@@ -96,6 +120,46 @@ targets:
       - package: MessagePack
       - package: libghostty-spm
         product: GhosttyTerminal
+      # Embeds the notification service extension into the app bundle.
+      - target: MotifNotifyService
+
+  # Notification Service Extension: decrypts E2E-encrypted push payloads on
+  # device before they're shown (the only iOS hook that runs between APNs
+  # delivery and display when the app is backgrounded/killed). Shares the App
+  # Group + Keychain group with the app to read the per-device AES key.
+  MotifNotifyService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: MotifNotifyService
+        excludes:
+          - "MotifNotifyService.entitlements"
+    entitlements:
+      path: MotifNotifyService/MotifNotifyService.entitlements
+      properties:
+        # App Group, shared with the app; also serves as the keychain access
+        # group for reading the per-device AES key (see the app target note).
+        com.apple.security.application-groups:
+          - group.io.allsunday.motif
+    info:
+      path: MotifNotifyService/Info.plist
+      properties:
+        CFBundleDisplayName: MotifNotifyService
+        # Must match the parent app's version exactly, else the build's
+        # embedded-extension validation fails ("CFBundleShortVersionString of
+        # an app extension must match that of its containing parent app").
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.allsunday.motif.MotifNotifyService
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: UWNR93L682
 
   MotifTests:
     type: bundle.unit-test

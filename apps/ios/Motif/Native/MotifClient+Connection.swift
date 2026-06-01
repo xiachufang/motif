@@ -122,6 +122,11 @@ extension MotifClient {
         }
         log.notice("connected to motifd as \(server.name, privacy: .public)")
         infoLog("[MotifClient] ws task resumed (state=connected)")
+        // Register this device for push with the now-connected motifd (idempotent;
+        // re-sends the token + per-device key over the authenticated channel).
+        // Detached so it never delays the auto-reattach below.
+        let serverID = server.id.uuidString
+        Task { await PushManager.shared.registerIfPossible(client: self, serverID: serverID) }
         eventTask = Task { [weak self] in
             guard let stream = self?.rpc?.events else { return }
             for await event in stream {

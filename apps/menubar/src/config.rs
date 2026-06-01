@@ -183,6 +183,9 @@ impl MenuConfig {
             tailscale,
             token,
             allow_insecure_no_auth,
+            // The menu-bar app embeds motifd on loopback for local use; push
+            // notifications (which need a public relay) aren't wired here.
+            push_relay_url: None,
         })
     }
 }

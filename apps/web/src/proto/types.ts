@@ -142,6 +142,7 @@ export type Event =
   | { method: "view.active_changed"; params: { view_id: ViewId | null; seq: Seq } }
   | { method: "view.moved";     params: { order: ViewId[]; seq: Seq } }
   | { method: "session.theme_changed"; params: { theme: "light" | "dark"; seq: Seq } }
+  | { method: "notification";   params: { title: string; body: string; session_id?: string | null; kind: string; seq: Seq } }
   // ── v2 shell-integration ──
   | { method: "pty.shell_bootstrapped"; params: { pty_id: PtyId; shell: ShellKind; seq: Seq } }
   | { method: "pty.prompt_started";     params: { pty_id: PtyId; block_id: BlockId; seq: Seq } }

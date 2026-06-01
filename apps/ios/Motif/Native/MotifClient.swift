@@ -19,6 +19,15 @@ import TalkerCommonLogging
 /// below is `internal` (and observable fields use plain `var` rather than
 /// `private(set)`). By convention only `MotifClient` mutates this state — the
 /// SwiftUI views that observe it treat it as read-only.
+/// A server-side notification surfaced on the live channel (Claude Code hook).
+/// `id` lets a banner view animate distinct notifications.
+struct MotifNotification: Identifiable, Equatable {
+    let id = UUID()
+    var title: String
+    var body: String
+    var sessionName: String?
+}
+
 @MainActor
 @Observable
 final class MotifClient {
@@ -81,6 +90,11 @@ final class MotifClient {
     /// every client looks identical and PTY output colours match the
     /// background. `nil` → fall back to this device's own preference.
     var sessionTheme: String?
+    /// Most recent server-side notification (Claude Code hook), for the
+    /// in-app/live channel. A banner view can observe this; cleared by the
+    /// consumer. Background delivery when the app is closed is handled out of
+    /// band via APNs (see PushManager).
+    var latestNotification: MotifNotification?
     /// Other clients attached to the same session. Seeded from
     /// `session.attach` and updated by `client.joined` / `client.left`.
     /// Excludes our own client_id (the server's attach response already

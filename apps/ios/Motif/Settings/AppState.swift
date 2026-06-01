@@ -25,6 +25,11 @@ final class AppState {
     /// Drives the Settings sheet (bundle id + version + diagnostics).
     var isShowingSettings: Bool = false
 
+    /// A tapped push notification's deep link, awaiting routing. Set by
+    /// PushManager; consumed (and cleared) by SessionListView once connected to
+    /// the right server.
+    var pendingDeepLink: PushDeepLink?
+
     /// Bumped to force NativeRoot to rebuild + re-task the connection when
     /// something other than the active server changes (e.g. Tailscale flips
     /// from .stopped to .running and the previous connection bailed early).

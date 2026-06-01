@@ -3,6 +3,9 @@ import SwiftUI
 @main
 struct MotifApp: App {
     @State private var appState = AppState()
+    // Bridges APNs callbacks (token registration, notification taps) into
+    // PushManager. See Push/PushManager.swift.
+    @UIApplicationDelegateAdaptor(MotifAppDelegate.self) private var appDelegate
 
     var body: some Scene {
         WindowGroup {

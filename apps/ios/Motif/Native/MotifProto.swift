@@ -380,6 +380,34 @@ enum MotifProto {
         var seq: UInt64?
     }
 
+    // ── device.* (push registration) ──
+
+    struct DeviceRegisterParams: Encodable {
+        var device_token: String
+        var platform: String                 // "ios"
+        var environment: String?             // "sandbox" | "production"
+        var enc_key: String                  // base64 of a 32-byte AES-256-GCM key
+        var app_version: String?
+    }
+
+    struct DeviceRegisterResult: Decodable {
+        var instance_id: String
+    }
+
+    struct DeviceUnregisterParams: Encodable {
+        var device_token: String
+    }
+
+    /// `notification` event — a server-side notification (Claude Code hook)
+    /// for the live/in-app channel.
+    struct NotificationEvent: Decodable {
+        var title: String
+        var body: String
+        var session_id: String?
+        var kind: String
+        var seq: UInt64?
+    }
+
     /// Decoded form of a `pty.output` notification's params.
     struct PtyOutputEvent: Decodable {
         var pty_id: String

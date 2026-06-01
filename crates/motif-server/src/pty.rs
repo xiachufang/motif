@@ -474,6 +474,14 @@ impl PtyPool {
         if let Some(ref bs) = bootstrap {
             bs.apply_to(&mut cb);
         }
+        // Inject the owning session's name so the Claude Code notify hook can
+        // tell motifd which session it fired in (for live-event routing +
+        // notification deep-linking). MOTIF_HOOK_SOCK itself is inherited from
+        // motifd's process env on Unix. Best-effort: skip if the back-pointer
+        // isn't wired yet.
+        if let Some(sess) = self.session() {
+            cb.env("MOTIF_SESSION_NAME", &sess.name);
+        }
         let child = pair
             .slave
             .spawn_command(cb)

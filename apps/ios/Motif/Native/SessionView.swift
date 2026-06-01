@@ -354,7 +354,7 @@ struct SessionView: View {
                 Button {
                     showingTermSettings = true
                 } label: {
-                    Image(systemName: "textformat.size")
+                    Image(systemName: "gearshape")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {

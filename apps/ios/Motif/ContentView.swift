@@ -28,6 +28,12 @@ struct ContentView: View {
             SettingsView().environment(appState)
         }
         .task {
+            // Wire push deep-link delivery to this AppState, then ask for
+            // notification authorization + register for remote notifications.
+            // Safe/no-op when the user declines or push is unconfigured.
+            PushManager.shared.appState = appState
+            await PushManager.shared.requestAuthorizationAndRegister()
+
             // Auto-resume Tailscale. With cached creds tsnet skips the
             // user prompt entirely; otherwise busDidReceive surfaces a
             // BrowseToURL via the setup sheet. In DEBUG we wedge a

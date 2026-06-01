@@ -1,0 +1,48 @@
+//! `device.*` request/response types — push-notification device registration.
+//!
+//! A client (currently iOS) registers its APNs device token plus a per-device
+//! symmetric key. The key is shared only between the client and this motifd
+//! instance (over the already-authenticated RPC channel); the push relay never
+//! sees it, so notification content is end-to-end encrypted. See
+//! `docs/prd.md` and the push-relay design notes.
+
+use serde::{Deserialize, Serialize};
+
+// ────────────────────────────────────────────────────── device.register
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterParams {
+    /// APNs device token, lowercase hex.
+    pub device_token: String,
+    /// Client platform, e.g. `"ios"`.
+    pub platform: String,
+    /// APNs environment hint: `"sandbox"` (dev builds) or `"production"`
+    /// (App Store / TestFlight). The relay uses it to pick the APNs host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// Base64 of a 32-byte AES-256-GCM key generated on-device. motifd uses it
+    /// to encrypt the notification payload per device; the relay only ever sees
+    /// the ciphertext.
+    pub enc_key: String,
+    /// Optional client app version, for diagnostics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterResult {
+    /// This motifd instance's stable id. The client persists
+    /// `instance_id → server` so a tapped notification can be routed back to
+    /// the right configured server for deep-linking.
+    pub instance_id: String,
+}
+
+// ──────────────────────────────────────────────────── device.unregister
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnregisterParams {
+    pub device_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnregisterResult {}

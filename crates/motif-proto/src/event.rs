@@ -79,6 +79,23 @@ pub enum Event {
     #[serde(rename = "session.theme_changed")]
     SessionThemeChanged { theme: String, seq: Seq },
 
+    /// A user-facing notification originating server-side (currently from a
+    /// Claude Code hook arriving on the local hook socket). Broadcast to every
+    /// attached client for in-app / terminal presentation (the "live" channel).
+    /// Background delivery (iOS APNs) is handled out-of-band by the relay and is
+    /// not represented here.
+    #[serde(rename = "notification")]
+    Notification {
+        title: String,
+        body: String,
+        /// Originating session, if known — lets clients deep-link.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        /// Coarse kind, e.g. `"needs_input"` (Claude needs attention) or
+        /// `"finished"` (turn ended).
+        kind: String,
+        seq: Seq,
+    },
 }
 
 impl Event {
@@ -97,6 +114,7 @@ impl Event {
             Self::ViewActiveChanged { seq, .. } => *seq,
             Self::ViewMoved { seq, .. } => *seq,
             Self::SessionThemeChanged { seq, .. } => *seq,
+            Self::Notification { seq, .. } => *seq,
         }
     }
 }

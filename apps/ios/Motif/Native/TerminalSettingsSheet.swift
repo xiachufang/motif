@@ -38,6 +38,16 @@ struct TerminalSettingsSheet: View {
                 } footer: {
                     Text("Applies to all terminals immediately. System follows your iOS appearance.")
                 }
+                Section {
+                    Toggle("Push Notifications", isOn: Binding(
+                        get: { PushManager.shared.pushEnabled },
+                        set: { PushManager.shared.setPushEnabled($0) }
+                    ))
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Get notified on this device when Claude needs your input or finishes — even when Motif is closed. Turn off to stop notifications here.")
+                }
             }
             .navigationTitle("Terminal")
             .navigationBarTitleDisplayMode(.inline)

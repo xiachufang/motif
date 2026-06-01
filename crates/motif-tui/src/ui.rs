@@ -731,12 +731,52 @@ impl AppState {
 
 // ─────────────────────────── Notification application ───────────────────────────
 
+/// Forward a notification to the controlling terminal as an OSC 9 desktop
+/// notification (iTerm2 / ghostty / kitty / WezTerm) plus an audible bell.
+/// OSC 9 doesn't touch the grid, so writing it straight to stdout between
+/// ratatui frames is safe. Control bytes are stripped from the message so a
+/// crafted notification can't inject further escapes.
+fn notify_terminal(title: &str, body: &str) {
+    use std::io::Write;
+    let sanitize = |s: &str| -> String {
+        s.chars().filter(|c| !c.is_control()).collect()
+    };
+    let text = match (sanitize(title), sanitize(body)) {
+        (t, b) if b.is_empty() => t,
+        (t, b) => format!("{t}: {b}"),
+    };
+    // OSC 9 ; <text> ST , then a standalone BEL for the audible bell.
+    let seq = format!("\x1b]9;{text}\x1b\\\x07");
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+}
+
 fn apply_notification(state: &mut AppState, n: Notification) {
     match n.method.as_str() {
         "client.joined" => state.other_clients += 1,
         "client.left" => state.other_clients = state.other_clients.saturating_sub(1),
         "tree.changed" => state.status = "tree changed (press r to refresh)".into(),
         "git.changed" => state.status = "git changed (press r to refresh)".into(),
+
+        // Server-side notification (currently Claude Code hooks). Show it in
+        // the status line and forward it to the controlling terminal as an
+        // OSC 9 desktop notification + bell — so the user's real terminal
+        // (ghostty/iTerm/kitty, even over SSH) raises a native alert.
+        "notification" => {
+            let title = n
+                .params
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Claude Code");
+            let body = n.params.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            state.status = if body.is_empty() {
+                format!("🔔 {title}")
+            } else {
+                format!("🔔 {title}: {body}")
+            };
+            notify_terminal(title, body);
+        }
 
         // Synced tabs: views are the source of truth for "what tabs exist /
         // which is active". They auto-pop-up on every client.

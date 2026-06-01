@@ -21,6 +21,14 @@ axum               = { workspace = true }
 
 futures-util       = { workspace = true }
 
+# Outbound HTTPS to the push relay + per-device payload encryption.
+hyper              = { workspace = true }
+hyper-util         = { workspace = true }
+hyper-rustls       = { workspace = true }
+http               = { workspace = true }
+http-body-util     = { workspace = true }
+aes-gcm            = { workspace = true }
+
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 rmp-serde          = { workspace = true }

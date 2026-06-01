@@ -3,13 +3,16 @@
 pub mod auth;
 pub mod config;
 pub mod conn_registry;
+pub mod devices;
 pub mod embed;
 pub mod events_ws;
 pub mod fs;
 pub mod fswatch;
 pub mod git;
+pub mod hook_ingress;
 pub mod http_rpc;
 pub mod pty;
+pub mod relay;
 pub mod pty_ws;
 pub mod rpc;
 pub mod rpc_log;
@@ -297,6 +300,8 @@ pub struct RunningServer {
     shutdown: CancellationToken,
     serve_task: JoinHandle<anyhow::Result<()>>,
     wake_task: JoinHandle<()>,
+    /// Hook-ingress unix-socket task, present only when push is enabled.
+    hook_task: Option<JoinHandle<()>>,
 }
 
 impl RunningServer {
@@ -347,6 +352,7 @@ impl RunningServer {
             shutdown,
             mut serve_task,
             wake_task,
+            hook_task,
         } = self;
 
         shutdown.cancel();
@@ -361,6 +367,9 @@ impl RunningServer {
             }
         };
         wake_task.abort();
+        if let Some(h) = hook_task {
+            h.abort();
+        }
         result
     }
 }
@@ -387,10 +396,25 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
             auth::TokenStore::disabled()
         }
     };
+    // Push-notification state: an in-memory device-token store (not persisted
+    // — see `devices` module docs) plus, when a relay URL is configured, the
+    // relay client. Clients re-register on every connect, so nothing needs to
+    // survive a restart.
+    let device_store = devices::DeviceStore::new();
+    let relay_client = cfg.push_relay_url.clone().map(relay::RelayClient::new);
+    if relay_client.is_some() {
+        tracing::info!(instance_id = %device_store.instance_id(), "push notifications enabled");
+    }
+    let device_state = relay::DeviceState {
+        store: device_store,
+        relay: relay_client,
+    };
+
     let state = ws::AppState {
         manager: manager.clone(),
         auth: Arc::new(token_store),
         conns: conn_registry::ConnRegistry::new(),
+        devices: device_state.clone(),
     };
     let app = ws::router(state);
 
@@ -433,6 +457,30 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     let ts = listener.tailscale_server();
 
     let shutdown = CancellationToken::new();
+
+    // Hook ingress: a local unix socket that receives Claude Code hook
+    // notifications from the shell-injected `motif-notify.sh`. Only spawned
+    // when push is enabled. The socket path is exported to the process env so
+    // child PTYs (which inherit motifd's env on Unix) see it as MOTIF_HOOK_SOCK.
+    let hook_task = if device_state.relay.is_some() {
+        let sock_path = hook_ingress::default_hook_socket_path();
+        std::env::set_var("MOTIF_HOOK_SOCK", &sock_path);
+        match hook_ingress::spawn(
+            sock_path,
+            device_state.clone(),
+            manager.clone(),
+            shutdown.clone(),
+        ) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("failed to bind hook ingress socket: {e}; push disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let child = shutdown.clone();
     // `into_make_service_with_connect_info::<PeerAddr>()` so handlers
     // can pull the peer addr via `ConnectInfo<PeerAddr>` and stamp it
@@ -457,6 +505,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         shutdown,
         serve_task,
         wake_task,
+        hook_task,
     })
 }
 

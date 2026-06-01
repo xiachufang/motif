@@ -29,3 +29,7 @@ apps/ios/**/xcshareddata/IDEWorkspaceChecks.plist
 apps/ios/Motif.xcodeproj/
 apps/ios/Motif/Resources/web/
 apps/ios/vendor
+
+# Push relay secrets — APNs .p8 auth key must never be committed.
+secrets/
+*.p8

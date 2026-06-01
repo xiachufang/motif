@@ -26,6 +26,9 @@ pub struct AppState {
     /// Registry of per-session_id ConnState. Used by HTTP /rpc and the
     /// /events and /pty/<id> WS upgrades.
     pub conns: Arc<ConnRegistry>,
+    /// Push-notification state: device-token store + optional relay client.
+    /// Carried so `device.register`/`device.unregister` RPCs can reach it.
+    pub devices: crate::relay::DeviceState,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -145,6 +148,7 @@ pub fn event_tag(ev: &Event) -> &'static str {
         Event::ViewActiveChanged { .. } => "evt:view.active_changed",
         Event::ViewMoved { .. } => "evt:view.moved",
         Event::SessionThemeChanged { .. } => "evt:session.theme_changed",
+        Event::Notification { .. } => "evt:notification",
     }
 }
 

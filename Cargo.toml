@@ -42,6 +42,12 @@ hyper              = { version = "1", features = ["client", "http1"] }
 hyper-util         = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 http               = "1"
 http-body-util     = "0.1"
+# Outbound HTTPS to the push relay (motifd → relay). Pinned to the `ring`
+# crypto provider, NOT aws-lc-rs (rustls 0.23's default) — aws-lc-sys's asm
+# trips the macOS linker, which is why the workspace keeps it out (see the
+# tokio-tungstenite note above).
+hyper-rustls       = { version = "0.27", default-features = false, features = ["ring", "webpki-roots", "http1", "tls12"] }
+aes-gcm            = "0.10"
 
 # CLI / config
 clap               = { version = "4", features = ["derive", "env"] }

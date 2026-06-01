@@ -86,3 +86,12 @@ fi
 autoload -Uz add-zsh-hook
 add-zsh-hook precmd  __motif_precmd
 add-zsh-hook preexec __motif_preexec
+
+# ── Motif: provision Claude Code notify hooks (push only) ────────────
+# When motifd has push enabled (MOTIF_HOOK_SOCK set) and generated a
+# settings file, transparently pass it to `claude` so Notification/Stop
+# hooks fire — without touching the user's ~/.claude/settings.json.
+# `command claude` skips this function, so there's no recursion.
+if [[ -n "$MOTIF_HOOK_SOCK" && -n "$MOTIF_CLAUDE_SETTINGS" ]]; then
+    claude() { command claude --settings "$MOTIF_CLAUDE_SETTINGS" "$@"; }
+fi

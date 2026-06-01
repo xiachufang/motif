@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // Server-pushed event fan-in. Translates RpcClient notifications into
 // observable state mutations.
@@ -121,6 +122,20 @@ extension MotifClient {
             // whole UI renders the same way across clients.
             if let payload = try? event.decode(MotifProto.SessionThemeChangedEvent.self) {
                 sessionTheme = payload.theme
+            }
+
+        case "notification":
+            // Live/in-app channel for server-side notifications (Claude Code
+            // hooks). Surface for any banner observer + fire a haptic. When the
+            // app is backgrounded/closed the same notification arrives via APNs
+            // (PushManager); the system handles that path instead.
+            if let payload = try? event.decode(MotifProto.NotificationEvent.self) {
+                latestNotification = MotifNotification(
+                    title: payload.title,
+                    body: payload.body,
+                    sessionName: payload.session_id
+                )
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
 
         case "client.joined":

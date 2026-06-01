@@ -21,6 +21,11 @@ pub struct ServerConfig {
     /// a loud startup warning). Off by default; operators must consciously
     /// enable it.
     pub allow_insecure_no_auth: bool,
+    /// Push-relay base URL. When set, Claude Code hook notifications arriving
+    /// on the local hook socket are forwarded here (encrypted) for APNs
+    /// delivery. `None` disables push entirely. motifd never holds the APNs
+    /// signing key — only this relay URL.
+    pub push_relay_url: Option<String>,
 }
 
 impl ServerConfig {

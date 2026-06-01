@@ -64,6 +64,13 @@ struct Args {
     #[arg(long)]
     insecure_no_auth: bool,
 
+    /// Push-relay base URL for iOS background notifications. When set, Claude
+    /// Code hook notifications are forwarded here (end-to-end encrypted) for
+    /// APNs delivery. Omit to disable push. motifd never holds the APNs
+    /// signing key — only this URL.
+    #[arg(long)]
+    push_relay_url: Option<String>,
+
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
     log: String,
@@ -141,6 +148,7 @@ async fn run() -> anyhow::Result<()> {
         tailscale,
         token,
         allow_insecure_no_auth: args.insecure_no_auth,
+        push_relay_url: args.push_relay_url,
     };
     motif_server::serve(cfg).await
 }

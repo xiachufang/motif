@@ -79,6 +79,24 @@ function affectedDirs(paths: string[], cached: Map<string, unknown>): string[] {
   return [...out];
 }
 
+/** Raise a desktop notification when the tab is visible and permission is
+ *  granted. Lazily requests permission the first time (best-effort; browsers
+ *  may ignore a non-gesture request). No-op where the Notification API is
+ *  unavailable. This is the web "live" channel only — there is no background
+ *  push (the tab must be open). */
+function notifyDesktop(title: string, body: string): void {
+  if (typeof Notification === "undefined") return;
+  const show = () => {
+    if (document.visibilityState !== "visible") return;
+    try { new Notification(title, { body }); } catch { /* ignore */ }
+  };
+  if (Notification.permission === "granted") {
+    show();
+  } else if (Notification.permission === "default") {
+    Notification.requestPermission().then(p => { if (p === "granted") show(); }).catch(() => {});
+  }
+}
+
 export default function Workspace({ sessionName }: Props) {
   const client       = useApp(s => s.client);
   const session      = useApp(s => s.session);
@@ -345,6 +363,18 @@ export default function Workspace({ sessionName }: Props) {
                                 if (root) {
                                   try { const g = await client.call<StatusResult>("git.status", { cwd: root }); setGit(g.branch ?? null, g.files); } catch {/*ignore*/}
                                 }
+                              }
+                              break;
+
+        // Server-side notification (currently Claude Code hooks). Surface it
+        // in the status line, and — if the tab is visible and the user has
+        // granted permission — raise a desktop notification. No service
+        // worker / background push (the tab must be open).
+        case "notification": {
+                                const title = e.params.title || "Claude Code";
+                                const body = e.params.body || "";
+                                setStatus(body ? `🔔 ${title}: ${body}` : `🔔 ${title}`);
+                                notifyDesktop(title, body);
                               }
                               break;
       }

@@ -12,9 +12,8 @@ fn loopback_cfg() -> ServerConfig {
         listen: Some(([127, 0, 0, 1], 0).into()), // port 0 → OS-assigned
         tailscale: None,
         token: None,
-        cert: None,
-        key: None,
         allow_insecure_no_auth: false,
+        push_relay_url: None,
     }
 }
 

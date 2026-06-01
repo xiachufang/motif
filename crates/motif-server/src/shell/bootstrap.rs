@@ -43,6 +43,11 @@ pub struct Bootstrap {
     /// Original ZDOTDIR (zsh-only) so the wrapped rcfile can reach the
     /// user's real ~/.zshrc instead of recursing into our tmpdir.
     user_zdotdir: Option<PathBuf>,
+    /// Generated Claude Code `--settings` file wiring the notify hook. The
+    /// `claude` wrapper in each shell script passes this via `--settings` so
+    /// the Notification/Stop hooks are provisioned without touching the user's
+    /// `~/.claude/settings.json`.
+    settings_path: PathBuf,
 }
 
 impl Bootstrap {
@@ -78,12 +83,32 @@ impl Bootstrap {
             ShellKind::Unknown => unreachable!("guarded above"),
         };
         let user_zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
+
+        // Materialize the Claude Code notify hook + a settings file that wires
+        // it. The settings file references the notify script by absolute path,
+        // so it's generated per-PTY rather than embedded.
+        write_asset_executable(dir.path(), "motif-notify.sh")?;
+        let notify = dir.path().join("motif-notify.sh");
+        let settings_path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "Notification": [
+                    { "hooks": [ { "type": "command", "command": notify.to_string_lossy() } ] }
+                ],
+                "Stop": [
+                    { "hooks": [ { "type": "command", "command": notify.to_string_lossy() } ] }
+                ]
+            }
+        });
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings).ok()?).ok()?;
+
         Some(Self {
             kind,
             session_id: session_id.into(),
             dir,
             entry,
             user_zdotdir,
+            settings_path,
         })
     }
 
@@ -94,6 +119,10 @@ impl Bootstrap {
         cb.env("MOTIF_SHELL", shell_kind_str(self.kind));
         cb.env("MOTIF_SESSION_ID", &self.session_id);
         cb.env("MOTIF_BOOTSTRAP_DIR", self.dir.path().as_os_str());
+        // The `claude` wrapper (defined in each shell script) only kicks in
+        // when MOTIF_HOOK_SOCK is also present (i.e. push is enabled); see the
+        // wrapper guards. We always set this so the wrapper has the path ready.
+        cb.env("MOTIF_CLAUDE_SETTINGS", self.settings_path.as_os_str());
 
         match self.kind {
             ShellKind::Bash => {
@@ -128,6 +157,21 @@ fn shell_kind_str(k: ShellKind) -> &'static str {
 fn write_asset(dir: &Path, name: &str) -> Option<()> {
     let bytes = ShellAssets::get(name)?.data;
     std::fs::write(dir.join(name), bytes).ok()?;
+    Some(())
+}
+
+/// Like [`write_asset`] but marks the file executable (0700) on Unix — used
+/// for `motif-notify.sh`, which Claude Code execs as a hook command.
+fn write_asset_executable(dir: &Path, name: &str) -> Option<()> {
+    write_asset(dir, name)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            dir.join(name),
+            std::fs::Permissions::from_mode(0o700),
+        );
+    }
     Some(())
 }
 
@@ -168,10 +212,47 @@ mod tests {
     fn assets_embed_resolves_all_scripts() {
         // Catches a forgotten `assets/shell/` file at compile time —
         // rust-embed won't fail to build, but the asset will be missing.
-        for name in ["bash.sh", "bash-preexec.sh", "zsh.zsh", "fish.fish"] {
+        for name in [
+            "bash.sh",
+            "bash-preexec.sh",
+            "zsh.zsh",
+            "fish.fish",
+            "motif-notify.sh",
+        ] {
             assert!(
                 ShellAssets::get(name).is_some(),
                 "missing embedded asset: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_generates_claude_notify_settings() {
+        // Don't touch MOTIF_SHELL_INTEGRATION here — `prepare_skipped_when_env_disabled`
+        // toggles it and tests share the process env. If a concurrent test has
+        // it disabled at this instant, prepare returns None; just skip then.
+        let Some(bs) = Bootstrap::prepare(ShellKind::Bash, "sh-1") else {
+            return;
+        };
+        // Notify script materialized + executable.
+        let notify = bs.dir.path().join("motif-notify.sh");
+        assert!(notify.exists(), "motif-notify.sh should be materialized");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&notify).unwrap().permissions().mode();
+            assert!(mode & 0o100 != 0, "notify script should be executable");
+        }
+        // Settings file wires both hooks at the notify script.
+        let raw = std::fs::read_to_string(&bs.settings_path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for ev in ["Notification", "Stop"] {
+            let cmd = v["hooks"][ev][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                cmd.ends_with("motif-notify.sh"),
+                "{ev} hook command should point at the notify script, got {cmd:?}"
             );
         }
     }
