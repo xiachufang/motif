@@ -78,6 +78,11 @@ export interface AppState {
   fontSize:      number;
   theme:         ThemeSetting;
 
+  /** Per-session notification mute (session names), persisted in localStorage.
+   *  Client-only — the web has no background push, so this just suppresses the
+   *  in-app toast / OS desktop notification. A session notifies unless muted. */
+  mutedSessions: Set<string>;
+
   /** Session-wide effective light/dark theme, broadcast by the server and
    *  set by whichever client is currently driving. When non-null, the whole
    *  UI renders in this theme (so a shared session looks identical and PTY
@@ -93,6 +98,7 @@ export interface AppState {
   setFontSize:   (n: number) => void;
   setTheme:      (t: ThemeSetting) => void;
   setSessionTheme: (t: ResolvedTheme | null) => void;
+  setSessionMuted: (name: string, muted: boolean) => void;
 
   hydrateWorkspace: (
     s: SessionInfo, me: string, others: ClientInfo[],
@@ -143,7 +149,7 @@ const initial = (): Pick<AppState,
   "page"|"token"|"client"|"session"|"myClientId"|"otherClients"|
   "gitBranch"|"gitFiles"|"ptyInfos"|"runningCmds"|
   "views"|"activeView"|"viewCache"|
-  "currentPath"|"dirChildren"|"expandedDirs"|"status"|"isLive"|"fontSize"|"theme"|"sessionTheme"
+  "currentPath"|"dirChildren"|"expandedDirs"|"status"|"isLive"|"fontSize"|"theme"|"sessionTheme"|"mutedSessions"
 > => ({
   page:          { kind: "login" },
   token:         loadToken(),
@@ -166,7 +172,20 @@ const initial = (): Pick<AppState,
   fontSize:      loadFontSize(),
   theme:         loadTheme(),
   sessionTheme:  null,
+  mutedSessions: loadMutedSessions(),
 });
+
+const MUTED_KEY = "motif.notifications.muted";
+function loadMutedSessions(): Set<string> {
+  try {
+    const raw = localStorage.getItem(MUTED_KEY);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch { /* ignore */ }
+  return new Set();
+}
+function saveMutedSessions(s: Set<string>): void {
+  try { localStorage.setItem(MUTED_KEY, JSON.stringify([...s])); } catch { /* ignore */ }
+}
 
 function loadToken(): string | null {
   const fromUrl = takeUrlToken();
@@ -208,6 +227,12 @@ export const useApp = create<AppState>((set) => ({
   },
   setTheme: (theme) => { saveTheme(theme); set({ theme }); },
   setSessionTheme: (sessionTheme) => set({ sessionTheme }),
+  setSessionMuted: (name, muted) => set(s => {
+    const next = new Set(s.mutedSessions);
+    if (muted) next.add(name); else next.delete(name);
+    saveMutedSessions(next);
+    return { mutedSessions: next };
+  }),
 
   hydrateWorkspace: (session, me, others, ptys, views, activeView, rootPath, rootEntries, git) => set(_s => {
     const dirChildren = new Map<string, TreeEntry[]>();

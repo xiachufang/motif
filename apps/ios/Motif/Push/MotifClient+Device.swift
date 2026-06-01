@@ -12,7 +12,7 @@ extension MotifClient {
     /// Register this device's APNs token + encryption key with the connected
     /// motifd. Safe to call repeatedly (server upserts by token). No-op when
     /// not connected.
-    func registerDevice(token: String, encKeyBase64: String, environment: String) async {
+    func registerDevice(token: String, encKeyBase64: String, environment: String, mutedSessions: [String]) async {
         guard let rpc else { return }
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         do {
@@ -23,7 +23,8 @@ extension MotifClient {
                     platform: "ios",
                     environment: environment,
                     enc_key: encKeyBase64,
-                    app_version: version
+                    app_version: version,
+                    muted_sessions: mutedSessions
                 ),
                 as: MotifProto.DeviceRegisterResult.self
             )
@@ -40,6 +41,19 @@ extension MotifClient {
         _ = try? await rpc.call(
             "device.unregister",
             params: MotifProto.DeviceUnregisterParams(device_token: token)
+        )
+    }
+
+    /// Mute/unmute background pushes for one session on this device.
+    /// Best-effort — the local muted set (PushManager) is the source of truth
+    /// and is replayed via `device.register` on the next connect.
+    func setSessionMuted(token: String, session: String, muted: Bool) async {
+        guard let rpc else { return }
+        _ = try? await rpc.call(
+            "device.set_session_muted",
+            params: MotifProto.DeviceSetSessionMutedParams(
+                device_token: token, session: session, muted: muted
+            )
         )
     }
 }

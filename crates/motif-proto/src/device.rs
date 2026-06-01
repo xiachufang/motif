@@ -27,6 +27,11 @@ pub struct RegisterParams {
     /// Optional client app version, for diagnostics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Full set of session names this device has muted. Sent on every connect
+    /// so the (in-memory) server state is restored after a motifd restart.
+    /// `None` leaves any existing muted set untouched; `Some` is authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted_sessions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,3 +51,17 @@ pub struct UnregisterParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UnregisterResult {}
+
+// ─────────────────────────────────────────────── device.set_session_muted
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetSessionMutedParams {
+    pub device_token: String,
+    /// Session name to mute/unmute notifications for.
+    pub session: String,
+    /// `true` mutes (no pushes to this device for this session), `false` unmutes.
+    pub muted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SetSessionMutedResult {}

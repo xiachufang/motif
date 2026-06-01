@@ -388,6 +388,7 @@ enum MotifProto {
         var environment: String?             // "sandbox" | "production"
         var enc_key: String                  // base64 of a 32-byte AES-256-GCM key
         var app_version: String?
+        var muted_sessions: [String]?        // full set of muted session names
     }
 
     struct DeviceRegisterResult: Decodable {
@@ -396,6 +397,12 @@ enum MotifProto {
 
     struct DeviceUnregisterParams: Encodable {
         var device_token: String
+    }
+
+    struct DeviceSetSessionMutedParams: Encodable {
+        var device_token: String
+        var session: String
+        var muted: Bool
     }
 
     /// `notification` event — a server-side notification (Claude Code hook)

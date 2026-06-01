@@ -105,7 +105,13 @@ impl RelayClient {
     /// 404/410 prunes that token from the store.
     pub async fn push_to_all(&self, store: &DeviceStore, notif: &PushNotification) {
         let instance_id = store.instance_id();
-        let devices = store.all();
+        let mut devices = store.all();
+        // Per-session mute: when the notification is attributable to a session,
+        // drop devices that muted it. An unattributed hook (session_id == None,
+        // e.g. fired outside a motif PTY) still goes to everyone.
+        if let Some(session) = notif.session_id.as_deref() {
+            devices.retain(|d| !d.muted_sessions.contains(session));
+        }
         if devices.is_empty() {
             return;
         }

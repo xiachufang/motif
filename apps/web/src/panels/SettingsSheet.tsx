@@ -13,6 +13,9 @@ export default function SettingsSheet({ onClose }: { onClose: () => void }) {
   const theme       = useApp(s => s.theme);
   const setFontSize = useApp(s => s.setFontSize);
   const setTheme    = useApp(s => s.setTheme);
+  const session         = useApp(s => s.session);
+  const mutedSessions   = useApp(s => s.mutedSessions);
+  const setSessionMuted = useApp(s => s.setSessionMuted);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -61,6 +64,18 @@ export default function SettingsSheet({ onClose }: { onClose: () => void }) {
             ))}
           </div>
         </div>
+
+        {session && (
+          <div className="settings-row">
+            <span className="settings-label">Notify for “{session.name}”</span>
+            <input
+              type="checkbox"
+              checked={!mutedSessions.has(session.name)}
+              onChange={e => setSessionMuted(session.name, !e.target.checked)}
+              aria-label={`Notifications for session ${session.name}`}
+            />
+          </div>
+        )}
 
         <div className="muted small">
           Applies to all terminals immediately. System follows your browser appearance.

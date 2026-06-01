@@ -130,6 +130,9 @@ extension MotifClient {
             // app is backgrounded/closed the same notification arrives via APNs
             // (PushManager); the system handles that path instead.
             if let payload = try? event.decode(MotifProto.NotificationEvent.self) {
+                // Respect the per-session mute (same set that gates background
+                // pushes server-side) — stay quiet for muted sessions.
+                if PushManager.shared.isSessionMuted(payload.session_id) { break }
                 latestNotification = MotifNotification(
                     title: payload.title,
                     body: payload.body,

@@ -15,6 +15,7 @@
 //! reconnected since won't receive pushes until it next connects. Negligible
 //! for a personal, few-device setup.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +32,10 @@ pub struct DeviceEntry {
     pub app_version: Option<String>,
     /// Unix ms when last registered.
     pub registered_at: u64,
+    /// Session names this device has muted — the relay skips this device when a
+    /// notification's session is in here. Per-device (lives with the entry, so
+    /// it's dropped automatically on unregister/prune).
+    pub muted_sessions: HashSet<String>,
 }
 
 /// Thread-safe in-memory device registry.
@@ -55,16 +60,33 @@ impl DeviceStore {
         self.instance_id.clone()
     }
 
-    /// Upsert a device by token.
-    pub fn register(&self, mut entry: DeviceEntry) {
+    /// Upsert a device by token. `muted` is the authoritative muted-session set
+    /// when `Some` (replayed by the client on every connect); `None` preserves
+    /// whatever set the existing entry already had. `entry.muted_sessions` is
+    /// ignored — this method fills it.
+    pub fn register(&self, mut entry: DeviceEntry, muted: Option<HashSet<String>>) {
         if entry.registered_at == 0 {
             entry.registered_at = now_ms();
         }
         let mut g = self.devices.lock();
         if let Some(existing) = g.iter_mut().find(|d| d.device_token == entry.device_token) {
+            entry.muted_sessions = muted.unwrap_or_else(|| existing.muted_sessions.clone());
             *existing = entry;
         } else {
+            entry.muted_sessions = muted.unwrap_or_default();
             g.push(entry);
+        }
+    }
+
+    /// Mute/unmute a session for a single device (no-op if the token is absent).
+    pub fn set_session_muted(&self, token: &str, session: &str, muted: bool) {
+        let mut g = self.devices.lock();
+        if let Some(d) = g.iter_mut().find(|d| d.device_token == token) {
+            if muted {
+                d.muted_sessions.insert(session.to_string());
+            } else {
+                d.muted_sessions.remove(session);
+            }
         }
     }
 
@@ -103,6 +125,7 @@ mod tests {
             enc_key: "AAAA".into(),
             app_version: None,
             registered_at: 0,
+            muted_sessions: HashSet::new(),
         }
     }
 
@@ -111,10 +134,10 @@ mod tests {
         let store = DeviceStore::new();
         assert!(!store.instance_id().is_empty());
 
-        store.register(entry("aa"));
-        store.register(entry("bb"));
+        store.register(entry("aa"), None);
+        store.register(entry("bb"), None);
         // Upsert: same token replaces, doesn't duplicate.
-        store.register(entry("aa"));
+        store.register(entry("aa"), None);
         assert_eq!(store.all().len(), 2);
 
         store.prune("aa");
@@ -124,6 +147,28 @@ mod tests {
 
         store.unregister("missing"); // no-op
         assert_eq!(store.all().len(), 1);
+    }
+
+    #[test]
+    fn per_session_mute_toggles_and_register_preserves() {
+        let store = DeviceStore::new();
+        store.register(entry("aa"), None);
+
+        store.set_session_muted("aa", "work", true);
+        assert!(store.all()[0].muted_sessions.contains("work"));
+
+        // Re-register with None preserves the muted set (e.g. a reconnect that
+        // didn't send the list).
+        store.register(entry("aa"), None);
+        assert!(store.all()[0].muted_sessions.contains("work"));
+
+        // Re-register with Some is authoritative (full replay from the client).
+        store.register(entry("aa"), Some(HashSet::from(["other".to_string()])));
+        let m = &store.all()[0].muted_sessions;
+        assert!(m.contains("other") && !m.contains("work"));
+
+        store.set_session_muted("aa", "other", false);
+        assert!(store.all()[0].muted_sessions.is_empty());
     }
 
     #[test]

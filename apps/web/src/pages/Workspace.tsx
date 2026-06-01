@@ -379,9 +379,13 @@ export default function Workspace({ sessionName }: Props) {
                                 const title = e.params.title || "Claude Code";
                                 const body = e.params.body || "";
                                 setStatus(body ? `🔔 ${title}: ${body}` : `🔔 ${title}`);
+                                // Per-session mute (client-only): keep the subtle
+                                // status-line update, but skip the toast / desktop
+                                // notification for muted sessions.
+                                if (useApp.getState().mutedSessions.has(sessionName)) break;
                                 // Visible → in-app toast; hidden/unfocused → OS
                                 // desktop notification (so you see it on another
-                                // tab/app). Status line covers both.
+                                // tab/app).
                                 if (document.visibilityState === "visible") {
                                   setLiveToast({ id: e.params.seq ?? 0, title, body });
                                 } else {

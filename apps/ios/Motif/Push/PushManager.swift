@@ -93,11 +93,41 @@ final class PushManager: NSObject {
     }
     private static let enabledKey = "motif.push.enabled"
 
+    /// Per-session mute set (session names). Device registration stays global
+    /// (`pushEnabled`); this is the finer, per-session opt-out. A session is
+    /// notified unless it's in here. Persisted, and replayed to motifd on every
+    /// connect via `device.register` so the in-memory server state survives a
+    /// motifd restart.
+    private(set) var mutedSessions: Set<String> {
+        didSet {
+            UserDefaults.standard.set(Array(mutedSessions), forKey: Self.mutedKey)
+        }
+    }
+    private static let mutedKey = "motif.push.mutedSessions"
+
     private override init() {
         UserDefaults.standard.register(defaults: [Self.enabledKey: true])
         pushEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
+        mutedSessions = Set(UserDefaults.standard.stringArray(forKey: Self.mutedKey) ?? [])
         super.init()
         deviceTokenHex = UserDefaults.standard.string(forKey: "motif.push.token")
+    }
+
+    /// Whether `session` currently shows notifications on this device.
+    func isSessionMuted(_ session: String?) -> Bool {
+        guard let session, !session.isEmpty else { return false }
+        return mutedSessions.contains(session)
+    }
+
+    /// Mute/unmute a session: persist locally, then tell the connected motifd
+    /// (so background pushes are gated server-side). The local set is the source
+    /// of truth and is replayed on reconnect.
+    func setSessionMuted(_ session: String, muted: Bool) {
+        guard !session.isEmpty else { return }
+        if muted { mutedSessions.insert(session) } else { mutedSessions.remove(session) }
+        if let client = connectedClient, let token = deviceTokenHex {
+            Task { await client.setSessionMuted(token: token, session: session, muted: muted) }
+        }
     }
 
     /// Flip the push switch. Persists immediately and reconciles registration
@@ -166,7 +196,12 @@ final class PushManager: NSObject {
         guard pushEnabled else { return }
         guard let token = deviceTokenHex else { return }
         let keyB64 = ensureEncKeyBase64()
-        await client.registerDevice(token: token, encKeyBase64: keyB64, environment: environment)
+        await client.registerDevice(
+            token: token,
+            encKeyBase64: keyB64,
+            environment: environment,
+            mutedSessions: Array(mutedSessions)
+        )
     }
 
     func noteRegistered(instanceID: String) {

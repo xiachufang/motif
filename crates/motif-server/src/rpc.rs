@@ -93,6 +93,7 @@ pub fn dispatch_concurrent(
         // device.* (push-notification registration; global, no attach needed)
         "device.register" => handle_device_register(devices, id, req.params),
         "device.unregister" => handle_device_unregister(devices, id, req.params),
+        "device.set_session_muted" => handle_device_set_session_muted(devices, id, req.params),
         // mutating methods belong on the serial path
         "session.attach" | "session.detach" => Response::err(
             id,
@@ -239,20 +240,42 @@ fn handle_device_register(devices: &crate::relay::DeviceState, id: Id, params: V
         Ok(p) => p,
         Err(e) => return Response::err(id, e),
     };
-    devices.store.register(crate::devices::DeviceEntry {
-        device_token: p.device_token,
-        platform: p.platform,
-        environment: p.environment,
-        enc_key: p.enc_key,
-        app_version: p.app_version,
-        registered_at: 0,
-    });
+    let muted = p
+        .muted_sessions
+        .map(|v| v.into_iter().collect::<std::collections::HashSet<_>>());
+    devices.store.register(
+        crate::devices::DeviceEntry {
+            device_token: p.device_token,
+            platform: p.platform,
+            environment: p.environment,
+            enc_key: p.enc_key,
+            app_version: p.app_version,
+            registered_at: 0,
+            muted_sessions: std::collections::HashSet::new(),
+        },
+        muted,
+    );
     Response::ok(
         id,
         motif_proto::device::RegisterResult {
             instance_id: devices.instance_id(),
         },
     )
+}
+
+fn handle_device_set_session_muted(
+    devices: &crate::relay::DeviceState,
+    id: Id,
+    params: Value,
+) -> Response {
+    let p: motif_proto::device::SetSessionMutedParams = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    devices
+        .store
+        .set_session_muted(&p.device_token, &p.session, p.muted);
+    Response::ok(id, motif_proto::device::SetSessionMutedResult::default())
 }
 
 fn handle_device_unregister(
