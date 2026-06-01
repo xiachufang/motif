@@ -14,9 +14,13 @@ extension MotifClient {
         return r.info
     }
 
-    func write(ptyID: String, data: Data) async {
-        guard let rpc else { return }
-        await rpc.writePty(ptyID: ptyID, data: data)
+    /// Returns `true` when the bytes were handed to the PTY socket. Callers
+    /// that just fire-and-forget can ignore it (`@discardableResult`); the
+    /// composer's send path checks it to clear the field only on success.
+    @discardableResult
+    func write(ptyID: String, data: Data) async -> Bool {
+        guard let rpc else { return false }
+        return await rpc.writePty(ptyID: ptyID, data: data)
     }
 
     /// Change the active PTY's working directory by sending a `cd` command

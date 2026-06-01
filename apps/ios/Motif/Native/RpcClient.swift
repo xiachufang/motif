@@ -351,13 +351,18 @@ actor RpcClient {
     /// Write raw PTY input (stdin) over the PTY's `/pty/<id>` WS as a binary
     /// frame — the only PTY write path. Best-effort: writes only target a PTY
     /// whose stream is open; a write arriving in the window before the stream
-    /// connects is dropped (no fallback).
-    func writePty(ptyID: String, data: Data) async {
-        guard ptys[ptyID]?.task != nil else { return }
+    /// connects is dropped (no fallback). Returns `true` when the frame was
+    /// handed to the socket, `false` when there's no open channel or the send
+    /// threw — the composer's send button uses this to decide whether to clear.
+    @discardableResult
+    func writePty(ptyID: String, data: Data) async -> Bool {
+        guard ptys[ptyID]?.task != nil else { return false }
         do {
             try await sendPtyBytes(ptyID: ptyID, data: data)
+            return true
         } catch {
             log.notice("pty write `\(ptyID, privacy: .public)`: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 

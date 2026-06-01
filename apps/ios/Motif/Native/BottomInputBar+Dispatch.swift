@@ -37,16 +37,28 @@ extension BottomInputBar {
 
     private func send() async {
         guard let id = activePtyID else { return }
-        // Strip the TextField's literal "\n" — that was the Enter that
-        // got us here. Always clear the buffer so a stray newline alone
-        // doesn't leave the field looking dirty.
+        // Strip the TextField's literal "\n" — that was the Enter that got us
+        // here. A stray newline alone (no real content) isn't a send: clear it
+        // so the field doesn't look dirty and bail before showing the spinner.
         let text = buffer.replacingOccurrences(of: "\n", with: "")
-        buffer = ""
-        expectedBuffer = ""
-        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
+            buffer = ""
+            expectedBuffer = ""
+            return
+        }
+        // Hold the text in the field while the write is in flight and flip the
+        // send button to its "sending" spinner. Only a confirmed write clears
+        // the composer — a failed send leaves the user's text intact to retry.
+        guard !isSending else { return }
+        isSending = true
+        defer { isSending = false }
         var data = Data(text.utf8)
         data.append(0x0D) // CR = PTY "Enter"
-        await motif.write(ptyID: id, data: data)
+        let ok = await motif.write(ptyID: id, data: data)
+        if ok {
+            buffer = ""
+            expectedBuffer = ""
+        }
     }
 
     func handleQuickTap(_ cmd: QuickCommand) {

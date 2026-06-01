@@ -81,6 +81,10 @@ struct BottomInputBar: View {
     /// `.lineLimit(1...5)` behaviour.
     @State private var composerHeight: CGFloat = Self.composerSingleLineHeight
     @State var isRecording: Bool = false
+    /// True while a composer send is in flight. Drives the send button's
+    /// spinner and gates the field clear: the buffer is only emptied once the
+    /// write is confirmed (see `send()` in BottomInputBar+Dispatch).
+    @State var isSending: Bool = false
     @State var asr: DoubaoASR?
     @State var asrError: String?
     @State var audioLevel: Float = 0
@@ -377,12 +381,20 @@ struct BottomInputBar: View {
     }
 
     private var sendButton: some View {
-        Button("Send", systemImage: "arrow.up") {
+        Button {
             submitBuffer()
+        } label: {
+            if isSending {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(MotifTheme.textOnAccent)
+            } else {
+                Image(systemName: "arrow.up")
+            }
         }
         .buttonStyle(MotifIconButtonStyle(role: .filled, size: .large))
         .disabled(!canSend)
-        .accessibilityLabel("Send")
+        .accessibilityLabel(isSending ? "Sending" : "Send")
     }
 
     /// Attach photos: pick from the library, upload to the server, and paste
@@ -430,6 +442,6 @@ struct BottomInputBar: View {
     }
 
     private var canSend: Bool {
-        canDispatch && !buffer.trimmingCharacters(in: .whitespaces).isEmpty
+        canDispatch && !isSending && !buffer.trimmingCharacters(in: .whitespaces).isEmpty
     }
 }
