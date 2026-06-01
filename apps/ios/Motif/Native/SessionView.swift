@@ -50,7 +50,9 @@ struct SessionView: View {
     @State var error: String?
     @State var showingTree: Bool = false
     @State private var showingTermSettings: Bool = false
-    @State private var quitConfirm: Bool = false
+    /// Name of the session a switch is in flight to, or nil. Gates the
+    /// session menu so a second tap can't fire a second `attach` mid-switch.
+    @State private var switching: String?
     /// How far to slide the terminal up so its bottom stays visible above the
     /// keyboard. The terminal *ignores* the keyboard safe area so its grid
     /// (rows/cols) never changes when the keyboard shows — this manual offset
@@ -281,6 +283,10 @@ struct SessionView: View {
         }
         .task {
             applyAppearance()
+            // Populate the session menu (and keep it fresh on re-entry) so the
+            // switcher shows every session, not just whatever the list view
+            // last cached before we attached.
+            await motif.refreshSessions()
             appState.terminals.syncRuntimes(
                 client: motif,
                 livePtyIDs: livePtyIDs,
@@ -337,18 +343,7 @@ struct SessionView: View {
                 ConnectionStatusChip(active: true)
             }
             ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    quitConfirm = true
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .confirmationDialog("Quit", isPresented: $quitConfirm) {
-                    Button("Quit") {
-                        router.pop()
-                    }
-                } message: {
-                    Text("Are you sure to quit?")
-                }
+                sessionMenu
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -388,5 +383,57 @@ struct SessionView: View {
             TerminalSettingsSheet().environment(appState)
         }
         .navigationBarBackButtonHidden(true)
+    }
+
+    /// Top-left control. Tap to drop a menu offering "Close session" (leave
+    /// the current session and return to the picker) plus the full session
+    /// list — tapping another session switches to it in place. The session
+    /// we're already on is shown with a checkmark and disabled.
+    private var sessionMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                router.pop()
+            } label: {
+                Label("Close session", systemImage: "xmark")
+            }
+            if !motif.sessions.isEmpty {
+                Section("Sessions") {
+                    ForEach(motif.sessions) { session in
+                        let isCurrent = session.name == name
+                        Button {
+                            switchTo(session.name)
+                        } label: {
+                            if isCurrent {
+                                Label(session.name, systemImage: "checkmark")
+                            } else {
+                                Text(session.name)
+                            }
+                        }
+                        .disabled(isCurrent || switching != nil)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "xmark")
+        }
+        .disabled(switching != nil)
+    }
+
+    /// Switch to another session in place: attach to it, then `replace` the
+    /// current `/session` route with the target's. The router's `afterPop`
+    /// won't detach us mid-switch — see `MotifClient.detachIfCurrent`.
+    private func switchTo(_ target: String) {
+        guard target != name, switching == nil else { return }
+        switching = target
+        Task {
+            defer { switching = nil }
+            do {
+                try await motif.attach(sessionName: target)
+                let (path, query) = SessionView.route(name: target)
+                router.replace(CmRouterPath(path, query))
+            } catch {
+                self.error = "switch to \(target): \(error)"
+            }
+        }
     }
 }

@@ -53,6 +53,19 @@ extension MotifClient {
         state = .connected
     }
 
+    /// Detach, but only if we're still attached to `session`. The router's
+    /// `afterPop` calls this when a `/session` route leaves the stack. On a
+    /// plain close that's the session we're on, so we detach. But an A→B
+    /// switch is a `replace`, which pops A's route *after* we've already
+    /// attached B — there the popped A must NOT tear down the live B. A `nil`
+    /// name (older routes that didn't carry it) always detaches.
+    func detachIfCurrent(session: String?) async {
+        if let session, case .attached(let current) = state, current != session {
+            return
+        }
+        await detach()
+    }
+
     func attach(sessionName: String) async throws {
         guard let rpc else { throw RpcClient.RpcError.notConnected }
         // Resume marker (set by a previous handleConnectionLost on this

@@ -378,10 +378,15 @@ final class AttachDetachDelegate: CmRouterDelegateProtocol {
     }
 
     func afterPop(path: CmRouterPath) {
-        // Any pop of /session means "leave the session". Pops of other
-        // routes are no-ops at the connection level.
+        // A pop of /session usually means "leave the session" → detach. The
+        // one exception is an in-place session switch (A→B), done as a
+        // `replace`: that pops A's route *after* B is already attached, so we
+        // must not detach the session we just joined. `detachIfCurrent` keys
+        // off the popped route's own session name to tell the two apart. Pops
+        // of other routes are no-ops at the connection level.
         if path.path == "/session" {
-            Task { await motif.detach() }
+            let leaving = path.query["name"]
+            Task { await motif.detachIfCurrent(session: leaving) }
         }
     }
 }
