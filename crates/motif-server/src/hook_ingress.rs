@@ -36,7 +36,7 @@ const SESSION_HEADER: &str = "x-motif-session";
 
 /// Claude Code hook payload (subset we use), delivered on the hook command's
 /// stdin and forwarded verbatim as the POST body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct HookPayload {
     #[serde(default)]
     message: Option<String>,
@@ -44,6 +44,11 @@ struct HookPayload {
     title: Option<String>,
     #[serde(default)]
     hook_event_name: Option<String>,
+    /// The assistant's final message for the turn. Claude Code includes this
+    /// directly on Stop/SubagentStop hooks, so we surface it as the body
+    /// without reading the transcript (and with no write-flush race).
+    #[serde(default)]
+    last_assistant_message: Option<String>,
 }
 
 /// Resolve the hook socket path: `$XDG_RUNTIME_DIR/motifd/hook.sock`, else
@@ -125,24 +130,42 @@ async fn handle(
         Ok(b) => b.to_bytes(),
         Err(_) => return Ok(reply(StatusCode::BAD_REQUEST)),
     };
-    let payload: HookPayload = serde_json::from_slice(&body).unwrap_or(HookPayload {
-        message: None,
-        title: None,
-        hook_event_name: None,
-    });
+    let payload: HookPayload = serde_json::from_slice(&body).unwrap_or_default();
 
+    let is_stop = matches!(
+        payload.hook_event_name.as_deref(),
+        Some("Stop") | Some("SubagentStop")
+    );
     let (default_title, kind) = match payload.hook_event_name.as_deref() {
         Some("Stop") | Some("SubagentStop") => ("Claude finished", "finished"),
         Some("Notification") => ("Claude needs your input", "needs_input"),
         _ => ("Claude Code", "info"),
     };
-    let title = payload
-        .title
-        .filter(|t| !t.is_empty())
+    // Title is the originating session name when known — with several Claude
+    // sessions running at once, that's the disambiguator you scan for (the
+    // finish/needs-input cue lives in `kind` + the body). Fall back to a
+    // hook-provided title, then the generic default, outside a motif PTY.
+    let title = session_name
+        .clone()
+        .or_else(|| payload.title.clone().filter(|t| !t.is_empty()))
         .unwrap_or_else(|| default_title.to_string());
+    // Body precedence: an explicit hook `message` wins (Notification); else, on
+    // a Stop/finish hook, the assistant's final message; else the generic
+    // default.
     let body_text = payload
         .message
         .filter(|m| !m.is_empty())
+        .or_else(|| {
+            if is_stop {
+                payload
+                    .last_assistant_message
+                    .as_deref()
+                    .map(summarize)
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| default_title.to_string());
 
     // (i) Live channel: publish to the originating session's broadcast.
@@ -180,6 +203,20 @@ async fn handle(
     Ok(reply(StatusCode::OK))
 }
 
+/// Condense an assistant message into a one-line, notification-sized snippet:
+/// collapse runs of whitespace/newlines to single spaces, then truncate to a
+/// char-boundary with an ellipsis if cut.
+fn summarize(s: &str) -> String {
+    let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX_CHARS: usize = 140;
+    if one_line.chars().count() <= MAX_CHARS {
+        return one_line;
+    }
+    let mut out: String = one_line.chars().take(MAX_CHARS).collect();
+    out.push('…');
+    out
+}
+
 fn reply(status: StatusCode) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
@@ -207,4 +244,23 @@ fn set_socket_private(_path: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn set_dir_private(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarize_collapses_whitespace() {
+        assert_eq!(summarize("Done —\n  built the\tfeature."), "Done — built the feature.");
+    }
+
+    #[test]
+    fn summarize_truncates_on_char_boundary_with_ellipsis() {
+        let long = "x".repeat(200);
+        let out = summarize(&long);
+        assert_eq!(out.chars().count(), 141); // 140 + ellipsis
+        assert!(out.ends_with('…'));
+        assert_eq!(summarize("short"), "short");
+    }
 }
