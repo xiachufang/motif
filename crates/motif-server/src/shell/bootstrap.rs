@@ -123,6 +123,14 @@ impl Bootstrap {
         // when MOTIF_HOOK_SOCK is also present (i.e. push is enabled); see the
         // wrapper guards. We always set this so the wrapper has the path ready.
         cb.env("MOTIF_CLAUDE_SETTINGS", self.settings_path.as_os_str());
+        // Codex CLI reuses the same notify script (it's agent-agnostic: reads
+        // stdin, POSTs to the hook socket). The `codex` wrapper injects it via
+        // `-c hooks.Stop=...` so nothing is written to the user's ~/.codex.
+        // Same guard convention as above (gated on MOTIF_HOOK_SOCK).
+        cb.env(
+            "MOTIF_CODEX_NOTIFY",
+            self.dir.path().join("motif-notify.sh").as_os_str(),
+        );
 
         match self.kind {
             ShellKind::Bash => {

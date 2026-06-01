@@ -106,3 +106,14 @@ precmd_functions+=(__motif_precmd)
 if [[ -n "$MOTIF_HOOK_SOCK" && -n "$MOTIF_CLAUDE_SETTINGS" ]]; then
     claude() { command claude --settings "$MOTIF_CLAUDE_SETTINGS" "$@"; }
 fi
+
+# ── Motif: provision Codex CLI notify hook (push only) ───────────────
+# Same idea for Codex: inject a Stop hook via `-c` (ephemeral SessionFlags
+# layer) pointing at the shared notify script — without touching the user's
+# ~/.codex/config.toml. Codex's own "Hooks need review" UI handles trust.
+# `command codex` skips this function, so there's no recursion.
+if [[ -n "$MOTIF_HOOK_SOCK" && -n "$MOTIF_CODEX_NOTIFY" ]]; then
+    codex() {
+        command codex -c "hooks.Stop=[{hooks=[{type=\"command\",command=\"$MOTIF_CODEX_NOTIFY\"}]}]" "$@"
+    }
+fi

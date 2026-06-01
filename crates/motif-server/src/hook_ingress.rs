@@ -1,9 +1,13 @@
-//! Local unix-socket listener that receives Claude Code hook notifications.
+//! Local unix-socket listener that receives coding-agent hook notifications.
 //!
-//! A Claude Code `Notification`/`Stop` hook (provisioned with zero user config
-//! by the shell bootstrap — see `crate::shell`) runs `motif-notify.sh`, which
-//! POSTs the hook's stdin JSON to this socket. We deliberately use a unix
-//! socket rather than the main axum router: it's auth-gated by filesystem
+//! Both Claude Code and Codex CLI are wired here: a `Notification`/`Stop` hook
+//! (provisioned with zero user config by the shell bootstrap — see
+//! `crate::shell`; Claude via `--settings`, Codex via `-c hooks.Stop=...`) runs
+//! `motif-notify.sh`, which POSTs the hook's stdin JSON to this socket. Both
+//! agents use the same stdin-JSON contract (`hook_event_name`,
+//! `last_assistant_message`, …), so this ingress is agent-agnostic. We
+//! deliberately use a unix socket rather than the main axum router: it's
+//! auth-gated by filesystem
 //! permissions (0600, local-only) instead of the bearer token, so no secret
 //! has to be exposed in the PTY environment.
 //!
@@ -34,8 +38,9 @@ use crate::session::manager::SessionManager;
 /// absent when the hook didn't fire inside a motif PTY.
 const SESSION_HEADER: &str = "x-motif-session";
 
-/// Claude Code hook payload (subset we use), delivered on the hook command's
-/// stdin and forwarded verbatim as the POST body.
+/// Coding-agent hook payload (subset we use), delivered on the hook command's
+/// stdin and forwarded verbatim as the POST body. Claude Code and Codex CLI
+/// share these field names/semantics.
 #[derive(Debug, Default, Deserialize)]
 struct HookPayload {
     #[serde(default)]
@@ -44,7 +49,7 @@ struct HookPayload {
     title: Option<String>,
     #[serde(default)]
     hook_event_name: Option<String>,
-    /// The assistant's final message for the turn. Claude Code includes this
+    /// The assistant's final message for the turn. Both agents include this
     /// directly on Stop/SubagentStop hooks, so we surface it as the body
     /// without reading the transcript (and with no write-flush race).
     #[serde(default)]
@@ -137,11 +142,11 @@ async fn handle(
         Some("Stop") | Some("SubagentStop")
     );
     let (default_title, kind) = match payload.hook_event_name.as_deref() {
-        Some("Stop") | Some("SubagentStop") => ("Claude finished", "finished"),
-        Some("Notification") => ("Claude needs your input", "needs_input"),
-        _ => ("Claude Code", "info"),
+        Some("Stop") | Some("SubagentStop") => ("Agent finished", "finished"),
+        Some("Notification") => ("Agent needs your input", "needs_input"),
+        _ => ("Agent", "info"),
     };
-    // Title is the originating session name when known — with several Claude
+    // Title is the originating session name when known — with several agent
     // sessions running at once, that's the disambiguator you scan for (the
     // finish/needs-input cue lives in `kind` + the body). Fall back to a
     // hook-provided title, then the generic default, outside a motif PTY.

@@ -164,3 +164,14 @@ if set -q MOTIF_HOOK_SOCK; and set -q MOTIF_CLAUDE_SETTINGS
         command claude --settings $MOTIF_CLAUDE_SETTINGS $argv
     end
 end
+
+# ── Motif: provision Codex CLI notify hook (push only) ───────────────
+# Same idea for Codex: inject a Stop hook via `-c` (ephemeral SessionFlags
+# layer) pointing at the shared notify script — without touching the user's
+# ~/.codex/config.toml. Codex's own "Hooks need review" UI handles trust.
+# `command codex` skips this function, so there's no recursion.
+if set -q MOTIF_HOOK_SOCK; and set -q MOTIF_CODEX_NOTIFY
+    function codex --wraps codex
+        command codex -c "hooks.Stop=[{hooks=[{type=\"command\",command=\"$MOTIF_CODEX_NOTIFY\"}]}]" $argv
+    end
+end
