@@ -71,6 +71,7 @@ class MotifTerminalView extends StatefulWidget {
 class _MotifTerminalViewState extends State<MotifTerminalView>
     with SingleTickerProviderStateMixin, TextInputClient {
   static const double _keyboardCursorMargin = 16;
+  static const Duration _terminalInitDelay = Duration(milliseconds: 32);
   static const int _remoteFeedMaxBytesPerFrame = 64 * 1024;
   static const int _remoteFeedMaxMicrosPerFrame = 4000;
   static const _softKeyboardSeed = '\u200b';
@@ -82,6 +83,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   late final TerminalState _state;
   Timer? _frameTimer;
   Timer? _resizeTimer;
+  Timer? _terminalInitTimer;
   Ticker? _scrollTicker;
   Simulation? _scrollSimulation;
   Duration? _scrollSimulationStart;
@@ -109,6 +111,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   double _viewportHeight = 0;
   int _cols = 80;
   int _rows = 24;
+  BoxConstraints? _pendingInitConstraints;
   int? _pendingResizeCols;
   int? _pendingResizeRows;
   bool _initialized = false;
@@ -223,6 +226,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     widget.motif.unregisterPtySink(widget.ptyId, _onRemoteBytes);
     _resizeTimer?.cancel();
     _frameTimer?.cancel();
+    _terminalInitTimer?.cancel();
     _retryTimer?.cancel();
     _remoteByteQueue.clear();
     _remoteByteQueueBytes = 0;
@@ -359,7 +363,10 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                     _scheduleImeRectSync();
                   }
                   final font = _fontSpec;
-                  _initTerminal(constraints);
+                  if (!_initialized) {
+                    _scheduleTerminalInit(constraints);
+                    return ColoredBox(color: widget.palette.background);
+                  }
                   _handleResize(constraints);
                   return CustomPaint(
                     painter: TerminalPainter(

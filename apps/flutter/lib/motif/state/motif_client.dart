@@ -53,6 +53,21 @@ class ConnSuspended extends MotifConnState {
 /// widget subscribes to it).
 typedef PtyByteSink = void Function(Uint8List bytes);
 
+class _PtyReplayDelivery {
+  _PtyReplayDelivery(this.sink);
+
+  final PtyByteSink sink;
+  final List<Uint8List> chunks = <Uint8List>[];
+  int index = 0;
+  int offset = 0;
+  Timer? timer;
+
+  void cancel() {
+    timer?.cancel();
+    timer = null;
+  }
+}
+
 class _PendingViewActivation {
   final String? viewId;
   final String? previousViewId;
@@ -118,8 +133,11 @@ class MotifClient extends ChangeNotifier {
   // PTY output fan-out: one sink per subscribed PTY surface.
   final Map<String, PtyByteSink> _ptySinks = {};
   static const int _maxReplayBytesPerPty = 2 * 1024 * 1024;
+  static const int _replayDeliverMaxBytesPerTick = 64 * 1024;
+  static const Duration _replayDeliverInterval = Duration(milliseconds: 16);
   final Map<String, List<Uint8List>> _ptyReplay = {};
   final Map<String, int> _ptyReplayBytes = {};
+  final Map<String, _PtyReplayDelivery> _ptyReplayDeliveries = {};
   final Map<String, int> _ptyOutputChunks = {};
   final Map<String, int> _ptyOutputBytes = {};
 
@@ -260,6 +278,10 @@ class MotifClient extends ChangeNotifier {
     shellKind.clear();
     shellContext.clear();
     _ptySinks.clear();
+    for (final delivery in _ptyReplayDeliveries.values) {
+      delivery.cancel();
+    }
+    _ptyReplayDeliveries.clear();
     _ptyReplay.clear();
     _ptyReplayBytes.clear();
   }
@@ -389,6 +411,7 @@ class MotifClient extends ChangeNotifier {
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
   void registerPtySink(String ptyId, PtyByteSink sink) {
     final replacing = _ptySinks.containsKey(ptyId);
+    _ptyReplayDeliveries.remove(ptyId)?.cancel();
     _ptySinks[ptyId] = sink;
     final replay = _ptyReplay[ptyId];
     Log.i(
@@ -399,17 +422,62 @@ class MotifClient extends ChangeNotifier {
       name: 'motif.pty',
     );
     if (replay == null || replay.isEmpty) return;
-    scheduleMicrotask(() {
-      if (_ptySinks[ptyId] != sink) return;
-      Log.i(
-        'replay sink pty=$ptyId chunks=${replay.length} '
-        'bytes=${_ptyReplayBytes[ptyId] ?? 0}',
-        name: 'motif.pty',
-      );
-      for (final chunk in replay) {
-        sink(Uint8List.fromList(chunk));
+    _startReplayDelivery(ptyId, sink, replay);
+  }
+
+  void _startReplayDelivery(
+    String ptyId,
+    PtyByteSink sink,
+    List<Uint8List> replay,
+  ) {
+    final delivery = _PtyReplayDelivery(sink)..chunks.addAll(replay);
+    _ptyReplayDeliveries[ptyId] = delivery;
+    Log.i(
+      'replay sink pty=$ptyId chunks=${replay.length} '
+      'bytes=${_ptyReplayBytes[ptyId] ?? 0}',
+      name: 'motif.pty',
+    );
+    _scheduleReplayDelivery(ptyId, delivery);
+  }
+
+  void _scheduleReplayDelivery(String ptyId, _PtyReplayDelivery delivery) {
+    if (delivery.timer != null) return;
+    void deliverBatch() {
+      delivery.timer = null;
+      if (_ptyReplayDeliveries[ptyId] != delivery ||
+          _ptySinks[ptyId] != delivery.sink) {
+        return;
       }
-    });
+      var delivered = 0;
+      while (delivery.index < delivery.chunks.length &&
+          delivered < _replayDeliverMaxBytesPerTick) {
+        final chunk = delivery.chunks[delivery.index];
+        final remaining = chunk.length - delivery.offset;
+        if (remaining <= 0) {
+          delivery.index++;
+          delivery.offset = 0;
+          continue;
+        }
+        final budget = _replayDeliverMaxBytesPerTick - delivered;
+        final take = remaining <= budget ? remaining : budget;
+        final start = delivery.offset;
+        final end = start + take;
+        delivery.sink(Uint8List.sublistView(chunk, start, end));
+        delivered += take;
+        delivery.offset = end;
+        if (delivery.offset >= chunk.length) {
+          delivery.index++;
+          delivery.offset = 0;
+        }
+      }
+      if (delivery.index < delivery.chunks.length) {
+        delivery.timer = Timer(_replayDeliverInterval, deliverBatch);
+      } else if (_ptyReplayDeliveries[ptyId] == delivery) {
+        _ptyReplayDeliveries.remove(ptyId);
+      }
+    }
+
+    delivery.timer = Timer(_replayDeliverInterval, deliverBatch);
   }
 
   void unregisterPtySink(String ptyId, [PtyByteSink? sink]) {
@@ -419,6 +487,7 @@ class MotifClient extends ChangeNotifier {
     }
     final hadSink = _ptySinks.containsKey(ptyId);
     _ptySinks.remove(ptyId);
+    _ptyReplayDeliveries.remove(ptyId)?.cancel();
     Log.i('unregister sink pty=$ptyId hadSink=$hadSink', name: 'motif.pty');
   }
 
@@ -795,13 +864,20 @@ class MotifClient extends ChangeNotifier {
           final bytes = base64Decode(b64);
           _rememberPtyBytes(id, bytes);
           _notePtyOutput(id, bytes.length);
-          _ptySinks[id]?.call(bytes);
+          final delivery = _ptyReplayDeliveries[id];
+          if (delivery != null && _ptySinks[id] == delivery.sink) {
+            delivery.chunks.add(bytes);
+            _scheduleReplayDelivery(id, delivery);
+          } else {
+            _ptySinks[id]?.call(bytes);
+          }
         }
         return; // hot path: no rebuild
       case 'pty.exited':
         final id = p['pty_id'] as String?;
         if (id != null) {
           _updatePty(id, (pty) => pty.copyWith(alive: false));
+          _ptyReplayDeliveries.remove(id)?.cancel();
           _ptyReplay.remove(id);
           _ptyReplayBytes.remove(id);
           runningCommand.remove(id);

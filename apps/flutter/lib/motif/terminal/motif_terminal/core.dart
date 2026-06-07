@@ -113,6 +113,20 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _cellHeight = paragraph.height;
   }
 
+  void _scheduleTerminalInit(BoxConstraints constraints) {
+    if (_initialized || _terminalError != null) return;
+    _pendingInitConstraints = constraints;
+    if (_terminalInitTimer != null) return;
+    _terminalInitTimer = Timer(_MotifTerminalViewState._terminalInitDelay, () {
+      _terminalInitTimer = null;
+      if (!mounted || _initialized || _terminalError != null) return;
+      final pending = _pendingInitConstraints;
+      if (pending == null) return;
+      _initTerminal(pending);
+      if (mounted) setState(() {});
+    });
+  }
+
   void _initTerminal(BoxConstraints constraints) {
     if (_initialized || _terminalError != null) return;
     try {
@@ -151,11 +165,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       _resizeTimer?.cancel();
       _frameTimer?.cancel();
       _scheduleTerminalRetry();
-      // Runs inside LayoutBuilder's build, so defer the rebuild that swaps in
-      // the error view.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() {});
-      });
+      if (mounted) setState(() {});
     }
   }
 
