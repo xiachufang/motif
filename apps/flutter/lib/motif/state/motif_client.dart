@@ -16,6 +16,8 @@ import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/rpc_client.dart';
 
+const int _kSessionNotFound = -32007;
+
 /// High-level connection state.
 sealed class MotifConnState {
   const MotifConnState();
@@ -207,13 +209,24 @@ class MotifClient extends ChangeNotifier {
           }
           pendingLocalViewId = null;
         }
-      } catch (_) {
-        connectionNotice =
-            'Could not reattach "$intended". Choose a session to continue.';
-        intendedSession = null;
-        pendingLocalViewId = null;
-        _setState(const ConnConnected());
-        unawaited(refreshSessions().catchError((_) {}));
+      } catch (error) {
+        if (_isSessionNotFound(error)) {
+          resumeSeqs.remove(intended);
+          _carriedPtyCursors = {};
+          intendedSession = null;
+          pendingLocalViewId = null;
+          connectionNotice = null;
+          lastSeq = 0;
+          sessionTheme = null;
+          _clearSessionState();
+          _setState(const ConnConnected());
+          unawaited(refreshSessions().catchError((_) {}));
+        } else {
+          connectionNotice = null;
+          if (_rpc != null) _carriedPtyCursors = _rpc!.ptyCursors();
+          await _teardownRpc();
+          _setState(ConnFailed('reattach failed: $error'));
+        }
       }
     } else {
       connectionNotice = null;
@@ -222,6 +235,9 @@ class MotifClient extends ChangeNotifier {
       unawaited(refreshSessions().catchError((_) {}));
     }
   }
+
+  bool _isSessionNotFound(Object error) =>
+      error is RpcException && error.code == _kSessionNotFound;
 
   Future<PingInfo> _pingWithRetry(RpcClient rpc, MotifServer server) async {
     try {

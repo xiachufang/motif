@@ -207,10 +207,12 @@ class RpcClient {
       throw const RpcException('session.attach: no X-Motif-Session header');
     }
     _sessionId = sid;
-    final since = (body['last_seq'] as num?)?.toInt() ?? 0;
+    final requestedSince = (params['last_seq'] as num?)?.toInt();
+    final since = requestedSince ?? (body['last_seq'] as num?)?.toInt() ?? 0;
     await _openEvents(since);
     Log.i(
-      'attach timing post=${postMs}ms events=${sw.elapsedMilliseconds - postMs}ms',
+      'attach timing post=${postMs}ms events=${sw.elapsedMilliseconds - postMs}ms '
+      'eventsSince=$since',
       name: 'motif.rpc',
     );
     return body;
