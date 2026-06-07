@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>ghostty-vt wasm browser test</title></head>
+<body>
+<pre id="out">RESULT:RUNNING</pre>
+<script src="ghostty_vt.js"></script>
+<script>
+(async () => {
+  const out = document.getElementById('out');
+  try {
+    const ok = await window.GhosttyVt.ready;
+    if (!ok) { out.textContent = 'RESULT:FAIL:wasm-not-ready'; return; }
+    const t = window.GhosttyVt.newTerminal(80, 24);
+    // Plain text + an SGR red run ("RED") to verify color extraction.
+    const text = 'hello world\r\nsecond line\r\n\x1b[31mRED\x1b[0m plain';
+    const bytes = new Uint8Array([...text].map(c => c.charCodeAt(0)));
+    window.GhosttyVt.write(t, bytes);
+    const grid = window.GhosttyVt.gridText(t);
+    const textOk = grid.includes('hello world') && grid.includes('second line') && grid.includes('RED');
+    // Color check: find the run containing "RED" and confirm its fg is reddish.
+    const data = JSON.parse(window.GhosttyVt.gridCellsJson(t));
+    let redRun = null;
+    for (const row of data.rows) for (const run of row) if (run.t.includes('RED')) redRun = run;
+    const colorOk = !!redRun && redRun.f[0] > 150 && redRun.f[1] < 120 && redRun.f[2] < 120;
+    const cur = data.cursor || {};
+    const cursorOk = cur.vis === true && cur.y >= 0 && cur.x >= 0;
+    const pass = textOk && colorOk && cursorOk;
+    out.textContent = (pass ? 'RESULT:PASS' : 'RESULT:FAIL') +
+      '\ntextOk=' + textOk + ' colorOk=' + colorOk + ' cursorOk=' + cursorOk +
+      ' cursor=' + JSON.stringify(cur) +
+      ' redFg=' + (redRun ? JSON.stringify(redRun.f) : 'none') +
+      '\n--GRID--\n' + grid;
+  } catch (e) {
+    out.textContent = 'RESULT:ERROR:' + (e && e.message || e);
+  }
+})();
+</script>
+</body>
+</html>

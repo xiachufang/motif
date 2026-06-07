@@ -1,0 +1,18 @@
+name: GhosttyBindings
+description: Auto-generated bindings for libghostty-vt
+output: 'lib/motif/terminal/ghostty_bindings.g.dart'
+headers:
+  entry-points:
+    - 'ghostty/zig-out/include/ghostty/vt.h'
+  include-directives:
+    - '**ghostty/vt.h'
+    - '**ghostty/vt/**'
+compiler-opts:
+  - '-Ighostty/zig-out/include'
+ffi-native:
+comments:
+  style: any
+  length: full
+silence-enum-warning: true
+preamble: |
+  // ignore_for_file: type=lint, unused_field

@@ -2,10 +2,10 @@
 
 pub mod manager;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use motif_proto::common::{ClientId, PtyId, Seq, SessionId, UnixMs};
 use motif_proto::event::Event;
@@ -13,16 +13,40 @@ use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 
 use crate::pty::PtyPool;
 
 const RING_CAPACITY: usize = 4096; // events buffered for replay
 const BROADCAST_CAPACITY: usize = 4096;
 
+/// Trailing window for `publish_coalesced`. A burst of same-key last-wins
+/// events (rapid tab switching, a resize storm) collapses to its final value
+/// once this much quiet has elapsed — see [`Session::publish_coalesced`].
+const COALESCE_WINDOW: Duration = Duration::from_millis(40);
+
 struct PublishState {
     seq: Seq,
     ring: VecDeque<Arc<Event>>,
+}
+
+/// Identifies a stream of last-wins events that should collapse to its most
+/// recent value. Only used for scalar state with no cross-event ordering
+/// dependency — notably NOT `view.moved` (whose `order` would go stale against
+/// an interleaved open/close) or any lifecycle/output event.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum CoalesceKey {
+    ViewActive,
+    Theme,
+    PtyResize(PtyId),
+}
+
+/// A coalesced event awaiting its trailing-window flush. `build` is the same
+/// `FnOnce(Seq) -> Event` shape `publish_event` takes — the seq is assigned at
+/// flush time so the ring stays monotonic with whatever was published meanwhile.
+struct Pending {
+    deadline: Instant,
+    build: Box<dyn FnOnce(Seq) -> Event + Send>,
 }
 
 pub struct Session {
@@ -74,6 +98,23 @@ pub struct Session {
     /// via `session.theme_changed` so every attached client renders the whole
     /// UI the same way and PTY output colours match the rendered background.
     theme: Mutex<Option<String>>,
+
+    /// Pending last-wins events keyed by stream, flushed after a trailing quiet
+    /// window by the `coalesce_task`. Lets a burst of `view.active_changed` /
+    /// `session.theme_changed` / `pty.resize` collapse to its final value
+    /// *before* hitting the wire — the redundant intermediates never reach any
+    /// client. See [`Session::publish_coalesced`].
+    coalesce: Mutex<HashMap<CoalesceKey, Pending>>,
+    /// Wakes the flush task whenever `coalesce` gains an entry or its nearest
+    /// deadline moves earlier.
+    coalesce_wake: Arc<Notify>,
+    /// The flush task, spawned lazily on the first `publish_coalesced` (so we
+    /// pick up the ambient runtime — `Session::new` itself may run off-runtime
+    /// in unit tests). Aborted on drop so an idle task can't outlive us.
+    coalesce_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Self-reference handed to the flush task so it can call back into
+    /// `publish_event` without keeping the session alive. Set in `new`.
+    me: Mutex<Weak<Session>>,
 }
 
 impl Session {
@@ -97,9 +138,14 @@ impl Session {
             fs_subscribers: Mutex::new(HashSet::new()),
             term_palette: Mutex::new(None),
             theme: Mutex::new(None),
+            coalesce: Mutex::new(HashMap::new()),
+            coalesce_wake: Arc::new(Notify::new()),
+            coalesce_task: Mutex::new(None),
+            me: Mutex::new(Weak::new()),
         });
-        // pool needs a back-reference for publishing events.
+        // pool + coalesce flush task need a back-reference for publishing events.
         s.pty_pool.set_session(Arc::downgrade(&s));
+        *s.me.lock() = Arc::downgrade(&s);
         s
     }
 
@@ -157,7 +203,10 @@ impl Session {
             }
             *t = Some(theme.clone());
         }
-        self.publish_event(|seq| Event::SessionThemeChanged { theme, seq });
+        self.publish_coalesced(CoalesceKey::Theme, |seq| Event::SessionThemeChanged {
+            theme,
+            seq,
+        });
     }
 
     /// Build the OSC 10/11 reply bytes for `kind` using the cached palette.
@@ -369,7 +418,13 @@ impl Session {
         if was_active {
             *self.active_view.lock() = next_active.clone();
             let nv = next_active.clone();
-            self.publish_event(|seq| Event::ViewActiveChanged { view_id: nv, seq });
+            // Same key as `activate_view`, so this fallback replaces any
+            // still-pending activation rather than racing it — the coalesce
+            // slot always holds the newest active view, never a closed one.
+            self.publish_coalesced(CoalesceKey::ViewActive, |seq| Event::ViewActiveChanged {
+                view_id: nv,
+                seq,
+            });
             self.sync_watch_to_active();
         }
         Some(removed)
@@ -431,7 +486,10 @@ impl Session {
             }
             *av = view_id.clone();
         }
-        self.publish_event(|seq| Event::ViewActiveChanged { view_id, seq });
+        self.publish_coalesced(CoalesceKey::ViewActive, |seq| Event::ViewActiveChanged {
+            view_id,
+            seq,
+        });
         self.sync_watch_to_active();
     }
 
@@ -503,6 +561,130 @@ impl Session {
         let _ = self.tx.send(arc);
         seq
     }
+
+    /// Broadcast a last-wins event, but coalesce a burst: stash `build` under
+    /// `key` and let the flush task publish only the most recent one after a
+    /// `COALESCE_WINDOW` of quiet. A newer event for the same key replaces the
+    /// stash and resets the window, so A→B→A→C within the window emits just C.
+    ///
+    /// Authoritative state (the `active_view` / `theme` / pty-geometry mutexes)
+    /// must already be updated by the caller — only the *notification* is
+    /// delayed. That keeps `session.attach` snapshots correct: a pending event
+    /// that flushes after a reconnect is just an idempotent echo of state the
+    /// snapshot already carried.
+    ///
+    /// Falls back to an immediate `publish_event` when there is no runtime to
+    /// host the flush task (off-runtime unit tests) — correctness over latency.
+    fn publish_coalesced<F>(&self, key: CoalesceKey, build: F)
+    where
+        F: FnOnce(Seq) -> Event + Send + 'static,
+    {
+        if !self.ensure_coalesce_task() {
+            self.publish_event(build);
+            return;
+        }
+        self.coalesce.lock().insert(
+            key,
+            Pending {
+                deadline: Instant::now() + COALESCE_WINDOW,
+                build: Box::new(build),
+            },
+        );
+        self.coalesce_wake.notify_one();
+    }
+
+    /// Coalesced `pty.resize`: a window-resize / rotation storm for one PTY
+    /// collapses to its final geometry. Keyed per `pty_id` so concurrent
+    /// resizes of different PTYs don't clobber each other.
+    pub(crate) fn publish_pty_resize(&self, pty_id: PtyId, cols: u16, rows: u16) {
+        self.publish_coalesced(CoalesceKey::PtyResize(pty_id.clone()), move |seq| {
+            Event::PtyResize {
+                pty_id,
+                cols,
+                rows,
+                seq,
+            }
+        });
+    }
+
+    /// Drop a pending coalesced `pty.resize` without publishing it. Used when
+    /// the PTY exits, so a still-pending resize for it would describe geometry
+    /// no one can see.
+    pub(crate) fn cancel_coalesced_resize(&self, pty_id: &str) {
+        self.coalesce
+            .lock()
+            .remove(&CoalesceKey::PtyResize(pty_id.to_string()));
+    }
+
+    /// Ensure the flush task is running. Returns false (and spawns nothing)
+    /// when called outside a tokio runtime, signalling the caller to publish
+    /// immediately instead.
+    fn ensure_coalesce_task(&self) -> bool {
+        let mut guard = self.coalesce_task.lock();
+        if guard.as_ref().is_some_and(|h| !h.is_finished()) {
+            return true;
+        }
+        if tokio::runtime::Handle::try_current().is_err() {
+            return false;
+        }
+        let weak = self.me.lock().clone();
+        let wake = self.coalesce_wake.clone();
+        *guard = Some(tokio::spawn(coalesce_flush_loop(weak, wake)));
+        true
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some(h) = self.coalesce_task.lock().take() {
+            h.abort();
+        }
+    }
+}
+
+/// Trailing-window flush loop for [`Session::publish_coalesced`]. Sleeps until
+/// the nearest pending deadline (or until woken by a new/earlier entry), then
+/// publishes every entry whose window has elapsed. Holds only a `Weak` to the
+/// session, so it exits once the session is dropped.
+async fn coalesce_flush_loop(weak: Weak<Session>, wake: Arc<Notify>) {
+    loop {
+        // Nearest deadline across all pending keys (None ⇒ nothing pending).
+        let next = {
+            let Some(s) = weak.upgrade() else { return };
+            let map = s.coalesce.lock();
+            map.values().map(|p| p.deadline).min()
+        };
+        match next {
+            None => wake.notified().await,
+            Some(deadline) => {
+                let now = Instant::now();
+                if deadline > now {
+                    // A new/earlier entry fires `wake` → restart and recompute.
+                    tokio::select! {
+                        _ = tokio::time::sleep(deadline - now) => {}
+                        _ = wake.notified() => continue,
+                    }
+                }
+                let due: Vec<Box<dyn FnOnce(Seq) -> Event + Send>> = {
+                    let Some(s) = weak.upgrade() else { return };
+                    let mut map = s.coalesce.lock();
+                    let now = Instant::now();
+                    let keys: Vec<CoalesceKey> = map
+                        .iter()
+                        .filter(|(_, p)| p.deadline <= now)
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    keys.into_iter()
+                        .filter_map(|k| map.remove(&k).map(|p| p.build))
+                        .collect()
+                };
+                let Some(s) = weak.upgrade() else { return };
+                for build in due {
+                    s.publish_event(build);
+                }
+            }
+        }
+    }
 }
 
 pub struct AttachOutcome {
@@ -572,6 +754,32 @@ mod tests {
         let after_mid = s.replay_since(mid);
         assert_eq!(after_mid.len(), total - mid as usize);
         assert_eq!(after_mid.first().unwrap().seq(), mid + 1);
+    }
+
+    /// A burst of distinct `view.active_changed` within the trailing window
+    /// must reach the wire as a single event carrying the final value — and
+    /// not before the window closes.
+    #[tokio::test]
+    async fn coalesces_view_active_burst_to_latest() {
+        let s = Session::new("test-coalesce", PathBuf::from("/tmp"));
+        for id in ["a", "b", "a", "c"] {
+            s.activate_view(Some(id.to_string()));
+        }
+        // The flush task hasn't had a chance to fire yet: nothing published.
+        assert!(
+            s.replay_since(0).is_empty(),
+            "burst must not publish before the window closes"
+        );
+
+        tokio::time::sleep(COALESCE_WINDOW * 3).await;
+        let events = s.replay_since(0);
+        assert_eq!(events.len(), 1, "burst must collapse to one event");
+        match &*events[0] {
+            Event::ViewActiveChanged { view_id, .. } => {
+                assert_eq!(view_id.as_deref(), Some("c"), "must keep the latest value");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

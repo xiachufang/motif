@@ -1,0 +1,431 @@
+/// App configuration models: servers, terminal appearance, and quick commands.
+///
+/// Ported from `apps/ios/Motif/Settings/{MotifServer,TerminalSettings,
+/// QuickCommand}.swift`. JSON shapes match the iOS persisted formats where it
+/// is cheap to do so, but these are local app state (not server wire types).
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+// ─────────────────────────── servers ───────────────────────────
+
+enum ServerKind {
+  tailscale,
+  direct;
+
+  static ServerKind fromWire(Object? v) =>
+      v == 'tailscale' ? ServerKind.tailscale : ServerKind.direct;
+}
+
+class MotifServer {
+  final String id;
+  final String name;
+  final String host;
+  final int port;
+  final String token;
+  final ServerKind kind;
+
+  const MotifServer({
+    required this.id,
+    required this.name,
+    required this.host,
+    this.port = 7777,
+    this.token = '',
+    this.kind = ServerKind.direct,
+  });
+
+  String get endpoint => '$host:$port';
+
+  MotifServer copyWith({
+    String? name,
+    String? host,
+    int? port,
+    String? token,
+    ServerKind? kind,
+  }) => MotifServer(
+    id: id,
+    name: name ?? this.name,
+    host: host ?? this.host,
+    port: port ?? this.port,
+    token: token ?? this.token,
+    kind: kind ?? this.kind,
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'host': host,
+    'port': port,
+    'token': token,
+    'kind': kind.name,
+  };
+
+  factory MotifServer.fromJson(Map<String, Object?> j) => MotifServer(
+    id: (j['id'] as String?) ?? '',
+    name: (j['name'] as String?) ?? '',
+    host: (j['host'] as String?) ?? '',
+    port: (j['port'] as num?)?.toInt() ?? 7777,
+    token: (j['token'] as String?) ?? '',
+    kind: ServerKind.fromWire(j['kind']),
+  );
+
+  static String encodeList(List<MotifServer> servers) =>
+      jsonEncode(servers.map((s) => s.toJson()).toList());
+
+  static List<MotifServer> decodeList(String raw) {
+    try {
+      final list = jsonDecode(raw);
+      if (list is! List) return const [];
+      return list
+          .map((e) => MotifServer.fromJson((e as Map).cast<String, Object?>()))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+}
+
+// ─────────────────────────── terminal settings ───────────────────────────
+
+enum TerminalThemeSetting {
+  system('System'),
+  light('Light'),
+  dark('Dark');
+
+  final String label;
+  const TerminalThemeSetting(this.label);
+
+  static TerminalThemeSetting fromWire(Object? v) => switch (v) {
+    'light' => TerminalThemeSetting.light,
+    'dark' => TerminalThemeSetting.dark,
+    _ => TerminalThemeSetting.system,
+  };
+}
+
+class TerminalSettings {
+  /// Font size in points; range 8–28, default 13.
+  final double fontSize;
+  final TerminalThemeSetting theme;
+
+  const TerminalSettings({
+    this.fontSize = defaultFontSize,
+    this.theme = TerminalThemeSetting.system,
+  });
+
+  static const double defaultFontSize = 13;
+  static const double minFontSize = 8;
+  static const double maxFontSize = 28;
+
+  TerminalSettings copyWith({double? fontSize, TerminalThemeSetting? theme}) =>
+      TerminalSettings(
+        fontSize: (fontSize ?? this.fontSize).clamp(minFontSize, maxFontSize),
+        theme: theme ?? this.theme,
+      );
+
+  Map<String, Object?> toJson() => {'fontSize': fontSize, 'theme': theme.name};
+
+  factory TerminalSettings.fromJson(Map<String, Object?> j) => TerminalSettings(
+    fontSize: ((j['fontSize'] as num?)?.toDouble() ?? defaultFontSize).clamp(
+      minFontSize,
+      maxFontSize,
+    ),
+    theme: TerminalThemeSetting.fromWire(j['theme']),
+  );
+}
+
+// ─────────────────────────── quick commands ───────────────────────────
+
+enum QuickCommandKind { bytes, paste, ctrl, alt, shift, cd }
+
+String newQuickCommandId([String prefix = 'cmd']) =>
+    '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+
+class QuickCommandModifiers {
+  final bool ctrl;
+  final bool alt;
+  final bool shift;
+
+  const QuickCommandModifiers({
+    this.ctrl = false,
+    this.alt = false,
+    this.shift = false,
+  });
+
+  static const none = QuickCommandModifiers();
+
+  bool get isEmpty => !ctrl && !alt && !shift;
+
+  int get rawValue =>
+      (ctrl ? 1 : 0) | (alt ? 1 << 1 : 0) | (shift ? 1 << 2 : 0);
+
+  /// Compact glyph string in canonical order (⌃⌥⇧).
+  String get glyphs {
+    final sb = StringBuffer();
+    if (ctrl) sb.write('⌃');
+    if (alt) sb.write('⌥');
+    if (shift) sb.write('⇧');
+    return sb.toString();
+  }
+
+  List<String> get names => [
+    if (ctrl) 'ctrl',
+    if (alt) 'alt',
+    if (shift) 'shift',
+  ];
+
+  Map<String, Object?> toJson() => {'ctrl': ctrl, 'alt': alt, 'shift': shift};
+
+  factory QuickCommandModifiers.fromJson(Map<String, Object?> j) {
+    final raw = (j['rawValue'] as num?)?.toInt();
+    if (raw != null) {
+      return QuickCommandModifiers(
+        ctrl: raw & 1 != 0,
+        alt: raw & (1 << 1) != 0,
+        shift: raw & (1 << 2) != 0,
+      );
+    }
+    return QuickCommandModifiers(
+      ctrl: (j['ctrl'] as bool?) ?? false,
+      alt: (j['alt'] as bool?) ?? false,
+      shift: (j['shift'] as bool?) ?? false,
+    );
+  }
+}
+
+class QuickCommand {
+  final String id;
+  final String label;
+  final String? symbol;
+  final Uint8List payload;
+  final bool sendImmediately;
+  final QuickCommandKind kind;
+  final QuickCommandModifiers modifiers;
+
+  QuickCommand({
+    required this.id,
+    required this.label,
+    this.symbol,
+    Uint8List? payload,
+    this.sendImmediately = true,
+    this.kind = QuickCommandKind.bytes,
+    this.modifiers = QuickCommandModifiers.none,
+  }) : payload = payload ?? Uint8List(0);
+
+  factory QuickCommand.text(
+    String id,
+    String label,
+    String text, {
+    String? symbol,
+    bool sendImmediately = true,
+    QuickCommandModifiers modifiers = QuickCommandModifiers.none,
+  }) => QuickCommand(
+    id: id,
+    label: label,
+    symbol: symbol,
+    payload: Uint8List.fromList(utf8.encode(text)),
+    sendImmediately: sendImmediately,
+    modifiers: modifiers,
+  );
+
+  factory QuickCommand.bytes(
+    String id,
+    String label,
+    List<int> bytes, {
+    String? symbol,
+    bool sendImmediately = true,
+    QuickCommandModifiers modifiers = QuickCommandModifiers.none,
+  }) => QuickCommand(
+    id: id,
+    label: label,
+    symbol: symbol,
+    payload: Uint8List.fromList(bytes),
+    sendImmediately: sendImmediately,
+    modifiers: modifiers,
+  );
+
+  factory QuickCommand.paste(String id, {String label = 'Paste'}) =>
+      QuickCommand(
+        id: id,
+        label: label,
+        symbol: 'doc.on.clipboard',
+        kind: QuickCommandKind.paste,
+      );
+
+  factory QuickCommand.ctrlModifier(String id) => QuickCommand(
+    id: id,
+    label: 'Ctrl',
+    symbol: 'control',
+    kind: QuickCommandKind.ctrl,
+  );
+
+  factory QuickCommand.altModifier(String id) => QuickCommand(
+    id: id,
+    label: 'Alt',
+    symbol: 'option',
+    kind: QuickCommandKind.alt,
+  );
+
+  factory QuickCommand.shiftModifier(String id) => QuickCommand(
+    id: id,
+    label: 'Shift',
+    symbol: 'shift',
+    kind: QuickCommandKind.shift,
+  );
+
+  factory QuickCommand.cd(String id) => QuickCommand(
+    id: id,
+    label: 'cd',
+    symbol: 'arrow.turn.down.right',
+    kind: QuickCommandKind.cd,
+  );
+
+  QuickCommand copyWith({
+    String? id,
+    String? label,
+    String? symbol,
+    Uint8List? payload,
+    bool? sendImmediately,
+    QuickCommandKind? kind,
+    QuickCommandModifiers? modifiers,
+  }) => QuickCommand(
+    id: id ?? this.id,
+    label: label ?? this.label,
+    symbol: symbol ?? this.symbol,
+    payload: payload ?? Uint8List.fromList(this.payload),
+    sendImmediately: sendImmediately ?? this.sendImmediately,
+    kind: kind ?? this.kind,
+    modifiers: modifiers ?? this.modifiers,
+  );
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'label': label,
+    'symbol': symbol,
+    'payload_b64': base64Encode(payload),
+    'sendImmediately': sendImmediately,
+    'kind': kind.name,
+    'modifiers': modifiers.toJson(),
+  };
+
+  factory QuickCommand.fromJson(Map<String, Object?> j) => QuickCommand(
+    id: (j['id'] as String?) ?? '',
+    label: (j['label'] as String?) ?? '',
+    symbol: j['symbol'] as String?,
+    payload: _decodeQuickCommandPayload(j),
+    sendImmediately: (j['sendImmediately'] as bool?) ?? true,
+    kind: QuickCommandKind.values.firstWhere(
+      (k) => k.name == j['kind'],
+      orElse: () => QuickCommandKind.bytes,
+    ),
+    modifiers: j['modifiers'] == null
+        ? QuickCommandModifiers.none
+        : QuickCommandModifiers.fromJson(
+            (j['modifiers'] as Map).cast<String, Object?>(),
+          ),
+  );
+}
+
+Uint8List _decodeQuickCommandPayload(Map<String, Object?> j) {
+  final encoded = (j['payload_b64'] ?? j['payload']) as String?;
+  if (encoded == null) return Uint8List(0);
+  try {
+    return base64Decode(encoded);
+  } catch (_) {
+    return Uint8List.fromList(utf8.encode(encoded));
+  }
+}
+
+class QuickCommandSet {
+  final String id;
+  final String name;
+  final List<String> matches;
+  final List<QuickCommand> commands;
+
+  const QuickCommandSet({
+    required this.id,
+    required this.name,
+    required this.matches,
+    required this.commands,
+  });
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'name': name,
+    'matches': matches,
+    'commands': commands.map((c) => c.toJson()).toList(),
+  };
+
+  factory QuickCommandSet.fromJson(Map<String, Object?> j) => QuickCommandSet(
+    id: (j['id'] as String?) ?? '',
+    name: (j['name'] as String?) ?? '',
+    matches: ((j['matches'] as List?) ?? []).map((e) => '$e').toList(),
+    commands: ((j['commands'] as List?) ?? [])
+        .map((e) => QuickCommand.fromJson((e as Map).cast<String, Object?>()))
+        .toList(),
+  );
+}
+
+/// ANSI escape sequences for the built-in key library used to seed defaults.
+class QuickKeys {
+  static const esc = [0x1b];
+  static const tab = [0x09];
+  static const enter = [0x0d];
+  static const backspace = [0x7f];
+  static const ctrlC = [0x03];
+  static const ctrlD = [0x04];
+  static const up = [0x1b, 0x5b, 0x41];
+  static const down = [0x1b, 0x5b, 0x42];
+  static const right = [0x1b, 0x5b, 0x43];
+  static const left = [0x1b, 0x5b, 0x44];
+}
+
+/// Default global quick-command list (front-loaded by frequency), mirroring the
+/// iOS seed in QuickCommandStore.
+List<QuickCommand> defaultQuickCommands() {
+  var n = 0;
+  String nextId() => 'seed-${n++}';
+  return [
+    QuickCommand.ctrlModifier(nextId()),
+    QuickCommand.bytes(
+      nextId(),
+      'Tab',
+      QuickKeys.tab,
+      symbol: 'arrow.right.to.line',
+    ),
+    QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
+    QuickCommand.bytes(nextId(), '↑', QuickKeys.up, symbol: 'arrow.up'),
+    QuickCommand.bytes(nextId(), '↓', QuickKeys.down, symbol: 'arrow.down'),
+    QuickCommand.bytes(nextId(), '←', QuickKeys.left, symbol: 'arrow.left'),
+    QuickCommand.bytes(nextId(), '→', QuickKeys.right, symbol: 'arrow.right'),
+    QuickCommand.bytes(nextId(), '^C', QuickKeys.ctrlC),
+    QuickCommand.cd(nextId()),
+    QuickCommand.text(nextId(), 'ls', 'ls\n'),
+    QuickCommand.paste(nextId()),
+    QuickCommand.bytes(
+      nextId(),
+      'Backspace',
+      QuickKeys.backspace,
+      symbol: 'delete.left',
+    ),
+    QuickCommand.bytes(nextId(), '^D', QuickKeys.ctrlD),
+    QuickCommand.altModifier(nextId()),
+    QuickCommand.shiftModifier(nextId()),
+    QuickCommand.text(nextId(), '|', '|'),
+    QuickCommand.text(nextId(), '/', '/'),
+    QuickCommand.text(nextId(), '-', '-'),
+    QuickCommand.text(nextId(), '~', '~'),
+    QuickCommand.text(nextId(), 'cd ..', 'cd ..\n'),
+  ];
+}
+
+/// Extract the program key (basename of first token) from a running command
+/// string, mirroring `QuickCommandStore.programKey`.
+String? programKey(String? running) {
+  if (running == null) return null;
+  final trimmed = running.trim();
+  if (trimmed.isEmpty) return null;
+  final firstToken = trimmed.split(RegExp(r'\s+')).first;
+  final base = firstToken.split('/').last;
+  return base.isEmpty ? null : base;
+}

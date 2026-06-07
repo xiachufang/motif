@@ -1,0 +1,487 @@
+/// Motif design system, ported from `apps/ios/Motif/UI/MotifTheme.swift`.
+///
+/// Semantic color tokens live in a [MotifColors] [ThemeExtension] (light + dark
+/// variants); spacing/radius/control-size scales are plain constants. Use
+/// `Theme.of(context).extension<MotifColors>()!` (or the `context.motif`
+/// helper) to read colors.
+library;
+
+import 'package:flutter/material.dart';
+
+/// Spacing scale (T-shirt sizes).
+abstract final class MotifSpacing {
+  static const double xs = 4;
+  static const double sm = 8;
+  static const double md = 12;
+  static const double lg = 16;
+  static const double xl = 24;
+  static const double xxl = 32;
+  static const double xxxl = 40;
+}
+
+/// Corner radii.
+abstract final class MotifRadius {
+  static const double xs = 8;
+  static const double sm = 12;
+  static const double md = 16;
+  static const double lg = 20;
+  static const double xl = 24;
+}
+
+/// Square control diameters / button heights.
+abstract final class MotifControlSize {
+  static const double sm = 32;
+  static const double md = 40;
+  static const double lg = 48;
+  static const double xl = 64;
+}
+
+abstract final class MotifInteraction {
+  static const double pressedOpacity = 0.72;
+  static const double pressedScale = 0.96;
+  static const double disabledOpacity = 0.45;
+  static const Duration pressDuration = Duration(milliseconds: 160);
+}
+
+/// Semantic colors. Values transcribed from the iOS asset catalog colorsets.
+@immutable
+class MotifColors extends ThemeExtension<MotifColors> {
+  final Color accent;
+  final Color accentContainer;
+  final Color background;
+  final Color surface;
+  final Color surfaceElevated;
+  final Color surfaceTranslucent;
+  final Color border;
+  final Color borderStrong;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textTertiary;
+  final Color textOnAccent;
+  final Color danger;
+  final Color success;
+  final Color warning;
+  final Color shadow;
+
+  const MotifColors({
+    required this.accent,
+    required this.accentContainer,
+    required this.background,
+    required this.surface,
+    required this.surfaceElevated,
+    required this.surfaceTranslucent,
+    required this.border,
+    required this.borderStrong,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textTertiary,
+    required this.textOnAccent,
+    required this.danger,
+    required this.success,
+    required this.warning,
+    required this.shadow,
+  });
+
+  Color get subtleFill => textPrimary.withValues(alpha: 0.06);
+  Color get pressedFill => textPrimary.withValues(alpha: 0.15);
+  Color accentFill([double alpha = 0.18]) => accent.withValues(alpha: alpha);
+
+  static const light = MotifColors(
+    accent: Color(0xFF3F6188),
+    accentContainer: Color(0xFFD6E1EE),
+    background: Color(0xFFF2F2F0),
+    surface: Color(0xFFFFFFFF),
+    surfaceElevated: Color(0xFFFFFFFF),
+    surfaceTranslucent: Color(0xA6FFFFFF),
+    border: Color(0xFFE5E5E2),
+    borderStrong: Color(0xFFC8C8C4),
+    textPrimary: Color(0xFF1A1A18),
+    textSecondary: Color(0xFF4A4A48),
+    textTertiary: Color(0xFF888884),
+    textOnAccent: Color(0xFFFFFFFF),
+    danger: Color(0xFFD6453E),
+    success: Color(0xFF2F8C4C),
+    warning: Color(0xFFC47A00),
+    shadow: Color(0xFF000000),
+  );
+
+  static const dark = MotifColors(
+    accent: Color(0xFF7BA1C7),
+    accentContainer: Color(0xFF1F2C3F),
+    background: Color(0xFF0E1013),
+    surface: Color(0xFF1C1F25),
+    surfaceElevated: Color(0xFF262A31),
+    surfaceTranslucent: Color(0xA60E1013),
+    border: Color(0xFF2A2E33),
+    borderStrong: Color(0xFF3D424A),
+    textPrimary: Color(0xFFF5F5F2),
+    textSecondary: Color(0xFFB5B5B0),
+    textTertiary: Color(0xFF7B7B76),
+    textOnAccent: Color(0xFF0F172A),
+    danger: Color(0xFFFF6A60),
+    success: Color(0xFF68C47A),
+    warning: Color(0xFFFFB85C),
+    shadow: Color(0xFF000000),
+  );
+
+  @override
+  MotifColors copyWith({
+    Color? accent,
+    Color? accentContainer,
+    Color? background,
+    Color? surface,
+    Color? surfaceElevated,
+    Color? surfaceTranslucent,
+    Color? border,
+    Color? borderStrong,
+    Color? textPrimary,
+    Color? textSecondary,
+    Color? textTertiary,
+    Color? textOnAccent,
+    Color? danger,
+    Color? success,
+    Color? warning,
+    Color? shadow,
+  }) => MotifColors(
+    accent: accent ?? this.accent,
+    accentContainer: accentContainer ?? this.accentContainer,
+    background: background ?? this.background,
+    surface: surface ?? this.surface,
+    surfaceElevated: surfaceElevated ?? this.surfaceElevated,
+    surfaceTranslucent: surfaceTranslucent ?? this.surfaceTranslucent,
+    border: border ?? this.border,
+    borderStrong: borderStrong ?? this.borderStrong,
+    textPrimary: textPrimary ?? this.textPrimary,
+    textSecondary: textSecondary ?? this.textSecondary,
+    textTertiary: textTertiary ?? this.textTertiary,
+    textOnAccent: textOnAccent ?? this.textOnAccent,
+    danger: danger ?? this.danger,
+    success: success ?? this.success,
+    warning: warning ?? this.warning,
+    shadow: shadow ?? this.shadow,
+  );
+
+  @override
+  MotifColors lerp(covariant MotifColors? other, double t) {
+    if (other == null) return this;
+    Color c(Color a, Color b) => Color.lerp(a, b, t)!;
+    return MotifColors(
+      accent: c(accent, other.accent),
+      accentContainer: c(accentContainer, other.accentContainer),
+      background: c(background, other.background),
+      surface: c(surface, other.surface),
+      surfaceElevated: c(surfaceElevated, other.surfaceElevated),
+      surfaceTranslucent: c(surfaceTranslucent, other.surfaceTranslucent),
+      border: c(border, other.border),
+      borderStrong: c(borderStrong, other.borderStrong),
+      textPrimary: c(textPrimary, other.textPrimary),
+      textSecondary: c(textSecondary, other.textSecondary),
+      textTertiary: c(textTertiary, other.textTertiary),
+      textOnAccent: c(textOnAccent, other.textOnAccent),
+      danger: c(danger, other.danger),
+      success: c(success, other.success),
+      warning: c(warning, other.warning),
+      shadow: c(shadow, other.shadow),
+    );
+  }
+}
+
+extension MotifThemeContext on BuildContext {
+  MotifColors get motif => Theme.of(this).extension<MotifColors>()!;
+}
+
+/// Builds the [ThemeData] for a given brightness with the Motif palette.
+ThemeData motifTheme(Brightness brightness) {
+  final colors = brightness == Brightness.dark
+      ? MotifColors.dark
+      : MotifColors.light;
+  final scheme =
+      ColorScheme.fromSeed(
+        seedColor: colors.accent,
+        brightness: brightness,
+        primary: colors.accent,
+        onPrimary: colors.textOnAccent,
+        surface: colors.surface,
+        error: colors.danger,
+      ).copyWith(
+        primary: colors.accent,
+        onPrimary: colors.textOnAccent,
+        primaryContainer: colors.accentContainer,
+        onPrimaryContainer: colors.accent,
+        secondary: colors.accent,
+        onSecondary: colors.textOnAccent,
+        secondaryContainer: colors.accentContainer,
+        onSecondaryContainer: colors.accent,
+        tertiary: colors.accent,
+        onTertiary: colors.textOnAccent,
+        tertiaryContainer: colors.accentContainer,
+        onTertiaryContainer: colors.accent,
+        surface: colors.surface,
+        onSurface: colors.textPrimary,
+        surfaceContainerLowest: colors.background,
+        surfaceContainerLow: colors.surface,
+        surfaceContainer: colors.surface,
+        surfaceContainerHigh: colors.surfaceElevated,
+        surfaceContainerHighest: colors.surfaceElevated,
+        surfaceTint: Colors.transparent,
+        error: colors.danger,
+        onError: colors.textOnAccent,
+        outline: colors.border,
+        outlineVariant: colors.borderStrong,
+        shadow: colors.shadow,
+        scrim: colors.shadow,
+        inverseSurface: colors.textPrimary,
+        onInverseSurface: colors.background,
+        inversePrimary: colors.accent,
+      );
+  final textTheme = Typography.material2021().black.apply(
+    bodyColor: colors.textPrimary,
+    displayColor: colors.textPrimary,
+  );
+  final inputBorder = OutlineInputBorder(
+    borderRadius: BorderRadius.circular(MotifRadius.lg),
+    borderSide: BorderSide(color: colors.border),
+  );
+  final roundedControlShape = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(MotifRadius.sm),
+  );
+  final textButtonStyle = TextButton.styleFrom(
+    foregroundColor: colors.accent,
+    disabledForegroundColor: colors.textTertiary,
+    shape: roundedControlShape,
+  );
+  final filledButtonStyle = FilledButton.styleFrom(
+    backgroundColor: colors.accent,
+    foregroundColor: colors.textOnAccent,
+    disabledBackgroundColor: colors.subtleFill,
+    disabledForegroundColor: colors.textTertiary,
+    shape: roundedControlShape,
+  );
+  final outlinedButtonStyle = OutlinedButton.styleFrom(
+    foregroundColor: colors.textPrimary,
+    disabledForegroundColor: colors.textTertiary,
+    side: BorderSide(color: colors.border),
+    shape: roundedControlShape,
+  );
+  return ThemeData(
+    useMaterial3: true,
+    brightness: brightness,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: colors.background,
+    extensions: [colors],
+    fontFamily: null,
+    splashFactory: NoSplash.splashFactory,
+    textTheme: textTheme,
+    appBarTheme: AppBarTheme(
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      backgroundColor: colors.background,
+      foregroundColor: colors.textPrimary,
+      centerTitle: false,
+      titleTextStyle: TextStyle(
+        color: colors.textPrimary,
+        fontSize: 17,
+        fontWeight: FontWeight.w700,
+      ),
+      iconTheme: IconThemeData(color: colors.textPrimary, size: 20),
+      actionsIconTheme: IconThemeData(color: colors.textPrimary, size: 20),
+    ),
+    dividerTheme: DividerThemeData(color: colors.border, thickness: 1),
+    iconButtonTheme: IconButtonThemeData(
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.disabled)) return colors.textTertiary;
+          return colors.textPrimary;
+        }),
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) return colors.pressedFill;
+          return Colors.transparent;
+        }),
+        shape: WidgetStateProperty.all(const CircleBorder()),
+        minimumSize: WidgetStateProperty.all(
+          const Size.square(MotifControlSize.md),
+        ),
+        fixedSize: WidgetStateProperty.all(
+          const Size.square(MotifControlSize.md),
+        ),
+        padding: WidgetStateProperty.all(EdgeInsets.zero),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      iconColor: colors.textSecondary,
+      selectedColor: colors.accent,
+      selectedTileColor: colors.accentFill(0.12),
+      textColor: colors.textPrimary,
+      titleTextStyle: TextStyle(color: colors.textPrimary, fontSize: 15),
+      subtitleTextStyle: TextStyle(color: colors.textTertiary, fontSize: 12),
+      leadingAndTrailingTextStyle: TextStyle(
+        color: colors.textTertiary,
+        fontSize: 12,
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(style: textButtonStyle),
+    filledButtonTheme: FilledButtonThemeData(style: filledButtonStyle),
+    outlinedButtonTheme: OutlinedButtonThemeData(style: outlinedButtonStyle),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      elevation: 0,
+      highlightElevation: 0,
+      backgroundColor: colors.accent,
+      foregroundColor: colors.textOnAccent,
+      shape: const CircleBorder(),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: colors.subtleFill,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      border: inputBorder,
+      enabledBorder: inputBorder.copyWith(
+        borderSide: BorderSide(color: colors.border),
+      ),
+      focusedBorder: inputBorder.copyWith(
+        borderSide: BorderSide(color: colors.accent, width: 1.5),
+      ),
+      errorBorder: inputBorder.copyWith(
+        borderSide: BorderSide(color: colors.danger),
+      ),
+      labelStyle: TextStyle(color: colors.textSecondary),
+      hintStyle: TextStyle(color: colors.textTertiary),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MotifRadius.lg),
+      ),
+      titleTextStyle: TextStyle(
+        color: colors.textPrimary,
+        fontSize: 17,
+        fontWeight: FontWeight.w700,
+      ),
+      contentTextStyle: TextStyle(color: colors.textSecondary, fontSize: 14),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: colors.shadow.withValues(alpha: 0.18),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MotifRadius.sm),
+        side: BorderSide(color: colors.border),
+      ),
+      textStyle: TextStyle(color: colors.textPrimary, fontSize: 15),
+      labelTextStyle: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) {
+          return TextStyle(color: colors.textTertiary, fontSize: 15);
+        }
+        return TextStyle(color: colors.textPrimary, fontSize: 15);
+      }),
+    ),
+    menuTheme: MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: WidgetStateProperty.all(colors.surfaceElevated),
+        surfaceTintColor: WidgetStateProperty.all(Colors.transparent),
+        shadowColor: WidgetStateProperty.all(
+          colors.shadow.withValues(alpha: 0.18),
+        ),
+        shape: WidgetStateProperty.all(roundedControlShape),
+      ),
+    ),
+    menuButtonTheme: MenuButtonThemeData(
+      style: ButtonStyle(
+        foregroundColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.disabled)) return colors.textTertiary;
+          return colors.textPrimary;
+        }),
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) return colors.pressedFill;
+          if (states.contains(WidgetState.hovered)) return colors.subtleFill;
+          return Colors.transparent;
+        }),
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: colors.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(MotifRadius.xl),
+        ),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: colors.surfaceElevated,
+      contentTextStyle: TextStyle(color: colors.textPrimary),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MotifRadius.sm),
+      ),
+    ),
+    tooltipTheme: TooltipThemeData(
+      decoration: BoxDecoration(
+        color: colors.textPrimary,
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+      ),
+      textStyle: TextStyle(color: colors.background, fontSize: 12),
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return colors.textTertiary;
+        if (states.contains(WidgetState.selected)) return colors.textOnAccent;
+        return colors.textSecondary;
+      }),
+      trackColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return colors.subtleFill;
+        if (states.contains(WidgetState.selected)) return colors.accent;
+        return colors.subtleFill;
+      }),
+      trackOutlineColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) return colors.accent;
+        return colors.border;
+      }),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return colors.subtleFill;
+        if (states.contains(WidgetState.selected)) return colors.accent;
+        return Colors.transparent;
+      }),
+      checkColor: WidgetStateProperty.all(colors.textOnAccent),
+      side: BorderSide(color: colors.borderStrong),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+      ),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return colors.textTertiary;
+        if (states.contains(WidgetState.selected)) return colors.accent;
+        return colors.textSecondary;
+      }),
+    ),
+    sliderTheme: SliderThemeData(
+      activeTrackColor: colors.accent,
+      inactiveTrackColor: colors.subtleFill,
+      thumbColor: colors.accent,
+      overlayColor: colors.accentFill(0.12),
+    ),
+    progressIndicatorTheme: ProgressIndicatorThemeData(
+      color: colors.accent,
+      linearTrackColor: colors.subtleFill,
+      circularTrackColor: colors.subtleFill,
+    ),
+    cardTheme: CardThemeData(
+      color: colors.surfaceElevated,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: colors.shadow.withValues(alpha: 0.12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(MotifRadius.sm),
+        side: BorderSide(color: colors.border),
+      ),
+    ),
+    tabBarTheme: TabBarThemeData(
+      dividerColor: colors.border,
+      indicatorColor: colors.accent,
+      labelColor: colors.accent,
+      unselectedLabelColor: colors.textSecondary,
+    ),
+  );
+}

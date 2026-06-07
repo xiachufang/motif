@@ -1,0 +1,10 @@
+# Test tags. The `live` tag marks tests that require a running motifd on
+# 127.0.0.1:7777. They skip gracefully when no server is present; exclude them
+# explicitly with: flutter test --exclude-tags=live
+tags:
+  live:
+    description: Requires a live motifd server.
+  native:
+    description: Requires the native libghostty asset (Zig on PATH).
+  tailscale:
+    description: Requires a built libtailscale dylib/.so.

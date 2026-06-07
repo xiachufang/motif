@@ -76,6 +76,14 @@ const RING_ORIGIN_BASE: u64 = MAX_SNAPSHOT_BYTES;
 /// for the VT snapshot served on a cold/truncated `/pty/<id>` connect.
 const MAX_SCROLLBACK: usize = 2000;
 
+/// Warm-resume crossover: only when the would-be byte delta `[since, total)`
+/// exceeds this do we also render a VT snapshot and send whichever is smaller.
+/// A delta below this is sent as-is — the bytes are cheap and rendering a
+/// snapshot to maybe-not-even-win isn't worth the CPU. Above it, a churny PTY
+/// (progress bars, a redrawing full-screen TUI) can make the delta many times
+/// the snapshot, which collapses the churn to its rendered result.
+const SNAPSHOT_VS_DELTA_THRESHOLD: usize = 256 * 1024;
+
 /// Depth of the reader→emulator command channel. Bounded so a slow emulator
 /// applies backpressure to the PTY reader (and thus the OS pty buffer / the
 /// program) instead of growing unboundedly. ~256 chunks at READ_CHUNK ≈ 2 MB.
@@ -177,11 +185,14 @@ enum EmuCmd {
 ///
 /// `replay` is **either**:
 ///   - a raw byte delta `[since, total)` for a warm incremental resume
-///     (`since` lands inside the ring), `start == since`; or
+///     (`since` lands inside the ring) whose delta is small, `start == since`; or
 ///   - a full VT **snapshot** (current screen + scrollback + mode/cursor
-///     prelude) for a cold / truncated / stale cursor, `start == total`.
+///     prelude) — for a cold / truncated / stale cursor, OR a warm cursor whose
+///     byte delta would be larger than the snapshot — `start == total - len`.
 /// The client treats both identically — bytes to feed into its terminal — so
-/// the distinction stays internal to [`emulator_loop`].
+/// the distinction stays internal to [`emulator_loop`]. The snapshot prelude
+/// clears the client's surface (scrollback included), so it lands correctly
+/// whether the client is fresh or warm.
 pub struct SubscribeReply {
     /// Absolute byte offset the client adopts as its resume cursor, chosen so
     /// that after the client counts the `replay` bytes it lands exactly on the
@@ -227,12 +238,15 @@ impl Pty {
     }
 
     /// (Re)attach a `/pty/<id>` client. Routes through the emulator thread so
-    /// the replay decision (warm byte-delta vs. cold VT snapshot), the byte
-    /// cursor, and the live `broadcast::Receiver` are taken atomically with
-    /// `vt_write` on a single thread — no output can fall between them.
+    /// the replay decision (byte-delta vs. VT snapshot), the byte cursor, and
+    /// the live `broadcast::Receiver` are taken atomically with `vt_write` on a
+    /// single thread — no output can fall between them.
     ///
     /// `since`:
-    ///   - `Some(n)` inside the ring → raw delta `[n, total)`, `start = n`.
+    ///   - `Some(n)` inside the ring → raw delta `[n, total)`, `start = n` —
+    ///     UNLESS that delta exceeds [`SNAPSHOT_VS_DELTA_THRESHOLD`] and a VT
+    ///     snapshot of the current state is smaller, in which case the snapshot
+    ///     is sent instead (`start = total - snapshot.len()`).
     ///   - `None` (tail), `n < origin` (truncated), or `n > total` (stale) →
     ///     a full VT snapshot of the current screen+scrollback, `start = total`.
     ///
@@ -577,13 +591,7 @@ impl PtyPool {
         for entry in self.ptys.iter() {
             if let Some((cols, rows)) = entry.forget_client(client) {
                 if let Some(ref s) = session {
-                    let pid = entry.id.clone();
-                    s.publish_event(|seq| Event::PtyResize {
-                        pty_id: pid,
-                        cols,
-                        rows,
-                        seq,
-                    });
+                    s.publish_pty_resize(entry.id.clone(), cols, rows);
                 }
             }
         }
@@ -693,6 +701,9 @@ fn reader_loop(
             // call pty.list immediately after seeing pty.exited won't see a
             // ghost entry.
             sess.pty_pool.remove(&pty_id);
+            // Drop any in-flight resize for this PTY so it can't flush after the
+            // exit and resurrect geometry for a tab that's gone.
+            sess.cancel_coalesced_resize(&pty_id);
             let pid_for_event = pty_id.clone();
             sess.publish_event(|seq| Event::PtyExited {
                 pty_id: pid_for_event,
@@ -816,12 +827,31 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                 let total = ring.total();
                 let origin = ring.origin;
                 let (start, replay) = match since {
-                    // Warm incremental resume: raw byte delta `[s, total)`.
-                    // start == s == total - delta.len(), so the client counting
-                    // the delta lands on `total`.
+                    // Warm incremental resume. Normally a raw byte delta
+                    // `[s, total)` with start == s, so the client counting the
+                    // delta lands on `total`. But when that delta is large, a VT
+                    // snapshot can be far smaller (it collapses redraw churn to
+                    // the rendered screen), so build it and send whichever is
+                    // fewer bytes. The snapshot's prelude clears the client's
+                    // surface — scrollback included — so it lands correctly over
+                    // the warm client's existing state, exactly like a cold one.
                     Some(s) if s >= origin && s <= total => {
                         let skip = (s - origin) as usize;
-                        (s, ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>())
+                        let delta_len = ring.bytes.len() - skip; // == total - s
+                        let snap = if delta_len > SNAPSHOT_VS_DELTA_THRESHOLD {
+                            term.as_ref().map(formatter_vt_snapshot)
+                        } else {
+                            None
+                        };
+                        match snap {
+                            Some(snap) if !snap.is_empty() && snap.len() < delta_len => {
+                                (total.saturating_sub(snap.len() as u64), snap)
+                            }
+                            _ => (
+                                s,
+                                ring.bytes.iter().skip(skip).copied().collect::<Vec<u8>>(),
+                            ),
+                        }
                     }
                     // Cold (None) / truncated (s<origin) / stale (s>total):
                     // full VT snapshot. The snapshot is SYNTHETIC (not ring
@@ -902,7 +932,14 @@ fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
     // ── Prelude: known, matching state before painting ──
     out.extend_from_slice(b"\x1b[!p"); // DECSTR soft reset (modes/SGR/margins → defaults)
     out.extend_from_slice(if alt { b"\x1b[?1049h" } else { b"\x1b[?1049l" });
-    out.extend_from_slice(b"\x1b[H\x1b[2J\x1b[0m"); // home + clear + reset SGR
+    // home + clear screen + clear scrollback (3J) + reset SGR. The 3J makes the
+    // snapshot self-contained over ANY prior client surface: fed to a warm
+    // client that still holds scrollback up to its old cursor, it wipes that
+    // first so the repaint below can't duplicate it. (No-op on a fresh/cold
+    // terminal.) On the primary screen 3J clears the primary scrollback we're
+    // about to repaint; under alt-screen it no-ops, leaving the primary
+    // scrollback beneath untouched — which is what we want there.
+    out.extend_from_slice(b"\x1b[H\x1b[2J\x1b[3J\x1b[0m");
 
     // ── Content (current screen + scrollback) ──
     out.extend_from_slice(&content);
@@ -1013,6 +1050,52 @@ mod tests {
 
     fn find(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn warm_resume_prefers_snapshot_when_delta_is_larger() {
+        // A churny PTY: a progress line rewritten in place ~20k times. The raw
+        // ring delta is ~1 MB, but the rendered screen is a single line — so a
+        // VT snapshot is tiny. A warm resume from the very first byte must get
+        // the snapshot, not the megabyte delta.
+        let tx = spawn_emu(80, 24);
+        let mut raw_len = 0usize;
+        for i in 0..20_000u32 {
+            let line = format!("\rprogress: {i:>6} ................................");
+            raw_len += line.len();
+            feed(&tx, line.as_bytes());
+        }
+        assert!(raw_len > SNAPSHOT_VS_DELTA_THRESHOLD, "test must exceed the threshold");
+        assert!(raw_len < RING_BYTES, "kept under the ring so origin stays at base");
+
+        // `since == RING_ORIGIN_BASE` is the ring's very start: a warm cursor
+        // whose delta is the whole ring.
+        let reply = subscribe(&tx, Some(RING_ORIGIN_BASE));
+        assert!(
+            reply.replay.len() < raw_len / 4,
+            "expected the small snapshot, got {} bytes vs ~{raw_len} raw delta",
+            reply.replay.len()
+        );
+        assert!(
+            find(&reply.replay, b"\x1b[3J"),
+            "snapshot must carry the scrollback-clearing prelude"
+        );
+        // Snapshot cursor accounting: counting the replay lands on `total`.
+        assert_ne!(reply.start, RING_ORIGIN_BASE, "snapshot start != warm since");
+    }
+
+    #[test]
+    fn warm_resume_keeps_small_delta_raw() {
+        // A small warm delta stays a raw byte delta — no snapshot, start == since.
+        let tx = spawn_emu(80, 24);
+        feed(&tx, b"hello world\r\n");
+        let reply = subscribe(&tx, Some(RING_ORIGIN_BASE));
+        assert_eq!(reply.start, RING_ORIGIN_BASE, "small delta resumes at `since`");
+        assert!(
+            !find(&reply.replay, b"\x1b[3J"),
+            "small delta must be raw bytes, not a snapshot"
+        );
+        assert!(find(&reply.replay, b"hello world"), "delta carries the raw bytes");
     }
 
     #[test]

@@ -494,7 +494,7 @@ export default function Workspace({ sessionName }: Props) {
         && (v.spec.path ?? null) === (path ?? null)
       );
       if (existing) {
-        await client.call("view.activate", { view_id: existing.id });
+        useApp.getState().activateViewOptimistic(existing.id);
       } else {
         await client.call("view.open", {
           spec: { kind: "diff", staged: false, path: path ?? null } as ViewSpec,

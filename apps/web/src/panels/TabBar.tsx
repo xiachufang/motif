@@ -13,6 +13,7 @@ export default function TabBar({ onNewPty }: Props) {
   const ptyInfos   = useApp(s => s.ptyInfos);
   const runningCmds = useApp(s => s.runningCmds);
   const applyViewMoved = useApp(s => s.applyViewMoved);
+  const activateViewOptimistic = useApp(s => s.activateViewOptimistic);
 
   // A pty tab whose foreground program is still running asks for confirmation
   // before closing. Non-pty tabs (and idle ptys) close immediately.
@@ -31,7 +32,7 @@ export default function TabBar({ onNewPty }: Props) {
   const [overIdx, setOverIdx] = useState<number | null>(null);
 
   function activate(id: string) {
-    client?.call("view.activate", { view_id: id }).catch(() => { /* idempotent */ });
+    activateViewOptimistic(id);
   }
   function close(id: string) {
     client?.call("view.close",    { view_id: id }).catch(() => { /* idempotent */ });

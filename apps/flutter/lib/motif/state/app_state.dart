@@ -1,0 +1,566 @@
+/// Top-level app state, ported from `apps/ios/Motif/Settings/AppState.swift`.
+///
+/// Owns the persisted stores and one live [MotifClient] per connected server.
+/// Exposed to the widget tree via `provider`.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../log/log.dart';
+import '../models/motif_proto.dart';
+import '../models/settings.dart';
+import '../net/proxy_client.dart';
+import '../platform/push_crypto.dart';
+import '../platform/services.dart';
+import '../terminal/terminal_palette.dart';
+import 'motif_client.dart';
+import 'stores.dart';
+
+class AppState extends ChangeNotifier {
+  final ServerStore servers;
+  final TerminalSettingsStore terminalSettings;
+  final QuickCommandStore commands;
+  final PushSettingsStore push;
+  final PlatformServices platform;
+  final String? startupActiveServerId;
+  final SessionSidebarUiState sessionSidebar = SessionSidebarUiState();
+  final MotifClient Function(MotifServer server) _clientFactory;
+  final Map<String, MotifClient> _clientsByServer = {};
+  final Map<String, VoidCallback> _clientListeners = {};
+  StreamSubscription<TailscaleState>? _tailscaleSub;
+  bool _disconnectingTailscaleServers = false;
+  final Set<String> _tailscaleSuspendedServerIds = {};
+
+  // Auto-reconnect after unexpected drops (ConnFailed), exponential backoff.
+  static const Duration _reconnectBaseDelay = Duration(milliseconds: 500);
+  static const Duration _reconnectMaxDelay = Duration(seconds: 30);
+  final Map<String, Timer> _reconnectTimers = {};
+  final Map<String, int> _reconnectAttempts = {};
+  final Set<String> _reconnecting = {};
+  final Map<String, MotifConnState> _lastClientState = {};
+  AppLifecycleListener? _lifecycleListener;
+  bool _appPaused = false;
+
+  AppState({
+    required this.servers,
+    required this.terminalSettings,
+    required this.commands,
+    required this.push,
+    required this.platform,
+    MotifClient Function(MotifServer server)? clientFactory,
+  }) : startupActiveServerId = servers.activeId,
+       _clientFactory = clientFactory ?? ((_) => MotifClient()) {
+    servers.addListener(_relayStoreChange);
+    commands.addListener(_relayStoreChange);
+    push.addListener(_relayStoreChange);
+    terminalSettings.addListener(_onTerminalSettingsChanged);
+    _tailscaleSub = platform.tailscale.states.listen(_onTailscaleState);
+    try {
+      _lifecycleListener = AppLifecycleListener(
+        onPause: _onAppPaused,
+        onHide: _onAppPaused,
+        onResume: _onAppResumed,
+      );
+    } catch (_) {
+      // No widgets binding (pure unit tests); lifecycle pausing is
+      // best-effort.
+    }
+    _applyTerminalPalette();
+  }
+
+  static Future<AppState> load({PlatformServices? platform}) async {
+    final prefs = await SharedPreferences.getInstance();
+    return AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: platform ?? PlatformServices.defaults(),
+    );
+  }
+
+  bool get hasActiveServer => servers.activeServer != null;
+
+  bool shouldAutoConnectServer(String serverId) =>
+      startupActiveServerId == serverId;
+
+  MotifServer? serverById(String id) {
+    for (final server in servers.servers) {
+      if (server.id == id) return server;
+    }
+    return null;
+  }
+
+  MotifClient? get activeClient {
+    final id = servers.activeId;
+    if (id == null) return null;
+    return clientForServer(id);
+  }
+
+  MotifClient get motif {
+    final client = activeClient;
+    if (client == null) {
+      throw StateError('No active server');
+    }
+    return client;
+  }
+
+  MotifClient? existingClientForServer(String serverId) =>
+      _clientsByServer[serverId];
+
+  MotifClient clientForServer(String serverId) {
+    final existing = _clientsByServer[serverId];
+    if (existing != null) return existing;
+    final server = serverById(serverId);
+    if (server == null) throw StateError('Unknown server: $serverId');
+    final client = _clientFactory(server);
+    _clientsByServer[serverId] = client;
+    _wireClient(serverId, client);
+    _applyTerminalPaletteTo(client);
+    return client;
+  }
+
+  bool isServerLive(String serverId) =>
+      existingClientForServer(serverId)?.isLive ?? false;
+
+  MotifConnState serverState(String serverId) =>
+      existingClientForServer(serverId)?.state ?? const ConnDisconnected();
+
+  List<({MotifServer server, MotifClient client})> get connectedServerClients {
+    final groups = <({MotifServer server, MotifClient client})>[];
+    for (final server in servers.servers) {
+      final client = _clientsByServer[server.id];
+      if (client != null && client.isLive) {
+        groups.add((server: server, client: client));
+      }
+    }
+    return groups;
+  }
+
+  List<({MotifServer server, MotifClient client})> get knownServerClients {
+    final groups = <({MotifServer server, MotifClient client})>[];
+    for (final server in servers.servers) {
+      final client = _clientsByServer[server.id];
+      if (client != null) groups.add((server: server, client: client));
+    }
+    return groups;
+  }
+
+  void _relayStoreChange() {
+    _pruneClientsForDeletedServers();
+    notifyListeners();
+  }
+
+  void _onTerminalSettingsChanged() {
+    _applyTerminalPalette();
+    notifyListeners();
+  }
+
+  void _onTailscaleState(TailscaleState state) {
+    if (state.status == TailscaleStatus.running) {
+      _reconnectTailscaleSuspendedServers();
+      _rescheduleFailedTailscaleServers();
+      return;
+    }
+    if (_disconnectingTailscaleServers) return;
+    _disconnectingTailscaleServers = true;
+    unawaited(
+      _disconnectTailscaleServers().whenComplete(() {
+        _disconnectingTailscaleServers = false;
+      }),
+    );
+  }
+
+  /// Reconnect servers that were dropped because Tailscale went away, now that
+  /// it is running again.
+  void _reconnectTailscaleSuspendedServers() {
+    if (_tailscaleSuspendedServerIds.isEmpty) return;
+    final ids = _tailscaleSuspendedServerIds.toList();
+    _tailscaleSuspendedServerIds.clear();
+    for (final id in ids) {
+      if (serverById(id)?.kind != ServerKind.tailscale) continue;
+      unawaited(
+        connectServerAndRefresh(id, makeActive: false).catchError((_) => false),
+      );
+    }
+  }
+
+  /// Tailscale servers skip the generic backoff while the backend is down
+  /// (reconnecting before Tailscale is up would always fail); once it is
+  /// running again, kick the reconnect loop for any that dropped.
+  void _rescheduleFailedTailscaleServers() {
+    for (final entry in knownServerClients) {
+      if (entry.server.kind != ServerKind.tailscale) continue;
+      if (entry.client.state is ConnFailed) {
+        _maybeScheduleReconnect(entry.server.id);
+      }
+    }
+  }
+
+  // ──────────────────────── auto-reconnect ────────────────────────
+
+  void _onClientStateChanged(String serverId, MotifClient client) {
+    final prev = _lastClientState[serverId];
+    final next = client.state;
+    _lastClientState[serverId] = next;
+    if (next is ConnAttached || next is ConnConnected) {
+      _reconnectAttempts.remove(serverId);
+      _cancelReconnect(serverId);
+      return;
+    }
+    if (next is ConnDisconnected) {
+      // Manual disconnect (or Tailscale suspend) — drop pending retries.
+      _reconnectAttempts.remove(serverId);
+      _cancelReconnect(serverId);
+      return;
+    }
+    // Edge into ConnFailed; repeated notifies while failed don't reschedule.
+    if (next is ConnFailed && prev is! ConnFailed) {
+      _maybeScheduleReconnect(serverId);
+    }
+  }
+
+  void _maybeScheduleReconnect(String serverId) {
+    if (_appPaused) return;
+    if (_tailscaleSuspendedServerIds.contains(serverId)) return;
+    final server = serverById(serverId);
+    if (server == null) return;
+    // Tailscale servers wait for the backend; _onTailscaleState reschedules
+    // them once it reports running.
+    if (server.kind == ServerKind.tailscale &&
+        platform.tailscale.state.status != TailscaleStatus.running) {
+      return;
+    }
+    final client = existingClientForServer(serverId);
+    if (client == null || client.state is! ConnFailed) return;
+    if (_reconnectTimers.containsKey(serverId) ||
+        _reconnecting.contains(serverId)) {
+      return;
+    }
+    final attempt = _reconnectAttempts[serverId] ?? 0;
+    final delay = _reconnectDelay(attempt);
+    Log.i(
+      'schedule reconnect server=$serverId attempt=$attempt '
+      'delay=${delay.inMilliseconds}ms',
+      name: 'motif.reconnect',
+    );
+    _reconnectTimers[serverId] = Timer(delay, () {
+      _reconnectTimers.remove(serverId);
+      unawaited(_attemptReconnect(serverId));
+    });
+  }
+
+  Duration _reconnectDelay(int attempt) {
+    final base = _reconnectBaseDelay.inMilliseconds * (1 << attempt.clamp(0, 6));
+    final capped = base.clamp(0, _reconnectMaxDelay.inMilliseconds);
+    // ~20% jitter to avoid synchronized retries across servers.
+    final jitter =
+        (capped * 0.2 * (DateTime.now().microsecondsSinceEpoch % 1000) / 1000)
+            .round();
+    return Duration(milliseconds: capped + jitter);
+  }
+
+  Future<void> _attemptReconnect(String serverId) async {
+    if (_appPaused) return;
+    final client = existingClientForServer(serverId);
+    if (client == null || client.state is! ConnFailed) return;
+    if (!_reconnecting.add(serverId)) return;
+    _reconnectAttempts[serverId] = (_reconnectAttempts[serverId] ?? 0) + 1;
+    try {
+      await connectServer(serverId, force: true, makeActive: false);
+    } catch (_) {
+      // Failure surfaces as ConnFailed; rescheduled below.
+    } finally {
+      _reconnecting.remove(serverId);
+    }
+    if (existingClientForServer(serverId)?.state is ConnFailed) {
+      _maybeScheduleReconnect(serverId);
+    }
+  }
+
+  void _cancelReconnect(String serverId) {
+    _reconnectTimers.remove(serverId)?.cancel();
+  }
+
+  void _cancelAllReconnects() {
+    for (final timer in _reconnectTimers.values) {
+      timer.cancel();
+    }
+    _reconnectTimers.clear();
+  }
+
+  void _onAppPaused() {
+    _appPaused = true;
+    _cancelAllReconnects();
+  }
+
+  void _onAppResumed() {
+    _appPaused = false;
+    for (final entry in knownServerClients) {
+      if (entry.client.state is ConnFailed) {
+        _maybeScheduleReconnect(entry.server.id);
+      }
+    }
+  }
+
+  void _applyTerminalPalette() {
+    final scheme = _resolveTerminalScheme(
+      terminalSettings.settings.theme,
+      ui.PlatformDispatcher.instance.platformBrightness,
+    );
+    final palette = terminalPaletteForBrightness(scheme);
+    for (final client in _allClients()) {
+      _applyTerminalPaletteTo(
+        client,
+        fg: palette.foregroundWire,
+        bg: palette.backgroundWire,
+        theme: palette.theme,
+      );
+    }
+  }
+
+  Iterable<MotifClient> _allClients() sync* {
+    for (final client in _clientsByServer.values) {
+      yield client;
+    }
+  }
+
+  void _applyTerminalPaletteTo(
+    MotifClient client, {
+    String? fg,
+    String? bg,
+    String? theme,
+  }) {
+    if (fg == null && bg == null && theme == null) {
+      final scheme = _resolveTerminalScheme(
+        terminalSettings.settings.theme,
+        ui.PlatformDispatcher.instance.platformBrightness,
+      );
+      final palette = terminalPaletteForBrightness(scheme);
+      fg = palette.foregroundWire;
+      bg = palette.backgroundWire;
+      theme = palette.theme;
+    }
+    client.setTerminalPalette(fg: fg, bg: bg, theme: theme);
+  }
+
+  ui.Brightness _resolveTerminalScheme(
+    TerminalThemeSetting setting,
+    ui.Brightness platformBrightness,
+  ) {
+    return switch (setting) {
+      TerminalThemeSetting.light => ui.Brightness.light,
+      TerminalThemeSetting.dark => ui.Brightness.dark,
+      TerminalThemeSetting.system =>
+        platformBrightness == ui.Brightness.dark
+            ? ui.Brightness.dark
+            : ui.Brightness.light,
+    };
+  }
+
+  /// Register this device for E2E push (native APNs token + the per-device AES
+  /// key) once connected, if the user enabled notifications. Best-effort: a
+  /// missing token / unsupported platform is a no-op. No Firebase involved.
+  bool _pushHandlerWired = false;
+
+  Future<void> registerForPush({MotifClient? client}) async {
+    final target = client ?? activeClient;
+    if (target == null || !push.enabled || !target.isLive) return;
+    // Decrypt foreground push payloads in-app and surface them as banners
+    // (background/killed delivery is decrypted by the iOS NSE).
+    if (!_pushHandlerWired) {
+      _pushHandlerWired = true;
+      platform.push.onEncryptedPayload((e, n) async {
+        final plain = await decryptPushPayload(
+          encKeyB64: push.encKeyBase64,
+          eB64: e,
+          nB64: n,
+        );
+        if (plain == null) return;
+        try {
+          final obj = jsonDecode(plain) as Map<String, Object?>;
+          if (push.isMuted(obj['session'] as String? ?? '')) return;
+          target.showNotification(
+            MotifNotification(
+              title: (obj['title'] as String?) ?? 'Motif',
+              body: (obj['body'] as String?) ?? '',
+              sessionId: obj['session'] as String?,
+              kind: (obj['kind'] as String?) ?? 'push',
+            ),
+          );
+        } catch (_) {}
+      });
+    }
+    try {
+      final reg = await platform.push.register(encKeyBase64: push.encKeyBase64);
+      if (reg == null) return;
+      await target.registerDevice(
+        deviceToken: reg.deviceToken,
+        platform: reg.platform,
+        encKeyBase64: reg.encKeyBase64,
+        mutedSessions: push.mutedSessions.toList(),
+      );
+    } catch (_) {
+      // Push is best-effort; never block the session on it.
+    }
+  }
+
+  /// Connect (or reconnect) to the active server. Tailscale-kind servers route
+  /// their host through the [TailscaleService] (MagicDNS → peer IP) and tunnel
+  /// RPC traffic through the tsnet loopback SOCKS5 proxy when one is available.
+  Future<void> connectActive({bool force = false}) async {
+    final server = servers.activeServer;
+    if (server == null) return;
+    await connectServer(server.id, force: force, makeActive: false);
+  }
+
+  Future<void> connectServer(
+    String serverId, {
+    bool force = false,
+    bool makeActive = true,
+  }) async {
+    final server = serverById(serverId);
+    if (server == null) return;
+    if (makeActive && servers.activeId != serverId) {
+      await servers.setActive(serverId);
+    }
+    var target = server;
+    var proxy = ProxySettings.none;
+    if (server.kind == ServerKind.tailscale) {
+      try {
+        final resolved = await platform.tailscale.resolveHost(server.host);
+        if (resolved.isNotEmpty && resolved != server.host) {
+          target = server.copyWith(host: resolved);
+        }
+      } catch (_) {
+        // Fall back to the configured host on resolution failure.
+      }
+      // If a real tsnet backend is running, route through its loopback proxy.
+      proxy = platform.tailscale.loopbackProxy ?? ProxySettings.none;
+    }
+    final client = clientForServer(server.id);
+    await client.connect(target, force: force, proxy: proxy);
+    // Best-effort push registration once the RPC channel is live.
+    unawaited(registerForPush(client: client));
+  }
+
+  Future<bool> connectServerAndRefresh(
+    String serverId, {
+    bool force = false,
+    bool makeActive = true,
+  }) async {
+    await connectServer(serverId, force: force, makeActive: makeActive);
+    final client = existingClientForServer(serverId);
+    if (client == null || !client.isLive) return false;
+    await refreshServerSessions(serverId);
+    return true;
+  }
+
+  Future<void> disconnectServer(String serverId) async {
+    final client = existingClientForServer(serverId);
+    if (client == null) return;
+    await client.disconnect();
+    notifyListeners();
+  }
+
+  Future<void> _disconnectTailscaleServers() async {
+    final futures = <Future<void>>[];
+    for (final server in servers.servers) {
+      if (server.kind != ServerKind.tailscale) continue;
+      final client = existingClientForServer(server.id);
+      if (client == null || !client.isLive) continue;
+      _tailscaleSuspendedServerIds.add(server.id);
+      futures.add(client.disconnect().catchError((_) {}));
+    }
+    if (futures.isEmpty) return;
+    await Future.wait(futures);
+    notifyListeners();
+  }
+
+  Future<void> refreshConnectedSessions() async {
+    await Future.wait([
+      for (final group in connectedServerClients)
+        group.client.refreshSessions().catchError((_) {
+          return null;
+        }),
+    ]);
+    notifyListeners();
+  }
+
+  Future<void> refreshServerSessions(String serverId) async {
+    final client = existingClientForServer(serverId);
+    if (client == null || !client.isLive) return;
+    try {
+      await client.refreshSessions();
+    } catch (_) {
+      // Session refresh is best-effort; keep the list usable on transient RPC
+      // failures.
+    }
+    notifyListeners();
+  }
+
+  void _wireClient(String serverId, MotifClient client) {
+    void listener() {
+      _onClientStateChanged(serverId, client);
+      if (hasListeners) notifyListeners();
+    }
+
+    _clientListeners[serverId] = listener;
+    client.addListener(listener);
+  }
+
+  void _pruneClientsForDeletedServers() {
+    final liveIds = {for (final server in servers.servers) server.id};
+    for (final id in _clientsByServer.keys.toList()) {
+      if (liveIds.contains(id)) continue;
+      final client = _clientsByServer.remove(id);
+      final listener = _clientListeners.remove(id);
+      _cancelReconnect(id);
+      _reconnectAttempts.remove(id);
+      _lastClientState.remove(id);
+      _reconnecting.remove(id);
+      if (client == null) continue;
+      if (listener != null) client.removeListener(listener);
+      unawaited(client.disconnect());
+      client.dispose();
+    }
+  }
+
+  @override
+  void dispose() {
+    servers.removeListener(_relayStoreChange);
+    commands.removeListener(_relayStoreChange);
+    push.removeListener(_relayStoreChange);
+    terminalSettings.removeListener(_onTerminalSettingsChanged);
+    unawaited(_tailscaleSub?.cancel());
+    _lifecycleListener?.dispose();
+    _cancelAllReconnects();
+    for (final entry in _clientsByServer.entries) {
+      final listener = _clientListeners[entry.key];
+      if (listener != null) entry.value.removeListener(listener);
+    }
+    for (final client in _clientsByServer.values) {
+      client.dispose();
+    }
+    super.dispose();
+  }
+}
+
+class SessionSidebarUiState {
+  bool showSessions = false;
+  bool showFileTree = false;
+  bool showGitDiff = false;
+  bool showBottomBar = false;
+  double width = 340;
+  double splitFraction = 0.5;
+  double firstSplitFraction = 0.34;
+  double secondSplitFraction = 0.67;
+
+  bool get hasVisiblePanel => showSessions || showFileTree || showGitDiff;
+}

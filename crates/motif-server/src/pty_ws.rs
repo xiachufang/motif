@@ -11,15 +11,20 @@
 //! byte ring AND a headless libghostty terminal. On connect the handler asks it
 //! (via `Pty::subscribe`) for the bytes to send before going live:
 //!
-//! - `origin <= since <= total`    — warm resume: raw byte delta `[since, total)`.
+//! - `origin <= since <= total`    — warm resume: raw byte delta `[since, total)`,
+//!   UNLESS that delta is large and a snapshot is smaller (see below).
 //! - `since` omitted / `< origin` / `> total` — cold/truncated/stale: a full VT
 //!   **snapshot** of the current screen + scrollback (with a mode/cursor
 //!   prelude), resuming live from `total`.
 //!
 //! The snapshot collapses in-place redraw churn (progress bars, full-screen
 //! TUIs) to its rendered result, so a busy PTY replays kilobytes instead of
-//! megabytes. The replay slice and the live receiver are taken atomically on
-//! the emulator thread, so no output falls between them.
+//! megabytes. For that reason a *warm* resume whose byte delta would be larger
+//! than the snapshot also gets the snapshot — the server sends whichever is
+//! fewer bytes. The snapshot's prelude clears the client surface (scrollback
+//! included), so it lands correctly over a warm client's existing state. The
+//! replay slice and the live receiver are taken atomically on the emulator
+//! thread, so no output falls between them.
 //!
 //! ## Meta frame
 //!
@@ -43,7 +48,6 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use motif_net::PeerAddr;
 use motif_proto::common::{ClientId, PtyId};
-use motif_proto::event::Event;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
@@ -325,13 +329,7 @@ async fn handle_pty_socket(
                     tracing::warn!(pty_id = %pty_id, "pty write: {e}");
                 }
                 if let Some((cols, rows)) = pty.mark_primary(client_id.clone()) {
-                    let pid = pty_id.clone();
-                    session.publish_event(|seq| Event::PtyResize {
-                        pty_id: pid,
-                        cols,
-                        rows,
-                        seq,
-                    });
+                    session.publish_pty_resize(pty_id.clone(), cols, rows);
                 }
             }
             Message::Close(_) => break,

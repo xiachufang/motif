@@ -1,0 +1,226 @@
+import 'package:flutter/services.dart';
+import 'ghostty_bindings.g.dart';
+
+GhosttyKey? mapFlutterKey(LogicalKeyboardKey key) {
+  return _keyMap[key];
+}
+
+String? logicalKeyCharacter(LogicalKeyboardKey key, {required bool shift}) {
+  final chars = _printableKeyChars[key];
+  if (chars == null) return null;
+  return shift ? chars.shifted : chars.unshifted;
+}
+
+int logicalKeyUnshiftedCodepoint(LogicalKeyboardKey key) {
+  final chars = _printableKeyChars[key];
+  return chars == null ? 0 : chars.unshifted.codeUnitAt(0);
+}
+
+int? logicalKeyControlCode(LogicalKeyboardKey key, {required bool shift}) {
+  final chars = _printableKeyChars[key];
+  if (chars == null) return null;
+  for (final ch in [
+    shift ? chars.shifted : chars.unshifted,
+    chars.unshifted,
+    chars.shifted,
+  ]) {
+    if (ch.length != 1) continue;
+    final cp = ch.codeUnitAt(0);
+    final upper = (cp >= 0x61 && cp <= 0x7a) ? cp - 0x20 : cp;
+    if (upper >= 0x40 && upper <= 0x5f) return upper & 0x1f;
+    if (upper == 0x3f) return 0x7f;
+  }
+  return null;
+}
+
+final Map<LogicalKeyboardKey, ({String unshifted, String shifted})>
+_printableKeyChars = {
+  LogicalKeyboardKey.keyA: (unshifted: 'a', shifted: 'A'),
+  LogicalKeyboardKey.keyB: (unshifted: 'b', shifted: 'B'),
+  LogicalKeyboardKey.keyC: (unshifted: 'c', shifted: 'C'),
+  LogicalKeyboardKey.keyD: (unshifted: 'd', shifted: 'D'),
+  LogicalKeyboardKey.keyE: (unshifted: 'e', shifted: 'E'),
+  LogicalKeyboardKey.keyF: (unshifted: 'f', shifted: 'F'),
+  LogicalKeyboardKey.keyG: (unshifted: 'g', shifted: 'G'),
+  LogicalKeyboardKey.keyH: (unshifted: 'h', shifted: 'H'),
+  LogicalKeyboardKey.keyI: (unshifted: 'i', shifted: 'I'),
+  LogicalKeyboardKey.keyJ: (unshifted: 'j', shifted: 'J'),
+  LogicalKeyboardKey.keyK: (unshifted: 'k', shifted: 'K'),
+  LogicalKeyboardKey.keyL: (unshifted: 'l', shifted: 'L'),
+  LogicalKeyboardKey.keyM: (unshifted: 'm', shifted: 'M'),
+  LogicalKeyboardKey.keyN: (unshifted: 'n', shifted: 'N'),
+  LogicalKeyboardKey.keyO: (unshifted: 'o', shifted: 'O'),
+  LogicalKeyboardKey.keyP: (unshifted: 'p', shifted: 'P'),
+  LogicalKeyboardKey.keyQ: (unshifted: 'q', shifted: 'Q'),
+  LogicalKeyboardKey.keyR: (unshifted: 'r', shifted: 'R'),
+  LogicalKeyboardKey.keyS: (unshifted: 's', shifted: 'S'),
+  LogicalKeyboardKey.keyT: (unshifted: 't', shifted: 'T'),
+  LogicalKeyboardKey.keyU: (unshifted: 'u', shifted: 'U'),
+  LogicalKeyboardKey.keyV: (unshifted: 'v', shifted: 'V'),
+  LogicalKeyboardKey.keyW: (unshifted: 'w', shifted: 'W'),
+  LogicalKeyboardKey.keyX: (unshifted: 'x', shifted: 'X'),
+  LogicalKeyboardKey.keyY: (unshifted: 'y', shifted: 'Y'),
+  LogicalKeyboardKey.keyZ: (unshifted: 'z', shifted: 'Z'),
+  LogicalKeyboardKey.digit0: (unshifted: '0', shifted: ')'),
+  LogicalKeyboardKey.digit1: (unshifted: '1', shifted: '!'),
+  LogicalKeyboardKey.digit2: (unshifted: '2', shifted: '@'),
+  LogicalKeyboardKey.digit3: (unshifted: '3', shifted: '#'),
+  LogicalKeyboardKey.digit4: (unshifted: '4', shifted: r'$'),
+  LogicalKeyboardKey.digit5: (unshifted: '5', shifted: '%'),
+  LogicalKeyboardKey.digit6: (unshifted: '6', shifted: '^'),
+  LogicalKeyboardKey.digit7: (unshifted: '7', shifted: '&'),
+  LogicalKeyboardKey.digit8: (unshifted: '8', shifted: '*'),
+  LogicalKeyboardKey.digit9: (unshifted: '9', shifted: '('),
+  LogicalKeyboardKey.backquote: (unshifted: '`', shifted: '~'),
+  LogicalKeyboardKey.backslash: (unshifted: r'\', shifted: '|'),
+  LogicalKeyboardKey.bracketLeft: (unshifted: '[', shifted: '{'),
+  LogicalKeyboardKey.bracketRight: (unshifted: ']', shifted: '}'),
+  LogicalKeyboardKey.comma: (unshifted: ',', shifted: '<'),
+  LogicalKeyboardKey.equal: (unshifted: '=', shifted: '+'),
+  LogicalKeyboardKey.minus: (unshifted: '-', shifted: '_'),
+  LogicalKeyboardKey.period: (unshifted: '.', shifted: '>'),
+  LogicalKeyboardKey.quote: (unshifted: "'", shifted: '"'),
+  LogicalKeyboardKey.semicolon: (unshifted: ';', shifted: ':'),
+  LogicalKeyboardKey.slash: (unshifted: '/', shifted: '?'),
+  LogicalKeyboardKey.space: (unshifted: ' ', shifted: ' '),
+};
+
+final Map<LogicalKeyboardKey, GhosttyKey> _keyMap = {
+  // Letters A-Z
+  LogicalKeyboardKey.keyA: GhosttyKey.GHOSTTY_KEY_A,
+  LogicalKeyboardKey.keyB: GhosttyKey.GHOSTTY_KEY_B,
+  LogicalKeyboardKey.keyC: GhosttyKey.GHOSTTY_KEY_C,
+  LogicalKeyboardKey.keyD: GhosttyKey.GHOSTTY_KEY_D,
+  LogicalKeyboardKey.keyE: GhosttyKey.GHOSTTY_KEY_E,
+  LogicalKeyboardKey.keyF: GhosttyKey.GHOSTTY_KEY_F,
+  LogicalKeyboardKey.keyG: GhosttyKey.GHOSTTY_KEY_G,
+  LogicalKeyboardKey.keyH: GhosttyKey.GHOSTTY_KEY_H,
+  LogicalKeyboardKey.keyI: GhosttyKey.GHOSTTY_KEY_I,
+  LogicalKeyboardKey.keyJ: GhosttyKey.GHOSTTY_KEY_J,
+  LogicalKeyboardKey.keyK: GhosttyKey.GHOSTTY_KEY_K,
+  LogicalKeyboardKey.keyL: GhosttyKey.GHOSTTY_KEY_L,
+  LogicalKeyboardKey.keyM: GhosttyKey.GHOSTTY_KEY_M,
+  LogicalKeyboardKey.keyN: GhosttyKey.GHOSTTY_KEY_N,
+  LogicalKeyboardKey.keyO: GhosttyKey.GHOSTTY_KEY_O,
+  LogicalKeyboardKey.keyP: GhosttyKey.GHOSTTY_KEY_P,
+  LogicalKeyboardKey.keyQ: GhosttyKey.GHOSTTY_KEY_Q,
+  LogicalKeyboardKey.keyR: GhosttyKey.GHOSTTY_KEY_R,
+  LogicalKeyboardKey.keyS: GhosttyKey.GHOSTTY_KEY_S,
+  LogicalKeyboardKey.keyT: GhosttyKey.GHOSTTY_KEY_T,
+  LogicalKeyboardKey.keyU: GhosttyKey.GHOSTTY_KEY_U,
+  LogicalKeyboardKey.keyV: GhosttyKey.GHOSTTY_KEY_V,
+  LogicalKeyboardKey.keyW: GhosttyKey.GHOSTTY_KEY_W,
+  LogicalKeyboardKey.keyX: GhosttyKey.GHOSTTY_KEY_X,
+  LogicalKeyboardKey.keyY: GhosttyKey.GHOSTTY_KEY_Y,
+  LogicalKeyboardKey.keyZ: GhosttyKey.GHOSTTY_KEY_Z,
+
+  // Digits 0-9
+  LogicalKeyboardKey.digit0: GhosttyKey.GHOSTTY_KEY_DIGIT_0,
+  LogicalKeyboardKey.digit1: GhosttyKey.GHOSTTY_KEY_DIGIT_1,
+  LogicalKeyboardKey.digit2: GhosttyKey.GHOSTTY_KEY_DIGIT_2,
+  LogicalKeyboardKey.digit3: GhosttyKey.GHOSTTY_KEY_DIGIT_3,
+  LogicalKeyboardKey.digit4: GhosttyKey.GHOSTTY_KEY_DIGIT_4,
+  LogicalKeyboardKey.digit5: GhosttyKey.GHOSTTY_KEY_DIGIT_5,
+  LogicalKeyboardKey.digit6: GhosttyKey.GHOSTTY_KEY_DIGIT_6,
+  LogicalKeyboardKey.digit7: GhosttyKey.GHOSTTY_KEY_DIGIT_7,
+  LogicalKeyboardKey.digit8: GhosttyKey.GHOSTTY_KEY_DIGIT_8,
+  LogicalKeyboardKey.digit9: GhosttyKey.GHOSTTY_KEY_DIGIT_9,
+
+  // Punctuation / writing system
+  LogicalKeyboardKey.backquote: GhosttyKey.GHOSTTY_KEY_BACKQUOTE,
+  LogicalKeyboardKey.backslash: GhosttyKey.GHOSTTY_KEY_BACKSLASH,
+  LogicalKeyboardKey.bracketLeft: GhosttyKey.GHOSTTY_KEY_BRACKET_LEFT,
+  LogicalKeyboardKey.bracketRight: GhosttyKey.GHOSTTY_KEY_BRACKET_RIGHT,
+  LogicalKeyboardKey.comma: GhosttyKey.GHOSTTY_KEY_COMMA,
+  LogicalKeyboardKey.equal: GhosttyKey.GHOSTTY_KEY_EQUAL,
+  LogicalKeyboardKey.minus: GhosttyKey.GHOSTTY_KEY_MINUS,
+  LogicalKeyboardKey.period: GhosttyKey.GHOSTTY_KEY_PERIOD,
+  LogicalKeyboardKey.quote: GhosttyKey.GHOSTTY_KEY_QUOTE,
+  LogicalKeyboardKey.semicolon: GhosttyKey.GHOSTTY_KEY_SEMICOLON,
+  LogicalKeyboardKey.slash: GhosttyKey.GHOSTTY_KEY_SLASH,
+
+  // Functional keys
+  LogicalKeyboardKey.altLeft: GhosttyKey.GHOSTTY_KEY_ALT_LEFT,
+  LogicalKeyboardKey.altRight: GhosttyKey.GHOSTTY_KEY_ALT_RIGHT,
+  LogicalKeyboardKey.backspace: GhosttyKey.GHOSTTY_KEY_BACKSPACE,
+  LogicalKeyboardKey.capsLock: GhosttyKey.GHOSTTY_KEY_CAPS_LOCK,
+  LogicalKeyboardKey.contextMenu: GhosttyKey.GHOSTTY_KEY_CONTEXT_MENU,
+  LogicalKeyboardKey.controlLeft: GhosttyKey.GHOSTTY_KEY_CONTROL_LEFT,
+  LogicalKeyboardKey.controlRight: GhosttyKey.GHOSTTY_KEY_CONTROL_RIGHT,
+  LogicalKeyboardKey.enter: GhosttyKey.GHOSTTY_KEY_ENTER,
+  LogicalKeyboardKey.metaLeft: GhosttyKey.GHOSTTY_KEY_META_LEFT,
+  LogicalKeyboardKey.metaRight: GhosttyKey.GHOSTTY_KEY_META_RIGHT,
+  LogicalKeyboardKey.shiftLeft: GhosttyKey.GHOSTTY_KEY_SHIFT_LEFT,
+  LogicalKeyboardKey.shiftRight: GhosttyKey.GHOSTTY_KEY_SHIFT_RIGHT,
+  LogicalKeyboardKey.space: GhosttyKey.GHOSTTY_KEY_SPACE,
+  LogicalKeyboardKey.tab: GhosttyKey.GHOSTTY_KEY_TAB,
+
+  // Control pad
+  LogicalKeyboardKey.delete: GhosttyKey.GHOSTTY_KEY_DELETE,
+  LogicalKeyboardKey.end: GhosttyKey.GHOSTTY_KEY_END,
+  LogicalKeyboardKey.home: GhosttyKey.GHOSTTY_KEY_HOME,
+  LogicalKeyboardKey.insert: GhosttyKey.GHOSTTY_KEY_INSERT,
+  LogicalKeyboardKey.pageDown: GhosttyKey.GHOSTTY_KEY_PAGE_DOWN,
+  LogicalKeyboardKey.pageUp: GhosttyKey.GHOSTTY_KEY_PAGE_UP,
+
+  // Arrow keys
+  LogicalKeyboardKey.arrowDown: GhosttyKey.GHOSTTY_KEY_ARROW_DOWN,
+  LogicalKeyboardKey.arrowLeft: GhosttyKey.GHOSTTY_KEY_ARROW_LEFT,
+  LogicalKeyboardKey.arrowRight: GhosttyKey.GHOSTTY_KEY_ARROW_RIGHT,
+  LogicalKeyboardKey.arrowUp: GhosttyKey.GHOSTTY_KEY_ARROW_UP,
+
+  // Numpad
+  LogicalKeyboardKey.numLock: GhosttyKey.GHOSTTY_KEY_NUM_LOCK,
+  LogicalKeyboardKey.numpad0: GhosttyKey.GHOSTTY_KEY_NUMPAD_0,
+  LogicalKeyboardKey.numpad1: GhosttyKey.GHOSTTY_KEY_NUMPAD_1,
+  LogicalKeyboardKey.numpad2: GhosttyKey.GHOSTTY_KEY_NUMPAD_2,
+  LogicalKeyboardKey.numpad3: GhosttyKey.GHOSTTY_KEY_NUMPAD_3,
+  LogicalKeyboardKey.numpad4: GhosttyKey.GHOSTTY_KEY_NUMPAD_4,
+  LogicalKeyboardKey.numpad5: GhosttyKey.GHOSTTY_KEY_NUMPAD_5,
+  LogicalKeyboardKey.numpad6: GhosttyKey.GHOSTTY_KEY_NUMPAD_6,
+  LogicalKeyboardKey.numpad7: GhosttyKey.GHOSTTY_KEY_NUMPAD_7,
+  LogicalKeyboardKey.numpad8: GhosttyKey.GHOSTTY_KEY_NUMPAD_8,
+  LogicalKeyboardKey.numpad9: GhosttyKey.GHOSTTY_KEY_NUMPAD_9,
+  LogicalKeyboardKey.numpadAdd: GhosttyKey.GHOSTTY_KEY_NUMPAD_ADD,
+  LogicalKeyboardKey.numpadComma: GhosttyKey.GHOSTTY_KEY_NUMPAD_COMMA,
+  LogicalKeyboardKey.numpadDecimal: GhosttyKey.GHOSTTY_KEY_NUMPAD_DECIMAL,
+  LogicalKeyboardKey.numpadDivide: GhosttyKey.GHOSTTY_KEY_NUMPAD_DIVIDE,
+  LogicalKeyboardKey.numpadEnter: GhosttyKey.GHOSTTY_KEY_NUMPAD_ENTER,
+  LogicalKeyboardKey.numpadEqual: GhosttyKey.GHOSTTY_KEY_NUMPAD_EQUAL,
+  LogicalKeyboardKey.numpadMultiply: GhosttyKey.GHOSTTY_KEY_NUMPAD_MULTIPLY,
+  LogicalKeyboardKey.numpadParenLeft: GhosttyKey.GHOSTTY_KEY_NUMPAD_PAREN_LEFT,
+  LogicalKeyboardKey.numpadParenRight:
+      GhosttyKey.GHOSTTY_KEY_NUMPAD_PAREN_RIGHT,
+  LogicalKeyboardKey.numpadSubtract: GhosttyKey.GHOSTTY_KEY_NUMPAD_SUBTRACT,
+
+  // Function keys
+  LogicalKeyboardKey.escape: GhosttyKey.GHOSTTY_KEY_ESCAPE,
+  LogicalKeyboardKey.f1: GhosttyKey.GHOSTTY_KEY_F1,
+  LogicalKeyboardKey.f2: GhosttyKey.GHOSTTY_KEY_F2,
+  LogicalKeyboardKey.f3: GhosttyKey.GHOSTTY_KEY_F3,
+  LogicalKeyboardKey.f4: GhosttyKey.GHOSTTY_KEY_F4,
+  LogicalKeyboardKey.f5: GhosttyKey.GHOSTTY_KEY_F5,
+  LogicalKeyboardKey.f6: GhosttyKey.GHOSTTY_KEY_F6,
+  LogicalKeyboardKey.f7: GhosttyKey.GHOSTTY_KEY_F7,
+  LogicalKeyboardKey.f8: GhosttyKey.GHOSTTY_KEY_F8,
+  LogicalKeyboardKey.f9: GhosttyKey.GHOSTTY_KEY_F9,
+  LogicalKeyboardKey.f10: GhosttyKey.GHOSTTY_KEY_F10,
+  LogicalKeyboardKey.f11: GhosttyKey.GHOSTTY_KEY_F11,
+  LogicalKeyboardKey.f12: GhosttyKey.GHOSTTY_KEY_F12,
+  LogicalKeyboardKey.f13: GhosttyKey.GHOSTTY_KEY_F13,
+  LogicalKeyboardKey.f14: GhosttyKey.GHOSTTY_KEY_F14,
+  LogicalKeyboardKey.f15: GhosttyKey.GHOSTTY_KEY_F15,
+  LogicalKeyboardKey.f16: GhosttyKey.GHOSTTY_KEY_F16,
+  LogicalKeyboardKey.f17: GhosttyKey.GHOSTTY_KEY_F17,
+  LogicalKeyboardKey.f18: GhosttyKey.GHOSTTY_KEY_F18,
+  LogicalKeyboardKey.f19: GhosttyKey.GHOSTTY_KEY_F19,
+  LogicalKeyboardKey.f20: GhosttyKey.GHOSTTY_KEY_F20,
+  LogicalKeyboardKey.f21: GhosttyKey.GHOSTTY_KEY_F21,
+  LogicalKeyboardKey.f22: GhosttyKey.GHOSTTY_KEY_F22,
+  LogicalKeyboardKey.f23: GhosttyKey.GHOSTTY_KEY_F23,
+  LogicalKeyboardKey.f24: GhosttyKey.GHOSTTY_KEY_F24,
+  LogicalKeyboardKey.fn: GhosttyKey.GHOSTTY_KEY_FN,
+  LogicalKeyboardKey.printScreen: GhosttyKey.GHOSTTY_KEY_PRINT_SCREEN,
+  LogicalKeyboardKey.scrollLock: GhosttyKey.GHOSTTY_KEY_SCROLL_LOCK,
+  LogicalKeyboardKey.pause: GhosttyKey.GHOSTTY_KEY_PAUSE,
+};

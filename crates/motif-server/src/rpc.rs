@@ -448,13 +448,7 @@ fn handle_pty_resize(
         return Response::err(id, RpcError::new(ErrorCode::PtyNotFound, "pty not found"));
     };
     if let Some((cols, rows)) = pty.set_client_size(conn.client_id.clone(), p.cols, p.rows) {
-        let pid = p.pty_id.clone();
-        s.publish_event(|seq| Event::PtyResize {
-            pty_id: pid,
-            cols,
-            rows,
-            seq,
-        });
+        s.publish_pty_resize(p.pty_id.clone(), cols, rows);
     }
     Response::ok(id, EmptyOk {})
 }
@@ -604,13 +598,7 @@ fn mark_pty_primary(s: &Arc<Session>, pty_id: &str, client: motif_proto::common:
         return;
     };
     if let Some((cols, rows)) = pty.mark_primary(client) {
-        let pid = pty_id.to_string();
-        s.publish_event(|seq| Event::PtyResize {
-            pty_id: pid,
-            cols,
-            rows,
-            seq,
-        });
+        s.publish_pty_resize(pty_id.to_string(), cols, rows);
     }
 }
 

@@ -125,6 +125,13 @@ export interface AppState {
   applyViewActiveChanged: (id: ViewId | null) => void;
   applyViewMoved:         (order: ViewId[]) => void;
 
+  /// Switch the active view optimistically — flip locally now, fire
+  /// `view.activate`, and let the server's authoritative `view.active_changed`
+  /// echo reconcile. The server coalesces that echo (~40ms), so without the
+  /// optimistic flip a tab tap would feel laggy. Rolls back on RPC failure if
+  /// nothing else moved focus meanwhile. Mirrors iOS `MotifClient.activateView`.
+  activateViewOptimistic: (id: ViewId) => void;
+
   // ── per-view local cache ──
   setViewCache:  (id: ViewId, cache: ViewCache) => void;
   clearViewCache: (id: ViewId) => void;
@@ -212,7 +219,7 @@ function takeUrlToken(): string | null {
   }
 }
 
-export const useApp = create<AppState>((set) => ({
+export const useApp = create<AppState>((set, get) => ({
   ...initial(),
 
   setPage:    (page)  => set({ page }),
@@ -303,6 +310,18 @@ export const useApp = create<AppState>((set) => ({
     return { views, viewCache: cache };
   }),
   applyViewActiveChanged: (id) => set({ activeView: id }),
+  activateViewOptimistic: (id) => {
+    const { client, activeView } = get();
+    if (!client) return;
+    const prev = activeView;
+    // Re-asserting the current view is a pure primary claim — skip the flip.
+    if (prev !== id) set({ activeView: id });
+    client.call("view.activate", { view_id: id }).catch(() => {
+      // Roll back only if focus hasn't moved on since (a later activation, or
+      // the authoritative echo, may have already won).
+      if (get().activeView === id) set({ activeView: prev });
+    });
+  },
   applyViewMoved: (order) => set(s => {
     // Sort local views to match the server's order. Anything not in `order`
     // (rare race) is appended after, so we never silently drop a tab.
