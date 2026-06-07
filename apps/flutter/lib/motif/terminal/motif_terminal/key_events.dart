@@ -44,10 +44,11 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     }
     final text = switch (action) {
       GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
-      GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT =>
-        (event.character?.isNotEmpty ?? false)
-            ? event.character
-            : logicalKeyCharacter(event.logicalKey, shift: shiftPressed),
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT => logicalKeyEventCharacter(
+        event.logicalKey,
+        event.character,
+        shift: shiftPressed,
+      ),
       GhosttyKeyAction.GHOSTTY_KEY_ACTION_RELEASE => null,
       GhosttyKeyAction.GHOSTTY_KEY_ACTION_MAX_VALUE => null,
     };

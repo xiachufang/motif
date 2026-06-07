@@ -5,15 +5,17 @@ library;
 
 import 'package:flutter/foundation.dart';
 
+import '../terminal/keyboard_chars.dart';
+
 /// One modifier's activation level.
 enum StickyLevel { inactive, armed, locked }
 
 /// Advance one tap: inactive → armed → locked → inactive.
 StickyLevel _nextLevel(StickyLevel l) => switch (l) {
-      StickyLevel.inactive => StickyLevel.armed,
-      StickyLevel.armed => StickyLevel.locked,
-      StickyLevel.locked => StickyLevel.inactive,
-    };
+  StickyLevel.inactive => StickyLevel.armed,
+  StickyLevel.armed => StickyLevel.locked,
+  StickyLevel.locked => StickyLevel.inactive,
+};
 
 class StickyModifiers extends ChangeNotifier {
   StickyLevel ctrl = StickyLevel.inactive;
@@ -66,7 +68,7 @@ class StickyModifiers extends ChangeNotifier {
 
 /// Apply Ctrl/Alt/Shift to a payload, mirroring the iOS `applyModifiers`.
 ///
-/// - Shift uppercases a single ASCII letter.
+/// - Shift maps a single US-ASCII printable key to its shifted form.
 /// - Ctrl maps a single ASCII char to its control code (`c & 0x1f`).
 /// - Alt prefixes the result with ESC (0x1b).
 ///
@@ -82,9 +84,7 @@ Uint8List applyModifiers(
 
   if (bytes.length == 1) {
     var b = bytes[0];
-    if (shift && b >= 0x61 && b <= 0x7a) {
-      b -= 0x20; // a–z → A–Z
-    }
+    if (shift) b = shiftAsciiCodeUnit(b);
     if (ctrl) {
       b = b & 0x1f;
     }

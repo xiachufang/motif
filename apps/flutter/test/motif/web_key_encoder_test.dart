@@ -130,6 +130,28 @@ void main() {
       );
     });
 
+    test(
+      'shifted digit resolves to symbol when event character is missing or raw',
+      () {
+        expect(
+          encodeKeyToBytes(
+            LogicalKeyboardKey.digit1,
+            null,
+            const TerminalKeyMods(shift: true),
+          ),
+          [0x21],
+        );
+        expect(
+          encodeKeyToBytes(
+            LogicalKeyboardKey.digit1,
+            '1',
+            const TerminalKeyMods(shift: true),
+          ),
+          [0x21],
+        );
+      },
+    );
+
     test('Ctrl+Shift and Ctrl+Alt combinations', () {
       expect(
         encodeKeyToBytes(
@@ -146,6 +168,14 @@ void main() {
           const TerminalKeyMods(ctrl: true, alt: true),
         ),
         [0x1b, 0x03],
+      );
+      expect(
+        encodeKeyToBytes(
+          LogicalKeyboardKey.digit2,
+          null,
+          const TerminalKeyMods(ctrl: true, shift: true),
+        ),
+        [0x00],
       );
     });
 

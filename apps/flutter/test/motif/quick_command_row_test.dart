@@ -84,6 +84,7 @@ void main() {
       _key('c', 'c', [0x63]),
       _key('b', 'b', [0x62]),
       _key('a', 'a', [0x61]),
+      _key('1', '1', [0x31]),
     ]);
 
     await tester.tap(find.byTooltip('Ctrl'));
@@ -102,6 +103,12 @@ void main() {
     await tester.tap(find.byTooltip('a'));
     await tester.pump();
     expect(harness.sent.last, _bytes([0x41]));
+    expect(harness.modifiers.shift, StickyLevel.inactive);
+
+    await tester.tap(find.byTooltip('Shift'));
+    await tester.tap(find.byTooltip('1'));
+    await tester.pump();
+    expect(harness.sent.last, _bytes([0x21]));
     expect(harness.modifiers.shift, StickyLevel.inactive);
 
     await tester.tap(find.byTooltip('Ctrl'));

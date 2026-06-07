@@ -6,11 +6,17 @@ library;
 
 import 'package:flutter/services.dart';
 
+import 'keyboard_chars.dart';
+
 class TerminalKeyMods {
   final bool ctrl;
   final bool alt;
   final bool shift;
-  const TerminalKeyMods({this.ctrl = false, this.alt = false, this.shift = false});
+  const TerminalKeyMods({
+    this.ctrl = false,
+    this.alt = false,
+    this.shift = false,
+  });
 }
 
 /// Returns the bytes to send for a key press, or null if the key isn't handled
@@ -27,22 +33,24 @@ List<int>? encodeKeyToBytes(
   }
 
   // Printable character.
-  if (character != null && character.isNotEmpty) {
+  final text = logicalKeyEventCharacter(key, character, shift: mods.shift);
+  if (text != null && text.isNotEmpty) {
     // Ctrl+<char>: map a single ASCII letter/char to its control code.
-    if (mods.ctrl && character.length == 1) {
-      final cp = character.codeUnitAt(0);
+    if (mods.ctrl && text.length == 1) {
+      final cp = text.codeUnitAt(0);
       final base = (cp >= 0x61 && cp <= 0x7a) ? cp - 0x20 : cp; // upper for a-z
       final ctrlCode = base & 0x1f;
       return mods.alt ? [0x1b, ctrlCode] : [ctrlCode];
     }
-    final bytes = character.codeUnits;
+    final bytes = text.codeUnits;
     return mods.alt ? [0x1b, ...bytes] : bytes;
   }
   return null;
 }
 
 List<int>? _namedKey(LogicalKeyboardKey key) {
-  if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+  if (key == LogicalKeyboardKey.enter ||
+      key == LogicalKeyboardKey.numpadEnter) {
     return const [0x0d];
   }
   if (key == LogicalKeyboardKey.backspace) return const [0x7f];
