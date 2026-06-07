@@ -383,7 +383,7 @@ class _SheetScaffold extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: TextButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
+                    child: const Text('Close'),
                   ),
                 ),
               ],
