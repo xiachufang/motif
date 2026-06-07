@@ -16,13 +16,21 @@ void main() {
       expect(applyModifiers(_b([0x61]), shift: true), _b([0x41])); // a → A
     });
 
+    test('shift maps digits and punctuation to symbols', () {
+      expect(applyModifiers(_b([0x31]), shift: true), _b([0x21])); // 1 -> !
+      expect(applyModifiers(_b([0x3d]), shift: true), _b([0x2b])); // = -> +
+    });
+
     test('alt prefixes ESC', () {
       expect(applyModifiers(_b([0x62]), alt: true), _b([0x1b, 0x62]));
     });
 
     test('ctrl+alt combine', () {
       // Alt+Ctrl+C → ESC, 0x03
-      expect(applyModifiers(_b([0x63]), ctrl: true, alt: true), _b([0x1b, 0x03]));
+      expect(
+        applyModifiers(_b([0x63]), ctrl: true, alt: true),
+        _b([0x1b, 0x03]),
+      );
     });
 
     test('multi-byte payloads only receive an alt ESC prefix', () {
