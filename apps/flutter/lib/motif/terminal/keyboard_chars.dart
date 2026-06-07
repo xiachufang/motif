@@ -2,7 +2,7 @@ import 'package:flutter/services.dart';
 
 String? logicalKeyCharacter(LogicalKeyboardKey key, {required bool shift}) {
   final chars = _printableKeyChars[key];
-  if (chars == null) return null;
+  if (chars == null) return logicalKeyUnicodeCharacter(key);
   return shift ? chars.shifted : chars.unshifted;
 }
 
@@ -18,8 +18,28 @@ String? logicalKeyEventCharacter(
     }
     return character;
   }
-  if (chars == null) return null;
+  if (chars == null) return logicalKeyUnicodeCharacter(key);
   return shift ? chars.shifted : chars.unshifted;
+}
+
+String? logicalKeyUnicodeCharacter(LogicalKeyboardKey key) {
+  const valueMaskWidth = 32;
+  const valueMask = 0x000ffffffff;
+  final keyId = key.keyId;
+  if ((keyId >> valueMaskWidth) != 0) return null;
+  final codePoint = keyId & valueMask;
+  if (codePoint < 0x20 || codePoint == 0x7f || codePoint > 0x10ffff) {
+    return null;
+  }
+  return String.fromCharCode(codePoint);
+}
+
+bool isPrintableTerminalText(String text) {
+  if (text.isEmpty) return false;
+  for (final rune in text.runes) {
+    if (rune < 0x20 || rune == 0x7f) return false;
+  }
+  return true;
 }
 
 int logicalKeyUnshiftedCodepoint(LogicalKeyboardKey key) {

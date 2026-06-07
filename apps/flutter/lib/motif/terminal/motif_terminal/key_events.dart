@@ -7,8 +7,6 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     }
     // Swallow keys while disconnected/reconnecting.
     if (!widget.motif.canInput) return KeyEventResult.ignored;
-    final ghosttyKey = mapFlutterKey(event.logicalKey);
-    if (ghosttyKey == null) return KeyEventResult.ignored;
     final GhosttyKeyAction action;
     if (event is KeyDownEvent) {
       action = GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS;
@@ -52,6 +50,20 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       GhosttyKeyAction.GHOSTTY_KEY_ACTION_RELEASE => null,
       GhosttyKeyAction.GHOSTTY_KEY_ACTION_MAX_VALUE => null,
     };
+    if (!metaPressed &&
+        !controlPressed &&
+        text != null &&
+        isPrintableTerminalText(text) &&
+        (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
+            action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
+      final bytes = utf8.encode(text);
+      _state.writeToPty(
+        Uint8List.fromList(altPressed ? [0x1b, ...bytes] : bytes),
+      );
+      return KeyEventResult.handled;
+    }
+    final ghosttyKey = mapFlutterKey(event.logicalKey);
+    if (ghosttyKey == null) return KeyEventResult.ignored;
     _state.encodeKeyAndWrite(
       ghosttyKey,
       action,
