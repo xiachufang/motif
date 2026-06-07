@@ -347,6 +347,8 @@ void main() {
     expect(app.isServerLive('server-1'), isTrue);
     expect(manual.refreshes, 1);
     expect(tester.widget<Icon>(icon).color, MotifColors.dark.success);
+    expect(find.text('Connected'), findsOneWidget);
+    expect(find.text('Reachable'), findsNothing);
   });
 
   testWidgets('add server saves and connects in one flow', (tester) async {
@@ -437,6 +439,7 @@ void main() {
 
     expect(failing.attempts, 1);
     expect(find.textContaining('Failed: No response'), findsOneWidget);
+    expect(find.text('Failed'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Retry Connection'));
     await tester.pumpAndSettle();

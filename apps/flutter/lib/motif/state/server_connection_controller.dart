@@ -90,9 +90,7 @@ class ServerConnectionController {
         }
       case ConnFailed(:final message):
         final session = client.intendedSession;
-        if (_state is! ServerReconnecting) {
-          _setState(ServerFailed(message, session: session));
-        }
+        _setState(ServerFailed(message, session: session));
         if (_wantsConnection && previous is! ConnFailed) {
           _maybeScheduleReconnect();
         }
@@ -225,11 +223,6 @@ class ServerConnectionController {
 
     final attempt = _reconnectAttempts;
     final delay = immediate ? Duration.zero : _reconnectDelay(attempt);
-    if (client.hasTerminalSnapshot || _state is ServerSuspended) {
-      _setState(
-        ServerReconnecting(session: client.intendedSession, attempt: attempt),
-      );
-    }
     Log.i(
       'schedule reconnect server=$serverId attempt=$attempt '
       'delay=${delay.inMilliseconds}ms',

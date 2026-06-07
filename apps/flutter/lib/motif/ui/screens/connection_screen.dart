@@ -263,6 +263,7 @@ class _ServerRowState extends State<_ServerRow> {
     final c = context.motif;
     final view = widget.viewState;
     final action = view.primaryAction;
+    final showPingBadge = view.statusLabel == 'Offline';
     return MotifSectionRow(
       leading: Icon(
         _iconForViewState(view),
@@ -276,21 +277,12 @@ class _ServerRowState extends State<_ServerRow> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _ServerPingBadge(indicator: _pingIndicator),
+          if (showPingBadge)
+            _ServerPingBadge(indicator: _pingIndicator)
+          else
+            _ServerConnectionBadge(viewState: view),
           const SizedBox(width: MotifSpacing.sm),
-          if (view.showSpinner && action == ServerConnectionAction.none)
-            const SizedBox(
-              width: 40,
-              height: 40,
-              child: Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            )
-          else if (action != ServerConnectionAction.none)
+          if (action != ServerConnectionAction.none)
             IconButton(
               icon: Icon(_iconForAction(action)),
               tooltip: _tooltipForAction(action),
@@ -495,6 +487,42 @@ class _ServerPingBadge extends StatelessWidget {
           const SizedBox(width: 4),
           Text(
             indicator.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: color, fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServerConnectionBadge extends StatelessWidget {
+  final ServerConnectionViewState viewState;
+
+  const _ServerConnectionBadge({required this.viewState});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final color = _toneColor(c, viewState.tone);
+    return Semantics(
+      label: 'Server connection',
+      value: viewState.statusLabel,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (viewState.showSpinner)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(_iconForViewState(viewState), size: 14, color: color),
+          const SizedBox(width: 4),
+          Text(
+            viewState.statusLabel,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(color: color, fontSize: 12),

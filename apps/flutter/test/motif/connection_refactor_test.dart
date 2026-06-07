@@ -96,6 +96,12 @@ class _RecordingMotifClient extends MotifClient {
     notifyListeners();
   }
 
+  void failConnection(String message) {
+    _live = false;
+    _state = ConnFailed(message);
+    notifyListeners();
+  }
+
   @override
   Future<void> suspendTransport(String reason) async {
     suspendCalls++;
@@ -266,6 +272,32 @@ void main() {
     expect(client.connectCalls, 1);
     expect(app.connectionStateForServer('tailnet'), isA<ServerAttached>());
   });
+
+  test(
+    'connection loss shows failed while waiting for reconnect retry',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final client = _RecordingMotifClient()..intendedSession = 'dev';
+      final app = await _appWith(tailscale: tailscale, client: client);
+      addTearDown(app.dispose);
+
+      await app.connectServer('tailnet', force: true);
+      expect(app.connectionStateForServer('tailnet'), isA<ServerAttached>());
+
+      client.failConnection('connection lost');
+      await Future<void>.delayed(Duration.zero);
+
+      final state = app.connectionStateForServer('tailnet');
+      expect(state, isA<ServerFailed>());
+      expect((state as ServerFailed).session, 'dev');
+      final view = app.serverViewState('tailnet');
+      expect(view.statusLabel, 'Failed');
+      expect(view.showSpinner, isFalse);
+    },
+  );
 
   test('MotifClient.suspendTransport preserves terminal snapshot', () async {
     final motif = MotifClient();
