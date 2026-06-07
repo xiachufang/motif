@@ -3,9 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../models/settings.dart';
-import '../../platform/services.dart';
 import '../../state/app_state.dart';
+import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
@@ -19,12 +18,12 @@ class WelcomeScreen extends StatelessWidget {
     final app = context.read<AppState>();
     final result = await showServerEditSheet(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
-    if (result.server.kind == ServerKind.tailscale &&
-        app.platform.tailscale.state.status != TailscaleStatus.running) {
-      if (context.mounted) showTailscaleConnectionSheet(context);
-      return;
-    }
     await app.connectServerAndRefresh(result.server.id, force: true);
+    if (context.mounted &&
+        app.serverViewState(result.server.id).primaryAction ==
+            ServerConnectionAction.openTailscale) {
+      showTailscaleConnectionSheet(context);
+    }
   }
 
   @override

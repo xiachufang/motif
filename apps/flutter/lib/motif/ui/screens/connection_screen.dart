@@ -7,7 +7,7 @@ import '../../models/settings.dart';
 import '../../net/rpc_client.dart';
 import '../../platform/services.dart';
 import '../../state/app_state.dart';
-import '../../state/motif_client.dart';
+import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
@@ -29,17 +29,38 @@ class ConnectionScreen extends StatelessWidget {
     AppState app,
     MotifServer server,
   ) async {
-    if (server.kind == ServerKind.tailscale &&
-        app.platform.tailscale.state.status != TailscaleStatus.running) {
-      if (context.mounted) showTailscaleConnectionSheet(context);
-      return;
-    }
     await app.connectServerAndRefresh(server.id, force: true, makeActive: true);
+    if (context.mounted &&
+        app.serverViewState(server.id).primaryAction ==
+            ServerConnectionAction.openTailscale) {
+      showTailscaleConnectionSheet(context);
+    }
   }
 
   void _openSessions(BuildContext context) {
     final navigator = Navigator.of(context);
     if (navigator.canPop()) navigator.pop();
+  }
+
+  void _performServerAction(
+    BuildContext context,
+    AppState app,
+    MotifServer server,
+    ServerConnectionAction action,
+  ) {
+    switch (action) {
+      case ServerConnectionAction.none:
+        return;
+      case ServerConnectionAction.connect:
+      case ServerConnectionAction.retry:
+        unawaited(_connectServer(context, app, server));
+      case ServerConnectionAction.disconnect:
+        unawaited(app.disconnectServer(server.id));
+      case ServerConnectionAction.openTailscale:
+        showTailscaleConnectionSheet(context);
+      case ServerConnectionAction.openSessions:
+        _openSessions(context);
+    }
   }
 
   @override
@@ -87,10 +108,9 @@ class ConnectionScreen extends StatelessWidget {
                       for (final s in servers)
                         _ServerRow(
                           server: s,
-                          state: app.serverState(s.id),
-                          onConnect: () => _connectServer(context, app, s),
-                          onDisconnect: () => app.disconnectServer(s.id),
-                          onOpenSessions: () => _openSessions(context),
+                          viewState: app.serverViewState(s.id),
+                          onAction: (action) =>
+                              _performServerAction(context, app, s, action),
                           onEdit: () =>
                               showServerEditSheet(context, existing: s),
                           onDelete: () {
@@ -109,19 +129,15 @@ class ConnectionScreen extends StatelessWidget {
 
 class _ServerRow extends StatefulWidget {
   final MotifServer server;
-  final MotifConnState state;
-  final Future<void> Function() onConnect;
-  final Future<void> Function() onDisconnect;
-  final VoidCallback onOpenSessions;
+  final ServerConnectionViewState viewState;
+  final ValueChanged<ServerConnectionAction> onAction;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
   const _ServerRow({
     required this.server,
-    required this.state,
-    required this.onConnect,
-    required this.onDisconnect,
-    required this.onOpenSessions,
+    required this.viewState,
+    required this.onAction,
     required this.onEdit,
     required this.onDelete,
   });
@@ -248,41 +264,24 @@ class _ServerRowState extends State<_ServerRow> {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final kindIcon = widget.server.kind == ServerKind.tailscale
-        ? Icons.hub_outlined
-        : Icons.public;
-    final connecting = widget.state is ConnConnecting;
-    final connected =
-        widget.state is ConnConnected || widget.state is ConnAttached;
-    final failed = widget.state is ConnFailed;
-    final failureMessage = switch (widget.state) {
-      ConnFailed(:final message) => message,
-      _ => null,
-    };
-    final kindIconColor = switch (widget.state) {
-      ConnConnected() || ConnAttached() => c.success,
-      ConnConnecting() => c.accent,
-      ConnFailed() => c.danger,
-      ConnDisconnected() => c.textSecondary,
-    };
+    final view = widget.viewState;
+    final action = view.primaryAction;
     return MotifSectionRow(
       leading: Icon(
-        kindIcon,
+        _iconForViewState(view),
         key: ValueKey('server-kind-icon-${widget.server.id}'),
-        color: kindIconColor,
+        color: _toneColor(c, view.tone),
         size: 18,
       ),
       title: widget.server.name,
-      subtitle: failureMessage == null
-          ? widget.server.endpoint
-          : '${widget.server.endpoint}\nFailed: $failureMessage',
-      titleWeight: connected ? FontWeight.w700 : FontWeight.w500,
+      subtitle: view.subtitle,
+      titleWeight: view.canOpenTerminal ? FontWeight.w700 : FontWeight.w500,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           _ServerPingBadge(indicator: _pingIndicator),
           const SizedBox(width: MotifSpacing.sm),
-          if (connecting)
+          if (view.showSpinner && action == ServerConnectionAction.none)
             const SizedBox(
               width: 40,
               height: 40,
@@ -294,19 +293,11 @@ class _ServerRowState extends State<_ServerRow> {
                 ),
               ),
             )
-          else
+          else if (action != ServerConnectionAction.none)
             IconButton(
-              icon: Icon(
-                connected ? Icons.link_off_outlined : Icons.cloud_sync_outlined,
-              ),
-              tooltip: connected
-                  ? 'Disconnect Server'
-                  : failed
-                  ? 'Retry Connection'
-                  : 'Connect Server',
-              onPressed: () => unawaited(
-                connected ? widget.onDisconnect() : widget.onConnect(),
-              ),
+              icon: Icon(_iconForAction(action)),
+              tooltip: _tooltipForAction(action),
+              onPressed: () => widget.onAction(action),
             ),
           PopupMenuButton<String>(
             tooltip: 'Server actions',
@@ -341,13 +332,53 @@ class _ServerRowState extends State<_ServerRow> {
           ),
         ],
       ),
-      onTap: connecting
+      onTap: view.tapAction == ServerConnectionAction.none
           ? null
-          : connected
-          ? widget.onOpenSessions
-          : () => unawaited(widget.onConnect()),
+          : () => widget.onAction(view.tapAction),
     );
   }
+}
+
+IconData _iconForViewState(ServerConnectionViewState viewState) {
+  return switch (viewState.icon) {
+    ServerConnectionIconKind.direct => Icons.public,
+    ServerConnectionIconKind.tailscale => Icons.hub_outlined,
+    ServerConnectionIconKind.sync => Icons.cloud_sync_outlined,
+    ServerConnectionIconKind.warning => Icons.warning_rounded,
+    ServerConnectionIconKind.offline => Icons.cloud_off_outlined,
+  };
+}
+
+Color _toneColor(MotifColors c, ServerConnectionTone tone) {
+  return switch (tone) {
+    ServerConnectionTone.neutral => c.textSecondary,
+    ServerConnectionTone.accent => c.accent,
+    ServerConnectionTone.success => c.success,
+    ServerConnectionTone.warning => c.warning,
+    ServerConnectionTone.danger => c.danger,
+  };
+}
+
+IconData _iconForAction(ServerConnectionAction action) {
+  return switch (action) {
+    ServerConnectionAction.connect => Icons.cloud_sync_outlined,
+    ServerConnectionAction.retry => Icons.refresh,
+    ServerConnectionAction.disconnect => Icons.link_off_outlined,
+    ServerConnectionAction.openTailscale => Icons.shield_outlined,
+    ServerConnectionAction.openSessions => Icons.terminal,
+    ServerConnectionAction.none => Icons.circle_outlined,
+  };
+}
+
+String _tooltipForAction(ServerConnectionAction action) {
+  return switch (action) {
+    ServerConnectionAction.connect => 'Connect Server',
+    ServerConnectionAction.retry => 'Retry Connection',
+    ServerConnectionAction.disconnect => 'Disconnect Server',
+    ServerConnectionAction.openTailscale => 'Setup Tailscale',
+    ServerConnectionAction.openSessions => 'Open Sessions',
+    ServerConnectionAction.none => '',
+  };
 }
 
 enum _ServerPingIndicatorKind {

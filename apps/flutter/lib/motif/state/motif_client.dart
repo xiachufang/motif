@@ -43,6 +43,12 @@ class ConnFailed extends MotifConnState {
   const ConnFailed(this.message);
 }
 
+class ConnSuspended extends MotifConnState {
+  final String message;
+  final String? session;
+  const ConnSuspended(this.message, {this.session});
+}
+
 /// A sink of decoded PTY output bytes for a single PTY surface (the terminal
 /// widget subscribes to it).
 typedef PtyByteSink = void Function(Uint8List bytes);
@@ -93,6 +99,7 @@ class MotifClient extends ChangeNotifier {
   bool isForeground = true;
 
   MotifNotification? latestNotification;
+  String? connectionNotice;
 
   /// Show an in-app notification (e.g. a decrypted foreground push).
   void showNotification(MotifNotification n) {
@@ -117,6 +124,9 @@ class MotifClient extends ChangeNotifier {
   final Map<String, int> _ptyOutputBytes = {};
 
   bool get isLive => _rpc != null;
+
+  bool get hasTerminalSnapshot =>
+      intendedSession != null || ptys.isNotEmpty || views.isNotEmpty;
 
   /// Whether terminal input may be sent. Only true when a session is
   /// attached; blocks input while disconnected or reconnecting.
@@ -180,11 +190,15 @@ class MotifClient extends ChangeNotifier {
           pendingLocalViewId = null;
         }
       } catch (_) {
+        connectionNotice =
+            'Could not reattach "$intended". Choose a session to continue.';
         intendedSession = null;
         pendingLocalViewId = null;
         _setState(const ConnConnected());
+        unawaited(refreshSessions().catchError((_) {}));
       }
     } else {
+      connectionNotice = null;
       _setState(const ConnConnected());
       // populate the session picker
       unawaited(refreshSessions().catchError((_) {}));
@@ -217,8 +231,23 @@ class MotifClient extends ChangeNotifier {
     _carriedPtyCursors = {};
     pendingLocalViewId = null;
     intendedSession = null;
+    connectionNotice = null;
     lastSeq = 0;
     _setState(const ConnDisconnected());
+  }
+
+  Future<void> suspendTransport(String reason) async {
+    final s = _state;
+    if (s is ConnAttached && lastSeq > 0) {
+      resumeSeqs[s.session] = lastSeq;
+    }
+    if (_rpc != null) _carriedPtyCursors = _rpc!.ptyCursors();
+    if (_pendingViewActivation != null) {
+      pendingLocalViewId = activeViewId;
+      _completePendingViewActivation();
+    }
+    await _teardownRpc();
+    _setState(ConnSuspended(reason, session: intendedSession));
   }
 
   void _clearSessionState() {
@@ -317,6 +346,7 @@ class MotifClient extends ChangeNotifier {
     lastSeq = result.lastSeq ?? 0;
     sessionTheme = result.theme;
     intendedSession = name;
+    connectionNotice = null;
     resumeSeqs.remove(name);
 
     _setState(ConnAttached(name));

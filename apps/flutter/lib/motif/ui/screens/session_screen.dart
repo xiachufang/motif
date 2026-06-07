@@ -287,6 +287,7 @@ class _SessionScreenState extends State<SessionScreen>
             body: ListenableBuilder(
               listenable: motif,
               builder: (context, _) {
+                final connectionView = app.serverViewState(widget.serverId);
                 final activeView = _switchingSession
                     ? null
                     : _activeView(motif);
@@ -372,14 +373,16 @@ class _SessionScreenState extends State<SessionScreen>
                           child: bottomBar,
                         ),
                       ),
-                    if (motif.intendedSession != null &&
-                        (motif.state is ConnFailed ||
-                            motif.state is ConnConnecting))
-                      const Positioned(
+                    if (connectionView.terminalOverlay != null)
+                      Positioned(
                         top: MotifSpacing.sm,
                         left: 0,
                         right: 0,
-                        child: Center(child: _ReconnectBanner()),
+                        child: Center(
+                          child: _ReconnectBanner(
+                            message: connectionView.terminalOverlay!,
+                          ),
+                        ),
                       ),
                   ],
                 );
@@ -448,7 +451,9 @@ class _SessionScreenState extends State<SessionScreen>
 /// Small pill shown over the terminal while the connection is being
 /// re-established. Input is blocked in this state ([MotifClient.canInput]).
 class _ReconnectBanner extends StatelessWidget {
-  const _ReconnectBanner();
+  final String message;
+
+  const _ReconnectBanner({required this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -463,7 +468,11 @@ class _ReconnectBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(MotifRadius.md),
         border: Border.all(color: c.border),
         boxShadow: [
-          BoxShadow(color: c.shadow, blurRadius: 20, offset: const Offset(0, 8)),
+          BoxShadow(
+            color: c.shadow,
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
         ],
       ),
       child: Row(
@@ -476,7 +485,7 @@ class _ReconnectBanner extends StatelessWidget {
           ),
           const SizedBox(width: MotifSpacing.sm),
           Text(
-            'Reconnecting…',
+            message,
             style: TextStyle(
               color: c.textPrimary,
               fontSize: 13,

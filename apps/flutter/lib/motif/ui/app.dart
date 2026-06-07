@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/settings.dart';
-import '../platform/services.dart';
 import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
@@ -68,10 +67,6 @@ class _RootState extends State<_Root> {
     final server = app.servers.activeServer;
     if (server == null) return;
     if (!app.shouldAutoConnectServer(server.id)) return;
-    if (server.kind == ServerKind.tailscale &&
-        app.platform.tailscale.state.status != TailscaleStatus.running) {
-      return;
-    }
     final state = app.serverState(server.id);
     if (state is ConnConnected ||
         state is ConnAttached ||
@@ -95,8 +90,5 @@ class _RootState extends State<_Root> {
 /// Shared helper to open the connection/server manager as an adaptive
 /// modal (bottom sheet on phones, dialog on desktop).
 void openConnectionManager(BuildContext context) {
-  showAdaptivePanel<void>(
-    context,
-    builder: (_) => const ConnectionScreen(),
-  );
+  showAdaptivePanel<void>(context, builder: (_) => const ConnectionScreen());
 }

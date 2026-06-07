@@ -5,9 +5,9 @@ import 'package:provider/provider.dart';
 
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
-import '../../platform/services.dart';
 import '../../platform/window_title.dart';
 import '../../state/app_state.dart';
+import '../../state/connection_state.dart';
 import '../../state/motif_client.dart';
 import '../app.dart';
 import '../theme/motif_buttons.dart';
@@ -120,12 +120,12 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   Future<void> _connectServer(MotifServer server) async {
     final app = context.read<AppState>();
-    if (server.kind == ServerKind.tailscale &&
-        app.platform.tailscale.state.status != TailscaleStatus.running) {
-      if (mounted) showTailscaleConnectionSheet(context);
-      return;
-    }
     await app.connectServerAndRefresh(server.id, force: true);
+    if (mounted &&
+        app.serverViewState(server.id).primaryAction ==
+            ServerConnectionAction.openTailscale) {
+      showTailscaleConnectionSheet(context);
+    }
   }
 
   @override
@@ -173,6 +173,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                   return _ServerSessionSection(
                     server: group.server,
                     motif: group.client,
+                    viewState: app.serverViewState(group.server.id),
                     onRefresh: () => app.refreshServerSessions(group.server.id),
                     onAttach: (session) => _attach(
                       context,
@@ -218,12 +219,14 @@ class _SessionListScreenState extends State<SessionListScreen>
 class _ServerSessionSection extends StatelessWidget {
   final MotifServer server;
   final MotifClient motif;
+  final ServerConnectionViewState viewState;
   final Future<void> Function() onRefresh;
   final ValueChanged<String> onAttach;
 
   const _ServerSessionSection({
     required this.server,
     required this.motif,
+    required this.viewState,
     required this.onRefresh,
     required this.onAttach,
   });
@@ -234,6 +237,7 @@ class _ServerSessionSection extends StatelessWidget {
       title: server.name,
       headerTrailing: _ServerHeaderActions(
         motif: motif,
+        viewState: viewState,
         serverId: server.id,
         serverName: server.name,
         onRefresh: onRefresh,
@@ -443,19 +447,14 @@ class _CreateSessionRow extends StatelessWidget {
 }
 
 class _StatusChip extends StatelessWidget {
-  final MotifClient motif;
-  const _StatusChip({required this.motif});
+  final ServerConnectionViewState viewState;
+  const _StatusChip({required this.viewState});
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final (label, color) = switch (motif.state) {
-      ConnConnecting() => ('Connecting...', c.accent),
-      ConnFailed() => ('Failed', c.danger),
-      ConnAttached() => ('Live', c.accent),
-      ConnConnected() => ('Connected', c.textSecondary),
-      ConnDisconnected() => ('Offline', c.textTertiary),
-    };
+    final label = viewState.statusLabel;
+    final color = _toneColor(c, viewState.tone);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
       child: Row(
@@ -475,12 +474,14 @@ class _StatusChip extends StatelessWidget {
 
 class _ServerHeaderActions extends StatefulWidget {
   final MotifClient motif;
+  final ServerConnectionViewState viewState;
   final String serverId;
   final String serverName;
   final Future<void> Function() onRefresh;
 
   const _ServerHeaderActions({
     required this.motif,
+    required this.viewState,
     required this.serverId,
     required this.serverName,
     required this.onRefresh,
@@ -509,7 +510,7 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _StatusChip(motif: widget.motif),
+        _StatusChip(viewState: widget.viewState),
         IconButton(
           key: ValueKey('refresh-server-sessions-${widget.serverId}'),
           icon: _refreshing
@@ -547,38 +548,31 @@ class _SessionListEmptyState extends StatelessWidget {
     final c = context.motif;
     final servers = app.servers.servers;
     final active = app.servers.activeServer ?? servers.firstOrNull;
-    final state = active == null ? null : app.serverState(active.id);
-    final connecting = state is ConnConnecting;
-    final tailscaleStatus = active?.kind == ServerKind.tailscale
-        ? app.platform.tailscale.state.status
-        : null;
-    final tailscaleConnecting = tailscaleStatus == TailscaleStatus.starting;
-    final tailscaleNeedsSetup =
-        tailscaleStatus != null &&
-        tailscaleStatus != TailscaleStatus.running &&
-        !tailscaleConnecting;
-    final failedMessage = switch (state) {
-      ConnFailed(:final message) => message,
-      _ => null,
-    };
+    final view = active == null ? null : app.serverViewState(active.id);
+    final action = view?.primaryAction ?? ServerConnectionAction.none;
+    final connecting = view?.showSpinner ?? false;
+    final tailscaleNeedsSetup = action == ServerConnectionAction.openTailscale;
+    final failed = view?.statusLabel == 'Failed';
     final title = active == null
         ? 'No servers configured'
-        : tailscaleConnecting
+        : connecting && (view?.statusLabel.startsWith('Tailscale') ?? false)
         ? 'Connecting Tailscale…'
         : tailscaleNeedsSetup
         ? 'Tailscale is not connected'
         : connecting
         ? 'Connecting to ${active.name}'
-        : failedMessage != null
+        : failed
         ? 'Connection failed'
         : 'No connected servers';
     final subtitle = active == null
         ? 'Connect a motifd server to load sessions.'
-        : tailscaleConnecting
+        : connecting && (view?.statusLabel.startsWith('Tailscale') ?? false)
         ? 'Waiting for Tailscale to reach ${active.name}.'
         : tailscaleNeedsSetup
         ? 'Start Tailscale to reach ${active.name}.'
-        : failedMessage ?? 'Connect ${active.name} to load its sessions.';
+        : failed
+        ? (view?.subtitle.split('\n').last ?? 'Connection failed')
+        : 'Connect ${active.name} to load its sessions.';
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
@@ -615,9 +609,9 @@ class _SessionListEmptyState extends StatelessWidget {
                           ? 'Connect a Server'
                           : tailscaleNeedsSetup
                           ? 'Setup Tailscale'
-                          : connecting || tailscaleConnecting
+                          : connecting
                           ? 'Connecting…'
-                          : failedMessage != null
+                          : failed
                           ? 'Retry ${active.name}'
                           : 'Connect ${active.name}',
                       icon: active == null
@@ -625,11 +619,12 @@ class _SessionListEmptyState extends StatelessWidget {
                           : tailscaleNeedsSetup
                           ? Icons.shield_outlined
                           : Icons.cloud_sync_outlined,
-                      onPressed: connecting || tailscaleConnecting
+                      onPressed:
+                          connecting || action == ServerConnectionAction.none
                           ? null
                           : active == null
                           ? () => unawaited(onAddServer())
-                          : () => unawaited(onConnectServer(active)),
+                          : () => _performAction(context, active, action),
                     ),
                     MotifButton(
                       label: 'Manage Servers',
@@ -646,4 +641,32 @@ class _SessionListEmptyState extends StatelessWidget {
       ],
     );
   }
+
+  void _performAction(
+    BuildContext context,
+    MotifServer server,
+    ServerConnectionAction action,
+  ) {
+    switch (action) {
+      case ServerConnectionAction.none:
+      case ServerConnectionAction.disconnect:
+      case ServerConnectionAction.openSessions:
+        return;
+      case ServerConnectionAction.openTailscale:
+        showTailscaleConnectionSheet(context);
+      case ServerConnectionAction.connect:
+      case ServerConnectionAction.retry:
+        unawaited(onConnectServer(server));
+    }
+  }
+}
+
+Color _toneColor(MotifColors c, ServerConnectionTone tone) {
+  return switch (tone) {
+    ServerConnectionTone.neutral => c.textSecondary,
+    ServerConnectionTone.accent => c.accent,
+    ServerConnectionTone.success => c.success,
+    ServerConnectionTone.warning => c.warning,
+    ServerConnectionTone.danger => c.danger,
+  };
 }

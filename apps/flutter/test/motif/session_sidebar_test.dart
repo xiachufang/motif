@@ -110,6 +110,27 @@ class _ShortcutMotifClient extends MotifClient {
   }
 }
 
+class _SuspendedMotifClient extends _ShortcutMotifClient {
+  MotifConnState _state = const ConnSuspended(
+    'Tailscale disconnected',
+    session: 'test-session',
+  );
+
+  @override
+  MotifConnState get state => _state;
+
+  @override
+  bool get isLive => false;
+
+  void emitSuspended() {
+    _state = const ConnSuspended(
+      'Tailscale disconnected',
+      session: 'test-session',
+    );
+    notifyListeners();
+  }
+}
+
 Future<AppState> _appStateWith(Map<String, MotifClient> clients) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -270,6 +291,23 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const ValueKey('terminal-pty-1')), findsOneWidget);
+  });
+
+  testWidgets('suspended connection keeps terminal pane and shows overlay', (
+    tester,
+  ) async {
+    final motif = _SuspendedMotifClient()
+      ..intendedSession = 'test-session'
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+    motif.emitSuspended();
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('terminal-pty-1')), findsOneWidget);
+    expect(find.text('Tailscale disconnected'), findsOneWidget);
   });
 
   testWidgets('narrow screen keeps terminal tabs in the body', (tester) async {
