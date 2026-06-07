@@ -7,6 +7,19 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     }
     // Swallow keys while disconnected/reconnecting.
     if (!widget.motif.canInput) return KeyEventResult.ignored;
+    final shiftPressed = HardwareKeyboard.instance.isShiftPressed;
+    final controlPressed = HardwareKeyboard.instance.isControlPressed;
+    final altPressed = HardwareKeyboard.instance.isAltPressed;
+    final metaPressed = HardwareKeyboard.instance.isMetaPressed;
+    if (event is KeyDownEvent &&
+        _handleClipboardShortcut(
+          event.logicalKey,
+          shift: shiftPressed,
+          control: controlPressed,
+          meta: metaPressed,
+        )) {
+      return KeyEventResult.handled;
+    }
     final GhosttyKeyAction action;
     if (event is KeyDownEvent) {
       action = GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS;
@@ -18,10 +31,6 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       return KeyEventResult.ignored;
     }
     int mods = 0;
-    final shiftPressed = HardwareKeyboard.instance.isShiftPressed;
-    final controlPressed = HardwareKeyboard.instance.isControlPressed;
-    final altPressed = HardwareKeyboard.instance.isAltPressed;
-    final metaPressed = HardwareKeyboard.instance.isMetaPressed;
     if (shiftPressed) mods |= 1;
     if (controlPressed) mods |= 2;
     if (altPressed) mods |= 4;
@@ -56,6 +65,9 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         isPrintableTerminalText(text) &&
         (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
             action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
+      if (!altPressed && _textInputConnectionIsActive) {
+        return KeyEventResult.ignored;
+      }
       final bytes = utf8.encode(text);
       _state.writeToPty(
         Uint8List.fromList(altPressed ? [0x1b, ...bytes] : bytes),
@@ -72,5 +84,28 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       unshiftedCodepoint: logicalKeyUnshiftedCodepoint(event.logicalKey),
     );
     return KeyEventResult.handled;
+  }
+
+  bool _handleClipboardShortcut(
+    LogicalKeyboardKey key, {
+    required bool shift,
+    required bool control,
+    required bool meta,
+  }) {
+    final isApplePlatform =
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final appleClipboard = isApplePlatform && meta && !control;
+    final nonAppleClipboard = !isApplePlatform && control && shift && !meta;
+    if (!appleClipboard && !nonAppleClipboard) return false;
+    if (key == LogicalKeyboardKey.keyV) {
+      unawaited(_pasteFromClipboard());
+      return true;
+    }
+    if (key == LogicalKeyboardKey.keyC) {
+      unawaited(_copyVisible());
+      return true;
+    }
+    return false;
   }
 }

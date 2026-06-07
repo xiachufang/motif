@@ -30,6 +30,7 @@ import 'terminal_error_view.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
+import 'terminal_paste.dart';
 import 'terminal_scroll_driver.dart';
 
 part 'motif_terminal/text_input.dart';
@@ -247,7 +248,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     final committed = value.text.replaceAll(_softKeyboardSeed, '');
     if (committed.isNotEmpty) {
       _writeSoftKeyboardText(committed);
-    } else if (!hadComposing && value.text.length < previous.text.length) {
+    } else if (_usesSoftKeyboard &&
+        !hadComposing &&
+        value.text.length < previous.text.length) {
       _writeSoftKeyboardBytes(const [0x7f]);
     }
     _resetTextInputValue();

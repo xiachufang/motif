@@ -1,11 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/settings.dart';
 import '../../state/sticky_modifiers.dart';
+import '../../terminal/terminal_paste.dart';
 import '../theme/motif_theme.dart';
 
 /// Horizontal scrollable row of sticky modifier chips + quick-command capsules.
@@ -249,23 +249,7 @@ class QuickCommandRow extends StatelessWidget {
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         final text = data?.text ?? '';
         if (text.isEmpty) return;
-        // Bracketed paste: ESC[200~ … ESC[201~
-        final bytes = <int>[
-          0x1b,
-          0x5b,
-          0x32,
-          0x30,
-          0x30,
-          0x7e,
-          ...utf8.encode(text),
-          0x1b,
-          0x5b,
-          0x32,
-          0x30,
-          0x31,
-          0x7e,
-        ];
-        onSendBytes(Uint8List.fromList(bytes));
+        onSendBytes(bracketedPasteBytes(text));
         modifiers.consumeArmed();
         return;
       case QuickCommandKind.ctrl:

@@ -9,6 +9,7 @@ import 'package:opus_dart/opus_dart.dart' as opus;
 import 'package:opus_flutter/opus_flutter.dart' as opus_flutter;
 import 'package:record/record.dart';
 
+import '../../log/log.dart';
 import '../services.dart';
 import 'asr_protocol.dart';
 import 'doubao_constants.dart';
@@ -132,7 +133,13 @@ class _DoubaoASR {
       _canSendAudio = true;
       _scheduleFlush();
       await _flushFuture;
-    } catch (error) {
+    } catch (error, stackTrace) {
+      Log.e(
+        'start failed',
+        name: 'motif.asr',
+        error: error,
+        stackTrace: stackTrace,
+      );
       await _cleanupAfterStartFailure();
       rethrow;
     }
@@ -293,6 +300,7 @@ class _DoubaoASR {
           r.messageType == 'SessionFailed',
     );
     if (task.messageType != 'TaskStarted') {
+      _maybeResetCredentials(task.statusCode);
       throw DoubaoException(
         'StartTask: ${task.statusMessage.isEmpty ? 'failed' : task.statusMessage} (${task.statusCode})',
       );
@@ -313,10 +321,24 @@ class _DoubaoASR {
           r.messageType == 'SessionFailed',
     );
     if (session.messageType != 'SessionStarted') {
+      _maybeResetCredentials(session.statusCode);
       throw DoubaoException(
         'StartSession: ${session.statusMessage.isEmpty ? 'failed' : session.statusMessage} (${session.statusCode})',
       );
     }
+  }
+
+  /// Doubao 5xx backend failures ("service discovery failure") have proven
+  /// sticky per registered device_id — the device's backend route is dead and
+  /// every session on it fails. Registration is anonymous and cheap, so drop
+  /// the cached identity; the next start re-registers a fresh device.
+  void _maybeResetCredentials(int statusCode) {
+    if (statusCode < 50000000) return;
+    Log.w(
+      'backend failure ($statusCode): resetting device credentials',
+      name: 'motif.asr',
+    );
+    DoubaoCredentialStore.shared.reset().ignore();
   }
 
   String _sessionConfigJson(String deviceId) {
@@ -413,6 +435,7 @@ class _DoubaoASR {
         // ("expected seq=1 or StartSession"), burying the root cause.
         _sessionFailed = true;
         _canSendAudio = false;
+        _maybeResetCredentials(response.statusCode);
         final message = response.statusMessage.isEmpty
             ? 'ASR failed (${response.statusCode})'
             : '${response.statusMessage} (${response.statusCode})';
@@ -583,6 +606,7 @@ class _DoubaoASR {
   void _deliverError(Object error) {
     if (_errorDelivered) return;
     _errorDelivered = true;
+    Log.e('session error', name: 'motif.asr', error: error);
     onError?.call(error);
   }
 

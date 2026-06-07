@@ -16,11 +16,23 @@ import 'package:motif/motif/platform/doubao_asr/doubao_constants.dart';
 
 Future<void> main(List<String> argv) async {
   final badToken = argv.contains('--bad-token');
+  final deviceIdArg = argv.firstWhere(
+    (a) => a.startsWith('--device-id='),
+    orElse: () => '',
+  );
   final cdid = _uuidV4();
   final openudid = _randomHex(8);
   final clientudid = _uuidV4();
 
-  stdout.writeln('== registering device ==');
+  // --device-id=N reuses an existing device_id (e.g. the phone's) to test
+  // whether the backend failure is sticky per device; registration is skipped.
+  var deviceId = deviceIdArg.isEmpty
+      ? ''
+      : deviceIdArg.substring('--device-id='.length);
+  if (deviceId.isNotEmpty) {
+    stdout.writeln('== reusing device_id=$deviceId ==');
+  } else {
+    stdout.writeln('== registering device ==');
   final header = <String, Object>{
     ...DoubaoConstants.appConfig,
     ...DoubaoConstants.deviceConfig,
@@ -81,11 +93,11 @@ Future<void> main(List<String> argv) async {
     },
     body: regBody,
   );
-  stdout.writeln('register HTTP ${regResp.statusCode}: ${regResp.body}');
-  final regJson = jsonDecode(regResp.body) as Map<String, Object?>;
-  final deviceId =
-      '${regJson['device_id_str'] ?? regJson['device_id'] ?? ''}';
-  stdout.writeln('device_id=$deviceId');
+    stdout.writeln('register HTTP ${regResp.statusCode}: ${regResp.body}');
+    final regJson = jsonDecode(regResp.body) as Map<String, Object?>;
+    deviceId = '${regJson['device_id_str'] ?? regJson['device_id'] ?? ''}';
+    stdout.writeln('device_id=$deviceId');
+  }
 
   stdout.writeln('== fetching token ==');
   final tokenBody = utf8.encode('body=null');

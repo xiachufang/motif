@@ -7,7 +7,9 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     if (!mounted || !widget.active || !_focusNode.canRequestFocus) return;
     _showSoftKeyboardOnFocus = showSoftKeyboard;
     if (!_focusNode.hasFocus) _focusNode.requestFocus();
-    if (showSoftKeyboard) _openTextInput();
+    if (_usesTextInputClient && (!_usesSoftKeyboard || showSoftKeyboard)) {
+      _openTextInput(showKeyboard: showSoftKeyboard);
+    }
   }
 
   void _requestFocusWithoutKeyboard() {
@@ -20,6 +22,10 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
 
   void _toggleFocus() {
     if (!mounted || !widget.active || !_focusNode.canRequestFocus) return;
+    if (!_usesSoftKeyboard) {
+      _requestFocusWithoutKeyboard();
+      return;
+    }
     final connection = _textInputConnection;
     if (_focusNode.hasFocus && connection != null && connection.attached) {
       _showSoftKeyboardOnFocus = false;
@@ -31,8 +37,10 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   }
 
   void _onFocusChanged() {
-    if (_focusNode.hasFocus && _showSoftKeyboardOnFocus) {
-      _openTextInput();
+    if (_focusNode.hasFocus &&
+        _usesTextInputClient &&
+        (!_usesSoftKeyboard || _showSoftKeyboardOnFocus)) {
+      _openTextInput(showKeyboard: _showSoftKeyboardOnFocus);
     } else {
       _closeTextInput();
     }
@@ -44,14 +52,24 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
       defaultTargetPlatform == TargetPlatform.iOS ||
       defaultTargetPlatform == TargetPlatform.android;
 
-  void _openTextInput() {
-    if (!_usesSoftKeyboard || !widget.active || !_focusNode.hasFocus) return;
+  bool get _usesTextInputClient =>
+      _usesSoftKeyboard ||
+      defaultTargetPlatform == TargetPlatform.macOS ||
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.fuchsia;
+
+  bool get _textInputConnectionIsActive =>
+      _textInputConnection?.attached ?? false;
+
+  void _openTextInput({required bool showKeyboard}) {
+    if (!_usesTextInputClient || !widget.active || !_focusNode.hasFocus) return;
     // No soft keyboard while disconnected/reconnecting.
     if (!widget.motif.canInput) return;
     final existing = _textInputConnection;
     if (existing != null && existing.attached) {
       _state.scrollToBottom();
-      existing.show();
+      if (showKeyboard || !_usesSoftKeyboard) existing.show();
       return;
     }
     _state.scrollToBottom();
@@ -71,7 +89,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     );
     _textInputConnection = connection;
     connection.setEditingState(_textInputValue);
-    connection.show();
+    if (showKeyboard || !_usesSoftKeyboard) connection.show();
   }
 
   void _closeTextInput() {
@@ -103,5 +121,15 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null || bytes.isEmpty) return;
     if (!widget.motif.canInput) return;
     _state.writeToPty(Uint8List.fromList(bytes));
+  }
+
+  Future<void> _pasteFromClipboard() async {
+    if (!_initialized || _terminalError != null || !widget.motif.canInput) {
+      return;
+    }
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text ?? '';
+    if (text.isEmpty) return;
+    _state.writeToPty(bracketedPasteBytes(text));
   }
 }
