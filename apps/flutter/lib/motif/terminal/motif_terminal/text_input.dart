@@ -3,11 +3,19 @@
 part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalTextInput on _MotifTerminalViewState {
-  void _requestFocusAndKeyboard() {
+  void _requestFocus({required bool showSoftKeyboard}) {
     if (!mounted || !widget.active || !_focusNode.canRequestFocus) return;
-    _showSoftKeyboardOnFocus = true;
+    _showSoftKeyboardOnFocus = showSoftKeyboard;
     if (!_focusNode.hasFocus) _focusNode.requestFocus();
-    _openTextInput();
+    if (showSoftKeyboard) _openTextInput();
+  }
+
+  void _requestFocusWithoutKeyboard() {
+    _requestFocus(showSoftKeyboard: false);
+  }
+
+  void _requestFocusAndKeyboard() {
+    _requestFocus(showSoftKeyboard: true);
   }
 
   void _toggleFocus() {

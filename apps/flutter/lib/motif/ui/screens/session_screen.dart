@@ -18,6 +18,7 @@ import '../../state/app_state.dart';
 import '../../state/motif_client.dart';
 import '../../state/sticky_modifiers.dart';
 import '../../terminal/native_terminal.dart';
+import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_palette.dart';
 import '../theme/motif_buttons.dart';

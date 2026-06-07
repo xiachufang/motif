@@ -7,7 +7,7 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     try {
       final (cols, rows) = _preferredPtySize(_motif);
       await _motif.createPty(cols: cols, rows: rows);
-      _focusTerminal();
+      _focusTerminalAfterTabSwitch();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(

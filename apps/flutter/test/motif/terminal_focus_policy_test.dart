@@ -1,0 +1,31 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/terminal/terminal_focus_policy.dart';
+
+void main() {
+  test('tab switch autofocus is disabled on mobile platforms', () {
+    expect(
+      terminalAutofocusesOnTabSwitchByDefault(platform: TargetPlatform.iOS),
+      isFalse,
+    );
+    expect(
+      terminalAutofocusesOnTabSwitchByDefault(platform: TargetPlatform.android),
+      isFalse,
+    );
+  });
+
+  test('tab switch autofocus is enabled on non-mobile platforms', () {
+    for (final platform in [
+      TargetPlatform.fuchsia,
+      TargetPlatform.linux,
+      TargetPlatform.macOS,
+      TargetPlatform.windows,
+    ]) {
+      expect(
+        terminalAutofocusesOnTabSwitchByDefault(platform: platform),
+        isTrue,
+        reason: '$platform',
+      );
+    }
+  });
+}

@@ -125,7 +125,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     } else {
       motif.selectViewLocally(viewId);
     }
-    _focusTerminal();
+    _focusTerminalAfterTabSwitch();
   }
 
   Future<void> _closeActiveTab() async {
@@ -136,7 +136,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         : motif.views.where((v) => v.id == activeViewId).firstOrNull;
     if (view == null) return;
     await _closeViewWithConfirmation(context, motif, view);
-    _focusTerminal();
+    _focusTerminalAfterTabSwitch();
   }
 
   void _toggleSessionsPanel(AppState app) {
@@ -176,6 +176,11 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   void _focusTerminal() {
     if (!mounted) return;
     setState(() => _terminalFocusSerial++);
+  }
+
+  void _focusTerminalAfterTabSwitch() {
+    if (!terminalAutofocusesOnTabSwitchByDefault()) return;
+    _focusTerminal();
   }
 
   Future<void> _sendBytes(List<int> bytes) async {

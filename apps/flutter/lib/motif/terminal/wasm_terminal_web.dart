@@ -16,6 +16,7 @@ import 'package:flutter/services.dart';
 import '../state/motif_client.dart';
 import '../ui/theme/motif_theme.dart';
 import 'terminal_error_view.dart';
+import 'terminal_focus_policy.dart';
 import 'terminal_fonts.dart';
 import 'terminal_palette.dart';
 import 'web_key_encoder.dart';
@@ -92,7 +93,9 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     super.initState();
     widget.motif.registerPtySink(widget.ptyId, _onBytes);
     _init();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _requestFocus());
+    if (terminalAutofocusesOnTabSwitchByDefault()) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _requestFocus());
+    }
   }
 
   Future<void> _init() async {
@@ -121,13 +124,17 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   @override
   void didUpdateWidget(covariant _WasmTerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if ((!oldWidget.active && widget.active) ||
-        oldWidget.focusSerial != widget.focusSerial) {
+    final gainedActive = !oldWidget.active && widget.active;
+    final shouldDefaultFocus =
+        gainedActive && terminalAutofocusesOnTabSwitchByDefault();
+    final focusRequested = oldWidget.focusSerial != widget.focusSerial;
+    if (shouldDefaultFocus || focusRequested) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _requestFocus());
     }
     if (!oldWidget.active && widget.active) {
       unawaited(widget.motif.activatePtyStream(widget.ptyId));
     } else if (oldWidget.active && !widget.active) {
+      _focusNode.unfocus();
       unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
     }
   }
@@ -243,7 +250,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     );
     return Focus(
       focusNode: _focusNode,
-      autofocus: widget.active,
+      autofocus: widget.active && terminalAutofocusesOnTabSwitchByDefault(),
       canRequestFocus: widget.active,
       onKeyEvent: _onKey,
       child: GestureDetector(

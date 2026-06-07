@@ -28,6 +28,7 @@ import '../log/log.dart';
 import '../state/motif_client.dart';
 import 'terminal_error_view.dart';
 import 'terminal_fonts.dart';
+import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
 import 'terminal_scroll_driver.dart';
 
@@ -137,6 +138,11 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       name: 'motif.terminal',
     );
     widget.motif.registerPtySink(widget.ptyId, _onRemoteBytes);
+    if (terminalAutofocusesOnTabSwitchByDefault()) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _requestFocusWithoutKeyboard(),
+      );
+    }
   }
 
   @override
@@ -175,6 +181,17 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
         _closeTextInput();
       }
       _syncKeyboardLift();
+    }
+    if ((!oldWidget.active && widget.active) &&
+        terminalAutofocusesOnTabSwitchByDefault()) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _requestFocusWithoutKeyboard(),
+      );
+    }
+    if (oldWidget.focusSerial != widget.focusSerial) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _requestFocusWithoutKeyboard(),
+      );
     }
     if (!oldWidget.active && widget.active) {
       _scheduleResizeAndMaybeOpen();
@@ -299,7 +316,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       child: RepaintBoundary(
         child: Focus(
           focusNode: _focusNode,
-          autofocus: false,
+          autofocus: widget.active && terminalAutofocusesOnTabSwitchByDefault(),
           canRequestFocus: widget.active && widget.motif.canInput,
           onKeyEvent: _onKeyEvent,
           child: GestureDetector(
