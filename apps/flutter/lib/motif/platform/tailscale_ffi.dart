@@ -141,9 +141,11 @@ class LibTailscale {
   /// null if the library/symbols aren't present.
   static LibTailscale? tryOpenDefault() {
     final candidates = <String>[
-      if (Platform.isIOS) '@rpath/tailscale.framework/tailscale',
-      if (Platform.isIOS) 'tailscale.framework/tailscale',
-      if (Platform.isIOS) 'Frameworks/tailscale.framework/tailscale',
+      if (Platform.isMacOS || Platform.isIOS)
+        '@rpath/tailscale.framework/tailscale',
+      if (Platform.isMacOS || Platform.isIOS) 'tailscale.framework/tailscale',
+      if (Platform.isMacOS || Platform.isIOS)
+        'Frameworks/tailscale.framework/tailscale',
       if (Platform.isMacOS) 'libtailscale.dylib',
       if (Platform.isLinux || Platform.isAndroid) 'libtailscale.so',
       if (Platform.isWindows) 'libtailscale.dll',

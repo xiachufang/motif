@@ -39,12 +39,20 @@ String? _findLibtailscale() {
       ? 'dylib'
       : (Platform.isWindows ? 'dll' : 'so');
   final exeDir = File(Platform.resolvedExecutable).parent.path;
+  final cwd = Directory.current.path;
   final pathCandidates = <String>[
     if (Platform.environment['MOTIF_LIBTAILSCALE'] != null)
       Platform.environment['MOTIF_LIBTAILSCALE']!,
     '$exeDir/libtailscale.$ext',
     '$exeDir/../Frameworks/libtailscale.$ext',
-    '${Directory.current.path}/build/native/tailscale/libtailscale.$ext',
+    if (Platform.isMacOS || Platform.isIOS) ...[
+      '$exeDir/../Frameworks/tailscale.framework/tailscale',
+      '$exeDir/../Frameworks/tailscale.framework/Versions/A/tailscale',
+    ],
+    '$cwd/build/native_assets/macos/libtailscale.dylib',
+    '$cwd/build/native/tailscale/macos/arm64/libtailscale.dylib',
+    '$cwd/build/native/tailscale/macos/x64/libtailscale.dylib',
+    '$cwd/build/native/tailscale/libtailscale.$ext',
     '/tmp/libtailscale.$ext',
   ];
   for (final path in pathCandidates) {
@@ -56,9 +64,11 @@ String? _findLibtailscale() {
   // they are loadable by soname but do not exist as ordinary files.
   final sonameCandidates = <String>[
     if (Platform.isAndroid || Platform.isLinux) 'libtailscale.so',
-    if (Platform.isIOS) '@rpath/tailscale.framework/tailscale',
-    if (Platform.isIOS) 'tailscale.framework/tailscale',
-    if (Platform.isIOS) 'Frameworks/tailscale.framework/tailscale',
+    if (Platform.isMacOS || Platform.isIOS)
+      '@rpath/tailscale.framework/tailscale',
+    if (Platform.isMacOS || Platform.isIOS) 'tailscale.framework/tailscale',
+    if (Platform.isMacOS || Platform.isIOS)
+      'Frameworks/tailscale.framework/tailscale',
     if (Platform.isMacOS || Platform.isIOS) 'libtailscale.dylib',
     if (Platform.isWindows) 'libtailscale.dll',
     'libtailscale',

@@ -521,6 +521,7 @@ Future<void> main(List<String> args) async {
         'macos/vendor/libtailscale.dylib',
       ],
       buildTarget: 'macos-$targetArchName',
+      environment: {'MACOSX_DEPLOYMENT_TARGET': '$macOSMinVersion'},
     );
   });
 }

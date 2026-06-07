@@ -36,7 +36,7 @@ if [[ -z "$SRC" ]]; then
 fi
 
 # Cross-build env for Android (needs ANDROID_NDK_HOME); host build otherwise.
-GOOS_ENV=(); CC_ENV=""; GO_BUILD_EXTRA=(); ext=""
+GOOS_ENV=(); CC_ENV=""; CGO_CFLAGS_ENV=""; CGO_LDFLAGS_ENV=""; GO_BUILD_EXTRA=(); ext=""
 case "$TARGET" in
   host)
     case "$(uname -s)" in
@@ -46,13 +46,22 @@ case "$TARGET" in
     esac
     OUT="${OUT:-$PROJECT_DIR/build/native/tailscale/libtailscale.$ext}";;
   macos-arm64|macos-x64)
+    command -v xcrun >/dev/null || { echo "error: xcrun not on PATH" >&2; exit 127; }
     arch="${TARGET#macos-}"
     if [[ "$arch" == "arm64" ]]; then
       goarch="arm64"; clang_arch="arm64";
     else
       goarch="amd64"; clang_arch="x86_64";
     fi
-    GOOS_ENV=(GOOS=darwin "GOARCH=$goarch"); CC_ENV="clang -arch $clang_arch"; GO_BUILD_EXTRA=(-ldflags=-extldflags=-Wl,-headerpad_max_install_names); ext="dylib"
+    sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+    clang="$(xcrun --sdk macosx --find clang)"
+    min="${MACOSX_DEPLOYMENT_TARGET:-${MACOS_MIN_VERSION:-11.0}}"
+    GOOS_ENV=(GOOS=darwin "GOARCH=$goarch")
+    CC_ENV="$clang"
+    CGO_CFLAGS_ENV="-arch $clang_arch -isysroot $sdk_path -mmacosx-version-min=$min"
+    CGO_LDFLAGS_ENV="$CGO_CFLAGS_ENV"
+    GO_BUILD_EXTRA=(-ldflags=-extldflags=-Wl,-headerpad_max_install_names)
+    ext="dylib"
     OUT="${OUT:-$PROJECT_DIR/build/native/tailscale/macos/$arch/libtailscale.dylib}";;
   linux-arm64|linux-x64)
     arch="${TARGET#linux-}"
@@ -137,7 +146,7 @@ esac
 mkdir -p "$(dirname "$OUT")"
 echo ">>> building libtailscale ($TARGET) → $OUT"
 if [[ -n "$CC_ENV" ]]; then
-  ( cd "$SRC" && env CGO_ENABLED=1 "${GOOS_ENV[@]}" CC="$CC_ENV" go build -buildmode=c-shared "${GO_BUILD_EXTRA[@]}" -o "$OUT" . )
+  ( cd "$SRC" && env CGO_ENABLED=1 "${GOOS_ENV[@]}" CC="$CC_ENV" CGO_CFLAGS="$CGO_CFLAGS_ENV" CGO_LDFLAGS="$CGO_LDFLAGS_ENV" go build -buildmode=c-shared "${GO_BUILD_EXTRA[@]}" -o "$OUT" . )
 else
   ( cd "$SRC" && env CGO_ENABLED=1 "${GOOS_ENV[@]}" go build -buildmode=c-shared "${GO_BUILD_EXTRA[@]}" -o "$OUT" . )
 fi

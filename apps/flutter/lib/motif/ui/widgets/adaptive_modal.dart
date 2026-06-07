@@ -24,7 +24,11 @@ Future<T?> showAdaptiveModal<T>(
 }) {
   final background = context.motif.background;
   if (!_useSheet) {
-    return showDialog<T>(context: context, builder: builder);
+    return showDialog<T>(
+      context: context,
+      barrierDismissible: false,
+      builder: builder,
+    );
   }
   return showModalBottomSheet<T>(
     context: context,
@@ -50,6 +54,7 @@ Future<T?> showAdaptivePanel<T>(
   if (!_useSheet) {
     return showDialog<T>(
       context: context,
+      barrierDismissible: false,
       builder: (context) => Dialog(
         clipBehavior: Clip.antiAlias,
         backgroundColor: background,
