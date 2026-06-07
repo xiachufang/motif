@@ -6,6 +6,7 @@ import '../../models/motif_proto.dart';
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import '../widgets/motif_form.dart';
 
 /// Lazy file-tree browser rooted at a directory (mirrors FileTreePanel).
 /// Tapping a file calls [onOpen] (and pops); tapping a dir expands it.
@@ -290,21 +291,41 @@ class _FileTreePanelState extends State<FileTreePanel> {
       context,
       builder: (context) => AdaptiveModal(
         title: title,
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          autocorrect: false,
+        content: MotifSection(
+          title: 'Name',
+          dividerIndent: MotifSpacing.lg,
+          children: [_promptField(ctrl)],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
           TextButton(
             onPressed: () => Navigator.pop(context, ctrl.text),
             child: const Text('OK'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _promptField(TextEditingController controller) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.md,
+        vertical: MotifSpacing.sm,
+      ),
+      child: TextField(
+        controller: controller,
+        autofocus: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: const InputDecoration(
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          errorBorder: InputBorder.none,
+          focusedErrorBorder: InputBorder.none,
+          isDense: true,
+        ),
       ),
     );
   }

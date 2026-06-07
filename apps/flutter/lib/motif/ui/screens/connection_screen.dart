@@ -9,6 +9,7 @@ import '../../platform/services.dart';
 import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
 import 'server_edit_sheet.dart';
@@ -69,12 +70,8 @@ class ConnectionScreen extends StatelessWidget {
     final c = context.motif;
     final servers = app.servers.servers;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Connection'),
-        centerTitle: true,
-        // Presented as a modal (sheet/dialog), not a pushed route.
-        leading: const CloseButton(),
-      ),
+      backgroundColor: c.background,
+      appBar: const AdaptiveModalHeader(title: 'Connection'),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(

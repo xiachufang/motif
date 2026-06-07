@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../models/motif_proto.dart';
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/adaptive_modal.dart';
 
 /// A `cd` directory picker (mirrors ChangeDirectoryPanel): browse subdirectories
 /// of a base path and send `cd '<path>'` to the active PTY on confirm.
@@ -201,7 +202,6 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
             ),
           ),
           _Header(onCancel: () => Navigator.of(context).pop()),
-          const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.fromLTRB(
               MotifSpacing.lg,
@@ -371,30 +371,6 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.motif;
-    return SizedBox(
-      height: 48,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(onPressed: onCancel, child: const Text('Cancel')),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 96),
-            child: Text(
-              'Change directory',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: c.textPrimary,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+    return AdaptiveModalHeader(title: 'Change directory', onClose: onCancel);
   }
 }

@@ -6,6 +6,7 @@ import '../../log/log_export.dart';
 import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import '../widgets/motif_form.dart';
 
 class SessionListSettingsSheet extends StatefulWidget {
   const SessionListSettingsSheet({super.key});
@@ -46,35 +47,35 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Notifications',
-          style: TextStyle(color: c.textPrimary, fontSize: 15),
+        MotifSection(
+          title: 'Notifications',
+          dividerIndent: MotifSpacing.lg,
+          children: [
+            MotifSectionRow(
+              leading: Icon(Icons.notifications_outlined, color: c.accent),
+              title: 'Push notifications',
+              onTap: () => push.setEnabled(!push.enabled),
+              trailing: Switch(value: push.enabled, onChanged: push.setEnabled),
+            ),
+          ],
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Push notifications'),
-          value: push.enabled,
-          onChanged: push.setEnabled,
-        ),
-        const SizedBox(height: MotifSpacing.md),
-        Divider(height: 1, color: c.border),
-        const SizedBox(height: MotifSpacing.md),
-        Text(
-          'Diagnostics',
-          style: TextStyle(color: c.textPrimary, fontSize: 15),
-        ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.file_download_outlined, color: c.textSecondary),
-          title: const Text('Export logs'),
-          trailing: _exporting
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Icon(Icons.chevron_right, color: c.textTertiary),
-          onTap: _exporting ? null : _exportLogs,
+        const SizedBox(height: MotifSpacing.xl),
+        MotifSection(
+          title: 'Diagnostics',
+          children: [
+            MotifSectionRow(
+              leading: Icon(Icons.file_download_outlined, color: c.accent),
+              title: 'Export logs',
+              trailing: _exporting
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(Icons.chevron_right, color: c.textTertiary),
+              onTap: _exporting ? null : _exportLogs,
+            ),
+          ],
         ),
       ],
     );
@@ -87,12 +88,6 @@ Future<void> showSessionListSettingsSheet(BuildContext context) {
     builder: (_) => AdaptiveModal(
       title: 'Settings',
       content: const SessionListSettingsSheet(),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
-        ),
-      ],
     ),
   );
 }

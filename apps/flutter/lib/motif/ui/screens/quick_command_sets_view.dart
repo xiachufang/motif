@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import '../widgets/motif_form.dart';
 import 'quick_command_editor.dart';
 
 /// Manage the global list + per-program quick-command sets (mirrors the iOS
@@ -128,12 +129,14 @@ Future<String?> _promptText(
     context,
     builder: (context) => AdaptiveModal(
       title: title,
-      content: TextField(controller: ctrl, autofocus: true),
+      content: MotifSection(
+        title: 'Details',
+        dividerIndent: MotifSpacing.lg,
+        children: [
+          _sectionField(controller: ctrl, label: 'Name', autofocus: true),
+        ],
+      ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
         TextButton(
           onPressed: () => Navigator.pop(context, ctrl.text),
           child: const Text('OK'),
@@ -153,27 +156,19 @@ Future<(String, List<String>)?> _promptNameMatches(
     context,
     builder: (context) => AdaptiveModal(
       title: title,
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
+      content: MotifSection(
+        title: 'Details',
+        dividerIndent: MotifSpacing.lg,
         children: [
-          TextField(
-            controller: name,
-            decoration: const InputDecoration(labelText: 'Name'),
-            autofocus: true,
-          ),
-          TextField(
+          _sectionField(controller: name, label: 'Name', autofocus: true),
+          _sectionField(
             controller: matches,
-            decoration: const InputDecoration(
-              labelText: 'Programs (e.g. vim, nano)',
-            ),
+            label: 'Programs',
+            hint: 'e.g. vim, nano',
           ),
         ],
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
         TextButton(
           onPressed: () {
             if (name.text.trim().isEmpty) return;
@@ -187,6 +182,37 @@ Future<(String, List<String>)?> _promptNameMatches(
           child: const Text('Create'),
         ),
       ],
+    ),
+  );
+}
+
+Widget _sectionField({
+  required TextEditingController controller,
+  required String label,
+  String? hint,
+  bool autofocus = false,
+}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(
+      horizontal: MotifSpacing.md,
+      vertical: MotifSpacing.sm,
+    ),
+    child: TextField(
+      controller: controller,
+      autofocus: autofocus,
+      autocorrect: false,
+      enableSuggestions: false,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        filled: false,
+        border: InputBorder.none,
+        enabledBorder: InputBorder.none,
+        focusedBorder: InputBorder.none,
+        errorBorder: InputBorder.none,
+        focusedErrorBorder: InputBorder.none,
+        isDense: true,
+      ),
     ),
   );
 }

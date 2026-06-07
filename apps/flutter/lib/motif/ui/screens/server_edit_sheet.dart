@@ -203,45 +203,24 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    final title = widget.existing == null
+        ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
+        : 'Edit Server';
     return SafeArea(
       top: false,
       child: Column(
         children: [
-          SizedBox(
-            height: 50,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Text(
-                  widget.existing == null
-                      ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
-                      : 'Edit Server',
-                  style: TextStyle(
-                    color: c.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel'),
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: _valid && !_saving
-                        ? () => _save(connectAfterSave: widget.connectOnSave)
-                        : null,
-                    child: Text(_primaryActionLabel),
-                  ),
-                ),
-              ],
-            ),
+          AdaptiveModalHeader(
+            title: title,
+            actions: [
+              TextButton(
+                onPressed: _valid && !_saving
+                    ? () => _save(connectAfterSave: widget.connectOnSave)
+                    : null,
+                child: Text(_primaryActionLabel),
+              ),
+            ],
           ),
-          Divider(height: 1, color: c.border),
           if (widget.connectOnSave) ...[
             Material(
               color: c.background,

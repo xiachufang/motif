@@ -4,6 +4,7 @@ import '../../models/motif_proto.dart';
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import '../widgets/motif_form.dart';
 
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
@@ -48,28 +49,19 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
   Widget build(BuildContext context) {
     return AdaptiveModal(
       title: 'New session',
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
+      content: MotifSection(
+        title: 'Session',
+        dividerIndent: MotifSpacing.lg,
         children: [
-          TextField(
+          _sectionField(
             controller: _name,
-            autocorrect: false,
-            decoration: const InputDecoration(labelText: 'Name'),
+            label: 'Name',
             onChanged: (_) => setState(() {}),
           ),
-          const SizedBox(height: MotifSpacing.lg),
-          TextField(
-            controller: _workdir,
-            autocorrect: false,
-            decoration: const InputDecoration(labelText: 'Working directory'),
-          ),
+          _sectionField(controller: _workdir, label: 'Working directory'),
         ],
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
         TextButton(
           onPressed: _name.text.trim().isEmpty
               ? null
@@ -80,6 +72,35 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
           child: const Text('Create'),
         ),
       ],
+    );
+  }
+
+  Widget _sectionField({
+    required TextEditingController controller,
+    required String label,
+    ValueChanged<String>? onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.md,
+        vertical: MotifSpacing.sm,
+      ),
+      child: TextField(
+        controller: controller,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: InputDecoration(
+          labelText: label,
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          errorBorder: InputBorder.none,
+          focusedErrorBorder: InputBorder.none,
+          isDense: true,
+        ),
+        onChanged: onChanged,
+      ),
     );
   }
 }

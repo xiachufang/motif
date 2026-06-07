@@ -361,35 +361,11 @@ class _SheetScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.motif;
     return SafeArea(
       top: false,
       child: Column(
         children: [
-          SizedBox(
-            height: 50,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: c.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Close'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Divider(height: 1, color: c.border),
+          AdaptiveModalHeader(title: title),
           Expanded(child: child),
         ],
       ),

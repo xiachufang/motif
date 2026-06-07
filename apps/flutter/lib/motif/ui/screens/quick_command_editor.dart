@@ -9,6 +9,7 @@ import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/key_picker.dart';
+import '../widgets/motif_form.dart';
 import 'quick_command_sets_view.dart';
 
 /// Reorderable editor for the global or per-program quick-command list.
@@ -264,73 +265,130 @@ class _EditDialogState extends State<_EditDialog> {
   List<Widget> _buildFields() {
     final isKey = _mode == _PayloadMode.key;
     return [
-      SegmentedButton<_PayloadMode>(
-        segments: const [
-          ButtonSegment(value: _PayloadMode.text, label: Text('Text')),
-          ButtonSegment(value: _PayloadMode.key, label: Text('Key')),
-        ],
-        selected: {_mode},
-        onSelectionChanged: (s) => setState(() => _mode = s.first),
-      ),
-      const SizedBox(height: MotifSpacing.md),
-      TextField(
-        controller: _label,
-        decoration: const InputDecoration(labelText: 'Label'),
-        onChanged: (_) => setState(() {}),
-      ),
-      const SizedBox(height: MotifSpacing.md),
-      TextField(
-        controller: _symbol,
-        decoration: const InputDecoration(
-          labelText: 'Symbol (optional)',
-          helperText: 'Known names: arrow.up, delete.left, control...',
-        ),
-        autocorrect: false,
-      ),
-      CheckboxListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Ctrl'),
-        value: _ctrl,
-        onChanged: (v) => setState(() => _ctrl = v ?? false),
-      ),
-      CheckboxListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Alt / Option'),
-        value: _alt,
-        onChanged: (v) => setState(() => _alt = v ?? false),
-      ),
-      CheckboxListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Shift'),
-        value: _shift,
-        onChanged: (v) => setState(() => _shift = v ?? false),
-      ),
-      if (isKey)
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.keyboard),
-          title: Text(_key == null ? 'Choose a key…' : _key!.name),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _pickKey,
-        )
-      else ...[
-        TextField(
-          controller: _text,
-          decoration: const InputDecoration(
-            labelText: 'Text to send/insert',
-            helperText: r'\n / \t / \r / \e are interpreted',
+      MotifSection(
+        title: 'Payload type',
+        dividerIndent: MotifSpacing.lg,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(MotifSpacing.sm),
+            child: SegmentedButton<_PayloadMode>(
+              segments: const [
+                ButtonSegment(value: _PayloadMode.text, label: Text('Text')),
+                ButtonSegment(value: _PayloadMode.key, label: Text('Key')),
+              ],
+              selected: {_mode},
+              onSelectionChanged: (s) => setState(() => _mode = s.first),
+            ),
           ),
-          minLines: 1,
-          maxLines: 3,
+        ],
+      ),
+      const SizedBox(height: MotifSpacing.xl),
+      MotifSection(
+        title: 'Display',
+        dividerIndent: MotifSpacing.lg,
+        children: [
+          _sectionField(
+            controller: _label,
+            label: 'Label',
+            onChanged: (_) => setState(() {}),
+          ),
+          _sectionField(
+            controller: _symbol,
+            label: 'Symbol (optional)',
+            helperText: 'Known names: arrow.up, delete.left, control...',
+          ),
+        ],
+      ),
+      const SizedBox(height: MotifSpacing.xl),
+      MotifSection(
+        title: 'Modifiers',
+        dividerIndent: MotifSpacing.lg,
+        children: [
+          _modifierRow('Ctrl', _ctrl, (v) => _ctrl = v),
+          _modifierRow('Alt / Option', _alt, (v) => _alt = v),
+          _modifierRow('Shift', _shift, (v) => _shift = v),
+        ],
+      ),
+      const SizedBox(height: MotifSpacing.xl),
+      if (isKey)
+        MotifSection(
+          title: 'Key',
+          children: [
+            MotifSectionRow(
+              leading: const Icon(Icons.keyboard),
+              title: _key == null ? 'Choose a key…' : _key!.name,
+              showChevron: true,
+              onTap: _pickKey,
+            ),
+          ],
+        )
+      else
+        MotifSection(
+          title: 'Text',
+          dividerIndent: MotifSpacing.lg,
+          children: [
+            _sectionField(
+              controller: _text,
+              label: 'Text to send/insert',
+              helperText: r'\n / \t / \r / \e are interpreted',
+              minLines: 1,
+              maxLines: 3,
+            ),
+            MotifSectionRow(
+              title: 'Send immediately',
+              onTap: () => setState(() => _sendImmediately = !_sendImmediately),
+              trailing: Switch(
+                value: _sendImmediately,
+                onChanged: (v) => setState(() => _sendImmediately = v),
+              ),
+            ),
+          ],
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Send immediately'),
-          value: _sendImmediately,
-          onChanged: (v) => setState(() => _sendImmediately = v),
-        ),
-      ],
     ];
+  }
+
+  Widget _sectionField({
+    required TextEditingController controller,
+    required String label,
+    String? helperText,
+    int? minLines,
+    int? maxLines = 1,
+    ValueChanged<String>? onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.md,
+        vertical: MotifSpacing.sm,
+      ),
+      child: TextField(
+        controller: controller,
+        autocorrect: false,
+        enableSuggestions: false,
+        minLines: minLines,
+        maxLines: maxLines,
+        decoration: InputDecoration(
+          labelText: label,
+          helperText: helperText,
+          filled: false,
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          errorBorder: InputBorder.none,
+          focusedErrorBorder: InputBorder.none,
+          isDense: true,
+        ),
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _modifierRow(String title, bool value, ValueChanged<bool> update) {
+    void setValue(bool next) => setState(() => update(next));
+    return MotifSectionRow(
+      title: title,
+      onTap: () => setValue(!value),
+      trailing: Checkbox(value: value, onChanged: (v) => setValue(v ?? false)),
+    );
   }
 
   @override
@@ -342,10 +400,6 @@ class _EditDialogState extends State<_EditDialog> {
       title: widget.existing == null ? 'New command' : 'Edit command',
       content: Column(mainAxisSize: MainAxisSize.min, children: _buildFields()),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
         TextButton(
           onPressed: canSave ? _save : null,
           child: const Text('Save'),
