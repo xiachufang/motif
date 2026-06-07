@@ -69,6 +69,8 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final existing = _textInputConnection;
     if (existing != null && existing.attached) {
       _state.scrollToBottom();
+      _syncImeRect();
+      _scheduleImeRectSync();
       if (showKeyboard || !_usesSoftKeyboard) existing.show();
       return;
     }
@@ -89,6 +91,8 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     );
     _textInputConnection = connection;
     connection.setEditingState(_textInputValue);
+    _syncImeRect();
+    _scheduleImeRectSync();
     if (showKeyboard || !_usesSoftKeyboard) connection.show();
   }
 
@@ -106,7 +110,60 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final connection = _textInputConnection;
     if (connection != null && connection.attached) {
       connection.setEditingState(_textInputValue);
+      _scheduleImeRectSync();
     }
+  }
+
+  void _scheduleImeRectSync() {
+    if (_imeRectSyncScheduled || !mounted) return;
+    _imeRectSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _imeRectSyncScheduled = false;
+      if (mounted) _syncImeRect();
+    });
+  }
+
+  void _syncImeRect() {
+    final connection = _textInputConnection;
+    if (connection == null || !connection.attached) return;
+    final surfaceContext = _terminalSurfaceKey.currentContext;
+    final renderObject = surfaceContext?.findRenderObject();
+    if (renderObject is! RenderBox ||
+        !renderObject.attached ||
+        renderObject.size.isEmpty) {
+      return;
+    }
+
+    connection.setEditableSizeAndTransform(
+      renderObject.size,
+      renderObject.getTransformTo(null),
+    );
+    final rect = _cursorInputRect(renderObject.size);
+    connection.setComposingRect(rect);
+    connection.setCaretRect(rect);
+  }
+
+  Rect _cursorInputRect(Size surfaceSize) {
+    final cellWidth = _cellWidth <= 0 ? 1.0 : _cellWidth;
+    final cellHeight = _cellHeight <= 0 ? 1.0 : _cellHeight;
+    final cursor = _lastCursorSnapshot;
+    final cursorX = cursor != null && cursor.inViewport ? cursor.x : 0;
+    final cursorY = cursor != null && cursor.inViewport
+        ? cursor.y
+        : (_rows - 1).clamp(0, 1000);
+    final maxLeft = (surfaceSize.width - cellWidth)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    final maxTop = (surfaceSize.height - cellHeight)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    final left = (widget.padding + cursorX * cellWidth)
+        .clamp(0.0, maxLeft)
+        .toDouble();
+    final top = (widget.padding + cursorY * cellHeight)
+        .clamp(0.0, maxTop)
+        .toDouble();
+    return Rect.fromLTWH(left, top, cellWidth, cellHeight);
   }
 
   void _writeSoftKeyboardText(String text) {

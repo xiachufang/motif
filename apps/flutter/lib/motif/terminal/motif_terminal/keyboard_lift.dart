@@ -18,6 +18,7 @@ extension _MotifTerminalKeyboardLift on _MotifTerminalViewState {
     _keyboardLiftOffset.value = lift;
     _lastKeyboardLiftTrace = trace;
     _logKeyboardLift(trace, previous);
+    _scheduleImeRectSync();
   }
 
   _KeyboardLiftTrace _keyboardLift() {

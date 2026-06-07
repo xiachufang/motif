@@ -3,7 +3,12 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
-    show ValueListenable, ValueNotifier, defaultTargetPlatform, kIsWeb;
+    show
+        TargetPlatform,
+        ValueListenable,
+        ValueNotifier,
+        defaultTargetPlatform,
+        kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -83,9 +88,6 @@ class _SessionScreenState extends State<SessionScreen>
   int _terminalFocusSerial = 0;
   bool _keyboardInsetSyncScheduled = false;
   bool _paneMountReady = false;
-  bool _paneMountWaitStarted = false;
-  Animation<double>? _paneMountAnimation;
-  Timer? _paneMountFallbackTimer;
   bool _usesSidebarLayout = false;
   bool _switchingSession = false;
   bool _attachingSession = false;
@@ -154,7 +156,7 @@ class _SessionScreenState extends State<SessionScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _deferPaneMountUntilRouteSettles();
+    _mountPaneImmediately();
   }
 
   @override
@@ -167,8 +169,6 @@ class _SessionScreenState extends State<SessionScreen>
 
   @override
   void dispose() {
-    _paneMountAnimation?.removeStatusListener(_onPaneMountAnimationStatus);
-    _paneMountFallbackTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
@@ -185,50 +185,9 @@ class _SessionScreenState extends State<SessionScreen>
     _scheduleKeyboardInsetSync();
   }
 
-  void _deferPaneMountUntilRouteSettles() {
-    if (_paneMountReady || _paneMountWaitStarted) return;
-    final route = ModalRoute.of(context);
-    if (route == null || route.isFirst) {
-      _paneMountReady = true;
-      return;
-    }
-    final transitionDuration = route.transitionDuration;
-    if (transitionDuration <= Duration.zero) {
-      _paneMountReady = true;
-      return;
-    }
-    final animation = route.animation;
-    _paneMountWaitStarted = true;
-    _paneMountAnimation = animation;
-    animation?.addStatusListener(_onPaneMountAnimationStatus);
-    // Keep heavy terminal panes out of the route transition even if a platform
-    // reports the animation as already completed when the subtree first builds.
-    _paneMountFallbackTimer = Timer(
-      transitionDuration + const Duration(milliseconds: 32),
-      _markPaneMountReady,
-    );
-  }
-
-  void _onPaneMountAnimationStatus(AnimationStatus status) {
-    if (status == AnimationStatus.completed) {
-      _markPaneMountReady();
-    }
-  }
-
-  void _markPaneMountReady() {
-    final animation = _paneMountAnimation;
-    if (animation != null) {
-      animation.removeStatusListener(_onPaneMountAnimationStatus);
-      _paneMountAnimation = null;
-    }
-    _paneMountFallbackTimer?.cancel();
-    _paneMountFallbackTimer = null;
+  void _mountPaneImmediately() {
     if (_paneMountReady) return;
-    if (mounted) {
-      setState(() => _paneMountReady = true);
-    } else {
-      _paneMountReady = true;
-    }
+    _paneMountReady = true;
   }
 
   @override

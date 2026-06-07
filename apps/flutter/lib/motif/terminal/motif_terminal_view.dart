@@ -11,6 +11,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -70,6 +71,8 @@ class MotifTerminalView extends StatefulWidget {
 class _MotifTerminalViewState extends State<MotifTerminalView>
     with SingleTickerProviderStateMixin, TextInputClient {
   static const double _keyboardCursorMargin = 16;
+  static const int _remoteFeedMaxBytesPerFrame = 64 * 1024;
+  static const int _remoteFeedMaxMicrosPerFrame = 4000;
   static const _softKeyboardSeed = '\u200b';
   static const _softKeyboardValue = TextEditingValue(
     text: _softKeyboardSeed,
@@ -92,6 +95,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final TerminalScrollAccumulator _scrollAccumulator =
       TerminalScrollAccumulator();
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
+  final GlobalKey _terminalSurfaceKey = GlobalKey(
+    debugLabel: 'Motif terminal surface',
+  );
   final ValueNotifier<double> _keyboardLiftOffset = ValueNotifier(0);
   TextInputConnection? _textInputConnection;
   TextEditingValue _textInputValue = _softKeyboardValue;
@@ -112,10 +118,13 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   Timer? _retryTimer;
   int _terminalRetryAttempt = 0;
   bool _keyboardLiftSyncScheduled = false;
+  bool _imeRectSyncScheduled = false;
   double _bottomViewPadding = 0;
   _KeyboardLiftTrace? _lastKeyboardLiftTrace;
   DateTime? _lastKeyboardLiftLogAt;
-  final List<Uint8List> _pendingRemoteBytes = [];
+  final Queue<Uint8List> _remoteByteQueue = Queue<Uint8List>();
+  int _remoteByteQueueBytes = 0;
+  int _remoteByteQueueOffset = 0;
   int _remoteChunks = 0;
   int _remoteBytes = 0;
 
@@ -215,6 +224,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _resizeTimer?.cancel();
     _frameTimer?.cancel();
     _retryTimer?.cancel();
+    _remoteByteQueue.clear();
+    _remoteByteQueueBytes = 0;
+    _remoteByteQueueOffset = 0;
     _stopScrollInertia(resetVelocity: true);
     _scrollTicker?.dispose();
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
@@ -242,6 +254,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
         previousComposing.isValid && !previousComposing.isCollapsed;
     final composing = value.composing;
     if (composing.isValid && !composing.isCollapsed) {
+      _scheduleImeRectSync();
       return;
     }
 
@@ -254,6 +267,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       _writeSoftKeyboardBytes(const [0x7f]);
     }
     _resetTextInputValue();
+    _scheduleImeRectSync();
   }
 
   @override
@@ -317,6 +331,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     return ValueListenableBuilder<double>(
       valueListenable: _keyboardLiftOffset,
       child: RepaintBoundary(
+        key: _terminalSurfaceKey,
         child: Focus(
           focusNode: _focusNode,
           autofocus: widget.active && terminalAutofocusesOnTabSwitchByDefault(),
@@ -341,6 +356,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                   if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
                     _viewportHeight = viewportHeight;
                     _scheduleKeyboardLiftSync();
+                    _scheduleImeRectSync();
                   }
                   final font = _fontSpec;
                   _initTerminal(constraints);

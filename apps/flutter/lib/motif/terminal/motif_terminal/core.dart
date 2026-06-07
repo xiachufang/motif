@@ -14,15 +14,80 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       Log.i(
         'terminal bytes pty=${widget.ptyId} chunk=$_remoteChunks '
         'bytes=${bytes.length} totalBytes=$_remoteBytes '
-        'initialized=$_initialized pending=${_pendingRemoteBytes.length}',
+        'initialized=$_initialized queuedChunks=${_remoteByteQueue.length} '
+        'queuedBytes=$_remoteByteQueueBytes',
         name: 'motif.terminal',
       );
     }
-    if (!_initialized) {
-      _pendingRemoteBytes.add(Uint8List.fromList(bytes));
-      return;
+    _enqueueRemoteBytes(bytes);
+  }
+
+  void _enqueueRemoteBytes(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    _remoteByteQueue.add(Uint8List.fromList(bytes));
+    _remoteByteQueueBytes += bytes.length;
+  }
+
+  bool _drainRemoteBytesForFrame() {
+    if (!_initialized ||
+        _terminalError != null ||
+        _remoteByteQueue.isEmpty ||
+        _remoteByteQueueBytes <= 0) {
+      return false;
     }
-    _state.feedBytes(bytes);
+
+    var fedBytes = 0;
+    final sw = Stopwatch()..start();
+    while (_remoteByteQueue.isNotEmpty &&
+        fedBytes < _MotifTerminalViewState._remoteFeedMaxBytesPerFrame) {
+      final chunk = _remoteByteQueue.first;
+      final remaining = chunk.length - _remoteByteQueueOffset;
+      if (remaining <= 0) {
+        _remoteByteQueue.removeFirst();
+        _remoteByteQueueOffset = 0;
+        continue;
+      }
+
+      final byteBudget =
+          _MotifTerminalViewState._remoteFeedMaxBytesPerFrame - fedBytes;
+      final take = remaining <= byteBudget ? remaining : byteBudget;
+      final start = _remoteByteQueueOffset;
+      final end = start + take;
+      final slice = start == 0 && end == chunk.length
+          ? chunk
+          : Uint8List.sublistView(chunk, start, end);
+      _state.feedBytes(slice);
+
+      fedBytes += take;
+      _remoteByteQueueBytes -= take;
+      _remoteByteQueueOffset = end;
+      if (_remoteByteQueueOffset >= chunk.length) {
+        _remoteByteQueue.removeFirst();
+        _remoteByteQueueOffset = 0;
+      }
+      if (sw.elapsedMicroseconds >=
+          _MotifTerminalViewState._remoteFeedMaxMicrosPerFrame) {
+        break;
+      }
+    }
+
+    if (_remoteByteQueue.isEmpty) {
+      _remoteByteQueueBytes = 0;
+      _remoteByteQueueOffset = 0;
+    }
+    if (fedBytes > 0 &&
+        (_remoteByteQueue.isNotEmpty ||
+            _remoteChunks <= 3 ||
+            _remoteChunks == 10 ||
+            _remoteChunks % 100 == 0)) {
+      Log.i(
+        'terminal feed pty=${widget.ptyId} fedBytes=$fedBytes '
+        'queuedChunks=${_remoteByteQueue.length} '
+        'queuedBytes=$_remoteByteQueueBytes',
+        name: 'motif.terminal',
+      );
+    }
+    return fedBytes > 0;
   }
 
   void _measureCell() {
@@ -73,15 +138,11 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         '${constraints.maxHeight.toStringAsFixed(1)} '
         'cell=${_cellWidth.toStringAsFixed(1)}x'
         '${_cellHeight.toStringAsFixed(1)} '
-        'pendingChunks=${_pendingRemoteBytes.length}',
+        'queuedChunks=${_remoteByteQueue.length} '
+        'queuedBytes=$_remoteByteQueueBytes',
         name: 'motif.terminal',
       );
       _scheduleResizeAndMaybeOpen();
-      for (final bytes in _pendingRemoteBytes) {
-        _state.feedBytes(bytes);
-      }
-      _pendingRemoteBytes.clear();
-
       _startFrameTimer();
     } catch (e, st) {
       _terminalError = e;
@@ -101,13 +162,18 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   void _startFrameTimer() {
     _frameTimer?.cancel();
     _frameTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+      final fedRemoteBytes = _drainRemoteBytesForFrame();
       _state.updateRenderState();
       final dirty = _state.getDirty();
       final cursorSnapshot = _readCursorSnapshot();
       final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
       _lastCursorSnapshot = cursorSnapshot;
-      if (cursorChanged) _syncKeyboardLift();
+      if (cursorChanged) {
+        _syncKeyboardLift();
+        _scheduleImeRectSync();
+      }
       if (dirty != GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE ||
+          fedRemoteBytes ||
           cursorChanged) {
         if (mounted) setState(() {});
       }
@@ -145,6 +211,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         widget.padding.toInt(),
       );
       _scheduleResizeAndMaybeOpen();
+      _scheduleImeRectSync();
     }
   }
 

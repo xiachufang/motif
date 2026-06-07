@@ -263,40 +263,84 @@ void main() {
     );
   });
 
-  testWidgets('push transition defers terminal pane mount', (tester) async {
-    final motif = _ShortcutMotifClient()
-      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
-      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
-      ..activeViewId = 'v1';
-    final app = await _appState(motif: motif);
+  testWidgets('Android push transition mounts terminal pane immediately', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final motif = _ShortcutMotifClient()
+        ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+        ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+        ..activeViewId = 'v1';
+      final app = await _appState(motif: motif);
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
-        child: MaterialApp(
-          theme: motifTheme(Brightness.dark),
-          home: const Scaffold(body: Text('Session list')),
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: app,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.dark),
+            home: const Scaffold(body: Text('Session list')),
+          ),
         ),
-      ),
-    );
-    await tester.pump();
+      );
+      await tester.pump();
 
-    Navigator.of(tester.element(find.text('Session list'))).push(
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            const SessionScreen(serverId: 'server-1', session: 'test-session'),
-      ),
-    );
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 16));
+      Navigator.of(tester.element(find.text('Session list'))).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
 
-    expect(find.byType(SessionScreen), findsOneWidget);
-    expect(find.byKey(const ValueKey('terminal-pty-1')), findsNothing);
+      expect(find.byType(SessionScreen), findsOneWidget);
+      expect(find.byKey(const ValueKey('terminal-pty-1')), findsOneWidget);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
 
-    await tester.pump(const Duration(milliseconds: 1000));
-    await tester.pump();
+  testWidgets('macOS push transition mounts terminal pane immediately', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    try {
+      final motif = _ShortcutMotifClient()
+        ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+        ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+        ..activeViewId = 'v1';
+      final app = await _appState(motif: motif);
 
-    expect(find.byKey(const ValueKey('terminal-pty-1')), findsOneWidget);
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: app,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.dark),
+            home: const Scaffold(body: Text('Session list')),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      Navigator.of(tester.element(find.text('Session list'))).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 16));
+
+      expect(find.byType(SessionScreen), findsOneWidget);
+      expect(find.byKey(const ValueKey('terminal-pty-1')), findsOneWidget);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('suspended connection keeps terminal pane and shows overlay', (
