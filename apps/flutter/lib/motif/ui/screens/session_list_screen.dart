@@ -189,30 +189,21 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  Future<void> _attach(
+  void _attach(
     BuildContext context,
     AppState app,
     MotifServer server,
     MotifClient motif,
     String name,
-  ) async {
-    try {
-      await app.servers.setActive(server.id);
-      await motif.attach(name);
-      if (context.mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => SessionScreen(serverId: server.id, session: name),
-          ),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Attach failed: $e')));
-      }
-    }
+  ) {
+    // Navigate immediately; SessionScreen performs the attach itself and shows
+    // a connecting overlay, so opening a session never blocks on the network.
+    unawaited(app.servers.setActive(server.id));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SessionScreen(serverId: server.id, session: name),
+      ),
+    );
   }
 }
 

@@ -200,13 +200,19 @@ class RpcClient {
   }
 
   Future<Map<String, Object?>> _doAttach(Map<String, Object?> params) async {
+    final sw = Stopwatch()..start();
     final (body, sid) = await _rawCall('session.attach', params);
+    final postMs = sw.elapsedMilliseconds;
     if (sid == null) {
       throw const RpcException('session.attach: no X-Motif-Session header');
     }
     _sessionId = sid;
     final since = (body['last_seq'] as num?)?.toInt() ?? 0;
     await _openEvents(since);
+    Log.i(
+      'attach timing post=${postMs}ms events=${sw.elapsedMilliseconds - postMs}ms',
+      name: 'motif.rpc',
+    );
     return body;
   }
 

@@ -48,6 +48,9 @@ class _SessionMenuMotifClient extends MotifClient {
   int detaches = 0;
 
   @override
+  MotifConnState get state => const ConnAttached('test-session');
+
+  @override
   bool get isLive => true;
 
   @override
@@ -67,6 +70,9 @@ class _SessionMenuMotifClient extends MotifClient {
 class _ShortcutMotifClient extends MotifClient {
   int createdPtys = 0;
   final List<String> closedViews = [];
+
+  @override
+  MotifConnState get state => const ConnAttached('test-session');
 
   @override
   bool get isLive => true;

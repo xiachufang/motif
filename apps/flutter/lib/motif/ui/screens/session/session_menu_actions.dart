@@ -135,18 +135,16 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     String name,
   ) async {
     if (serverId == widget.serverId && name == widget.session) return;
-    final target = app.clientForServer(serverId);
-    var detached = false;
     try {
       setState(() {
         _switchingSession = true;
         _mountedViewIds.clear();
       });
       await motif.detach();
-      detached = true;
       await app.servers.setActive(serverId);
-      await target.attach(name);
       if (!mounted) return;
+      // Navigate right away; the replacement screen attaches to the target
+      // session itself behind its connecting overlay.
       Navigator.of(
         context,
       ).pushReplacement(_sessionSwitchRoute(serverId, name));
@@ -156,7 +154,6 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Switch failed: $e')));
-      if (detached) Navigator.of(context).pop();
     }
   }
 

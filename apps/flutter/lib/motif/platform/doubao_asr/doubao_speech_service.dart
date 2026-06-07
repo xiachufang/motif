@@ -89,6 +89,8 @@ class _DoubaoASR {
   bool _canSendAudio = false;
   bool _isRunning = false;
   bool _isFinalizing = false;
+  bool _sessionFailed = false;
+  bool _errorDelivered = false;
 
   final List<String> _committedSegments = <String>[];
   String _currentInterim = '';
@@ -108,6 +110,8 @@ class _DoubaoASR {
     _pcmBuffer.clear();
     _didSendFirstFrame = false;
     _canSendAudio = false;
+    _sessionFailed = false;
+    _errorDelivered = false;
     _finishedCompleter = Completer<void>();
 
     try {
@@ -141,11 +145,15 @@ class _DoubaoASR {
     try {
       await _stopMicStream();
       await _flushFuture.catchError((_) {});
-      try {
-        await _flushAndSendLastFrame();
-        await _sendFinishSession();
-      } catch (error) {
-        _deliverError(error);
+      // After a server-side TaskFailed/SessionFailed the session is gone;
+      // sending more audio only yields "expected seq=1 or StartSession".
+      if (!_sessionFailed) {
+        try {
+          await _flushAndSendLastFrame();
+          await _sendFinishSession();
+        } catch (error) {
+          _deliverError(error);
+        }
       }
 
       final finished = _finishedCompleter?.future;
@@ -400,6 +408,11 @@ class _DoubaoASR {
         return;
       case 'TaskFailed':
       case 'SessionFailed':
+        // Stop streaming immediately: the session is dead server-side, and
+        // every further frame would bounce back as another SessionFailed
+        // ("expected seq=1 or StartSession"), burying the root cause.
+        _sessionFailed = true;
+        _canSendAudio = false;
         final message = response.statusMessage.isEmpty
             ? 'ASR failed (${response.statusCode})'
             : '${response.statusMessage} (${response.statusCode})';
@@ -564,7 +577,14 @@ class _DoubaoASR {
     }
   }
 
-  void _deliverError(Object error) => onError?.call(error);
+  // Only the first error per recording session reaches the UI — follow-up
+  // failures (flush errors during teardown, repeated server rejects) are
+  // symptoms of the same root cause.
+  void _deliverError(Object error) {
+    if (_errorDelivered) return;
+    _errorDelivered = true;
+    onError?.call(error);
+  }
 
   static String _uuidV4() {
     final random = Random.secure();

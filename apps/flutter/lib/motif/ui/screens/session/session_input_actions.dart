@@ -84,6 +84,10 @@ extension _SessionScreenInputActions on _SessionScreenState {
         },
         onError: (e) {
           failed = true;
+          // Mid-session failures (e.g. Doubao backend dying) don't stop the
+          // recorder by themselves — shut it down so the mic turns off
+          // instead of streaming into a dead session.
+          if (_recording) unawaited(speech.stop());
           if (mounted) {
             setState(() {
               _micStarting = false;

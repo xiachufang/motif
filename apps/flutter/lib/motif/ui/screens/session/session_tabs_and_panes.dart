@@ -187,6 +187,7 @@ class _TabBar extends StatelessWidget {
 
 class _PaneStack extends StatelessWidget {
   final ViewInfo? activeView;
+  final bool attaching;
   final bool mountPanes;
   final List<ViewInfo> mountedViews;
   final MotifClient motif;
@@ -197,6 +198,7 @@ class _PaneStack extends StatelessWidget {
 
   const _PaneStack({
     required this.activeView,
+    required this.attaching,
     required this.mountPanes,
     required this.mountedViews,
     required this.motif,
@@ -210,6 +212,11 @@ class _PaneStack extends StatelessWidget {
   Widget build(BuildContext context) {
     final active = activeView;
     if (active == null) {
+      // While the in-screen attach is still in flight the connecting overlay
+      // explains the empty pane; "No terminal yet" would be misleading.
+      if (attaching) {
+        return ColoredBox(color: palette.background);
+      }
       final c = context.motif;
       return Center(
         child: Text(

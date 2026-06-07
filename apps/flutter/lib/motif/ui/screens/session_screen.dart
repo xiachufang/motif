@@ -88,6 +88,7 @@ class _SessionScreenState extends State<SessionScreen>
   Timer? _paneMountFallbackTimer;
   bool _usesSidebarLayout = false;
   bool _switchingSession = false;
+  bool _attachingSession = false;
   bool _recording = false;
   bool _micStarting = false;
   String _asrBase = '';
@@ -102,6 +103,52 @@ class _SessionScreenState extends State<SessionScreen>
     HardwareKeyboard.instance.addHandler(_handleShortcut);
     _input.addListener(_onInputChanged);
     _syncWindowTitle();
+    _attachIfNeeded();
+  }
+
+  /// Attach to [SessionScreen.session] if this client isn't already attached
+  /// to it. Callers navigate here immediately and the attach round trips
+  /// (RPC POST + /events WebSocket) happen behind a connecting overlay instead
+  /// of blocking the page transition.
+  void _attachIfNeeded() {
+    final motif = context.read<AppState>().clientForServer(widget.serverId);
+    // While the transport is down the reconnect flow owns reattaching
+    // (intendedSession); attaching here would just throw "not connected".
+    if (!motif.isLive) return;
+    final state = motif.state;
+    if (state is ConnAttached && state.session == widget.session) return;
+    _attachingSession = true;
+    unawaited(_attachToSession(motif));
+  }
+
+  Future<void> _attachToSession(MotifClient motif) async {
+    final sw = Stopwatch()..start();
+    try {
+      await motif.attach(widget.session);
+      Log.i(
+        'open attach session=${widget.session} took=${sw.elapsedMilliseconds}ms',
+        name: 'motif.ui',
+      );
+    } catch (e) {
+      Log.w(
+        'open attach failed session=${widget.session}',
+        name: 'motif.ui',
+        error: e,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Attach failed: $e')));
+        Navigator.of(context).pop();
+      }
+      return;
+    } finally {
+      if (mounted) {
+        setState(() => _attachingSession = false);
+      } else {
+        _attachingSession = false;
+      }
+    }
   }
 
   @override
@@ -288,6 +335,9 @@ class _SessionScreenState extends State<SessionScreen>
               listenable: motif,
               builder: (context, _) {
                 final connectionView = app.serverViewState(widget.serverId);
+                final overlayMessage =
+                    connectionView.terminalOverlay ??
+                    (_attachingSession ? 'Connecting...' : null);
                 final activeView = _switchingSession
                     ? null
                     : _activeView(motif);
@@ -350,6 +400,7 @@ class _SessionScreenState extends State<SessionScreen>
                           child: ClipRect(
                             child: _PaneStack(
                               activeView: activeView,
+                              attaching: _attachingSession,
                               mountPanes: _paneMountReady,
                               mountedViews: mountedViews,
                               motif: motif,
@@ -373,15 +424,13 @@ class _SessionScreenState extends State<SessionScreen>
                           child: bottomBar,
                         ),
                       ),
-                    if (connectionView.terminalOverlay != null)
+                    if (overlayMessage != null)
                       Positioned(
                         top: MotifSpacing.sm,
                         left: 0,
                         right: 0,
                         child: Center(
-                          child: _ReconnectBanner(
-                            message: connectionView.terminalOverlay!,
-                          ),
+                          child: _ReconnectBanner(message: overlayMessage),
                         ),
                       ),
                   ],
