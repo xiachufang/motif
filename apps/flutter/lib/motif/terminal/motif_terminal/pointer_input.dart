@@ -40,12 +40,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _lastScrollUpdateTime = null;
       return;
     }
-    _state.encodeMouseAndWrite(
-      GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
-      _mapButton(e.buttons),
-      0,
-      e.localPosition.dx,
-      e.localPosition.dy,
+    _worker?.encodeMouse(
+      action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
+      button: _mapButton(e.buttons),
+      mods: 0,
+      x: e.localPosition.dx,
+      y: e.localPosition.dy,
     );
   }
 
@@ -59,32 +59,32 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _touchDownPosition = null;
       if (downPosition != null &&
           _touchScrollDistance < kTouchSlop &&
-          _state.mouseTrackingActive) {
-        _state.encodeMouseAndWrite(
-          GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
-          GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
-          0,
-          downPosition.dx,
-          downPosition.dy,
+          (_snapshot?.mouseTrackingActive ?? false)) {
+        _worker?.encodeMouse(
+          action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
+          button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
+          mods: 0,
+          x: downPosition.dx,
+          y: downPosition.dy,
         );
-        _state.encodeMouseAndWrite(
-          GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
-          GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
-          0,
-          downPosition.dx,
-          downPosition.dy,
+        _worker?.encodeMouse(
+          action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
+          button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
+          mods: 0,
+          x: downPosition.dx,
+          y: downPosition.dy,
         );
         return;
       }
       _startScrollInertia();
       return;
     }
-    _state.encodeMouseAndWrite(
-      GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
-      GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
-      0,
-      e.localPosition.dx,
-      e.localPosition.dy,
+    _worker?.encodeMouse(
+      action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
+      button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
+      mods: 0,
+      x: e.localPosition.dx,
+      y: e.localPosition.dy,
     );
   }
 
@@ -105,12 +105,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _recordScrollVelocity(pixels, e.timeStamp);
       return;
     }
-    _state.encodeMouseAndWrite(
-      GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_MOTION,
-      GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_UNKNOWN,
-      0,
-      e.localPosition.dx,
-      e.localPosition.dy,
+    _worker?.encodeMouse(
+      action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_MOTION,
+      button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_UNKNOWN,
+      mods: 0,
+      x: e.localPosition.dx,
+      y: e.localPosition.dy,
     );
   }
 
@@ -148,15 +148,15 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _scrollByPixels(double pixels) {
     final rows = _scrollAccumulator.applyPixelDelta(pixels, _cellHeight);
     if (rows == 0) return;
-    if (_state.mouseTrackingActive) {
+    if (_snapshot?.mouseTrackingActive ?? false) {
       // The app (claude, vim with mouse, htop, ...) wants wheel events.
       _sendWheelEvents(rows);
-    } else if (_state.alternateScreenActive) {
+    } else if (_snapshot?.alternateScreenActive ?? false) {
       // Alternate screen has no scrollback; emulate xterm's alternate
       // scroll mode by sending arrow keys (less, vim, man, ...).
       _sendAlternateScrollArrows(rows);
     } else {
-      _state.scroll(rows);
+      _worker?.scroll(rows);
     }
   }
 
@@ -173,12 +173,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
           widget.padding + _cellHeight * _rows / 2,
         );
     for (var i = rows.abs(); i > 0; i--) {
-      _state.encodeMouseAndWrite(
-        GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
-        button,
-        0,
-        pos.dx,
-        pos.dy,
+      _worker?.encodeMouse(
+        action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
+        button: button,
+        mods: 0,
+        x: pos.dx,
+        y: pos.dy,
       );
     }
   }
@@ -188,11 +188,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         ? GhosttyKey.GHOSTTY_KEY_ARROW_UP
         : GhosttyKey.GHOSTTY_KEY_ARROW_DOWN;
     for (var i = rows.abs(); i > 0; i--) {
-      _state.encodeKeyAndWrite(
-        key,
-        GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
-        0,
-        null,
+      _worker?.encodeKey(
+        key: key,
+        action: GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+        mods: 0,
+        text: null,
+        unshiftedCodepoint: 0,
       );
     }
   }
@@ -256,20 +257,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   /// Extract the visible grid as text (rows joined by newlines, trailing
   /// whitespace trimmed). Used by long-press → copy.
   String _visibleText() {
-    final rows = <String>[];
-    _state.populateRowIterator();
-    while (_state.rowIteratorNext()) {
-      final sb = StringBuffer();
-      _state.populateRowCells();
-      while (_state.rowCellsNext()) {
-        sb.write(_state.getCellGrapheme(_state.getCellGraphemeLen()));
-      }
-      rows.add(sb.toString().trimRight());
-    }
-    while (rows.isNotEmpty && rows.last.isEmpty) {
-      rows.removeLast();
-    }
-    return rows.join('\n');
+    return _snapshot?.visibleText ?? '';
   }
 
   Future<void> _copyVisible() async {

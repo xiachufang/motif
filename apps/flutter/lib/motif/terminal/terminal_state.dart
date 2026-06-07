@@ -2,6 +2,7 @@ import 'dart:ffi';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'ghostty_bindings.g.dart';
+import 'terminal_snapshot.dart';
 
 class TerminalState {
   late GhosttyTerminal _terminal;
@@ -617,6 +618,109 @@ class TerminalState {
   void markPaletteDirty() {
     _paletteDirty = true;
   }
+
+  TerminalSnapshot snapshot({
+    required int defaultForegroundArgb,
+    required int defaultBackgroundArgb,
+  }) {
+    final colors = this.colors;
+    final bgColor = defaultBackgroundArgb;
+    final fgDefault = defaultForegroundArgb;
+    final cursorColor = colors.cursor_has_value
+        ? _rgbArgb(colors.cursor.r, colors.cursor.g, colors.cursor.b)
+        : fgDefault;
+
+    final lines = <TerminalSnapshotRow>[];
+    populateRowIterator();
+    while (rowIteratorNext()) {
+      final rowText = StringBuffer();
+      final cells = <TerminalSnapshotCell>[];
+      populateRowCells();
+      var colIdx = 0;
+      while (rowCellsNext()) {
+        final wide = cellWide;
+        final graphemeLen = getCellGraphemeLen();
+        final grapheme = graphemeLen > 0 ? getCellGrapheme(graphemeLen) : '';
+        rowText.write(grapheme);
+
+        if (wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
+          colIdx++;
+          continue;
+        }
+
+        final style = cellStyle;
+        var fg = _resolveSnapshotColor(style.fg_color, fgDefault);
+        var bg = _resolveSnapshotColor(style.bg_color, bgColor);
+        if (style.inverse) {
+          final tmp = fg;
+          fg = bg;
+          bg = tmp;
+        }
+        if (style.faint) {
+          fg = _withAlpha(fg, 0x80);
+        }
+        final drawsBackground = bg != bgColor;
+        if (grapheme.isNotEmpty || drawsBackground) {
+          cells.add(
+            TerminalSnapshotCell(
+              col: colIdx,
+              widthCells: wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_WIDE
+                  ? 2
+                  : 1,
+              text: grapheme,
+              foregroundArgb: fg,
+              backgroundArgb: bg,
+              drawsBackground: drawsBackground,
+              bold: style.bold,
+              italic: style.italic,
+              invisible: style.invisible,
+            ),
+          );
+        }
+        colIdx++;
+      }
+      setRowDirty(false);
+      lines.add(TerminalSnapshotRow(text: rowText.toString(), cells: cells));
+    }
+
+    final snapshot = TerminalSnapshot(
+      cols: cols,
+      rows: rows,
+      backgroundArgb: bgColor,
+      foregroundArgb: fgDefault,
+      cursorArgb: cursorColor,
+      cursorVisible: cursorVisible,
+      cursorInViewport: cursorInViewport,
+      cursorX: cursorInViewport ? cursorX : -1,
+      cursorY: cursorInViewport ? cursorY : -1,
+      cursorStyle: cursorStyle.value,
+      mouseTrackingActive: mouseTrackingActive,
+      alternateScreenActive: alternateScreenActive,
+      lines: lines,
+    );
+    setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);
+    return snapshot;
+  }
+
+  int _resolveSnapshotColor(GhosttyStyleColor styleColor, int defaultColor) {
+    switch (styleColor.tag) {
+      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_NONE:
+        return defaultColor;
+      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_RGB:
+        final rgb = styleColor.value.rgb;
+        return _rgbArgb(rgb.r, rgb.g, rgb.b);
+      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_PALETTE:
+        final idx = styleColor.value.palette;
+        final (r, g, b) = paletteColor(idx);
+        return _rgbArgb(r, g, b);
+      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_TAG_MAX_VALUE:
+        return defaultColor;
+    }
+  }
+
+  int _rgbArgb(int r, int g, int b) => 0xff000000 | (r << 16) | (g << 8) | b;
+
+  int _withAlpha(int argb, int alpha) => (argb & 0x00ffffff) | (alpha << 24);
 
   // Write raw bytes to the host (the remote PTY, via the network sink).
   void writeToPty(Uint8List data) {

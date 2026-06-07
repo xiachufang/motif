@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +42,7 @@ class _RecordingMotifClient extends MotifClient {
   @override
   Future<void> closeView(String viewId) async {
     closedViews.add(viewId);
+    await super.closeView(viewId);
   }
 }
 
@@ -64,6 +67,16 @@ class _SessionMenuMotifClient extends MotifClient {
   @override
   Future<void> attach(String name) async {
     attached.add(name);
+  }
+}
+
+class _BlockingDetachMotifClient extends _SessionMenuMotifClient {
+  final Completer<void> detachCompleter = Completer<void>();
+
+  @override
+  Future<void> detach() async {
+    detaches++;
+    await detachCompleter.future;
   }
 }
 
@@ -581,6 +594,50 @@ void main() {
     expect(find.byType(GitDiffPanel), findsOneWidget);
   });
 
+  testWidgets('close session pops without waiting for detach RPC', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _BlockingDetachMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    addTearDown(() {
+      if (!motif.detachCompleter.isCompleted) {
+        motif.detachCompleter.complete();
+      }
+    });
+    final app = await _appState(motif: motif);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: Text('home')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    Navigator.of(tester.element(find.text('home'))).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const SessionScreen(serverId: 'server-1', session: 'test-session'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('close-session-button')));
+    await tester.pumpAndSettle();
+
+    expect(motif.detaches, 1);
+    expect(find.text('home'), findsOneWidget);
+    expect(find.byType(SessionScreen), findsNothing);
+  });
+
   testWidgets('terminal tab close prompts while a command is running', (
     tester,
   ) async {
@@ -611,9 +668,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('close-tab-term-view')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Close tab'));
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(motif.closedViews, ['term-view']);
+    expect(find.byKey(const ValueKey('close-tab-term-view')), findsNothing);
   });
 
   testWidgets('Chrome-style tab shortcuts create close and switch tabs', (

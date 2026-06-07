@@ -20,6 +20,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       );
     }
     _enqueueRemoteBytes(bytes);
+    _flushRemoteBytesToWorker();
   }
 
   void _enqueueRemoteBytes(Uint8List bytes) {
@@ -28,66 +29,15 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _remoteByteQueueBytes += bytes.length;
   }
 
-  bool _drainRemoteBytesForFrame() {
-    if (!_initialized ||
-        _terminalError != null ||
-        _remoteByteQueue.isEmpty ||
-        _remoteByteQueueBytes <= 0) {
-      return false;
+  void _flushRemoteBytesToWorker() {
+    final worker = _worker;
+    if (!_initialized || _terminalError != null || worker == null) return;
+    while (_remoteByteQueue.isNotEmpty) {
+      final chunk = _remoteByteQueue.removeFirst();
+      _remoteByteQueueBytes -= chunk.length;
+      worker.feedBytes(chunk);
     }
-
-    var fedBytes = 0;
-    final sw = Stopwatch()..start();
-    while (_remoteByteQueue.isNotEmpty &&
-        fedBytes < _MotifTerminalViewState._remoteFeedMaxBytesPerFrame) {
-      final chunk = _remoteByteQueue.first;
-      final remaining = chunk.length - _remoteByteQueueOffset;
-      if (remaining <= 0) {
-        _remoteByteQueue.removeFirst();
-        _remoteByteQueueOffset = 0;
-        continue;
-      }
-
-      final byteBudget =
-          _MotifTerminalViewState._remoteFeedMaxBytesPerFrame - fedBytes;
-      final take = remaining <= byteBudget ? remaining : byteBudget;
-      final start = _remoteByteQueueOffset;
-      final end = start + take;
-      final slice = start == 0 && end == chunk.length
-          ? chunk
-          : Uint8List.sublistView(chunk, start, end);
-      _state.feedBytes(slice);
-
-      fedBytes += take;
-      _remoteByteQueueBytes -= take;
-      _remoteByteQueueOffset = end;
-      if (_remoteByteQueueOffset >= chunk.length) {
-        _remoteByteQueue.removeFirst();
-        _remoteByteQueueOffset = 0;
-      }
-      if (sw.elapsedMicroseconds >=
-          _MotifTerminalViewState._remoteFeedMaxMicrosPerFrame) {
-        break;
-      }
-    }
-
-    if (_remoteByteQueue.isEmpty) {
-      _remoteByteQueueBytes = 0;
-      _remoteByteQueueOffset = 0;
-    }
-    if (fedBytes > 0 &&
-        (_remoteByteQueue.isNotEmpty ||
-            _remoteChunks <= 3 ||
-            _remoteChunks == 10 ||
-            _remoteChunks % 100 == 0)) {
-      Log.i(
-        'terminal feed pty=${widget.ptyId} fedBytes=$fedBytes '
-        'queuedChunks=${_remoteByteQueue.length} '
-        'queuedBytes=$_remoteByteQueueBytes',
-        name: 'motif.terminal',
-      );
-    }
-    return fedBytes > 0;
+    if (_remoteByteQueueBytes < 0) _remoteByteQueueBytes = 0;
   }
 
   void _measureCell() {
@@ -114,7 +64,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   }
 
   void _scheduleTerminalInit(BoxConstraints constraints) {
-    if (_initialized || _terminalError != null) return;
+    if (_initialized || _workerStarting || _terminalError != null) return;
     _pendingInitConstraints = constraints;
     if (_terminalInitTimer != null) return;
     _terminalInitTimer = Timer(_MotifTerminalViewState._terminalInitDelay, () {
@@ -128,26 +78,16 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   }
 
   void _initTerminal(BoxConstraints constraints) {
-    if (_initialized || _terminalError != null) return;
+    if (_initialized || _workerStarting || _terminalError != null) return;
     try {
-      _initialized = true;
       _cols = ((constraints.maxWidth - 2 * widget.padding) / _cellWidth)
           .floor()
           .clamp(1, 1000);
       _rows = ((constraints.maxHeight - 2 * widget.padding) / _cellHeight)
           .floor()
           .clamp(1, 1000);
-      _state.init(_cols, _rows);
-      _state.setMouseEncoderSize(
-        constraints.maxWidth.toInt(),
-        constraints.maxHeight.toInt(),
-        _cellWidth.toInt(),
-        _cellHeight.toInt(),
-        widget.padding.toInt(),
-        widget.padding.toInt(),
-      );
       Log.i(
-        'terminal initialized pty=${widget.ptyId} cols=$_cols rows=$_rows '
+        'terminal worker starting pty=${widget.ptyId} cols=$_cols rows=$_rows '
         'constraints=${constraints.maxWidth.toStringAsFixed(1)}x'
         '${constraints.maxHeight.toStringAsFixed(1)} '
         'cell=${_cellWidth.toStringAsFixed(1)}x'
@@ -156,49 +96,70 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         'queuedBytes=$_remoteByteQueueBytes',
         name: 'motif.terminal',
       );
-      _scheduleResizeAndMaybeOpen();
-      _startFrameTimer();
+      _workerStarting = true;
+      final generation = ++_workerGeneration;
+      unawaited(_startWorker(generation, constraints));
     } catch (e, st) {
       _terminalError = e;
       _terminalStack = st;
       _initialized = false;
+      _workerStarting = false;
       _resizeTimer?.cancel();
-      _frameTimer?.cancel();
       _scheduleTerminalRetry();
       if (mounted) setState(() {});
     }
   }
 
-  void _startFrameTimer() {
-    _frameTimer?.cancel();
-    _frameTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
-      final fedRemoteBytes = _drainRemoteBytesForFrame();
-      _state.updateRenderState();
-      final dirty = _state.getDirty();
-      final cursorSnapshot = _readCursorSnapshot();
-      final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
-      _lastCursorSnapshot = cursorSnapshot;
-      if (cursorChanged) {
-        _syncKeyboardLift();
-        _scheduleImeRectSync();
+  Future<void> _startWorker(int generation, BoxConstraints constraints) async {
+    try {
+      final worker = await TerminalWorkerClient.spawn(
+        onHostWrite: _onHostWrite,
+        onSnapshot: (snapshot) => _onWorkerSnapshot(generation, snapshot),
+        onInitialized: () => _onWorkerInitialized(generation),
+        onError: (error) => _onWorkerError(generation, error),
+      );
+      if (!_isCurrentWorker(generation)) {
+        await worker.dispose();
+        return;
       }
-      if (dirty != GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE ||
-          fedRemoteBytes ||
-          cursorChanged) {
-        if (mounted) setState(() {});
-      }
-    });
+      _worker = worker;
+      worker.init(
+        cols: _cols,
+        rows: _rows,
+        screenWidth: constraints.maxWidth.toInt(),
+        screenHeight: constraints.maxHeight.toInt(),
+        cellWidth: _cellWidth.toInt(),
+        cellHeight: _cellHeight.toInt(),
+        paddingLeft: widget.padding.toInt(),
+        paddingTop: widget.padding.toInt(),
+        foregroundArgb: _colorToArgb(widget.palette.foreground),
+        backgroundArgb: _colorToArgb(widget.palette.background),
+      );
+    } catch (e, st) {
+      if (_isCurrentWorker(generation)) _failTerminal(e, st);
+    }
   }
 
   _CursorSnapshot _readCursorSnapshot() {
-    final visible = _state.cursorVisible;
-    final inViewport = _state.cursorInViewport;
+    final snapshot = _snapshot;
+    if (snapshot == null) {
+      return const _CursorSnapshot(
+        visible: false,
+        inViewport: false,
+        x: -1,
+        y: -1,
+        style: GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
+      );
+    }
     return _CursorSnapshot(
-      visible: visible,
-      inViewport: inViewport,
-      x: inViewport ? _state.cursorX : -1,
-      y: inViewport ? _state.cursorY : -1,
-      style: _state.cursorStyle,
+      visible: snapshot.cursorVisible,
+      inViewport: snapshot.cursorInViewport,
+      x: snapshot.cursorX,
+      y: snapshot.cursorY,
+      style: GhosttyRenderStateCursorVisualStyle.fromValue(
+        snapshot.cursorStyle,
+      ),
     );
   }
 
@@ -211,14 +172,15 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (newCols > 0 && newRows > 0 && (newCols != _cols || newRows != _rows)) {
       _cols = newCols;
       _rows = newRows;
-      _state.resize(_cols, _rows, _cellWidth.toInt(), _cellHeight.toInt());
-      _state.setMouseEncoderSize(
-        constraints.maxWidth.toInt(),
-        constraints.maxHeight.toInt(),
-        _cellWidth.toInt(),
-        _cellHeight.toInt(),
-        widget.padding.toInt(),
-        widget.padding.toInt(),
+      _worker?.resize(
+        cols: _cols,
+        rows: _rows,
+        screenWidth: constraints.maxWidth.toInt(),
+        screenHeight: constraints.maxHeight.toInt(),
+        cellWidth: _cellWidth.toInt(),
+        cellHeight: _cellHeight.toInt(),
+        paddingLeft: widget.padding.toInt(),
+        paddingTop: widget.padding.toInt(),
       );
       _scheduleResizeAndMaybeOpen();
       _scheduleImeRectSync();
@@ -248,6 +210,38 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         _initialized &&
         _terminalError == null &&
         generation == _streamGeneration;
+  }
+
+  bool _isCurrentWorker(int generation) =>
+      mounted && generation == _workerGeneration && _terminalError == null;
+
+  void _onWorkerInitialized(int generation) {
+    if (!_isCurrentWorker(generation)) return;
+    _workerStarting = false;
+    _initialized = true;
+    _terminalRetryAttempt = 0;
+    _flushRemoteBytesToWorker();
+    _scheduleResizeAndMaybeOpen();
+    _syncKeyboardLift();
+    if (mounted) setState(() {});
+  }
+
+  void _onWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
+    if (!_isCurrentWorker(generation)) return;
+    _snapshot = snapshot;
+    final cursorSnapshot = _readCursorSnapshot();
+    final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
+    _lastCursorSnapshot = cursorSnapshot;
+    if (cursorChanged) {
+      _syncKeyboardLift();
+      _scheduleImeRectSync();
+    }
+    if (mounted) setState(() {});
+  }
+
+  void _onWorkerError(int generation, Object error) {
+    if (!_isCurrentWorker(generation)) return;
+    _failTerminal(error, StackTrace.current);
   }
 
   Future<void> _flushResizeAndMaybeOpen(int generation) async {
@@ -293,7 +287,13 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _terminalError = error;
     _terminalStack = stackTrace;
     _resizeTimer?.cancel();
-    _frameTimer?.cancel();
+    _terminalInitTimer?.cancel();
+    final worker = _worker;
+    _worker = null;
+    if (worker != null) unawaited(worker.dispose());
+    _initialized = false;
+    _workerStarting = false;
+    _snapshot = null;
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
   }
@@ -330,8 +330,31 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       _terminalStack = null;
     });
     if (_initialized) {
-      _startFrameTimer();
       _scheduleResizeAndMaybeOpen();
+    } else {
+      final pending = _pendingInitConstraints;
+      if (pending != null) _initTerminal(pending);
     }
   }
+
+  void _restartWorkerForNewPty() {
+    _terminalInitTimer?.cancel();
+    _terminalInitTimer = null;
+    _resizeTimer?.cancel();
+    _resizeTimer = null;
+    _workerGeneration++;
+    final worker = _worker;
+    _worker = null;
+    if (worker != null) unawaited(worker.dispose());
+    _initialized = false;
+    _workerStarting = false;
+    _snapshot = null;
+    _lastCursorSnapshot = null;
+    _remoteByteQueue.clear();
+    _remoteByteQueueBytes = 0;
+    _terminalError = null;
+    _terminalStack = null;
+  }
+
+  int _colorToArgb(Color color) => color.toARGB32();
 }

@@ -589,7 +589,43 @@ class MotifClient extends ChangeNotifier {
   }
 
   Future<void> closeView(String viewId) async {
-    await _rpc?.call('view.close', {'view_id': viewId});
+    final index = views.indexWhere((view) => view.id == viewId);
+    if (index < 0) {
+      await _rpc?.call('view.close', {'view_id': viewId});
+      return;
+    }
+
+    final previousViews = views;
+    final previousActiveViewId = activeViewId;
+    final previousPendingLocalViewId = pendingLocalViewId;
+    final nextViews = [...views]..removeAt(index);
+    String? nextActiveViewId = activeViewId;
+    if (activeViewId == viewId) {
+      nextActiveViewId = nextViews.isEmpty
+          ? null
+          : nextViews[index.clamp(0, nextViews.length - 1).toInt()].id;
+    }
+    if (pendingLocalViewId == viewId) {
+      pendingLocalViewId = nextActiveViewId;
+    }
+    views = nextViews;
+    activeViewId = nextActiveViewId;
+    notifyListeners();
+
+    final rpc = _rpc;
+    if (rpc == null) return;
+
+    try {
+      await rpc.call('view.close', {'view_id': viewId});
+    } catch (_) {
+      if (!views.any((view) => view.id == viewId)) {
+        views = previousViews;
+        activeViewId = previousActiveViewId;
+        pendingLocalViewId = previousPendingLocalViewId;
+        notifyListeners();
+      }
+      rethrow;
+    }
   }
 
   Future<void> moveView(String viewId, int toIndex) async {

@@ -68,13 +68,13 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     if (!widget.motif.canInput) return;
     final existing = _textInputConnection;
     if (existing != null && existing.attached) {
-      _state.scrollToBottom();
+      _worker?.scrollToBottom();
       _syncImeRect();
       _scheduleImeRectSync();
       if (showKeyboard || !_usesSoftKeyboard) existing.show();
       return;
     }
-    _state.scrollToBottom();
+    _worker?.scrollToBottom();
     _textInputValue = _MotifTerminalViewState._softKeyboardValue;
     final connection = TextInput.attach(
       this,
@@ -169,7 +169,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   void _writeSoftKeyboardText(String text) {
     if (!_initialized || _terminalError != null || text.isEmpty) return;
     if (!widget.motif.canInput) return;
-    _state.writeToPty(
+    _worker?.writeBytes(
       Uint8List.fromList(utf8.encode(text.replaceAll('\n', '\r'))),
     );
   }
@@ -177,7 +177,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   void _writeSoftKeyboardBytes(List<int> bytes) {
     if (!_initialized || _terminalError != null || bytes.isEmpty) return;
     if (!widget.motif.canInput) return;
-    _state.writeToPty(Uint8List.fromList(bytes));
+    _worker?.writeBytes(Uint8List.fromList(bytes));
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -187,6 +187,6 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text ?? '';
     if (text.isEmpty) return;
-    _state.writeToPty(bracketedPasteBytes(text));
+    _worker?.writeBytes(bracketedPasteBytes(text));
   }
 }

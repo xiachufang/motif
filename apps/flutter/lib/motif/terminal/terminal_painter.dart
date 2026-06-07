@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'ghostty_bindings.g.dart';
+import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
 
 class TerminalPainter extends CustomPainter {
@@ -230,41 +231,178 @@ class TerminalPainter extends CustomPainter {
     bool bold = false,
     bool italic = false,
   }) {
-    // Force the primary (monospace) font's line metrics so fallback-font
-    // glyphs (CJK) share the same baseline as ASCII and never exceed
-    // cellHeight, which was measured from the primary font.
-    final builder =
-        ui.ParagraphBuilder(
-            ui.ParagraphStyle(
-              fontFamily: fontFamily,
-              fontSize: fontSize,
-              strutStyle: ui.StrutStyle(
-                fontFamily: fontFamily,
-                fontSize: fontSize,
-                forceStrutHeight: true,
-              ),
-            ),
-          )
-          ..pushStyle(
-            ui.TextStyle(
-              color: color,
-              fontFamily: fontFamily,
-              fontFamilyFallback: fontFamilyFallback,
-              fontSize: fontSize,
-              fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-              fontStyle: italic ? FontStyle.italic : FontStyle.normal,
-            ),
-          )
-          ..addText(text);
-
-    // Unbounded width: a single grapheme must never wrap, even if the
-    // fallback font's advance slightly exceeds two cells.
-    final paragraph = builder.build()
-      ..layout(const ui.ParagraphConstraints(width: double.infinity));
-
-    canvas.drawParagraph(paragraph, Offset(x, y));
+    _drawTerminalText(
+      canvas,
+      text,
+      x,
+      y,
+      color,
+      fontFamily: fontFamily,
+      fontFamilyFallback: fontFamilyFallback,
+      fontSize: fontSize,
+      bold: bold,
+      italic: italic,
+    );
   }
 
   @override
   bool shouldRepaint(covariant TerminalPainter oldDelegate) => true;
+}
+
+class TerminalSnapshotPainter extends CustomPainter {
+  final TerminalSnapshot snapshot;
+  final double cellWidth;
+  final double cellHeight;
+  final double padding;
+  final String fontFamily;
+  final List<String> fontFamilyFallback;
+  final double fontSize;
+  final bool showCursor;
+
+  TerminalSnapshotPainter({
+    required this.snapshot,
+    required this.cellWidth,
+    required this.cellHeight,
+    this.padding = 4.0,
+    this.fontFamily = 'Menlo',
+    this.fontFamilyFallback = const [],
+    this.fontSize = 14.0,
+    this.showCursor = true,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bgColor = Color(snapshot.backgroundArgb);
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      Paint()..color = bgColor,
+    );
+
+    for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
+      final y = padding + rowIdx * cellHeight;
+      for (final cell in snapshot.lines[rowIdx].cells) {
+        final x = padding + cell.col * cellWidth;
+        final drawWidth = cell.widthCells <= 1
+            ? cellWidth
+            : cellWidth * cell.widthCells;
+        if (cell.drawsBackground) {
+          canvas.drawRect(
+            Rect.fromLTWH(x, y, drawWidth, cellHeight),
+            Paint()..color = Color(cell.backgroundArgb),
+          );
+        }
+        if (!cell.invisible && cell.text.isNotEmpty) {
+          _drawTerminalText(
+            canvas,
+            cell.text,
+            x,
+            y,
+            Color(cell.foregroundArgb),
+            fontFamily: fontFamily,
+            fontFamilyFallback: fontFamilyFallback,
+            fontSize: fontSize,
+            bold: cell.bold,
+            italic: cell.italic,
+          );
+        }
+      }
+    }
+
+    if (showCursor &&
+        snapshot.cursorVisible &&
+        snapshot.cursorInViewport &&
+        snapshot.cursorX >= 0 &&
+        snapshot.cursorY >= 0) {
+      final cx = padding + snapshot.cursorX * cellWidth;
+      final cy = padding + snapshot.cursorY * cellHeight;
+      final cursorColor = Color(snapshot.cursorArgb);
+      switch (GhosttyRenderStateCursorVisualStyle.fromValue(
+        snapshot.cursorStyle,
+      )) {
+        case GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK:
+          canvas.drawRect(
+            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
+            Paint()..color = cursorColor,
+          );
+        case GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR:
+          canvas.drawRect(
+            Rect.fromLTWH(cx, cy, 2, cellHeight),
+            Paint()..color = cursorColor,
+          );
+        case GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
+          canvas.drawRect(
+            Rect.fromLTWH(cx, cy + cellHeight - 2, cellWidth, 2),
+            Paint()..color = cursorColor,
+          );
+        case GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
+          canvas.drawRect(
+            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
+            Paint()..color = cursorColor,
+          );
+        case GhosttyRenderStateCursorVisualStyle
+            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_MAX_VALUE:
+          break;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant TerminalSnapshotPainter oldDelegate) =>
+      oldDelegate.snapshot != snapshot ||
+      oldDelegate.cellWidth != cellWidth ||
+      oldDelegate.cellHeight != cellHeight ||
+      oldDelegate.padding != padding ||
+      oldDelegate.fontFamily != fontFamily ||
+      oldDelegate.fontSize != fontSize ||
+      oldDelegate.showCursor != showCursor;
+}
+
+void _drawTerminalText(
+  Canvas canvas,
+  String text,
+  double x,
+  double y,
+  Color color, {
+  required String fontFamily,
+  required List<String> fontFamilyFallback,
+  required double fontSize,
+  bool bold = false,
+  bool italic = false,
+}) {
+  // Force the primary (monospace) font's line metrics so fallback-font glyphs
+  // (CJK) share the same baseline as ASCII and never exceed cellHeight.
+  final builder =
+      ui.ParagraphBuilder(
+          ui.ParagraphStyle(
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            strutStyle: ui.StrutStyle(
+              fontFamily: fontFamily,
+              fontSize: fontSize,
+              forceStrutHeight: true,
+            ),
+          ),
+        )
+        ..pushStyle(
+          ui.TextStyle(
+            color: color,
+            fontFamily: fontFamily,
+            fontFamilyFallback: fontFamilyFallback,
+            fontSize: fontSize,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+          ),
+        )
+        ..addText(text);
+
+  // Unbounded width: a single grapheme must never wrap, even if the fallback
+  // font's advance slightly exceeds two cells.
+  final paragraph = builder.build()
+    ..layout(const ui.ParagraphConstraints(width: double.infinity));
+
+  canvas.drawParagraph(paragraph, Offset(x, y));
 }

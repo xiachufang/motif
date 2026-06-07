@@ -116,16 +116,15 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   }
 
   Future<void> _closeSession(MotifClient motif) async {
-    try {
-      await motif.detach();
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Close failed: $e')));
-      }
-    }
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (mounted) Navigator.of(context).pop();
+    unawaited(
+      motif.detach().catchError((Object e) {
+        if (messenger?.mounted ?? false) {
+          messenger!.showSnackBar(SnackBar(content: Text('Close failed: $e')));
+        }
+      }),
+    );
   }
 
   Future<void> _switchSession(

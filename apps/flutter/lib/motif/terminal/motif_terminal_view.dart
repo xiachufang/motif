@@ -24,7 +24,6 @@ import 'package:flutter/services.dart';
 import 'ghostty_bindings.g.dart';
 import 'key_map.dart';
 import 'terminal_painter.dart';
-import 'terminal_state.dart';
 import '../log/log.dart';
 import '../state/motif_client.dart';
 import 'terminal_error_view.dart';
@@ -33,6 +32,8 @@ import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
 import 'terminal_paste.dart';
 import 'terminal_scroll_driver.dart';
+import 'terminal_snapshot.dart';
+import 'terminal_worker.dart';
 
 part 'motif_terminal/text_input.dart';
 part 'motif_terminal/core.dart';
@@ -72,16 +73,13 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     with SingleTickerProviderStateMixin, TextInputClient {
   static const double _keyboardCursorMargin = 16;
   static const Duration _terminalInitDelay = Duration(milliseconds: 32);
-  static const int _remoteFeedMaxBytesPerFrame = 64 * 1024;
-  static const int _remoteFeedMaxMicrosPerFrame = 4000;
   static const _softKeyboardSeed = '\u200b';
   static const _softKeyboardValue = TextEditingValue(
     text: _softKeyboardSeed,
     selection: TextSelection.collapsed(offset: _softKeyboardSeed.length),
   );
 
-  late final TerminalState _state;
-  Timer? _frameTimer;
+  TerminalWorkerClient? _worker;
   Timer? _resizeTimer;
   Timer? _terminalInitTimer;
   Ticker? _scrollTicker;
@@ -115,6 +113,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   int? _pendingResizeCols;
   int? _pendingResizeRows;
   bool _initialized = false;
+  bool _workerStarting = false;
+  int _workerGeneration = 0;
   int _streamGeneration = 0;
   Object? _terminalError;
   StackTrace? _terminalStack;
@@ -127,7 +127,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   DateTime? _lastKeyboardLiftLogAt;
   final Queue<Uint8List> _remoteByteQueue = Queue<Uint8List>();
   int _remoteByteQueueBytes = 0;
-  int _remoteByteQueueOffset = 0;
+  TerminalSnapshot? _snapshot;
   int _remoteChunks = 0;
   int _remoteBytes = 0;
 
@@ -142,7 +142,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   @override
   void initState() {
     super.initState();
-    _state = TerminalState(onHostWrite: _onHostWrite);
     _focusNode.addListener(_onFocusChanged);
     widget.keyboardInset.addListener(_syncKeyboardLift);
     _measureCell();
@@ -171,16 +170,22 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       _measureCell();
       _scheduleResizeAndMaybeOpen();
     }
+    if (oldWidget.palette != widget.palette) {
+      _worker?.setThemeColors(
+        foregroundArgb: _colorToArgb(widget.palette.foreground),
+        backgroundArgb: _colorToArgb(widget.palette.background),
+      );
+    }
     if (oldWidget.ptyId != widget.ptyId) {
       Log.i(
         'terminal pty changed old=${oldWidget.ptyId} new=${widget.ptyId}',
         name: 'motif.terminal',
       );
       _invalidateStreamWork();
+      _restartWorkerForNewPty();
       widget.motif.unregisterPtySink(oldWidget.ptyId, _onRemoteBytes);
       unawaited(widget.motif.deactivatePtyStream(oldWidget.ptyId));
       widget.motif.registerPtySink(widget.ptyId, _onRemoteBytes);
-      _scheduleResizeAndMaybeOpen();
     }
     if (oldWidget.active != widget.active) {
       Log.i(
@@ -225,12 +230,10 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     // killing both the buffered replay and ongoing output for the new grid.
     widget.motif.unregisterPtySink(widget.ptyId, _onRemoteBytes);
     _resizeTimer?.cancel();
-    _frameTimer?.cancel();
     _terminalInitTimer?.cancel();
     _retryTimer?.cancel();
     _remoteByteQueue.clear();
     _remoteByteQueueBytes = 0;
-    _remoteByteQueueOffset = 0;
     _stopScrollInertia(resetVelocity: true);
     _scrollTicker?.dispose();
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
@@ -239,7 +242,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _closeTextInput();
     _keyboardLiftOffset.dispose();
     _focusNode.dispose();
-    if (_initialized) _state.dispose();
+    unawaited(_worker?.dispose());
     super.dispose();
   }
 
@@ -363,22 +366,21 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                     _scheduleImeRectSync();
                   }
                   final font = _fontSpec;
-                  if (!_initialized) {
+                  final snapshot = _snapshot;
+                  if (!_initialized || snapshot == null) {
                     _scheduleTerminalInit(constraints);
                     return ColoredBox(color: widget.palette.background);
                   }
                   _handleResize(constraints);
                   return CustomPaint(
-                    painter: TerminalPainter(
-                      state: _state,
+                    painter: TerminalSnapshotPainter(
+                      snapshot: snapshot,
                       cellWidth: _cellWidth,
                       cellHeight: _cellHeight,
                       padding: widget.padding,
                       fontFamily: font.family,
                       fontFamilyFallback: font.fallback,
                       fontSize: widget.fontSize,
-                      defaultForeground: widget.palette.foreground,
-                      defaultBackground: widget.palette.background,
                       showCursor: _focusNode.hasFocus,
                     ),
                     size: Size(constraints.maxWidth, constraints.maxHeight),

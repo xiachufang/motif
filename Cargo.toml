@@ -92,9 +92,8 @@ tui-term           = "0.3"
 # crates.io 0.1.1 release: the published crate is frozen at a March-2026
 # snapshot whose bundled ghostty predates the PageList column-reflow fixes
 # (ghostty #10297 / #10337), so shrinking a PTY's columns with large
-# scrollback aborts the process. This rev's build.rs pins ghostty b869a6e5
-# (2026-05-25), which is 2392 commits past that fix.
-libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "8e1b0f7" }
+# scrollback aborts the process. This rev's build.rs pins ghostty bfe633a9.
+libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543" }
 notify             = "8"
 notify-debouncer-full = "0.7"
 

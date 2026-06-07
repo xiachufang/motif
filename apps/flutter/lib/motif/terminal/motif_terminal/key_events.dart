@@ -44,7 +44,7 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         controlCode != null &&
         (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
             action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
-      _state.writeToPty(
+      _worker?.writeBytes(
         Uint8List.fromList(altPressed ? [0x1b, controlCode] : [controlCode]),
       );
       return KeyEventResult.handled;
@@ -69,18 +69,18 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         return KeyEventResult.ignored;
       }
       final bytes = utf8.encode(text);
-      _state.writeToPty(
+      _worker?.writeBytes(
         Uint8List.fromList(altPressed ? [0x1b, ...bytes] : bytes),
       );
       return KeyEventResult.handled;
     }
     final ghosttyKey = mapFlutterKey(event.logicalKey);
     if (ghosttyKey == null) return KeyEventResult.ignored;
-    _state.encodeKeyAndWrite(
-      ghosttyKey,
-      action,
-      mods,
-      text,
+    _worker?.encodeKey(
+      key: ghosttyKey,
+      action: action,
+      mods: mods,
+      text: text,
       unshiftedCodepoint: logicalKeyUnshiftedCodepoint(event.logicalKey),
     );
     return KeyEventResult.handled;
