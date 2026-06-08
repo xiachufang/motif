@@ -1,3 +1,5 @@
+// ignore_for_file: invalid_use_of_protected_member
+
 part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalPointerInput on _MotifTerminalViewState {
@@ -30,7 +32,15 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerDown(PointerDownEvent e) {
     if (!_initialized || _terminalError != null) return;
+    _lastPointerKind = e.kind;
     _lastPointerPosition = e.localPosition;
+    if (_canStartMouseSelection(e)) {
+      _beginMouseSelection(e);
+      return;
+    }
+    if (_selection != null) {
+      _clearTerminalSelection();
+    }
     if (_touchScrollPointer == null && _shouldScrollDirectTouch(e.kind)) {
       _touchScrollPointer = e.pointer;
       _touchDownPosition = e.localPosition;
@@ -51,6 +61,15 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
+    if (e.pointer == _selectionPointer) {
+      _finishMouseSelection();
+      return;
+    }
+    if (e.pointer == _touchSelectionPointer) {
+      _touchSelectionPointer = null;
+      return;
+    }
+    if (_touchSelectionGestureActive) return;
     if (e.pointer == _touchScrollPointer) {
       _touchScrollPointer = null;
       // A touch that never really moved is a tap; deliver it as a click
@@ -89,6 +108,15 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
+    if (e.pointer == _selectionPointer) {
+      _finishMouseSelection();
+      return;
+    }
+    if (e.pointer == _touchSelectionPointer) {
+      _touchSelectionPointer = null;
+      _onTerminalLongPressCancel();
+      return;
+    }
     if (e.pointer != _touchScrollPointer) return;
     _touchScrollPointer = null;
     _touchDownPosition = null;
@@ -98,6 +126,11 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerMove(PointerMoveEvent e) {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
+    if (e.pointer == _selectionPointer) {
+      _updateMouseSelection(e.localPosition);
+      return;
+    }
+    if (_touchSelectionGestureActive) return;
     if (e.pointer == _touchScrollPointer) {
       _touchScrollDistance += e.delta.distance;
       final pixels = touchMoveDeltaToScrollPixels(e.delta.dy);
@@ -124,6 +157,140 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     } else if (e is PointerScrollInertiaCancelEvent) {
       _stopScrollInertia(resetVelocity: true);
     }
+  }
+
+  bool get _canSelectTerminalText => !(_snapshot?.mouseTrackingActive ?? false);
+
+  bool _canStartMouseSelection(PointerDownEvent e) {
+    if (!_canSelectTerminalText) return false;
+    if (e.kind != PointerDeviceKind.mouse) return false;
+    return e.buttons & 0x01 != 0;
+  }
+
+  bool _isTouchSelectionKind(PointerDeviceKind? kind) {
+    if (kind == null) return true;
+    return kind == PointerDeviceKind.touch ||
+        kind == PointerDeviceKind.stylus ||
+        kind == PointerDeviceKind.invertedStylus;
+  }
+
+  void _beginMouseSelection(PointerDownEvent e) {
+    _requestFocusWithoutKeyboard();
+    _stopScrollInertia(resetVelocity: true);
+    _clearTerminalSelection();
+    _selectionPointer = e.pointer;
+    _selectionPointerDown = e.localPosition;
+    _selectionAnchor = _terminalCellAt(e.localPosition);
+    _selectionDragActive = false;
+  }
+
+  void _updateMouseSelection(Offset localPosition) {
+    final down = _selectionPointerDown;
+    if (down == null) return;
+    if (!_selectionDragActive && (localPosition - down).distance < kTouchSlop) {
+      return;
+    }
+    _selectionDragActive = true;
+    _updateTerminalSelection(localPosition);
+  }
+
+  void _finishMouseSelection() {
+    _selectionPointer = null;
+    _selectionPointerDown = null;
+    _selectionAnchor = null;
+    _selectionDragActive = false;
+  }
+
+  void _onTerminalLongPressStart(LongPressStartDetails details) {
+    if (!_initialized || _terminalError != null) return;
+    if (!_isTouchSelectionKind(_lastPointerKind)) return;
+    if (!_canSelectTerminalText) {
+      unawaited(_copySelectionOrVisible());
+      return;
+    }
+    _requestFocusWithoutKeyboard();
+    _stopScrollInertia(resetVelocity: true);
+    _touchSelectionPointer = _touchScrollPointer;
+    _touchScrollPointer = null;
+    _touchDownPosition = null;
+    _clearTerminalSelection();
+    _touchSelectionGestureActive = true;
+    _selectionAnchor = _terminalCellAt(details.localPosition);
+    _updateTerminalSelection(details.localPosition);
+  }
+
+  void _onTerminalLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+    if (!_touchSelectionGestureActive) return;
+    _updateTerminalSelection(details.localPosition);
+  }
+
+  void _onTerminalLongPressEnd(LongPressEndDetails _) {
+    if (!_touchSelectionGestureActive) return;
+    _touchSelectionGestureActive = false;
+    _selectionAnchor = null;
+    unawaited(_copySelectedText());
+  }
+
+  void _onTerminalLongPressCancel() {
+    _touchSelectionGestureActive = false;
+    _selectionAnchor = null;
+  }
+
+  TerminalCellPoint _terminalCellAt(Offset localPosition) {
+    final snapshot = _snapshot;
+    final cols = snapshot?.cols ?? _cols;
+    final rows = snapshot?.rows ?? _rows;
+    final safeCols = cols <= 0 ? 1 : cols;
+    final safeRows = rows <= 0 ? 1 : rows;
+    final col = _cellWidth <= 0
+        ? 0
+        : ((localPosition.dx - widget.padding) / _cellWidth).floor();
+    final row = _cellHeight <= 0
+        ? 0
+        : ((localPosition.dy - widget.padding) / _cellHeight).floor();
+    return TerminalCellPoint(
+      row: _clampTerminalInt(row, 0, safeRows - 1),
+      col: _clampTerminalInt(col, 0, safeCols - 1),
+    );
+  }
+
+  void _updateTerminalSelection(Offset localPosition) {
+    final anchor = _selectionAnchor ?? _terminalCellAt(localPosition);
+    _selectionAnchor = anchor;
+    final next = TerminalSelection(
+      base: anchor,
+      extent: _terminalCellAt(localPosition),
+    );
+    if (_selection == next) return;
+    if (mounted) {
+      setState(() => _selection = next);
+    } else {
+      _selection = next;
+    }
+  }
+
+  void _clearTerminalSelection() {
+    final hadSelection = _selection != null;
+    _discardTerminalSelectionState();
+    if (!hadSelection) return;
+    if (mounted) setState(() {});
+  }
+
+  void _discardTerminalSelectionState() {
+    _selectionAnchor = null;
+    _selectionPointerDown = null;
+    _selectionPointer = null;
+    _selectionDragActive = false;
+    _touchSelectionGestureActive = false;
+    _touchSelectionPointer = null;
+    _selection = null;
+  }
+
+  int _clampTerminalInt(int value, int min, int max) {
+    if (max < min) return min;
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
   }
 
   // Trackpad/touch two-finger scroll arrives as pan/zoom events.
@@ -260,13 +427,43 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     return _snapshot?.visibleText ?? '';
   }
 
-  Future<void> _copyVisible() async {
+  String _selectedText() {
+    final selection = _selection;
+    if (selection == null) return '';
+    return _snapshot?.selectedText(selection) ?? '';
+  }
+
+  Future<void> _copySelectedText() async {
     if (!_initialized) return;
-    await Clipboard.setData(ClipboardData(text: _visibleText()));
+    final text = _selectedText();
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Copied terminal output')));
+      ).showSnackBar(const SnackBar(content: Text('Copied selection')));
+    }
+  }
+
+  Future<void> _copyVisible() async {
+    if (!_initialized) return;
+    await _copySelectionOrVisible();
+  }
+
+  Future<void> _copySelectionOrVisible() async {
+    if (!_initialized) return;
+    final selection = _selection;
+    final text = selection == null ? _visibleText() : _selectedText();
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            selection == null ? 'Copied terminal output' : 'Copied selection',
+          ),
+        ),
+      );
     }
   }
 }

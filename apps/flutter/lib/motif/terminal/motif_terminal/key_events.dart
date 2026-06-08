@@ -44,6 +44,7 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         controlCode != null &&
         (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
             action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
+      _clearTerminalSelection();
       _worker?.writeBytes(
         Uint8List.fromList(altPressed ? [0x1b, controlCode] : [controlCode]),
       );
@@ -68,6 +69,7 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       if (!altPressed && _textInputConnectionIsActive) {
         return KeyEventResult.ignored;
       }
+      _clearTerminalSelection();
       final bytes = utf8.encode(text);
       _worker?.writeBytes(
         Uint8List.fromList(altPressed ? [0x1b, ...bytes] : bytes),
@@ -99,6 +101,7 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     final nonAppleClipboard = !isApplePlatform && control && shift && !meta;
     if (!appleClipboard && !nonAppleClipboard) return false;
     if (key == LogicalKeyboardKey.keyV) {
+      _clearTerminalSelection();
       unawaited(_pasteFromClipboard());
       return true;
     }

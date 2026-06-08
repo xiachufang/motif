@@ -172,6 +172,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (newCols > 0 && newRows > 0 && (newCols != _cols || newRows != _rows)) {
       _cols = newCols;
       _rows = newRows;
+      _discardTerminalSelectionState();
       _worker?.resize(
         cols: _cols,
         rows: _rows,
@@ -294,6 +295,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _snapshot = null;
+    _discardTerminalSelectionState();
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
   }
@@ -349,6 +351,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _snapshot = null;
+    _discardTerminalSelectionState();
     _lastCursorSnapshot = null;
     _remoteByteQueue.clear();
     _remoteByteQueueBytes = 0;

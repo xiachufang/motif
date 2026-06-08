@@ -258,6 +258,9 @@ class TerminalSnapshotPainter extends CustomPainter {
   final List<String> fontFamilyFallback;
   final double fontSize;
   final bool showCursor;
+  final TerminalSelection? selection;
+  final Color selectionBackground;
+  final Color selectionForeground;
 
   TerminalSnapshotPainter({
     required this.snapshot,
@@ -268,6 +271,9 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.fontFamilyFallback = const [],
     this.fontSize = 14.0,
     this.showCursor = true,
+    this.selection,
+    this.selectionBackground = const Color(0x996EA8FE),
+    this.selectionForeground = Colors.white,
   });
 
   @override
@@ -291,13 +297,28 @@ class TerminalSnapshotPainter extends CustomPainter {
             Paint()..color = Color(cell.backgroundArgb),
           );
         }
+      }
+    }
+
+    _drawSelection(canvas);
+
+    for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
+      final y = padding + rowIdx * cellHeight;
+      for (final cell in snapshot.lines[rowIdx].cells) {
+        final x = padding + cell.col * cellWidth;
         if (!cell.invisible && cell.text.isNotEmpty) {
+          final selected = selection?.intersectsCell(
+            row: rowIdx,
+            col: cell.col,
+            widthCells: cell.widthCells,
+            cols: snapshot.cols,
+          );
           _drawTerminalText(
             canvas,
             cell.text,
             x,
             y,
-            Color(cell.foregroundArgb),
+            selected == true ? selectionForeground : Color(cell.foregroundArgb),
             fontFamily: fontFamily,
             fontFamilyFallback: fontFamilyFallback,
             fontSize: fontSize,
@@ -350,6 +371,20 @@ class TerminalSnapshotPainter extends CustomPainter {
     }
   }
 
+  void _drawSelection(Canvas canvas) {
+    final range = selection;
+    if (range == null || cellWidth <= 0 || cellHeight <= 0) return;
+    final paint = Paint()..color = selectionBackground;
+    for (var row = 0; row < snapshot.lines.length; row++) {
+      final columns = range.columnsForRow(row, snapshot.cols);
+      if (columns == null || columns.endCol < columns.startCol) continue;
+      final x = padding + columns.startCol * cellWidth;
+      final y = padding + row * cellHeight;
+      final width = (columns.endCol - columns.startCol + 1) * cellWidth;
+      canvas.drawRect(Rect.fromLTWH(x, y, width, cellHeight), paint);
+    }
+  }
+
   @override
   bool shouldRepaint(covariant TerminalSnapshotPainter oldDelegate) =>
       oldDelegate.snapshot != snapshot ||
@@ -358,7 +393,10 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.padding != padding ||
       oldDelegate.fontFamily != fontFamily ||
       oldDelegate.fontSize != fontSize ||
-      oldDelegate.showCursor != showCursor;
+      oldDelegate.showCursor != showCursor ||
+      oldDelegate.selection != selection ||
+      oldDelegate.selectionBackground != selectionBackground ||
+      oldDelegate.selectionForeground != selectionForeground;
 }
 
 void _drawTerminalText(

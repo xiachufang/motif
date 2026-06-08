@@ -89,6 +89,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   double _scrollVelocity = 0;
   Duration? _lastScrollUpdateTime;
   int? _touchScrollPointer;
+  int? _touchSelectionPointer;
+  PointerDeviceKind? _lastPointerKind;
   Offset? _lastPointerPosition;
   Offset? _touchDownPosition;
   double _touchScrollDistance = 0;
@@ -128,6 +130,12 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final Queue<Uint8List> _remoteByteQueue = Queue<Uint8List>();
   int _remoteByteQueueBytes = 0;
   TerminalSnapshot? _snapshot;
+  TerminalSelection? _selection;
+  TerminalCellPoint? _selectionAnchor;
+  Offset? _selectionPointerDown;
+  int? _selectionPointer;
+  bool _selectionDragActive = false;
+  bool _touchSelectionGestureActive = false;
   int _remoteChunks = 0;
   int _remoteBytes = 0;
 
@@ -347,7 +355,10 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _toggleFocus,
-            onLongPress: _copyVisible,
+            onLongPressStart: _onTerminalLongPressStart,
+            onLongPressMoveUpdate: _onTerminalLongPressMoveUpdate,
+            onLongPressEnd: _onTerminalLongPressEnd,
+            onLongPressCancel: _onTerminalLongPressCancel,
             child: Listener(
               onPointerDown: _onPointerDown,
               onPointerUp: _onPointerUp,
@@ -372,6 +383,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                     return ColoredBox(color: widget.palette.background);
                   }
                   _handleResize(constraints);
+                  final colorScheme = Theme.of(context).colorScheme;
                   return CustomPaint(
                     painter: TerminalSnapshotPainter(
                       snapshot: snapshot,
@@ -382,6 +394,11 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                       fontFamilyFallback: font.fallback,
                       fontSize: widget.fontSize,
                       showCursor: _focusNode.hasFocus,
+                      selection: _selection,
+                      selectionBackground: colorScheme.primary.withValues(
+                        alpha: 0.72,
+                      ),
+                      selectionForeground: colorScheme.onPrimary,
                     ),
                     size: Size(constraints.maxWidth, constraints.maxHeight),
                   );
