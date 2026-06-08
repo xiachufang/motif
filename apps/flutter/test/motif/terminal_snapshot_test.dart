@@ -54,6 +54,74 @@ void main() {
 
     expect(snapshot.selectedText(selection), ' y');
   });
+
+  test('wordSelectionAt selects the token under the cell', () {
+    final snapshot = _snapshot([_row(_cellsFromText('echo hello'))], cols: 16);
+
+    final selection = snapshot.wordSelectionAt(
+      const TerminalCellPoint(row: 0, col: 6),
+    );
+
+    expect(
+      selection,
+      const TerminalSelection(
+        base: TerminalCellPoint(row: 0, col: 5),
+        extent: TerminalCellPoint(row: 0, col: 9),
+      ),
+    );
+    expect(snapshot.selectedText(selection!), 'hello');
+  });
+
+  test('wordSelectionAt ignores whitespace cells', () {
+    final snapshot = _snapshot([_row(_cellsFromText('echo hello'))], cols: 16);
+
+    expect(
+      snapshot.wordSelectionAt(const TerminalCellPoint(row: 0, col: 4)),
+      isNull,
+    );
+  });
+
+  test('wordSelectionAt treats paths and command fragments as one token', () {
+    final snapshot = _snapshot([
+      _row(_cellsFromText('/usr/bin/env VAR=value')),
+    ], cols: 32);
+
+    expect(
+      snapshot.wordSelectionAt(const TerminalCellPoint(row: 0, col: 7)),
+      const TerminalSelection(
+        base: TerminalCellPoint(row: 0, col: 0),
+        extent: TerminalCellPoint(row: 0, col: 11),
+      ),
+    );
+    expect(
+      snapshot.wordSelectionAt(const TerminalCellPoint(row: 0, col: 16)),
+      const TerminalSelection(
+        base: TerminalCellPoint(row: 0, col: 13),
+        extent: TerminalCellPoint(row: 0, col: 21),
+      ),
+    );
+  });
+
+  test('wordSelectionAt includes wide cells from either half', () {
+    final snapshot = _snapshot([
+      _row([_cell(1, '好', widthCells: 2)]),
+    ], cols: 4);
+
+    const expected = TerminalSelection(
+      base: TerminalCellPoint(row: 0, col: 1),
+      extent: TerminalCellPoint(row: 0, col: 2),
+    );
+
+    expect(
+      snapshot.wordSelectionAt(const TerminalCellPoint(row: 0, col: 1)),
+      expected,
+    );
+    expect(
+      snapshot.wordSelectionAt(const TerminalCellPoint(row: 0, col: 2)),
+      expected,
+    );
+    expect(snapshot.selectedText(expected), '好');
+  });
 }
 
 TerminalSnapshot _snapshot(
@@ -82,6 +150,10 @@ TerminalSnapshotRow _row(List<TerminalSnapshotCell> cells) {
     text: cells.map((cell) => cell.text).join(),
     cells: cells,
   );
+}
+
+List<TerminalSnapshotCell> _cellsFromText(String text) {
+  return [for (var i = 0; i < text.length; i++) _cell(i, text[i])];
 }
 
 TerminalSnapshotCell _cell(

@@ -15,6 +15,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
+import 'package:flutter/cupertino.dart' as cupertino;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -131,11 +132,14 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   int _remoteByteQueueBytes = 0;
   TerminalSnapshot? _snapshot;
   TerminalSelection? _selection;
-  TerminalCellPoint? _selectionAnchor;
-  Offset? _selectionPointerDown;
-  int? _selectionPointer;
-  bool _selectionDragActive = false;
+  TerminalCellPoint? _mouseSelectionAnchor;
+  int? _mouseSelectionPointer;
+  TerminalCellPoint? _touchSelectionAnchor;
+  bool _touchSelectionActive = false;
   bool _touchSelectionGestureActive = false;
+  _TouchSelectionHandle? _touchSelectionDragHandle;
+  OverlayEntry? _touchSelectionHandlesEntry;
+  OverlayEntry? _touchSelectionMenuEntry;
   int _remoteChunks = 0;
   int _remoteBytes = 0;
 
@@ -244,6 +248,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _remoteByteQueueBytes = 0;
     _stopScrollInertia(resetVelocity: true);
     _scrollTicker?.dispose();
+    _discardTerminalSelectionState();
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
     _focusNode.removeListener(_onFocusChanged);
     widget.keyboardInset.removeListener(_syncKeyboardLift);
@@ -343,6 +348,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       _bottomViewPadding = bottomViewPadding;
       _scheduleKeyboardLiftSync();
     }
+    final useTouchSelectionGestures = _usesTouchSelectionGestures;
     return ValueListenableBuilder<double>(
       valueListenable: _keyboardLiftOffset,
       child: RepaintBoundary(
@@ -355,10 +361,18 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _toggleFocus,
-            onLongPressStart: _onTerminalLongPressStart,
-            onLongPressMoveUpdate: _onTerminalLongPressMoveUpdate,
-            onLongPressEnd: _onTerminalLongPressEnd,
-            onLongPressCancel: _onTerminalLongPressCancel,
+            onLongPressStart: useTouchSelectionGestures
+                ? _onTerminalLongPressStart
+                : null,
+            onLongPressMoveUpdate: useTouchSelectionGestures
+                ? _onTerminalLongPressMoveUpdate
+                : null,
+            onLongPressEnd: useTouchSelectionGestures
+                ? _onTerminalLongPressEnd
+                : null,
+            onLongPressCancel: useTouchSelectionGestures
+                ? _onTerminalLongPressCancel
+                : null,
             child: Listener(
               onPointerDown: _onPointerDown,
               onPointerUp: _onPointerUp,

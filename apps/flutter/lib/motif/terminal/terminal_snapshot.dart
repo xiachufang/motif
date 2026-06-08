@@ -65,6 +65,45 @@ class TerminalSnapshot {
     }
     return rows.join('\n');
   }
+
+  TerminalSelection? wordSelectionAt(TerminalCellPoint point) {
+    if (point.row < 0 || point.row >= lines.length || cols <= 0) return null;
+    final row = lines[point.row];
+    final hitIndex = row.cellIndexForColumn(point.col);
+    if (hitIndex == null) return null;
+    final hit = row.cells[hitIndex];
+    if (!_isSelectableWordCell(hit)) return null;
+
+    var startCol = hit.col;
+    var endCol = hit.endCol;
+
+    for (var i = hitIndex - 1; i >= 0; i--) {
+      final cell = row.cells[i];
+      if (!_isSelectableWordCell(cell) || cell.endCol + 1 != startCol) {
+        break;
+      }
+      startCol = cell.col;
+    }
+
+    for (var i = hitIndex + 1; i < row.cells.length; i++) {
+      final cell = row.cells[i];
+      if (!_isSelectableWordCell(cell) || cell.col != endCol + 1) {
+        break;
+      }
+      endCol = cell.endCol;
+    }
+
+    return TerminalSelection(
+      base: TerminalCellPoint(
+        row: point.row,
+        col: _clampInt(startCol, 0, cols - 1),
+      ),
+      extent: TerminalCellPoint(
+        row: point.row,
+        col: _clampInt(endCol, 0, cols - 1),
+      ),
+    );
+  }
 }
 
 class TerminalSnapshotRow {
@@ -72,6 +111,15 @@ class TerminalSnapshotRow {
   final List<TerminalSnapshotCell> cells;
 
   const TerminalSnapshotRow({required this.text, required this.cells});
+
+  int? cellIndexForColumn(int col) {
+    for (var i = 0; i < cells.length; i++) {
+      final cell = cells[i];
+      if (col >= cell.col && col <= cell.endCol) return i;
+      if (cell.col > col) break;
+    }
+    return null;
+  }
 
   String textForColumns({required int startCol, required int endCol}) {
     if (endCol < startCol) return '';
@@ -119,6 +167,12 @@ class TerminalSnapshotCell {
     required this.italic,
     required this.invisible,
   });
+
+  int get endCol => col + (widthCells <= 0 ? 1 : widthCells) - 1;
+}
+
+bool _isSelectableWordCell(TerminalSnapshotCell cell) {
+  return !cell.invisible && cell.text.trim().isNotEmpty;
 }
 
 class TerminalCellPoint implements Comparable<TerminalCellPoint> {

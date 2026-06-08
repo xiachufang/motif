@@ -21,6 +21,21 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       defaultTargetPlatform == TargetPlatform.iOS ||
       defaultTargetPlatform == TargetPlatform.android;
 
+  bool get _usesTouchSelectionGestures =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.android;
+
+  bool get _usesDesktopMouseSelection {
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.macOS ||
+      TargetPlatform.linux ||
+      TargetPlatform.windows => true,
+      TargetPlatform.android ||
+      TargetPlatform.iOS ||
+      TargetPlatform.fuchsia => false,
+    };
+  }
+
   bool _shouldScrollDirectTouch(PointerDeviceKind kind) {
     if (!_usesMobileDirectTouchScroll) {
       return false;
@@ -39,6 +54,11 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       return;
     }
     if (_selection != null) {
+      if (_shouldKeepTouchSelectionForTap(e)) {
+        _touchSelectionPointer = e.pointer;
+        _showTouchSelectionMenu();
+        return;
+      }
       _clearTerminalSelection();
     }
     if (_touchScrollPointer == null && _shouldScrollDirectTouch(e.kind)) {
@@ -61,7 +81,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
-    if (e.pointer == _selectionPointer) {
+    if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
     }
@@ -108,7 +128,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
-    if (e.pointer == _selectionPointer) {
+    if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
     }
@@ -126,10 +146,11 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerMove(PointerMoveEvent e) {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
-    if (e.pointer == _selectionPointer) {
+    if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
       return;
     }
+    if (e.pointer == _touchSelectionPointer) return;
     if (_touchSelectionGestureActive) return;
     if (e.pointer == _touchScrollPointer) {
       _touchScrollDistance += e.delta.distance;
@@ -163,8 +184,21 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   bool _canStartMouseSelection(PointerDownEvent e) {
     if (!_canSelectTerminalText) return false;
+    if (!_usesDesktopMouseSelection) return false;
     if (e.kind != PointerDeviceKind.mouse) return false;
-    return e.buttons & 0x01 != 0;
+    return (e.buttons & 0x01) != 0;
+  }
+
+  bool _isMouseSelectionMove(PointerMoveEvent e) {
+    if (_mouseSelectionAnchor == null) return false;
+    if (_mouseSelectionPointer == null) return false;
+    if ((e.buttons & 0x01) == 0) return false;
+    return e.pointer == _mouseSelectionPointer;
+  }
+
+  bool _isMouseSelectionPointer(int pointer) {
+    if (_mouseSelectionAnchor == null) return false;
+    return pointer == _mouseSelectionPointer;
   }
 
   bool _isTouchSelectionKind(PointerDeviceKind? kind) {
@@ -174,66 +208,84 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         kind == PointerDeviceKind.invertedStylus;
   }
 
+  bool _shouldKeepTouchSelectionForTap(PointerDownEvent e) {
+    if (!_usesTouchSelectionGestures || !_touchSelectionActive) return false;
+    if (!_isTouchSelectionKind(e.kind)) return false;
+    final snapshot = _snapshot;
+    final selection = _selection;
+    if (snapshot == null || selection == null) return false;
+    final cell = _terminalCellAt(e.localPosition);
+    return selection.intersectsCell(
+      row: cell.row,
+      col: cell.col,
+      widthCells: 1,
+      cols: snapshot.cols,
+    );
+  }
+
   void _beginMouseSelection(PointerDownEvent e) {
     _requestFocusWithoutKeyboard();
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
-    _selectionPointer = e.pointer;
-    _selectionPointerDown = e.localPosition;
-    _selectionAnchor = _terminalCellAt(e.localPosition);
-    _selectionDragActive = false;
+    _mouseSelectionPointer = e.pointer;
+    _mouseSelectionAnchor = _terminalCellAt(e.localPosition);
   }
 
   void _updateMouseSelection(Offset localPosition) {
-    final down = _selectionPointerDown;
-    if (down == null) return;
-    if (!_selectionDragActive && (localPosition - down).distance < kTouchSlop) {
-      return;
-    }
-    _selectionDragActive = true;
-    _updateTerminalSelection(localPosition);
+    final anchor = _mouseSelectionAnchor;
+    if (anchor == null) return;
+    _updateTerminalSelection(anchor, localPosition);
   }
 
   void _finishMouseSelection() {
-    _selectionPointer = null;
-    _selectionPointerDown = null;
-    _selectionAnchor = null;
-    _selectionDragActive = false;
+    _mouseSelectionPointer = null;
+    _mouseSelectionAnchor = null;
   }
 
   void _onTerminalLongPressStart(LongPressStartDetails details) {
     if (!_initialized || _terminalError != null) return;
+    if (!_usesTouchSelectionGestures) return;
     if (!_isTouchSelectionKind(_lastPointerKind)) return;
-    if (!_canSelectTerminalText) {
-      unawaited(_copySelectionOrVisible());
-      return;
-    }
+    if (!_canSelectTerminalText) return;
+    final wordSelection = _snapshot?.wordSelectionAt(
+      _terminalCellAt(details.localPosition),
+    );
+    if (wordSelection == null) return;
     _requestFocusWithoutKeyboard();
     _stopScrollInertia(resetVelocity: true);
-    _touchSelectionPointer = _touchScrollPointer;
+    final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;
     _touchDownPosition = null;
     _clearTerminalSelection();
+    _touchSelectionPointer = selectionPointer;
     _touchSelectionGestureActive = true;
-    _selectionAnchor = _terminalCellAt(details.localPosition);
-    _updateTerminalSelection(details.localPosition);
+    _touchSelectionActive = true;
+    _touchSelectionAnchor = wordSelection.base;
+    _setTerminalSelection(wordSelection);
+    _showTouchSelectionHandles();
+    _showTouchSelectionMenu();
   }
 
   void _onTerminalLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
     if (!_touchSelectionGestureActive) return;
-    _updateTerminalSelection(details.localPosition);
+    final anchor = _touchSelectionAnchor;
+    if (anchor == null) return;
+    _hideTouchSelectionMenu();
+    _updateTerminalSelection(anchor, details.localPosition);
+    _showTouchSelectionHandles();
   }
 
   void _onTerminalLongPressEnd(LongPressEndDetails _) {
     if (!_touchSelectionGestureActive) return;
     _touchSelectionGestureActive = false;
-    _selectionAnchor = null;
-    unawaited(_copySelectedText());
+    _touchSelectionAnchor = null;
+    _showTouchSelectionHandles();
+    _showTouchSelectionMenu();
   }
 
   void _onTerminalLongPressCancel() {
-    _touchSelectionGestureActive = false;
-    _selectionAnchor = null;
+    if (!_touchSelectionGestureActive) return;
+    _clearTerminalSelection();
   }
 
   TerminalCellPoint _terminalCellAt(Offset localPosition) {
@@ -254,19 +306,26 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
   }
 
-  void _updateTerminalSelection(Offset localPosition) {
-    final anchor = _selectionAnchor ?? _terminalCellAt(localPosition);
-    _selectionAnchor = anchor;
+  void _updateTerminalSelection(
+    TerminalCellPoint anchor,
+    Offset localPosition,
+  ) {
     final next = TerminalSelection(
       base: anchor,
       extent: _terminalCellAt(localPosition),
     );
+    _setTerminalSelection(next);
+  }
+
+  void _setTerminalSelection(TerminalSelection next) {
     if (_selection == next) return;
     if (mounted) {
       setState(() => _selection = next);
     } else {
       _selection = next;
     }
+    _touchSelectionHandlesEntry?.markNeedsBuild();
+    _touchSelectionMenuEntry?.markNeedsBuild();
   }
 
   void _clearTerminalSelection() {
@@ -277,13 +336,283 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _discardTerminalSelectionState() {
-    _selectionAnchor = null;
-    _selectionPointerDown = null;
-    _selectionPointer = null;
-    _selectionDragActive = false;
+    _hideTouchSelectionMenu();
+    _hideTouchSelectionHandles();
+    _mouseSelectionAnchor = null;
+    _mouseSelectionPointer = null;
+    _touchSelectionAnchor = null;
+    _touchSelectionActive = false;
     _touchSelectionGestureActive = false;
     _touchSelectionPointer = null;
+    _touchSelectionDragHandle = null;
     _selection = null;
+  }
+
+  TextSelectionControls get _touchSelectionControls {
+    return defaultTargetPlatform == TargetPlatform.iOS
+        ? cupertino.cupertinoTextSelectionHandleControls
+        : materialTextSelectionHandleControls;
+  }
+
+  bool get _canShowTouchSelectionOverlays {
+    return mounted &&
+        _usesTouchSelectionGestures &&
+        _touchSelectionActive &&
+        _selection != null &&
+        _selectedText().isNotEmpty;
+  }
+
+  void _showTouchSelectionHandles() {
+    if (!_canShowTouchSelectionOverlays) {
+      _hideTouchSelectionHandles();
+      return;
+    }
+    final overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    final entry = _touchSelectionHandlesEntry;
+    if (entry != null) {
+      entry.markNeedsBuild();
+      return;
+    }
+    final newEntry = OverlayEntry(builder: _buildTouchSelectionHandlesOverlay);
+    _touchSelectionHandlesEntry = newEntry;
+    overlay.insert(newEntry);
+  }
+
+  void _hideTouchSelectionHandles() {
+    _touchSelectionHandlesEntry?.remove();
+    _touchSelectionHandlesEntry = null;
+  }
+
+  Widget _buildTouchSelectionHandlesOverlay(BuildContext overlayContext) {
+    if (!_canShowTouchSelectionOverlays) return const SizedBox.shrink();
+    final endpoints = _touchSelectionOverlayEndpoints();
+    if (endpoints == null) return const SizedBox.shrink();
+    final controls = _touchSelectionControls;
+    return Positioned.fill(
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          _buildTouchSelectionHandle(
+            overlayContext: overlayContext,
+            handle: _TouchSelectionHandle.start,
+            endpoint: endpoints.start,
+            controls: controls,
+          ),
+          _buildTouchSelectionHandle(
+            overlayContext: overlayContext,
+            handle: _TouchSelectionHandle.end,
+            endpoint: endpoints.end,
+            controls: controls,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTouchSelectionHandle({
+    required BuildContext overlayContext,
+    required _TouchSelectionHandle handle,
+    required Offset endpoint,
+    required TextSelectionControls controls,
+  }) {
+    final type = switch (handle) {
+      _TouchSelectionHandle.start => TextSelectionHandleType.left,
+      _TouchSelectionHandle.end => TextSelectionHandleType.right,
+    };
+    final anchor = controls.getHandleAnchor(type, _cellHeight);
+    return Positioned(
+      left: endpoint.dx - anchor.dx,
+      top: endpoint.dy - anchor.dy,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onPanStart: (details) =>
+            _onTouchSelectionHandleDragStart(handle, details),
+        onPanUpdate: _onTouchSelectionHandleDragUpdate,
+        onPanEnd: (_) => _onTouchSelectionHandleDragEnd(),
+        onPanCancel: _onTouchSelectionHandleDragEnd,
+        child: controls.buildHandle(overlayContext, type, _cellHeight),
+      ),
+    );
+  }
+
+  ({Offset start, Offset end})? _touchSelectionOverlayEndpoints() {
+    final global = _touchSelectionGlobalEndpoints();
+    if (global == null) return null;
+    final overlayBox =
+        Overlay.maybeOf(context)?.context.findRenderObject() as RenderBox?;
+    if (overlayBox == null || !overlayBox.hasSize) return null;
+    return (
+      start: overlayBox.globalToLocal(global.start),
+      end: overlayBox.globalToLocal(global.end),
+    );
+  }
+
+  ({Offset start, Offset end})? _touchSelectionGlobalEndpoints() {
+    final selection = _selection?.normalized;
+    final terminalBox =
+        _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
+    if (selection == null ||
+        terminalBox == null ||
+        !terminalBox.hasSize ||
+        _cellWidth <= 0 ||
+        _cellHeight <= 0) {
+      return null;
+    }
+    return (
+      start: terminalBox.localToGlobal(_selectionStartEndpoint(selection.base)),
+      end: terminalBox.localToGlobal(_selectionEndEndpoint(selection.extent)),
+    );
+  }
+
+  Offset _selectionStartEndpoint(TerminalCellPoint point) {
+    return Offset(
+      widget.padding + point.col * _cellWidth,
+      widget.padding + (point.row + 1) * _cellHeight,
+    );
+  }
+
+  Offset _selectionEndEndpoint(TerminalCellPoint point) {
+    return Offset(
+      widget.padding + (point.col + 1) * _cellWidth,
+      widget.padding + (point.row + 1) * _cellHeight,
+    );
+  }
+
+  void _onTouchSelectionHandleDragStart(
+    _TouchSelectionHandle handle,
+    DragStartDetails _,
+  ) {
+    _touchSelectionDragHandle = handle;
+    _hideTouchSelectionMenu();
+  }
+
+  void _onTouchSelectionHandleDragUpdate(DragUpdateDetails details) {
+    final activeHandle = _touchSelectionDragHandle;
+    final current = _selection?.normalized;
+    final terminalBox =
+        _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
+    if (activeHandle == null || current == null || terminalBox == null) {
+      return;
+    }
+    final point = _terminalCellAt(
+      terminalBox.globalToLocal(details.globalPosition),
+    );
+    final next = switch (activeHandle) {
+      _TouchSelectionHandle.start => _selectionAdjustedFromStart(
+        current,
+        point,
+      ),
+      _TouchSelectionHandle.end => _selectionAdjustedFromEnd(current, point),
+    };
+    _setTerminalSelection(next.selection);
+    _touchSelectionDragHandle = next.activeHandle;
+    _touchSelectionHandlesEntry?.markNeedsBuild();
+  }
+
+  ({TerminalSelection selection, _TouchSelectionHandle activeHandle})
+  _selectionAdjustedFromStart(
+    TerminalSelection current,
+    TerminalCellPoint point,
+  ) {
+    if (point.compareTo(current.extent) <= 0) {
+      return (
+        selection: TerminalSelection(base: point, extent: current.extent),
+        activeHandle: _TouchSelectionHandle.start,
+      );
+    }
+    return (
+      selection: TerminalSelection(base: current.extent, extent: point),
+      activeHandle: _TouchSelectionHandle.end,
+    );
+  }
+
+  ({TerminalSelection selection, _TouchSelectionHandle activeHandle})
+  _selectionAdjustedFromEnd(
+    TerminalSelection current,
+    TerminalCellPoint point,
+  ) {
+    if (point.compareTo(current.base) >= 0) {
+      return (
+        selection: TerminalSelection(base: current.base, extent: point),
+        activeHandle: _TouchSelectionHandle.end,
+      );
+    }
+    return (
+      selection: TerminalSelection(base: point, extent: current.base),
+      activeHandle: _TouchSelectionHandle.start,
+    );
+  }
+
+  void _onTouchSelectionHandleDragEnd() {
+    if (_touchSelectionDragHandle == null) return;
+    _touchSelectionDragHandle = null;
+    _showTouchSelectionHandles();
+    _showTouchSelectionMenu();
+  }
+
+  void _showTouchSelectionMenu() {
+    if (!_canShowTouchSelectionOverlays) {
+      _hideTouchSelectionMenu();
+      return;
+    }
+    final overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    _hideTouchSelectionMenu();
+    final entry = OverlayEntry(builder: _buildTouchSelectionMenuOverlay);
+    _touchSelectionMenuEntry = entry;
+    overlay.insert(entry);
+  }
+
+  void _hideTouchSelectionMenu() {
+    _touchSelectionMenuEntry?.remove();
+    _touchSelectionMenuEntry = null;
+  }
+
+  Widget _buildTouchSelectionMenuOverlay(BuildContext overlayContext) {
+    final anchors = _touchSelectionToolbarAnchors();
+    if (!_canShowTouchSelectionOverlays || anchors == null) {
+      return const SizedBox.shrink();
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: anchors,
+      buttonItems: [
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.copy,
+          onPressed: () {
+            _hideTouchSelectionMenu();
+            unawaited(_copySelectedText());
+          },
+        ),
+      ],
+    );
+  }
+
+  TextSelectionToolbarAnchors? _touchSelectionToolbarAnchors() {
+    final selection = _selection?.normalized;
+    final terminalBox =
+        _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
+    if (selection == null ||
+        terminalBox == null ||
+        !terminalBox.hasSize ||
+        _cellWidth <= 0 ||
+        _cellHeight <= 0) {
+      return null;
+    }
+    final sameRow = selection.base.row == selection.extent.row;
+    final left = sameRow
+        ? widget.padding + selection.base.col * _cellWidth
+        : widget.padding;
+    final right = sameRow
+        ? widget.padding + (selection.extent.col + 1) * _cellWidth
+        : widget.padding + _cols * _cellWidth;
+    final top = widget.padding + selection.base.row * _cellHeight;
+    final bottom = widget.padding + (selection.extent.row + 1) * _cellHeight;
+    final centerX = left + (right - left) / 2;
+    return TextSelectionToolbarAnchors(
+      primaryAnchor: terminalBox.localToGlobal(Offset(centerX, top)),
+      secondaryAnchor: terminalBox.localToGlobal(Offset(centerX, bottom)),
+    );
   }
 
   int _clampTerminalInt(int value, int min, int max) {
@@ -467,3 +796,5 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     }
   }
 }
+
+enum _TouchSelectionHandle { start, end }
