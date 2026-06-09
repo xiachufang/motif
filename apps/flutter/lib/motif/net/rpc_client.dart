@@ -74,6 +74,7 @@ class RpcClient {
 
   String _host = '';
   int _port = 0;
+  String _scheme = 'http';
   String _token = '';
 
   String? _sessionId;
@@ -103,10 +104,12 @@ class RpcClient {
     required String host,
     required int port,
     required String token,
+    String scheme = 'http',
     ProxySettings proxy = ProxySettings.none,
   }) {
     _host = host;
     _port = port;
+    _scheme = scheme == 'https' ? 'https' : 'http';
     _token = token;
     _proxy = proxy;
     if (proxy.isActive) {
@@ -135,7 +138,7 @@ class RpcClient {
 
   /// GET /ping — unauthenticated identity probe.
   Future<PingInfo> ping() async {
-    final uri = Uri.parse('http://$_host:$_port/ping');
+    final uri = _uri('/ping');
     final resp = await _http.get(uri).timeout(const Duration(seconds: 8));
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       throw RpcException('ping HTTP ${resp.statusCode}');
@@ -165,7 +168,7 @@ class RpcClient {
     String method,
     Map<String, Object?> params,
   ) async {
-    final uri = Uri.parse('http://$_host:$_port/rpc/$method');
+    final uri = _uri('/rpc/$method');
     final timeout = method == 'fs.write'
         ? const Duration(seconds: 60)
         : const Duration(seconds: 30);
@@ -253,7 +256,7 @@ class RpcClient {
     String? expectedSha256,
   }) async {
     final uri = Uri(
-      scheme: 'http',
+      scheme: _scheme,
       host: _host,
       port: _port,
       path: '/rpc/fs.write',
@@ -287,7 +290,7 @@ class RpcClient {
     final sid = _sessionId;
     if (sid == null) throw const RpcException('not connected');
     final url =
-        'ws://$_host:$_port/events?session=$sid&since=$since&${_wsAuthQuery()}';
+        '$_wsScheme://$_host:$_port/events?session=$sid&since=$since&${_wsAuthQuery()}';
     final socket = connectWebSocket(
       url,
       headers: {'Authorization': 'Bearer $_token'},
@@ -330,6 +333,11 @@ class RpcClient {
   void _emit(MotifEvent e) {
     if (!_events.isClosed) _events.add(e);
   }
+
+  Uri _uri(String path) =>
+      Uri(scheme: _scheme, host: _host, port: _port, path: path);
+
+  String get _wsScheme => _scheme == 'https' ? 'wss' : 'ws';
 
   // ─────────────────────────── /pty/<id> ───────────────────────────
 
@@ -415,7 +423,7 @@ class RpcClient {
   ) async {
     final sinceQuery = ch.hasCursor ? '&since=${ch.cursor}' : '';
     final url =
-        'ws://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&${_wsAuthQuery()}';
+        '$_wsScheme://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&${_wsAuthQuery()}';
     Log.i(
       'ws open pty=$ptyId gen=$generation since=${ch.hasCursor ? ch.cursor : "full"}',
       name: 'motif.rpc',

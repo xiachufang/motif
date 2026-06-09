@@ -259,7 +259,7 @@ pub async fn set_launch_at_login(
 
     if enable && !is_bundled() {
         return Err(
-            "Launch at login needs the bundled Motif.app — run apps/menubar/bundle.sh and \
+            "Launch at login needs the bundled Motif.app — run make release-menubar-macos and \
              start that, not the dev binary."
                 .into(),
         );

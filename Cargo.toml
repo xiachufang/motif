@@ -1,8 +1,8 @@
 [workspace]
 members  = ["crates/*", "apps/*"]
-# apps/web (React/Vite) and apps/ios (Swift/Xcode) live alongside the Rust
-# apps under apps/ but aren't Cargo packages; exclude so the glob skips them.
-exclude  = ["apps/web", "apps/ios", "apps/flutter"]
+# apps/flutter is a Flutter project, not a Cargo package; exclude it from the
+# workspace glob while still letting motif-server embed its web build output.
+exclude  = ["apps/flutter"]
 resolver = "2"
 
 [workspace.package]

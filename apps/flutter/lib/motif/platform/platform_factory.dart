@@ -4,4 +4,5 @@
 /// the web compile.
 library;
 
-export 'platform_factory_io.dart' if (dart.library.html) 'platform_factory_web.dart';
+export 'platform_factory_io.dart'
+    if (dart.library.js_interop) 'platform_factory_web.dart';

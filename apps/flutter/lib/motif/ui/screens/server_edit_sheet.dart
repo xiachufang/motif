@@ -115,6 +115,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       name: _name.text.trim(),
       host: _host.text.trim(),
       port: int.parse(_port.text.trim()),
+      scheme: widget.existing?.scheme ?? 'http',
       token: _token.text,
       kind: _kind,
     );

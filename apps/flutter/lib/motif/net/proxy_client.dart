@@ -4,4 +4,5 @@
 /// default client is returned.
 library;
 
-export 'proxy_client_io.dart' if (dart.library.html) 'proxy_client_web.dart';
+export 'proxy_client_io.dart'
+    if (dart.library.js_interop) 'proxy_client_web.dart';

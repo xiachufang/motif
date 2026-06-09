@@ -12,8 +12,7 @@ See [`docs/prd.md`](docs/prd.md) for the full design.
 ```
 crates/                  Rust workspace
 ├─ motif-server          motifd: HTTP /rpc + WS /events + WS /pty/<id>;
-│                        embeds the React SPA via rust-embed
-├─ motif-tui             ratatui terminal client (reference client)
+│                        embeds the Flutter Web client via rust-embed
 ├─ motif-cast            "cast my terminal to motifd" one-shot
 ├─ motif-client          shared client transport (HTTP + WS)
 ├─ motif-proto           wire types — JSON-RPC envelopes, events, RPC schemas
@@ -21,8 +20,7 @@ crates/                  Rust workspace
 └─ motif-tailscale       tsnet integration so motifd can join a tailnet
 
 apps/
-├─ web                   React 19 + Vite SPA (browser client, embedded into motifd)
-├─ ios                   Swift / SwiftUI iOS app (WKWebView + native panels)
+├─ flutter               Flutter client for iOS, macOS, Android, Web, Linux, Windows
 └─ menubar               Tauri menu-bar shell that runs an embedded motifd
 
 docs/                    architecture + protocol
@@ -48,18 +46,37 @@ via **Zig 0.15.2** (pinned by ghostty; 0.16 is rejected). Put a matching `zig` o
   ghostty source and Zig packages.
 
 ```bash
-# Rust binaries (motifd / motif-tui / motif-cast / motif-menubar)
-cargo build --release
+# Flutter Web — built separately, then embedded by motif-server's build.rs.
+cd apps/flutter
+flutter pub get
+flutter build web --no-wasm-dry-run
+cd ../..
 
-# Web SPA — built separately, then embedded by motif-server's build.rs.
-pnpm --dir apps/web install
-pnpm --dir apps/web build
-cargo build -p motif-server --release   # picks up apps/web/dist
+# Rust binaries (motifd / motif-cast / motif-menubar)
+cargo build --release                   # motif-server picks up apps/flutter/build/web
 ```
 
-`crates/motif-server/build.rs` copies `apps/web/dist/` into a `static/` dir,
-which `rust-embed` bakes into the `motifd` binary. If `apps/web/dist` doesn't
-exist, build.rs writes a placeholder index.html so `cargo build` still works.
+`crates/motif-server/build.rs` copies `apps/flutter/build/web/` into a
+`static/` dir, which `rust-embed` bakes into the `motifd` binary. If the Flutter
+Web build does not exist, build.rs writes a placeholder index.html so
+`cargo build` still works.
+
+### Release artifacts
+
+The root `Makefile` is the release entry point:
+
+```bash
+make deps
+make release-flutter-web
+make release-macos       # Rust + menu-bar + Flutter macOS artifacts
+make release-linux       # Rust + menu-bar + Flutter Linux artifacts
+make release-windows     # Rust + menu-bar + Flutter Windows artifacts
+```
+
+Artifacts are written to `dist/release/`. Platform-specific targets are meant for
+a CI matrix: each host builds its own artifact and fails fast if it is run on the
+wrong OS. Mobile targets intentionally fail early if Android is still using debug
+signing or iOS is still configured with development APNs entitlements.
 
 ## Run
 
@@ -67,10 +84,8 @@ exist, build.rs writes a placeholder index.html so `cargo build` still works.
 # Server (insecure-no-auth is for local dev)
 ./target/release/motifd --listen 0.0.0.0:7777 --insecure-no-auth
 
-# TUI client — auto-discovers ws://127.0.0.1:7777
-./target/release/motif-tui
-
-# Browser — open http://localhost:7777
+# Browser — open http://localhost:7777; the embedded Flutter Web client
+# auto-configures itself to the motifd origin on first launch.
 ```
 
 For deployments behind a TLS terminator or on a tailnet, see
@@ -81,24 +96,25 @@ For deployments behind a TLS terminator or on a tailnet, see
 Two Procfiles (run with `overmind start -f <file>` / `foreman start -f <file>`):
 
 **`Procfile.watch`** — fast iteration. motifd + relay under `cargo watch`
-(auto-rebuild on Rust changes) plus the Vite dev server:
+(auto-rebuild on Rust changes) plus the Flutter web-server:
 
 ```
 motifd: cargo watch ... -x "run -p motif-server --bin motifd -- --listen 0.0.0.0:7777 --insecure-no-auth --tailscale ..."
 relay:  cargo watch -w crates/motif-push-relay -x "run -p motif-push-relay -- ..."
-vite:   cd apps/web && pnpm dev --host 0.0.0.0 --port 5173
+web-dev: cd apps/flutter && flutter run -d web-server --web-hostname 0.0.0.0 --web-port 5173
 ```
 
-Vite proxies `/rpc`, `/events`, `/pty`, `/ping` to motifd, so browsing
-`http://localhost:5173/` gives you a hot-reloading web client against the
-locally running motifd. Note: motifd's own `:7777` serves the *embedded* web
-snapshot from the last `pnpm build` — under `Procfile.watch` it's stale; use
-`:5173` for web work.
+Browsing `http://localhost:5173/` gives you Flutter hot reload. Add
+`127.0.0.1:7777` as a direct server in that dev UI, or use motifd's own
+`http://localhost:7777/` to exercise the embedded snapshot from the last
+`flutter build web --no-wasm-dry-run`.
 
-**`Procfile.dev`** — no `cargo watch`. Runs `pnpm --dir apps/web build` first,
-then `cargo run` motifd (whose `build.rs` embeds the freshly-built `apps/web/dist`),
-so `http://localhost:7777/` serves the current web — the same path a release
-binary takes. No Vite, no auto-rebuild: restart the Procfile to pick up changes.
+**`Procfile.dev`** — no `cargo watch`. Runs
+`flutter build web --no-wasm-dry-run` first, then `cargo run` motifd (whose
+`build.rs` embeds the freshly-built
+`apps/flutter/build/web`), so `http://localhost:7777/` serves the current web —
+the same path a release binary takes. No hot reload: restart the Procfile to pick
+up changes.
 Use this to exercise the real embedded `:7777` path (and to avoid the session/
 device-registration churn that `cargo watch` restarts cause).
 

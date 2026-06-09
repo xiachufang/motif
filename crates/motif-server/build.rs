@@ -40,7 +40,7 @@ fn main() {
     } else {
         let placeholder = b"<!doctype html><meta charset=utf-8><title>motif</title>\
             <h1>motif</h1><p>frontend not built. \
-            Run <code>flutter build web</code> from <code>apps/flutter</code>, \
+            Run <code>flutter build web --wasm</code> from <code>apps/flutter</code>, \
             then rebuild <code>motifd</code>.</p>";
         std::fs::write(static_dir.join("index.html"), placeholder).unwrap();
     }

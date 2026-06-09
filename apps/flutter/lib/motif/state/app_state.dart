@@ -14,10 +14,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/motif_proto.dart';
 import '../models/settings.dart';
+import '../platform/web_launch.dart';
 import '../platform/push_crypto.dart';
 import '../platform/services.dart';
 import '../terminal/terminal_palette.dart';
 import 'connection_state.dart';
+import 'embedded_web_server.dart';
 import 'motif_client.dart';
 import 'server_connection_controller.dart';
 import 'stores.dart';
@@ -67,10 +69,28 @@ class AppState extends ChangeNotifier {
     _applyTerminalPalette();
   }
 
-  static Future<AppState> load({PlatformServices? platform}) async {
+  static Future<AppState> load({
+    PlatformServices? platform,
+    Uri? embeddedWebUri,
+    String embeddedWebToken = '',
+  }) async {
     final prefs = await SharedPreferences.getInstance();
+    final servers = ServerStore(prefs);
+    if (servers.servers.isEmpty) {
+      final launch = currentWebLaunchLocation();
+      final server = embeddedWebServerFromUri(
+        embeddedWebUri ?? launch?.uri ?? Uri(),
+        token: embeddedWebUri == null
+            ? (launch?.token ?? '')
+            : embeddedWebToken,
+      );
+      if (server != null) {
+        await servers.add(server);
+        scrubWebLaunchToken();
+      }
+    }
     return AppState(
-      servers: ServerStore(prefs),
+      servers: servers,
       terminalSettings: TerminalSettingsStore(prefs),
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),

@@ -95,7 +95,7 @@ Requires **Zig 0.15.2** on `PATH` for the libghostty native asset.
 | macOS | `flutter build macos` | libghostty dylib | ✅ builds + runs |
 | iOS | `flutter build ios --simulator` | libghostty dylib/framework | sim ✅; device needs signing |
 | Android | `flutter build apk` | libghostty `.so` | ✅ bundles `lib*/libghostty-vt.so`; needs NDK 28 + JDK 17 |
-| Web | `flutter build web` | libghostty WASM | ✅ builds (`web/ghostty-vt.wasm` + `web/ghostty_vt.js`) |
+| Web | `flutter build web --no-wasm-dry-run` | libghostty WASM | ✅ builds (`web/ghostty-vt.wasm` + `web/ghostty_vt.js`) |
 | Linux | `flutter build linux` (on a Linux host) | libghostty `.so` (cross-builds from macOS) | app assembly needs a Linux host/CI |
 | Windows | `flutter build windows` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
 

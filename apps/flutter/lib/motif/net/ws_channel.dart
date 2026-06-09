@@ -7,4 +7,4 @@
 /// required; see MOTIF_FLUTTER_PLAN.md web phase).
 library;
 
-export 'ws_channel_io.dart' if (dart.library.html) 'ws_channel_web.dart';
+export 'ws_channel_io.dart' if (dart.library.js_interop) 'ws_channel_web.dart';

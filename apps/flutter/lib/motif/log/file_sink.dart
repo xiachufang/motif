@@ -4,4 +4,4 @@
 /// web compile, mirroring `platform/platform_factory.dart`.
 library;
 
-export 'file_sink_io.dart' if (dart.library.html) 'file_sink_stub.dart';
+export 'file_sink_io.dart' if (dart.library.js_interop) 'file_sink_stub.dart';

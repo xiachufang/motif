@@ -66,6 +66,11 @@ class _InputBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    final speechAvailable = context
+        .read<AppState>()
+        .platform
+        .speech
+        .isAvailable;
     return Container(
       key: const ValueKey('bottom-bar'),
       padding: const EdgeInsets.symmetric(
@@ -104,7 +109,7 @@ class _InputBar extends StatelessWidget {
                       maxLines: 5,
                       style: TextStyle(color: c.textPrimary, fontSize: 16),
                       decoration: InputDecoration(
-                        hintText: 'type or speak…',
+                        hintText: speechAvailable ? 'type or speak…' : 'type…',
                         hintStyle: TextStyle(color: c.textTertiary),
                         filled: false,
                         border: InputBorder.none,
@@ -119,39 +124,40 @@ class _InputBar extends StatelessWidget {
                       onSubmitted: (_) => onSend(),
                     ),
                   ),
-                  SizedBox(
-                    width: 30,
-                    height: 28,
-                    child: IconButton(
-                      onPressed: micStarting ? null : onMic,
-                      tooltip: micStarting
-                          ? 'Starting voice input'
-                          : recording
-                          ? 'Stop'
-                          : 'Voice input',
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.transparent,
-                        foregroundColor: recording ? c.danger : c.textPrimary,
-                        fixedSize: const Size(30, 28),
-                        minimumSize: const Size(30, 28),
-                        padding: EdgeInsets.zero,
-                      ),
-                      icon: micStarting
-                          ? SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: c.textSecondary,
+                  if (speechAvailable)
+                    SizedBox(
+                      width: 30,
+                      height: 28,
+                      child: IconButton(
+                        onPressed: micStarting ? null : onMic,
+                        tooltip: micStarting
+                            ? 'Starting voice input'
+                            : recording
+                            ? 'Stop'
+                            : 'Voice input',
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          foregroundColor: recording ? c.danger : c.textPrimary,
+                          fixedSize: const Size(30, 28),
+                          minimumSize: const Size(30, 28),
+                          padding: EdgeInsets.zero,
+                        ),
+                        icon: micStarting
+                            ? SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: c.textSecondary,
+                                ),
+                              )
+                            : Icon(
+                                recording
+                                    ? Icons.stop_circle_outlined
+                                    : Icons.mic,
                               ),
-                            )
-                          : Icon(
-                              recording
-                                  ? Icons.stop_circle_outlined
-                                  : Icons.mic,
-                            ),
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),

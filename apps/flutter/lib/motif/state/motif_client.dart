@@ -172,6 +172,7 @@ class MotifClient extends ChangeNotifier {
       ..connect(
         host: server.host,
         port: server.port,
+        scheme: server.scheme,
         token: server.token,
         proxy: proxy,
       );

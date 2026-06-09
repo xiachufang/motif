@@ -23,6 +23,7 @@ class MotifServer {
   final String name;
   final String host;
   final int port;
+  final String scheme;
   final String token;
   final ServerKind kind;
 
@@ -31,16 +32,19 @@ class MotifServer {
     required this.name,
     required this.host,
     this.port = 7777,
+    this.scheme = 'http',
     this.token = '',
     this.kind = ServerKind.direct,
   });
 
   String get endpoint => '$host:$port';
+  String get origin => '$scheme://$endpoint';
 
   MotifServer copyWith({
     String? name,
     String? host,
     int? port,
+    String? scheme,
     String? token,
     ServerKind? kind,
   }) => MotifServer(
@@ -48,6 +52,7 @@ class MotifServer {
     name: name ?? this.name,
     host: host ?? this.host,
     port: port ?? this.port,
+    scheme: _normalizeScheme(scheme ?? this.scheme),
     token: token ?? this.token,
     kind: kind ?? this.kind,
   );
@@ -57,6 +62,7 @@ class MotifServer {
     'name': name,
     'host': host,
     'port': port,
+    if (scheme != 'http') 'scheme': scheme,
     'token': token,
     'kind': kind.name,
   };
@@ -66,9 +72,13 @@ class MotifServer {
     name: (j['name'] as String?) ?? '',
     host: (j['host'] as String?) ?? '',
     port: (j['port'] as num?)?.toInt() ?? 7777,
+    scheme: _normalizeScheme(j['scheme'] as String?),
     token: (j['token'] as String?) ?? '',
     kind: ServerKind.fromWire(j['kind']),
   );
+
+  static String _normalizeScheme(String? value) =>
+      value == 'https' ? 'https' : 'http';
 
   static String encodeList(List<MotifServer> servers) =>
       jsonEncode(servers.map((s) => s.toJson()).toList());

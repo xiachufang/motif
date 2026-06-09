@@ -7,4 +7,5 @@
 /// stub is inert.
 library;
 
-export 'native_terminal_io.dart' if (dart.library.html) 'native_terminal_stub.dart';
+export 'native_terminal_io.dart'
+    if (dart.library.js_interop) 'native_terminal_stub.dart';

@@ -1,4 +1,5 @@
 /target
+/dist
 # binary symlinks -> target/debug/* (created for convenience)
 /motifd
 /motif-tui
