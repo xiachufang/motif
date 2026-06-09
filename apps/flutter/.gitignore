@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Generated native/web artifacts
+/android/app/src/main/jniLibs/
+/ios/vendor/
+/linux/vendor/
+/macos/Libs/
+/macos/vendor/
+/web/ghostty-vt.wasm
+/windows/vendor/

@@ -11,6 +11,7 @@ Cargo.lock.bak
 
 # motif state directories (per-binary, used at runtime)
 .motif/
+.motif-dev/
 *.token
 
 # motifd RPC frame dump (enabled by dev-warp.sh)
