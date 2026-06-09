@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -36,6 +37,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   String? _discoveryMessage;
   int _discoveryGeneration = 0;
 
+  bool get _supportsTailscale => !kIsWeb;
+
   @override
   void initState() {
     super.initState();
@@ -44,7 +47,9 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _host = TextEditingController(text: e?.host ?? '');
     _port = TextEditingController(text: '${e?.port ?? 7777}');
     _token = TextEditingController(text: e?.token ?? '');
-    _kind = e?.kind ?? ServerKind.tailscale;
+    _kind = _supportsTailscale
+        ? (e?.kind ?? ServerKind.tailscale)
+        : ServerKind.direct;
   }
 
   @override
@@ -87,7 +92,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_discoveryStarted && _isNew && _kind == ServerKind.tailscale) {
+    if (_supportsTailscale &&
+        !_discoveryStarted &&
+        _isNew &&
+        _kind == ServerKind.tailscale) {
       _discoveryStarted = true;
       Future.microtask(_loadDiscovery);
     }
@@ -152,7 +160,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   Future<void> _refreshVisiblePeerPings({int? generation}) async {
     final currentGeneration = generation ?? ++_discoveryGeneration;
-    if (!_isNew || _kind != ServerKind.tailscale || _discoveryLoading) return;
+    if (!_supportsTailscale ||
+        !_isNew ||
+        _kind != ServerKind.tailscale ||
+        _discoveryLoading) {
+      return;
+    }
     final svc = context.read<AppState>().platform.tailscale;
     final port = int.tryParse(_port.text.trim());
     final peers = _visiblePeers;
@@ -193,6 +206,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   void _onKindChanged(Set<ServerKind> selected) {
+    if (!_supportsTailscale) return;
     setState(() => _kind = selected.first);
     if (_isNew && _kind == ServerKind.tailscale) {
       _discoveryStarted = true;
@@ -271,34 +285,38 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                 MediaQuery.of(context).viewInsets.bottom + MotifSpacing.xl,
               ),
               children: [
-                MotifSection(
-                  title: 'Reach via',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(MotifSpacing.sm),
-                      child: SegmentedButton<ServerKind>(
-                        segments: const [
-                          ButtonSegment(
-                            value: ServerKind.direct,
-                            label: Text('Direct'),
-                          ),
-                          ButtonSegment(
-                            value: ServerKind.tailscale,
-                            label: Text('Tailscale'),
-                          ),
-                        ],
-                        selected: {_kind},
-                        onSelectionChanged: _onKindChanged,
+                if (_supportsTailscale) ...[
+                  MotifSection(
+                    title: 'Reach via',
+                    dividerIndent: MotifSpacing.lg,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(MotifSpacing.sm),
+                        child: SegmentedButton<ServerKind>(
+                          segments: const [
+                            ButtonSegment(
+                              value: ServerKind.direct,
+                              label: Text('Direct'),
+                            ),
+                            ButtonSegment(
+                              value: ServerKind.tailscale,
+                              label: Text('Tailscale'),
+                            ),
+                          ],
+                          selected: {_kind},
+                          onSelectionChanged: _onKindChanged,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                if (_isNew && _kind == ServerKind.tailscale) ...[
+                    ],
+                  ),
                   const SizedBox(height: MotifSpacing.xl),
-                  _discoverySection(context),
                 ],
-                const SizedBox(height: MotifSpacing.xl),
+                if (_supportsTailscale &&
+                    _isNew &&
+                    _kind == ServerKind.tailscale) ...[
+                  _discoverySection(context),
+                  const SizedBox(height: MotifSpacing.xl),
+                ],
                 MotifSection(
                   title: 'Name',
                   dividerIndent: MotifSpacing.lg,

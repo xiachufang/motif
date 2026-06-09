@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -31,7 +32,8 @@ class ConnectionScreen extends StatelessWidget {
     MotifServer server,
   ) async {
     await app.connectServerAndRefresh(server.id, force: true, makeActive: true);
-    if (context.mounted &&
+    if (!kIsWeb &&
+        context.mounted &&
         app.serverViewState(server.id).primaryAction ==
             ServerConnectionAction.openTailscale) {
       showTailscaleConnectionSheet(context);
@@ -58,6 +60,7 @@ class ConnectionScreen extends StatelessWidget {
       case ServerConnectionAction.disconnect:
         unawaited(app.disconnectServer(server.id));
       case ServerConnectionAction.openTailscale:
+        if (kIsWeb) return;
         showTailscaleConnectionSheet(context);
       case ServerConnectionAction.openSessions:
         _openSessions(context);
@@ -81,11 +84,13 @@ class ConnectionScreen extends StatelessWidget {
             MotifSpacing.xl,
           ),
           children: [
-            const MotifSection(
-              title: 'Tailscale',
-              children: [TailscaleSection()],
-            ),
-            const SizedBox(height: MotifSpacing.xl),
+            if (!kIsWeb) ...[
+              const MotifSection(
+                title: 'Tailscale',
+                children: [TailscaleSection()],
+              ),
+              const SizedBox(height: MotifSpacing.xl),
+            ],
             MotifSection(
               title: 'Servers',
               headerTrailing: IconButton(

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
@@ -77,6 +78,8 @@ void main() {
   testWidgets('discovers Tailscale peers and saves a selected motifd server', (
     tester,
   ) async {
+    if (kIsWeb) return;
+
     final app = await _app();
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
@@ -112,4 +115,38 @@ void main() {
     expect(server.port, 7777);
     expect(server.kind, ServerKind.tailscale);
   });
+
+  testWidgets('web hides Tailscale server options', (tester) async {
+    if (!kIsWeb) return;
+
+    final app = await _app();
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet()),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    expect(find.text('Reach via'), findsNothing);
+    expect(find.text('Tailscale'), findsNothing);
+    expect(find.text('DISCOVERED ON TAILNET'), findsNothing);
+
+    await tester.enterText(_fieldWithLabel('Name'), 'Web Dev');
+    await tester.enterText(_fieldWithLabel('Host'), '127.0.0.1');
+    await tester.pump();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(app.servers.servers, hasLength(1));
+    expect(app.servers.servers.single.kind, ServerKind.direct);
+  });
 }
+
+Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
+  (widget) => widget is TextField && widget.decoration?.labelText == label,
+);

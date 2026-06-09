@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -19,7 +20,8 @@ class WelcomeScreen extends StatelessWidget {
     final result = await showServerEditSheet(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
     await app.connectServerAndRefresh(result.server.id, force: true);
-    if (context.mounted &&
+    if (!kIsWeb &&
+        context.mounted &&
         app.serverViewState(result.server.id).primaryAction ==
             ServerConnectionAction.openTailscale) {
       showTailscaleConnectionSheet(context);
@@ -72,13 +74,15 @@ class WelcomeScreen extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: MotifSpacing.xl),
-            const MotifSection(
-              title: 'Tailscale',
-              footer:
-                  'motifd is reached over the tailnet. Connect first to discover servers automatically.',
-              children: [TailscaleSection()],
-            ),
+            if (!kIsWeb) ...[
+              const SizedBox(height: MotifSpacing.xl),
+              const MotifSection(
+                title: 'Tailscale',
+                footer:
+                    'motifd is reached over the tailnet. Connect first to discover servers automatically.',
+                children: [TailscaleSection()],
+              ),
+            ],
             const SizedBox(height: MotifSpacing.xl),
             MotifSection(
               title: 'Servers',
