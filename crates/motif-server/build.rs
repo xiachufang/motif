@@ -4,9 +4,9 @@
 use std::path::Path;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../apps/web/dist");
-    println!("cargo:rerun-if-changed=../../apps/web/index.html");
-    println!("cargo:rerun-if-changed=../../apps/web/src");
+    println!("cargo:rerun-if-changed=../../apps/flutter/build/web");
+    println!("cargo:rerun-if-changed=../../apps/flutter/web");
+    println!("cargo:rerun-if-changed=../../apps/flutter/lib");
 
     let crate_root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let static_dir = Path::new(&crate_root).join("static");
@@ -26,21 +26,22 @@ fn main() {
         }
     }
 
-    let web_dir = Path::new(&crate_root)
+    let flutter_dir = Path::new(&crate_root)
         .parent()
         .unwrap()
         .parent()
         .unwrap()
         .join("apps")
-        .join("web");
-    let dist = web_dir.join("dist");
+        .join("flutter");
+    let dist = flutter_dir.join("build").join("web");
 
     if dist.is_dir() {
         copy_tree(&dist, &static_dir);
     } else {
         let placeholder = b"<!doctype html><meta charset=utf-8><title>motif</title>\
             <h1>motif</h1><p>frontend not built. \
-            Run <code>pnpm --dir apps/web build</code>, then rebuild <code>motifd</code>.</p>";
+            Run <code>flutter build web</code> from <code>apps/flutter</code>, \
+            then rebuild <code>motifd</code>.</p>";
         std::fs::write(static_dir.join("index.html"), placeholder).unwrap();
     }
 }
