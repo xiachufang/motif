@@ -175,9 +175,7 @@ enum EmuCmd {
     /// position and reply with `ESC [ row ; col R`. Routed through this
     /// ordered channel so it's processed *after* every preceding `Feed`,
     /// i.e. the cursor reflects exactly the bytes seen before the query.
-    AnswerCpr {
-        reply: oneshot::Sender<Vec<u8>>,
-    },
+    AnswerCpr { reply: oneshot::Sender<Vec<u8>> },
 }
 
 /// Reply to [`EmuCmd::Subscribe`]. The client adopts `start` as its byte
@@ -255,7 +253,11 @@ impl Pty {
         let (tx, rx) = oneshot::channel();
         // Non-blocking unless the bounded channel is full (slow emulator);
         // a failed send means the emulator thread has exited.
-        if self.emu_tx.send(EmuCmd::Subscribe { since, reply: tx }).is_err() {
+        if self
+            .emu_tx
+            .send(EmuCmd::Subscribe { since, reply: tx })
+            .is_err()
+        {
             return None;
         }
         rx.await.ok()
@@ -1061,8 +1063,14 @@ mod tests {
             raw_len += line.len();
             feed(&tx, line.as_bytes());
         }
-        assert!(raw_len > SNAPSHOT_VS_DELTA_THRESHOLD, "test must exceed the threshold");
-        assert!(raw_len < RING_BYTES, "kept under the ring so origin stays at base");
+        assert!(
+            raw_len > SNAPSHOT_VS_DELTA_THRESHOLD,
+            "test must exceed the threshold"
+        );
+        assert!(
+            raw_len < RING_BYTES,
+            "kept under the ring so origin stays at base"
+        );
 
         // `since == RING_ORIGIN_BASE` is the ring's very start: a warm cursor
         // whose delta is the whole ring.
@@ -1077,7 +1085,10 @@ mod tests {
             "snapshot must carry the scrollback-clearing prelude"
         );
         // Snapshot cursor accounting: counting the replay lands on `total`.
-        assert_ne!(reply.start, RING_ORIGIN_BASE, "snapshot start != warm since");
+        assert_ne!(
+            reply.start, RING_ORIGIN_BASE,
+            "snapshot start != warm since"
+        );
     }
 
     #[test]
@@ -1086,12 +1097,18 @@ mod tests {
         let tx = spawn_emu(80, 24);
         feed(&tx, b"hello world\r\n");
         let reply = subscribe(&tx, Some(RING_ORIGIN_BASE));
-        assert_eq!(reply.start, RING_ORIGIN_BASE, "small delta resumes at `since`");
+        assert_eq!(
+            reply.start, RING_ORIGIN_BASE,
+            "small delta resumes at `since`"
+        );
         assert!(
             !find(&reply.replay, b"\x1b[3J"),
             "small delta must be raw bytes, not a snapshot"
         );
-        assert!(find(&reply.replay, b"hello world"), "delta carries the raw bytes");
+        assert!(
+            find(&reply.replay, b"hello world"),
+            "delta carries the raw bytes"
+        );
     }
 
     #[test]
@@ -1122,7 +1139,11 @@ mod tests {
 
         // Without the re-pad, the trimmed blank rows make `echo` scroll fewer
         // lines (smaller scrollback) and land the content a row too low.
-        assert_eq!(echo.cursor_y().unwrap(), orig_cy, "cursor row drifted across snapshot");
+        assert_eq!(
+            echo.cursor_y().unwrap(),
+            orig_cy,
+            "cursor row drifted across snapshot"
+        );
         assert_eq!(
             echo.scrollback_rows().unwrap(),
             orig_sb,
@@ -1279,7 +1300,10 @@ mod tests {
         let r = subscribe(&tx, None);
         assert!(!r.replay.is_empty());
         // Scrollback survives the rebuild (most-recent line is present).
-        assert!(find(&r.replay, b"line 4999"), "snapshot lost recent scrollback after reflow");
+        assert!(
+            find(&r.replay, b"line 4999"),
+            "snapshot lost recent scrollback after reflow"
+        );
     }
 
     #[test]
@@ -1303,7 +1327,10 @@ mod tests {
         // Cold attach → snapshot. start is chosen so that after the client
         // counts the snapshot bytes its cursor lands on `total` (= base + fed),
         // making the next resume a warm delta.
-        assert_eq!(r.start + r.replay.len() as u64, RING_ORIGIN_BASE + fed as u64);
+        assert_eq!(
+            r.start + r.replay.len() as u64,
+            RING_ORIGIN_BASE + fed as u64
+        );
         assert!(!r.replay.is_empty());
         // Redraw churn collapses: the snapshot is a tiny fraction of fed bytes.
         assert!(

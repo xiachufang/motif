@@ -99,11 +99,17 @@ pub fn dispatch_concurrent(
             id,
             RpcError::internal("mutating method routed to concurrent dispatcher"),
         ),
-        "session.set_palette" => attached(manager, conn, id, req.params, |s, p: ses::SetPaletteParams| {
-            s.set_terminal_palette(p.term_fg, p.term_bg);
-            s.set_theme(p.theme);
-            Ok(ses::SetPaletteResult::default())
-        }),
+        "session.set_palette" => attached(
+            manager,
+            conn,
+            id,
+            req.params,
+            |s, p: ses::SetPaletteParams| {
+                s.set_terminal_palette(p.term_fg, p.term_bg);
+                s.set_theme(p.theme);
+                Ok(ses::SetPaletteResult::default())
+            },
+        ),
 
         // pty.*
         "pty.create" => handle_pty_create(manager, conn, id, req.params),
@@ -602,7 +608,10 @@ fn mark_pty_primary(s: &Arc<Session>, pty_id: &str, client: motif_proto::common:
     }
 }
 
-pub(crate) fn current_session(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) -> Option<Arc<Session>> {
+pub(crate) fn current_session(
+    mgr: &Arc<SessionManager>,
+    conn: &ConnSnapshot,
+) -> Option<Arc<Session>> {
     let name = conn.attached.as_ref()?;
     mgr.get(name)
 }

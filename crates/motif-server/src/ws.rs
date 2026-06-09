@@ -8,10 +8,12 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::Message;
 use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderName, Method};
 use axum::routing::get;
 use axum::Router;
 use motif_proto::envelope::Notification;
 use motif_proto::event::Event;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::TokenStore;
 use crate::conn_registry::ConnRegistry;
@@ -47,6 +49,15 @@ pub fn router(state: AppState) -> Router {
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
         .with_state(state)
+        .layer(cors_layer())
+}
+
+fn cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(Any)
+        .expose_headers([HeaderName::from_static(http_rpc::SESSION_HEADER)])
 }
 
 /// `GET /ping` — unauthenticated liveness + identity probe. Returns a

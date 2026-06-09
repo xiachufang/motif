@@ -152,4 +152,3 @@ async fn run() -> anyhow::Result<()> {
     };
     motif_server::serve(cfg).await
 }
-

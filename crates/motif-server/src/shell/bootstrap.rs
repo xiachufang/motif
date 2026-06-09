@@ -175,10 +175,7 @@ fn write_asset_executable(dir: &Path, name: &str) -> Option<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            dir.join(name),
-            std::fs::Permissions::from_mode(0o700),
-        );
+        let _ = std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o700));
     }
     Some(())
 }

@@ -109,7 +109,9 @@ mod tests {
         let b = generate_token();
         assert_ne!(a, b);
         assert_eq!(a.len(), 43); // 32 bytes base64url-nopad
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
     #[test]

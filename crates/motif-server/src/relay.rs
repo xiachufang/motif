@@ -134,7 +134,15 @@ impl RelayClient {
         let futs = devices.into_iter().map(|d| {
             let plain = plain.clone();
             async move {
-                match self.push_one(&d.device_token, d.environment.as_deref(), &d.enc_key, &plain).await {
+                match self
+                    .push_one(
+                        &d.device_token,
+                        d.environment.as_deref(),
+                        &d.enc_key,
+                        &plain,
+                    )
+                    .await
+                {
                     Ok(true) => {}
                     Ok(false) => {
                         tracing::info!("push: relay reported token gone; pruning");

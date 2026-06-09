@@ -111,9 +111,8 @@ impl TestServer {
                 String::from_utf8_lossy(&body)
             );
         }
-        serde_json::from_slice(&body).with_context(|| {
-            format!("decode {method}: {}", String::from_utf8_lossy(&body))
-        })
+        serde_json::from_slice(&body)
+            .with_context(|| format!("decode {method}: {}", String::from_utf8_lossy(&body)))
     }
 }
 
@@ -138,9 +137,7 @@ async fn http_request(
         .await
         .with_context(|| format!("connect {addr}"))?;
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = http1::handshake(io)
-        .await
-        .context("http1 handshake")?;
+    let (mut sender, conn) = http1::handshake(io).await.context("http1 handshake")?;
     let driver = tokio::spawn(async move {
         let _ = conn.await;
     });
@@ -199,11 +196,7 @@ impl TestClient {
 
     /// Create a session with `workdir`, attach to it, and open the /events
     /// WebSocket. If the session already exists, only attach.
-    pub async fn connect(
-        server: &TestServer,
-        session_name: &str,
-        workdir: &Path,
-    ) -> Result<Self> {
+    pub async fn connect(server: &TestServer, session_name: &str, workdir: &Path) -> Result<Self> {
         Self::connect_inner(server, session_name, workdir, /*open_events=*/ true).await
     }
 
@@ -237,7 +230,9 @@ impl TestClient {
         .await?;
         if !status.is_success() {
             // -32008 AlreadyExists is fine; any other error fails the test.
-            let err: RpcError = serde_json::from_slice(&body).unwrap_or_else(|_| RpcError::internal(format!("{status}: {}", String::from_utf8_lossy(&body))));
+            let err: RpcError = serde_json::from_slice(&body).unwrap_or_else(|_| {
+                RpcError::internal(format!("{status}: {}", String::from_utf8_lossy(&body)))
+            });
             if err.code != -32008 {
                 bail!("session.create failed: {err:?}");
             }
@@ -261,7 +256,10 @@ impl TestClient {
         )
         .await?;
         if !status.is_success() {
-            bail!("session.attach status {status}: {}", String::from_utf8_lossy(&body));
+            bail!(
+                "session.attach status {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
         }
         let session_id = headers
             .get(SESSION_HEADER)
@@ -320,8 +318,7 @@ impl TestClient {
         let body = to_body(&params);
         let path = format!("/rpc/{method}");
         let headers = with_session(&self.token, &self.session_id);
-        let (status, _, body) =
-            http_request(self.addr, "POST", &path, &headers, body).await?;
+        let (status, _, body) = http_request(self.addr, "POST", &path, &headers, body).await?;
         if !status.is_success() {
             let err: Result<RpcError, _> = serde_json::from_slice(&body);
             match err {
@@ -350,8 +347,7 @@ impl TestClient {
         let body = to_body(&params);
         let path = format!("/rpc/{method}");
         let headers = with_session(&self.token, &self.session_id);
-        let (status, _, body) =
-            http_request(self.addr, "POST", &path, &headers, body).await?;
+        let (status, _, body) = http_request(self.addr, "POST", &path, &headers, body).await?;
         Ok((status, body))
     }
 
@@ -418,7 +414,9 @@ impl TestClient {
 
     /// session.detach via HTTP. Implicitly closes the /events WS server-side.
     pub async fn detach(&mut self) -> Result<()> {
-        let _: ses::DetachResult = self.call("session.detach", ses::DetachParams::default()).await?;
+        let _: ses::DetachResult = self
+            .call("session.detach", ses::DetachParams::default())
+            .await?;
         if let Some(t) = self.events_task.take() {
             // The server closes the WS when the session is detached; give the
             // reader task a moment to notice, then drop it.
@@ -463,7 +461,10 @@ impl PtyWs {
                 }
                 Ok(Some(Ok(_other))) => continue,
                 Ok(Some(Err(e))) => bail!("/pty ws read error: {e}"),
-                Ok(None) => bail!("/pty ws closed while waiting for {:?}", String::from_utf8_lossy(needle)),
+                Ok(None) => bail!(
+                    "/pty ws closed while waiting for {:?}",
+                    String::from_utf8_lossy(needle)
+                ),
                 Err(_) => {
                     bail!(
                         "/pty ws timeout after {:?}; got {:?}",
@@ -595,7 +596,10 @@ pub fn init_git_repo(workdir: &Path) -> Result<()> {
         Ok(())
     };
     must("init", &["init", "-q", "-b", "main"])?;
-    must("config email", &["config", "user.email", "test@motif.invalid"])?;
+    must(
+        "config email",
+        &["config", "user.email", "test@motif.invalid"],
+    )?;
     must("config name", &["config", "user.name", "Motif Test"])?;
     std::fs::write(workdir.join("README.md"), b"hello\n").context("write README.md")?;
     must("add", &["add", "."])?;

@@ -257,7 +257,10 @@ mod tests {
 
     #[test]
     fn summarize_collapses_whitespace() {
-        assert_eq!(summarize("Done —\n  built the\tfeature."), "Done — built the feature.");
+        assert_eq!(
+            summarize("Done —\n  built the\tfeature."),
+            "Done — built the feature."
+        );
     }
 
     #[test]

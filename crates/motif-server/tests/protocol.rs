@@ -26,7 +26,10 @@ async fn session_lifecycle() {
     let dir_b = TempDir::new().unwrap();
 
     // list() empty
-    let listed: ses::ListResult = server.call("session.list", ses::ListParams::default()).await.unwrap();
+    let listed: ses::ListResult = server
+        .call("session.list", ses::ListParams::default())
+        .await
+        .unwrap();
     assert_eq!(listed.sessions.len(), 0);
 
     // create A
@@ -56,25 +59,36 @@ async fn session_lifecycle() {
         .unwrap();
 
     // list shows both, neither attached
-    let listed: ses::ListResult = server.call("session.list", ses::ListParams::default()).await.unwrap();
+    let listed: ses::ListResult = server
+        .call("session.list", ses::ListParams::default())
+        .await
+        .unwrap();
     assert_eq!(listed.sessions.len(), 2);
     assert!(listed.sessions.iter().all(|s| s.client_count == 0));
 
     // attach A via TestClient (it tolerates AlreadyExists)
-    let mut client_a = TestClient::connect(&server, "A", dir_a.path()).await.unwrap();
+    let mut client_a = TestClient::connect(&server, "A", dir_a.path())
+        .await
+        .unwrap();
     assert_eq!(client_a.attach_result.session.name, "A");
     // Single attach => empty `clients` list (the new client isn't in the
     // `existing` snapshot — that's the rule that lets us know if siblings are
     // present without filtering out self).
     assert_eq!(client_a.attach_result.clients.len(), 0);
 
-    let listed: ses::ListResult = server.call("session.list", ses::ListParams::default()).await.unwrap();
+    let listed: ses::ListResult = server
+        .call("session.list", ses::ListParams::default())
+        .await
+        .unwrap();
     let a = listed.sessions.iter().find(|s| s.name == "A").unwrap();
     assert_eq!(a.client_count, 1);
 
     // detach
     client_a.detach().await.unwrap();
-    let listed: ses::ListResult = server.call("session.list", ses::ListParams::default()).await.unwrap();
+    let listed: ses::ListResult = server
+        .call("session.list", ses::ListParams::default())
+        .await
+        .unwrap();
     let a = listed.sessions.iter().find(|s| s.name == "A").unwrap();
     assert_eq!(a.client_count, 0);
 
@@ -83,7 +97,10 @@ async fn session_lifecycle() {
         .call::<_, ses::DestroyResult>("session.destroy", ses::DestroyParams { name: "A".into() })
         .await
         .unwrap();
-    let listed: ses::ListResult = server.call("session.list", ses::ListParams::default()).await.unwrap();
+    let listed: ses::ListResult = server
+        .call("session.list", ses::ListParams::default())
+        .await
+        .unwrap();
     assert_eq!(listed.sessions.len(), 1);
     assert_eq!(listed.sessions[0].name, "B");
 }
@@ -94,20 +111,20 @@ async fn session_lifecycle() {
 async fn fs_operations_and_events() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
-    let mut c = TestClient::connect(&server, "fs", dir.path()).await.unwrap();
+    let mut c = TestClient::connect(&server, "fs", dir.path())
+        .await
+        .unwrap();
     // tree.changed / git.changed are opt-in: subscribe before driving fs.* so
     // the per-client filter delivers them.
     let _: serde_json::Value = c.call("fs.watch", json!({})).await.unwrap();
 
     // mkdir sub/ — emits TreeChanged only (rpc.rs: no GitChanged for mkdir).
-    let _: serde_json::Value = c
-        .call("fs.mkdir", json!({ "path": "sub" }))
-        .await
-        .unwrap();
+    let _: serde_json::Value = c.call("fs.mkdir", json!({ "path": "sub" })).await.unwrap();
     let ev = c
-        .expect_event("tree.changed after mkdir", |e| {
-            matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub"))
-        })
+        .expect_event(
+            "tree.changed after mkdir",
+            |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub")),
+        )
         .await;
     let mkdir_seq = ev.seq();
     assert!(mkdir_seq > 0);
@@ -133,14 +150,21 @@ async fn fs_operations_and_events() {
         })
         .await;
     let git_ev = c
-        .expect_event("git.changed after write", |e| matches!(e, Event::GitChanged { .. }))
+        .expect_event("git.changed after write", |e| {
+            matches!(e, Event::GitChanged { .. })
+        })
         .await;
     assert!(tree_ev.seq() > mkdir_seq);
     assert!(git_ev.seq() > tree_ev.seq());
 
     // stat
     let st: pfs::StatResult = c
-        .call("fs.stat", pfs::StatParams { path: "sub/a.txt".into() })
+        .call(
+            "fs.stat",
+            pfs::StatParams {
+                path: "sub/a.txt".into(),
+            },
+        )
         .await
         .unwrap();
     assert_eq!(st.kind, pfs::FileType::File);
@@ -150,7 +174,10 @@ async fn fs_operations_and_events() {
     let rd: pfs::ReadResult = c
         .call(
             "fs.read",
-            pfs::ReadParams { path: "sub/a.txt".into(), max_bytes: 1024 },
+            pfs::ReadParams {
+                path: "sub/a.txt".into(),
+                max_bytes: 1024,
+            },
         )
         .await
         .unwrap();
@@ -196,7 +223,10 @@ async fn fs_operations_and_events() {
 
     // rename sub/a.txt → sub/b.txt — emits TreeChanged (with both paths) + GitChanged.
     let _: serde_json::Value = c
-        .call("fs.rename", json!({ "from": "sub/a.txt", "to": "sub/b.txt" }))
+        .call(
+            "fs.rename",
+            json!({ "from": "sub/a.txt", "to": "sub/b.txt" }),
+        )
         .await
         .unwrap();
     c.expect_event("tree.changed after rename", |e| {
@@ -204,31 +234,46 @@ async fn fs_operations_and_events() {
             if paths.iter().any(|p| p == "sub/a.txt") && paths.iter().any(|p| p == "sub/b.txt"))
     })
     .await;
-    c.expect_event("git.changed after rename", |e| matches!(e, Event::GitChanged { .. }))
-        .await;
+    c.expect_event("git.changed after rename", |e| {
+        matches!(e, Event::GitChanged { .. })
+    })
+    .await;
 
     // remove sub/b.txt — emits TreeChanged + GitChanged.
     let _: serde_json::Value = c
         .call("fs.remove", json!({ "path": "sub/b.txt" }))
         .await
         .unwrap();
-    c.expect_event("tree.changed after remove", |e| {
-        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub/b.txt"))
+    c.expect_event(
+        "tree.changed after remove",
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub/b.txt")),
+    )
+    .await;
+    c.expect_event("git.changed after remove", |e| {
+        matches!(e, Event::GitChanged { .. })
     })
     .await;
-    c.expect_event("git.changed after remove", |e| matches!(e, Event::GitChanged { .. }))
-        .await;
 
     // tree at root, depth=2 — only `sub/` survives (empty after remove).
     let tree: pfs::TreeResult = c
         .call(
             "fs.tree",
-            pfs::TreeParams { path: ".".into(), depth: 2, show_hidden: false },
+            pfs::TreeParams {
+                path: ".".into(),
+                depth: 2,
+                show_hidden: false,
+            },
         )
         .await
         .unwrap();
-    assert!(tree.entries.iter().any(|e| e.name == "sub" && e.kind == pfs::FileType::Dir));
-    assert!(tree.entries.iter().all(|e| e.name != "a.txt" && e.name != "b.txt"));
+    assert!(tree
+        .entries
+        .iter()
+        .any(|e| e.name == "sub" && e.kind == pfs::FileType::Dir));
+    assert!(tree
+        .entries
+        .iter()
+        .all(|e| e.name != "a.txt" && e.name != "b.txt"));
 }
 
 // ─────────────────────────── 3. git_operations ───────────────────────────
@@ -241,7 +286,9 @@ async fn git_operations() {
         eprintln!("skipping git_operations: `git` CLI not available");
         return;
     }
-    let mut c = TestClient::connect(&server, "git", dir.path()).await.unwrap();
+    let mut c = TestClient::connect(&server, "git", dir.path())
+        .await
+        .unwrap();
 
     // Mutate the tracked file via fs.write so git sees a working-tree change.
     let _: pfs::WriteResult = c
@@ -285,7 +332,11 @@ async fn git_operations() {
         )
         .await
         .unwrap();
-    assert!(diff.patch.contains("+world"), "unstaged diff missing change: {}", diff.patch);
+    assert!(
+        diff.patch.contains("+world"),
+        "unstaged diff missing change: {}",
+        diff.patch
+    );
 
     // `git add README.md` so we can verify the staged path too.
     Command::new("git")
@@ -323,7 +374,11 @@ async fn git_operations() {
     let summary: pgit::DiffSummaryResult = c
         .call(
             "git.diffSummary",
-            pgit::DiffParams { path: None, staged: true, cwd: None },
+            pgit::DiffParams {
+                path: None,
+                staged: true,
+                cwd: None,
+            },
         )
         .await
         .unwrap();
@@ -332,7 +387,10 @@ async fn git_operations() {
         .iter()
         .find(|f| f.path == "README.md")
         .expect("README.md in summary");
-    assert!(entry.additions >= 1, "expected at least 1 addition, got {entry:?}");
+    assert!(
+        entry.additions >= 1,
+        "expected at least 1 addition, got {entry:?}"
+    );
 }
 
 // ─────────────────────────── 4. view_operations_and_events ───────────────────────────
@@ -342,14 +400,18 @@ async fn view_operations_and_events() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("README.md"), b"hi\n").unwrap();
-    let mut c = TestClient::connect(&server, "views", dir.path()).await.unwrap();
+    let mut c = TestClient::connect(&server, "views", dir.path())
+        .await
+        .unwrap();
 
     // Open a Preview view (default activate=true).
     let open1: pview::OpenResult = c
         .call(
             "view.open",
             pview::OpenParams {
-                spec: pview::ViewSpec::Preview { path: "README.md".into() },
+                spec: pview::ViewSpec::Preview {
+                    path: "README.md".into(),
+                },
                 activate: true,
             },
         )
@@ -357,14 +419,16 @@ async fn view_operations_and_events() {
         .unwrap();
     let v1 = open1.view.id.clone();
     let opened1 = c
-        .expect_event("view.opened (Preview)", |e| {
-            matches!(e, Event::ViewOpened { view, .. } if view.id == v1)
-        })
+        .expect_event(
+            "view.opened (Preview)",
+            |e| matches!(e, Event::ViewOpened { view, .. } if view.id == v1),
+        )
         .await;
     // First view → also flips active.
-    c.expect_event("view.active_changed (-> v1)", |e| {
-        matches!(e, Event::ViewActiveChanged { view_id: Some(id), .. } if id == &v1)
-    })
+    c.expect_event(
+        "view.active_changed (-> v1)",
+        |e| matches!(e, Event::ViewActiveChanged { view_id: Some(id), .. } if id == &v1),
+    )
     .await;
     assert!(opened1.seq() > 0);
 
@@ -373,23 +437,30 @@ async fn view_operations_and_events() {
         .call(
             "view.open",
             pview::OpenParams {
-                spec: pview::ViewSpec::Diff { staged: false, path: None },
+                spec: pview::ViewSpec::Diff {
+                    staged: false,
+                    path: None,
+                },
                 activate: false,
             },
         )
         .await
         .unwrap();
     let v2 = open2.view.id.clone();
-    c.expect_event("view.opened (Diff)", |e| {
-        matches!(e, Event::ViewOpened { view, .. } if view.id == v2)
-    })
+    c.expect_event(
+        "view.opened (Diff)",
+        |e| matches!(e, Event::ViewOpened { view, .. } if view.id == v2),
+    )
     .await;
 
     // Move v2 to index 0.
     let _: pview::MoveResult = c
         .call(
             "view.move",
-            pview::MoveParams { view_id: v2.clone(), to_index: 0 },
+            pview::MoveParams {
+                view_id: v2.clone(),
+                to_index: 0,
+            },
         )
         .await
         .unwrap();
@@ -405,23 +476,32 @@ async fn view_operations_and_events() {
     let _: pview::ActivateResult = c
         .call(
             "view.activate",
-            pview::ActivateParams { view_id: Some(v2.clone()) },
+            pview::ActivateParams {
+                view_id: Some(v2.clone()),
+            },
         )
         .await
         .unwrap();
-    c.expect_event("view.active_changed (-> v2)", |e| {
-        matches!(e, Event::ViewActiveChanged { view_id: Some(id), .. } if id == &v2)
-    })
+    c.expect_event(
+        "view.active_changed (-> v2)",
+        |e| matches!(e, Event::ViewActiveChanged { view_id: Some(id), .. } if id == &v2),
+    )
     .await;
 
     // Close the currently active view → view.closed + view.active_changed.
     let _: pview::CloseResult = c
-        .call("view.close", pview::CloseParams { view_id: v2.clone() })
+        .call(
+            "view.close",
+            pview::CloseParams {
+                view_id: v2.clone(),
+            },
+        )
         .await
         .unwrap();
-    c.expect_event("view.closed (v2)", |e| {
-        matches!(e, Event::ViewClosed { view_id, .. } if view_id == &v2)
-    })
+    c.expect_event(
+        "view.closed (v2)",
+        |e| matches!(e, Event::ViewClosed { view_id, .. } if view_id == &v2),
+    )
     .await;
     c.expect_event("view.active_changed after close", |e| {
         matches!(e, Event::ViewActiveChanged { .. })
@@ -435,9 +515,15 @@ async fn view_operations_and_events() {
 async fn pty_lifecycle_and_mirror() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
-    let mut a = TestClient::connect(&server, "ptys", dir.path()).await.unwrap();
-    let mut b = TestClient::connect(&server, "ptys", dir.path()).await.unwrap();
-    let mut c = TestClient::connect(&server, "ptys", dir.path()).await.unwrap();
+    let mut a = TestClient::connect(&server, "ptys", dir.path())
+        .await
+        .unwrap();
+    let mut b = TestClient::connect(&server, "ptys", dir.path())
+        .await
+        .unwrap();
+    let mut c = TestClient::connect(&server, "ptys", dir.path())
+        .await
+        .unwrap();
     // Drain any client.joined events accumulated during the attach handshake.
     let _ = a.drain_events().await;
     let _ = b.drain_events().await;
@@ -464,9 +550,10 @@ async fn pty_lifecycle_and_mirror() {
     // All three clients see pty.created + view.opened (auto-created Pty view).
     for client in [&mut a, &mut b, &mut c] {
         client
-            .expect_event("pty.created", |e| {
-                matches!(e, Event::PtyCreated { info, .. } if info.id == pty_id)
-            })
+            .expect_event(
+                "pty.created",
+                |e| matches!(e, Event::PtyCreated { info, .. } if info.id == pty_id),
+            )
             .await;
         client
             .expect_event("view.opened (Pty)", |e| {
@@ -477,7 +564,13 @@ async fn pty_lifecycle_and_mirror() {
         // The new PTY view is activated as part of pty.create.
         client
             .expect_event("view.active_changed (-> Pty view)", |e| {
-                matches!(e, Event::ViewActiveChanged { view_id: Some(_), .. })
+                matches!(
+                    e,
+                    Event::ViewActiveChanged {
+                        view_id: Some(_),
+                        ..
+                    }
+                )
             })
             .await;
     }
@@ -504,7 +597,11 @@ async fn pty_lifecycle_and_mirror() {
     let _: serde_json::Value = a
         .call(
             "pty.resize",
-            ppty::PtyResizeParams { pty_id: pty_id.clone(), cols: 100, rows: 30 },
+            ppty::PtyResizeParams {
+                pty_id: pty_id.clone(),
+                cols: 100,
+                rows: 30,
+            },
         )
         .await
         .unwrap();
@@ -526,17 +623,25 @@ async fn pty_lifecycle_and_mirror() {
 
     // A kills the PTY → pty.exited + the auto-opened view closes.
     let _: serde_json::Value = a
-        .call("pty.kill", ppty::PtyKillParams { pty_id: pty_id.clone() })
+        .call(
+            "pty.kill",
+            ppty::PtyKillParams {
+                pty_id: pty_id.clone(),
+            },
+        )
         .await
         .unwrap();
     for client in [&mut a, &mut b, &mut c] {
         client
-            .expect_event("pty.exited", |e| {
-                matches!(e, Event::PtyExited { pty_id: pid, .. } if pid == &pty_id)
-            })
+            .expect_event(
+                "pty.exited",
+                |e| matches!(e, Event::PtyExited { pty_id: pid, .. } if pid == &pty_id),
+            )
             .await;
         client
-            .expect_event("view.closed (Pty view)", |e| matches!(e, Event::ViewClosed { .. }))
+            .expect_event("view.closed (Pty view)", |e| {
+                matches!(e, Event::ViewClosed { .. })
+            })
             .await;
     }
 }
@@ -549,31 +654,40 @@ async fn multi_client_mirror() {
     let dir = TempDir::new().unwrap();
 
     // A attaches first — no siblings.
-    let mut a = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
+    let mut a = TestClient::connect(&server, "mirror", dir.path())
+        .await
+        .unwrap();
     assert_eq!(a.attach_result.clients.len(), 0);
     // All three clients opt into tree.changed / git.changed (gated by fs.watch).
     let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
 
     // B attaches — A sees `client.joined(B)`; B's snapshot lists A.
-    let mut b = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
+    let mut b = TestClient::connect(&server, "mirror", dir.path())
+        .await
+        .unwrap();
     let _: serde_json::Value = b.call("fs.watch", json!({})).await.unwrap();
-    a.expect_event("A: client.joined(B)", |e| {
-        matches!(e, Event::ClientJoined { client_id, .. } if client_id == &b.client_id)
-    })
+    a.expect_event(
+        "A: client.joined(B)",
+        |e| matches!(e, Event::ClientJoined { client_id, .. } if client_id == &b.client_id),
+    )
     .await;
     assert_eq!(b.attach_result.clients.len(), 1);
     assert_eq!(b.attach_result.clients[0].id, a.client_id);
 
     // C attaches — both A and B see `client.joined(C)`.
-    let mut c = TestClient::connect(&server, "mirror", dir.path()).await.unwrap();
+    let mut c = TestClient::connect(&server, "mirror", dir.path())
+        .await
+        .unwrap();
     let _: serde_json::Value = c.call("fs.watch", json!({})).await.unwrap();
-    a.expect_event("A: client.joined(C)", |e| {
-        matches!(e, Event::ClientJoined { client_id, .. } if client_id == &c.client_id)
-    })
+    a.expect_event(
+        "A: client.joined(C)",
+        |e| matches!(e, Event::ClientJoined { client_id, .. } if client_id == &c.client_id),
+    )
     .await;
-    b.expect_event("B: client.joined(C)", |e| {
-        matches!(e, Event::ClientJoined { client_id, .. } if client_id == &c.client_id)
-    })
+    b.expect_event(
+        "B: client.joined(C)",
+        |e| matches!(e, Event::ClientJoined { client_id, .. } if client_id == &c.client_id),
+    )
     .await;
     assert_eq!(c.attach_result.clients.len(), 2);
 
@@ -611,13 +725,16 @@ async fn multi_client_mirror() {
     ] {
         let pty_id_inner = pty_id.clone();
         let ev = client
-            .expect_event("pty.created", move |e| {
-                matches!(e, Event::PtyCreated { info, .. } if info.id == pty_id_inner)
-            })
+            .expect_event(
+                "pty.created",
+                move |e| matches!(e, Event::PtyCreated { info, .. } if info.id == pty_id_inner),
+            )
             .await;
         step(&format!("{label}: pty.created"), ev.seq(), last);
         let ev = client
-            .expect_event("view.opened (Pty)", |e| matches!(e, Event::ViewOpened { .. }))
+            .expect_event("view.opened (Pty)", |e| {
+                matches!(e, Event::ViewOpened { .. })
+            })
             .await;
         if pty_view_id.is_none() {
             if let Event::ViewOpened { view, .. } = &ev {
@@ -661,7 +778,9 @@ async fn multi_client_mirror() {
             .await;
         step(&format!("{label}: tree.changed (seed.txt)"), ev.seq(), last);
         let ev = client
-            .expect_event("git.changed (seed.txt)", |e| matches!(e, Event::GitChanged { .. }))
+            .expect_event("git.changed (seed.txt)", |e| {
+                matches!(e, Event::GitChanged { .. })
+            })
             .await;
         step(&format!("{label}: git.changed (seed.txt)"), ev.seq(), last);
     }
@@ -669,7 +788,9 @@ async fn multi_client_mirror() {
         .call(
             "view.open",
             pview::OpenParams {
-                spec: pview::ViewSpec::Preview { path: "seed.txt".into() },
+                spec: pview::ViewSpec::Preview {
+                    path: "seed.txt".into(),
+                },
                 activate: false,
             },
         )
@@ -683,9 +804,10 @@ async fn multi_client_mirror() {
     ] {
         let preview_id = preview_id.clone();
         let ev = client
-            .expect_event("view.opened (Preview)", move |e| {
-                matches!(e, Event::ViewOpened { view, .. } if view.id == preview_id)
-            })
+            .expect_event(
+                "view.opened (Preview)",
+                move |e| matches!(e, Event::ViewOpened { view, .. } if view.id == preview_id),
+            )
             .await;
         step(&format!("{label}: view.opened (Preview)"), ev.seq(), last);
     }
@@ -694,7 +816,9 @@ async fn multi_client_mirror() {
     let _: pview::ActivateResult = a
         .call(
             "view.activate",
-            pview::ActivateParams { view_id: Some(preview_id.clone()) },
+            pview::ActivateParams {
+                view_id: Some(preview_id.clone()),
+            },
         )
         .await
         .unwrap();
@@ -710,7 +834,11 @@ async fn multi_client_mirror() {
                     if id == &preview_id)
             })
             .await;
-        step(&format!("{label}: view.active_changed (Preview)"), ev.seq(), last);
+        step(
+            &format!("{label}: view.active_changed (Preview)"),
+            ev.seq(),
+            last,
+        );
     }
 
     // ── B writes a file → tree.changed + git.changed (broadcast to all 3).
@@ -749,7 +877,10 @@ async fn multi_client_mirror() {
     let _: pview::MoveResult = b
         .call(
             "view.move",
-            pview::MoveParams { view_id: preview_id.clone(), to_index: 0 },
+            pview::MoveParams {
+                view_id: preview_id.clone(),
+                to_index: 0,
+            },
         )
         .await
         .unwrap();
@@ -773,7 +904,9 @@ async fn multi_client_mirror() {
     let _: pview::CloseResult = c
         .call(
             "view.close",
-            pview::CloseParams { view_id: preview_id.clone() },
+            pview::CloseParams {
+                view_id: preview_id.clone(),
+            },
         )
         .await
         .unwrap();
@@ -784,9 +917,10 @@ async fn multi_client_mirror() {
     ] {
         let pid = preview_id.clone();
         let ev = client
-            .expect_event("view.closed (Preview)", move |e| {
-                matches!(e, Event::ViewClosed { view_id, .. } if view_id == &pid)
-            })
+            .expect_event(
+                "view.closed (Preview)",
+                move |e| matches!(e, Event::ViewClosed { view_id, .. } if view_id == &pid),
+            )
             .await;
         step(&format!("{label}: view.closed"), ev.seq(), last);
         let ev = client
@@ -794,7 +928,11 @@ async fn multi_client_mirror() {
                 matches!(e, Event::ViewActiveChanged { .. })
             })
             .await;
-        step(&format!("{label}: view.active_changed (after close)"), ev.seq(), last);
+        step(
+            &format!("{label}: view.active_changed (after close)"),
+            ev.seq(),
+            last,
+        );
     }
 
     // ── session.list from each client sees one session with client_count=3.
@@ -819,13 +957,15 @@ async fn multi_client_mirror() {
     // ── C detaches → A and B see client.left(C).
     let c_id = c.client_id.clone();
     c.detach().await.unwrap();
-    a.expect_event("A: client.left(C)", |e| {
-        matches!(e, Event::ClientLeft { client_id, .. } if client_id == &c_id)
-    })
+    a.expect_event(
+        "A: client.left(C)",
+        |e| matches!(e, Event::ClientLeft { client_id, .. } if client_id == &c_id),
+    )
     .await;
-    b.expect_event("B: client.left(C)", |e| {
-        matches!(e, Event::ClientLeft { client_id, .. } if client_id == &c_id)
-    })
+    b.expect_event(
+        "B: client.left(C)",
+        |e| matches!(e, Event::ClientLeft { client_id, .. } if client_id == &c_id),
+    )
     .await;
 }
 
@@ -839,7 +979,9 @@ async fn event_replay_on_reattach() {
     // A attaches and seeds the ring with a few events. fs.watch first so the
     // tree.changed / git.changed events the test relies on actually go into
     // the ring (default-off post-`fs.watch` rewrite).
-    let mut a = TestClient::connect(&server, "replay", dir.path()).await.unwrap();
+    let mut a = TestClient::connect(&server, "replay", dir.path())
+        .await
+        .unwrap();
     let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
     let _: ppty::PtyCreateResult = a
         .call(
@@ -886,16 +1028,21 @@ async fn event_replay_on_reattach() {
     // B's own ClientJoined is filtered server-side; everything earlier is
     // replayed in order.
     assert!(
-        collected.iter().any(|e| matches!(e, Event::PtyCreated { .. })),
+        collected
+            .iter()
+            .any(|e| matches!(e, Event::PtyCreated { .. })),
         "replay missing pty.created: {collected:?}"
     );
     assert!(
-        collected.iter().any(|e| matches!(e, Event::TreeChanged { .. })),
+        collected
+            .iter()
+            .any(|e| matches!(e, Event::TreeChanged { .. })),
         "replay missing tree.changed: {collected:?}"
     );
     assert!(
-        collected.iter().any(|e|
-            matches!(e, Event::ClientJoined { client_id, .. } if client_id == &a.client_id)),
+        collected.iter().any(
+            |e| matches!(e, Event::ClientJoined { client_id, .. } if client_id == &a.client_id)
+        ),
         "replay missing client.joined(A): {collected:?}"
     );
     // Seqs are monotonic.
@@ -943,12 +1090,15 @@ async fn event_replay_on_reattach() {
         )
         .await
         .unwrap();
-    d.expect_event("tree.changed (g.txt)", |e| {
-        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "g.txt"))
+    d.expect_event(
+        "tree.changed (g.txt)",
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "g.txt")),
+    )
+    .await;
+    d.expect_event("git.changed (g.txt)", |e| {
+        matches!(e, Event::GitChanged { .. })
     })
     .await;
-    d.expect_event("git.changed (g.txt)", |e| matches!(e, Event::GitChanged { .. }))
-        .await;
 
     // ── Scenario 3: since= a value larger than current total → empty replay
     //    (no special close code, just zero past events; the WS stays open and
@@ -972,7 +1122,9 @@ async fn fs_watch_subscription_gates_events() {
     let dir = TempDir::new().unwrap();
 
     // ── Default state: no subscription, no events.
-    let mut a = TestClient::connect(&server, "watch", dir.path()).await.unwrap();
+    let mut a = TestClient::connect(&server, "watch", dir.path())
+        .await
+        .unwrap();
     let _: pfs::WriteResult = a
         .call(
             "fs.write",
@@ -1011,8 +1163,10 @@ async fn fs_watch_subscription_gates_events() {
         matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "during.txt"))
     })
     .await;
-    a.expect_event("git.changed (during)", |e| matches!(e, Event::GitChanged { .. }))
-        .await;
+    a.expect_event("git.changed (during)", |e| {
+        matches!(e, Event::GitChanged { .. })
+    })
+    .await;
 
     // ── Unsubscribe → events stop. fs.watch / fs.unwatch are both idempotent.
     let _: serde_json::Value = a.call("fs.unwatch", json!({})).await.unwrap();
@@ -1040,7 +1194,9 @@ async fn fs_watch_subscription_gates_events() {
     // ── Multi-client: A subscribed, B not. A's write reaches only A.
     //    A must re-subscribe — we unwatched above.
     let _: serde_json::Value = a.call("fs.watch", json!({})).await.unwrap();
-    let mut b = TestClient::connect(&server, "watch", dir.path()).await.unwrap();
+    let mut b = TestClient::connect(&server, "watch", dir.path())
+        .await
+        .unwrap();
     let _: pfs::WriteResult = a
         .call(
             "fs.write",
@@ -1053,9 +1209,10 @@ async fn fs_watch_subscription_gates_events() {
         )
         .await
         .unwrap();
-    a.expect_event("A: tree.changed (split)", |e| {
-        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "split.txt"))
-    })
+    a.expect_event(
+        "A: tree.changed (split)",
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "split.txt")),
+    )
     .await;
     let b_collected = b.drain_events().await;
     assert!(
