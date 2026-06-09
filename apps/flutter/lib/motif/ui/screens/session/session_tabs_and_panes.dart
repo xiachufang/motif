@@ -52,9 +52,7 @@ class _TabBar extends StatelessWidget {
                 unawaited(
                   motif.moveView(viewId, targetIndex).catchError((Object e) {
                     if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Move tab failed: $e')),
-                      );
+                      showMotifToast(context, 'Move tab failed: $e');
                     }
                   }),
                 );

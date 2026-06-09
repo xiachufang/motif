@@ -768,9 +768,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Copied selection')));
+      showMotifToast(context, 'Copied selection');
     }
   }
 
@@ -786,12 +784,9 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            selection == null ? 'Copied terminal output' : 'Copied selection',
-          ),
-        ),
+      showMotifToast(
+        context,
+        selection == null ? 'Copied terminal output' : 'Copied selection',
       );
     }
   }

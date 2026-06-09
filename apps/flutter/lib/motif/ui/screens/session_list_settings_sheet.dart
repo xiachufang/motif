@@ -7,6 +7,7 @@ import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/top_toast.dart';
 
 class SessionListSettingsSheet extends StatefulWidget {
   const SessionListSettingsSheet({super.key});
@@ -25,14 +26,10 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet> {
       await Log.flush();
       final result = await exportLogFiles();
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Logs exported: ${result.path}')));
+      showMotifToast(context, 'Logs exported: ${result.path}');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Export logs failed: $e')));
+      showMotifToast(context, 'Export logs failed: $e');
     } finally {
       if (mounted) setState(() => _exporting = false);
     }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/top_toast.dart';
 
 /// Read-only file preview with an edit/save toggle (mirrors PreviewPane).
 class PreviewPane extends StatefulWidget {
@@ -97,9 +98,7 @@ class _PreviewPaneState extends State<PreviewPane> {
         _sha = newSha;
         _editing = false;
       });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Saved')));
+      showMotifToast(context, 'Saved');
     } catch (e) {
       if (!mounted) return;
       if (!force) {
@@ -136,9 +135,7 @@ class _PreviewPaneState extends State<PreviewPane> {
         }
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Save failed: $e')));
+      showMotifToast(context, 'Save failed: $e');
     }
   }
 

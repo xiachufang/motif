@@ -29,6 +29,7 @@ import '../../terminal/terminal_palette.dart';
 import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/quick_command_row.dart';
+import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
 import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
@@ -138,9 +139,7 @@ class _SessionScreenState extends State<SessionScreen>
         error: e,
       );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Attach failed: $e')));
+        showMotifToast(context, 'Attach failed: $e');
         Navigator.of(context).pop();
       }
       return;

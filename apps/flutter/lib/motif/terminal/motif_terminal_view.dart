@@ -35,6 +35,7 @@ import 'terminal_paste.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_worker.dart';
+import '../ui/widgets/top_toast.dart';
 
 part 'motif_terminal/text_input.dart';
 part 'motif_terminal/core.dart';

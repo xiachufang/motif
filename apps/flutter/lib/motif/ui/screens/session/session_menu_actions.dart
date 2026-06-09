@@ -10,9 +10,7 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       _focusTerminalAfterTabSwitch();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('New terminal failed: $e')));
+        showMotifToast(context, 'New terminal failed: $e');
       }
     }
   }
@@ -116,12 +114,11 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   }
 
   Future<void> _closeSession(MotifClient motif) async {
-    final messenger = ScaffoldMessenger.maybeOf(context);
     if (mounted) Navigator.of(context).pop();
     unawaited(
       motif.detach().catchError((Object e) {
-        if (messenger?.mounted ?? false) {
-          messenger!.showSnackBar(SnackBar(content: Text('Close failed: $e')));
+        if (mounted) {
+          showMotifToast(context, 'Close failed: $e');
         }
       }),
     );
@@ -150,9 +147,7 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     } catch (e) {
       if (!mounted) return;
       setState(() => _switchingSession = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Switch failed: $e')));
+      showMotifToast(context, 'Switch failed: $e');
     }
   }
 

@@ -7,6 +7,7 @@ import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/top_toast.dart';
 
 /// Lazy file-tree browser rooted at a directory (mirrors FileTreePanel).
 /// Tapping a file calls [onOpen] (and pops); tapping a dir expands it.
@@ -332,7 +333,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
 
   void _snack(String msg) {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      showMotifToast(context, msg);
     }
   }
 

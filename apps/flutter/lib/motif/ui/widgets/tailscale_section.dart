@@ -9,6 +9,7 @@ import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import 'adaptive_modal.dart';
 import 'motif_form.dart';
+import 'top_toast.dart';
 
 const _browserChannel = MethodChannel('motif/browser');
 
@@ -460,9 +461,7 @@ Future<void> openTailscaleAuthUrl(BuildContext context, String url) async {
   final opened = await _openExternalUrl(url);
   if (opened) return;
   if (!context.mounted) return;
-  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-    const SnackBar(content: Text('Could not open the browser for this URL.')),
-  );
+  showMotifToast(context, 'Could not open the browser for this URL.');
 }
 
 Future<bool> _openExternalUrl(String url) async {

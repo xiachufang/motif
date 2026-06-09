@@ -5,6 +5,7 @@ import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/top_toast.dart';
 
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
@@ -19,9 +20,7 @@ Future<SessionInfo?> createSessionWithDialog(
     return await motif.createSession(result.$1, result.$2);
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Create failed: $e')));
+      showMotifToast(context, 'Create failed: $e');
     }
     return null;
   }

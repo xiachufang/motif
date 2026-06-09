@@ -93,9 +93,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
               _micStarting = false;
               _recording = false;
             });
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Voice input: $e')));
+            showMotifToast(context, 'Voice input: $e');
           }
         },
       );
@@ -111,9 +109,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
           _micStarting = false;
           _recording = false;
         });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Voice input unavailable: $e')));
+        showMotifToast(context, 'Voice input unavailable: $e');
       }
     }
   }
@@ -149,9 +145,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
       await _sendBytes(paste);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Attach failed: $e')));
+        showMotifToast(context, 'Attach failed: $e');
       }
     }
   }

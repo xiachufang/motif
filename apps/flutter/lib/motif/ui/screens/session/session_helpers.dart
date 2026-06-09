@@ -54,17 +54,13 @@ Future<void> _closeViewWithConfirmation(
     unawaited(
       motif.closeView(view.id).catchError((Object e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Close tab failed: $e')));
+          showMotifToast(context, 'Close tab failed: $e');
         }
       }),
     );
   } catch (e) {
     if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Close tab failed: $e')));
+      showMotifToast(context, 'Close tab failed: $e');
     }
   }
 }

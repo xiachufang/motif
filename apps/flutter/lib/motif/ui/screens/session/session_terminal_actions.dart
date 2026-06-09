@@ -281,9 +281,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       await motif.openView(spec: PreviewViewSpec(path), activate: true);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Open preview failed: $e')));
+        showMotifToast(context, 'Open preview failed: $e');
       }
     }
   }
