@@ -20,8 +20,9 @@ crates/                  Rust workspace
 └─ motif-tailscale       tsnet integration so motifd can join a tailnet
 
 apps/
-├─ flutter               Flutter client for iOS, macOS, Android, Web, Linux, Windows
-└─ menubar               Tauri menu-bar shell that runs an embedded motifd
+└─ flutter               Flutter client for iOS, macOS, Android, Web, Linux, Windows;
+                         desktop builds can run an embedded motifd in-process,
+                         controlled from the system tray (crates/motif-embed)
 
 docs/                    architecture + protocol
 ├─ prd.md                product / architecture
@@ -52,7 +53,7 @@ flutter pub get
 flutter build web --no-wasm-dry-run
 cd ../..
 
-# Rust binaries (motifd / motif-cast / motif-menubar)
+# Rust binaries (motifd / motif-cast / motif-push-relay)
 cargo build --release                   # motif-server picks up apps/flutter/build/web
 ```
 
@@ -68,9 +69,9 @@ The root `Makefile` is the release entry point:
 ```bash
 make deps
 make release-flutter-web
-make release-macos       # Rust + menu-bar + Flutter macOS artifacts
-make release-linux       # Rust + menu-bar + Flutter Linux artifacts
-make release-windows     # Rust + menu-bar + Flutter Windows artifacts
+make release-macos       # Rust + Flutter macOS artifacts
+make release-linux       # Rust + Flutter Linux artifacts
+make release-windows     # Rust + Flutter Windows artifacts
 ```
 
 Artifacts are written to `dist/release/`. Platform-specific targets are meant for

@@ -42,11 +42,6 @@ IOS_ALLOW_DEVELOPMENT_APS ?= 0
 RUST_RELEASE_PACKAGES := motif-server motif-cast motif-push-relay
 RUST_RELEASE_BINS := motifd motif-cast motif-push-relay
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
-MENUBAR_BIN := motif-menubar
-MENUBAR_EXE := $(MENUBAR_BIN)$(HOST_EXE)
-MENUBAR_BUNDLE_ID := io.allsunday.motif.menubar
-MENUBAR_ICON := apps/menubar/icons/icon.png
-MENUBAR_APP := target/release/bundle/Motif.app
 FLUTTER_MACOS_APP := $(FLUTTER_DIR)/build/macos/Build/Products/Release/Motif.app
 
 require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host (current: $(HOST_OS))."; exit 1; }
@@ -57,7 +52,6 @@ require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host 
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
 	release-rust-macos release-rust-linux release-rust-windows \
-	release-menubar-macos release-menubar-linux release-menubar-windows \
 	release-flutter-macos release-flutter-linux \
 	release-flutter-windows release-flutter-android release-flutter-ios \
 	release-manifest verify-release clean-release
@@ -191,11 +185,11 @@ release-flutter-web: build-flutter-web ## Copy and archive the standalone Flutte
 	@tar -czf "$(RELEASE_DIR)/motif-web-$(ARTIFACT_SUFFIX).tar.gz" -C "$(RELEASE_DIR)" web
 	@echo "Web build: $(RELEASE_DIR)/web"
 
-release-macos: release-rust-macos release-menubar-macos release-flutter-macos ## Build all macOS release artifacts.
+release-macos: release-rust-macos release-flutter-macos ## Build all macOS release artifacts.
 
-release-linux: release-rust-linux release-menubar-linux release-flutter-linux ## Build all Linux release artifacts.
+release-linux: release-rust-linux release-flutter-linux ## Build all Linux release artifacts.
 
-release-windows: release-rust-windows release-menubar-windows release-flutter-windows ## Build all Windows release artifacts.
+release-windows: release-rust-windows release-flutter-windows ## Build all Windows release artifacts.
 
 release-rust-macos: check-cargo check-zig deps-rust build-flutter-web ## Build Rust binaries for macOS.
 	$(call require_host,macos)
@@ -223,66 +217,6 @@ release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin).exe" "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin/$(bin).exe";)
 	@tar -czf "$(RELEASE_DIR)/motif-rust-$(ARTIFACT_SUFFIX)-windows-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/rust/windows-$(UNAME_M)" bin
 	@echo "Rust binaries: $(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin"
-
-release-menubar-macos: check-macos-tools check-cargo check-zig deps-rust build-flutter-web ## Build and archive the macOS menu-bar app.
-	$(call require_host,macos)
-	@$(CARGO) build --release $(CARGO_LOCKED) -p "$(MENUBAR_BIN)"
-	@echo "==> assembling $(MENUBAR_APP)"
-	@rm -rf "$(MENUBAR_APP)"
-	@mkdir -p "$(MENUBAR_APP)/Contents/MacOS" "$(MENUBAR_APP)/Contents/Resources"
-	@install -m 0755 "target/release/$(MENUBAR_BIN)" "$(MENUBAR_APP)/Contents/MacOS/$(MENUBAR_BIN)"
-	@tmpdir="$$(mktemp -d)"; \
-		iconset="$$tmpdir/icon.iconset"; \
-		mkdir -p "$$iconset"; \
-		for sz in 16 32 128 256 512; do \
-			sips -z "$$sz" "$$sz" "$(MENUBAR_ICON)" --out "$$iconset/icon_$${sz}x$${sz}.png" >/dev/null; \
-			sips -z "$$((sz * 2))" "$$((sz * 2))" "$(MENUBAR_ICON)" --out "$$iconset/icon_$${sz}x$${sz}@2x.png" >/dev/null; \
-		done; \
-		iconutil -c icns "$$iconset" -o "$(MENUBAR_APP)/Contents/Resources/icon.icns"; \
-		rm -rf "$$tmpdir"
-	@{ \
-		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'; \
-		printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'; \
-		printf '%s\n' '<plist version="1.0">'; \
-		printf '%s\n' '<dict>'; \
-		printf '%s\n' '  <key>CFBundleName</key><string>Motif</string>'; \
-		printf '%s\n' '  <key>CFBundleDisplayName</key><string>Motif</string>'; \
-		printf '%s\n' '  <key>CFBundleIdentifier</key><string>$(MENUBAR_BUNDLE_ID)</string>'; \
-		printf '%s\n' '  <key>CFBundleExecutable</key><string>$(MENUBAR_BIN)</string>'; \
-		printf '%s\n' '  <key>CFBundleIconFile</key><string>icon</string>'; \
-		printf '%s\n' '  <key>CFBundlePackageType</key><string>APPL</string>'; \
-		printf '%s\n' '  <key>CFBundleShortVersionString</key><string>$(VERSION)</string>'; \
-		printf '%s\n' '  <key>CFBundleVersion</key><string>$(BUILD_NUMBER)</string>'; \
-		printf '%s\n' '  <key>LSMinimumSystemVersion</key><string>11.0</string>'; \
-		printf '%s\n' '  <key>LSUIElement</key><true/>'; \
-		printf '%s\n' '  <key>NSHighResolutionCapable</key><true/>'; \
-		printf '%s\n' '</dict>'; \
-		printf '%s\n' '</plist>'; \
-	} > "$(MENUBAR_APP)/Contents/Info.plist"
-	@codesign --force --sign - "$(MENUBAR_APP)" >/dev/null 2>&1 || true
-	@rm -rf "$(RELEASE_DIR)/macos/menubar"
-	@mkdir -p "$(RELEASE_DIR)/macos/menubar"
-	@cp -R "$(MENUBAR_APP)" "$(RELEASE_DIR)/macos/menubar/Motif.app"
-	@cd "$(RELEASE_DIR)/macos/menubar" && ditto -c -k --keepParent Motif.app "../../Motif-menubar-$(ARTIFACT_SUFFIX)-$(HOST_TAG).zip"
-	@echo "Menu-bar app: $(RELEASE_DIR)/macos/menubar/Motif.app"
-
-release-menubar-linux: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the Linux menu-bar app.
-	$(call require_host,linux)
-	@$(CARGO) build --release $(CARGO_LOCKED) -p "$(MENUBAR_BIN)"
-	@rm -rf "$(RELEASE_DIR)/menubar/linux-$(UNAME_M)"
-	@mkdir -p "$(RELEASE_DIR)/menubar/linux-$(UNAME_M)"
-	@install -m 0755 "target/release/$(MENUBAR_BIN)" "$(RELEASE_DIR)/menubar/linux-$(UNAME_M)/$(MENUBAR_BIN)"
-	@tar -czf "$(RELEASE_DIR)/Motif-menubar-$(ARTIFACT_SUFFIX)-linux-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/menubar/linux-$(UNAME_M)" "$(MENUBAR_BIN)"
-	@echo "Menu-bar app: $(RELEASE_DIR)/menubar/linux-$(UNAME_M)/$(MENUBAR_BIN)"
-
-release-menubar-windows: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the Windows menu-bar app.
-	$(call require_host,windows)
-	@$(CARGO) build --release $(CARGO_LOCKED) -p "$(MENUBAR_BIN)"
-	@rm -rf "$(RELEASE_DIR)/menubar/windows-$(UNAME_M)"
-	@mkdir -p "$(RELEASE_DIR)/menubar/windows-$(UNAME_M)"
-	@install -m 0755 "target/release/$(MENUBAR_BIN).exe" "$(RELEASE_DIR)/menubar/windows-$(UNAME_M)/$(MENUBAR_BIN).exe"
-	@tar -czf "$(RELEASE_DIR)/Motif-menubar-$(ARTIFACT_SUFFIX)-windows-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/menubar/windows-$(UNAME_M)" "$(MENUBAR_BIN).exe"
-	@echo "Menu-bar app: $(RELEASE_DIR)/menubar/windows-$(UNAME_M)/$(MENUBAR_BIN).exe"
 
 release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the Flutter macOS app.
 	$(call require_host,macos)

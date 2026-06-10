@@ -1,0 +1,21 @@
+[package]
+name        = "motif-embed"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Motif embeddable server — a C ABI over motif-server for in-process hosts (the Flutter desktop app)"
+
+[lib]
+# cdylib: the dynamic library Flutter loads over dart:ffi.
+# rlib:   lets `cargo test` link the unit tests against the same crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+motif-server = { path = "../motif-server" }
+
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tracing    = { workspace = true }
+dirs       = { workspace = true }

@@ -15,6 +15,10 @@ import 'widgets/notification_banner.dart';
 
 final motifRouteObserver = RouteObserver<ModalRoute<void>>();
 
+/// Navigator key so non-widget code (the system tray) can open dialogs/screens
+/// against a live context.
+final motifNavigatorKey = GlobalKey<NavigatorState>();
+
 class MotifApp extends StatelessWidget {
   const MotifApp({super.key});
 
@@ -34,6 +38,7 @@ class MotifApp extends StatelessWidget {
         TerminalThemeSetting.dark => ThemeMode.dark,
         TerminalThemeSetting.system => ThemeMode.system,
       },
+      navigatorKey: motifNavigatorKey,
       navigatorObservers: [motifRouteObserver],
       home: app.hasActiveServer ? const _Root() : const WelcomeScreen(),
     );

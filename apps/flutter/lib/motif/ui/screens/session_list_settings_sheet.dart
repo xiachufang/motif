@@ -4,10 +4,12 @@ import 'package:provider/provider.dart';
 import '../../log/log.dart';
 import '../../log/log_export.dart';
 import '../../state/app_state.dart';
+import '../../state/embedded_server_service.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/top_toast.dart';
+import 'embedded_server_settings_sheet.dart';
 
 class SessionListSettingsSheet extends StatefulWidget {
   const SessionListSettingsSheet({super.key});
@@ -40,10 +42,31 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet> {
     final app = context.watch<AppState>();
     final push = app.push;
     final c = context.motif;
+    final embedded = app.embeddedServer;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (embedded != null && embedded.available) ...[
+          MotifSection(
+            title: 'Local server',
+            children: [
+              MotifSectionRow(
+                leading: Icon(Icons.dns_outlined, color: c.accent),
+                title: 'Run a server on this computer',
+                subtitle: switch (embedded.phase) {
+                  EmbeddedRunState.running => 'Running',
+                  EmbeddedRunState.starting => 'Starting…',
+                  EmbeddedRunState.failed => 'Failed',
+                  EmbeddedRunState.stopped => 'Stopped',
+                },
+                showChevron: true,
+                onTap: () => showEmbeddedServerSettingsSheet(context),
+              ),
+            ],
+          ),
+          const SizedBox(height: MotifSpacing.xl),
+        ],
         MotifSection(
           title: 'Notifications',
           dividerIndent: MotifSpacing.lg,

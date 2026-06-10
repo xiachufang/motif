@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 
 import 'motif/log/log.dart';
 import 'motif/platform/platform_factory.dart';
+import 'motif/platform/desktop_window.dart';
+import 'motif/platform/tray_service.dart';
 import 'motif/platform/window_title.dart';
 import 'motif/state/app_state.dart';
 import 'motif/ui/app.dart';
@@ -47,6 +49,16 @@ Future<void> main() async {
       runApp(
         ChangeNotifierProvider.value(value: appState, child: const MotifApp()),
       );
+
+      // Desktop: live in the tray (start the embedded-server tray control and
+      // start hidden, accessory-style). No-op when the embedded server isn't
+      // available, so the window stays shown on platforms without it.
+      if (TrayService.isSupported && (appState.embeddedServer?.available ?? false)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          TrayService(appState, motifNavigatorKey).start();
+          unawaited(DesktopWindow.hideAtLaunch());
+        });
+      }
     },
     (error, stack) {
       // Uncaught async errors that escape the zone (incl. failures during startup).

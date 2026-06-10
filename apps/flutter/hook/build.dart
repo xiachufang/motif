@@ -8,6 +8,9 @@ import 'package:hooks/hooks.dart';
 // from motifd's PTY, so no local PTY library is built or bundled.
 const _ghosttyAssetName = 'motif/terminal/ghostty_bindings.g.dart';
 const _tailscaleAssetName = 'motif/platform/tailscale_ffi.dart';
+// The embedded-server cdylib (a C ABI over motif-server). Desktop only — the
+// app runs an in-process motifd from the tray, like the Tauri menu-bar app.
+const _motifEmbedAssetName = 'motif/platform/motif_embed_ffi.dart';
 const _homebrewZig = '/opt/homebrew/opt/zig@0.15/bin/zig';
 
 /// Whether the Zig toolchain is discoverable on PATH.
@@ -95,6 +98,73 @@ Future<void> _runTailscaleBuild(
   }
 }
 
+void _addBundledMotifEmbedDynamicFile(
+  BuildInput input,
+  BuildOutputBuilder output,
+  File lib,
+) {
+  output.dependencies.add(lib.uri);
+  output.assets.code.add(
+    CodeAsset(
+      package: input.packageName,
+      name: _motifEmbedAssetName,
+      file: lib.uri,
+      linkMode: DynamicLoadingBundled(),
+    ),
+  );
+}
+
+/// Find the prebuilt motif-embed cdylib (or build it via cargo) and bundle it.
+/// Mirrors [_addOrBuildBundledTailscaleDynamic]; desktop targets only. A null
+/// `buildTarget` (e.g. mobile) means "don't build" and is a no-op.
+Future<void> _addOrBuildBundledMotifEmbedDynamic(
+  BuildInput input,
+  BuildOutputBuilder output, {
+  required List<String> relativeCandidates,
+  String? buildTarget,
+  Map<String, String>? environment,
+}) async {
+  var lib = _findRelativeFile(input, relativeCandidates);
+  if (lib == null && buildTarget != null) {
+    await _runMotifEmbedBuild(input, buildTarget, environment: environment);
+    lib = _findRelativeFile(input, relativeCandidates);
+  }
+  if (lib == null) return;
+  _addBundledMotifEmbedDynamicFile(input, output, lib);
+}
+
+Future<void> _runMotifEmbedBuild(
+  BuildInput input,
+  String target, {
+  Map<String, String>? environment,
+}) async {
+  final packageRoot = Directory.fromUri(input.packageRoot).path;
+  final buildScript = File.fromUri(
+    input.packageRoot.resolve('scripts/build_motif_embed.sh'),
+  );
+  if (!buildScript.existsSync()) {
+    throw StateError('Missing build script: ${buildScript.path}');
+  }
+  final args = ['bash', buildScript.path, '--target', target];
+  final process = await Process.start(
+    '/usr/bin/env',
+    args,
+    workingDirectory: packageRoot,
+    environment: environment,
+  );
+  await stdout.addStream(process.stdout);
+  await stderr.addStream(process.stderr);
+  final exitCode = await process.exitCode;
+  if (exitCode != 0) {
+    throw ProcessException(
+      '/usr/bin/env',
+      args,
+      'motif-embed native build failed for $target',
+      exitCode,
+    );
+  }
+}
+
 /// Linux native build: cross-/native-compile libghostty-vt.so and emit it as a
 /// bundled dynamic library.
 Future<void> _buildLinux(BuildInput input, BuildOutputBuilder output) async {
@@ -161,6 +231,15 @@ Future<void> _buildLinux(BuildInput input, BuildOutputBuilder output) async {
       'build/native/tailscale/linux/$arch/libtailscale.so',
       'build/native/tailscale/libtailscale.so',
       'linux/vendor/libtailscale.so',
+    ],
+    buildTarget: 'linux-$arch',
+  );
+  await _addOrBuildBundledMotifEmbedDynamic(
+    input,
+    output,
+    relativeCandidates: [
+      'build/native/motif/linux/$arch/libmotif_embed.so',
+      'linux/vendor/libmotif_embed.so',
     ],
     buildTarget: 'linux-$arch',
   );
@@ -308,6 +387,15 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
       'build/native/tailscale/windows/$arch/libtailscale.dll',
       'build/native/tailscale/libtailscale.dll',
       'windows/vendor/libtailscale.dll',
+    ],
+    buildTarget: 'windows-$arch',
+  );
+  await _addOrBuildBundledMotifEmbedDynamic(
+    input,
+    output,
+    relativeCandidates: [
+      'build/native/motif/windows/$arch/motif_embed.dll',
+      'windows/vendor/motif_embed.dll',
     ],
     buildTarget: 'windows-$arch',
   );
@@ -519,6 +607,16 @@ Future<void> main(List<String> args) async {
         'build/native/tailscale/macos/$targetArchName/libtailscale.dylib',
         'build/native/tailscale/libtailscale.dylib',
         'macos/vendor/libtailscale.dylib',
+      ],
+      buildTarget: 'macos-$targetArchName',
+      environment: {'MACOSX_DEPLOYMENT_TARGET': '$macOSMinVersion'},
+    );
+    await _addOrBuildBundledMotifEmbedDynamic(
+      input,
+      output,
+      relativeCandidates: [
+        'build/native/motif/macos/$targetArchName/libmotif_embed.dylib',
+        'macos/vendor/libmotif_embed.dylib',
       ],
       buildTarget: 'macos-$targetArchName',
       environment: {'MACOSX_DEPLOYMENT_TARGET': '$macOSMinVersion'},

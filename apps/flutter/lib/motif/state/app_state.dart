@@ -19,6 +19,7 @@ import '../platform/push_crypto.dart';
 import '../platform/services.dart';
 import '../terminal/terminal_palette.dart';
 import 'connection_state.dart';
+import 'embedded_server_service.dart';
 import 'embedded_web_server.dart';
 import 'motif_client.dart';
 import 'server_connection_controller.dart';
@@ -31,6 +32,9 @@ class AppState extends ChangeNotifier {
   final QuickCommandStore commands;
   final PushSettingsStore push;
   final PlatformServices platform;
+  /// Desktop-only embedded motifd (run from the tray). Null on web/mobile or
+  /// when the native library isn't bundled.
+  final EmbeddedServerService? embeddedServer;
   final String? startupActiveServerId;
   final SessionSidebarUiState sessionSidebar = SessionSidebarUiState();
   final MotifClient Function(MotifServer server) _clientFactory;
@@ -47,6 +51,7 @@ class AppState extends ChangeNotifier {
     required this.commands,
     required this.push,
     required this.platform,
+    this.embeddedServer,
     MotifClient Function(MotifServer server)? clientFactory,
   }) : startupActiveServerId = servers.activeId,
        _clientFactory = clientFactory ?? ((_) => MotifClient()) {
@@ -54,6 +59,7 @@ class AppState extends ChangeNotifier {
     servers.addListener(_relayStoreChange);
     commands.addListener(_relayStoreChange);
     push.addListener(_relayStoreChange);
+    embeddedServer?.addListener(_relayStoreChange);
     terminalSettings.addListener(_onTerminalSettingsChanged);
     _tailscaleSub = platform.tailscale.states.listen(_onTailscaleState);
     try {
@@ -95,6 +101,7 @@ class AppState extends ChangeNotifier {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: platform ?? PlatformServices.defaults(),
+      embeddedServer: await EmbeddedServerService.create(prefs, servers),
     );
   }
 
@@ -433,6 +440,8 @@ class AppState extends ChangeNotifier {
     servers.removeListener(_relayStoreChange);
     commands.removeListener(_relayStoreChange);
     push.removeListener(_relayStoreChange);
+    embeddedServer?.removeListener(_relayStoreChange);
+    embeddedServer?.dispose();
     terminalSettings.removeListener(_onTerminalSettingsChanged);
     unawaited(_tailscaleSub?.cancel());
     _lifecycleListener?.dispose();
