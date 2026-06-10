@@ -28,8 +28,6 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Motif uses the microphone for voice input in the terminal composer.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Motif uses speech recognition to transcribe voice input into terminal commands.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
