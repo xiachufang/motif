@@ -3,7 +3,7 @@
 # Fail this script if any subcommand fails.
 set -e
 
-brew install zig@0.15
+brew install zig@0.15 go
 
 # The default execution directory of this script is the ci_scripts directory.
 cd $CI_PRIMARY_REPOSITORY_PATH/apps/flutter # change working directory to the root of your cloned repo.
