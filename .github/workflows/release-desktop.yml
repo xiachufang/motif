@@ -71,6 +71,25 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make mingw -y
 
+      # Windows: prebuild the native libs explicitly before `flutter build`.
+      # Two reasons: (1) flutter's native-assets hook runs under an MSBuild
+      # custom-build step that swallows the build scripts' stderr, so failures
+      # here are otherwise invisible; running them directly surfaces the real
+      # error. (2) tailscale/motif_embed land in the paths the hook scans first
+      # (build/native/...), so the in-build hook reuses them — same trick the
+      # macOS Xcode Cloud post_clone uses. CC=gcc: choco's mingw ships `gcc`,
+      # not the cross-prefixed x86_64-w64-mingw32-gcc the script defaults to.
+      - name: Prebuild native libs (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          CC: gcc
+        run: |
+          cd apps/flutter
+          bash scripts/build_native_deps.sh --target-os windows --target-arch x64 --out-dir build/native/windows
+          bash scripts/build_tailscale.sh --target windows-x64
+          bash scripts/build_motif_embed.sh --target windows-x64
+
       # Run under bash everywhere: on Windows this is Git Bash, which satisfies
       # both the Makefile's `SHELL := /bin/bash` and the build hook's
       # `Process.start('bash', ...)` calls.
