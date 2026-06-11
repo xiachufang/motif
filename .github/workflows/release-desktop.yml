@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04   # older glibc baseline → binaries run on more distros
+          - os: ubuntu-24.04   # need GLib >= 2.74 (G_APPLICATION_DEFAULT_FLAGS in cnativeapi); 22.04 ships 2.72
             target: release-flutter-linux
           - os: windows-latest
             target: release-flutter-windows
@@ -65,10 +65,11 @@ jobs:
             clang cmake ninja-build pkg-config make \
             libgtk-3-dev liblzma-dev libsecret-1-dev libayatana-appindicator3-dev
 
-      # Windows runners ship MSVC + Git Bash but not GNU make.
-      - name: Install make (Windows)
+      # Windows runners ship MSVC + Git Bash but not GNU make; libtailscale's
+      # CGO c-shared build also needs a mingw-w64 gcc (x86_64-w64-mingw32-gcc).
+      - name: Install make + mingw (Windows)
         if: runner.os == 'Windows'
-        run: choco install make -y
+        run: choco install make mingw -y
 
       # Run under bash everywhere: on Windows this is Git Bash, which satisfies
       # both the Makefile's `SHELL := /bin/bash` and the build hook's

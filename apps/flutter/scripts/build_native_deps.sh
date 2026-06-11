@@ -147,7 +147,12 @@ require_command() {
 }
 
 require_command zig
-require_command xcrun
+# xcrun is macOS-only. The Linux/Windows/Android paths drive Zig directly and
+# never shell out to it, so requiring it there would wrongly fail the build
+# (e.g. on CI Linux/Windows runners with no Xcode).
+if [[ "$TARGET_OS" == "macos" || "$TARGET_OS" == "ios" ]]; then
+  require_command xcrun
+fi
 
 # Zig 0.15.2's self-hosted Mach-O linker can't parse libSystem.tbd from very new
 # macOS SDKs (e.g. 26.x), which makes even the build runner fail to link. If the
@@ -190,7 +195,10 @@ EOF
   export PATH="$shimdir:$PATH"
   echo "[native] pinned macOS SDK for Zig → $fallback (active SDK unparseable by Zig 0.15.2)"
 }
-maybe_pin_macos_sdk
+# Only relevant to macOS/iOS builds (the shim probes the macOS SDK via xcrun).
+if [[ "$TARGET_OS" == "macos" || "$TARGET_OS" == "ios" ]]; then
+  maybe_pin_macos_sdk
+fi
 
 if [[ "$TARGET_OS" != "macos" && "$TARGET_OS" != "ios" && "$TARGET_OS" != "linux" && "$TARGET_OS" != "windows" && "$TARGET_OS" != "android" ]]; then
   echo "error: unsupported target OS '$TARGET_OS' (expected macos|ios|linux|windows|android)" >&2
