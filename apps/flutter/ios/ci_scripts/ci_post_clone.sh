@@ -25,4 +25,12 @@ flutter pub get
 # "Unable to load contents of file list: .../FlutterInputs.xcfilelist".
 flutter build ios --config-only --no-codesign --release
 
+# Warm zig's global package cache for the ghostty native build. During
+# `xcodebuild archive`, the Flutter "Run Script" phase compiles libghostty-vt
+# via zig, which fetches deps from deps.files.ghostty.org. Xcode Cloud blocks
+# network egress during the build action, so that fetch fails with
+# "TlsInitializationFailed". Fetch the whole dep tree here (network is available
+# in post-clone) into ~/.cache/zig; the in-build zig run is then a cache hit.
+( cd ghostty && zig build --fetch=all )
+
 exit 0
