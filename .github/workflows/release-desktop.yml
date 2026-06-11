@@ -1,0 +1,90 @@
+name: release-desktop
+
+# Build the Linux and Windows desktop apps (macOS/iOS are handled by Xcode
+# Cloud) and upload them to the GitHub Release for the pushed git tag. The
+# macOS .dmg published by Xcode Cloud's ci_post_xcodebuild.sh keys off the same
+# tag, so all platforms merge into one Release: whichever side runs first
+# creates it, the other appends its assets.
+#
+# The repo's Makefile already orchestrates the builds (release-linux /
+# release-windows). This workflow only provisions toolchains + system libs,
+# runs `make`, and uploads dist/release/*.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}        # run manually first to shake out build issues
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # GITHUB_TOKEN creates/updates the Release; no PAT needed
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04   # older glibc baseline → binaries run on more distros
+            target: release-linux
+          - os: windows-latest
+            target: release-windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Flutter + Rust + Go + Zig are all needed at build time: the flutter
+      # build hook compiles the motif-embed cdylib (Rust) and libtailscale (Go)
+      # via bash scripts, and cargo builds motif-server which links
+      # libghostty-vt (built from source by Zig).
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - uses: dtolnay/rust-toolchain@1.95        # matches rust-toolchain.toml
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2                        # Cargo.toml pins libghostty-vt to Zig 0.15.2
+
+      # Linux system libraries: Flutter desktop (GTK/cmake/ninja), tray
+      # (appindicator), and secret-service (flutter_secure_storage). `make` is
+      # preinstalled on ubuntu but listed for clarity.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config make \
+            libgtk-3-dev liblzma-dev libsecret-1-dev libayatana-appindicator3-dev
+
+      # Windows runners ship MSVC + Git Bash but not GNU make.
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
+      # Run under bash everywhere: on Windows this is Git Bash, which satisfies
+      # both the Makefile's `SHELL := /bin/bash` and the build hook's
+      # `Process.start('bash', ...)` calls.
+      - name: Build release artifacts
+        shell: bash
+        run: |
+          make ${{ matrix.target }}
+          make release-manifest
+
+      # Upload to the tag's Release (create-or-update; merges with the macOS
+      # .dmg from Xcode Cloud). No body/notes set, so neither side clobbers the
+      # other's release description.
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/release/*.tar.gz
+            dist/release/MANIFEST.txt
+          fail_on_unmatched_files: true
