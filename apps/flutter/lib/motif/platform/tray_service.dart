@@ -30,6 +30,10 @@ class TrayService {
   EmbeddedServerService? _svc;
   EmbeddedRunState? _lastPhase;
   bool _lastHasLoopback = false;
+  // nativeapi can deliver a menu-item click more than once for a single
+  // selection on macOS; this collapses rapid repeats to one action.
+  DateTime? _lastActionAt;
+  bool _settingsOpen = false;
 
   TrayService(this._app, this._navigatorKey);
 
@@ -82,9 +86,9 @@ class TrayService {
     // needs-login is reflected when running but Tailscale is waiting on auth.
     final b64 = switch (phase) {
       EmbeddedRunState.running =>
-        _svc!.status.authUrl != null ? TrayIcons.needsLogin : TrayIcons.running,
+        _svc!.status.authUrl != null ? TrayIcons.error : TrayIcons.running,
       EmbeddedRunState.starting => TrayIcons.starting,
-      EmbeddedRunState.failed => TrayIcons.stopped,
+      EmbeddedRunState.failed => TrayIcons.error,
       EmbeddedRunState.stopped => TrayIcons.stopped,
     };
     // Some platforms' decoder wants a data URI; try both.
@@ -124,9 +128,11 @@ class TrayService {
       menu.addItem(_item('Open in Browser…', () => _openWebUi(svc)));
     }
     if (status.authUrl != null) {
-      menu.addItem(_item('Sign in to Tailscale…', () {
-        openExternalUrl(status.authUrl!);
-      }));
+      menu.addItem(
+        _item('Sign in to Tailscale…', () {
+          openExternalUrl(status.authUrl!);
+        }),
+      );
     }
 
     menu.addSeparator();
@@ -140,7 +146,16 @@ class TrayService {
   na.MenuItem _item(String label, VoidCallback onTap) {
     final item = na.MenuItem(label);
     item.startEventListening();
-    item.on<na.MenuItemClickedEvent>((_) => onTap());
+    item.on<na.MenuItemClickedEvent>((_) {
+      final now = DateTime.now();
+      final last = _lastActionAt;
+      if (last != null &&
+          now.difference(last) < const Duration(milliseconds: 500)) {
+        return; // duplicate click event for the same selection — ignore.
+      }
+      _lastActionAt = now;
+      onTap();
+    });
     return item;
   }
 
@@ -158,10 +173,16 @@ class TrayService {
   }
 
   Future<void> _openSettings() async {
-    await DesktopWindow.show();
-    final ctx = _navigatorKey.currentContext;
-    if (ctx != null && ctx.mounted) {
-      await showEmbeddedServerSettingsSheet(ctx);
+    if (_settingsOpen) return; // already showing — don't stack a second sheet.
+    _settingsOpen = true;
+    try {
+      await DesktopWindow.show();
+      final ctx = _navigatorKey.currentContext;
+      if (ctx != null && ctx.mounted) {
+        await showEmbeddedServerSettingsSheet(ctx);
+      }
+    } finally {
+      _settingsOpen = false;
     }
   }
 
