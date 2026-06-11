@@ -33,4 +33,20 @@ flutter build macos --config-only --release
 # in post-clone) into ~/.cache/zig; the in-build zig run is then a cache hit.
 ( cd ghostty && zig build --fetch=all )
 
+# Install Rust and prebuild the motif-embed cdylib. The native-assets hook
+# compiles it via cargo during the build phase, but Xcode Cloud has no Rust
+# toolchain and no network there ("cargo not on PATH" / crate fetch would fail).
+# Build it here into build/native/motif/macos/<arch>/ — the exact path the hook
+# scans first (hook/build.dart) — so the in-build hook finds it prebuilt and
+# skips cargo entirely. rust-toolchain.toml (repo root) pins the channel.
+export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --no-modify-path --default-toolchain 1.95
+. "$CARGO_HOME/env"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# Release archives are universal (arm64 + x86_64); prebuild both slices.
+bash scripts/build_motif_embed.sh --target macos-arm64
+bash scripts/build_motif_embed.sh --target macos-x64
+
 exit 0
