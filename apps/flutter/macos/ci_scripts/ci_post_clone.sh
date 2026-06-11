@@ -13,10 +13,16 @@ git clone https://github.com/flutter/flutter.git --depth 1 -b stable $HOME/flutt
 export PATH="$PATH:$HOME/flutter/bin:/opt/homebrew/opt/zig@0.15/bin"
 export LDFLAGS="-L/opt/homebrew/opt/zig@0.15/lib"
 
-# Install Flutter artifacts for iOS (--ios), or macOS (--macos) platforms.
-flutter precache --ios
+# Install Flutter artifacts for macOS.
+flutter precache --macos
 
 # Install Flutter dependencies.
 flutter pub get
+
+# Generate the ephemeral Xcode config + SPM package + FlutterInputs/Outputs.xcfilelist.
+# `flutter pub get` alone does NOT create these (they live in macos/Flutter/ephemeral,
+# which is gitignored), so `xcodebuild archive` would fail with
+# "Unable to load contents of file list: .../FlutterInputs.xcfilelist".
+flutter build macos --config-only --release
 
 exit 0
