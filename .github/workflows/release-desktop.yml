@@ -6,9 +6,12 @@ name: release-desktop
 # tag, so all platforms merge into one Release: whichever side runs first
 # creates it, the other appends its assets.
 #
-# The repo's Makefile already orchestrates the builds (release-linux /
-# release-windows). This workflow only provisions toolchains + system libs,
-# runs `make`, and uploads dist/release/*.
+# The repo's Makefile already orchestrates the builds. We use the
+# release-flutter-{linux,windows} targets (the desktop app), NOT release-{linux,
+# windows}: the latter also build the standalone server binaries via
+# release-rust-*, which pull in `flutter build web` — and the app's dart:ffi
+# bindings don't compile for the web target. This workflow only provisions
+# toolchains + system libs, runs `make`, and uploads dist/release/*.
 
 on:
   push:
@@ -29,9 +32,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-22.04   # older glibc baseline → binaries run on more distros
-            target: release-linux
+            target: release-flutter-linux
           - os: windows-latest
-            target: release-windows
+            target: release-flutter-windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
