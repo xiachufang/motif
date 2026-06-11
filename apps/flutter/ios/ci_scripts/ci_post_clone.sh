@@ -27,10 +27,17 @@ flutter build ios --config-only --no-codesign --release
 
 # Warm zig's global package cache for the ghostty native build. During
 # `xcodebuild archive`, the Flutter "Run Script" phase compiles libghostty-vt
-# via zig, which fetches deps from deps.files.ghostty.org. Xcode Cloud blocks
-# network egress during the build action, so that fetch fails with
-# "TlsInitializationFailed". Fetch the whole dep tree here (network is available
-# in post-clone) into ~/.cache/zig; the in-build zig run is then a cache hit.
+# via zig, which fetches deps from deps.files.ghostty.org. zig's TLS stack can't
+# initialize in the sandboxed Run Script phase ("TlsInitializationFailed"), so
+# fetch the whole dep tree here into ~/.cache/zig; the in-build zig run is then a
+# cache hit and needs no network.
 ( cd ghostty && zig build --fetch=all )
+
+# Prebuild libtailscale for iOS device (Go c-archive wrapped into a dylib). The
+# hook otherwise clones tailscale/libtailscale and runs `make` in the sandboxed
+# build phase; do it here into build/native/tailscale/iphoneos/ (a hook scan
+# path) so the in-build hook finds it prebuilt. `go` is installed above.
+# iOS doesn't use motif-embed (desktop-only) or cargo, so no Rust needed here.
+bash scripts/build_tailscale.sh --target ios
 
 exit 0
