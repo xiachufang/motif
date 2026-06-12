@@ -70,6 +70,15 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
+      # The native build hook spawns `bash`, which on a Windows runner resolves
+      # to WSL's C:\Windows\System32\bash.exe (no distro installed → it errors
+      # out). Prepend Git Bash to PATH so the flutter/dart subprocess's `bash`
+      # is Git Bash.
+      - name: Prefer Git Bash over WSL bash (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
+
       # Windows: run the app build verbosely before `make` so the native-assets
       # hook's output — which the MSBuild custom-build step otherwise swallows —
       # is visible in the CI log. The subsequent `make` build is incremental.
