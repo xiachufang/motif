@@ -41,12 +41,18 @@ echo "ci_post_xcodebuild: publishing release for tag $CI_TAG"
 # --- Locate the Developer ID-signed app ------------------------------------
 # Populated only when the workflow has a Developer ID distribution preparation.
 # If it's empty the archive is adhoc-signed, which won't reliably launch on
-# Apple Silicon even after stripping quarantine, so bail.
+# Apple Silicon even after stripping quarantine, so we can't publish a usable
+# build. That's a workflow-config prerequisite, NOT a build failure: the archive
+# itself already succeeded, so skip the release with a loud warning and let the
+# build stay green. Add a Developer ID distribution preparation to the workflow's
+# Archive action to enable publishing.
 if [ -z "$CI_DEVELOPER_ID_SIGNED_APP_PATH" ]; then
-  echo "ERROR: CI_DEVELOPER_ID_SIGNED_APP_PATH is empty." >&2
-  echo "       Add a Developer ID distribution preparation to the Xcode Cloud" >&2
-  echo "       workflow's Archive action so the app is Developer ID-signed." >&2
-  exit 1
+  echo "WARNING: CI_DEVELOPER_ID_SIGNED_APP_PATH is empty; skipping release for $CI_TAG." >&2
+  echo "         The archive is not Developer ID-signed (no Developer ID" >&2
+  echo "         distribution preparation on the workflow's Archive action), so" >&2
+  echo "         there is no notarizable/launchable app to publish. Add that" >&2
+  echo "         preparation in Xcode Cloud to enable tag releases." >&2
+  exit 0
 fi
 APP_PATH="$CI_DEVELOPER_ID_SIGNED_APP_PATH/$APP_NAME.app"
 if [ ! -d "$APP_PATH" ]; then
