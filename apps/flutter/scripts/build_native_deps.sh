@@ -207,6 +207,17 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# Windows: Flutter's native-assets runner spawns this hook with a sanitized
+# environment that can drop ZIG_GLOBAL_CACHE_DIR and APPDATA, leaving zig unable
+# to resolve its global cache ("error: unable to resolve zig cache directory:
+# AppDataDirUnavailable"). Give zig a project-local cache as a fallback (only
+# when the env didn't already provide one, so CI cache restore still wins).
+if [[ "$TARGET_OS" == "windows" ]]; then
+  export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$PROJECT_DIR/.zig-cache/global}"
+  export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$PROJECT_DIR/.zig-cache/local}"
+  mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+fi
+
 # ─────────────────────────── Android (.so) ───────────────────────────
 # Requires the Android NDK (ghostty's simdutf dep links bionic libc/headers).
 # Set ANDROID_NDK_HOME (or ANDROID_HOME with an ndk/ subdir). pty is a stub
