@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/settings.dart';
 import '../../net/rpc_client.dart';
 import '../../platform/services.dart';
+import '../../platform/tailscale_support.dart';
 import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
@@ -32,7 +32,7 @@ class ConnectionScreen extends StatelessWidget {
     MotifServer server,
   ) async {
     await app.connectServerAndRefresh(server.id, force: true, makeActive: true);
-    if (!kIsWeb &&
+    if (tailscaleSupported &&
         context.mounted &&
         app.serverViewState(server.id).primaryAction ==
             ServerConnectionAction.openTailscale) {
@@ -60,7 +60,7 @@ class ConnectionScreen extends StatelessWidget {
       case ServerConnectionAction.disconnect:
         unawaited(app.disconnectServer(server.id));
       case ServerConnectionAction.openTailscale:
-        if (kIsWeb) return;
+        if (!tailscaleSupported) return;
         showTailscaleConnectionSheet(context);
       case ServerConnectionAction.openSessions:
         _openSessions(context);
@@ -84,7 +84,7 @@ class ConnectionScreen extends StatelessWidget {
             MotifSpacing.xl,
           ),
           children: [
-            if (!kIsWeb) ...[
+            if (tailscaleSupported) ...[
               const MotifSection(
                 title: 'Tailscale',
                 children: [TailscaleSection()],

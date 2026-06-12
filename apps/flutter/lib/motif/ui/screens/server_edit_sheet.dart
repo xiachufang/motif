@@ -1,9 +1,9 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/settings.dart';
 import '../../platform/services.dart';
+import '../../platform/tailscale_support.dart';
 import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
@@ -37,7 +37,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   String? _discoveryMessage;
   int _discoveryGeneration = 0;
 
-  bool get _supportsTailscale => !kIsWeb;
+  bool get _supportsTailscale => tailscaleSupported;
 
   @override
   void initState() {

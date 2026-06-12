@@ -1,9 +1,9 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../platform/tailscale_support.dart';
 import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
@@ -20,7 +20,7 @@ class WelcomeScreen extends StatelessWidget {
     final result = await showServerEditSheet(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
     await app.connectServerAndRefresh(result.server.id, force: true);
-    if (!kIsWeb &&
+    if (tailscaleSupported &&
         context.mounted &&
         app.serverViewState(result.server.id).primaryAction ==
             ServerConnectionAction.openTailscale) {
@@ -74,7 +74,7 @@ class WelcomeScreen extends StatelessWidget {
                 ),
               ],
             ),
-            if (!kIsWeb) ...[
+            if (tailscaleSupported) ...[
               const SizedBox(height: MotifSpacing.xl),
               const MotifSection(
                 title: 'Tailscale',

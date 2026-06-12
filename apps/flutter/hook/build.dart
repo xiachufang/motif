@@ -380,16 +380,12 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
       linkMode: DynamicLoadingBundled(),
     ),
   );
-  await _addOrBuildBundledTailscaleDynamic(
-    input,
-    output,
-    relativeCandidates: [
-      'build/native/tailscale/windows/$arch/libtailscale.dll',
-      'build/native/tailscale/libtailscale.dll',
-      'windows/vendor/libtailscale.dll',
-    ],
-    buildTarget: 'windows-$arch',
-  );
+  // No libtailscale on Windows: upstream tailscale/libtailscale's C wrapper
+  // (tailscale.c) is POSIX-only (#include <sys/socket.h>, <unistd.h>) with no
+  // winsock fallback, so it can't build for Windows. Without the bundled DLL,
+  // platform_factory_io.dart's _findLibtailscale() returns null and the app
+  // falls back to NoopTailscaleService — Tailscale features are unavailable on
+  // Windows but the app builds and runs.
   await _addOrBuildBundledMotifEmbedDynamic(
     input,
     output,
