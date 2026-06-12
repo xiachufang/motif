@@ -274,15 +274,20 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
                     app_version.patch,
                 });
 
-                if (!std.mem.eql(u8, tag, expected)) {
-                    @panic("tagged releases must be in vX.Y.Z format matching build.zig");
+                // Motif vendors libghostty-vt *inside* its own git repo, so
+                // `git describe` here returns Motif's release tag (e.g.
+                // v1.0.0-rc1), which never matches ghostty's own version. Take
+                // the clean-release path only on an exact match; otherwise fall
+                // through to the pre-release version below instead of the
+                // upstream @panic (which on Windows crashes into a blocking
+                // WerFault dialog and hangs CI until timeout). [motif patch]
+                if (std.mem.eql(u8, tag, expected)) {
+                    break :version .{
+                        .major = app_version.major,
+                        .minor = app_version.minor,
+                        .patch = app_version.patch,
+                    };
                 }
-
-                break :version .{
-                    .major = app_version.major,
-                    .minor = app_version.minor,
-                    .patch = app_version.patch,
-                };
             }
         }
 
