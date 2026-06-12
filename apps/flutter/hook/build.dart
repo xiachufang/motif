@@ -348,14 +348,19 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
   // Invoke bash directly, not via `/usr/bin/env`: this hook runs in the native
   // Windows flutter/dart process (not inside Git Bash), where the Unix path
   // `/usr/bin/env` does not exist. `bash` resolves on PATH (Git Bash's bash).
+  //
+  // Dart hands us native Windows paths with backslashes (D:\a\...). bash treats
+  // `\` as an escape, so the script's `dirname`/`cd`/`mkdir` on these paths
+  // break (it fails within seconds). Convert to forward slashes — msys bash
+  // accepts `D:/a/...` as the script path and --out-dir.
   final args = [
-    buildScript.path,
+    buildScript.path.replaceAll(r'\', '/'),
     '--target-os',
     'windows',
     '--target-arch',
     arch,
     '--out-dir',
-    outDir.path,
+    outDir.path.replaceAll(r'\', '/'),
   ];
   final process = await Process.start(
     'bash',
