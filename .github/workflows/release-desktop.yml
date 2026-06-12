@@ -70,22 +70,18 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      # Windows: prebuild the native libs explicitly before `flutter build`.
-      # Two reasons: (1) flutter's native-assets hook runs under an MSBuild
-      # custom-build step that swallows the build scripts' stderr, so failures
-      # here are otherwise invisible; running them directly surfaces the real
-      # error. (2) motif_embed lands in the path the hook scans first
-      # (build/native/...), so the in-build hook reuses it — same trick the
-      # macOS Xcode Cloud post_clone uses. ghostty (zig) and motif_embed
-      # (cargo+MSVC) need no C compiler; libtailscale is skipped on Windows
-      # (upstream is POSIX-only), so no mingw is required.
-      - name: Prebuild native libs (Windows)
+      # Windows: build ghostty-vt.dll explicitly before `flutter build`, as a
+      # visible canary. flutter's native-assets hook runs under an MSBuild
+      # custom-build step that swallows the build script's stderr, so a ghostty
+      # failure would otherwise be invisible; running it here surfaces the real
+      # error. (libtailscale and motif-embed are intentionally not built on
+      # Windows — see hook/build.dart — so ghostty-vt is the only native lib.)
+      - name: Prebuild ghostty-vt (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           cd apps/flutter
           bash scripts/build_native_deps.sh --target-os windows --target-arch x64 --out-dir build/native/windows
-          bash scripts/build_motif_embed.sh --target windows-x64
 
       # Run under bash everywhere: on Windows this is Git Bash, which satisfies
       # both the Makefile's `SHELL := /bin/bash` and the build hook's

@@ -380,21 +380,17 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
       linkMode: DynamicLoadingBundled(),
     ),
   );
-  // No libtailscale on Windows: upstream tailscale/libtailscale's C wrapper
-  // (tailscale.c) is POSIX-only (#include <sys/socket.h>, <unistd.h>) with no
-  // winsock fallback, so it can't build for Windows. Without the bundled DLL,
-  // platform_factory_io.dart's _findLibtailscale() returns null and the app
-  // falls back to NoopTailscaleService — Tailscale features are unavailable on
-  // Windows but the app builds and runs.
-  await _addOrBuildBundledMotifEmbedDynamic(
-    input,
-    output,
-    relativeCandidates: [
-      'build/native/motif/windows/$arch/motif_embed.dll',
-      'windows/vendor/motif_embed.dll',
-    ],
-    buildTarget: 'windows-$arch',
-  );
+  // Windows bundles only the terminal engine (ghostty-vt) — no libtailscale
+  // and no embedded motifd:
+  //   - libtailscale: upstream's C wrapper (tailscale.c) is POSIX-only
+  //     (<sys/socket.h>, <unistd.h>) with no winsock fallback.
+  //   - motif-embed (in-process motifd): motif-server is Unix-centric (a
+  //     Unix-domain hook-ingress socket, fs-permission calls), so it isn't
+  //     built for Windows.
+  // The app degrades gracefully when these are absent: _findLibtailscale()
+  // returns null → NoopTailscaleService, and EmbeddedServerService.available
+  // is false → the embedded-server UI hides. The Windows client is a pure
+  // remote client (connects to a remote motifd).
 }
 
 /// iOS native build: wrap libghostty-vt's iOS archive slice into a bundled
