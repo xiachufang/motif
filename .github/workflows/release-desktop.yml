@@ -72,19 +72,6 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install make -y
 
-      # Windows: run the app build verbosely before `make` so the native-assets
-      # hook's output — which the MSBuild custom-build step otherwise swallows —
-      # is visible in the CI log. The subsequent `make` build is incremental.
-      # (libtailscale and motif-embed are intentionally not built on Windows —
-      # see hook/build.dart — so ghostty-vt is the only native lib.)
-      - name: Build Windows app (verbose, visible hook logs)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cd apps/flutter
-          flutter pub get
-          flutter build windows --release -v
-
       # Run under bash everywhere: on Windows this is Git Bash, which satisfies
       # both the Makefile's `SHELL := /bin/bash` and the build hook's
       # `Process.start('bash', ...)` calls.
