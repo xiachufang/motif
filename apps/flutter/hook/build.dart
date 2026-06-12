@@ -345,8 +345,10 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
   );
   outDir.createSync(recursive: true);
 
+  // Invoke bash directly, not via `/usr/bin/env`: this hook runs in the native
+  // Windows flutter/dart process (not inside Git Bash), where the Unix path
+  // `/usr/bin/env` does not exist. `bash` resolves on PATH (Git Bash's bash).
   final args = [
-    'bash',
     buildScript.path,
     '--target-os',
     'windows',
@@ -356,14 +358,14 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
     outDir.path,
   ];
   final process = await Process.start(
-    '/usr/bin/env',
+    'bash',
     args,
     workingDirectory: packageRoot,
   );
   await stdout.addStream(process.stdout);
   await stderr.addStream(process.stderr);
   if (await process.exitCode != 0) {
-    throw ProcessException('/usr/bin/env', args, 'Windows native build failed');
+    throw ProcessException('bash', args, 'Windows native build failed');
   }
 
   final ghosttyLib = File.fromUri(outDir.uri.resolve('ghostty-vt.dll'));
