@@ -66,18 +66,11 @@ jobs:
             libgtk-3-dev liblzma-dev libsecret-1-dev libayatana-appindicator3-dev
 
       # Windows runners ship MSVC + Git Bash but not GNU make.
+      # (The hook resolves Git Bash explicitly — see _bashExecutable in
+      # hook/build.dart — so no PATH juggling is needed for the WSL-bash trap.)
       - name: Install make (Windows)
         if: runner.os == 'Windows'
         run: choco install make -y
-
-      # The native build hook spawns `bash`, which on a Windows runner resolves
-      # to WSL's C:\Windows\System32\bash.exe (no distro installed → it errors
-      # out). Prepend Git Bash to PATH so the flutter/dart subprocess's `bash`
-      # is Git Bash.
-      - name: Prefer Git Bash over WSL bash (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value 'C:\Program Files\Git\bin'
 
       # Windows: run the app build verbosely before `make` so the native-assets
       # hook's output — which the MSBuild custom-build step otherwise swallows —

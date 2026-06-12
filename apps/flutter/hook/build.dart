@@ -26,6 +26,27 @@ Future<bool> _hasZig() async {
   return false;
 }
 
+/// Resolve a bash to run the build scripts with.
+///
+/// On Windows, a bare `bash` is a trap: Dart's Process.start uses CreateProcess,
+/// whose search order hits C:\Windows\System32 before PATH — and System32\bash
+/// is the WSL launcher, which errors out ("no installed distributions") when no
+/// distro is present. So prefer an explicit Git Bash (overridable via
+/// MOTIF_BASH); fall back to PATH `bash` on Unix.
+String _bashExecutable() {
+  final override = Platform.environment['MOTIF_BASH'];
+  if (override != null && override.isNotEmpty) return override;
+  if (Platform.isWindows) {
+    for (final candidate in [
+      r'C:\Program Files\Git\bin\bash.exe',
+      r'C:\Program Files\Git\usr\bin\bash.exe',
+    ]) {
+      if (File(candidate).existsSync()) return candidate;
+    }
+  }
+  return 'bash';
+}
+
 File? _findRelativeFile(BuildInput input, List<String> relativeCandidates) {
   for (final relativePath in relativeCandidates) {
     final lib = File.fromUri(input.packageRoot.resolve(relativePath));
@@ -353,6 +374,7 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
   // `\` as an escape, so the script's `dirname`/`cd`/`mkdir` on these paths
   // break (it fails within seconds). Convert to forward slashes — msys bash
   // accepts `D:/a/...` as the script path and --out-dir.
+  final bash = _bashExecutable();
   final args = [
     buildScript.path.replaceAll(r'\', '/'),
     '--target-os',
@@ -363,14 +385,14 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
     outDir.path.replaceAll(r'\', '/'),
   ];
   final process = await Process.start(
-    'bash',
+    bash,
     args,
     workingDirectory: packageRoot,
   );
   await stdout.addStream(process.stdout);
   await stderr.addStream(process.stderr);
   if (await process.exitCode != 0) {
-    throw ProcessException('bash', args, 'Windows native build failed');
+    throw ProcessException(bash, args, 'Windows native build failed');
   }
 
   final ghosttyLib = File.fromUri(outDir.uri.resolve('ghostty-vt.dll'));
