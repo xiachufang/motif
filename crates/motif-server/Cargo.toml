@@ -10,14 +10,24 @@ description = "Motif remote dev agent — core server library + motifd binary"
 name = "motifd"
 path = "src/main.rs"
 
+[features]
+# Tailscale is opt-out. `default` keeps the historical behaviour (motifd ships
+# with the real embedded tsnet), but a build that doesn't want it — or can't
+# provide a Go toolchain (e.g. the hardened review image) — uses
+# `--no-default-features` and pulls in NO motif-tailscale at all.
+#   tailscale          : compile the tsnet transport + status API (stub, no Go).
+#   tailscale-bundled  : link the real Go libtailscale (needs Go on the builder).
+# All tailscale-touching code in motif-server is `#[cfg(feature = "tailscale")]`.
+default            = ["tailscale-bundled"]
+tailscale          = ["motif-net/tailscale"]
+tailscale-bundled  = ["tailscale", "motif-net/tailscale-bundled"]
+
 [dependencies]
 motif-proto        = { path = "../motif-proto" }
-# Tailscale transport. The base feature is the `tailscale` stub (compiles
-# everywhere, runtime Unimplemented). The real `tailscale-bundled` (Go-built
-# libtailscale via libtailscale-sys) is added for every target except Windows
-# below — upstream libtailscale's C wrapper is POSIX-only (sys/socket.h) and
-# won't compile under MSVC/mingw.
-motif-net          = { path = "../motif-net", features = ["tailscale"] }
+# Transport. Tailscale support is layered on via this crate's own features
+# above (motif-net/tailscale[-bundled]); the base dep stays feature-free so a
+# default-features-off build links no motif-tailscale.
+motif-net          = { path = "../motif-net" }
 
 tokio              = { workspace = true }
 tokio-util         = { workspace = true }
@@ -67,10 +77,6 @@ time               = { workspace = true }
 # tmpdir for the live rcfile copy.
 rust-embed         = { workspace = true }
 tempfile           = { workspace = true }
-
-# Real Tailscale (Go libtailscale) on every non-Windows target.
-[target.'cfg(not(windows))'.dependencies]
-motif-net = { path = "../motif-net", features = ["tailscale-bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

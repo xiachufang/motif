@@ -71,6 +71,9 @@ struct SessionDto {
     client_count: u32,
 }
 
+// Built without `tailscale` this is still named by `StatusDto.tailscale`'s type
+// but never constructed, so silence the dead-field lint in that configuration.
+#[cfg_attr(not(feature = "tailscale"), allow(dead_code))]
 #[derive(Serialize, Clone)]
 struct TsStatusDto {
     backend_state: String,
@@ -188,16 +191,25 @@ async fn do_status() -> StatusDto {
                 })
                 .collect();
 
-            let raw_ts = r.tailscale_status().await;
-            let auth_url = r
-                .tailscale_auth_url()
-                .or_else(|| raw_ts.as_ref().and_then(|s| s.auth_url.clone()));
-            let tailscale = raw_ts.map(|s| TsStatusDto {
-                backend_state: s.backend_state,
-                peer_online: s.peer_online,
-                peer_total: s.peer_total,
-                health: s.health,
-            });
+            // tailscale_status/auth_url only exist when motif-server is built
+            // with the `tailscale` feature; without it there is no tsnet to
+            // report, so both fields are simply absent.
+            #[cfg(feature = "tailscale")]
+            let (tailscale, auth_url) = {
+                let raw_ts = r.tailscale_status().await;
+                let auth_url = r
+                    .tailscale_auth_url()
+                    .or_else(|| raw_ts.as_ref().and_then(|s| s.auth_url.clone()));
+                let tailscale = raw_ts.map(|s| TsStatusDto {
+                    backend_state: s.backend_state,
+                    peer_online: s.peer_online,
+                    peer_total: s.peer_total,
+                    health: s.health,
+                });
+                (tailscale, auth_url)
+            };
+            #[cfg(not(feature = "tailscale"))]
+            let (tailscale, auth_url): (Option<TsStatusDto>, Option<String>) = (None, None);
 
             StatusDto {
                 running: true,

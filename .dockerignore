@@ -1,0 +1,21 @@
+# Keep the Docker build context small. The review image (deploy/review/Dockerfile)
+# only needs the Cargo workspace (crates/, Cargo.toml, Cargo.lock); it skips the
+# Flutter web embed. Excluding build artifacts and VCS keeps `COPY . .` fast and
+# avoids baking local secrets/outputs into the image.
+.git
+target
+**/target
+
+# Flutter client + its build artifacts (not needed by motifd's build)
+apps
+
+# Logs, packaging outputs, local env
+*.log
+*.dmg
+*.ipa
+.DS_Store
+.env
+.env.*
+
+# The review launcher's transient token dir, if ever created in-tree
+deploy/review/*.token

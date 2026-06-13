@@ -20,34 +20,43 @@ struct Args {
     /// $XDG_DATA_HOME/motifd/tsnet (~/.local/share/motifd/tsnet on Linux/macOS).
     /// First start without --tailscale-authkey will print a login URL on
     /// stderr — open it once in a browser to authorize this node.
+    /// The whole `--tailscale*` family exists only when built with the
+    /// `tailscale` feature (the default); `--no-default-features` drops it.
+    #[cfg(feature = "tailscale")]
     #[arg(long)]
     tailscale: bool,
 
     /// Override the embedded tsnet hostname. Default: `motifd-<system-hostname>`.
+    #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_hostname: Option<String>,
 
     /// Override the persistent state dir. Default:
     /// $XDG_DATA_HOME/motifd/tsnet (or ~/.local/share/motifd/tsnet).
+    #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_state_dir: Option<PathBuf>,
 
     /// Tailnet listen port for the embedded node.
+    #[cfg(feature = "tailscale")]
     #[arg(long, default_value_t = 7777, requires = "tailscale")]
     tailscale_port: u16,
 
     /// Tailnet authkey for unattended bring-up. Optional; if absent, tsnet
     /// emits a login URL on stderr.
+    #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_authkey: Option<String>,
 
     /// Override the coordination server (e.g. for headscale). Tailscale
     /// SaaS by default.
+    #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_control_url: Option<String>,
 
     /// Bring the node up as ephemeral (no persistent device entry on the
     /// tailnet — auto-removed when the process exits).
+    #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_ephemeral: bool,
 
@@ -119,6 +128,9 @@ async fn run() -> anyhow::Result<()> {
         None => None,
     };
 
+    // Built without the `tailscale` feature, the `--tailscale*` flags don't
+    // exist and the listener carries no tsnet backend, so the field is `None`.
+    #[cfg(feature = "tailscale")]
     let tailscale = if args.tailscale {
         let hostname = args
             .tailscale_hostname
@@ -145,7 +157,10 @@ async fn run() -> anyhow::Result<()> {
 
     let cfg = motif_server::ServerConfig {
         listen: args.listen,
+        #[cfg(feature = "tailscale")]
         tailscale,
+        #[cfg(not(feature = "tailscale"))]
+        tailscale: None,
         token,
         allow_insecure_no_auth: args.insecure_no_auth,
         push_relay_url: args.push_relay_url,

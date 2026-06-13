@@ -160,7 +160,7 @@ $ ssh -N \
 
 | 维度 | SSH 隧道 | Tailscale 嵌入 |
 |---|---|---|
-| 服务器准备 | 已有 SSH 即可（一条 sshd） | motifd 加 `--tailscale` 起嵌入式 tsnet listener（构建时 motif-server 已自带 tailscale-bundled），或者机器跑系统 Tailscale daemon |
+| 服务器准备 | 已有 SSH 即可（一条 sshd） | motifd 加 `--tailscale` 起嵌入式 tsnet listener（motif-server 默认即带 tailscale-bundled；用 `--no-default-features` 构建则无此参数），或者机器跑系统 Tailscale daemon |
 | 客户端准备 | 已有 OpenSSH（macOS/Linux 默认带） | motif-tui 需要用 `--features tailscale-bundled` 构建（需要本机 Go） |
 | 二进制大小影响 | **零**（不引入新依赖） | +20 MB 量级 |
 | 网络穿透 | 依赖 SSH 服务可达（公网或同网） | NAT 穿透 + DERP relay |

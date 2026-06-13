@@ -296,6 +296,7 @@ pub fn init_tracing_gui(filter: &str, log_dir: &Path, ring: LogRing) -> anyhow::
 pub struct RunningServer {
     bound: Vec<String>,
     manager: Arc<session::manager::SessionManager>,
+    #[cfg(feature = "tailscale")]
     ts: Option<Arc<motif_net::motif_tailscale::TsServer>>,
     shutdown: CancellationToken,
     serve_task: JoinHandle<anyhow::Result<()>>,
@@ -322,11 +323,13 @@ impl RunningServer {
 
     /// tsnet backend snapshot (state, peers, auth URL), or `None` when the
     /// tailscale backend isn't active.
+    #[cfg(feature = "tailscale")]
     pub async fn tailscale_status(&self) -> Option<motif_net::motif_tailscale::TsBackendStatus> {
         let ts = self.ts.as_ref()?;
         ts.backend_status().await.ok()
     }
 
+    #[cfg(feature = "tailscale")]
     pub async fn tailscale_peers(&self) -> Vec<motif_net::motif_tailscale::TsPeer> {
         match self.ts.as_ref() {
             Some(ts) => ts.list_peers().await.unwrap_or_default(),
@@ -335,6 +338,7 @@ impl RunningServer {
     }
 
     /// Latest first-start device-auth URL, if tsnet is waiting on login.
+    #[cfg(feature = "tailscale")]
     pub fn tailscale_auth_url(&self) -> Option<String> {
         self.ts.as_ref().and_then(|ts| ts.auth_url())
     }
@@ -348,7 +352,8 @@ impl RunningServer {
         let RunningServer {
             bound: _bound,
             manager: _manager,
-            ts: _ts,
+            #[cfg(feature = "tailscale")]
+                ts: _ts,
             shutdown,
             mut serve_task,
             wake_task,
@@ -418,6 +423,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     };
     let app = ws::router(state);
 
+    #[cfg(feature = "tailscale")]
     if let Some(ts) = &cfg.tailscale {
         tracing::info!(
             hostname  = %ts.hostname,
@@ -454,6 +460,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     }
     // Grab the tsnet node handle before the listener is moved into the serve
     // task, so status queries can reach it for the server's lifetime.
+    #[cfg(feature = "tailscale")]
     let ts = listener.tailscale_server();
 
     let shutdown = CancellationToken::new();
@@ -501,6 +508,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     Ok(RunningServer {
         bound,
         manager,
+        #[cfg(feature = "tailscale")]
         ts,
         shutdown,
         serve_task,

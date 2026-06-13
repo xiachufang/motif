@@ -1,0 +1,112 @@
+name: review-image
+
+# Build the hardened, no-Tailscale motifd review image (deploy/review/Dockerfile,
+# built with `cargo --no-default-features` so no motif-tailscale / Go is linked)
+# and push it to GHCR. This is the image deploy/review/run-review.sh runs to hand
+# App Review (or any demo) a contained remote shell.
+#
+# Registry: ghcr.io/<owner>/motifd-review, authenticated with the built-in
+# GITHUB_TOKEN (packages: write) — no extra secrets. Switch to another registry
+# by changing IMAGE + the login step's credentials.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}          # build on demand (e.g. to refresh before a review)
+
+concurrency:
+  group: review-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write                # GITHUB_TOKEN pushes to GHCR; no PAT needed
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/motifd-review
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile is self-contained (Rust + Zig + ghostty all build inside
+      # it), so the runner only needs Docker/buildx — no flutter/go/zig here.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags: on a git tag → :<tag> + :latest; always a :sha-<short> for traceability.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=sha,format=short
+
+      # Build once and load into the local docker so we can smoke-test before
+      # publishing. linux/amd64 only — the typical VPS target; the Dockerfile is
+      # arch-aware (TARGETARCH) if arm64 is ever needed. gha cache keeps the
+      # zig/ghostty + cargo layers warm across runs.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/review/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Boot the image under the same hardening run-review.sh uses (non-root,
+      # read-only rootfs, tmpfs mode=1777) and assert: it stays up, the token
+      # gate works (/rpc 401 without, 200 with), and the binary links no
+      # tailscale. Catches runtime regressions the build alone won't.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          TF=$(mktemp); echo "ci-smoke-token" > "$TF"
+          docker run -d --name smoke -p 127.0.0.1:8080:8080 --user 10001:10001 \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
+            --tmpfs /home/demo:rw,nosuid,nodev,mode=1777,size=128m \
+            --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777,size=4m \
+            --mount "type=bind,source=$TF,target=/run/secrets/motifd_token,readonly" \
+            "$TAG"
+          sleep 3
+          docker ps --filter name=smoke --format '{{.Status}}' | grep -q Up \
+            || { echo "container exited"; docker logs smoke; exit 1; }
+          ping=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ping)
+          noauth=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/rpc/session.list)
+          auth=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Authorization: Bearer ci-smoke-token' -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:8080/rpc/session.list)
+          echo "ping=$ping noauth=$noauth auth=$auth"
+          test "$ping" = 200 && test "$noauth" = 401 && test "$auth" = 200
+          # No tailscale linked into the --no-default-features binary.
+          test "$(docker exec smoke sh -c 'grep -c tailscale /proc/1/maps || true')" = 0
+          docker rm -f smoke
+
+      # Re-run the build (all layers are gha-cached, so this is a near-instant
+      # replay) and push the tags now that the image passed the smoke test.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/review/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
