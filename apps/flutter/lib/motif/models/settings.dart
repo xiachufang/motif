@@ -12,10 +12,14 @@ import 'dart:typed_data';
 
 enum ServerKind {
   tailscale,
-  direct;
+  direct,
+  rendezvous;
 
-  static ServerKind fromWire(Object? v) =>
-      v == 'tailscale' ? ServerKind.tailscale : ServerKind.direct;
+  static ServerKind fromWire(Object? v) => switch (v) {
+        'tailscale' => ServerKind.tailscale,
+        'rendezvous' => ServerKind.rendezvous,
+        _ => ServerKind.direct,
+      };
 }
 
 class MotifServer {
@@ -27,6 +31,16 @@ class MotifServer {
   final String token;
   final ServerKind kind;
 
+  /// Rendezvous-only fields (`kind == ServerKind.rendezvous`), populated from a
+  /// scanned pairing QR. [relay] is the relay endpoint (`host:port`); [psk] and
+  /// [pubKey] are base64url-encoded 32-byte secrets — the pairing secret used
+  /// to derive the rzv token, and `motifd`'s identity key pinned for E2E TLS.
+  /// Empty for `direct` / `tailscale` servers, where `host`/`port` drive the
+  /// connection instead.
+  final String relay;
+  final String psk;
+  final String pubKey;
+
   const MotifServer({
     required this.id,
     required this.name,
@@ -35,6 +49,9 @@ class MotifServer {
     this.scheme = 'http',
     this.token = '',
     this.kind = ServerKind.direct,
+    this.relay = '',
+    this.psk = '',
+    this.pubKey = '',
   });
 
   String get endpoint => '$host:$port';
@@ -47,6 +64,9 @@ class MotifServer {
     String? scheme,
     String? token,
     ServerKind? kind,
+    String? relay,
+    String? psk,
+    String? pubKey,
   }) => MotifServer(
     id: id,
     name: name ?? this.name,
@@ -55,6 +75,9 @@ class MotifServer {
     scheme: _normalizeScheme(scheme ?? this.scheme),
     token: token ?? this.token,
     kind: kind ?? this.kind,
+    relay: relay ?? this.relay,
+    psk: psk ?? this.psk,
+    pubKey: pubKey ?? this.pubKey,
   );
 
   Map<String, Object?> toJson() => {
@@ -65,6 +88,9 @@ class MotifServer {
     if (scheme != 'http') 'scheme': scheme,
     'token': token,
     'kind': kind.name,
+    if (relay.isNotEmpty) 'relay': relay,
+    if (psk.isNotEmpty) 'psk': psk,
+    if (pubKey.isNotEmpty) 'pubKey': pubKey,
   };
 
   factory MotifServer.fromJson(Map<String, Object?> j) => MotifServer(
@@ -75,6 +101,9 @@ class MotifServer {
     scheme: _normalizeScheme(j['scheme'] as String?),
     token: (j['token'] as String?) ?? '',
     kind: ServerKind.fromWire(j['kind']),
+    relay: (j['relay'] as String?) ?? '',
+    psk: (j['psk'] as String?) ?? '',
+    pubKey: (j['pubKey'] as String?) ?? '',
   );
 
   static String _normalizeScheme(String? value) =>

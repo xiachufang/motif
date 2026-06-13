@@ -57,7 +57,13 @@ OUT="${OUT:-$PROJECT_DIR/build/native/motif/$os/$arch/$out_name}"
 # native-asset bundler copies it into the app's Frameworks (mirrors how the
 # libtailscale dylib is wrapped).
 if [[ "$os" == "macos" ]]; then
-  extra_rustflags="-C link-arg=-Wl,-install_name,@rpath/$out_name"
+  # `-headerpad_max_install_names` reserves space in the Mach-O load commands so
+  # the native-asset bundler can rewrite this dylib's dependency install names
+  # (libghostty-vt / libtailscale / objective_c) to their absolute
+  # `.dart_tool/lib/...` paths. Without it, deep checkout paths (e.g. a git
+  # worktree under `.claude/worktrees/`) overflow the pad and install_name_tool
+  # fails with "larger updated load commands do not fit".
+  extra_rustflags="-C link-arg=-Wl,-install_name,@rpath/$out_name -C link-arg=-Wl,-headerpad_max_install_names"
   : "${MACOSX_DEPLOYMENT_TARGET:=${MACOS_MIN_VERSION:-11.0}}"
   export MACOSX_DEPLOYMENT_TARGET
 fi
