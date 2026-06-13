@@ -50,6 +50,10 @@ class ServerConnectionController {
     _reconnectAttempts = 0;
     _cancelReconnect();
     await client.disconnect();
+    // Tear down the rendezvous loopback forwarder (no-op for other transports)
+    // so we don't keep parked relay connections open after an explicit
+    // disconnect. Reconnects re-resolve and start a fresh one.
+    await resolver.stopForwarder(serverId);
     _setState(const ServerIdle());
   }
 
@@ -148,6 +152,7 @@ class ServerConnectionController {
 
   void dispose() {
     _cancelReconnect();
+    unawaited(resolver.stopForwarder(serverId));
   }
 
   Future<void> _connect({required bool force, required bool reconnect}) async {

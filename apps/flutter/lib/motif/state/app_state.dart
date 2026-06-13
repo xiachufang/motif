@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/motif_proto.dart';
 import '../models/settings.dart';
+import '../net/rzv/pairing_payload.dart';
 import '../platform/web_launch.dart';
 import '../platform/push_crypto.dart';
 import '../platform/services.dart';
@@ -115,6 +116,17 @@ class AppState extends ChangeNotifier {
       if (server.id == id) return server;
     }
     return null;
+  }
+
+  /// Create and persist a `rendezvous` server from a scanned/pasted
+  /// `motif://pair` link. The single entry point that QR scanning, link
+  /// pasting, and deep links all funnel through. Throws [FormatException] when
+  /// the link is malformed; returns the new server id on success.
+  Future<String> addServerFromPairingUri(String uri) async {
+    final payload = MotifPairingPayload.parse(uri);
+    final id = 'srv-${DateTime.now().microsecondsSinceEpoch}';
+    await servers.add(payload.toServer(id: id));
+    return id;
   }
 
   MotifClient? get activeClient {

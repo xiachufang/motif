@@ -1,5 +1,10 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import '../models/settings.dart';
 import '../net/proxy_client.dart';
+import '../net/rzv/rzv_forwarder.dart';
+import '../net/rzv/rzv_protocol.dart';
 import '../platform/services.dart';
 import 'connection_state.dart';
 
@@ -29,7 +34,12 @@ class TransportFailed extends TransportResolution {
 class TransportResolver {
   final PlatformServices platform;
 
-  const TransportResolver(this.platform);
+  /// Live loopback forwarders for `rendezvous` servers, keyed by server id.
+  /// Started lazily on [resolve] and torn down by [stopForwarder] when the
+  /// owning connection disconnects or the server is removed.
+  final Map<String, RzvForwarder> _forwarders = {};
+
+  TransportResolver(this.platform);
 
   ConnectionBlocker? currentBlocker(MotifServer server) {
     if (server.kind != ServerKind.tailscale) return null;
@@ -39,10 +49,24 @@ class TransportResolver {
   }
 
   Future<TransportResolution> resolve(MotifServer server) async {
-    if (server.kind != ServerKind.tailscale) {
-      return TransportReady(target: server, proxy: ProxySettings.none);
+    switch (server.kind) {
+      case ServerKind.rendezvous:
+        return _resolveRendezvous(server);
+      case ServerKind.tailscale:
+        return _resolveTailscale(server);
+      case ServerKind.direct:
+        return TransportReady(target: server, proxy: ProxySettings.none);
     }
+  }
 
+  /// Stop and forget the forwarder for [serverId], if any. Safe to call when
+  /// none exists.
+  Future<void> stopForwarder(String serverId) async {
+    final fwd = _forwarders.remove(serverId);
+    await fwd?.stop();
+  }
+
+  Future<TransportResolution> _resolveTailscale(MotifServer server) async {
     final blocker = currentBlocker(server);
     if (blocker != null) return TransportBlocked(blocker);
 
@@ -61,5 +85,78 @@ class TransportResolver {
       target: target,
       proxy: platform.tailscale.loopbackProxy ?? ProxySettings.none,
     );
+  }
+
+  /// Bring up (or reuse) a loopback forwarder that pairs with `motifd` through
+  /// the relay, then connect to it as if it were a plain local server. The
+  /// rest of the stack (RpcClient/WebSocket) is unaware of the rendezvous hop.
+  Future<TransportResolution> _resolveRendezvous(MotifServer server) async {
+    final relay = _parseHostPort(server.relay);
+    if (relay == null) {
+      return const TransportFailed(
+        'rendezvous server has no valid relay address (expected host:port)',
+      );
+    }
+
+    final Uint8List token;
+    try {
+      token = _rzvToken(server.psk);
+    } on FormatException catch (e) {
+      return TransportFailed('rendezvous pairing secret invalid: ${e.message}');
+    }
+
+    // Reuse a running forwarder for this server; restart it if the relay
+    // endpoint changed (e.g. the server was re-paired with a new QR).
+    var fwd = _forwarders[server.id];
+    if (fwd != null &&
+        (fwd.relayHost != relay.$1 || fwd.relayPort != relay.$2)) {
+      await stopForwarder(server.id);
+      fwd = null;
+    }
+    fwd ??= _forwarders[server.id] = RzvForwarder(
+      relayHost: relay.$1,
+      relayPort: relay.$2,
+      token: token,
+    );
+
+    try {
+      if (!fwd.isRunning) await fwd.start();
+    } catch (e) {
+      await stopForwarder(server.id);
+      return TransportFailed('rendezvous forwarder failed to start: $e');
+    }
+
+    final target = server.copyWith(
+      host: '127.0.0.1',
+      port: fwd.port,
+      scheme: 'http',
+    );
+    return TransportReady(target: target, proxy: ProxySettings.none);
+  }
+
+  static (String, int)? _parseHostPort(String s) {
+    final i = s.lastIndexOf(':');
+    if (i <= 0 || i == s.length - 1) return null;
+    final host = s.substring(0, i);
+    final port = int.tryParse(s.substring(i + 1));
+    if (port == null || port <= 0 || port > 65535) return null;
+    return (host, port);
+  }
+
+  // P1: the rendezvous token is the raw 32-byte pairing secret. P2 will derive
+  // it as HKDF(psk, "motif-rzv-v1" | epoch) and rotate it — see
+  // docs/rzv-protocol.md.
+  static Uint8List _rzvToken(String pskB64) {
+    if (pskB64.isEmpty) throw const FormatException('missing pairing secret');
+    final Uint8List bytes;
+    try {
+      bytes = base64Url.decode(base64Url.normalize(pskB64));
+    } on FormatException {
+      throw const FormatException('not base64url');
+    }
+    if (bytes.length != RzvProtocol.tokenLength) {
+      throw FormatException('must be ${RzvProtocol.tokenLength} bytes');
+    }
+    return bytes;
   }
 }
