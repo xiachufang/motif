@@ -65,18 +65,32 @@ without ever swallowing application data.
 
 ## Token
 
-The token is a **capability to meet**, not an authentication. In P1 it is the
-raw 32-byte pairing secret. In P2 it is derived and rotated:
+The token is a **capability to meet**, not an authentication. It is derived
+**one-way** from the 32-byte pairing secret (`psk`) so the relay — which sees
+the token — never learns the secret. The secret is the durable value reserved
+for the end-to-end layer; it must never appear on the wire.
 
 ```
-token = HKDF(psk, info = "motif-rzv-v1" | epoch_hour)[0..32]
+token = HKDF-SHA256(ikm = psk, salt = "" (32 zero bytes), info = "motif-rzv-token-v1")[0..32]
 ```
+
+Since `L == HashLen`, this is a single HMAC block:
+`token = HMAC-SHA256(HMAC-SHA256(0^32, psk), "motif-rzv-token-v1" | 0x01)`.
+
+Reference implementations (kept byte-identical):
+`motif_server::rzv::derive_token` (Rust) and `RzvProtocol.deriveToken` (Dart).
+Cross-language fixture: `psk = bytes 0..31` ⇒
+`token = bb48b13937710e30c1fffa843593313a7d403c44236eb01d6c86842e43bfa7da`.
+
+Future refinement: rotate by binding a coarse epoch into `info` (motifd would
+park under adjacent epochs to cover the boundary); not yet implemented.
 
 Trust is established separately by the layer above:
 
-- **P1**: plaintext over the relay (no E2E) — for bring-up only.
-- **P2**: TLS over the relayed pipe; the client pins `motifd`'s identity public
-  key (`pk`), delivered out-of-band via the pairing QR (see below). This
+- **Today**: plaintext over the relay (no E2E) — the token finds the peer; the
+  one-way derivation only keeps the `psk` off the wire.
+- **Next (P2)**: TLS over the relayed pipe; the client pins `motifd`'s identity
+  public key (`pk`), delivered out-of-band via the pairing QR (see below). This
   defeats both the relay and anyone who guesses/squats the token.
 
 ## Pairing QR / deep link

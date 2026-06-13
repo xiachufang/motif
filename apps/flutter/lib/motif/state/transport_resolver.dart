@@ -143,20 +143,20 @@ class TransportResolver {
     return (host, port);
   }
 
-  // P1: the rendezvous token is the raw 32-byte pairing secret. P2 will derive
-  // it as HKDF(psk, "motif-rzv-v1" | epoch) and rotate it — see
-  // docs/rzv-protocol.md.
+  // The on-the-wire token is derived one-way from the 32-byte pairing secret
+  // (HKDF-SHA256), matching `motif_server::rzv::derive_token`, so the relay
+  // never sees the secret. The secret stays reserved for the P2 E2E layer.
   static Uint8List _rzvToken(String pskB64) {
     if (pskB64.isEmpty) throw const FormatException('missing pairing secret');
-    final Uint8List bytes;
+    final Uint8List psk;
     try {
-      bytes = base64Url.decode(base64Url.normalize(pskB64));
+      psk = base64Url.decode(base64Url.normalize(pskB64));
     } on FormatException {
       throw const FormatException('not base64url');
     }
-    if (bytes.length != RzvProtocol.tokenLength) {
+    if (psk.length != RzvProtocol.tokenLength) {
       throw FormatException('must be ${RzvProtocol.tokenLength} bytes');
     }
-    return bytes;
+    return RzvProtocol.deriveToken(psk);
   }
 }

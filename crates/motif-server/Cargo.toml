@@ -41,6 +41,7 @@ rmp-serde          = { workspace = true }
 rmpv               = { workspace = true }
 bytes              = { workspace = true }
 base64             = { workspace = true }
+qrcode             = { workspace = true }
 
 dashmap            = { workspace = true }
 parking_lot        = { workspace = true }

@@ -12,7 +12,10 @@
 /// Keep this in lockstep with `docs/rzv-protocol.md` and the Rust side.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
 
 class RzvProtocol {
   RzvProtocol._();
@@ -32,6 +35,19 @@ class RzvProtocol {
 
   static const int tokenLength = 32;
   static const int helloLength = 4 + 1 + 1 + tokenLength; // 38
+
+  static const String _tokenInfo = 'motif-rzv-token-v1';
+
+  /// Derive the on-the-wire token from the 32-byte pairing secret via
+  /// HKDF-SHA256 (RFC 5869, empty salt, L = 32). Byte-identical with the Rust
+  /// `motif_server::rzv::derive_token`. One-way, so the relay — which sees the
+  /// token — never learns the pairing secret (reserved for the P2 E2E layer).
+  static Uint8List deriveToken(Uint8List psk) {
+    final salt = Uint8List(tokenLength); // empty salt -> HashLen zero bytes
+    final prk = Hmac(sha256, salt).convert(psk).bytes;
+    final info = <int>[...utf8.encode(_tokenInfo), 0x01];
+    return Uint8List.fromList(Hmac(sha256, prk).convert(info).bytes);
+  }
 
   /// Build the fixed-length HELLO frame for [role] carrying [token].
   static Uint8List buildHello(int role, List<int> token) {

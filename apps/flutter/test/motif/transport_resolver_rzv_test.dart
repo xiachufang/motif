@@ -57,8 +57,8 @@ void main() {
     expect(relay.hellos, hasLength(1));
     expect(
       RzvProtocol.parseHello(relay.hellos.single).token,
-      pskBytes,
-      reason: 'P1 token is the raw pairing secret',
+      RzvProtocol.deriveToken(pskBytes),
+      reason: 'wire token is HKDF-derived from the pairing secret, not the raw psk',
     );
 
     await client.close();
