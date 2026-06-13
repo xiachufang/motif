@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use base64::Engine;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -70,6 +71,21 @@ struct Args {
     /// signing key — only this URL.
     #[arg(long)]
     push_relay_url: Option<String>,
+
+    /// Rendezvous relay address (`host:port`) to park `accept` waiters at, so
+    /// clients can reach this motifd through the relay without direct
+    /// connectivity. Requires --rzv-token. The relay only sees ciphertext.
+    #[arg(long)]
+    rzv_relay: Option<String>,
+
+    /// 32-byte rendezvous token as base64url (the shared pairing secret).
+    /// Required with --rzv-relay.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_token: Option<String>,
+
+    /// How many idle `accept` waiters to keep parked at the relay (default 2).
+    #[arg(long, requires = "rzv_relay")]
+    rzv_pool: Option<usize>,
 
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
@@ -143,9 +159,30 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    let rendezvous = match args.rzv_relay {
+        Some(url) => {
+            let token_b64 = args
+                .rzv_token
+                .ok_or_else(|| anyhow::anyhow!("--rzv-relay requires --rzv-token"))?;
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(token_b64.trim())
+                .map_err(|e| anyhow::anyhow!("--rzv-token is not base64url: {e}"))?;
+            let token: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                anyhow::anyhow!("--rzv-token must decode to 32 bytes, got {}", bytes.len())
+            })?;
+            let mut c = motif_server::RzvListenConfig::new(url, token);
+            if let Some(pool) = args.rzv_pool {
+                c.pool = pool;
+            }
+            Some(c)
+        }
+        None => None,
+    };
+
     let cfg = motif_server::ServerConfig {
         listen: args.listen,
         tailscale,
+        rendezvous,
         token,
         allow_insecure_no_auth: args.insecure_no_auth,
         push_relay_url: args.push_relay_url,

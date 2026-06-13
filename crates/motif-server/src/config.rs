@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-pub use motif_net::TailscaleListenConfig;
+pub use motif_net::{RzvListenConfig, TailscaleListenConfig};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -12,6 +12,11 @@ pub struct ServerConfig {
     /// Embedded-Tailscale listener. Independently optional from `listen`;
     /// at least one must be set.
     pub tailscale: Option<TailscaleListenConfig>,
+    /// Rendezvous-relay accept backend. motifd parks `accept` waiters at the
+    /// relay so clients can reach it without direct connectivity. Like
+    /// tailscale, it's a private surface (relay-mediated), so it satisfies the
+    /// "at least one listener" requirement and needs no public-port auth guard.
+    pub rendezvous: Option<RzvListenConfig>,
     /// Bearer token expected on HTTP RPC and WS upgrades. `None` disables
     /// auth — only allowed when no public TCP surface is exposed (loopback or
     /// tailscale-only); see `validate`.
@@ -41,8 +46,10 @@ impl ServerConfig {
     /// a trusted segment / the tailnet, and terminate TLS at an upstream
     /// proxy if they need it. The token guard below is the auth boundary.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.listen.is_none() && self.tailscale.is_none() {
-            anyhow::bail!("must specify at least one of --listen / --tailscale-hostname");
+        if self.listen.is_none() && self.tailscale.is_none() && self.rendezvous.is_none() {
+            anyhow::bail!(
+                "must specify at least one of --listen / --tailscale-hostname / --rzv-relay"
+            );
         }
         if let Some(addr) = self.listen {
             let is_loopback = addr.ip().is_loopback();
@@ -70,9 +77,7 @@ impl ServerConfig {
         motif_net::ListenConfig {
             tcp: self.listen,
             tailscale: self.tailscale.clone(),
-            // motifd doesn't expose a rendezvous relay backend via config yet;
-            // see the follow-up to plumb `--rzv-relay`/token here.
-            rendezvous: None,
+            rendezvous: self.rendezvous.clone(),
         }
     }
 }

@@ -42,7 +42,7 @@ fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'st
     ))
 }
 
-pub use config::{ServerConfig, TailscaleListenConfig};
+pub use config::{RzvListenConfig, ServerConfig, TailscaleListenConfig};
 
 /// Default embedded-tsnet hostname (`motifd-<sanitized system hostname>`).
 /// Shared by the `motifd` binary and embedding hosts (the menu-bar app) so
