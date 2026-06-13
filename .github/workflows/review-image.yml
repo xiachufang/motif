@@ -48,7 +48,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
 
       # Build once and load into the local docker so we can smoke-test before
@@ -76,7 +76,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
-          TF=$(mktemp); echo "ci-smoke-token" > "$TF"
+          # 0644 so the uid-10001 container can read the bind-mounted token on
+          # Linux (host perms are preserved through the mount).
+          TF=$(mktemp); echo "ci-smoke-token" > "$TF"; chmod 0644 "$TF"
           docker run -d --name smoke -p 127.0.0.1:8080:8080 --user 10001:10001 \
             --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \

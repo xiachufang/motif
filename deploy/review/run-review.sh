@@ -88,6 +88,12 @@ else
     head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
 fi
 TOKEN="$(cat "$TOKEN_FILE")"
+# The container runs as uid 10001 and bind-mounts this file read-only. On Linux
+# a bind mount preserves host ownership/perms, so a 0600 file (umask above) is
+# unreadable by the container user — motifd then exits with "token-file:
+# Permission denied". Make the file world-readable; it still sits inside the
+# 0700 mktemp dir, so no other host user can reach it.
+chmod 0644 "$TOKEN_FILE"
 
 # ---- cleanup --------------------------------------------------------------
 FW_RULES=()           # exact rule specs we inserted, for precise removal
