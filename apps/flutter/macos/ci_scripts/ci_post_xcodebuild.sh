@@ -1,11 +1,14 @@
 #!/bin/sh
 
-# Xcode Cloud post-build hook: package the signed Motif.app as a .dmg and publish
-# it to a GitHub Release. No notarization (see note below).
+# Xcode Cloud post-build hook: package the archived Motif.app as a .dmg and
+# publish it to a GitHub Release. No notarization (see note below).
 #
-# Runs AFTER `xcodebuild archive` (and after the workflow's Developer ID
-# distribution preparation, which exposes the exported app). Unlike the Run
-# Script build phase, this hook HAS network access.
+# Runs AFTER `xcodebuild archive`. We pull the app straight out of the
+# .xcarchive (CI_ARCHIVE_PATH) — the workflow's Distribution Preparation is set
+# to None, so there is no separately-exported "Developer ID" app. Since this
+# build is ad-hoc signed and unnotarized anyway, the archived app is identical
+# to what an export would produce. Unlike the Run Script build phase, this hook
+# HAS network access.
 #
 # We do NOT notarize. The team has no Developer ID Application certificate, so
 # Xcode Cloud's "Developer ID" export is actually ad-hoc signed (TeamIdentifier
@@ -22,9 +25,9 @@
 # Runner target, then notarize+staple the .dmg here with `xcrun notarytool`.
 #
 # Division of labour (see ci_post_clone.sh sibling for the build-time half):
-#   - Xcode Cloud's distribution preparation exports the app and exposes it via
-#     CI_DEVELOPER_ID_SIGNED_APP_PATH. We cannot sign here: the script
-#     environment has zero valid codesign identities.
+#   - `xcodebuild archive` produces the .xcarchive; Xcode Cloud exposes its path
+#     via CI_ARCHIVE_PATH. We read Motif.app from inside it. We cannot re-sign
+#     here: the script environment has zero valid codesign identities.
 #   - We package the .dmg and upload the GitHub Release.
 #
 # Required workflow Secret environment variable (set in Xcode Cloud, masked):
@@ -44,22 +47,19 @@ if [ -z "$CI_TAG" ]; then
 fi
 echo "ci_post_xcodebuild: publishing release for tag $CI_TAG"
 
-# --- Locate the exported app -----------------------------------------------
-# Populated only when the workflow has a distribution preparation on the Archive
-# action. If it's empty there's nothing to package: that's a workflow-config
-# prerequisite, NOT a build failure (the archive itself already succeeded), so
-# skip the release with a loud warning and let the build stay green.
-if [ -z "$CI_DEVELOPER_ID_SIGNED_APP_PATH" ]; then
-  echo "WARNING: CI_DEVELOPER_ID_SIGNED_APP_PATH is empty; skipping release for $CI_TAG." >&2
-  echo "         No distribution preparation on the workflow's Archive action, so" >&2
-  echo "         there is no exported app to publish. Add one in Xcode Cloud to" >&2
-  echo "         enable tag releases." >&2
+# --- Locate the archived app -----------------------------------------------
+# Read the app straight out of the .xcarchive. CI_ARCHIVE_PATH is set by Xcode
+# Cloud for any Archive workflow; if it's empty something is badly off (this
+# hook only runs after a successful archive), so warn and skip rather than fail.
+if [ -z "$CI_ARCHIVE_PATH" ]; then
+  echo "WARNING: CI_ARCHIVE_PATH is empty; skipping release for $CI_TAG." >&2
+  echo "         Expected an .xcarchive from the Archive action." >&2
   exit 0
 fi
-APP_PATH="$CI_DEVELOPER_ID_SIGNED_APP_PATH/$APP_NAME.app"
+APP_PATH="$CI_ARCHIVE_PATH/Products/Applications/$APP_NAME.app"
 if [ ! -d "$APP_PATH" ]; then
   echo "ERROR: $APP_PATH not found." >&2
-  ls -la "$CI_DEVELOPER_ID_SIGNED_APP_PATH" >&2 || true
+  ls -la "$CI_ARCHIVE_PATH/Products/Applications" >&2 || true
   exit 1
 fi
 
