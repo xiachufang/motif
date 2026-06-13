@@ -25,3 +25,8 @@ thiserror          = { workspace = true }
 tracing            = { workspace = true }
 
 motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false }
+
+[dev-dependencies]
+# Exercise the rzv accept backend against the real relay.
+motif-rendezvous   = { path = "../motif-rendezvous" }
+tokio              = { workspace = true, features = ["full"] }

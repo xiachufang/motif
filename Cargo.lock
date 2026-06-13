@@ -1284,6 +1284,7 @@ name = "motif-net"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "motif-rendezvous",
  "motif-tailscale",
  "pin-project-lite",
  "thiserror 2.0.18",
@@ -1323,6 +1324,18 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "motif-rendezvous"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "parking_lot",
  "tokio",
  "tracing",
  "tracing-subscriber",

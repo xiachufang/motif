@@ -70,6 +70,9 @@ impl ServerConfig {
         motif_net::ListenConfig {
             tcp: self.listen,
             tailscale: self.tailscale.clone(),
+            // motifd doesn't expose a rendezvous relay backend via config yet;
+            // see the follow-up to plumb `--rzv-relay`/token here.
+            rendezvous: None,
         }
     }
 }
