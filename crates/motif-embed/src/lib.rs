@@ -48,6 +48,9 @@ struct EmbedState {
     /// Fallback tsnet state dir when `motif_server::default_tailscale_state_dir`
     /// can't resolve one. Resolved at init from the platform data dir.
     tsnet_dir: PathBuf,
+    /// `motif://pair` link for the current rzv-enabled run, surfaced to the
+    /// host UI via the status snapshot. `None` when rzv is off or stopped.
+    pairing_uri: Mutex<Option<String>>,
 }
 
 static RT: OnceLock<Runtime> = OnceLock::new();
@@ -92,6 +95,9 @@ struct StatusDto {
     tailscale: Option<TsStatusDto>,
     /// First-start Tailscale login URL, when the node is waiting on auth.
     auth_url: Option<String>,
+    /// `motif://pair` link when the rendezvous backend is configured — the host
+    /// renders it as a QR for phone pairing.
+    pairing_uri: Option<String>,
     /// Last start failure, if any.
     error: Option<String>,
 }
@@ -117,13 +123,16 @@ async fn do_start(cfg: MenuConfig) -> Result<(), String> {
 
     // Build the server config up front so obvious mistakes fail fast (and
     // reset the state) rather than after a spawn.
-    let server_cfg = match cfg.to_server_config(&st.tsnet_dir) {
+    let built = match cfg.to_server_config(&st.tsnet_dir) {
         Ok(c) => c,
         Err(e) => {
             *st.server.lock().await = ServerState::Failed(e.clone());
             return Err(e);
         }
     };
+    let server_cfg = built.server;
+    // Surface the pairing link (if rzv is on) for the host's QR.
+    *st.pairing_uri.lock().await = built.pairing_uri;
 
     // Run the (possibly long) bring-up off the command path.
     rt().spawn(async move {
@@ -157,6 +166,7 @@ async fn do_stop() -> Result<(), String> {
         let mut s = st.server.lock().await;
         std::mem::replace(&mut *s, ServerState::Stopped)
     };
+    *st.pairing_uri.lock().await = None;
     if let ServerState::Running(rs) = taken {
         rs.shutdown().await.map_err(|e| format!("{e:#}"))?;
     }
@@ -178,6 +188,7 @@ async fn do_status() -> StatusDto {
             // The server handle doesn't exist yet, so the login URL (if any)
             // is read from the log ring.
             auth_url: latest_auth_url(&st.log_ring),
+            pairing_uri: st.pairing_uri.lock().await.clone(),
             ..StatusDto::default()
         },
         ServerState::Running(r) => {
@@ -219,6 +230,7 @@ async fn do_status() -> StatusDto {
                 sessions,
                 tailscale,
                 auth_url,
+                pairing_uri: st.pairing_uri.lock().await.clone(),
                 error: None,
             }
         }
@@ -311,6 +323,7 @@ pub unsafe extern "C" fn motif_embed_init(log_dir: *const c_char) -> c_int {
         server: Mutex::new(ServerState::Stopped),
         log_ring,
         tsnet_dir,
+        pairing_uri: Mutex::new(None),
     });
     0
 }

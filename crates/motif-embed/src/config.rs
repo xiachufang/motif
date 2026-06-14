@@ -8,7 +8,7 @@
 //! config only ever arrives as JSON from the host.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use motif_server::{ServerConfig, TailscaleListenConfig};
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,27 @@ pub struct AuthConfig {
     pub token: String,
 }
 
+/// Rendezvous-relay backend for the embedded server: park `accept` waiters at
+/// a relay so a phone can pair with this in-process motifd without direct
+/// connectivity. The pairing secret + identity cert are auto-generated and
+/// persisted (same files the `motifd` CLI uses); the app shows the resulting
+/// `motif://pair` QR.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RzvConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Relay address (`host:port`) to dial. Empty disables rzv.
+    #[serde(default)]
+    pub relay: String,
+}
+
+/// The `ServerConfig` plus the `motif://pair` link to surface in the host UI
+/// (present only when the rendezvous backend is configured).
+pub struct BuiltServerConfig {
+    pub server: ServerConfig,
+    pub pairing_uri: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MenuConfig {
     #[serde(default)]
@@ -72,6 +93,8 @@ pub struct MenuConfig {
     pub tailscale: TsConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub rzv: RzvConfig,
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
     #[serde(default)]
@@ -89,24 +112,30 @@ impl Default for MenuConfig {
             port: default_port(),
             tailscale: TsConfig::default(),
             auth: AuthConfig::default(),
+            rzv: RzvConfig::default(),
             autostart: false,
         }
     }
 }
 
 impl MenuConfig {
-    /// Translate into a [`ServerConfig`], applying the same guards the
-    /// settings UI hints at. Returns a user-facing error string when the
-    /// combination can't safely start.
-    pub fn to_server_config(&self, tsnet_dir: &Path) -> Result<ServerConfig, String> {
+    /// Translate into a [`ServerConfig`] (plus the pairing link when rzv is on),
+    /// applying the same guards the settings UI hints at. Returns a user-facing
+    /// error string when the combination can't safely start.
+    pub fn to_server_config(&self, tsnet_dir: &Path) -> Result<BuiltServerConfig, String> {
         let listen = match self.listen_mode {
             ListenMode::Loopback => Some(SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))),
             ListenMode::Lan => Some(SocketAddr::from((Ipv4Addr::UNSPECIFIED, self.port))),
             ListenMode::Off => None,
         };
 
-        if listen.is_none() && !self.tailscale.enabled {
-            return Err("Listener is Off and Tailscale is disabled — nothing to serve.".into());
+        let (rendezvous, pairing_uri) = self.build_rzv()?;
+
+        if listen.is_none() && !self.tailscale.enabled && rendezvous.is_none() {
+            return Err(
+                "Listener is Off, Tailscale is disabled, and no relay is set — nothing to serve."
+                    .into(),
+            );
         }
 
         let token = if self.auth.enabled {
@@ -159,18 +188,52 @@ impl MenuConfig {
             None
         };
 
-        Ok(ServerConfig {
-            listen,
-            tailscale,
-            // The embedded server is for local use; rendezvous (a remote-relay
-            // backend) isn't wired into the in-process menu-bar path.
-            rendezvous: None,
-            token,
-            allow_insecure_no_auth,
-            // The embedded server runs motifd on loopback/LAN for local use;
-            // push notifications (which need a public relay) aren't wired here.
-            push_relay_url: None,
+        Ok(BuiltServerConfig {
+            server: ServerConfig {
+                listen,
+                tailscale,
+                rendezvous,
+                token,
+                allow_insecure_no_auth,
+                // The embedded server runs motifd on loopback/LAN for local use;
+                // push notifications (which need a public relay) aren't wired
+                // here.
+                push_relay_url: None,
+            },
+            pairing_uri,
         })
+    }
+
+    /// Build the rendezvous backend (and its pairing link) when enabled. The
+    /// pairing secret + identity cert are persisted under the same data dir the
+    /// `motifd` CLI uses, so the QR is stable across restarts and end-to-end TLS
+    /// is on (the relay only sees ciphertext).
+    fn build_rzv(
+        &self,
+    ) -> Result<(Option<motif_server::RzvListenConfig>, Option<String>), String> {
+        let relay = self.rzv.relay.trim();
+        if !self.rzv.enabled || relay.is_empty() {
+            return Ok((None, None));
+        }
+
+        let psk_path = motif_server::default_rzv_psk_path();
+        let psk = motif_server::rzv::load_or_create_psk(&psk_path)
+            .map_err(|e| format!("rzv pairing secret: {e}"))?;
+        let token = motif_server::rzv::derive_token(&psk);
+
+        let rzv_dir = psk_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let identity = motif_server::rzv::load_or_create_identity(&rzv_dir)
+            .map_err(|e| format!("rzv identity: {e}"))?;
+
+        let name = motif_server::default_tailscale_hostname();
+        let uri = motif_server::rzv::pair_uri(relay, &psk, Some(&identity.cert_sha256), Some(&name));
+
+        let mut cfg = motif_server::RzvListenConfig::new(relay.to_string(), token);
+        cfg.tls = Some(identity.server_config);
+        Ok((Some(cfg), Some(uri)))
     }
 }
 
@@ -186,7 +249,7 @@ mod tests {
     #[test]
     fn loopback_tokenless_ok() {
         let c = MenuConfig::default(); // loopback, auth off
-        let sc = c.to_server_config(&tsnet()).expect("loopback should map");
+        let sc = c.to_server_config(&tsnet()).expect("loopback should map").server;
         assert!(sc.listen.unwrap().ip().is_loopback());
         assert!(sc.token.is_none());
         assert!(sc.tailscale.is_none());
@@ -198,7 +261,8 @@ mod tests {
         c.listen_mode = ListenMode::Lan;
         let sc = c
             .to_server_config(&tsnet())
-            .expect("lan without token is allowed");
+            .expect("lan without token is allowed")
+            .server;
         assert!(sc.token.is_none());
         assert!(
             sc.allow_insecure_no_auth,
@@ -214,7 +278,7 @@ mod tests {
             enabled: true,
             token: "secret".into(),
         };
-        let sc = c.to_server_config(&tsnet()).expect("lan+token should map");
+        let sc = c.to_server_config(&tsnet()).expect("lan+token should map").server;
         assert_eq!(sc.token.as_deref(), Some("secret"));
         assert!(!sc.listen.unwrap().ip().is_loopback());
     }
@@ -238,7 +302,8 @@ mod tests {
         c.tailscale.enabled = true;
         let sc = c
             .to_server_config(&tsnet())
-            .expect("off+tailscale should map");
+            .expect("off+tailscale should map")
+            .server;
         assert!(sc.listen.is_none());
         assert!(sc.tailscale.is_some());
     }
@@ -270,5 +335,26 @@ mod tests {
         assert_eq!(c.listen_mode, ListenMode::Loopback);
         assert!(!c.tailscale.enabled);
         assert!(!c.auth.enabled);
+        assert!(!c.rzv.enabled);
+    }
+
+    #[test]
+    fn rzv_disabled_has_no_backend_or_pairing() {
+        // Default (rzv off) takes the early-return path — no filesystem I/O.
+        let built = c_default().to_server_config(&tsnet()).expect("default maps");
+        assert!(built.server.rendezvous.is_none());
+        assert!(built.pairing_uri.is_none());
+    }
+
+    #[test]
+    fn rzv_config_parses_from_host_json() {
+        let json = r#"{"rzv":{"enabled":true,"relay":"relay.example:9999"}}"#;
+        let c: MenuConfig = serde_json::from_str(json).expect("parse rzv");
+        assert!(c.rzv.enabled);
+        assert_eq!(c.rzv.relay, "relay.example:9999");
+    }
+
+    fn c_default() -> MenuConfig {
+        MenuConfig::default()
     }
 }

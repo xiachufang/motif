@@ -56,6 +56,8 @@ class EmbeddedServerConfig {
   final String tsControlUrl;
   final bool authEnabled;
   final String authToken;
+  final bool rzvEnabled;
+  final String rzvRelay;
   final bool autostart;
 
   const EmbeddedServerConfig({
@@ -67,6 +69,8 @@ class EmbeddedServerConfig {
     this.tsControlUrl = '',
     this.authEnabled = false,
     this.authToken = '',
+    this.rzvEnabled = false,
+    this.rzvRelay = '',
     this.autostart = false,
   });
 
@@ -79,6 +83,8 @@ class EmbeddedServerConfig {
     String? tsControlUrl,
     bool? authEnabled,
     String? authToken,
+    bool? rzvEnabled,
+    String? rzvRelay,
     bool? autostart,
   }) => EmbeddedServerConfig(
     listenMode: listenMode ?? this.listenMode,
@@ -89,6 +95,8 @@ class EmbeddedServerConfig {
     tsControlUrl: tsControlUrl ?? this.tsControlUrl,
     authEnabled: authEnabled ?? this.authEnabled,
     authToken: authToken ?? this.authToken,
+    rzvEnabled: rzvEnabled ?? this.rzvEnabled,
+    rzvRelay: rzvRelay ?? this.rzvRelay,
     autostart: autostart ?? this.autostart,
   );
 
@@ -102,12 +110,14 @@ class EmbeddedServerConfig {
       'control_url': tsControlUrl,
     },
     'auth': {'enabled': authEnabled, 'token': authToken},
+    'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
     'autostart': autostart,
   };
 
   factory EmbeddedServerConfig.fromJson(Map<String, Object?> j) {
     final ts = (j['tailscale'] as Map?)?.cast<String, Object?>() ?? const {};
     final auth = (j['auth'] as Map?)?.cast<String, Object?>() ?? const {};
+    final rzv = (j['rzv'] as Map?)?.cast<String, Object?>() ?? const {};
     return EmbeddedServerConfig(
       listenMode: EmbeddedListenMode.fromWire(j['listen_mode']),
       port: (j['port'] as num?)?.toInt() ?? 7777,
@@ -117,6 +127,8 @@ class EmbeddedServerConfig {
       tsControlUrl: (ts['control_url'] as String?) ?? '',
       authEnabled: auth['enabled'] == true,
       authToken: (auth['token'] as String?) ?? '',
+      rzvEnabled: rzv['enabled'] == true,
+      rzvRelay: (rzv['relay'] as String?) ?? '',
       autostart: j['autostart'] == true,
     );
   }
@@ -134,6 +146,7 @@ class EmbeddedServerStatus {
   final int sessionCount;
   final String? tailscaleState;
   final String? authUrl;
+  final String? pairingUri;
   final String? error;
 
   const EmbeddedServerStatus({
@@ -143,6 +156,7 @@ class EmbeddedServerStatus {
     this.sessionCount = 0,
     this.tailscaleState,
     this.authUrl,
+    this.pairingUri,
     this.error,
   });
 
@@ -180,6 +194,7 @@ class EmbeddedServerStatus {
       sessionCount: (j['session_count'] as num?)?.toInt() ?? 0,
       tailscaleState: ts?['backend_state'] as String?,
       authUrl: j['auth_url'] as String?,
+      pairingUri: j['pairing_uri'] as String?,
       error: j['error'] as String?,
     );
   }

@@ -4,7 +4,9 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../platform/desktop_launch.dart';
 import '../../state/app_state.dart';
@@ -28,6 +30,7 @@ class _EmbeddedServerSettingsSheetState
   late final TextEditingController _tsHostname;
   late final TextEditingController _tsAuthkey;
   late final TextEditingController _tsControlUrl;
+  late final TextEditingController _rzvRelay;
 
   EmbeddedServerService get _svc => context.read<AppState>().embeddedServer!;
 
@@ -40,6 +43,7 @@ class _EmbeddedServerSettingsSheetState
     _tsHostname = TextEditingController(text: c.tsHostname);
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
+    _rzvRelay = TextEditingController(text: c.rzvRelay);
   }
 
   @override
@@ -49,6 +53,7 @@ class _EmbeddedServerSettingsSheetState
     _tsHostname.dispose();
     _tsAuthkey.dispose();
     _tsControlUrl.dispose();
+    _rzvRelay.dispose();
     super.dispose();
   }
 
@@ -73,6 +78,8 @@ class _EmbeddedServerSettingsSheetState
         _authSection(cfg, c),
         const SizedBox(height: MotifSpacing.xl),
         _tailscaleSection(cfg, c),
+        const SizedBox(height: MotifSpacing.xl),
+        _rzvSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.xl),
         MotifSection(
           title: 'App',
@@ -329,6 +336,100 @@ class _EmbeddedServerSettingsSheetState
           ),
         ],
       ],
+    );
+  }
+
+  // ── Rendezvous relay + pairing QR ──
+
+  Widget _rzvSection(
+    EmbeddedServerConfig cfg,
+    EmbeddedServerStatus status,
+    MotifColors c,
+  ) {
+    final pairingUri = status.pairingUri;
+    return MotifSection(
+      title: 'Pair over a relay',
+      footer: 'Park this server at a rendezvous relay so a phone can reach it '
+          'without direct connectivity. The relay only sees encrypted traffic; '
+          'the phone pins this server. Restart the server after changing this.',
+      children: [
+        MotifSectionRow(
+          leading: Icon(Icons.qr_code_2, color: c.accent),
+          title: 'Enable relay pairing',
+          onTap: () => _save(cfg.copyWith(rzvEnabled: !cfg.rzvEnabled)),
+          trailing: Switch(
+            value: cfg.rzvEnabled,
+            onChanged: (v) => _save(cfg.copyWith(rzvEnabled: v)),
+          ),
+        ),
+        if (cfg.rzvEnabled) ...[
+          _field(
+            _rzvRelay,
+            'Relay address',
+            'host:port of your rendezvous relay',
+            onChanged: () =>
+                _save(cfg.copyWith(rzvRelay: _rzvRelay.text.trim())),
+          ),
+          if (pairingUri != null)
+            _pairingQr(pairingUri, c)
+          else if (status.running)
+            MotifSectionRow(
+              leading: Icon(Icons.info_outline, color: c.textTertiary),
+              title: 'Set a relay address, then restart the server.',
+              titleColor: c.textSecondary,
+              titleWeight: FontWeight.w400,
+            )
+          else
+            MotifSectionRow(
+              leading: Icon(Icons.info_outline, color: c.textTertiary),
+              title: 'Start the server to generate the pairing QR.',
+              titleColor: c.textSecondary,
+              titleWeight: FontWeight.w400,
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _pairingQr(String uri, MotifColors c) {
+    return Padding(
+      padding: const EdgeInsets.all(MotifSpacing.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(MotifSpacing.md),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: QrImageView(
+              data: uri,
+              size: 220,
+              backgroundColor: Colors.white,
+            ),
+          ),
+          const SizedBox(height: MotifSpacing.sm),
+          Text(
+            'Scan in the Motif app on another device, or copy the link.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: c.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: MotifSpacing.xs),
+          TextButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: uri));
+              if (mounted) {
+                ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                  const SnackBar(content: Text('Pairing link copied')),
+                );
+              }
+            },
+            icon: const Icon(Icons.copy, size: 16),
+            label: const Text('Copy pairing link'),
+          ),
+        ],
+      ),
     );
   }
 
