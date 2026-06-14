@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
@@ -78,6 +79,7 @@ class _RecordingMotifClient extends MotifClient {
     MotifServer server, {
     bool force = false,
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) async {
     connectCalls++;
     _live = true;

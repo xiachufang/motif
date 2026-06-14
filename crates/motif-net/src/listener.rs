@@ -7,9 +7,10 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
-use crate::config::ListenConfig;
+use crate::config::{ListenConfig, RzvListenConfig};
 use crate::stream::Stream;
 
 #[cfg(feature = "tailscale")]
@@ -25,7 +26,32 @@ pub struct Listener {
     tcp: Option<TcpListener>,
     #[cfg(feature = "tailscale")]
     ts: Option<TsBackend>,
+    /// Rendezvous backend: a pool of `accept` waiters parked at the relay,
+    /// funnelled into `rx` exactly like the tailscale pump. Always compiled
+    /// (pure tokio, no feature gate).
+    rzv: Option<RzvBackend>,
 }
+
+/// Rendezvous-relay accept backend. See `docs/rzv-protocol.md`. Each pump task
+/// keeps one `accept` connection parked at the relay; when the relay pairs it
+/// with a client, the now-transparent stream is pushed into `rx` and the pump
+/// loops to park a fresh one.
+struct RzvBackend {
+    rx: tokio::sync::mpsc::Receiver<io::Result<(Stream, SocketAddr)>>,
+    /// Relay address, for `bound_addrs()`.
+    url: String,
+    /// Held to keep the pump tasks alive for the listener's lifetime.
+    _pumps: Vec<tokio::task::JoinHandle<()>>,
+}
+
+// rzv wire constants — keep in lockstep with `motif-rendezvous` and
+// `docs/rzv-protocol.md`.
+const RZV_MAGIC: [u8; 4] = *b"MRZV";
+const RZV_VERSION: u8 = 1;
+const RZV_ROLE_ACCEPT: u8 = 0;
+const RZV_CTRL_PING: u8 = 0x01;
+const RZV_CTRL_PONG: u8 = 0x02;
+const RZV_CTRL_PAIRED: u8 = 0x10;
 
 #[cfg(feature = "tailscale")]
 struct TsBackend {
@@ -77,10 +103,13 @@ impl Listener {
             None => None,
         };
 
+        let rzv = cfg.rendezvous.as_ref().map(bind_rzv);
+
         Ok(Self {
             tcp,
             #[cfg(feature = "tailscale")]
             ts,
+            rzv,
         })
     }
 
@@ -99,6 +128,9 @@ impl Listener {
             // We don't have the hostname back from libtailscale yet; the
             // bind() caller logs it. Future: surface it through TsServer.
             out.push(format!("tailscale://*:{}", _b.port));
+        }
+        if let Some(b) = &self.rzv {
+            out.push(format!("rzv://{}", b.url));
         }
         out
     }
@@ -170,6 +202,115 @@ async fn bind_tailscale(c: &TailscaleListenConfig) -> io::Result<TsBackend> {
     })
 }
 
+/// Start the rendezvous backend: a pool of pump tasks, each holding one parked
+/// `accept` waiter at the relay and re-parking after every pairing. Mirrors the
+/// tailscale pump's mpsc fan-in.
+fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
+    // Bounded buffer applies backpressure: if axum isn't pulling accepted
+    // streams, the pumps stop re-parking rather than piling up.
+    let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<(Stream, SocketAddr)>>(8);
+    let pool = c.pool.max(1);
+    let mut pumps = Vec::with_capacity(pool);
+    for _ in 0..pool {
+        let tx = tx.clone();
+        let url = c.url.clone();
+        let token = c.token;
+        let tls = c.tls.clone();
+        pumps.push(tokio::spawn(async move {
+            // Backoff only grows on repeated failures; reset after a success.
+            let mut backoff = Duration::from_millis(250);
+            loop {
+                match park_accept(&url, &token, tls.clone()).await {
+                    Ok(stream) => {
+                        backoff = Duration::from_millis(250);
+                        let addr = SocketAddr::from(([0, 0, 0, 0], 0));
+                        tracing::info!(relay = %url, transport = "rzv", "motif-net: accept");
+                        if tx.send(Ok((stream, addr))).await.is_err() {
+                            tracing::debug!("rzv pump: receiver dropped, exiting");
+                            return;
+                        }
+                        // Loop immediately to park a fresh waiter.
+                    }
+                    Err(e) => {
+                        tracing::warn!(relay = %url, error = %e, "rzv pump: park failed; retrying");
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(Duration::from_secs(15));
+                    }
+                }
+            }
+        }));
+    }
+    RzvBackend {
+        rx,
+        url: c.url.clone(),
+        _pumps: pumps,
+    }
+}
+
+/// Dial the relay, park as an `accept` waiter, and block until the relay pairs
+/// us (`PAIRED`). Answers `PING` keepalives with `PONG` while parked. When
+/// `tls` is set, terminates end-to-end TLS over the now-transparent pipe before
+/// returning (the relay never sees plaintext); otherwise returns the plain
+/// stream. Either way the result is ready for axum to serve over.
+async fn park_accept(
+    url: &str,
+    token: &[u8; 32],
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+) -> io::Result<Stream> {
+    let mut s = TcpStream::connect(url).await?;
+
+    let mut hello = Vec::with_capacity(38);
+    hello.extend_from_slice(&RZV_MAGIC);
+    hello.push(RZV_VERSION);
+    hello.push(RZV_ROLE_ACCEPT);
+    hello.extend_from_slice(token);
+    s.write_all(&hello).await?;
+    s.flush().await?;
+
+    // Read one control byte at a time until PAIRED so we never consume the
+    // client's first application bytes (which only arrive after PAIRED).
+    loop {
+        let mut b = [0u8; 1];
+        s.read_exact(&mut b).await?;
+        match b[0] {
+            RZV_CTRL_PAIRED => break,
+            RZV_CTRL_PING => {
+                s.write_all(&[RZV_CTRL_PONG]).await?;
+                s.flush().await?;
+            }
+            other => {
+                // Unexpected pre-pairing byte: treat as a protocol error.
+                return Err(io::Error::other(format!(
+                    "rzv: unexpected control byte {other:#04x} before PAIRED"
+                )));
+            }
+        }
+    }
+
+    match tls {
+        Some(cfg) => {
+            let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
+            let tls_stream = acceptor.accept(s).await?;
+            Ok(Stream::from_tls(tls_stream))
+        }
+        None => Ok(Stream::from_tcp(s)),
+    }
+}
+
+async fn accept_rzv(o: Option<&mut RzvBackend>) -> io::Result<(Stream, SocketAddr)> {
+    match o {
+        Some(b) => match b.rx.recv().await {
+            Some(res) => res,
+            None => {
+                // All pumps exited (receiver can't outlive senders unless they
+                // all dropped). Wedge instead of spinning the outer loop.
+                std::future::pending().await
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
 impl axum::serve::Listener for Listener {
     type Io = Stream;
     type Addr = SocketAddr;
@@ -182,17 +323,22 @@ impl axum::serve::Listener for Listener {
                 // back-off on accept errors.
                 #[cfg(feature = "tailscale")]
                 let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp, ts } = self;
+                    let Self { tcp, ts, rzv } = self;
                     tokio::select! {
                         biased;
                         r = accept_tcp(tcp.as_ref()) => r,
                         r = accept_ts(ts.as_mut())   => r,
+                        r = accept_rzv(rzv.as_mut())  => r,
                     }
                 };
                 #[cfg(not(feature = "tailscale"))]
                 let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp } = self;
-                    accept_tcp(tcp.as_ref()).await
+                    let Self { tcp, rzv } = self;
+                    tokio::select! {
+                        biased;
+                        r = accept_tcp(tcp.as_ref()) => r,
+                        r = accept_rzv(rzv.as_mut())  => r,
+                    }
                 };
 
                 match res {
@@ -217,6 +363,11 @@ impl axum::serve::Listener for Listener {
             // Tailscale has no real SocketAddr; placeholder so axum can log
             // something. The real human-readable name is in `bound_addrs()`.
             return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), b.port));
+        }
+        if self.rzv.is_some() {
+            // Rendezvous streams arrive over outbound relay connections; there
+            // is no local bind addr. Synthesize one so axum can log something.
+            return Ok(SocketAddr::from(([0, 0, 0, 0], 0)));
         }
         Err(io::Error::other("Listener has no backends"))
     }

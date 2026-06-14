@@ -14,6 +14,7 @@ import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import 'create_session_dialog.dart';
+import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
 import 'session_screen.dart';
@@ -118,6 +119,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     await _connectServer(result.server);
   }
 
+  Future<void> _pairAndConnectServer() async {
+    final id = await showRzvPairingSheet(context);
+    if (id == null || !mounted) return;
+    final server = context.read<AppState>().serverById(id);
+    if (server == null) return;
+    await _connectServer(server);
+  }
+
   Future<void> _connectServer(MotifServer server) async {
     final app = context.read<AppState>();
     await app.connectServerAndRefresh(server.id, force: true);
@@ -155,6 +164,7 @@ class _SessionListScreenState extends State<SessionListScreen>
             ? _SessionListEmptyState(
                 app: app,
                 onAddServer: _addAndConnectServer,
+                onPairServer: _pairAndConnectServer,
                 onConnectServer: _connectServer,
               )
             : ListView.separated(
@@ -526,11 +536,13 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
 class _SessionListEmptyState extends StatelessWidget {
   final AppState app;
   final Future<void> Function() onAddServer;
+  final Future<void> Function() onPairServer;
   final Future<void> Function(MotifServer server) onConnectServer;
 
   const _SessionListEmptyState({
     required this.app,
     required this.onAddServer,
+    required this.onPairServer,
     required this.onConnectServer,
   });
 
@@ -616,6 +628,12 @@ class _SessionListEmptyState extends StatelessWidget {
                           : active == null
                           ? () => unawaited(onAddServer())
                           : () => _performAction(context, active, action),
+                    ),
+                    MotifButton(
+                      label: 'Pair with Link',
+                      icon: Icons.qr_code_2,
+                      role: MotifButtonRole.bordered,
+                      onPressed: () => unawaited(onPairServer()),
                     ),
                     MotifButton(
                       label: 'Manage Servers',

@@ -71,6 +71,9 @@ class RpcClient {
 
   http.Client _http;
   ProxySettings _proxy = ProxySettings.none;
+  /// rzv end-to-end TLS cert pin (`sha256(cert.der)`), or null for plaintext
+  /// transports. Applied to the RPC http client and every PTY/events WS.
+  Uint8List? _certPin;
 
   String _host = '';
   int _port = 0;
@@ -106,15 +109,17 @@ class RpcClient {
     required String token,
     String scheme = 'http',
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) {
     _host = host;
     _port = port;
     _scheme = scheme == 'https' ? 'https' : 'http';
     _token = token;
     _proxy = proxy;
-    if (proxy.isActive) {
+    _certPin = certPin;
+    if (proxy.isActive || certPin != null) {
       _http.close();
-      _http = makeHttpClient(proxy);
+      _http = makeHttpClient(proxy, certPin: certPin);
     }
   }
 
@@ -298,6 +303,7 @@ class RpcClient {
       proxyPort: _proxy.proxyPort,
       proxyUser: _proxy.username,
       proxyPass: _proxy.password,
+      certPin: _certPin,
     );
     await socket.ready;
     _eventsSocket = socket;
@@ -435,6 +441,7 @@ class RpcClient {
       proxyPort: _proxy.proxyPort,
       proxyUser: _proxy.username,
       proxyPass: _proxy.password,
+      certPin: _certPin,
     );
     try {
       await socket.ready;

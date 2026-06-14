@@ -1,7 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:http/http.dart' as http;
 
 /// Web: no proxy control (the browser manages networking), so [proxyHost] etc.
-/// are inert and the default client is used.
+/// are inert and the default client is used. Cert pinning ([certPin]) isn't
+/// available in the browser either; the rzv transport is native-only.
 class ProxySettings {
   final String? proxyHost;
   final int? proxyPort;
@@ -13,4 +16,5 @@ class ProxySettings {
   bool get isActive => false;
 }
 
-http.Client makeHttpClient(ProxySettings p) => http.Client();
+http.Client makeHttpClient(ProxySettings p, {Uint8List? certPin}) =>
+    http.Client();

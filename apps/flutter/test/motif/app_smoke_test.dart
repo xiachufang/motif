@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';
@@ -20,6 +22,7 @@ class _SmokeMotifClient extends MotifClient {
     MotifServer server, {
     bool force = false,
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) async {
     _live = true;
     notifyListeners();

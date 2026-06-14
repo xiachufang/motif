@@ -1284,10 +1284,15 @@ name = "motif-net"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "motif-rendezvous",
  "motif-tailscale",
  "pin-project-lite",
+ "rcgen",
+ "rustls",
+ "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "url",
 ]
@@ -1329,6 +1334,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "motif-rendezvous"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "parking_lot",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "motif-server"
 version = "0.1.0"
 dependencies = [
@@ -1356,9 +1373,12 @@ dependencies = [
  "notify-debouncer-full",
  "parking_lot",
  "portable-pty",
+ "qrcode",
+ "rcgen",
  "rmp-serde",
  "rmpv",
  "rust-embed",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1651,6 +1671,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1707,6 +1733,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
 ]
 
 [[package]]
@@ -1852,6 +1891,7 @@ version = "0.23.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3027,6 +3067,15 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yoke"

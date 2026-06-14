@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use base64::Engine;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -80,6 +81,36 @@ struct Args {
     #[arg(long)]
     push_relay_url: Option<String>,
 
+    /// Rendezvous relay address (`host:port`) to park `accept` waiters at, so
+    /// clients can reach this motifd through the relay without direct
+    /// connectivity. Requires --rzv-token. The relay only sees ciphertext.
+    #[arg(long)]
+    rzv_relay: Option<String>,
+
+    /// 32-byte pairing secret as base64url. Omit to auto-generate and persist
+    /// one (printed as a `motif://pair` QR/link to pair a client). The
+    /// on-the-wire token is derived one-way from this, so the relay never sees
+    /// the secret.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_psk: Option<String>,
+
+    /// Where to persist the auto-generated pairing secret. Defaults to
+    /// `<data-dir>/motif/rzv_psk`. Ignored when --rzv-psk is given.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_psk_file: Option<PathBuf>,
+
+    /// How many idle `accept` waiters to keep parked at the relay (default 2).
+    #[arg(long, requires = "rzv_relay")]
+    rzv_pool: Option<usize>,
+
+    /// Disable rzv end-to-end TLS. By default motifd terminates TLS over the
+    /// relayed pipe with a persisted self-signed identity and advertises its pin
+    /// in the pairing QR, so the relay only ever sees ciphertext and the client
+    /// verifies motifd. Pass this only for a fully trusted relay/segment, where
+    /// rzv traffic then travels as plaintext through the relay.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_no_tls: bool,
+
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
     log: String,
@@ -155,12 +186,65 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    let rendezvous = match args.rzv_relay {
+        Some(url) => {
+            // Obtain the pairing secret: explicit flag, or persisted/auto-gen.
+            let psk: [u8; 32] = match args.rzv_psk {
+                Some(b64) => {
+                    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(b64.trim())
+                        .map_err(|e| anyhow::anyhow!("--rzv-psk is not base64url: {e}"))?;
+                    bytes.as_slice().try_into().map_err(|_| {
+                        anyhow::anyhow!("--rzv-psk must decode to 32 bytes, got {}", bytes.len())
+                    })?
+                }
+                None => {
+                    let path = args
+                        .rzv_psk_file
+                        .unwrap_or_else(motif_server::default_rzv_psk_path);
+                    motif_server::rzv::load_or_create_psk(&path)?
+                }
+            };
+
+            // The wire token is derived one-way from the secret.
+            let token = motif_server::rzv::derive_token(&psk);
+
+            // End-to-end TLS is on by default (relay sees only ciphertext);
+            // build/persist the identity and pin unless explicitly disabled.
+            let psk_dir = motif_server::default_rzv_psk_path();
+            let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let identity = if args.rzv_no_tls {
+                None
+            } else {
+                Some(motif_server::rzv::load_or_create_identity(rzv_dir)?)
+            };
+            let pin = identity.as_ref().map(|id| id.cert_sha256);
+
+            // Print the pairing QR/link for a client to scan.
+            let name = motif_server::default_tailscale_hostname();
+            let uri = motif_server::rzv::pair_uri(&url, &psk, pin.as_ref(), Some(&name));
+            if let Some(qr) = motif_server::rzv::render_qr(&uri) {
+                println!("\n{qr}");
+            }
+            println!("Pair a client by scanning the QR above or opening this link:\n  {uri}\n");
+
+            let mut c = motif_server::RzvListenConfig::new(url, token);
+            if let Some(pool) = args.rzv_pool {
+                c.pool = pool;
+            }
+            c.tls = identity.map(|id| id.server_config);
+            Some(c)
+        }
+        None => None,
+    };
+
     let cfg = motif_server::ServerConfig {
         listen: args.listen,
         #[cfg(feature = "tailscale")]
         tailscale,
         #[cfg(not(feature = "tailscale"))]
         tailscale: None,
+        rendezvous,
         token,
         allow_insecure_no_auth: args.insecure_no_auth,
         push_relay_url: args.push_relay_url,

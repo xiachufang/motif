@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -114,6 +115,7 @@ class _ManualMotifClient extends MotifClient {
     MotifServer server, {
     bool force = false,
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) async {
     _live = true;
     _manualState = const ConnConnected();
@@ -148,6 +150,7 @@ class _FailingMotifClient extends MotifClient {
     MotifServer server, {
     bool force = false,
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) async {
     attempts++;
     _manualState = const ConnFailed('No response');

@@ -67,6 +67,7 @@ impl TestServer {
         let listener = motif_net::Listener::bind(&motif_net::ListenConfig {
             tcp: Some("127.0.0.1:0".parse().expect("parse loopback addr")),
             tailscale: None,
+            rendezvous: None,
         })
         .await
         .expect("bind 127.0.0.1:0");

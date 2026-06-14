@@ -162,6 +162,9 @@ impl MenuConfig {
         Ok(ServerConfig {
             listen,
             tailscale,
+            // The embedded server is for local use; rendezvous (a remote-relay
+            // backend) isn't wired into the in-process menu-bar path.
+            rendezvous: None,
             token,
             allow_insecure_no_auth,
             // The embedded server runs motifd on loopback/LAN for local use;

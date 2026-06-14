@@ -15,6 +15,7 @@ pub mod pty;
 pub mod pty_ws;
 pub mod relay;
 pub mod rpc;
+pub mod rzv;
 pub mod rpc_log;
 pub mod session;
 pub mod shell;
@@ -42,7 +43,7 @@ fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'st
     ))
 }
 
-pub use config::{ServerConfig, TailscaleListenConfig};
+pub use config::{RzvListenConfig, ServerConfig, TailscaleListenConfig};
 
 /// Default embedded-tsnet hostname (`motifd-<sanitized system hostname>`).
 /// Shared by the `motifd` binary and embedding hosts (the menu-bar app) so
@@ -87,6 +88,25 @@ pub fn default_tailscale_state_dir() -> Option<PathBuf> {
         return Some(p);
     }
     None
+}
+
+/// Default path for the persisted rzv pairing secret. Always returns a path
+/// (falls back to the current directory when no data/home dir is known).
+pub fn default_rzv_psk_path() -> PathBuf {
+    let mut base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".local");
+                p.push("share");
+                p
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.push("motifd");
+    base.push("rzv_psk");
+    base
 }
 
 #[cfg(unix)]

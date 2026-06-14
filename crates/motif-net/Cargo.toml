@@ -23,5 +23,15 @@ pin-project-lite   = { workspace = true }
 url                = { workspace = true }
 thiserror          = { workspace = true }
 tracing            = { workspace = true }
+rustls             = { workspace = true }
+tokio-rustls       = { workspace = true }
 
 motif-tailscale    = { path = "../motif-tailscale", optional = true, default-features = false }
+
+[dev-dependencies]
+# Exercise the rzv accept backend against the real relay.
+motif-rendezvous   = { path = "../motif-rendezvous" }
+tokio              = { workspace = true, features = ["full"] }
+# Generate a throwaway self-signed cert + pin it for the rzv-over-TLS test.
+rcgen              = { workspace = true }
+sha2               = { workspace = true }

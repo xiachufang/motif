@@ -67,6 +67,16 @@ hex                = "0.4"
 ulid               = { version = "1", features = ["serde"] }
 getrandom          = "0.2"
 dirs               = "6"
+# Terminal QR for rzv pairing (`motif://pair`). default-features off to skip
+# the image/svg renderers — we only use the unicode half-block renderer.
+qrcode             = { version = "0.14", default-features = false }
+
+# rzv end-to-end TLS over the relayed pipe. All pinned to the `ring` provider
+# (NOT aws-lc-rs) to match hyper-rustls and keep aws-lc-sys out of the build.
+rustls             = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls       = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# Self-signed identity cert for motifd; ring crypto, no aws-lc.
+rcgen              = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 
 # Errors / logging
 thiserror          = "2"

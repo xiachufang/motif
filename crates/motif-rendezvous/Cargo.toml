@@ -1,0 +1,26 @@
+[package]
+name        = "motif-rendezvous"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+description = "Motif rendezvous relay — pairs a motifd `accept` with a client `connect` by token, then pipes bytes. Sees only ciphertext."
+
+[[bin]]
+name = "motif-rendezvous"
+path = "src/main.rs"
+
+[lib]
+name = "motif_rendezvous"
+path = "src/lib.rs"
+
+[dependencies]
+tokio              = { workspace = true }
+clap               = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot        = { workspace = true }
+
+[dev-dependencies]
+tokio              = { workspace = true, features = ["full", "test-util"] }
