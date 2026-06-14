@@ -17,8 +17,9 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../models/settings.dart';
 import '../platform/motif_embed_ffi.dart';
+// jsonDecodeMap / jsonEncodeMap live here (the ServerStore type is no longer
+// used — the service is client-agnostic).
 import 'stores.dart';
 
 /// Stable id of the auto-managed loopback server entry.
@@ -202,14 +203,13 @@ class EmbeddedServerStatus {
 
 class EmbeddedServerService extends ChangeNotifier {
   final SharedPreferences _prefs;
-  final ServerStore _servers;
   final LibMotifEmbed? _lib;
 
   EmbeddedServerConfig _config = const EmbeddedServerConfig();
   EmbeddedServerStatus _status = const EmbeddedServerStatus();
   Timer? _poll;
 
-  EmbeddedServerService._(this._prefs, this._servers, this._lib) {
+  EmbeddedServerService._(this._prefs, this._lib) {
     final raw = _prefs.getString(_kConfigKey);
     if (raw != null) {
       final map = jsonDecodeMap(raw);
@@ -218,11 +218,10 @@ class EmbeddedServerService extends ChangeNotifier {
   }
 
   /// Build the service, loading the native library and initializing logging on
-  /// desktop. Best-effort autostart if the saved config asks for it.
-  static Future<EmbeddedServerService> create(
-    SharedPreferences prefs,
-    ServerStore servers,
-  ) async {
+  /// desktop. Best-effort autostart if the saved config asks for it. The
+  /// service is client-agnostic — registering the running server as a
+  /// connectable target is the host's (AppState's) job, by observing status.
+  static Future<EmbeddedServerService> create(SharedPreferences prefs) async {
     LibMotifEmbed? lib;
     if (_isDesktop) {
       lib = LibMotifEmbed.tryOpenDefault();
@@ -235,7 +234,7 @@ class EmbeddedServerService extends ChangeNotifier {
         }
       }
     }
-    final svc = EmbeddedServerService._(prefs, servers, lib);
+    final svc = EmbeddedServerService._(prefs, lib);
     if (svc.available && svc._config.autostart) {
       unawaited(svc.start());
     }
@@ -320,43 +319,11 @@ class EmbeddedServerService extends ChangeNotifier {
     _status = map == null
         ? const EmbeddedServerStatus()
         : EmbeddedServerStatus.fromJson(map);
-    // Keep the connectable loopback server entry in sync once running.
-    if (_status.running) {
-      await _syncServerEntry();
-    }
     // Stop the poll loop once we settle into a terminal (non-running) state.
     if (!_status.running && !_status.starting) _stopPolling();
+    // The host (AppState) listens to this notifier and registers the running
+    // server as a connectable target — the service itself stays client-agnostic.
     notifyListeners();
-  }
-
-  /// Upsert the loopback [MotifServer] for the running server so the user can
-  /// connect through the normal flow. No-op when the server only listens on
-  /// Tailscale (no loopback endpoint).
-  Future<void> _syncServerEntry() async {
-    final endpoint = _status.loopbackEndpoint;
-    if (endpoint == null) return;
-    final desired = MotifServer(
-      id: kEmbeddedServerId,
-      name: 'This computer',
-      host: endpoint.host,
-      port: endpoint.port,
-      token: _config.authEnabled ? _config.authToken : '',
-      kind: ServerKind.direct,
-    );
-    MotifServer? existing;
-    for (final s in _servers.servers) {
-      if (s.id == kEmbeddedServerId) {
-        existing = s;
-        break;
-      }
-    }
-    if (existing == null) {
-      await _servers.add(desired);
-    } else if (existing.host != desired.host ||
-        existing.port != desired.port ||
-        existing.token != desired.token) {
-      await _servers.update(desired);
-    }
   }
 
   @override

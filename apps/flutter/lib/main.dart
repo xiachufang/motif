@@ -11,6 +11,7 @@ import 'motif/platform/desktop_window.dart';
 import 'motif/platform/tray_service.dart';
 import 'motif/platform/window_title.dart';
 import 'motif/state/app_state.dart';
+import 'motif/state/embedded_server_service.dart';
 import 'motif/ui/app.dart';
 
 Future<void> main() async {
@@ -46,8 +47,21 @@ Future<void> main() async {
 
       // Native: real libtailscale service when its dylib is present; web: no-op.
       final appState = await AppState.load(platform: makePlatformServices());
+      final embedded = appState.embeddedServer;
       runApp(
-        ChangeNotifierProvider.value(value: appState, child: const MotifApp()),
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<AppState>.value(value: appState),
+            // The embedded server is its own provider so the Server view + tray
+            // consume it directly, not through AppState. Only present on desktop
+            // where the native library loaded.
+            if (embedded != null)
+              ChangeNotifierProvider<EmbeddedServerService>.value(
+                value: embedded,
+              ),
+          ],
+          child: const MotifApp(),
+        ),
       );
 
       // Desktop: live in the tray (start the embedded-server tray control and

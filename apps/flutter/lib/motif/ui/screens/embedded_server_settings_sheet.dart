@@ -9,7 +9,6 @@ import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../platform/desktop_launch.dart';
-import '../../state/app_state.dart';
 import '../../state/embedded_server_service.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
@@ -32,7 +31,7 @@ class _EmbeddedServerSettingsSheetState
   late final TextEditingController _tsControlUrl;
   late final TextEditingController _rzvRelay;
 
-  EmbeddedServerService get _svc => context.read<AppState>().embeddedServer!;
+  EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
 
   @override
   void initState() {
@@ -61,8 +60,7 @@ class _EmbeddedServerSettingsSheetState
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final svc = app.embeddedServer!;
+    final svc = context.watch<EmbeddedServerService>();
     final cfg = svc.config;
     final status = svc.status;
     final c = context.motif;

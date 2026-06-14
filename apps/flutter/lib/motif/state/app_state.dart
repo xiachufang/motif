@@ -75,7 +75,10 @@ class AppState extends ChangeNotifier {
     servers.addListener(_relayStoreChange);
     commands.addListener(_relayStoreChange);
     push.addListener(_relayStoreChange);
-    embeddedServer?.addListener(_relayStoreChange);
+    // One-way bridge: the client observes the embedded server's status and
+    // registers/updates its loopback entry as a connectable target. The server
+    // service stays unaware of the client's server list.
+    embeddedServer?.addListener(_onEmbeddedServerChanged);
     terminalSettings.addListener(_onTerminalSettingsChanged);
     _tailscaleSub = platform.tailscale.states.listen(_onTailscaleState);
     try {
@@ -117,7 +120,7 @@ class AppState extends ChangeNotifier {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: platform ?? PlatformServices.defaults(),
-      embeddedServer: await EmbeddedServerService.create(prefs, servers),
+      embeddedServer: await EmbeddedServerService.create(prefs),
     );
   }
 
@@ -237,6 +240,39 @@ class AppState extends ChangeNotifier {
   void _relayStoreChange() {
     _pruneClientsForDeletedServers();
     notifyListeners();
+  }
+
+  /// The embedded server changed: keep its connectable loopback entry in sync,
+  /// then propagate the change to listeners. This is the only place the client
+  /// reaches into the server's state — the service never touches the client.
+  void _onEmbeddedServerChanged() {
+    unawaited(_syncEmbeddedServerEntry());
+    _relayStoreChange();
+  }
+
+  /// Upsert the loopback [MotifServer] for the running embedded server so it
+  /// appears in the connect flow. No-op until it has a loopback endpoint.
+  Future<void> _syncEmbeddedServerEntry() async {
+    final svc = embeddedServer;
+    if (svc == null) return;
+    final endpoint = svc.status.loopbackEndpoint;
+    if (endpoint == null) return;
+    final desired = MotifServer(
+      id: kEmbeddedServerId,
+      name: 'This computer',
+      host: endpoint.host,
+      port: endpoint.port,
+      token: svc.config.authEnabled ? svc.config.authToken : '',
+      kind: ServerKind.direct,
+    );
+    final existing = serverById(kEmbeddedServerId);
+    if (existing == null) {
+      await servers.add(desired);
+    } else if (existing.host != desired.host ||
+        existing.port != desired.port ||
+        existing.token != desired.token) {
+      await servers.update(desired);
+    }
   }
 
   void _relayControllerChange() {
@@ -467,7 +503,7 @@ class AppState extends ChangeNotifier {
     servers.removeListener(_relayStoreChange);
     commands.removeListener(_relayStoreChange);
     push.removeListener(_relayStoreChange);
-    embeddedServer?.removeListener(_relayStoreChange);
+    embeddedServer?.removeListener(_onEmbeddedServerChanged);
     embeddedServer?.dispose();
     terminalSettings.removeListener(_onTerminalSettingsChanged);
     unawaited(_tailscaleSub?.cancel());
