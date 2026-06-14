@@ -496,10 +496,7 @@ class EmbeddedServerPage extends StatelessWidget {
             MotifSpacing.lg,
             MotifSpacing.xl,
           ),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 640),
-            child: const EmbeddedServerSettingsSheet(),
-          ),
+          child: const EmbeddedServerSettingsSheet(),
         ),
       ),
     );
