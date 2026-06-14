@@ -132,6 +132,7 @@ class _ModeToolbar extends StatelessWidget {
     final customTitleBar = DesktopWindow.usesCustomTitleBar;
     return Material(
       color: c.surface,
+      elevation: 0,
       child: Container(
         height: 38,
         padding: EdgeInsets.only(
@@ -143,12 +144,14 @@ class _ModeToolbar extends StatelessWidget {
         ),
         child: Row(
           children: [
-            _ModeSwitch(mode: mode, onChanged: onChanged),
+            // Drag region (macOS) / spacer fills the left, pushing the switch
+            // to the right edge of the title bar.
             Expanded(
               child: customTitleBar
                   ? const _WindowDragArea()
                   : const SizedBox.shrink(),
             ),
+            _ModeSwitch(mode: mode, onChanged: onChanged),
           ],
         ),
       ),
@@ -198,36 +201,41 @@ class _ModeSwitch extends StatelessWidget {
 
   Widget _seg(MotifColors c, IconData icon, String label, AppViewMode m) {
     final selected = mode == m;
+    // GestureDetector (not InkWell) so tapping doesn't flash an ink ripple over
+    // the title bar; the selected pill is the only feedback.
     return Tooltip(
       message: label,
-      child: InkWell(
-        onTap: () => onChanged(m),
-        borderRadius: BorderRadius.circular(5),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: selected ? c.background : Colors.transparent,
-            borderRadius: BorderRadius.circular(5),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                icon,
-                size: 15,
-                color: selected ? c.accent : c.textTertiary,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  color: selected ? c.textPrimary : c.textTertiary,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onChanged(m),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: selected ? c.background : Colors.transparent,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 15,
+                  color: selected ? c.accent : c.textTertiary,
                 ),
-              ),
-            ],
+                const SizedBox(width: 5),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    color: selected ? c.textPrimary : c.textTertiary,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

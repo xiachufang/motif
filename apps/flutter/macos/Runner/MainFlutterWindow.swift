@@ -44,6 +44,12 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     self.titlebarAppearsTransparent = true
     self.titleVisibility = .hidden
     self.styleMask.insert(.fullSizeContentView)
+    // Drop the system separator line under the title bar — the Flutter toolbar
+    // draws its own bottom border, and the native one can flash as content
+    // scrolls under it.
+    if #available(macOS 11.0, *) {
+      self.titlebarSeparatorStyle = .none
+    }
 
     self.delegate = self
     super.awakeFromNib()
