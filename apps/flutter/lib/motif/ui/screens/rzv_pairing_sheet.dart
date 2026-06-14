@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -5,6 +6,22 @@ import '../../net/rzv/pairing_payload.dart';
 import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import 'rzv_scan_screen.dart';
+
+/// Whether camera QR scanning is available on this platform. mobile_scanner
+/// supports iOS / Android / macOS / web; desktop Linux/Windows fall back to
+/// pasting the link.
+bool get _scanSupported {
+  if (kIsWeb) return true;
+  switch (defaultTargetPlatform) {
+    case TargetPlatform.iOS:
+    case TargetPlatform.android:
+    case TargetPlatform.macOS:
+      return true;
+    default:
+      return false;
+  }
+}
 
 /// Add a rendezvous server by pasting the `motif://pair?...` link that
 /// `motifd --rzv-relay` prints (as a QR + a link). Returns the new server's id
@@ -54,6 +71,13 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
     });
   }
 
+  Future<void> _scan() async {
+    final link = await showRzvScanScreen(context);
+    if (link == null || !mounted) return;
+    _controller.text = link;
+    _onChanged(link);
+  }
+
   Future<void> _pair() async {
     if (_parsed == null || _busy) return;
     setState(() => _busy = true);
@@ -90,10 +114,21 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
         children: [
           Text(
             'On the server, run motifd with --rzv-relay; it prints a '
-            'motif://pair link (and a QR). Paste the link here.',
+            'motif://pair link (and a QR). Scan the QR or paste the link here.',
             style: TextStyle(color: c.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: MotifSpacing.md),
+          if (_scanSupported) ...[
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _busy ? null : _scan,
+                icon: const Icon(Icons.qr_code_scanner, size: 18),
+                label: const Text('Scan QR'),
+              ),
+            ),
+            const SizedBox(height: MotifSpacing.md),
+          ],
           TextField(
             controller: _controller,
             autofocus: true,
