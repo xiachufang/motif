@@ -119,9 +119,25 @@ session is spliced together end-to-end encrypted.
 
 ## Verify a running relay
 
+**Built-in liveness probe** — the binary probes itself, no extra deps:
+
 ```sh
-python3 deploy/rendezvous/smoke.py <host> 8765
-# -> "relay pairing + pipe OK"
+motif-rendezvous healthcheck --addr <host>:8765   # prints "ok", exits 0/1
+```
+
+It sends a health HELLO (`role = 2`) and checks the relay replies `HEALTH_OK`,
+so a pass means the relay is actually pairing-capable, not just that the port is
+bound — and it parks no state. The image runs this as its Docker `HEALTHCHECK`,
+so `docker ps` shows `healthy`/`unhealthy` on its own:
+
+```sh
+docker inspect --format '{{.State.Health.Status}}' motif-rzv
+```
+
+**Full pairing self-test** — exercises a real accept↔connect splice end to end:
+
+```sh
+python3 deploy/rendezvous/smoke.py <host> 8765   # -> "relay pairing + pipe OK"
 ```
 
 This is exactly what CI runs against the freshly built image before pushing.

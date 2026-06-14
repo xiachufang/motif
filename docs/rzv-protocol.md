@@ -22,6 +22,10 @@ Keep all three in lockstep with this file.
   unbounded number of clients over time while the relay stays dumb.
 - **connect** (`role = 1`) — the client. Dials in on demand, once per logical
   connection (each PTY / events / RPC stream is its own dial in P1).
+- **health** (`role = 2`) — a liveness probe (token ignored). The relay replies
+  `HEALTH_OK` (`0x20`) and closes; the connection is never parked or paired, so
+  it leaves no state. Used by the image's `HEALTHCHECK` and the
+  `motif-rendezvous healthcheck` subcommand.
 
 The relay only ever pairs an `accept` with a `connect` bearing the same token —
 never accept↔accept or connect↔connect. This is the one difference from the
@@ -36,8 +40,8 @@ The first bytes each side writes after the TCP connect. Fixed length, 38 bytes:
 offset  size  field
 0       4     magic = "MRZV" (0x4D 0x52 0x5A 0x56)
 4       1     version = 1
-5       1     role (0 = accept, 1 = connect)
-6       32    token
+5       1     role (0 = accept, 1 = connect, 2 = health)
+6       32    token (ignored for role = health)
 ```
 
 ## Pairing & control bytes
@@ -46,9 +50,10 @@ Before pairing, the relay may exchange single control bytes with a parked side.
 These are valid **only** in the pre-pairing window:
 
 ```
-0x01  PING    relay → waiter   (keepalive so middleboxes don't drop idle parks)
-0x02  PONG    waiter → relay   (keepalive ack)
-0x10  PAIRED  relay → both     (sent once to each side at pairing)
+0x01  PING      relay → waiter  (keepalive so middleboxes don't drop idle parks)
+0x02  PONG      waiter → relay  (keepalive ack)
+0x10  PAIRED    relay → both    (sent once to each side at pairing)
+0x20  HEALTH_OK relay → health  (reply to a role = health HELLO, then close)
 ```
 
 When two opposite-role connections with the same token are present, the relay

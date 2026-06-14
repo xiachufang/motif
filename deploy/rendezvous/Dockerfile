@@ -35,5 +35,13 @@ COPY --from=builder /usr/local/bin/motif-rendezvous /usr/local/bin/
 # Unprivileged; the default port (8765) is > 1024 so no capabilities needed.
 USER 10001:10001
 EXPOSE 8765
+
+# Liveness via the binary's own probe — no nc/curl/python in the slim runtime.
+# It sends a health HELLO and checks the reply, so `healthy` means the relay is
+# actually pairing-capable, not just that the port is bound. If you override the
+# listen port, override --addr here too.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=3s --retries=3 \
+    CMD ["motif-rendezvous", "healthcheck", "--addr", "127.0.0.1:8765"]
+
 ENTRYPOINT ["motif-rendezvous"]
 CMD ["--listen", "0.0.0.0:8765"]

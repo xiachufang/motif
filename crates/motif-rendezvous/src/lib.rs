@@ -29,9 +29,16 @@ pub const VERSION: u8 = 1;
 
 pub const ROLE_ACCEPT: u8 = 0;
 pub const ROLE_CONNECT: u8 = 1;
+/// A liveness probe. The relay replies with [`CTRL_HEALTH_OK`] and closes —
+/// it is never parked or paired, so it leaves no state behind.
+pub const ROLE_HEALTH: u8 = 2;
 
 /// Sent to both sides at pairing; after it the stream is transparent.
 pub const CTRL_PAIRED: u8 = 0x10;
+/// Reply to a [`ROLE_HEALTH`] HELLO: the relay's event loop and HELLO parser
+/// are alive. Distinct from [`CTRL_PAIRED`] so a probe can't be mistaken for a
+/// real pairing.
+pub const CTRL_HEALTH_OK: u8 = 0x20;
 
 pub const TOKEN_LEN: usize = 32;
 pub const HELLO_LEN: usize = 4 + 1 + 1 + TOKEN_LEN; // 38
@@ -114,6 +121,13 @@ impl Hub {
         let mut stream = stream;
         let (role, token) = read_hello(&mut stream).await?;
 
+        // A health probe is answered inline and dropped — never parked/paired.
+        if role == ROLE_HEALTH {
+            stream.write_all(&[CTRL_HEALTH_OK]).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+
         // Pop an opposite-role waiter or park self — both under one lock so a
         // simultaneous accept+connect can't each miss the other and deadlock.
         let mut stream = Some(stream);
@@ -188,12 +202,38 @@ async fn read_hello(stream: &mut TcpStream) -> anyhow::Result<(u8, Token)> {
         anyhow::bail!("unsupported version {}", buf[4]);
     }
     let role = buf[5];
-    if role != ROLE_ACCEPT && role != ROLE_CONNECT {
+    if role != ROLE_ACCEPT && role != ROLE_CONNECT && role != ROLE_HEALTH {
         anyhow::bail!("bad role {role}");
     }
     let mut token = [0u8; TOKEN_LEN];
     token.copy_from_slice(&buf[6..6 + TOKEN_LEN]);
     Ok((role, token))
+}
+
+/// Client side of the health protocol: dial the relay, send a [`ROLE_HEALTH`]
+/// HELLO, and confirm it replies [`CTRL_HEALTH_OK`]. Proves the listener is up
+/// *and* the HELLO parser / response path run — more than a bare TCP connect,
+/// and it parks no state. Used by the `healthcheck` subcommand and the image's
+/// `HEALTHCHECK`. `timeout` bounds the whole exchange.
+pub async fn health_check(addr: &str, timeout: Duration) -> anyhow::Result<()> {
+    tokio::time::timeout(timeout, async {
+        let mut stream = TcpStream::connect(addr).await?;
+        let mut frame = [0u8; HELLO_LEN];
+        frame[0..4].copy_from_slice(&MAGIC);
+        frame[4] = VERSION;
+        frame[5] = ROLE_HEALTH;
+        // token bytes stay zero — unused for a health probe.
+        stream.write_all(&frame).await?;
+        stream.flush().await?;
+        let mut b = [0u8; 1];
+        stream.read_exact(&mut b).await?;
+        if b[0] != CTRL_HEALTH_OK {
+            anyhow::bail!("unexpected health reply {:#04x}", b[0]);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("health probe timed out after {timeout:?}"))?
 }
 
 /// Signal both sides, then pipe bytes until either closes.
@@ -294,6 +334,25 @@ mod tests {
             .unwrap();
         let got = tokio::time::timeout(Duration::from_millis(150), read_byte(&mut acc)).await;
         assert!(got.is_err(), "mismatched token must not pair");
+    }
+
+    #[tokio::test]
+    async fn health_probe_replies_and_parks_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hub = Hub::new(HubConfig {
+            park_ttl: Duration::from_millis(300),
+        });
+        let hub2 = Arc::clone(&hub);
+        tokio::spawn(hub.run(listener));
+
+        // The high-level helper succeeds against a live relay.
+        health_check(&addr.to_string(), Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        // And it left no parked state behind.
+        assert_eq!(hub2.parked_tokens(), 0, "health probe must not park");
     }
 
     #[tokio::test]
