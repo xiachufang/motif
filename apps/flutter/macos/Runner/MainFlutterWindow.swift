@@ -25,10 +25,25 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       case "hide":
         self?.hideWindow()
         result(nil)
+      case "startDrag":
+        // Drag the window from the Flutter custom title bar. Uses AppKit's
+        // window-drag helper with the in-flight mouse event.
+        if let event = NSApp.currentEvent {
+          self?.perform(Selector(("performWindowDragWithEvent:")), with: event)
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
+
+    // Custom title bar: extend the Flutter content into the title-bar band and
+    // hide the system title, so the Client/Server switch toolbar can act as the
+    // title bar. The traffic-light buttons stay; the Flutter toolbar insets to
+    // clear them and drives dragging via the `startDrag` channel call.
+    self.titlebarAppearsTransparent = true
+    self.titleVisibility = .hidden
+    self.styleMask.insert(.fullSizeContentView)
 
     self.delegate = self
     super.awakeFromNib()

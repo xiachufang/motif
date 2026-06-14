@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/settings.dart';
+import '../platform/desktop_window.dart';
 import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
@@ -126,17 +127,46 @@ class _ModeToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    // On macOS the toolbar IS the (custom) title bar: inset the left to clear
+    // the traffic-light buttons, and let the empty area drag the window.
+    final customTitleBar = DesktopWindow.usesCustomTitleBar;
     return Material(
       color: c.surface,
       child: Container(
         height: 38,
-        padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
-        alignment: Alignment.centerLeft,
+        padding: EdgeInsets.only(
+          left: customTitleBar ? 78 : MotifSpacing.sm,
+          right: MotifSpacing.sm,
+        ),
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: c.border)),
         ),
-        child: _ModeSwitch(mode: mode, onChanged: onChanged),
+        child: Row(
+          children: [
+            _ModeSwitch(mode: mode, onChanged: onChanged),
+            Expanded(
+              child: customTitleBar
+                  ? const _WindowDragArea()
+                  : const SizedBox.shrink(),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// Fills the title-bar's empty space; a pointer-down there starts a window
+/// move (macOS custom title bar).
+class _WindowDragArea extends StatelessWidget {
+  const _WindowDragArea();
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => DesktopWindow.startDrag(),
+      child: const SizedBox.expand(),
     );
   }
 }

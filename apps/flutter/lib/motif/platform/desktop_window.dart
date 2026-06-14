@@ -53,4 +53,18 @@ abstract final class DesktopWindow {
 
   /// Start in the tray with no window shown. Called once at launch.
   static Future<void> hideAtLaunch() => hide();
+
+  /// Whether this platform uses a Flutter-drawn custom title bar (macOS, where
+  /// the window content extends into the title-bar band). The top toolbar must
+  /// then inset for the traffic lights and host a drag region.
+  static bool get usesCustomTitleBar => _isMac;
+
+  /// Begin a window-move drag from the custom title bar (macOS only). Call on
+  /// pointer-down over a draggable title-bar region. No-op elsewhere.
+  static Future<void> startDrag() async {
+    if (!_isMac) return;
+    try {
+      await _macChannel.invokeMethod('startDrag');
+    } catch (_) {}
+  }
 }
