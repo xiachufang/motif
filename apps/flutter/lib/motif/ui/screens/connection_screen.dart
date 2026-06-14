@@ -13,6 +13,7 @@ import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
+import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 
 /// Server list + management (mirrors ConnectionView).
@@ -24,6 +25,16 @@ class ConnectionScreen extends StatelessWidget {
     if (result == null || !result.connectAfterSave) return;
     if (!context.mounted) return;
     await _connectServer(context, app, result.server);
+  }
+
+  /// Pair a rendezvous server from a scanned/pasted `motif://pair` link, then
+  /// connect to it.
+  Future<void> _pairServer(BuildContext context, AppState app) async {
+    final id = await showRzvPairingSheet(context);
+    if (id == null || !context.mounted) return;
+    final server = app.serverById(id);
+    if (server == null) return;
+    await _connectServer(context, app, server);
   }
 
   Future<void> _connectServer(
@@ -93,10 +104,20 @@ class ConnectionScreen extends StatelessWidget {
             ],
             MotifSection(
               title: 'Servers',
-              headerTrailing: IconButton(
-                icon: const Icon(Icons.add),
-                tooltip: 'Add Server',
-                onPressed: () => unawaited(_addServer(context, app)),
+              headerTrailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.qr_code_2),
+                    tooltip: 'Pair with link',
+                    onPressed: () => unawaited(_pairServer(context, app)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Add Server',
+                    onPressed: () => unawaited(_addServer(context, app)),
+                  ),
+                ],
               ),
               children: servers.isEmpty
                   ? [
