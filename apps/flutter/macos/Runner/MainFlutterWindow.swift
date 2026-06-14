@@ -26,10 +26,10 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         self?.hideWindow()
         result(nil)
       case "startDrag":
-        // Drag the window from the Flutter custom title bar. Uses AppKit's
-        // window-drag helper with the in-flight mouse event.
+        // Drag the window from the Flutter custom title bar, using the
+        // in-flight mouse event.
         if let event = NSApp.currentEvent {
-          self?.perform(Selector(("performWindowDragWithEvent:")), with: event)
+          self?.performDrag(with: event)
         }
         result(nil)
       default:
