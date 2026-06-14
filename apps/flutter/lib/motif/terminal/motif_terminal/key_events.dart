@@ -35,73 +35,54 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     if (controlPressed) mods |= 2;
     if (altPressed) mods |= 4;
     if (metaPressed) mods |= 8;
-    final controlCode = logicalKeyControlCode(
-      event.logicalKey,
-      shift: shiftPressed,
-    );
-    if (!metaPressed &&
-        controlPressed &&
-        controlCode != null &&
-        (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
-            action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
-      _clearTerminalSelection();
-      _worker?.writeBytes(
-        Uint8List.fromList(altPressed ? [0x1b, controlCode] : [controlCode]),
-      );
-      return KeyEventResult.handled;
-    }
-    final text = switch (action) {
-      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
-      GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT => logicalKeyEventCharacter(
-        event.logicalKey,
-        event.character,
-        shift: shiftPressed,
-      ),
-      GhosttyKeyAction.GHOSTTY_KEY_ACTION_RELEASE => null,
-      GhosttyKeyAction.GHOSTTY_KEY_ACTION_MAX_VALUE => null,
-    };
-    if (!metaPressed &&
-        !controlPressed &&
-        text != null &&
-        isPrintableTerminalText(text) &&
-        (action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
-            action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT)) {
-      if (!altPressed && _textInputConnectionIsActive) {
-        return KeyEventResult.ignored;
-      }
-      _clearTerminalSelection();
-      final bytes = utf8.encode(text);
-      _worker?.writeBytes(
-        Uint8List.fromList(altPressed ? [0x1b, ...bytes] : bytes),
-      );
-      return KeyEventResult.handled;
-    }
-    // Enter is delivered twice when a text input connection is attached: once
-    // here (hardware-key path) and once as performAction(newline). Defer plain
-    // Enter to the text input — matching how printable text defers above — so
-    // it isn't sent as two carriage returns (the "double newline" bug on
-    // desktop / a tablet with a hardware keyboard). Modified Enter
-    // (ctrl/alt/meta) stays on the key path for its proper escape sequence.
-    final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
-        event.logicalKey == LogicalKeyboardKey.numpadEnter;
-    if (isEnter &&
-        _textInputConnectionIsActive &&
-        !controlPressed &&
-        !altPressed &&
-        !metaPressed) {
-      return KeyEventResult.ignored;
-    }
 
-    final ghosttyKey = mapFlutterKey(event.logicalKey);
-    if (ghosttyKey == null) return KeyEventResult.ignored;
-    _worker?.encodeKey(
-      key: ghosttyKey,
-      action: action,
-      mods: mods,
-      text: text,
-      unshiftedCodepoint: logicalKeyUnshiftedCodepoint(event.logicalKey),
+    final isPressOrRepeat =
+        action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS ||
+        action == GhosttyKeyAction.GHOSTTY_KEY_ACTION_REPEAT;
+    // Resolve the printable character once; reused for both the routing
+    // decision and the ghostty encoder. Releases carry no text.
+    final text = isPressOrRepeat
+        ? logicalKeyEventCharacter(
+            event.logicalKey,
+            event.character,
+            shift: shiftPressed,
+          )
+        : null;
+
+    // One place decides who owns this key (see terminal_input.dart). The key
+    // path emits control codes / printable text, defers plain text + plain
+    // Enter to the IME when a connection owns text, and otherwise hands special
+    // keys to the ghostty encoder.
+    final route = classifyTerminalKey(
+      logicalKey: event.logicalKey,
+      resolvedText: text,
+      shift: shiftPressed,
+      control: controlPressed,
+      alt: altPressed,
+      meta: metaPressed,
+      isPressOrRepeat: isPressOrRepeat,
+      textInputAttached: _textInputConnectionIsActive,
     );
-    return KeyEventResult.handled;
+    switch (route.kind) {
+      case TerminalKeyRouteKind.deferToTextInput:
+      case TerminalKeyRouteKind.ignore:
+        return KeyEventResult.ignored;
+      case TerminalKeyRouteKind.sendBytes:
+        _clearTerminalSelection();
+        _worker?.writeBytes(Uint8List.fromList(route.bytes!));
+        return KeyEventResult.handled;
+      case TerminalKeyRouteKind.encodeViaGhostty:
+        final ghosttyKey = mapFlutterKey(event.logicalKey);
+        if (ghosttyKey == null) return KeyEventResult.ignored;
+        _worker?.encodeKey(
+          key: ghosttyKey,
+          action: action,
+          mods: mods,
+          text: text,
+          unshiftedCodepoint: logicalKeyUnshiftedCodepoint(event.logicalKey),
+        );
+        return KeyEventResult.handled;
+    }
   }
 
   bool _handleClipboardShortcut(

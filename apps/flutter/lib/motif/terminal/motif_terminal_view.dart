@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 
 import 'ghostty_bindings.g.dart';
 import 'key_map.dart';
+import 'terminal_input.dart';
 import 'terminal_painter.dart';
 import '../log/log.dart';
 import '../state/motif_client.dart';

@@ -48,16 +48,13 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     if (mounted) setState(() {});
   }
 
-  bool get _usesSoftKeyboard =>
-      defaultTargetPlatform == TargetPlatform.iOS ||
-      defaultTargetPlatform == TargetPlatform.android;
+  /// Single source of truth for the desktop/mobile input split.
+  TerminalInputMode get _inputMode =>
+      terminalInputModeFor(defaultTargetPlatform);
 
-  bool get _usesTextInputClient =>
-      _usesSoftKeyboard ||
-      defaultTargetPlatform == TargetPlatform.macOS ||
-      defaultTargetPlatform == TargetPlatform.linux ||
-      defaultTargetPlatform == TargetPlatform.windows ||
-      defaultTargetPlatform == TargetPlatform.fuchsia;
+  bool get _usesSoftKeyboard => _inputMode.usesSoftKeyboard;
+
+  bool get _usesTextInputClient => _inputMode.attachesTextInput;
 
   bool get _textInputConnectionIsActive =>
       _textInputConnection?.attached ?? false;
