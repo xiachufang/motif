@@ -76,6 +76,22 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       );
       return KeyEventResult.handled;
     }
+    // Enter is delivered twice when a text input connection is attached: once
+    // here (hardware-key path) and once as performAction(newline). Defer plain
+    // Enter to the text input — matching how printable text defers above — so
+    // it isn't sent as two carriage returns (the "double newline" bug on
+    // desktop / a tablet with a hardware keyboard). Modified Enter
+    // (ctrl/alt/meta) stays on the key path for its proper escape sequence.
+    final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter;
+    if (isEnter &&
+        _textInputConnectionIsActive &&
+        !controlPressed &&
+        !altPressed &&
+        !metaPressed) {
+      return KeyEventResult.ignored;
+    }
+
     final ghosttyKey = mapFlutterKey(event.logicalKey);
     if (ghosttyKey == null) return KeyEventResult.ignored;
     _worker?.encodeKey(
