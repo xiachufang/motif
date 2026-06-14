@@ -30,7 +30,12 @@
 #   --tunnel           start `cloudflared tunnel --url http://127.0.0.1:PORT`
 #   --egress none      drop ALL container egress (default: restricted = block
 #                      metadata + RFC1918 only, allow public internet)
-#   --port N           host loopback port to publish (default 8080)
+#   --port N           host port to publish (default 8080)
+#   --bind ADDR        host interface to publish on (default 127.0.0.1). Use
+#                      0.0.0.0 for direct public exposure (open the port in your
+#                      firewall/security group yourself; the bearer token is the
+#                      only auth, and motifd speaks plaintext ws:// — fine only
+#                      if the client allows non-TLS, e.g. an iOS ATS exception).
 #   --image NAME       image tag (default motifd:review)
 #   --workspace-size   tmpfs size for /home/demo/work (default 128m)
 #
@@ -39,6 +44,7 @@ set -euo pipefail
 # ---- config ---------------------------------------------------------------
 IMAGE="motifd:review"
 PORT=8080
+BIND="127.0.0.1"         # host interface to publish on; 0.0.0.0 = public
 EGRESS="restricted"      # restricted | none
 WORKSPACE_SIZE="128m"
 DO_BUILD=0
@@ -53,9 +59,10 @@ while [ $# -gt 0 ]; do
         --tunnel) DO_TUNNEL=1 ;;
         --egress) EGRESS="${2:?}"; shift ;;
         --port) PORT="${2:?}"; shift ;;
+        --bind) BIND="${2:?}"; shift ;;
         --image) IMAGE="${2:?}"; shift ;;
         --workspace-size) WORKSPACE_SIZE="${2:?}"; shift ;;
-        -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
     shift
@@ -172,7 +179,7 @@ docker run -d --rm \
     --name "$CTR_NAME" \
     "${RUNTIME_ARGS[@]}" \
     --network "$NET_NAME" \
-    -p "127.0.0.1:${PORT}:8080" \
+    -p "${BIND}:${PORT}:8080" \
     --user 10001:10001 \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
@@ -224,7 +231,7 @@ cat >&2 <<EOF
   motifd review server is up.
 
   token:        $TOKEN
-  local:        ws://127.0.0.1:${PORT}   (motifd, plaintext — proxy this)
+  local:        ws://${BIND}:${PORT}
 EOF
 if [ -n "$PUBLIC_URL" ]; then
 cat >&2 <<EOF
@@ -238,12 +245,27 @@ cat >&2 <<EOF
   Add the server in the app, connect, open a terminal, browse files,
   and view the git diff. The server is a sandbox; no account is needed.
 EOF
+elif [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "localhost" ]; then
+# Direct public exposure, plaintext ws:// (no TLS). Best-effort public IP.
+PUB_IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+HOST_HINT="${PUB_IP:-<this-host-public-ip-or-domain>}"
+cat >&2 <<EOF
+  exposure:     direct, plaintext ws:// — open port ${PORT}/tcp in your
+                firewall/security group. The bearer token is the only auth.
+  connect:      ws://${HOST_HINT}:${PORT}        token above
+
+  ── paste into App Store review notes (requires the app's ATS to allow ws://) ──
+  This app is a client for a self-hosted dev server (motifd). To test:
+    Server URL:  ws://${HOST_HINT}:${PORT}
+    Token:       $TOKEN
+  Add the server in the app, connect, open a terminal, browse files,
+  and view the git diff. The server is a sandbox; no account is needed.
+EOF
 else
 cat >&2 <<EOF
-  next:         expose it with TLS, e.g.
-                  cloudflared tunnel --url http://127.0.0.1:${PORT}
-                then give the iOS app the wss:// URL + token above.
-                (or re-run with --tunnel)
+  next:         publish publicly with --bind 0.0.0.0 (plaintext ws://, open the
+                port yourself) or front it with TLS via --tunnel / a proxy, then
+                give the app the URL + token above.
 EOF
 fi
 cat >&2 <<EOF
