@@ -22,8 +22,10 @@ class MotifPairingPayload {
   /// 32-byte pairing secret. The rendezvous token is derived from this.
   final Uint8List psk;
 
-  /// `motifd`'s 32-byte ed25519 identity key. Optional in P1 (plaintext
-  /// bring-up); required in P2 to pin the E2E TLS session.
+  /// The end-to-end TLS pin: SHA-256 of `motifd`'s self-signed cert DER, present
+  /// iff motifd runs with `--rzv-tls`. The client verifies the presented cert by
+  /// `sha256(cert.der) == pubKey`. Absent for plaintext (trusted-relay) setups.
+  /// (Wire field is `pk`; it's a cert pin, not a public key.)
   final Uint8List? pubKey;
 
   /// Optional display name and instance id, for the UI.

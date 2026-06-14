@@ -102,12 +102,25 @@ renders as a QR (client scans it). One-time / short-lived.
 motif://pair?v=1
   &rzv=<relay host:port>      required
   &psk=<base64url 32 bytes>   required — pairing secret
-  &pk=<base64url 32 bytes>    optional in P1, required in P2 — motifd identity key
+  &pk=<base64url 32 bytes>    present iff motifd runs with end-to-end TLS —
+                              SHA-256 of motifd's self-signed cert DER (the pin)
   &name=<display name>        optional
   &id=<instance id>           optional
 ```
 
 `psk`/`pk` are base64url (URL-safe alphabet, padding optional).
+
+**End-to-end TLS (when `pk` is present).** motifd terminates a TLS handshake on
+its `accept` side of the relayed pipe using a persisted self-signed identity
+cert; the relay only forwards ciphertext. The client, after `PAIRED`, performs a
+TLS handshake to motifd and **pins** the presented leaf cert by checking
+`SHA-256(cert DER) == pk` from the QR (hostname verification is irrelevant and
+disabled). This defeats both the relay and anyone who squats the token: without
+motifd's actual cert the handshake the client accepts cannot be produced.
+Reference: `motif_server::rzv::load_or_create_identity` (Rust server),
+`crates/motif-net` `park_accept` TLS branch, and the pinning client in
+`crates/motif-net/tests/rzv_tls.rs`. When `pk` is absent, traffic is plaintext
+through the relay (bring-up / trusted-relay deployments).
 
 ## Lifecycle (P1)
 

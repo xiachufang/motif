@@ -24,6 +24,7 @@ async fn rzv_backend_pairs_and_pipes() {
             url: relay_addr.to_string(),
             token,
             pool: 2,
+            tls: None,
         }),
     })
     .await

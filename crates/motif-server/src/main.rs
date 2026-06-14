@@ -94,6 +94,13 @@ struct Args {
     #[arg(long, requires = "rzv_relay")]
     rzv_pool: Option<usize>,
 
+    /// Terminate end-to-end TLS over the relayed pipe using a persisted
+    /// self-signed identity, and advertise its pin in the pairing QR so the
+    /// client verifies motifd. The relay stays a blind byte pipe. Without this,
+    /// rzv traffic is plaintext through the relay.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_tls: bool,
+
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
     log: String,
@@ -189,9 +196,19 @@ async fn run() -> anyhow::Result<()> {
             // The wire token is derived one-way from the secret.
             let token = motif_server::rzv::derive_token(&psk);
 
+            // End-to-end TLS (optional): build/persist the identity and pin.
+            let psk_dir = motif_server::default_rzv_psk_path();
+            let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let identity = if args.rzv_tls {
+                Some(motif_server::rzv::load_or_create_identity(rzv_dir)?)
+            } else {
+                None
+            };
+            let pin = identity.as_ref().map(|id| id.cert_sha256);
+
             // Print the pairing QR/link for a client to scan.
             let name = motif_server::default_tailscale_hostname();
-            let uri = motif_server::rzv::pair_uri(&url, &psk, Some(&name));
+            let uri = motif_server::rzv::pair_uri(&url, &psk, pin.as_ref(), Some(&name));
             if let Some(qr) = motif_server::rzv::render_qr(&uri) {
                 println!("\n{qr}");
             }
@@ -201,6 +218,7 @@ async fn run() -> anyhow::Result<()> {
             if let Some(pool) = args.rzv_pool {
                 c.pool = pool;
             }
+            c.tls = identity.map(|id| id.server_config);
             Some(c)
         }
         None => None,

@@ -8,12 +8,67 @@
 //! Dart client (`RzvProtocol.deriveToken`) and `docs/rzv-protocol.md`.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::ServerConfig;
 use sha2::{Digest, Sha256};
 
 const TOKEN_INFO: &[u8] = b"motif-rzv-token-v1";
+
+/// motifd's persisted self-signed identity for rzv end-to-end TLS.
+pub struct RzvIdentity {
+    /// rustls server config used to terminate TLS on the relayed pipe.
+    pub server_config: Arc<ServerConfig>,
+    /// SHA-256 of the certificate DER — the pin the client carries in the QR
+    /// (`pk`) and checks the presented cert against.
+    pub cert_sha256: [u8; 32],
+}
+
+/// Load the persisted identity (cert.der + key.der under `dir`), or generate a
+/// fresh self-signed pair and persist it. Stable across restarts so the pin in
+/// the pairing QR keeps matching.
+pub fn load_or_create_identity(dir: &Path) -> anyhow::Result<RzvIdentity> {
+    let cert_path = dir.join("rzv_cert.der");
+    let key_path = dir.join("rzv_key.der");
+
+    let (cert_der, key_der) = match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+        (Ok(c), Ok(k)) if !c.is_empty() && !k.is_empty() => (c, k),
+        _ => {
+            let certified = rcgen::generate_simple_self_signed(vec!["motif-rzv".to_string()])
+                .map_err(|e| anyhow::anyhow!("generate self-signed cert: {e}"))?;
+            let cert_der = certified.cert.der().as_ref().to_vec();
+            let key_der = certified.key_pair.serialize_der();
+            std::fs::create_dir_all(dir).ok();
+            std::fs::write(&cert_path, &cert_der)
+                .map_err(|e| anyhow::anyhow!("write {}: {e}", cert_path.display()))?;
+            std::fs::write(&key_path, &key_der)
+                .map_err(|e| anyhow::anyhow!("write {}: {e}", key_path.display()))?;
+            (cert_der, key_der)
+        }
+    };
+
+    let mut cert_sha256 = [0u8; 32];
+    cert_sha256.copy_from_slice(&Sha256::digest(&cert_der));
+
+    let certs = vec![CertificateDer::from(cert_der)];
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+    let server_config = ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| anyhow::anyhow!("rustls protocol versions: {e}"))?
+    .with_no_client_auth()
+    .with_single_cert(certs, key)
+    .map_err(|e| anyhow::anyhow!("rustls server config: {e}"))?;
+
+    Ok(RzvIdentity {
+        server_config: Arc::new(server_config),
+        cert_sha256,
+    })
+}
 
 /// HKDF-SHA256 (RFC 5869) with an empty salt, L = 32 — the rzv token.
 pub fn derive_token(psk: &[u8; 32]) -> [u8; 32] {
@@ -26,11 +81,15 @@ pub fn derive_token(psk: &[u8; 32]) -> [u8; 32] {
     hmac_sha256(&prk, &info_ctr)
 }
 
-/// Build the `motif://pair` URI a client scans/pastes to learn where to meet,
-/// the pairing secret, and (later) the identity key to pin.
-pub fn pair_uri(relay: &str, psk: &[u8; 32], name: Option<&str>) -> String {
+/// Build the `motif://pair` URI a client scans/pastes to learn where to meet
+/// (`rzv`), the pairing secret (`psk`), and — when end-to-end TLS is on — the
+/// cert pin to verify motifd against (`pk` = SHA-256 of the cert DER).
+pub fn pair_uri(relay: &str, psk: &[u8; 32], pin: Option<&[u8; 32]>, name: Option<&str>) -> String {
     let psk_b64 = URL_SAFE_NO_PAD.encode(psk);
     let mut uri = format!("motif://pair?v=1&rzv={relay}&psk={psk_b64}");
+    if let Some(pin) = pin {
+        uri.push_str(&format!("&pk={}", URL_SAFE_NO_PAD.encode(pin)));
+    }
     if let Some(n) = name {
         // Names here are hostnames/identifiers — keep it simple, percent-encode
         // the few characters that would break the query.
@@ -136,9 +195,14 @@ mod tests {
     #[test]
     fn pair_uri_round_trips_shape() {
         let psk: [u8; 32] = [7u8; 32];
-        let uri = pair_uri("relay.example:9999", &psk, Some("studio"));
+        let uri = pair_uri("relay.example:9999", &psk, None, Some("studio"));
         assert!(uri.starts_with("motif://pair?v=1&rzv=relay.example:9999&psk="));
         assert!(uri.contains("&name=studio"));
-        assert!(!uri.contains('=') || uri.contains("psk=")); // sanity
+        assert!(!uri.contains("&pk="));
+
+        let pin: [u8; 32] = [9u8; 32];
+        let uri = pair_uri("r:1", &psk, Some(&pin), None);
+        assert!(uri.contains("&pk="));
+        assert!(!uri.contains("&name="));
     }
 }

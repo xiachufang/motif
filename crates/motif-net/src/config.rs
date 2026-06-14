@@ -3,7 +3,6 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-#[cfg(feature = "tailscale")]
 use std::sync::Arc;
 
 /// Where the server should accept connections. At least one of `tcp` /
@@ -33,14 +32,18 @@ pub struct TailscaleListenConfig {
 /// See `docs/rzv-protocol.md`.
 #[derive(Clone)]
 pub struct RzvListenConfig {
-    /// Relay address (`host:port`) to dial. Plaintext today — front the relay
-    /// with a TLS-terminating proxy.
+    /// Relay address (`host:port`) to dial. The relay sees only the (possibly
+    /// TLS-encrypted) byte pipe; it never terminates TLS itself.
     pub url: String,
-    /// The 32-byte rendezvous token (P1: the raw pairing secret).
+    /// The 32-byte rendezvous token (derived one-way from the pairing secret).
     pub token: [u8; 32],
     /// How many idle `accept` waiters to keep parked. ≥1; defaults to 2 via
     /// [`RzvListenConfig::new`].
     pub pool: usize,
+    /// When set, motifd terminates **end-to-end TLS** over the relayed pipe
+    /// using this server config (the relay stays a blind byte pipe; the client
+    /// pins motifd's cert). `None` = plaintext over the relay.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 impl RzvListenConfig {
@@ -49,6 +52,7 @@ impl RzvListenConfig {
             url: url.into(),
             token,
             pool: 2,
+            tls: None,
         }
     }
 }
@@ -60,6 +64,7 @@ impl std::fmt::Debug for RzvListenConfig {
             .field("url", &self.url)
             .field("token", &"<redacted>")
             .field("pool", &self.pool)
+            .field("tls", &self.tls.is_some())
             .finish()
     }
 }

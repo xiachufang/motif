@@ -215,11 +215,12 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
         let tx = tx.clone();
         let url = c.url.clone();
         let token = c.token;
+        let tls = c.tls.clone();
         pumps.push(tokio::spawn(async move {
             // Backoff only grows on repeated failures; reset after a success.
             let mut backoff = Duration::from_millis(250);
             loop {
-                match park_accept(&url, &token).await {
+                match park_accept(&url, &token, tls.clone()).await {
                     Ok(stream) => {
                         backoff = Duration::from_millis(250);
                         let addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -247,9 +248,15 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
 }
 
 /// Dial the relay, park as an `accept` waiter, and block until the relay pairs
-/// us (`PAIRED`). Answers `PING` keepalives with `PONG` while parked. Returns
-/// the now-transparent stream, ready for axum to serve over.
-async fn park_accept(url: &str, token: &[u8; 32]) -> io::Result<Stream> {
+/// us (`PAIRED`). Answers `PING` keepalives with `PONG` while parked. When
+/// `tls` is set, terminates end-to-end TLS over the now-transparent pipe before
+/// returning (the relay never sees plaintext); otherwise returns the plain
+/// stream. Either way the result is ready for axum to serve over.
+async fn park_accept(
+    url: &str,
+    token: &[u8; 32],
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+) -> io::Result<Stream> {
     let mut s = TcpStream::connect(url).await?;
 
     let mut hello = Vec::with_capacity(38);
@@ -279,7 +286,15 @@ async fn park_accept(url: &str, token: &[u8; 32]) -> io::Result<Stream> {
             }
         }
     }
-    Ok(Stream::from_tcp(s))
+
+    match tls {
+        Some(cfg) => {
+            let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
+            let tls_stream = acceptor.accept(s).await?;
+            Ok(Stream::from_tls(tls_stream))
+        }
+        None => Ok(Stream::from_tcp(s)),
+    }
 }
 
 async fn accept_rzv(o: Option<&mut RzvBackend>) -> io::Result<(Stream, SocketAddr)> {
