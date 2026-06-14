@@ -9,6 +9,7 @@
 /// library failed to load).
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -37,15 +38,22 @@ class TrayService {
       !kIsWeb && (Platform.isMacOS || Platform.isLinux || Platform.isWindows);
 
   /// Create the tray icon and start reflecting the embedded server's state.
-  void start() {
+  Future<void> start() async {
     final svc = _app.embeddedServer;
     if (!isSupported || svc == null || !svc.available) return;
     _svc = svc;
+    // Destroy any tray left over from a previous isolate (a hot restart) before
+    // creating a fresh one — otherwise the stale tray accumulates and clicking
+    // it invokes a deleted FFI callback (a crash). No-op on a cold launch.
+    await DesktopWindow.cleanupStaleTray();
     try {
-      _tray = na.TrayIcon()
+      final tray = na.TrayIcon()
         ..tooltip = 'Motif'
         ..contextMenuTrigger = na.ContextMenuTrigger.clicked;
-      _tray!.startEventListening();
+      tray.startEventListening();
+      _tray = tray;
+      // Remember this tray's native handle so the next isolate can clean it up.
+      unawaited(DesktopWindow.stashTrayHandle(tray.nativeHandle.address));
     } catch (_) {
       _tray = null;
       return;

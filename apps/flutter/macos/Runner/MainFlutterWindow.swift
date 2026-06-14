@@ -1,7 +1,20 @@
 import Cocoa
 import FlutterMacOS
 
+// C symbol from the linked cnativeapi library (the tray plugin's backend),
+// used to destroy a stale tray icon left over from a hot restart by its raw
+// native handle. Declared here so we don't need a bridging header.
+@_silgen_name("native_tray_icon_destroy")
+func native_tray_icon_destroy(_ trayIcon: UnsafeMutableRawPointer)
+
 class MainFlutterWindow: NSWindow, NSWindowDelegate {
+  // Native handle of the tray icon Dart created, stashed so that after a hot
+  // restart the new Dart isolate can destroy the stale native tray (whose FFI
+  // callbacks were deleted with the old isolate) before making a fresh one.
+  // The window survives hot restart, so this persists across it — but a cold
+  // launch starts with nil, which correctly means "nothing to clean up".
+  private var stashedTrayHandle: Int?
+
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -31,6 +44,20 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
         if let event = NSApp.currentEvent {
           self?.performDrag(with: event)
         }
+        result(nil)
+      case "stashTrayHandle":
+        self?.stashedTrayHandle = call.arguments as? Int
+        result(nil)
+      case "cleanupStaleTray":
+        // After a hot restart the previous isolate's native tray lingers with
+        // dangling FFI callbacks. Destroy it (the symbol is in the linked
+        // cnativeapi library) before the new isolate makes a fresh one. A cold
+        // launch has nothing stashed, so this is a no-op then.
+        if let h = self?.stashedTrayHandle,
+           let ptr = UnsafeMutableRawPointer(bitPattern: h) {
+          native_tray_icon_destroy(ptr)
+        }
+        self?.stashedTrayHandle = nil
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

@@ -67,4 +67,23 @@ abstract final class DesktopWindow {
       await _macChannel.invokeMethod('startDrag');
     } catch (_) {}
   }
+
+  /// Stash the tray icon's native handle in the (process-lifetime) native side
+  /// so the next isolate can clean it up after a hot restart. macOS only.
+  static Future<void> stashTrayHandle(int handle) async {
+    if (!_isMac) return;
+    try {
+      await _macChannel.invokeMethod('stashTrayHandle', handle);
+    } catch (_) {}
+  }
+
+  /// Destroy a tray icon left over from a previous isolate (a hot restart),
+  /// natively, before creating a fresh one. No-op on a cold launch (nothing is
+  /// stashed then) and on non-macOS.
+  static Future<void> cleanupStaleTray() async {
+    if (!_isMac) return;
+    try {
+      await _macChannel.invokeMethod('cleanupStaleTray');
+    } catch (_) {}
+  }
 }
