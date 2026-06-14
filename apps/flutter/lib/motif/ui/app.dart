@@ -28,6 +28,14 @@ class MotifApp extends StatelessWidget {
     final terminalTheme = context.select<AppState, TerminalThemeSetting>(
       (a) => a.terminalSettings.settings.theme,
     );
+    // With the desktop shell, the client lives under a nested Navigator that
+    // owns `motifRouteObserver` (so the session list still gets didPopNext). A
+    // RouteObserver can only be attached to one Navigator, so the root one
+    // drops it in that case. Without the shell, the client is on the root
+    // Navigator and keeps the observer.
+    final canServe = context.select<AppState, bool>(
+      (a) => a.embeddedServer?.available ?? false,
+    );
     return MaterialApp(
       title: 'Motif',
       debugShowCheckedModeBanner: false,
@@ -39,7 +47,7 @@ class MotifApp extends StatelessWidget {
         TerminalThemeSetting.system => ThemeMode.system,
       },
       navigatorKey: motifNavigatorKey,
-      navigatorObservers: [motifRouteObserver],
+      navigatorObservers: canServe ? const [] : [motifRouteObserver],
       home: const _HomeShell(),
     );
   }
