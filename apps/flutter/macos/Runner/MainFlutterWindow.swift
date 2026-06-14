@@ -33,6 +33,13 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     self.delegate = self
     super.awakeFromNib()
 
+    // Show the window on whatever Space (desktop) is currently active, instead
+    // of yanking the user back to the Space the window was last shown on. A
+    // plain window is bound to its home Space, so `makeKeyAndOrderFront` from a
+    // different Space would switch desktops; `.moveToActiveSpace` makes the
+    // window follow the user instead.
+    self.collectionBehavior = [.moveToActiveSpace]
+
     // Start hidden in the tray (no flash thanks to LSUIElement).
     self.orderOut(nil)
   }
