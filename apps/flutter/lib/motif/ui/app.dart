@@ -201,41 +201,40 @@ class _ModeSwitch extends StatelessWidget {
 
   Widget _seg(MotifColors c, IconData icon, String label, AppViewMode m) {
     final selected = mode == m;
-    // GestureDetector (not InkWell) so tapping doesn't flash an ink ripple over
-    // the title bar; the selected pill is the only feedback.
-    return Tooltip(
-      message: label,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => onChanged(m),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: selected ? c.background : Colors.transparent,
-              borderRadius: BorderRadius.circular(5),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  icon,
-                  size: 15,
-                  color: selected ? c.accent : c.textTertiary,
+    // No Tooltip: the segment already shows its label, and the tooltip's dark
+    // bubble flashes over the title bar on hover/click. GestureDetector (not
+    // InkWell) so there's no ink ripple either — the selected pill is the only
+    // feedback.
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onChanged(m),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: selected ? c.background : Colors.transparent,
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 15,
+                color: selected ? c.accent : c.textTertiary,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  color: selected ? c.textPrimary : c.textTertiary,
                 ),
-                const SizedBox(width: 5),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    color: selected ? c.textPrimary : c.textTertiary,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
