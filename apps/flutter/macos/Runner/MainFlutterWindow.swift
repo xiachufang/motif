@@ -37,22 +37,21 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       }
     }
 
+    self.delegate = self
+    super.awakeFromNib()
+
     // Custom title bar: extend the Flutter content into the title-bar band and
     // hide the system title, so the Client/Server switch toolbar can act as the
-    // title bar. The traffic-light buttons stay; the Flutter toolbar insets to
-    // clear them and drives dragging via the `startDrag` channel call.
+    // title bar. Set after super.awakeFromNib() so nib loading can't reset it.
     self.titlebarAppearsTransparent = true
     self.titleVisibility = .hidden
     self.styleMask.insert(.fullSizeContentView)
-    // Drop the system separator line under the title bar — the Flutter toolbar
-    // draws its own bottom border, and the native one can flash as content
-    // scrolls under it.
+    // Drop the system separator under the title bar — the Flutter toolbar draws
+    // its own bottom border, and the native one shows a shadow that flashes as
+    // content "scrolls under" the title bar on a view switch.
     if #available(macOS 11.0, *) {
       self.titlebarSeparatorStyle = .none
     }
-
-    self.delegate = self
-    super.awakeFromNib()
 
     // Show the window on whatever Space (desktop) is currently active, instead
     // of yanking the user back to the Space the window was last shown on. A
