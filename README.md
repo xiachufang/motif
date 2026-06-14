@@ -30,7 +30,8 @@ docs/                    architecture + protocol
 ├─ web-client.md         web SPA details
 ├─ shell-integration.md  prompt / command block markers (OSC 133 + 777)
 ├─ tailscale.md          tsnet wiring
-└─ ssh-tunnel.md         `motif-tui --via ssh://…`
+├─ ssh-tunnel.md         `motif-tui --via ssh://…`
+└─ review-server.md      hardened no-tailscale motifd for App Review (image + VPS deploy)
 ```
 
 ## Build
