@@ -116,6 +116,57 @@ void main() {
     expect(server.kind, ServerKind.tailscale);
   });
 
+  testWidgets('rendezvous server shows a safe read-only panel, not the form', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    const server = MotifServer(
+      id: 'srv-rzv',
+      name: 'Studio',
+      host: 'us.allsunday.io',
+      port: 8765,
+      scheme: 'https',
+      kind: ServerKind.rendezvous,
+      relay: 'us.allsunday.io:8765',
+      psk: 'AAA',
+      pubKey: 'BBB',
+    );
+    await app.servers.add(server);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet(existing: server)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The rendezvous panel: relay + encryption, no host/port/token/segments.
+    expect(find.text('Rendezvous Server'), findsOneWidget);
+    expect(find.text('us.allsunday.io:8765'), findsOneWidget);
+    expect(find.text('End-to-end encrypted (cert pinned)'), findsOneWidget);
+    expect(_fieldWithLabel('Host'), findsNothing);
+    expect(_fieldWithLabel('Port'), findsNothing);
+    expect(find.text('Tailscale'), findsNothing);
+
+    // Saving only updates the name; the kind/relay are never coerced.
+    await tester.enterText(_fieldWithLabel('Name'), 'Studio Mac');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.kind, ServerKind.rendezvous);
+    expect(saved.name, 'Studio Mac');
+    expect(saved.relay, 'us.allsunday.io:8765');
+    expect(saved.host, 'us.allsunday.io');
+    expect(saved.port, 8765);
+  });
+
   testWidgets('web hides Tailscale server options', (tester) async {
     if (!kIsWeb) return;
 

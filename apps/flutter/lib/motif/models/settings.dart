@@ -93,21 +93,49 @@ class MotifServer {
     if (pubKey.isNotEmpty) 'pubKey': pubKey,
   };
 
-  factory MotifServer.fromJson(Map<String, Object?> j) => MotifServer(
-    id: (j['id'] as String?) ?? '',
-    name: (j['name'] as String?) ?? '',
-    host: (j['host'] as String?) ?? '',
-    port: (j['port'] as num?)?.toInt() ?? 7777,
-    scheme: _normalizeScheme(j['scheme'] as String?),
-    token: (j['token'] as String?) ?? '',
-    kind: ServerKind.fromWire(j['kind']),
-    relay: (j['relay'] as String?) ?? '',
-    psk: (j['psk'] as String?) ?? '',
-    pubKey: (j['pubKey'] as String?) ?? '',
-  );
+  factory MotifServer.fromJson(Map<String, Object?> j) {
+    final kind = ServerKind.fromWire(j['kind']);
+    final relay = (j['relay'] as String?) ?? '';
+    var host = (j['host'] as String?) ?? '';
+    var port = (j['port'] as num?)?.toInt() ?? 7777;
+    // Heal legacy rendezvous records: an earlier version stored the whole relay
+    // string (with its port) in `host`, leaving `endpoint` as `h:port:port`.
+    // Re-derive a clean host/port from the relay endpoint.
+    if (kind == ServerKind.rendezvous && host.contains(':')) {
+      final hp = splitHostPort(relay.isNotEmpty ? relay : host);
+      if (hp != null) {
+        host = hp.$1;
+        port = hp.$2;
+      }
+    }
+    return MotifServer(
+      id: (j['id'] as String?) ?? '',
+      name: (j['name'] as String?) ?? '',
+      host: host,
+      port: port,
+      scheme: _normalizeScheme(j['scheme'] as String?),
+      token: (j['token'] as String?) ?? '',
+      kind: kind,
+      relay: relay,
+      psk: (j['psk'] as String?) ?? '',
+      pubKey: (j['pubKey'] as String?) ?? '',
+    );
+  }
 
   static String _normalizeScheme(String? value) =>
       value == 'https' ? 'https' : 'http';
+
+  /// Split a `host:port` endpoint. Returns null when it isn't a valid pair
+  /// (no colon, empty host, or an out-of-range/non-numeric port). Shared by
+  /// pairing (`toServer`) and the rendezvous transport resolver.
+  static (String, int)? splitHostPort(String s) {
+    final i = s.lastIndexOf(':');
+    if (i <= 0 || i == s.length - 1) return null;
+    final host = s.substring(0, i);
+    final port = int.tryParse(s.substring(i + 1));
+    if (port == null || port <= 0 || port > 65535) return null;
+    return (host, port);
+  }
 
   static String encodeList(List<MotifServer> servers) =>
       jsonEncode(servers.map((s) => s.toJson()).toList());

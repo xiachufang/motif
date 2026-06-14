@@ -215,9 +215,127 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     }
   }
 
+  Future<void> _saveRendezvousName() async {
+    final existing = widget.existing!;
+    if (_saving) return;
+    setState(() => _saving = true);
+    final name = _name.text.trim();
+    final updated = existing.copyWith(name: name.isEmpty ? existing.name : name);
+    await context.read<AppState>().servers.update(updated);
+    if (mounted) {
+      Navigator.of(context).pop(
+        ServerEditResult(server: updated, connectAfterSave: false),
+      );
+    }
+  }
+
+  Widget _buildRendezvous(BuildContext context, MotifServer server) {
+    final c = context.motif;
+    final pinned = server.pubKey.isNotEmpty;
+    return SafeArea(
+      top: false,
+      child: Column(
+        children: [
+          AdaptiveModalHeader(
+            title: 'Rendezvous Server',
+            actions: [
+              TextButton(
+                onPressed: _saving ? null : _saveRendezvousName,
+                child: Text(_saving ? 'Saving…' : 'Save'),
+              ),
+            ],
+          ),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.fromLTRB(
+                MotifSpacing.lg,
+                MotifSpacing.md,
+                MotifSpacing.lg,
+                MediaQuery.of(context).viewInsets.bottom + MotifSpacing.xl,
+              ),
+              children: [
+                MotifSection(
+                  title: 'Name',
+                  dividerIndent: MotifSpacing.lg,
+                  children: [_field(_name, 'Name', 'e.g. Studio Mac')],
+                ),
+                const SizedBox(height: MotifSpacing.xl),
+                MotifSection(
+                  title: 'Pairing',
+                  footer:
+                      'Reached through a rendezvous relay — both sides dial out '
+                      'and pair by a scanned link. Re-scan the pairing QR to '
+                      'change the relay or keys.',
+                  dividerIndent: MotifSpacing.lg,
+                  children: [
+                    _rzvInfoRow(c, Icons.hub_outlined, 'Relay', server.relay),
+                    _rzvInfoRow(
+                      c,
+                      pinned ? Icons.lock_outline : Icons.lock_open_outlined,
+                      'Encryption',
+                      pinned
+                          ? 'End-to-end encrypted (cert pinned)'
+                          : 'Plaintext through the relay',
+                      valueColor: pinned ? c.success : c.warning,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _rzvInfoRow(
+    MotifColors c,
+    IconData icon,
+    String label,
+    String value, {
+    Color? valueColor,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.sm,
+        vertical: MotifSpacing.sm,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: valueColor ?? c.textSecondary),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: TextStyle(color: c.textTertiary, fontSize: 12)),
+                const SizedBox(height: 2),
+                SelectableText(
+                  value,
+                  style: TextStyle(
+                    color: valueColor ?? c.textPrimary,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    // A rendezvous server has no host/port/token/transport to edit (it's reached
+    // through a relay via a scanned pairing link). Show a safe read-only panel
+    // instead of the Direct/Tailscale form, which can't represent it.
+    final existing = widget.existing;
+    if (existing != null && existing.kind == ServerKind.rendezvous) {
+      return _buildRendezvous(context, existing);
+    }
     final title = widget.existing == null
         ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
         : 'Edit Server';

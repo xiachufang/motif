@@ -139,7 +139,14 @@ enum ServerConnectionAction {
 
 enum ServerConnectionTone { neutral, accent, success, warning, danger }
 
-enum ServerConnectionIconKind { direct, tailscale, sync, warning, offline }
+enum ServerConnectionIconKind {
+  direct,
+  tailscale,
+  rendezvous,
+  sync,
+  warning,
+  offline,
+}
 
 class ServerConnectionViewState {
   final String statusLabel;
@@ -170,9 +177,11 @@ class ServerConnectionViewState {
     required MotifServer server,
     required ServerConnectionState state,
   }) {
-    final baseIcon = server.kind == ServerKind.tailscale
-        ? ServerConnectionIconKind.tailscale
-        : ServerConnectionIconKind.direct;
+    final baseIcon = switch (server.kind) {
+      ServerKind.tailscale => ServerConnectionIconKind.tailscale,
+      ServerKind.rendezvous => ServerConnectionIconKind.rendezvous,
+      ServerKind.direct => ServerConnectionIconKind.direct,
+    };
     return switch (state) {
       ServerIdle() => ServerConnectionViewState(
         statusLabel: 'Offline',

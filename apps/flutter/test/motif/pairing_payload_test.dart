@@ -90,7 +90,11 @@ void main() {
       expect(server.kind, ServerKind.rendezvous);
       expect(server.relay, 'relay:9999');
       expect(server.name, 'studio');
-      expect(server.host, 'inst-7');
+      // host/port are the relay endpoint, split cleanly — never the whole
+      // relay string with an embedded colon (which made `endpoint` garbage).
+      expect(server.host, 'relay');
+      expect(server.port, 9999);
+      expect(server.endpoint, 'relay:9999');
       expect(server.psk, isNotEmpty);
       expect(server.pubKey, isNotEmpty);
 
@@ -98,8 +102,27 @@ void main() {
       final back = MotifServer.fromJson(server.toJson());
       expect(back.kind, ServerKind.rendezvous);
       expect(back.relay, 'relay:9999');
+      expect(back.host, 'relay');
+      expect(back.port, 9999);
       expect(back.psk, server.psk);
       expect(back.pubKey, server.pubKey);
+    });
+
+    test('fromJson heals a legacy rendezvous record with relay in host', () {
+      // Older builds stored the whole relay (with its port) in `host`, leaving
+      // a default `port` — `endpoint` came out as `h:port:port`.
+      final back = MotifServer.fromJson({
+        'id': 'srv-legacy',
+        'name': 'old',
+        'host': 'us.allsunday.io:8765',
+        'port': 7777,
+        'kind': 'rendezvous',
+        'relay': 'us.allsunday.io:8765',
+        'psk': 'AAA',
+      });
+      expect(back.host, 'us.allsunday.io');
+      expect(back.port, 8765);
+      expect(back.endpoint, 'us.allsunday.io:8765');
     });
 
     test('direct server JSON omits empty rendezvous fields', () {

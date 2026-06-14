@@ -97,15 +97,21 @@ class MotifPairingPayload {
   /// Build a persistable [MotifServer] of `kind == rendezvous` from this
   /// scanned payload. Keys are re-encoded canonically (base64url, no padding)
   /// so the stored form is stable regardless of how the QR encoded them.
-  MotifServer toServer({required String id}) => MotifServer(
-        id: id,
-        name: (name == null || name!.isEmpty) ? relay : name!,
-        host: instanceId ?? relay,
-        kind: ServerKind.rendezvous,
-        relay: relay,
-        psk: _encodeKey(psk),
-        pubKey: pubKey == null ? '' : _encodeKey(pubKey!),
-      );
+  MotifServer toServer({required String id}) {
+    // Store a clean host/port (the relay endpoint) so `endpoint`/display are
+    // sensible; the rendezvous transport ignores them and dials `relay` anyway.
+    final hp = MotifServer.splitHostPort(relay);
+    return MotifServer(
+      id: id,
+      name: (name == null || name!.isEmpty) ? relay : name!,
+      host: hp?.$1 ?? relay,
+      port: hp?.$2 ?? 7777,
+      kind: ServerKind.rendezvous,
+      relay: relay,
+      psk: _encodeKey(psk),
+      pubKey: pubKey == null ? '' : _encodeKey(pubKey!),
+    );
+  }
 
   static Uint8List _decodeKey(String s, String field) {
     final Uint8List bytes;

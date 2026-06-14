@@ -358,6 +358,7 @@ IconData _iconForViewState(ServerConnectionViewState viewState) {
   return switch (viewState.icon) {
     ServerConnectionIconKind.direct => Icons.public,
     ServerConnectionIconKind.tailscale => Icons.hub_outlined,
+    ServerConnectionIconKind.rendezvous => Icons.cell_tower_outlined,
     ServerConnectionIconKind.sync => Icons.cloud_sync_outlined,
     ServerConnectionIconKind.warning => Icons.warning_rounded,
     ServerConnectionIconKind.offline => Icons.cloud_off_outlined,

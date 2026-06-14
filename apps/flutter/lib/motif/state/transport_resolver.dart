@@ -100,7 +100,7 @@ class TransportResolver {
   /// the relay, then connect to it as if it were a plain local server. The
   /// rest of the stack (RpcClient/WebSocket) is unaware of the rendezvous hop.
   Future<TransportResolution> _resolveRendezvous(MotifServer server) async {
-    final relay = _parseHostPort(server.relay);
+    final relay = MotifServer.splitHostPort(server.relay);
     if (relay == null) {
       return const TransportFailed(
         'rendezvous server has no valid relay address (expected host:port)',
@@ -161,15 +161,6 @@ class TransportResolver {
       proxy: ProxySettings.none,
       certPin: certPin,
     );
-  }
-
-  static (String, int)? _parseHostPort(String s) {
-    final i = s.lastIndexOf(':');
-    if (i <= 0 || i == s.length - 1) return null;
-    final host = s.substring(0, i);
-    final port = int.tryParse(s.substring(i + 1));
-    if (port == null || port <= 0 || port > 65535) return null;
-    return (host, port);
   }
 
   // The on-the-wire token is derived one-way from the 32-byte pairing secret
