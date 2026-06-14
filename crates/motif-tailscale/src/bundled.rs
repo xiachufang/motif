@@ -42,11 +42,14 @@ impl TsServer {
     pub fn new(opts: TsOptions) -> Result<Self, TsError> {
         let mut t = libtailscale::Tailscale::new();
 
-        // Capture tsnet's logs through a pipe so we can spot the
-        // `https://login.tailscale.com/...` URL on first-start auth and
-        // surface it via tracing + the shared `auth_url` cell.
+        // Capture tsnet's logs through a pipe so we can spot the device-auth
+        // URL on first-start auth and surface it via tracing + the shared
+        // `auth_url` cell. With a custom control server (Headscale) the URL is
+        // on that host, not login.tailscale.com, so pass its host to the
+        // scraper.
         let auth_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let log_task = wire_log_pipe(&mut t, Arc::clone(&auth_url))?;
+        let control_host = opts.control_url.as_deref().and_then(crate::host_of);
+        let log_task = wire_log_pipe(&mut t, Arc::clone(&auth_url), control_host)?;
 
         // Configuration must happen before `start`/`up`. libtailscale's
         // setters return Err on invalid input; we propagate as Native.
@@ -568,6 +571,7 @@ fn into_tokio_stream(s: std::net::TcpStream) -> Result<tokio::net::TcpStream, Ts
 fn wire_log_pipe(
     t: &mut libtailscale::Tailscale,
     auth_url: Arc<Mutex<Option<String>>>,
+    control_host: Option<String>,
 ) -> Result<tokio::task::JoinHandle<()>, TsError> {
     use std::os::unix::io::{FromRawFd, IntoRawFd, OwnedFd};
 
@@ -609,7 +613,7 @@ fn wire_log_pipe(
                     break;
                 }
             };
-            classify_tsnet_log(&line, &auth_url);
+            classify_tsnet_log(&line, &auth_url, control_host.as_deref());
         }
     });
     Ok(handle)
@@ -625,34 +629,21 @@ fn wire_log_pipe(
 ///     `LinkChange`, magicsock rebind / throttle, post-rebind DNS reapply,
 ///     netmon gateway-change notes, and netcheck-driven rebinds. These are
 ///     exactly what we want visible after a Mac sleep/wake or Wi-Fi switch.
-fn classify_tsnet_log(line: &str, auth_url: &Arc<Mutex<Option<String>>>) {
-    // Match the auth URL's `/a/` path specifically; generic mentions of the
-    // login host (e.g. transient network errors at shutdown) shouldn't get
-    // promoted to WARN.
-    if line.contains("login.tailscale.com/a/") {
-        if let Some(url) = extract_auth_url(line) {
-            *auth_url.lock().unwrap() = Some(url);
-        }
+fn classify_tsnet_log(
+    line: &str,
+    auth_url: &Arc<Mutex<Option<String>>>,
+    control_host: Option<&str>,
+) {
+    // A device-auth URL (official Tailscale, or the configured Headscale host)
+    // is the WARN-worthy signal; everything else is recovery chatter or debug.
+    if let Some(url) = crate::extract_auth_url(line, control_host) {
+        *auth_url.lock().unwrap() = Some(url);
         tracing::warn!(target: "motif_tailscale", "Tailscale auth needed: {}", line);
     } else if is_network_recovery_line(line) {
         tracing::info!(target: "motif_tailscale::tsnet", "{}", line);
     } else {
         tracing::debug!(target: "motif_tailscale::tsnet", "{}", line);
     }
-}
-
-/// Pull the device-auth URL token out of a tsnet log line. Anchors on the
-/// `login.tailscale.com/a/` substring, then widens to the surrounding
-/// whitespace-delimited token so the scheme (`https://`) is included.
-fn extract_auth_url(line: &str) -> Option<String> {
-    let idx = line.find("login.tailscale.com/a/")?;
-    let start = line[..idx]
-        .rfind(char::is_whitespace)
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    let rest = &line[start..];
-    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-    Some(rest[..end].to_string())
 }
 
 /// Heuristic: tsnet log lines that signal network recovery (post-sleep, Wi-Fi
@@ -711,28 +702,14 @@ fn set_cloexec(fd: &std::os::unix::io::OwnedFd) {
 fn wire_log_pipe(
     _t: &mut libtailscale::Tailscale,
     _auth_url: Arc<Mutex<Option<String>>>,
+    _control_host: Option<String>,
 ) -> Result<tokio::task::JoinHandle<()>, TsError> {
     Err(TsError::Native("log pipe capture is unix-only".into()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_auth_url, is_network_recovery_line};
-
-    #[test]
-    fn extracts_auth_url_with_scheme() {
-        let line = "To authenticate, visit: https://login.tailscale.com/a/abc123def now";
-        assert_eq!(
-            extract_auth_url(line).as_deref(),
-            Some("https://login.tailscale.com/a/abc123def")
-        );
-        // No scheme prefix: still grabs the whole token.
-        assert_eq!(
-            extract_auth_url("login.tailscale.com/a/xyz").as_deref(),
-            Some("login.tailscale.com/a/xyz")
-        );
-        assert_eq!(extract_auth_url("nothing here"), None);
-    }
+    use super::is_network_recovery_line;
 
     #[test]
     fn classifies_link_change_and_rebind_lines() {

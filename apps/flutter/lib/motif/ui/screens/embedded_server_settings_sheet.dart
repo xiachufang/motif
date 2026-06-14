@@ -14,6 +14,17 @@ import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 
+/// Which control plane the embedded node joins. Derived from `tsControlUrl`
+/// (empty ⇒ official Tailscale; set ⇒ a self-hosted Headscale URL), but held
+/// as explicit UI state so "Custom" can stay selected while its URL field is
+/// still blank.
+enum _TsControl { official, custom }
+
+/// How the node signs in. Derived from `tsAuthkey` (empty ⇒ interactive
+/// browser/URL login; set ⇒ headless pre-shared key), held as UI state for the
+/// same reason.
+enum _TsAuth { browser, authKey }
+
 class EmbeddedServerSettingsSheet extends StatefulWidget {
   const EmbeddedServerSettingsSheet({super.key});
 
@@ -31,6 +42,10 @@ class _EmbeddedServerSettingsSheetState
   late final TextEditingController _tsControlUrl;
   late final TextEditingController _rzvRelay;
 
+  // Derived UI state for the two Tailscale axes (see the enum docs above).
+  late _TsControl _tsControl;
+  late _TsAuth _tsAuth;
+
   EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
 
   @override
@@ -43,6 +58,9 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
     _rzvRelay = TextEditingController(text: c.rzvRelay);
+    _tsControl =
+        c.tsControlUrl.trim().isEmpty ? _TsControl.official : _TsControl.custom;
+    _tsAuth = c.tsAuthkey.trim().isEmpty ? _TsAuth.browser : _TsAuth.authKey;
   }
 
   @override
@@ -75,7 +93,7 @@ class _EmbeddedServerSettingsSheetState
         const SizedBox(height: MotifSpacing.xl),
         _authSection(cfg, c),
         const SizedBox(height: MotifSpacing.xl),
-        _tailscaleSection(cfg, c),
+        _tailscaleSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.xl),
         _rzvSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.xl),
@@ -146,14 +164,6 @@ class _EmbeddedServerSettingsSheetState
             leading: Icon(Icons.error_outline, color: c.danger),
             title: status.error!,
             titleColor: c.danger,
-          ),
-        if (status.authUrl != null)
-          MotifSectionRow(
-            leading: Icon(Icons.login, color: c.accent),
-            title: 'Sign in to Tailscale',
-            subtitle: status.authUrl,
-            onTap: () => openExternalUrl(status.authUrl!),
-            showChevron: true,
           ),
         Padding(
           padding: const EdgeInsets.all(MotifSpacing.md),
@@ -294,46 +304,151 @@ class _EmbeddedServerSettingsSheetState
 
   // ── Tailscale ──
 
-  Widget _tailscaleSection(EmbeddedServerConfig cfg, MotifColors c) {
-    return MotifSection(
-      title: 'Tailscale',
-      footer: 'Serve the embedded server over your tailnet, reachable from '
-          'anywhere without exposing a port.',
+  Widget _tailscaleSection(
+    EmbeddedServerConfig cfg,
+    EmbeddedServerStatus status,
+    MotifColors c,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        MotifSectionRow(
-          leading: Icon(Icons.hub_outlined, color: c.accent),
-          title: 'Enable Tailscale',
-          onTap: () => _save(cfg.copyWith(tsEnabled: !cfg.tsEnabled)),
-          trailing: Switch(
-            value: cfg.tsEnabled,
-            onChanged: (v) => _save(cfg.copyWith(tsEnabled: v)),
-          ),
+        MotifSection(
+          title: 'Tailscale',
+          footer: 'Serve the embedded server over your tailnet, reachable from '
+              'anywhere without exposing a port.',
+          children: [
+            MotifSectionRow(
+              leading: Icon(Icons.hub_outlined, color: c.accent),
+              title: 'Enable Tailscale',
+              onTap: () => _save(cfg.copyWith(tsEnabled: !cfg.tsEnabled)),
+              trailing: Switch(
+                value: cfg.tsEnabled,
+                onChanged: (v) => _save(cfg.copyWith(tsEnabled: v)),
+              ),
+            ),
+            if (cfg.tsEnabled)
+              _field(
+                _tsHostname,
+                'Hostname',
+                'defaults to motifd-<host>',
+                onChanged: () =>
+                    _save(cfg.copyWith(tsHostname: _tsHostname.text.trim())),
+              ),
+          ],
         ),
         if (cfg.tsEnabled) ...[
+          const SizedBox(height: MotifSpacing.xl),
+          _tsControlSection(cfg, c),
+          const SizedBox(height: MotifSpacing.xl),
+          _tsSignInSection(cfg, status, c),
+        ],
+      ],
+    );
+  }
+
+  // Which control plane the node joins: official Tailscale or a custom
+  // (Headscale) server. "Custom" simply means a non-empty control URL.
+  Widget _tsControlSection(EmbeddedServerConfig cfg, MotifColors c) {
+    return MotifSection(
+      title: 'Control server',
+      footer: 'Use Tailscale, or point at a self-hosted Headscale server.',
+      children: [
+        _tsRadio(
+          c,
+          selected: _tsControl == _TsControl.official,
+          title: 'Tailscale (official)',
+          subtitle: 'login.tailscale.com',
+          onTap: () {
+            _tsControlUrl.clear();
+            setState(() => _tsControl = _TsControl.official);
+            _save(cfg.copyWith(tsControlUrl: ''));
+          },
+        ),
+        _tsRadio(
+          c,
+          selected: _tsControl == _TsControl.custom,
+          title: 'Custom (Headscale)',
+          subtitle: 'self-hosted control server',
+          onTap: () => setState(() => _tsControl = _TsControl.custom),
+        ),
+        if (_tsControl == _TsControl.custom)
           _field(
-            _tsHostname,
-            'Hostname',
-            'defaults to motifd-<host>',
+            _tsControlUrl,
+            'Control URL',
+            'https://headscale.example.com',
             onChanged: () =>
-                _save(cfg.copyWith(tsHostname: _tsHostname.text.trim())),
+                _save(cfg.copyWith(tsControlUrl: _tsControlUrl.text.trim())),
           ),
+      ],
+    );
+  }
+
+  // How the node authenticates: an interactive browser URL, or a headless
+  // pre-shared auth key. "Auth key" simply means a non-empty key.
+  Widget _tsSignInSection(
+    EmbeddedServerConfig cfg,
+    EmbeddedServerStatus status,
+    MotifColors c,
+  ) {
+    return MotifSection(
+      title: 'Sign-in',
+      footer: 'Browser login opens a one-time URL after you start the server. '
+          'An auth key signs in headlessly — paste one from your admin console.',
+      children: [
+        _tsRadio(
+          c,
+          selected: _tsAuth == _TsAuth.browser,
+          title: 'Browser login',
+          subtitle: 'open a sign-in URL',
+          onTap: () {
+            _tsAuthkey.clear();
+            setState(() => _tsAuth = _TsAuth.browser);
+            _save(cfg.copyWith(tsAuthkey: ''));
+          },
+        ),
+        _tsRadio(
+          c,
+          selected: _tsAuth == _TsAuth.authKey,
+          title: 'Auth key',
+          subtitle: 'headless, no browser',
+          onTap: () => setState(() => _tsAuth = _TsAuth.authKey),
+        ),
+        if (_tsAuth == _TsAuth.authKey)
           _field(
             _tsAuthkey,
             'Auth key',
-            'optional — for headless login',
+            'tskey-…',
             obscure: true,
             onChanged: () =>
                 _save(cfg.copyWith(tsAuthkey: _tsAuthkey.text.trim())),
           ),
-          _field(
-            _tsControlUrl,
-            'Control URL',
-            'optional — Headscale base URL',
-            onChanged: () =>
-                _save(cfg.copyWith(tsControlUrl: _tsControlUrl.text.trim())),
+        if (_tsAuth == _TsAuth.browser && status.authUrl != null)
+          MotifSectionRow(
+            leading: Icon(Icons.login, color: c.accent),
+            title: 'Sign in to Tailscale',
+            subtitle: status.authUrl,
+            onTap: () => openExternalUrl(status.authUrl!),
+            showChevron: true,
           ),
-        ],
       ],
+    );
+  }
+
+  Widget _tsRadio(
+    MotifColors c, {
+    required bool selected,
+    required String title,
+    String? subtitle,
+    required VoidCallback onTap,
+  }) {
+    return MotifSectionRow(
+      leading: Icon(
+        selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+        color: selected ? c.accent : c.textTertiary,
+      ),
+      title: title,
+      subtitle: subtitle,
+      onTap: onTap,
     );
   }
 

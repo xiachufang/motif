@@ -51,6 +51,11 @@ struct EmbedState {
     /// `motif://pair` link for the current rzv-enabled run, surfaced to the
     /// host UI via the status snapshot. `None` when rzv is off or stopped.
     pairing_uri: Mutex<Option<String>>,
+    /// Custom Tailscale control URL (Headscale) for the current run, if set.
+    /// Used to recognize Headscale auth URLs in the log ring during startup
+    /// (they're on this host, not login.tailscale.com). `None` for official
+    /// Tailscale or when stopped.
+    ts_control_url: Mutex<Option<String>>,
 }
 
 static RT: OnceLock<Runtime> = OnceLock::new();
@@ -133,6 +138,12 @@ async fn do_start(cfg: MenuConfig) -> Result<(), String> {
     let server_cfg = built.server;
     // Surface the pairing link (if rzv is on) for the host's QR.
     *st.pairing_uri.lock().await = built.pairing_uri;
+    // Remember a custom (Headscale) control URL so the startup log-ring scrape
+    // can recognize its auth URL; empty/official → None.
+    *st.ts_control_url.lock().await = {
+        let cu = cfg.tailscale.control_url.trim();
+        (!cu.is_empty()).then(|| cu.to_string())
+    };
 
     // Run the (possibly long) bring-up off the command path.
     rt().spawn(async move {
@@ -167,6 +178,7 @@ async fn do_stop() -> Result<(), String> {
         std::mem::replace(&mut *s, ServerState::Stopped)
     };
     *st.pairing_uri.lock().await = None;
+    *st.ts_control_url.lock().await = None;
     if let ServerState::Running(rs) = taken {
         rs.shutdown().await.map_err(|e| format!("{e:#}"))?;
     }
@@ -183,14 +195,25 @@ async fn do_status() -> StatusDto {
             error: Some(e.clone()),
             ..StatusDto::default()
         },
-        ServerState::Starting => StatusDto {
-            starting: true,
+        ServerState::Starting => {
             // The server handle doesn't exist yet, so the login URL (if any)
-            // is read from the log ring.
-            auth_url: latest_auth_url(&st.log_ring),
-            pairing_uri: st.pairing_uri.lock().await.clone(),
-            ..StatusDto::default()
-        },
+            // is read from the log ring. Only the tailscale build can produce
+            // one.
+            #[cfg(feature = "tailscale")]
+            let auth_url = {
+                let cu = st.ts_control_url.lock().await.clone();
+                let host = cu.as_deref().and_then(motif_net::motif_tailscale::host_of);
+                latest_auth_url(&st.log_ring, host.as_deref())
+            };
+            #[cfg(not(feature = "tailscale"))]
+            let auth_url: Option<String> = None;
+            StatusDto {
+                starting: true,
+                auth_url,
+                pairing_uri: st.pairing_uri.lock().await.clone(),
+                ..StatusDto::default()
+            }
+        }
         ServerState::Running(r) => {
             let sessions: Vec<SessionDto> = r
                 .sessions()
@@ -208,9 +231,19 @@ async fn do_status() -> StatusDto {
             #[cfg(feature = "tailscale")]
             let (tailscale, auth_url) = {
                 let raw_ts = r.tailscale_status().await;
-                let auth_url = r
-                    .tailscale_auth_url()
-                    .or_else(|| raw_ts.as_ref().and_then(|s| s.auth_url.clone()));
+                // Surface the login URL only while the backend actually needs
+                // login. The log-scraped URL is sticky — it survives a
+                // completed login (and a LocalAPI hiccup that skips the
+                // clear-on-Running step), so gate on `backend_state` rather
+                // than trusting the cached cell. Otherwise a finished login
+                // keeps showing a dead "Sign in to Tailscale" row whose URL is
+                // already consumed.
+                let auth_url = raw_ts.as_ref().and_then(|s| {
+                    match s.backend_state.as_str() {
+                        "NeedsLogin" | "NeedsMachineAuth" => s.auth_url.clone(),
+                        _ => None,
+                    }
+                });
                 let tailscale = raw_ts.map(|s| TsStatusDto {
                     backend_state: s.backend_state,
                     peer_online: s.peer_online,
@@ -237,19 +270,16 @@ async fn do_status() -> StatusDto {
     }
 }
 
-/// Most recent tailscale device-auth URL seen in the log ring, if any.
-/// Ported from `commands::latest_auth_url`.
-fn latest_auth_url(ring: &LogRing) -> Option<String> {
-    ring.snapshot().iter().rev().find_map(|line| {
-        let idx = line.find("login.tailscale.com/a/")?;
-        let start = line[..idx]
-            .rfind(char::is_whitespace)
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let rest = &line[start..];
-        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        Some(rest[..end].to_string())
-    })
+/// Most recent device-auth URL seen in the log ring, if any. Shares the
+/// scraper with the live tsnet path so official Tailscale and a custom
+/// (Headscale) `control_host` are recognized identically.
+#[cfg(feature = "tailscale")]
+fn latest_auth_url(ring: &LogRing, control_host: Option<&str>) -> Option<String> {
+    use motif_net::motif_tailscale::extract_auth_url;
+    ring.snapshot()
+        .iter()
+        .rev()
+        .find_map(|line| extract_auth_url(line, control_host))
 }
 
 // ─────────────────────────── ABI helpers ───────────────────────────
@@ -324,6 +354,7 @@ pub unsafe extern "C" fn motif_embed_init(log_dir: *const c_char) -> c_int {
         log_ring,
         tsnet_dir,
         pairing_uri: Mutex::new(None),
+        ts_control_url: Mutex::new(None),
     });
     0
 }

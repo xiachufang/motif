@@ -18,6 +18,7 @@ import 'package:provider/provider.dart';
 import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
+import '../../platform/desktop_window.dart';
 import '../../platform/window_title.dart';
 import '../../state/app_state.dart';
 import '../../state/motif_client.dart';

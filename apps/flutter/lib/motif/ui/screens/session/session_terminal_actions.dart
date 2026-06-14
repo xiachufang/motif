@@ -45,7 +45,13 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         return true;
       }
       if (key == LogicalKeyboardKey.keyW) {
-        unawaited(_closeActiveTab());
+        // Close the active tab; on the last tab, hide the window instead so the
+        // close-window shortcut works in the session view too.
+        if (_motif.views.length <= 1) {
+          unawaited(DesktopWindow.hide());
+        } else {
+          unawaited(_closeActiveTab());
+        }
         return true;
       }
       if (key == LogicalKeyboardKey.pageUp) {

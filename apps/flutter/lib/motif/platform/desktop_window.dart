@@ -51,8 +51,11 @@ abstract final class DesktopWindow {
     } catch (_) {}
   }
 
-  /// Start in the tray with no window shown. Called once at launch.
-  static Future<void> hideAtLaunch() => hide();
+  /// Open the main window on launch (promoting to a regular, Dock-visible app
+  /// on macOS). Called once after the first frame so the window appears with
+  /// content already rendered rather than blank. The red close button still
+  /// drops it back to the tray.
+  static Future<void> showAtLaunch() => show();
 
   /// Whether this platform uses a Flutter-drawn custom title bar (macOS, where
   /// the window content extends into the title-bar band). The top toolbar must

@@ -1272,6 +1272,7 @@ name = "motif-embed"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "motif-net",
  "motif-server",
  "serde",
  "serde_json",

@@ -16,13 +16,18 @@ crate-type = ["cdylib", "rlib"]
 # tsnet (Go libtailscale); `--no-default-features` builds a desktop host with no
 # Tailscale at all. The status surface in src/lib.rs is `#[cfg]`-gated to match.
 default            = ["tailscale-bundled"]
-tailscale          = ["motif-server/tailscale"]
+# `motif-net` is pulled in (stub mode is enough) so we can name its
+# `motif_tailscale::{extract_auth_url, host_of}` helpers for the log-ring scrape.
+tailscale          = ["motif-server/tailscale", "dep:motif-net", "motif-net/tailscale"]
 tailscale-bundled  = ["tailscale", "motif-server/tailscale-bundled"]
 
 [dependencies]
 # default-features = false so this crate's own feature flags decide whether
 # motif-tailscale gets linked.
 motif-server = { path = "../motif-server", default-features = false }
+# Optional, tailscale-only: the auth-URL scraper helpers live at the
+# motif-tailscale crate root, re-exported via motif-net.
+motif-net = { path = "../motif-net", optional = true, default-features = false }
 
 tokio      = { workspace = true }
 serde      = { workspace = true }

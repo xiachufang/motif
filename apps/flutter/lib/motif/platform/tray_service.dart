@@ -25,9 +25,15 @@ class TrayService {
   final AppState _app;
 
   na.TrayIcon? _tray;
+  // The single context menu, created once and mutated in place. It is never
+  // reassigned (see _populateMenu for why).
+  na.Menu? _menu;
+  // Current menu items, retained so their click-event closures aren't GC'd.
+  final List<na.MenuItem> _items = [];
   EmbeddedServerService? _svc;
   EmbeddedRunState? _lastPhase;
   bool _lastHasLoopback = false;
+  bool _lastHasAuth = false;
   // nativeapi can deliver a menu-item click more than once for a single
   // selection on macOS; this collapses rapid repeats to one action.
   DateTime? _lastActionAt;
@@ -52,6 +58,11 @@ class TrayService {
         ..contextMenuTrigger = na.ContextMenuTrigger.clicked;
       tray.startEventListening();
       _tray = tray;
+      // Create the context menu once and bind it now. Everything after this
+      // mutates this same Menu object in place (see _populateMenu).
+      final menu = na.Menu();
+      _menu = menu;
+      tray.contextMenu = menu;
       // Remember this tray's native handle so the next isolate can clean it up.
       unawaited(DesktopWindow.stashTrayHandle(tray.nativeHandle.address));
     } catch (_) {
@@ -76,14 +87,19 @@ class TrayService {
     if (tray == null || svc == null) return;
     final phase = svc.status.phase;
     final hasLoopback = svc.status.loopbackEndpoint != null;
-    if (!force && phase == _lastPhase && hasLoopback == _lastHasLoopback) {
+    final hasAuth = svc.status.authUrl != null;
+    if (!force &&
+        phase == _lastPhase &&
+        hasLoopback == _lastHasLoopback &&
+        hasAuth == _lastHasAuth) {
       return;
     }
     _lastPhase = phase;
     _lastHasLoopback = hasLoopback;
+    _lastHasAuth = hasAuth;
     _applyIcon(tray, phase);
     tray.tooltip = 'Motif — ${_phaseLabel(phase)}';
-    tray.contextMenu = _buildMenu(svc);
+    _populateMenu(svc);
   }
 
   void _applyIcon(na.TrayIcon tray, EmbeddedRunState phase) {
@@ -115,36 +131,50 @@ class TrayService {
     EmbeddedRunState.stopped => 'Stopped',
   };
 
-  na.Menu _buildMenu(EmbeddedServerService svc) {
+  /// Repopulate the existing context menu *in place*. We never reassign
+  /// `tray.contextMenu` after the initial bind: on macOS, `set_context_menu`
+  /// detaches the close-listener nativeapi uses to reset the status item's
+  /// native menu, so a menu swapped from inside a click handler leaves the old
+  /// menu attached — and macOS keeps showing it (stale) on the next open.
+  /// Mutating the same Menu object avoids that path entirely.
+  void _populateMenu(EmbeddedServerService svc) {
+    final menu = _menu;
+    if (menu == null) return;
+    while (menu.itemCount > 0) {
+      menu.removeItemAt(0);
+    }
+    _items.clear();
+
     final status = svc.status;
     final running = status.running;
     final starting = status.starting;
-    final menu = na.Menu();
+
+    void add(na.MenuItem item) {
+      _items.add(item);
+      menu.addItem(item);
+    }
 
     if (running || starting) {
-      menu.addItem(_item('Stop Server', () => svc.stop()));
+      add(_item('Stop Server', () => svc.stop()));
     } else {
-      menu.addItem(_item('Start Server', () => svc.start()));
+      add(_item('Start Server', () => svc.start()));
     }
 
     if (running && status.loopbackEndpoint != null) {
       menu.addSeparator();
-      menu.addItem(_item('Open in Browser…', () => _openWebUi(svc)));
+      add(_item('Open in Browser…', () => _openWebUi(svc)));
     }
     if (status.authUrl != null) {
-      menu.addItem(
-        _item('Sign in to Tailscale…', () {
-          openExternalUrl(status.authUrl!);
-        }),
-      );
+      add(_item('Sign in to Tailscale…', () => openExternalUrl(status.authUrl!)));
     }
 
     menu.addSeparator();
-    menu.addItem(_item('Show Motif', () => _showView(AppViewMode.client)));
-    menu.addItem(_item('Server Settings', () => _showView(AppViewMode.server)));
+    // Match the in-app Client/Server switch (lib/motif/ui/app.dart): each opens
+    // the window on that view.
+    add(_item('Open Client', () => _showView(AppViewMode.client)));
+    add(_item('Open Server', () => _showView(AppViewMode.server)));
     menu.addSeparator();
-    menu.addItem(_item('Quit Motif', _quit));
-    return menu;
+    add(_item('Quit Motif', _quit));
   }
 
   na.MenuItem _item(String label, VoidCallback onTap) {
@@ -158,7 +188,10 @@ class TrayService {
         return; // duplicate click event for the same selection — ignore.
       }
       _lastActionAt = now;
-      onTap();
+      // Defer until the menu has closed: the action can change server state and
+      // repopulate the menu (_populateMenu), and we'd rather not mutate the
+      // items of a menu that's still on screen mid-dismiss.
+      Future.delayed(const Duration(milliseconds: 50), onTap);
     });
     return item;
   }

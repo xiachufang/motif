@@ -64,13 +64,13 @@ Future<void> main() async {
         ),
       );
 
-      // Desktop: live in the tray (start the embedded-server tray control and
-      // start hidden, accessory-style). No-op when the embedded server isn't
-      // available, so the window stays shown on platforms without it.
+      // Desktop: start the embedded-server tray control and open the window on
+      // launch (the red close button drops it back to the tray). No-op when the
+      // embedded server isn't available, so the window stays shown anyway.
       if (TrayService.isSupported && (appState.embeddedServer?.available ?? false)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           unawaited(TrayService(appState).start());
-          unawaited(DesktopWindow.hideAtLaunch());
+          unawaited(DesktopWindow.showAtLaunch());
         });
       }
     },

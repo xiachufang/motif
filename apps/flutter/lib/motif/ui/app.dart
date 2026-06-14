@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../models/settings.dart';
@@ -49,9 +51,24 @@ class MotifApp extends StatelessWidget {
       },
       navigatorKey: motifNavigatorKey,
       navigatorObservers: canServe ? const [] : [motifRouteObserver],
-      home: const _HomeShell(),
+      // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
+      // terminal's own handler claims ⌘W first (close tab) — this only fires on
+      // the screens that don't, plus the session view's last-tab fallback.
+      home: CallbackShortcuts(
+        bindings: _closeWindowShortcuts,
+        child: const _HomeShell(),
+      ),
     );
   }
+}
+
+/// Platform-appropriate "close window" binding: ⌘W on macOS, ⌃W elsewhere.
+Map<ShortcutActivator, VoidCallback> get _closeWindowShortcuts {
+  final isMac = defaultTargetPlatform == TargetPlatform.macOS;
+  return {
+    SingleActivator(LogicalKeyboardKey.keyW, meta: isMac, control: !isMac): () =>
+        unawaited(DesktopWindow.hide()),
+  };
 }
 
 /// Top-level desktop shell. When this machine can run an embedded server, a
