@@ -25,9 +25,16 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8765")]
     listen: String,
 
-    /// Drop parked (unpaired) connections idle longer than this many seconds.
-    #[arg(long, default_value_t = 300)]
+    /// Backstop: drop a parked (unpaired) connection after this many seconds.
+    /// Keepalive keeps healthy parks alive, so this only reaps abandoned ones.
+    #[arg(long, default_value_t = 3600)]
     park_ttl_secs: u64,
+
+    /// PING a parked waiter every this many seconds (and once the instant it
+    /// parks) so NATs / proxies don't reap the idle connection before it pairs.
+    /// `0` disables keepalive.
+    #[arg(long, default_value_t = 15)]
+    keepalive_secs: u64,
 }
 
 #[derive(Subcommand)]
@@ -72,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
 
     let hub = Hub::new(HubConfig {
         park_ttl: Duration::from_secs(args.park_ttl_secs),
+        keepalive: Duration::from_secs(args.keepalive_secs),
     });
     hub.run(listener).await;
     Ok(())

@@ -53,8 +53,14 @@ cargo build --release -p motif-rendezvous
 ./target/release/motif-rendezvous --listen 0.0.0.0:8765
 ```
 
-Flags: `--listen <addr>` (default `127.0.0.1:8765`) and `--park-ttl-secs <n>`
-(default 300 — how long an unpaired waiter is held before it's dropped).
+Flags:
+- `--listen <addr>` (default `127.0.0.1:8765`).
+- `--keepalive-secs <n>` (default 15, `0` disables) — how often to PING a parked
+  waiter (plus one PING the instant it parks) so NATs / proxies on its path
+  don't reap the idle connection before it pairs. Lower it if a particularly
+  aggressive middlebox still cuts idle parks.
+- `--park-ttl-secs <n>` (default 3600) — backstop drop of an abandoned, unpaired
+  waiter. Keepalive keeps healthy parks alive, so this rarely fires.
 
 ## systemd (binary on a host)
 

@@ -56,6 +56,24 @@ These are valid **only** in the pre-pairing window:
 0x20  HEALTH_OK relay → health  (reply to a role = health HELLO, then close)
 ```
 
+### Keepalive
+
+While a waiter is parked (no partner yet), the relay sends `PING` (`0x01`) once
+the instant it parks — so a proxy that resets a connection whose server stays
+silent sees the server "speak" immediately — and then every keepalive interval
+(`--keepalive-secs`, default 15s). The waiter answers each with `PONG` (`0x02`).
+This keeps the idle connection active so NATs / L7 proxies / load balancers on
+the waiter's path don't reap it before it pairs. Both `motifd`
+(`crates/motif-net/src/listener.rs`) and the Dart client
+(`apps/flutter/lib/motif/net/rzv/rzv_forwarder_io.dart`) already answer `PONG`.
+
+At pairing the relay stops pinging and **drains any `PONG` still owed** for
+PINGs it already sent before it starts copying bytes, so no stray `0x02` leaks
+into the transparent stream. (Only the parked socket carries this chatter; the
+second party found a waiter and never parked, so its stream is clean.)
+
+### Pairing
+
 When two opposite-role connections with the same token are present, the relay
 sends `PAIRED` (`0x10`) to **both** and from then on copies bytes verbatim in
 both directions. **After `PAIRED`, no control bytes exist** — every byte is

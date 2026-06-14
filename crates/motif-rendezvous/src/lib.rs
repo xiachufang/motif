@@ -33,6 +33,13 @@ pub const ROLE_CONNECT: u8 = 1;
 /// it is never parked or paired, so it leaves no state behind.
 pub const ROLE_HEALTH: u8 = 2;
 
+/// Relay → a parked waiter: a keepalive so middleboxes (NAT, L7 proxies, load
+/// balancers) on the waiter's path don't reap the idle connection before it is
+/// paired. The waiter answers with [`CTRL_PONG`]; both motifd and the Dart
+/// client already do.
+pub const CTRL_PING: u8 = 0x01;
+/// Waiter → relay: the keepalive reply. The relay drains these before splicing.
+pub const CTRL_PONG: u8 = 0x02;
 /// Sent to both sides at pairing; after it the stream is transparent.
 pub const CTRL_PAIRED: u8 = 0x10;
 /// Reply to a [`ROLE_HEALTH`] HELLO: the relay's event loop and HELLO parser
@@ -48,15 +55,19 @@ pub type Token = [u8; TOKEN_LEN];
 /// How long a HELLO is allowed to take before we drop the connection.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct Parked {
-    stream: TcpStream,
+/// A parked waiter. The parking task owns the actual `TcpStream` (it keepalives
+/// it while waiting); to pair, the opposite-role handler hands *its* stream over
+/// this channel, and the parking task splices the two. `tx.is_closed()` becomes
+/// true the moment the parking task gives up, so the reaper can prune it.
+struct Waiter {
+    tx: tokio::sync::oneshot::Sender<TcpStream>,
     since: Instant,
 }
 
 #[derive(Default)]
 struct Waiters {
-    accepts: VecDeque<Parked>,
-    connects: VecDeque<Parked>,
+    accepts: VecDeque<Waiter>,
+    connects: VecDeque<Waiter>,
 }
 
 impl Waiters {
@@ -66,14 +77,19 @@ impl Waiters {
 }
 
 pub struct HubConfig {
-    /// Drop a parked (unpaired) connection after it has waited this long.
+    /// Drop a parked (unpaired) connection after it has waited this long. With
+    /// keepalive on, healthy parks self-maintain, so this is a long backstop.
     pub park_ttl: Duration,
+    /// How often to PING a parked waiter (plus one PING the instant it parks).
+    /// `Duration::ZERO` disables keepalive.
+    pub keepalive: Duration,
 }
 
 impl Default for HubConfig {
     fn default() -> Self {
         Self {
-            park_ttl: Duration::from_secs(300),
+            park_ttl: Duration::from_secs(3600),
+            keepalive: Duration::from_secs(15),
         }
     }
 }
@@ -82,6 +98,7 @@ impl Default for HubConfig {
 pub struct Hub {
     inner: Mutex<HashMap<Token, Waiters>>,
     park_ttl: Duration,
+    keepalive: Duration,
 }
 
 impl Hub {
@@ -89,6 +106,7 @@ impl Hub {
         Arc::new(Self {
             inner: Mutex::new(HashMap::new()),
             park_ttl: cfg.park_ttl,
+            keepalive: cfg.keepalive,
         })
     }
 
@@ -128,42 +146,55 @@ impl Hub {
             return Ok(());
         }
 
-        // Pop an opposite-role waiter or park self — both under one lock so a
-        // simultaneous accept+connect can't each miss the other and deadlock.
-        let mut stream = Some(stream);
-        let partner: Option<TcpStream> = {
+        // Either pair with an opposite-role waiter that's already parked, or
+        // park ourselves. We hand our stream to the parked task (which owns the
+        // splice) rather than taking its stream, because that task is busy
+        // keepaliving its connection and can't relinquish it mid-`select!`.
+        //
+        // `rx` is `Some` only when we parked: drive the keepalive loop with it.
+        let rx = {
             let mut map = self.inner.lock();
             let w = map.entry(token).or_default();
             let opposite = if role == ROLE_ACCEPT {
-                w.connects.pop_front()
+                &mut w.connects
             } else {
-                w.accepts.pop_front()
+                &mut w.accepts
             };
-            match opposite {
-                Some(p) => {
+            // Hand off to the first *live* parked waiter; a `send` that errors
+            // means that task already gave up, so skip it and try the next.
+            let mut handed = Some(stream);
+            while let Some(waiter) = opposite.pop_front() {
+                match waiter.tx.send(handed.take().expect("stream present")) {
+                    Ok(()) => break,                 // paired — parked task splices
+                    Err(returned) => handed = Some(returned), // dead waiter; retry
+                }
+            }
+            match handed {
+                None => {
                     if w.is_empty() {
                         map.remove(&token);
                     }
-                    Some(p.stream)
+                    None // paired
                 }
-                None => {
-                    let parked = Parked {
-                        stream: stream.take().expect("stream present"),
-                        since: Instant::now(),
-                    };
-                    if role == ROLE_ACCEPT {
-                        w.accepts.push_back(parked);
+                Some(s) => {
+                    // No live partner: park ourselves and keepalive until paired.
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let q = if role == ROLE_ACCEPT {
+                        &mut w.accepts
                     } else {
-                        w.connects.push_back(parked);
-                    }
-                    None
+                        &mut w.connects
+                    };
+                    q.push_back(Waiter {
+                        tx,
+                        since: Instant::now(),
+                    });
+                    Some((s, rx))
                 }
             }
         };
 
-        if let Some(partner) = partner {
-            let me = stream.take().expect("stream present");
-            splice(me, partner).await;
+        if let Some((stream, rx)) = rx {
+            park_and_keepalive(stream, rx, self.keepalive).await;
         }
         Ok(())
     }
@@ -176,8 +207,12 @@ impl Hub {
             let ttl = self.park_ttl;
             let mut map = self.inner.lock();
             map.retain(|_tok, w| {
-                w.accepts.retain(|p| now.duration_since(p.since) < ttl);
-                w.connects.retain(|p| now.duration_since(p.since) < ttl);
+                // Drop waiters whose task has exited (`tx` closed) or that have
+                // outlived the TTL backstop. Dropping a live `tx` here makes its
+                // parking task's `rx` resolve to `Err`, so it closes its socket.
+                let keep = |p: &Waiter| !p.tx.is_closed() && now.duration_since(p.since) < ttl;
+                w.accepts.retain(keep);
+                w.connects.retain(keep);
                 !w.is_empty()
             });
         }
@@ -236,6 +271,82 @@ pub async fn health_check(addr: &str, timeout: Duration) -> anyhow::Result<()> {
     .map_err(|_| anyhow::anyhow!("health probe timed out after {timeout:?}"))?
 }
 
+/// Own a parked connection until it pairs. While waiting, PING it periodically
+/// (and once immediately) so middleboxes keep the idle connection alive, and
+/// drain the waiter's PONG replies. When the opposite-role handler hands us its
+/// stream over `rx`, drain any in-flight PONG, then splice the two — so no stray
+/// `0x02` leaks into the now-transparent stream.
+async fn park_and_keepalive(
+    stream: TcpStream,
+    mut rx: tokio::sync::oneshot::Receiver<TcpStream>,
+    keepalive: Duration,
+) {
+    let ping_enabled = !keepalive.is_zero();
+    let (mut rd, mut wr) = stream.into_split();
+    let mut buf = [0u8; 64];
+    let mut pings_sent: u64 = 0;
+    let mut pongs_read: u64 = 0;
+
+    // Speak first: a single PING right away satisfies proxies that reset a
+    // connection whose server stays silent for the first few seconds.
+    if ping_enabled {
+        if wr.write_all(&[CTRL_PING]).await.is_err() {
+            return;
+        }
+        pings_sent += 1;
+    }
+
+    let mut tick = tokio::time::interval(if ping_enabled {
+        keepalive
+    } else {
+        Duration::from_secs(3600)
+    });
+    tick.tick().await; // the first tick fires immediately — already pinged above
+
+    let partner = loop {
+        tokio::select! {
+            _ = tick.tick(), if ping_enabled => {
+                if wr.write_all(&[CTRL_PING]).await.is_err() {
+                    return; // peer gone
+                }
+                pings_sent += 1;
+            }
+            r = rd.read(&mut buf) => match r {
+                Ok(0) | Err(_) => return, // peer closed while parked
+                Ok(n) => pongs_read += count_pongs(&buf[..n]),
+            },
+            p = &mut rx => match p {
+                Ok(partner) => break partner,
+                Err(_) => return, // reaper pruned us (TTL) or hub dropped
+            },
+        }
+    };
+
+    // Consume PONGs still owed for PINGs we sent, so copy_bidirectional doesn't
+    // forward a leftover 0x02 to the partner. Bounded so a silent peer can't
+    // wedge the splice.
+    if ping_enabled && pongs_read < pings_sent {
+        let drain = async {
+            while pongs_read < pings_sent {
+                match rd.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => pongs_read += count_pongs(&buf[..n]),
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
+    }
+
+    // The halves come from the same stream, so reunite never errors.
+    if let Ok(stream) = rd.reunite(wr) {
+        splice(stream, partner).await;
+    }
+}
+
+fn count_pongs(bytes: &[u8]) -> u64 {
+    bytes.iter().filter(|&&b| b == CTRL_PONG).count() as u64
+}
+
 /// Signal both sides, then pipe bytes until either closes.
 async fn splice(mut a: TcpStream, mut b: TcpStream) {
     if let Err(e) = async {
@@ -260,14 +371,23 @@ async fn splice(mut a: TcpStream, mut b: TcpStream) {
 mod tests {
     use super::*;
 
-    async fn start_hub() -> std::net::SocketAddr {
+    async fn spawn_hub(keepalive: Duration) -> (std::net::SocketAddr, Arc<Hub>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // Long TTL so the (30s-tick) reaper never fires mid-test.
         let hub = Hub::new(HubConfig {
-            park_ttl: Duration::from_millis(300),
+            park_ttl: Duration::from_secs(30),
+            keepalive,
         });
+        let handle = Arc::clone(&hub);
         tokio::spawn(hub.run(listener));
-        addr
+        (addr, handle)
+    }
+
+    /// Most tests don't care about keepalive; default it off so a parked waiter
+    /// emits no PING noise.
+    async fn start_hub() -> std::net::SocketAddr {
+        spawn_hub(Duration::ZERO).await.0
     }
 
     fn hello(role: u8, token: &Token) -> Vec<u8> {
@@ -338,13 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_probe_replies_and_parks_nothing() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let hub = Hub::new(HubConfig {
-            park_ttl: Duration::from_millis(300),
-        });
-        let hub2 = Arc::clone(&hub);
-        tokio::spawn(hub.run(listener));
+        let (addr, hub) = spawn_hub(Duration::ZERO).await;
 
         // The high-level helper succeeds against a live relay.
         health_check(&addr.to_string(), Duration::from_secs(2))
@@ -352,7 +466,85 @@ mod tests {
             .unwrap();
 
         // And it left no parked state behind.
-        assert_eq!(hub2.parked_tokens(), 0, "health probe must not park");
+        assert_eq!(hub.parked_tokens(), 0, "health probe must not park");
+    }
+
+    #[tokio::test]
+    async fn relay_pings_a_lone_park() {
+        let (addr, hub) = spawn_hub(Duration::from_millis(40)).await;
+        let token = [9u8; TOKEN_LEN];
+
+        let mut acc = TcpStream::connect(addr).await.unwrap();
+        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
+
+        // The relay speaks first: a parked, partnerless waiter still gets a PING
+        // so a middlebox doesn't reap the idle connection.
+        assert_eq!(read_byte(&mut acc).await, CTRL_PING);
+        assert_eq!(hub.parked_tokens(), 1, "the waiter stays parked");
+    }
+
+    #[tokio::test]
+    async fn keepalive_park_pairs_without_leaking_pong() {
+        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
+        let token = [5u8; TOKEN_LEN];
+
+        // Emulate motifd: park an accept and answer PINGs with PONGs in real
+        // time. Once paired, verify the client's bytes arrive EXACTLY — a leaked
+        // PONG would corrupt the now-transparent stream.
+        let mut acc = TcpStream::connect(addr).await.unwrap();
+        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
+        let acc_task = tokio::spawn(async move {
+            loop {
+                match read_byte(&mut acc).await {
+                    CTRL_PAIRED => break,
+                    CTRL_PING => acc.write_all(&[CTRL_PONG]).await.unwrap(),
+                    b => panic!("acc: unexpected pre-pair byte {b:#04x}"),
+                }
+            }
+            let mut buf = [0u8; 5];
+            acc.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"hello", "client->server payload corrupted");
+            acc.write_all(b"world").await.unwrap();
+        });
+
+        // Let the relay PING the park several times first.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Client dials in and pairs. It never parked, so its first byte is PAIRED.
+        let mut con = TcpStream::connect(addr).await.unwrap();
+        con.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
+        assert_eq!(read_byte(&mut con).await, CTRL_PAIRED);
+        con.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        con.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"world", "server->client payload corrupted (leaked PONG?)");
+
+        acc_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dead_park_is_skipped_when_pairing() {
+        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
+        let token = [3u8; TOKEN_LEN];
+
+        // Park an accept, confirm it's live (got a PING), then drop it so its
+        // park task exits and its hand-off channel closes.
+        {
+            let mut dead = TcpStream::connect(addr).await.unwrap();
+            dead.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
+            assert_eq!(read_byte(&mut dead).await, CTRL_PING);
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await; // let the task notice EOF
+
+        // A connect must skip the dead waiter and park itself (getting a PING),
+        // not pair with — or hang on — the corpse.
+        let mut con = TcpStream::connect(addr).await.unwrap();
+        con.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
+        assert_eq!(
+            read_byte(&mut con).await,
+            CTRL_PING,
+            "connect should skip the dead accept and park (be pinged), not pair"
+        );
     }
 
     #[tokio::test]
