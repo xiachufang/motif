@@ -81,6 +81,28 @@ void main() {
     await resolver.stopForwarder('rzv-1');
   }, timeout: const Timeout(Duration(seconds: 15)));
 
+  test('with a cert pin in the QR resolves to https + 32-byte certPin',
+      () async {
+    relay = await _FakeRelay.start();
+    final pin = base64Url
+        .encode(Uint8List.fromList(List.generate(32, (i) => i + 1)))
+        .replaceAll('=', '');
+    final s = MotifServer(
+      id: 'rzv-pin',
+      name: 'studio',
+      host: 'studio',
+      kind: ServerKind.rendezvous,
+      relay: '127.0.0.1:${relay.port}',
+      psk: pskB64,
+      pubKey: pin,
+    );
+    final res = await resolver.resolve(s) as TransportReady;
+    expect(res.target.scheme, 'https');
+    expect(res.certPin, isNotNull);
+    expect(res.certPin!.length, 32);
+    await resolver.stopForwarder('rzv-pin');
+  }, timeout: const Timeout(Duration(seconds: 15)));
+
   test('fails cleanly on a bad relay address or pairing secret', () async {
     relay = await _FakeRelay.start();
     final badRelay = MotifServer(

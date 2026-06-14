@@ -94,12 +94,13 @@ struct Args {
     #[arg(long, requires = "rzv_relay")]
     rzv_pool: Option<usize>,
 
-    /// Terminate end-to-end TLS over the relayed pipe using a persisted
-    /// self-signed identity, and advertise its pin in the pairing QR so the
-    /// client verifies motifd. The relay stays a blind byte pipe. Without this,
-    /// rzv traffic is plaintext through the relay.
+    /// Disable rzv end-to-end TLS. By default motifd terminates TLS over the
+    /// relayed pipe with a persisted self-signed identity and advertises its pin
+    /// in the pairing QR, so the relay only ever sees ciphertext and the client
+    /// verifies motifd. Pass this only for a fully trusted relay/segment, where
+    /// rzv traffic then travels as plaintext through the relay.
     #[arg(long, requires = "rzv_relay")]
-    rzv_tls: bool,
+    rzv_no_tls: bool,
 
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
@@ -196,13 +197,14 @@ async fn run() -> anyhow::Result<()> {
             // The wire token is derived one-way from the secret.
             let token = motif_server::rzv::derive_token(&psk);
 
-            // End-to-end TLS (optional): build/persist the identity and pin.
+            // End-to-end TLS is on by default (relay sees only ciphertext);
+            // build/persist the identity and pin unless explicitly disabled.
             let psk_dir = motif_server::default_rzv_psk_path();
             let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let identity = if args.rzv_tls {
-                Some(motif_server::rzv::load_or_create_identity(rzv_dir)?)
-            } else {
+            let identity = if args.rzv_no_tls {
                 None
+            } else {
+                Some(motif_server::rzv::load_or_create_identity(rzv_dir)?)
             };
             let pin = identity.as_ref().map(|id| id.cert_sha256);
 

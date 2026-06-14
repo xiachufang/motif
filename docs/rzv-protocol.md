@@ -87,11 +87,13 @@ park under adjacent epochs to cover the boundary); not yet implemented.
 
 Trust is established separately by the layer above:
 
-- **Today**: plaintext over the relay (no E2E) — the token finds the peer; the
-  one-way derivation only keeps the `psk` off the wire.
-- **Next (P2)**: TLS over the relayed pipe; the client pins `motifd`'s identity
-  public key (`pk`), delivered out-of-band via the pairing QR (see below). This
-  defeats both the relay and anyone who guesses/squats the token.
+- **Default**: end-to-end TLS over the relayed pipe; the client pins `motifd`'s
+  cert (`pk`), delivered out-of-band via the pairing QR (see below). The relay
+  sees only ciphertext, defeating both the relay and anyone who squats the
+  token. motifd runs this by default; `--rzv-no-tls` opts out.
+- **Plaintext** (`--rzv-no-tls`, no `pk`): for a fully trusted relay/segment —
+  the token finds the peer and the one-way derivation keeps `psk` off the wire,
+  but bytes are not encrypted end-to-end.
 
 ## Pairing QR / deep link
 

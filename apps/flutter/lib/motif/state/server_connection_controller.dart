@@ -180,9 +180,14 @@ class ServerConnectionController {
         _setState(ServerFailed(message, session: session));
         _maybeScheduleReconnect();
         return;
-      case TransportReady(:final target, :final proxy):
+      case TransportReady(:final target, :final proxy, :final certPin):
         try {
-          await client.connect(target, force: force, proxy: proxy);
+          await client.connect(
+            target,
+            force: force,
+            proxy: proxy,
+            certPin: certPin,
+          );
         } catch (e) {
           _setState(ServerFailed('$e', session: session));
           _maybeScheduleReconnect();

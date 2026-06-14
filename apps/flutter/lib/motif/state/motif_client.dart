@@ -158,6 +158,7 @@ class MotifClient extends ChangeNotifier {
     MotifServer server, {
     bool force = false,
     ProxySettings proxy = ProxySettings.none,
+    Uint8List? certPin,
   }) async {
     if (!force && (_state is ConnConnected || _state is ConnAttached)) return;
 
@@ -175,6 +176,7 @@ class MotifClient extends ChangeNotifier {
         scheme: server.scheme,
         token: server.token,
         proxy: proxy,
+        certPin: certPin,
       );
 
     try {

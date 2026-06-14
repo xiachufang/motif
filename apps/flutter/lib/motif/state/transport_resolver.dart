@@ -16,7 +16,16 @@ class TransportReady extends TransportResolution {
   final MotifServer target;
   final ProxySettings proxy;
 
-  const TransportReady({required this.target, required this.proxy});
+  /// rzv end-to-end TLS cert pin (`sha256(cert.der)`), when the paired motifd
+  /// runs with TLS. `null` for plaintext transports (tcp / tailscale / rzv
+  /// without a pin in the pairing QR).
+  final Uint8List? certPin;
+
+  const TransportReady({
+    required this.target,
+    required this.proxy,
+    this.certPin,
+  });
 }
 
 class TransportBlocked extends TransportResolution {
@@ -105,6 +114,22 @@ class TransportResolver {
       return TransportFailed('rendezvous pairing secret invalid: ${e.message}');
     }
 
+    // End-to-end TLS pin (`pk` in the pairing QR). Present => motifd terminates
+    // TLS and we connect over https/wss pinning sha256(cert.der) == pin.
+    Uint8List? certPin;
+    var scheme = 'http';
+    if (server.pubKey.isNotEmpty) {
+      try {
+        certPin = base64Url.decode(base64Url.normalize(server.pubKey));
+      } on FormatException {
+        return const TransportFailed('rendezvous cert pin is not base64url');
+      }
+      if (certPin.length != 32) {
+        return const TransportFailed('rendezvous cert pin must be 32 bytes');
+      }
+      scheme = 'https';
+    }
+
     // Reuse a running forwarder for this server; restart it if the relay
     // endpoint changed (e.g. the server was re-paired with a new QR).
     var fwd = _forwarders[server.id];
@@ -129,9 +154,13 @@ class TransportResolver {
     final target = server.copyWith(
       host: '127.0.0.1',
       port: fwd.port,
-      scheme: 'http',
+      scheme: scheme,
     );
-    return TransportReady(target: target, proxy: ProxySettings.none);
+    return TransportReady(
+      target: target,
+      proxy: ProxySettings.none,
+      certPin: certPin,
+    );
   }
 
   static (String, int)? _parseHostPort(String s) {
