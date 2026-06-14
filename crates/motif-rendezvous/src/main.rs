@@ -1,11 +1,13 @@
 //! Motif rendezvous relay binary.
 //!
 //! Pairs a `motifd` `accept` connection with a client `connect` connection by
-//! token, then pipes bytes. It only ever sees ciphertext. Does not terminate
-//! TLS — listen on loopback / a trusted segment and front it with a
-//! TLS-terminating proxy (same posture as `motif-push-relay`).
+//! token, then pipes bytes. With motifd's default end-to-end TLS it only ever
+//! sees ciphertext (and tokens are one-way derived from the pairing secret), so
+//! the plaintext port can be exposed directly on a public address — both motifd
+//! and clients dial out to it. (Only `motifd --rzv-no-tls` puts plaintext on the
+//! relay, in which case keep it on a trusted segment.)
 //!
-//!   motif-rendezvous --listen 0.0.0.0:9999
+//!   motif-rendezvous --listen 0.0.0.0:8765
 
 use std::time::Duration;
 
@@ -15,9 +17,9 @@ use motif_rendezvous::{Hub, HubConfig};
 #[derive(Parser)]
 #[command(about = "Motif rendezvous relay — token-paired byte pipe for motifd <-> client")]
 struct Args {
-    /// Address to listen on. Front with a TLS-terminating proxy; do not expose
-    /// the plaintext port to untrusted networks.
-    #[arg(long, default_value = "127.0.0.1:9999")]
+    /// Address to listen on. With motifd's default end-to-end TLS the relay
+    /// only forwards ciphertext, so `0.0.0.0:<port>` on a public host is fine.
+    #[arg(long, default_value = "127.0.0.1:8765")]
     listen: String,
 
     /// Drop parked (unpaired) connections idle longer than this many seconds.

@@ -1,0 +1,97 @@
+name: rendezvous-image
+
+# Build the standalone motif-rendezvous relay image (deploy/rendezvous/Dockerfile)
+# and push it to GHCR. Pure Rust — no Zig/Go — so this is a quick build.
+#
+# Registry: ghcr.io/<owner>/motif-rendezvous, authenticated with the built-in
+# GITHUB_TOKEN (packages: write) — no extra secrets.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/motif-rendezvous/**'
+      - 'deploy/rendezvous/**'
+      - '.github/workflows/rendezvous-image.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+    tags: ['v*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: rendezvous-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/motif-rendezvous
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags: on a git tag → :<tag> + :latest; on main → :latest; always a
+      # :sha-<short> for traceability.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      # Build into the local docker so we can pair-test before publishing.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/rendezvous/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Boot the relay and assert it actually pairs: an `accept` and a `connect`
+      # with the same token both get PAIRED (0x10), then bytes pipe through.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          docker run -d --name rzv-smoke -p 127.0.0.1:8765:8765 "$TAG"
+          for i in $(seq 1 20); do
+            docker ps --filter name=rzv-smoke --format '{{.Status}}' | grep -q Up && break
+            sleep 0.5
+          done
+          docker ps --filter name=rzv-smoke --format '{{.Status}}' | grep -q Up \
+            || { echo "container exited"; docker logs rzv-smoke; exit 1; }
+          python3 deploy/rendezvous/smoke.py 127.0.0.1 8765
+          docker rm -f rzv-smoke
+
+      # Re-run the build (gha-cached → near-instant) and push now it passed.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/rendezvous/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
