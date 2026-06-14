@@ -476,3 +476,32 @@ Future<void> showEmbeddedServerSettingsSheet(BuildContext context) {
     ),
   );
 }
+
+/// Full-page form of the embedded-server settings, for the desktop shell's
+/// "Server" view. Same content as the sheet, given room to breathe (and a
+/// bigger pairing QR).
+class EmbeddedServerPage extends StatelessWidget {
+  const EmbeddedServerPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: context.motif.background,
+      body: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(
+            MotifSpacing.lg,
+            MotifSpacing.lg,
+            MotifSpacing.lg,
+            MotifSpacing.xl,
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: const EmbeddedServerSettingsSheet(),
+          ),
+        ),
+      ),
+    );
+  }
+}

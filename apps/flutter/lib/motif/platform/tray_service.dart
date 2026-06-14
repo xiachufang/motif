@@ -12,19 +12,16 @@ library;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/widgets.dart';
 import 'package:nativeapi/nativeapi.dart' as na;
 
 import '../state/app_state.dart';
 import '../state/embedded_server_service.dart';
-import '../ui/screens/embedded_server_settings_sheet.dart';
 import 'desktop_launch.dart';
 import 'desktop_window.dart';
 import 'tray_icons.g.dart';
 
 class TrayService {
   final AppState _app;
-  final GlobalKey<NavigatorState> _navigatorKey;
 
   na.TrayIcon? _tray;
   EmbeddedServerService? _svc;
@@ -33,9 +30,8 @@ class TrayService {
   // nativeapi can deliver a menu-item click more than once for a single
   // selection on macOS; this collapses rapid repeats to one action.
   DateTime? _lastActionAt;
-  bool _settingsOpen = false;
 
-  TrayService(this._app, this._navigatorKey);
+  TrayService(this._app);
 
   static bool get isSupported =>
       !kIsWeb && (Platform.isMacOS || Platform.isLinux || Platform.isWindows);
@@ -136,8 +132,8 @@ class TrayService {
     }
 
     menu.addSeparator();
-    menu.addItem(_item('Open Settings…', _openSettings));
-    menu.addItem(_item('Show Motif', () => DesktopWindow.show()));
+    menu.addItem(_item('Show Motif', () => _showView(AppViewMode.client)));
+    menu.addItem(_item('Server Settings', () => _showView(AppViewMode.server)));
     menu.addSeparator();
     menu.addItem(_item('Quit Motif', _quit));
     return menu;
@@ -172,18 +168,10 @@ class TrayService {
     openExternalUrl(url);
   }
 
-  Future<void> _openSettings() async {
-    if (_settingsOpen) return; // already showing — don't stack a second sheet.
-    _settingsOpen = true;
-    try {
-      await DesktopWindow.show();
-      final ctx = _navigatorKey.currentContext;
-      if (ctx != null && ctx.mounted) {
-        await showEmbeddedServerSettingsSheet(ctx);
-      }
-    } finally {
-      _settingsOpen = false;
-    }
+  /// Switch the app to [mode] and bring the window forward.
+  Future<void> _showView(AppViewMode mode) async {
+    _app.setViewMode(mode);
+    await DesktopWindow.show();
   }
 
   void _quit() {

@@ -55,7 +55,7 @@ Future<void> main() async {
       // available, so the window stays shown on platforms without it.
       if (TrayService.isSupported && (appState.embeddedServer?.available ?? false)) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          TrayService(appState, motifNavigatorKey).start();
+          TrayService(appState).start();
           unawaited(DesktopWindow.hideAtLaunch());
         });
       }

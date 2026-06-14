@@ -27,6 +27,10 @@ import 'server_connection_controller.dart';
 import 'stores.dart';
 import 'transport_resolver.dart';
 
+/// Desktop top-level view selector: use the client (sessions/terminal) or
+/// administer this machine's embedded server.
+enum AppViewMode { client, server }
+
 class AppState extends ChangeNotifier {
   final ServerStore servers;
   final TerminalSettingsStore terminalSettings;
@@ -45,6 +49,17 @@ class AppState extends ChangeNotifier {
   final Map<String, VoidCallback> _clientListeners = {};
   StreamSubscription<TailscaleState>? _tailscaleSub;
   AppLifecycleListener? _lifecycleListener;
+
+  /// Desktop top-level view: the client (sessions) or the embedded-server
+  /// control panel. Only meaningful when [embeddedServer] is available; the UI
+  /// shell shows the switch in that case.
+  AppViewMode _viewMode = AppViewMode.client;
+  AppViewMode get viewMode => _viewMode;
+  void setViewMode(AppViewMode mode) {
+    if (_viewMode == mode) return;
+    _viewMode = mode;
+    notifyListeners();
+  }
 
   AppState({
     required this.servers,

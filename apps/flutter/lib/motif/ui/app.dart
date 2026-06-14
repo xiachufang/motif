@@ -7,6 +7,7 @@ import '../models/settings.dart';
 import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
+import 'screens/embedded_server_settings_sheet.dart';
 import 'screens/session_list_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/motif_theme.dart';
@@ -24,7 +25,6 @@ class MotifApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
     final terminalTheme = context.select<AppState, TerminalThemeSetting>(
       (a) => a.terminalSettings.settings.theme,
     );
@@ -40,7 +40,159 @@ class MotifApp extends StatelessWidget {
       },
       navigatorKey: motifNavigatorKey,
       navigatorObservers: [motifRouteObserver],
-      home: app.hasActiveServer ? const _Root() : const WelcomeScreen(),
+      home: const _HomeShell(),
+    );
+  }
+}
+
+/// Top-level desktop shell. When this machine can run an embedded server, a
+/// slim toolbar lets the user switch between the **client** (sessions) and the
+/// **server** control panel; the two are kept alive side-by-side so switching
+/// preserves state. On mobile / when no embedded server is available, the
+/// client is shown directly (unchanged behavior, no toolbar).
+class _HomeShell extends StatelessWidget {
+  const _HomeShell();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final canServe = app.embeddedServer?.available ?? false;
+    if (!canServe) return const _ClientHome();
+
+    return Column(
+      children: [
+        _ModeToolbar(
+          mode: app.viewMode,
+          onChanged: app.setViewMode,
+        ),
+        Expanded(
+          child: IndexedStack(
+            index: app.viewMode == AppViewMode.server ? 1 : 0,
+            children: const [
+              // The client keeps its own Navigator so pushing a session screen
+              // stays inside this pane (under the toolbar) instead of covering
+              // the whole window.
+              _ClientNavigator(),
+              EmbeddedServerPage(),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// The client content: the grouped session browser once a server is configured,
+/// otherwise the first-run welcome screen.
+class _ClientHome extends StatelessWidget {
+  const _ClientHome();
+
+  @override
+  Widget build(BuildContext context) {
+    final hasServer = context.select<AppState, bool>((a) => a.hasActiveServer);
+    return hasServer ? const _Root() : const WelcomeScreen();
+  }
+}
+
+/// Nested navigator hosting the client pane in the desktop shell.
+class _ClientNavigator extends StatelessWidget {
+  const _ClientNavigator();
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      observers: [motifRouteObserver],
+      onGenerateRoute: (settings) =>
+          MaterialPageRoute<void>(builder: (_) => const _ClientHome()),
+    );
+  }
+}
+
+/// Slim top toolbar carrying the compact Client/Server switch.
+class _ModeToolbar extends StatelessWidget {
+  const _ModeToolbar({required this.mode, required this.onChanged});
+
+  final AppViewMode mode;
+  final ValueChanged<AppViewMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Material(
+      color: c.surface,
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
+        alignment: Alignment.centerLeft,
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: c.border)),
+        ),
+        child: _ModeSwitch(mode: mode, onChanged: onChanged),
+      ),
+    );
+  }
+}
+
+class _ModeSwitch extends StatelessWidget {
+  const _ModeSwitch({required this.mode, required this.onChanged});
+
+  final AppViewMode mode;
+  final ValueChanged<AppViewMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      decoration: BoxDecoration(
+        color: c.subtleFill,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _seg(c, Icons.terminal_rounded, 'Client', AppViewMode.client),
+          _seg(c, Icons.dns_rounded, 'Server', AppViewMode.server),
+        ],
+      ),
+    );
+  }
+
+  Widget _seg(MotifColors c, IconData icon, String label, AppViewMode m) {
+    final selected = mode == m;
+    return Tooltip(
+      message: label,
+      child: InkWell(
+        onTap: () => onChanged(m),
+        borderRadius: BorderRadius.circular(5),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: selected ? c.background : Colors.transparent,
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 15,
+                color: selected ? c.accent : c.textTertiary,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  color: selected ? c.textPrimary : c.textTertiary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
