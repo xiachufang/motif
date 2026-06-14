@@ -9,6 +9,7 @@ import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
+import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 
 /// First-run screen, shown when no server is configured.
@@ -26,6 +27,13 @@ class WelcomeScreen extends StatelessWidget {
             ServerConnectionAction.openTailscale) {
       showTailscaleConnectionSheet(context);
     }
+  }
+
+  Future<void> _pairServer(BuildContext context) async {
+    final app = context.read<AppState>();
+    final id = await showRzvPairingSheet(context);
+    if (id == null || !context.mounted) return;
+    await app.connectServerAndRefresh(id, force: true);
   }
 
   @override
@@ -98,6 +106,13 @@ class WelcomeScreen extends StatelessWidget {
                   titleColor: c.accent,
                   titleWeight: FontWeight.w700,
                   onTap: () => unawaited(_connectServer(context)),
+                ),
+                MotifSectionRow(
+                  leading: Icon(Icons.qr_code_2, color: c.accent, size: 22),
+                  title: 'Scan or paste a pairing link',
+                  titleColor: c.accent,
+                  titleWeight: FontWeight.w700,
+                  onTap: () => unawaited(_pairServer(context)),
                 ),
               ],
             ),
