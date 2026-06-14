@@ -280,7 +280,15 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       return;
     }
 
-    final committed = value.text.replaceAll(_softKeyboardSeed, '');
+    // Enter is owned solely by performAction(newline). With
+    // TextInputAction.newline some platforms (notably iOS) ALSO insert the
+    // newline into the editing value here, which would emit a second carriage
+    // return — the iOS "double newline". Strip line breaks so a Return produces
+    // exactly one CR (via performAction).
+    final committed = value.text
+        .replaceAll(_softKeyboardSeed, '')
+        .replaceAll('\n', '')
+        .replaceAll('\r', '');
     if (committed.isNotEmpty) {
       _writeSoftKeyboardText(committed);
     } else if (_usesSoftKeyboard &&
