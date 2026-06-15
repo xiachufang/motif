@@ -92,7 +92,7 @@ passthrough，保留前向兼容。
 | Shell | 注入方式 |
 | --- | --- |
 | Bash | `bash --rcfile <(cat $MOTIF_BOOTSTRAP_BASH)` 或写入 `$BASH_ENV` 后 `--login` |
-| Zsh | 设置 `ZDOTDIR=$MOTIF_BOOTSTRAP_DIR`，目录里放 `.zshrc` 包装用户原 zshrc |
+| Zsh | 设置 `ZDOTDIR=$MOTIF_BOOTSTRAP_DIR`，目录里放启动文件 wrapper；zsh 自己按 login/interactive 规则读取，`.zshrc` 再注册 Motif hook |
 | Fish | `fish --init-command "source $MOTIF_BOOTSTRAP_FISH"` |
 
 `motifd` 启动时把脚本（`include_str!` 编入二进制）写到

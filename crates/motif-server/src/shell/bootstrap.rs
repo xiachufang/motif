@@ -74,6 +74,10 @@ impl Bootstrap {
                 let bytes = ShellAssets::get("zsh.zsh")?.data;
                 let target = dir.path().join(".zshrc");
                 std::fs::write(&target, bytes).ok()?;
+                write_zsh_user_startup_wrapper(dir.path(), ".zshenv")?;
+                write_zsh_user_startup_wrapper(dir.path(), ".zprofile")?;
+                write_zsh_user_startup_wrapper(dir.path(), ".zlogin")?;
+                write_zsh_user_startup_wrapper(dir.path(), ".zlogout")?;
                 target
             }
             ShellKind::Fish => {
@@ -168,6 +172,25 @@ fn write_asset(dir: &Path, name: &str) -> Option<()> {
     Some(())
 }
 
+fn write_zsh_user_startup_wrapper(dir: &Path, name: &str) -> Option<()> {
+    let wrapper = format!(
+        r#"# Motif zsh startup wrapper. zsh decides whether this file is read;
+# this only redirects the corresponding user file through the original ZDOTDIR.
+__motif_bootstrap_zdotdir=${{MOTIF_BOOTSTRAP_DIR:-$ZDOTDIR}}
+__motif_user_zdotdir=${{MOTIF_USER_ZDOTDIR:-$HOME}}
+if [[ -n "$__motif_user_zdotdir" && -f "$__motif_user_zdotdir/{name}" ]]; then
+    ZDOTDIR=$__motif_user_zdotdir source "$__motif_user_zdotdir/{name}"
+    if [[ -n "$ZDOTDIR" && "$ZDOTDIR" != "$__motif_bootstrap_zdotdir" && "$ZDOTDIR" != "$__motif_user_zdotdir" ]]; then
+        export MOTIF_USER_ZDOTDIR=$ZDOTDIR
+    fi
+fi
+ZDOTDIR=$__motif_bootstrap_zdotdir
+"#
+    );
+    std::fs::write(dir.join(name), wrapper).ok()?;
+    Some(())
+}
+
 /// Like [`write_asset`] but marks the file executable (0700) on Unix — used
 /// for `motif-notify.sh`, which Claude Code execs as a hook command.
 fn write_asset_executable(dir: &Path, name: &str) -> Option<()> {
@@ -231,6 +254,81 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn zsh_login_bootstrap_sources_profile_before_rc_for_path_dependent_bindings() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let Some(zsh) = find_on_path("zsh") else {
+            return;
+        };
+
+        let boot = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        let fake_bin = tempfile::tempdir().unwrap();
+
+        let zsh_asset = ShellAssets::get("zsh.zsh").unwrap().data;
+        std::fs::write(boot.path().join(".zshrc"), zsh_asset).unwrap();
+        write_zsh_user_startup_wrapper(boot.path(), ".zprofile").unwrap();
+
+        let fake_fzf = fake_bin.path().join("fzf");
+        std::fs::write(
+            &fake_fzf,
+            r#"#!/bin/sh
+if [ "${1:-}" = "--zsh" ]; then
+  cat <<'EOF'
+fzf-history-widget() { zle redisplay; }
+zle -N fzf-history-widget
+bindkey '^R' fzf-history-widget
+EOF
+fi
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::fs::write(
+            user.path().join(".zprofile"),
+            format!("export PATH={}:$PATH\n", zsh_quote(fake_bin.path())),
+        )
+        .unwrap();
+        std::fs::write(
+            user.path().join(".zshrc"),
+            "(( $+commands[fzf] )) && source <(fzf --zsh)\n",
+        )
+        .unwrap();
+
+        let output = Command::new(zsh)
+            .env_clear()
+            .env("HOME", user.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("ZDOTDIR", boot.path())
+            .env("MOTIF_USER_ZDOTDIR", user.path())
+            .arg("-l")
+            .arg("-i")
+            .arg("-c")
+            .arg("bindkey '^R'; whence -w fzf-history-widget")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "zsh probe failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("\"^R\" fzf-history-widget"),
+            "expected Ctrl-R to be bound by fzf after .zprofile updated PATH, got:\n{stdout}",
+        );
+        assert!(
+            stdout.contains("fzf-history-widget: function"),
+            "expected fake fzf --zsh widget to be loaded, got:\n{stdout}",
+        );
+    }
+
     #[test]
     fn prepare_generates_claude_notify_settings() {
         // Don't touch MOTIF_SHELL_INTEGRATION here — `prepare_skipped_when_env_disabled`
@@ -276,5 +374,18 @@ mod tests {
             bs.is_none(),
             "MOTIF_SHELL_INTEGRATION=0 should skip prepare"
         );
+    }
+
+    #[cfg(unix)]
+    fn find_on_path(name: &str) -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    }
+
+    #[cfg(unix)]
+    fn zsh_quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
     }
 }
