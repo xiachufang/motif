@@ -44,6 +44,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     } else {
       _closeTextInput();
     }
+    if (!_focusNode.hasFocus) _hostShortcutKeys.clear();
     _syncKeyboardLift();
     if (mounted) setState(() {});
   }

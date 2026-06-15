@@ -18,6 +18,7 @@ import '../ui/theme/motif_theme.dart';
 import 'terminal_error_view.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_fonts.dart';
+import 'terminal_input.dart';
 import 'terminal_palette.dart';
 import 'web_key_encoder.dart';
 
@@ -203,6 +204,15 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       return KeyEventResult.ignored;
     }
     final hw = HardwareKeyboard.instance;
+    if (isTerminalHostShortcut(
+      logicalKey: event.logicalKey,
+      shift: hw.isShiftPressed,
+      control: hw.isControlPressed,
+      alt: hw.isAltPressed,
+      meta: hw.isMetaPressed,
+    )) {
+      return KeyEventResult.ignored;
+    }
     final bytes = encodeKeyToBytes(
       event.logicalKey,
       event.character,
