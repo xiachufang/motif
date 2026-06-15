@@ -9,6 +9,7 @@ import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/connection_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
+import 'package:motif/motif/state/server_connection_controller.dart';
 import 'package:motif/motif/state/stores.dart';
 import 'package:motif/motif/state/transport_resolver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -67,6 +68,12 @@ class _RecordingMotifClient extends MotifClient {
   int connectCalls = 0;
   int suspendCalls = 0;
   int disconnectCalls = 0;
+  int refreshCalls = 0;
+  int markConnectionLostCalls = 0;
+  final List<bool> connectForces = [];
+  bool failRefresh = false;
+  int connectFailuresRemaining = 0;
+  String? lastConnectionLostMessage;
 
   @override
   MotifConnState get state => _state;
@@ -82,9 +89,29 @@ class _RecordingMotifClient extends MotifClient {
     Uint8List? certPin,
   }) async {
     connectCalls++;
+    connectForces.add(force);
+    if (connectFailuresRemaining > 0) {
+      connectFailuresRemaining--;
+      throw StateError('motifd unavailable');
+    }
     _live = true;
     final session = intendedSession;
     _state = session == null ? const ConnConnected() : ConnAttached(session);
+    notifyListeners();
+  }
+
+  @override
+  Future<void> refreshSessions() async {
+    refreshCalls++;
+    if (failRefresh) throw StateError('stale transport');
+  }
+
+  @override
+  Future<void> markConnectionLost([String message = 'connection lost']) async {
+    markConnectionLostCalls++;
+    lastConnectionLostMessage = message;
+    _live = false;
+    _state = ConnFailed(message);
     notifyListeners();
   }
 
@@ -298,6 +325,118 @@ void main() {
       final view = app.serverViewState('tailnet');
       expect(view.statusLabel, 'Failed');
       expect(view.showSpinner, isFalse);
+    },
+  );
+
+  test('session refresh failure marks transport lost and reconnects', () async {
+    final tailscale = _FakeTailscale(
+      const TailscaleState(TailscaleStatus.running),
+    );
+    addTearDown(tailscale.close);
+    final client = _RecordingMotifClient()..failRefresh = true;
+    final app = await _appWith(tailscale: tailscale, client: client);
+    addTearDown(app.dispose);
+
+    await app.connectServer('tailnet', force: true);
+    expect(client.connectCalls, 1);
+
+    await app.refreshConnectedSessions();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.refreshCalls, 1);
+    expect(client.markConnectionLostCalls, 1);
+    expect(
+      client.lastConnectionLostMessage,
+      contains('session refresh failed'),
+    );
+    expect(client.connectCalls, 2);
+    expect(client.connectForces.last, isTrue);
+    expect(app.connectionStateForServer('tailnet'), isA<ServerConnected>());
+  });
+
+  test(
+    'app resume reconnects attached session to rebuild websocket transport',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final client = _RecordingMotifClient()..intendedSession = 'dev';
+      final controller = ServerConnectionController(
+        serverId: 'tailnet',
+        client: client,
+        serverProvider: () => const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        resolver: TransportResolver(_platform(tailscale)),
+        onChanged: () {},
+      );
+      client.addListener(controller.handleClientStateChanged);
+      addTearDown(() {
+        client.removeListener(controller.handleClientStateChanged);
+        controller.dispose();
+      });
+
+      await controller.connect(force: true);
+      expect(client.connectCalls, 1);
+      expect(client.isForeground, isTrue);
+
+      controller.handleAppPaused();
+      expect(client.isForeground, isFalse);
+
+      controller.handleAppResumed();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.isForeground, isTrue);
+      expect(client.connectCalls, 2);
+      expect(client.connectForces.last, isTrue);
+      expect(controller.state, isA<ServerAttached>());
+    },
+  );
+
+  test(
+    'app resume retries server failure after pause canceled backoff',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final client = _RecordingMotifClient()..connectFailuresRemaining = 1;
+      final controller = ServerConnectionController(
+        serverId: 'tailnet',
+        client: client,
+        serverProvider: () => const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        resolver: TransportResolver(_platform(tailscale)),
+        onChanged: () {},
+      );
+      client.addListener(controller.handleClientStateChanged);
+      addTearDown(() {
+        client.removeListener(controller.handleClientStateChanged);
+        controller.dispose();
+      });
+
+      await controller.connect(force: true);
+      expect(client.connectCalls, 1);
+      expect(controller.state, isA<ServerFailed>());
+
+      controller.handleAppPaused();
+      controller.handleAppResumed();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.connectCalls, 2);
+      expect(client.connectForces.last, isTrue);
+      expect(controller.state, isA<ServerConnected>());
     },
   );
 

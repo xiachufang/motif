@@ -37,6 +37,7 @@ class AppState extends ChangeNotifier {
   final QuickCommandStore commands;
   final PushSettingsStore push;
   final PlatformServices platform;
+
   /// Desktop-only embedded motifd (run from the tray). Null on web/mobile or
   /// when the native library isn't bundled.
   final EmbeddedServerService? embeddedServer;
@@ -454,9 +455,7 @@ class AppState extends ChangeNotifier {
   Future<void> refreshConnectedSessions() async {
     await Future.wait([
       for (final group in connectedServerClients)
-        group.client.refreshSessions().catchError((_) {
-          return null;
-        }),
+        _refreshClientSessions(group.server.id, group.client),
     ]);
     notifyListeners();
   }
@@ -464,13 +463,21 @@ class AppState extends ChangeNotifier {
   Future<void> refreshServerSessions(String serverId) async {
     final client = existingClientForServer(serverId);
     if (client == null || !client.isLive) return;
+    await _refreshClientSessions(serverId, client);
+    notifyListeners();
+  }
+
+  Future<void> _refreshClientSessions(
+    String serverId,
+    MotifClient client,
+  ) async {
     try {
       await client.refreshSessions();
-    } catch (_) {
+    } catch (e, st) {
       // Session refresh is best-effort; keep the list usable on transient RPC
-      // failures.
+      // failures, but hand stale transports to the reconnect controller.
+      _controllersByServer[serverId]?.handleRefreshFailed(e, st);
     }
-    notifyListeners();
   }
 
   void _wireClient(String serverId, MotifClient client) {

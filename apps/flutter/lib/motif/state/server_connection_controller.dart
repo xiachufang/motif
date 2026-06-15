@@ -36,6 +36,7 @@ class ServerConnectionController {
   bool _reconnecting = false;
   bool _wantsConnection = false;
   bool _appPaused = false;
+  bool _resumeProbeRunning = false;
 
   bool get wantsConnection => _wantsConnection;
 
@@ -125,11 +126,13 @@ class ServerConnectionController {
 
   void handleAppPaused() {
     _appPaused = true;
+    client.setForeground(false);
     _cancelReconnect();
   }
 
   void handleAppResumed() {
     _appPaused = false;
+    client.setForeground(true);
     if (!_wantsConnection) return;
     final server = serverProvider();
     if (server == null) return;
@@ -144,10 +147,32 @@ class ServerConnectionController {
     }
     if (_state is ServerSuspended ||
         _state is ServerBlocked ||
+        _state is ServerFailed ||
         client.state is ConnFailed ||
         client.state is ConnSuspended) {
       _maybeScheduleReconnect(immediate: true);
+      return;
     }
+    if (client.state is ConnAttached) {
+      _maybeScheduleReconnect(immediate: true);
+      return;
+    }
+    if (client.isLive) {
+      unawaited(_probeLiveConnectionAfterResume());
+    }
+  }
+
+  void handleRefreshFailed(Object error, [StackTrace? stackTrace]) {
+    if (!_wantsConnection || _appPaused) return;
+    Log.w(
+      'session refresh failed; reconnecting server=$serverId',
+      name: 'motif.reconnect',
+      error: error,
+      stackTrace: stackTrace,
+    );
+    unawaited(
+      _markConnectionLostAndReconnect('session refresh failed: $error'),
+    );
   }
 
   void dispose() {
@@ -256,6 +281,35 @@ class ServerConnectionController {
     if (_wantsConnection && client.state is ConnFailed) {
       _maybeScheduleReconnect();
     }
+  }
+
+  Future<void> _probeLiveConnectionAfterResume() async {
+    if (_resumeProbeRunning || _appPaused || !_wantsConnection) return;
+    _resumeProbeRunning = true;
+    try {
+      await client.refreshSessions();
+    } catch (e, st) {
+      Log.w(
+        'resume probe failed; reconnecting server=$serverId',
+        name: 'motif.reconnect',
+        error: e,
+        stackTrace: st,
+      );
+      await _markConnectionLostAndReconnect('session refresh failed: $e');
+    } finally {
+      _resumeProbeRunning = false;
+    }
+  }
+
+  Future<void> _markConnectionLostAndReconnect(String message) async {
+    if (_appPaused || !_wantsConnection) return;
+    Log.i(
+      'mark connection lost server=$serverId message=$message',
+      name: 'motif.reconnect',
+    );
+    await client.markConnectionLost(message);
+    _cancelReconnect();
+    _maybeScheduleReconnect(immediate: true);
   }
 
   Duration _reconnectDelay(int attempt) {
