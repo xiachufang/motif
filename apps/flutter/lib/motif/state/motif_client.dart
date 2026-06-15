@@ -287,6 +287,12 @@ class MotifClient extends ChangeNotifier {
     _setState(ConnSuspended(reason, session: intendedSession));
   }
 
+  void setForeground(bool foreground) {
+    if (isForeground == foreground) return;
+    isForeground = foreground;
+    if (foreground) _reclaimPrimary();
+  }
+
   void _clearSessionState() {
     _completePendingViewActivation();
     ptys = [];
@@ -313,7 +319,12 @@ class MotifClient extends ChangeNotifier {
     }
   }
 
-  Future<void> _handleConnectionLost() async {
+  Future<void> markConnectionLost([String message = 'connection lost']) =>
+      _handleConnectionLost(message);
+
+  Future<void> _handleConnectionLost([
+    String message = 'connection lost',
+  ]) async {
     final s = _state;
     if (s is ConnAttached && lastSeq > 0) {
       resumeSeqs[s.session] = lastSeq;
@@ -328,7 +339,7 @@ class MotifClient extends ChangeNotifier {
       _completePendingViewActivation();
     }
     // Keep ptys/views/intendedSession so the terminal stays on screen offline.
-    _setState(const ConnFailed('connection lost'));
+    _setState(ConnFailed(message));
   }
 
   // ─────────────────────────── sessions ───────────────────────────
