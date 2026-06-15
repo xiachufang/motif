@@ -55,8 +55,10 @@ class TrayService {
     try {
       final tray = na.TrayIcon()
         ..tooltip = 'Motif'
-        ..contextMenuTrigger = na.ContextMenuTrigger.clicked;
-      tray.startEventListening();
+        ..contextMenuTrigger = na.ContextMenuTrigger.rightClicked;
+      tray.on<na.TrayIconClickedEvent>((_) {
+        unawaited(_showView(AppViewMode.client));
+      });
       _tray = tray;
       // Create the context menu once and bind it now. Everything after this
       // mutates this same Menu object in place (see _populateMenu).
@@ -165,7 +167,9 @@ class TrayService {
       add(_item('Open in Browser…', () => _openWebUi(svc)));
     }
     if (status.authUrl != null) {
-      add(_item('Sign in to Tailscale…', () => openExternalUrl(status.authUrl!)));
+      add(
+        _item('Sign in to Tailscale…', () => openExternalUrl(status.authUrl!)),
+      );
     }
 
     menu.addSeparator();

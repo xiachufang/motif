@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
@@ -23,8 +22,9 @@ class _StubClient extends MotifClient {
 }
 
 void main() {
-  testWidgets('first-run welcome screen can open the pairing sheet',
-      (tester) async {
+  testWidgets('first-run welcome screen can open the pairing sheet', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final app = AppState(

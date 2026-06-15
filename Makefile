@@ -46,7 +46,7 @@ FLUTTER_MACOS_APP := $(FLUTTER_DIR)/build/macos/Build/Products/Release/Motif.app
 
 require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host (current: $(HOST_OS))."; exit 1; }
 
-.PHONY: help version check-tools check-cargo check-flutter check-zig \
+.PHONY: help graph version check-tools check-cargo check-flutter check-zig \
 	check-macos-tools check-ios-tools check-android-release-signing \
 	check-ios-release-signing deps deps-rust deps-flutter deps-web deps-android \
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
@@ -62,7 +62,10 @@ help: ## Show available release targets.
 	@printf "Output:  %s\n\n" "$(RELEASE_DIR)"
 	@printf "Targets:\n"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-28s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@printf "\nDependency graph (ASCII):\n"
+	@printf "\nRun 'make graph' to print the target dependency graph.\n"
+
+graph: ## Print the target dependency graph (ASCII).
+	@printf "Dependency graph (ASCII):\n"
 	@awk '\
 		function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$$/, "", s); return s } \
 		function print_node(target, prefix, is_last, is_root,    i, dep, next_prefix, label) { \
