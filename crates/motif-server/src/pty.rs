@@ -32,7 +32,7 @@ use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions};
 use motif_proto::common::{ClientId, PtyId, UnixMs};
 use motif_proto::event::Event;
-use motif_proto::pty::{PtyCreateParams, PtyInfo};
+use motif_proto::pty::{PtyCreateParams, PtyInfo, ShellKind};
 use motif_proto::terminal_query::{QueryKind, QueryScanner, ScanItem};
 use parking_lot::Mutex;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -441,7 +441,9 @@ impl PtyPool {
             format!("sh-{}", *n)
         };
 
+        let is_default_cmd = params.cmd.is_none();
         let cmd_str = params.cmd.clone().unwrap_or_else(default_shell);
+        let detected_kind = crate::shell::detect(&cmd_str);
         let cwd = params
             .cwd
             .clone()
@@ -469,6 +471,9 @@ impl PtyPool {
         } else {
             CommandBuilder::new(&cmd_str)
         };
+        if should_launch_default_zsh_as_login_shell(is_default_cmd, detected_kind, &cmd_str) {
+            cb.arg("-l");
+        }
         cb.cwd(&cwd);
         // Ensure terminfo-based tools (`clear`, `tput`, `less`, ncurses)
         // have something sensible to look up. portable-pty inherits the
@@ -485,7 +490,6 @@ impl PtyPool {
         // flags / env into the CommandBuilder. The Bootstrap value owns
         // the tmpdir and is moved into the Pty struct so the scripts
         // stay on disk for the child's lifetime.
-        let detected_kind = crate::shell::detect(&cmd_str);
         let bootstrap = crate::shell::Bootstrap::prepare(detected_kind, &id);
         if let Some(ref bs) = bootstrap {
             bs.apply_to(&mut cb);
@@ -995,6 +999,17 @@ fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
 
 fn default_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+}
+
+fn should_launch_default_zsh_as_login_shell(
+    is_default_cmd: bool,
+    kind: ShellKind,
+    cmd: &str,
+) -> bool {
+    cfg!(target_os = "macos")
+        && is_default_cmd
+        && matches!(kind, ShellKind::Zsh)
+        && !cmd.contains(' ')
 }
 
 fn now_ms() -> UnixMs {
