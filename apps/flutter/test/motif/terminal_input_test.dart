@@ -41,7 +41,10 @@ void main() {
         TargetPlatform.windows,
         TargetPlatform.fuchsia,
       ]) {
-        expect(terminalInputModeFor(p, isWeb: false), TerminalInputMode.desktop);
+        expect(
+          terminalInputModeFor(p, isWeb: false),
+          TerminalInputMode.desktop,
+        );
       }
       // web wins regardless of underlying platform.
       expect(
@@ -60,15 +63,106 @@ void main() {
     });
   });
 
+  group('isTerminalHostShortcut', () {
+    bool host(
+      LogicalKeyboardKey key, {
+      bool shift = false,
+      bool control = false,
+      bool alt = false,
+      bool meta = false,
+      TargetPlatform platform = TargetPlatform.macOS,
+    }) {
+      return isTerminalHostShortcut(
+        logicalKey: key,
+        shift: shift,
+        control: control,
+        alt: alt,
+        meta: meta,
+        platform: platform,
+      );
+    }
+
+    test('reserves chrome-style tab shortcuts on Apple platforms', () {
+      expect(host(LogicalKeyboardKey.keyT, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.keyW, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.digit1, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.digit9, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.pageUp, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.pageDown, meta: true), isTrue);
+
+      expect(host(LogicalKeyboardKey.keyC, meta: true), isFalse);
+      expect(host(LogicalKeyboardKey.keyT, meta: true, alt: true), isFalse);
+    });
+
+    test('reserves chrome-style tab shortcuts on control platforms', () {
+      expect(
+        host(
+          LogicalKeyboardKey.keyT,
+          control: true,
+          platform: TargetPlatform.windows,
+        ),
+        isTrue,
+      );
+      expect(
+        host(
+          LogicalKeyboardKey.digit2,
+          control: true,
+          platform: TargetPlatform.linux,
+        ),
+        isTrue,
+      );
+      expect(
+        host(
+          LogicalKeyboardKey.keyC,
+          control: true,
+          platform: TargetPlatform.windows,
+        ),
+        isFalse,
+      );
+    });
+
+    test('reserves session sidebar shortcuts', () {
+      for (final key in [
+        LogicalKeyboardKey.keyW,
+        LogicalKeyboardKey.keyL,
+        LogicalKeyboardKey.keyE,
+        LogicalKeyboardKey.keyG,
+      ]) {
+        expect(host(key, meta: true, shift: true), isTrue, reason: '$key');
+      }
+    });
+
+    test('reserves tab cycling shortcuts', () {
+      expect(host(LogicalKeyboardKey.tab, control: true), isTrue);
+      expect(host(LogicalKeyboardKey.tab, control: true, shift: true), isTrue);
+      expect(host(LogicalKeyboardKey.arrowLeft, meta: true, alt: true), isTrue);
+      expect(
+        host(LogicalKeyboardKey.arrowRight, meta: true, alt: true),
+        isTrue,
+      );
+      expect(
+        host(LogicalKeyboardKey.arrowLeft, control: true, alt: true),
+        isFalse,
+      );
+    });
+  });
+
   group('classifyTerminalKey', () {
     test('plain printable text is owned by the IME when attached', () {
-      final r = _classify(key: LogicalKeyboardKey.keyA, text: 'a', attached: true);
+      final r = _classify(
+        key: LogicalKeyboardKey.keyA,
+        text: 'a',
+        attached: true,
+      );
       expect(r.kind, TerminalKeyRouteKind.deferToTextInput);
     });
 
     test('plain printable text is emitted directly when no IME', () {
-      final r =
-          _classify(key: LogicalKeyboardKey.keyA, text: 'a', attached: false);
+      final r = _classify(
+        key: LogicalKeyboardKey.keyA,
+        text: 'a',
+        attached: false,
+      );
       expect(r.kind, TerminalKeyRouteKind.sendBytes);
       expect(r.bytes, [0x61]);
     });
@@ -124,8 +218,11 @@ void main() {
     });
 
     test('special keys go to the ghostty encoder', () {
-      final r =
-          _classify(key: LogicalKeyboardKey.arrowUp, text: null, attached: true);
+      final r = _classify(
+        key: LogicalKeyboardKey.arrowUp,
+        text: null,
+        attached: true,
+      );
       expect(r.kind, TerminalKeyRouteKind.encodeViaGhostty);
     });
 

@@ -11,6 +11,22 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     final controlPressed = HardwareKeyboard.instance.isControlPressed;
     final altPressed = HardwareKeyboard.instance.isAltPressed;
     final metaPressed = HardwareKeyboard.instance.isMetaPressed;
+    final hostShortcut = isTerminalHostShortcut(
+      logicalKey: event.logicalKey,
+      shift: shiftPressed,
+      control: controlPressed,
+      alt: altPressed,
+      meta: metaPressed,
+    );
+    if (event is KeyDownEvent || event is KeyRepeatEvent) {
+      if (hostShortcut) {
+        _hostShortcutKeys.add(event.logicalKey);
+        return KeyEventResult.ignored;
+      }
+    } else if (event is KeyUpEvent) {
+      final wasHostShortcut = _hostShortcutKeys.remove(event.logicalKey);
+      if (hostShortcut || wasHostShortcut) return KeyEventResult.ignored;
+    }
     if (event is KeyDownEvent &&
         _handleClipboardShortcut(
           event.logicalKey,

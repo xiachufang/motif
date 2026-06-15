@@ -53,6 +53,73 @@ extension TerminalInputModeProps on TerminalInputMode {
   bool get usesSoftKeyboard => this == TerminalInputMode.mobile;
 }
 
+/// Whether this hardware key is reserved for the Motif session chrome instead
+/// of the terminal PTY.
+///
+/// These mirror the shortcuts handled by `SessionScreen`: tab creation/closing,
+/// tab switching, and sidebar toggles. The terminal focus handler uses this as
+/// a guard so global app shortcuts do not leak into shell programs while the
+/// terminal is focused.
+bool isTerminalHostShortcut({
+  required LogicalKeyboardKey logicalKey,
+  required bool shift,
+  required bool control,
+  required bool alt,
+  required bool meta,
+  TargetPlatform? platform,
+}) {
+  final target = platform ?? defaultTargetPlatform;
+  final usesCommandShortcuts =
+      target == TargetPlatform.macOS || target == TargetPlatform.iOS;
+  final primaryPressed = usesCommandShortcuts ? meta : control;
+
+  if (primaryPressed && shift && !alt) {
+    return logicalKey == LogicalKeyboardKey.keyW ||
+        logicalKey == LogicalKeyboardKey.keyL ||
+        logicalKey == LogicalKeyboardKey.keyE ||
+        logicalKey == LogicalKeyboardKey.keyG;
+  }
+
+  if (primaryPressed && !shift && !alt) {
+    return _chromeTabIndexForShortcutKey(logicalKey) != null ||
+        logicalKey == LogicalKeyboardKey.keyT ||
+        logicalKey == LogicalKeyboardKey.keyW ||
+        logicalKey == LogicalKeyboardKey.pageUp ||
+        logicalKey == LogicalKeyboardKey.pageDown;
+  }
+
+  if (control && !meta && !alt && logicalKey == LogicalKeyboardKey.tab) {
+    return true;
+  }
+
+  if (usesCommandShortcuts &&
+      meta &&
+      alt &&
+      !control &&
+      !shift &&
+      (logicalKey == LogicalKeyboardKey.arrowLeft ||
+          logicalKey == LogicalKeyboardKey.arrowRight)) {
+    return true;
+  }
+
+  return false;
+}
+
+int? _chromeTabIndexForShortcutKey(LogicalKeyboardKey key) {
+  return switch (key) {
+    LogicalKeyboardKey.digit1 || LogicalKeyboardKey.numpad1 => 1,
+    LogicalKeyboardKey.digit2 || LogicalKeyboardKey.numpad2 => 2,
+    LogicalKeyboardKey.digit3 || LogicalKeyboardKey.numpad3 => 3,
+    LogicalKeyboardKey.digit4 || LogicalKeyboardKey.numpad4 => 4,
+    LogicalKeyboardKey.digit5 || LogicalKeyboardKey.numpad5 => 5,
+    LogicalKeyboardKey.digit6 || LogicalKeyboardKey.numpad6 => 6,
+    LogicalKeyboardKey.digit7 || LogicalKeyboardKey.numpad7 => 7,
+    LogicalKeyboardKey.digit8 || LogicalKeyboardKey.numpad8 => 8,
+    LogicalKeyboardKey.digit9 || LogicalKeyboardKey.numpad9 => 9,
+    _ => null,
+  };
+}
+
 /// What the hardware-key path should do with one key event.
 enum TerminalKeyRouteKind {
   /// Let the attached `TextInput`/IME own this input — the key path returns
@@ -78,10 +145,12 @@ class TerminalKeyRoute {
 
   const TerminalKeyRoute._(this.kind, [this.bytes]);
 
-  static const deferToTextInput =
-      TerminalKeyRoute._(TerminalKeyRouteKind.deferToTextInput);
-  static const encodeViaGhostty =
-      TerminalKeyRoute._(TerminalKeyRouteKind.encodeViaGhostty);
+  static const deferToTextInput = TerminalKeyRoute._(
+    TerminalKeyRouteKind.deferToTextInput,
+  );
+  static const encodeViaGhostty = TerminalKeyRoute._(
+    TerminalKeyRouteKind.encodeViaGhostty,
+  );
   static const ignore = TerminalKeyRoute._(TerminalKeyRouteKind.ignore);
 
   factory TerminalKeyRoute.send(List<int> bytes) =>
@@ -132,7 +201,8 @@ TerminalKeyRoute classifyTerminalKey({
   // Plain Enter is "text" too: when a TextInput connection owns text it also
   // owns the newline (performAction). Modified Enter keeps the key path for its
   // proper escape sequence.
-  final isEnter = logicalKey == LogicalKeyboardKey.enter ||
+  final isEnter =
+      logicalKey == LogicalKeyboardKey.enter ||
       logicalKey == LogicalKeyboardKey.numpadEnter;
   if (isEnter && textInputAttached && !control && !alt && !meta) {
     return TerminalKeyRoute.deferToTextInput;
