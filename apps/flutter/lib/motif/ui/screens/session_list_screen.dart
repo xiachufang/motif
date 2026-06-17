@@ -13,12 +13,12 @@ import '../app.dart';
 import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/tailscale_section.dart';
 import 'create_session_dialog.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
 import 'session_screen.dart';
-import '../widgets/tailscale_section.dart';
 
 /// Root screen after servers are configured: grouped session picker for all
 /// manually connected servers.
@@ -132,8 +132,25 @@ class _SessionListScreenState extends State<SessionListScreen>
     await app.connectServerAndRefresh(server.id, force: true);
     if (mounted &&
         app.serverViewState(server.id).primaryAction ==
-            ServerConnectionAction.openTailscale) {
-      showTailscaleConnectionSheet(context);
+            ServerConnectionAction.setupTransport) {
+      await _setupTransport(server);
+    }
+  }
+
+  Future<void> _setupTransport(MotifServer server) async {
+    if (!mounted) return;
+    switch (server.kind) {
+      case ServerKind.tailscale:
+        showTailscaleConnectionSheet(context);
+        return;
+      case ServerKind.ssh:
+        await showServerEditSheet(context, existing: server);
+        return;
+      case ServerKind.rendezvous:
+        await _pairAndConnectServer();
+        return;
+      case ServerKind.direct:
+        return;
     }
   }
 
@@ -166,6 +183,7 @@ class _SessionListScreenState extends State<SessionListScreen>
                 onAddServer: _addAndConnectServer,
                 onPairServer: _pairAndConnectServer,
                 onConnectServer: _connectServer,
+                onSetupTransport: _setupTransport,
               )
             : ListView.separated(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -538,12 +556,14 @@ class _SessionListEmptyState extends StatelessWidget {
   final Future<void> Function() onAddServer;
   final Future<void> Function() onPairServer;
   final Future<void> Function(MotifServer server) onConnectServer;
+  final Future<void> Function(MotifServer server) onSetupTransport;
 
   const _SessionListEmptyState({
     required this.app,
     required this.onAddServer,
     required this.onPairServer,
     required this.onConnectServer,
+    required this.onSetupTransport,
   });
 
   @override
@@ -554,14 +574,13 @@ class _SessionListEmptyState extends StatelessWidget {
     final view = active == null ? null : app.serverViewState(active.id);
     final action = view?.primaryAction ?? ServerConnectionAction.none;
     final connecting = view?.showSpinner ?? false;
-    final tailscaleNeedsSetup = action == ServerConnectionAction.openTailscale;
+    final transportSetupNeeded =
+        action == ServerConnectionAction.setupTransport;
     final failed = view?.statusLabel == 'Failed';
     final title = active == null
         ? 'No servers configured'
-        : connecting && (view?.statusLabel.startsWith('Tailscale') ?? false)
-        ? 'Connecting Tailscale…'
-        : tailscaleNeedsSetup
-        ? 'Tailscale is not connected'
+        : transportSetupNeeded
+        ? view?.statusLabel ?? 'Reach via setup needed'
         : connecting
         ? 'Connecting to ${active.name}'
         : failed
@@ -569,10 +588,9 @@ class _SessionListEmptyState extends StatelessWidget {
         : 'No connected servers';
     final subtitle = active == null
         ? 'Connect a motifd server to load sessions.'
-        : connecting && (view?.statusLabel.startsWith('Tailscale') ?? false)
-        ? 'Waiting for Tailscale to reach ${active.name}.'
-        : tailscaleNeedsSetup
-        ? 'Start Tailscale to reach ${active.name}.'
+        : transportSetupNeeded
+        ? (view?.subtitle.split('\n').last ??
+              'Set up reach via for ${active.name}.')
         : failed
         ? (view?.subtitle.split('\n').last ?? 'Connection failed')
         : 'Connect ${active.name} to load its sessions.';
@@ -610,8 +628,8 @@ class _SessionListEmptyState extends StatelessWidget {
                     MotifButton(
                       label: active == null
                           ? 'Connect a Server'
-                          : tailscaleNeedsSetup
-                          ? 'Setup Tailscale'
+                          : transportSetupNeeded
+                          ? 'Setup Reach Via'
                           : connecting
                           ? 'Connecting…'
                           : failed
@@ -619,8 +637,8 @@ class _SessionListEmptyState extends StatelessWidget {
                           : 'Connect ${active.name}',
                       icon: active == null
                           ? Icons.dns_outlined
-                          : tailscaleNeedsSetup
-                          ? Icons.shield_outlined
+                          : transportSetupNeeded
+                          ? Icons.tune
                           : Icons.cloud_sync_outlined,
                       onPressed:
                           connecting || action == ServerConnectionAction.none
@@ -661,11 +679,13 @@ class _SessionListEmptyState extends StatelessWidget {
       case ServerConnectionAction.disconnect:
       case ServerConnectionAction.openSessions:
         return;
-      case ServerConnectionAction.openTailscale:
-        showTailscaleConnectionSheet(context);
+      case ServerConnectionAction.setupTransport:
+        unawaited(onSetupTransport(server));
+        return;
       case ServerConnectionAction.connect:
       case ServerConnectionAction.retry:
         unawaited(onConnectServer(server));
+        return;
     }
   }
 }

@@ -52,8 +52,7 @@ void main() {
       // crates/motif-server/src/rzv.rs.
       final psk = Uint8List.fromList(List.generate(32, (i) => i));
       final token = RzvProtocol.deriveToken(psk);
-      final hex =
-          token.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      final hex = token.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
       expect(
         hex,
         'bb48b13937710e30c1fffa843593313a7d403c44236eb01d6c86842e43bfa7da',
@@ -80,6 +79,7 @@ void main() {
       expect(ServerKind.fromWire('mystery'), ServerKind.direct);
       expect(ServerKind.fromWire(null), ServerKind.direct);
       expect(ServerKind.fromWire('tailscale'), ServerKind.tailscale);
+      expect(ServerKind.fromWire('ssh'), ServerKind.ssh);
     });
   });
 }

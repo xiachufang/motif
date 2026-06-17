@@ -12,6 +12,7 @@ import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/reach_via_section.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -20,8 +21,16 @@ import 'server_edit_sheet.dart';
 class ConnectionScreen extends StatelessWidget {
   const ConnectionScreen({super.key});
 
-  Future<void> _addServer(BuildContext context, AppState app) async {
-    final result = await showServerEditSheet(context, connectOnSave: true);
+  Future<void> _addServer(
+    BuildContext context,
+    AppState app, {
+    ServerKind? initialKind,
+  }) async {
+    final result = await showServerEditSheet(
+      context,
+      initialKind: initialKind,
+      connectOnSave: true,
+    );
     if (result == null || !result.connectAfterSave) return;
     if (!context.mounted) return;
     await _connectServer(context, app, result.server);
@@ -43,11 +52,10 @@ class ConnectionScreen extends StatelessWidget {
     MotifServer server,
   ) async {
     await app.connectServerAndRefresh(server.id, force: true, makeActive: true);
-    if (tailscaleSupported &&
-        context.mounted &&
+    if (context.mounted &&
         app.serverViewState(server.id).primaryAction ==
-            ServerConnectionAction.openTailscale) {
-      showTailscaleConnectionSheet(context);
+            ServerConnectionAction.setupTransport) {
+      _setupTransport(context, app, server);
     }
   }
 
@@ -68,13 +76,32 @@ class ConnectionScreen extends StatelessWidget {
       case ServerConnectionAction.connect:
       case ServerConnectionAction.retry:
         unawaited(_connectServer(context, app, server));
+        return;
       case ServerConnectionAction.disconnect:
         unawaited(app.disconnectServer(server.id));
-      case ServerConnectionAction.openTailscale:
-        if (!tailscaleSupported) return;
-        showTailscaleConnectionSheet(context);
+        return;
+      case ServerConnectionAction.setupTransport:
+        _setupTransport(context, app, server);
+        return;
       case ServerConnectionAction.openSessions:
         _openSessions(context);
+        return;
+    }
+  }
+
+  void _setupTransport(BuildContext context, AppState app, MotifServer server) {
+    switch (server.kind) {
+      case ServerKind.tailscale:
+        if (tailscaleSupported) showTailscaleConnectionSheet(context);
+        return;
+      case ServerKind.ssh:
+        unawaited(showServerEditSheet(context, existing: server));
+        return;
+      case ServerKind.rendezvous:
+        unawaited(_pairServer(context, app));
+        return;
+      case ServerKind.direct:
+        return;
     }
   }
 
@@ -95,13 +122,16 @@ class ConnectionScreen extends StatelessWidget {
             MotifSpacing.xl,
           ),
           children: [
-            if (tailscaleSupported) ...[
-              const MotifSection(
-                title: 'Tailscale',
-                children: [TailscaleSection()],
+            ReachViaSection(
+              onAddDirect: () => unawaited(
+                _addServer(context, app, initialKind: ServerKind.direct),
               ),
-              const SizedBox(height: MotifSpacing.xl),
-            ],
+              onPairRendezvous: () => unawaited(_pairServer(context, app)),
+              onAddSsh: () => unawaited(
+                _addServer(context, app, initialKind: ServerKind.ssh),
+              ),
+            ),
+            const SizedBox(height: MotifSpacing.xl),
             MotifSection(
               title: 'Servers',
               headerTrailing: Row(
@@ -234,9 +264,12 @@ class _ServerRowState extends State<_ServerRow> {
     final generation = ++_pingGeneration;
 
     _setPingIndicator(_ServerPingIndicator.checking);
-    final result = server.kind == ServerKind.tailscale
-        ? await _pingTailscaleServer(tailscale, server)
-        : await _pingDirectServer(server);
+    final result = switch (server.kind) {
+      ServerKind.tailscale => await _pingTailscaleServer(tailscale, server),
+      ServerKind.ssh => _ServerPingIndicator.unavailable('Via SSH'),
+      ServerKind.rendezvous ||
+      ServerKind.direct => await _pingDirectServer(server),
+    };
     if (!mounted || generation != _pingGeneration) return;
     _setPingIndicator(result);
   }
@@ -291,6 +324,7 @@ class _ServerRowState extends State<_ServerRow> {
     final action = view.primaryAction;
     final showPingBadge = view.statusLabel == 'Offline';
     return MotifSectionRow(
+      key: ValueKey('server-row-${widget.server.id}'),
       leading: Icon(
         _iconForViewState(view),
         key: ValueKey('server-kind-icon-${widget.server.id}'),
@@ -359,6 +393,7 @@ IconData _iconForViewState(ServerConnectionViewState viewState) {
     ServerConnectionIconKind.direct => Icons.public,
     ServerConnectionIconKind.tailscale => Icons.hub_outlined,
     ServerConnectionIconKind.rendezvous => Icons.cell_tower_outlined,
+    ServerConnectionIconKind.ssh => Icons.key_outlined,
     ServerConnectionIconKind.sync => Icons.cloud_sync_outlined,
     ServerConnectionIconKind.warning => Icons.warning_rounded,
     ServerConnectionIconKind.offline => Icons.cloud_off_outlined,
@@ -380,7 +415,7 @@ IconData _iconForAction(ServerConnectionAction action) {
     ServerConnectionAction.connect => Icons.cloud_sync_outlined,
     ServerConnectionAction.retry => Icons.refresh,
     ServerConnectionAction.disconnect => Icons.link_off_outlined,
-    ServerConnectionAction.openTailscale => Icons.shield_outlined,
+    ServerConnectionAction.setupTransport => Icons.tune,
     ServerConnectionAction.openSessions => Icons.terminal,
     ServerConnectionAction.none => Icons.circle_outlined,
   };
@@ -391,7 +426,7 @@ String _tooltipForAction(ServerConnectionAction action) {
     ServerConnectionAction.connect => 'Connect Server',
     ServerConnectionAction.retry => 'Retry Connection',
     ServerConnectionAction.disconnect => 'Disconnect Server',
-    ServerConnectionAction.openTailscale => 'Setup Tailscale',
+    ServerConnectionAction.setupTransport => 'Setup Reach Via',
     ServerConnectionAction.openSessions => 'Open Sessions',
     ServerConnectionAction.none => '',
   };

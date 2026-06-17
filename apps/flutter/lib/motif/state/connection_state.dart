@@ -1,87 +1,229 @@
 import '../models/settings.dart';
 import '../platform/services.dart';
 
-enum ConnectionBlockerKind {
-  tailscaleStopped,
-  tailscaleStarting,
-  tailscaleNeedsAuth,
-  tailscaleDegraded,
-  tailscaleFailed,
-  transportUnavailable,
+enum TransportStatus {
+  ready,
+  setupNeeded,
+  starting,
+  degraded,
+  unavailable,
+  failed,
 }
 
-class ConnectionBlocker {
-  final ConnectionBlockerKind kind;
-  final String message;
-  final TailscaleStatus? tailscaleStatus;
+enum TransportAction { none, setup, retry }
 
-  const ConnectionBlocker({
+class TransportViewState {
+  final ServerKind kind;
+  final TransportStatus status;
+  final String statusLabel;
+  final String message;
+  final ServerConnectionTone tone;
+  final ServerConnectionIconKind icon;
+  final bool showSpinner;
+  final TransportAction action;
+
+  const TransportViewState({
     required this.kind,
+    required this.status,
+    required this.statusLabel,
     required this.message,
-    this.tailscaleStatus,
+    required this.tone,
+    required this.icon,
+    this.showSpinner = false,
+    this.action = TransportAction.none,
   });
 
-  factory ConnectionBlocker.tailscale(TailscaleState state) {
+  bool get isReady => status == TransportStatus.ready;
+
+  factory TransportViewState.direct(MotifServer server) => TransportViewState(
+    kind: ServerKind.direct,
+    status: TransportStatus.ready,
+    statusLabel: 'Direct',
+    message: server.endpoint,
+    tone: ServerConnectionTone.neutral,
+    icon: ServerConnectionIconKind.direct,
+  );
+
+  factory TransportViewState.rendezvous(
+    MotifServer server, {
+    String? validationMessage,
+  }) {
+    if (validationMessage != null) {
+      return TransportViewState(
+        kind: ServerKind.rendezvous,
+        status: TransportStatus.setupNeeded,
+        statusLabel: 'Rendezvous setup',
+        message: validationMessage,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.rendezvous,
+        action: TransportAction.setup,
+      );
+    }
+    return TransportViewState(
+      kind: ServerKind.rendezvous,
+      status: TransportStatus.ready,
+      statusLabel: 'Rendezvous paired',
+      message: server.relay.isEmpty ? server.endpoint : server.relay,
+      tone: ServerConnectionTone.neutral,
+      icon: ServerConnectionIconKind.rendezvous,
+    );
+  }
+
+  factory TransportViewState.ssh(
+    MotifServer server, {
+    String? validationMessage,
+  }) {
+    if (validationMessage != null) {
+      return TransportViewState(
+        kind: ServerKind.ssh,
+        status: TransportStatus.setupNeeded,
+        statusLabel: 'SSH setup',
+        message: validationMessage,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.ssh,
+        action: TransportAction.setup,
+      );
+    }
+    final user = server.sshUsername.trim();
+    final ssh = user.isEmpty
+        ? server.sshEndpoint
+        : '$user@${server.sshEndpoint}';
+    return TransportViewState(
+      kind: ServerKind.ssh,
+      status: TransportStatus.ready,
+      statusLabel: 'SSH configured',
+      message: '$ssh -> ${server.endpoint}',
+      tone: ServerConnectionTone.neutral,
+      icon: ServerConnectionIconKind.ssh,
+    );
+  }
+
+  factory TransportViewState.tailscale(
+    MotifServer server,
+    TailscaleState state,
+  ) {
     return switch (state.status) {
-      TailscaleStatus.stopped => const ConnectionBlocker(
-        kind: ConnectionBlockerKind.tailscaleStopped,
+      TailscaleStatus.stopped => const TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.setupNeeded,
+        statusLabel: 'Tailscale setup',
         message: 'Start Tailscale to reach tailnet servers.',
-        tailscaleStatus: TailscaleStatus.stopped,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.tailscale,
+        action: TransportAction.setup,
       ),
-      TailscaleStatus.starting => ConnectionBlocker(
-        kind: ConnectionBlockerKind.tailscaleStarting,
+      TailscaleStatus.starting => TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.starting,
+        statusLabel: 'Tailscale starting',
         message: state.detail ?? 'Waiting for Tailscale to finish connecting.',
-        tailscaleStatus: TailscaleStatus.starting,
+        tone: ServerConnectionTone.accent,
+        icon: ServerConnectionIconKind.tailscale,
+        showSpinner: true,
       ),
-      TailscaleStatus.needsAuth => ConnectionBlocker(
-        kind: ConnectionBlockerKind.tailscaleNeedsAuth,
+      TailscaleStatus.needsAuth => TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.setupNeeded,
+        statusLabel: 'Tailscale login',
         message: state.detail ?? 'Tailscale login is required.',
-        tailscaleStatus: TailscaleStatus.needsAuth,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.tailscale,
+        action: TransportAction.setup,
       ),
-      TailscaleStatus.degraded => ConnectionBlocker(
-        kind: ConnectionBlockerKind.tailscaleDegraded,
+      TailscaleStatus.running => TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.ready,
+        statusLabel: 'Tailscale ready',
+        message: state.detail ?? server.endpoint,
+        tone: ServerConnectionTone.neutral,
+        icon: ServerConnectionIconKind.tailscale,
+      ),
+      TailscaleStatus.degraded => TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.degraded,
+        statusLabel: 'Tailscale reconnecting',
         message: state.detail ?? 'Tailscale is reconnecting.',
-        tailscaleStatus: TailscaleStatus.degraded,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.tailscale,
+        showSpinner: true,
+        action: TransportAction.setup,
       ),
-      TailscaleStatus.failed => ConnectionBlocker(
-        kind: ConnectionBlockerKind.tailscaleFailed,
+      TailscaleStatus.failed => TransportViewState(
+        kind: ServerKind.tailscale,
+        status: TransportStatus.failed,
+        statusLabel: 'Tailscale failed',
         message: state.detail ?? 'Tailscale failed to start.',
-        tailscaleStatus: TailscaleStatus.failed,
-      ),
-      TailscaleStatus.running => const ConnectionBlocker(
-        kind: ConnectionBlockerKind.transportUnavailable,
-        message: 'Transport is unavailable.',
-        tailscaleStatus: TailscaleStatus.running,
+        tone: ServerConnectionTone.danger,
+        icon: ServerConnectionIconKind.tailscale,
+        action: TransportAction.setup,
       ),
     };
   }
 
-  factory ConnectionBlocker.transport(String message) => ConnectionBlocker(
-    kind: ConnectionBlockerKind.transportUnavailable,
+  factory TransportViewState.unavailable({
+    required ServerKind kind,
+    required String statusLabel,
+    required String message,
+  }) => TransportViewState(
+    kind: kind,
+    status: TransportStatus.unavailable,
+    statusLabel: statusLabel,
+    message: message,
+    tone: ServerConnectionTone.warning,
+    icon: _iconForKind(kind),
+  );
+
+  factory TransportViewState.failure({
+    required ServerKind kind,
+    required String statusLabel,
+    required String message,
+    TransportAction action = TransportAction.retry,
+  }) => TransportViewState(
+    kind: kind,
+    status: TransportStatus.failed,
+    statusLabel: statusLabel,
+    message: message,
+    tone: ServerConnectionTone.danger,
+    icon: _iconForKind(kind),
+    action: action,
+  );
+
+  static ServerConnectionIconKind _iconForKind(ServerKind kind) =>
+      switch (kind) {
+        ServerKind.direct => ServerConnectionIconKind.direct,
+        ServerKind.tailscale => ServerConnectionIconKind.tailscale,
+        ServerKind.rendezvous => ServerConnectionIconKind.rendezvous,
+        ServerKind.ssh => ServerConnectionIconKind.ssh,
+      };
+}
+
+class ConnectionBlocker {
+  final TransportViewState transport;
+  final String message;
+
+  const ConnectionBlocker({required this.transport, required this.message});
+
+  factory ConnectionBlocker.fromTransport(TransportViewState transport) =>
+      ConnectionBlocker(transport: transport, message: transport.message);
+
+  factory ConnectionBlocker.transport(
+    String message, {
+    ServerKind kind = ServerKind.direct,
+  }) => ConnectionBlocker(
+    transport: TransportViewState.unavailable(
+      kind: kind,
+      statusLabel: 'Transport unavailable',
+      message: message,
+    ),
     message: message,
   );
 
-  bool get canOpenTailscale =>
-      kind != ConnectionBlockerKind.tailscaleStarting &&
-      kind != ConnectionBlockerKind.transportUnavailable;
+  String get statusLabel => transport.statusLabel;
+  ServerConnectionTone get tone => transport.tone;
+  ServerConnectionIconKind get icon => transport.icon;
+  bool get showSpinner => transport.showSpinner;
 
-  String get statusLabel => switch (kind) {
-    ConnectionBlockerKind.tailscaleStopped => 'Tailscale off',
-    ConnectionBlockerKind.tailscaleStarting => 'Tailscale starting',
-    ConnectionBlockerKind.tailscaleNeedsAuth => 'Tailscale login',
-    ConnectionBlockerKind.tailscaleDegraded => 'Tailscale reconnecting',
-    ConnectionBlockerKind.tailscaleFailed => 'Tailscale failed',
-    ConnectionBlockerKind.transportUnavailable => 'Unavailable',
-  };
-
-  String get terminalOverlay => switch (kind) {
-    ConnectionBlockerKind.tailscaleStopped => 'Tailscale disconnected',
-    ConnectionBlockerKind.tailscaleStarting => 'Connecting Tailscale...',
-    ConnectionBlockerKind.tailscaleNeedsAuth => 'Tailscale needs login',
-    ConnectionBlockerKind.tailscaleDegraded => 'Reconnecting Tailscale...',
-    ConnectionBlockerKind.tailscaleFailed => 'Tailscale failed',
-    ConnectionBlockerKind.transportUnavailable => message,
-  };
+  String get terminalOverlay => message;
 }
 
 sealed class ServerConnectionState {
@@ -133,7 +275,7 @@ enum ServerConnectionAction {
   connect,
   retry,
   disconnect,
-  openTailscale,
+  setupTransport,
   openSessions,
 }
 
@@ -143,6 +285,7 @@ enum ServerConnectionIconKind {
   direct,
   tailscale,
   rendezvous,
+  ssh,
   sync,
   warning,
   offline,
@@ -176,46 +319,44 @@ class ServerConnectionViewState {
   factory ServerConnectionViewState.from({
     required MotifServer server,
     required ServerConnectionState state,
+    required TransportViewState transport,
   }) {
-    final baseIcon = switch (server.kind) {
-      ServerKind.tailscale => ServerConnectionIconKind.tailscale,
-      ServerKind.rendezvous => ServerConnectionIconKind.rendezvous,
-      ServerKind.direct => ServerConnectionIconKind.direct,
-    };
+    final endpoint = _subtitleEndpoint(server);
     return switch (state) {
-      ServerIdle() => ServerConnectionViewState(
-        statusLabel: 'Offline',
-        subtitle: server.endpoint,
-        tone: ServerConnectionTone.neutral,
-        icon: baseIcon,
-        showSpinner: false,
-        canOpenTerminal: false,
-        canInput: false,
-        terminalOverlay: null,
-        primaryAction: ServerConnectionAction.connect,
-        tapAction: ServerConnectionAction.connect,
-      ),
+      ServerIdle() =>
+        transport.isReady
+            ? ServerConnectionViewState(
+                statusLabel: 'Offline',
+                subtitle: endpoint,
+                tone: ServerConnectionTone.neutral,
+                icon: transport.icon,
+                showSpinner: false,
+                canOpenTerminal: false,
+                canInput: false,
+                terminalOverlay: null,
+                primaryAction: ServerConnectionAction.connect,
+                tapAction: ServerConnectionAction.connect,
+              )
+            : _fromTransport(
+                transport: transport,
+                endpoint: endpoint,
+                canOpenTerminal: false,
+              ),
       ServerBlocked(:final blocker) => ServerConnectionViewState(
         statusLabel: blocker.statusLabel,
-        subtitle: '${server.endpoint}\n${blocker.message}',
-        tone: blocker.kind == ConnectionBlockerKind.tailscaleStarting
-            ? ServerConnectionTone.accent
-            : ServerConnectionTone.warning,
-        icon: ServerConnectionIconKind.warning,
-        showSpinner: blocker.kind == ConnectionBlockerKind.tailscaleStarting,
+        subtitle: '$endpoint\n${blocker.message}',
+        tone: blocker.tone,
+        icon: blocker.icon,
+        showSpinner: blocker.showSpinner,
         canOpenTerminal: false,
         canInput: false,
         terminalOverlay: null,
-        primaryAction: blocker.canOpenTailscale
-            ? ServerConnectionAction.openTailscale
-            : ServerConnectionAction.none,
-        tapAction: blocker.canOpenTailscale
-            ? ServerConnectionAction.openTailscale
-            : ServerConnectionAction.none,
+        primaryAction: _serverActionForTransport(blocker.transport.action),
+        tapAction: _serverActionForTransport(blocker.transport.action),
       ),
       ServerConnecting() => ServerConnectionViewState(
         statusLabel: 'Connecting...',
-        subtitle: server.endpoint,
+        subtitle: endpoint,
         tone: ServerConnectionTone.accent,
         icon: ServerConnectionIconKind.sync,
         showSpinner: true,
@@ -227,9 +368,9 @@ class ServerConnectionViewState {
       ),
       ServerConnected() => ServerConnectionViewState(
         statusLabel: 'Connected',
-        subtitle: server.endpoint,
+        subtitle: endpoint,
         tone: ServerConnectionTone.success,
-        icon: baseIcon,
+        icon: transport.icon,
         showSpinner: false,
         canOpenTerminal: true,
         canInput: false,
@@ -239,9 +380,9 @@ class ServerConnectionViewState {
       ),
       ServerAttached(:final session) => ServerConnectionViewState(
         statusLabel: 'Live',
-        subtitle: '${server.endpoint}\nAttached: $session',
+        subtitle: '$endpoint\nAttached: $session',
         tone: ServerConnectionTone.success,
-        icon: baseIcon,
+        icon: transport.icon,
         showSpinner: false,
         canOpenTerminal: true,
         canInput: true,
@@ -251,24 +392,20 @@ class ServerConnectionViewState {
       ),
       ServerSuspended(:final session, :final blocker) =>
         ServerConnectionViewState(
-          statusLabel: 'Reconnecting',
-          subtitle: '${server.endpoint}\n${blocker.message}',
-          tone: ServerConnectionTone.warning,
-          icon: ServerConnectionIconKind.warning,
-          showSpinner: true,
+          statusLabel: blocker.statusLabel,
+          subtitle: '$endpoint\n${blocker.message}',
+          tone: blocker.tone,
+          icon: blocker.icon,
+          showSpinner: blocker.showSpinner,
           canOpenTerminal: session != null,
           canInput: false,
           terminalOverlay: blocker.terminalOverlay,
-          primaryAction: blocker.canOpenTailscale
-              ? ServerConnectionAction.openTailscale
-              : ServerConnectionAction.none,
-          tapAction: blocker.canOpenTailscale
-              ? ServerConnectionAction.openTailscale
-              : ServerConnectionAction.none,
+          primaryAction: _serverActionForTransport(blocker.transport.action),
+          tapAction: _serverActionForTransport(blocker.transport.action),
         ),
       ServerReconnecting(:final session) => ServerConnectionViewState(
         statusLabel: 'Reconnecting',
-        subtitle: server.endpoint,
+        subtitle: endpoint,
         tone: ServerConnectionTone.accent,
         icon: ServerConnectionIconKind.sync,
         showSpinner: true,
@@ -280,7 +417,7 @@ class ServerConnectionViewState {
       ),
       ServerFailed(:final message, :final session) => ServerConnectionViewState(
         statusLabel: 'Failed',
-        subtitle: '${server.endpoint}\nFailed: $message',
+        subtitle: '$endpoint\nFailed: $message',
         tone: ServerConnectionTone.danger,
         icon: ServerConnectionIconKind.warning,
         showSpinner: false,
@@ -291,5 +428,42 @@ class ServerConnectionViewState {
         tapAction: ServerConnectionAction.retry,
       ),
     };
+  }
+
+  static ServerConnectionViewState _fromTransport({
+    required TransportViewState transport,
+    required String endpoint,
+    required bool canOpenTerminal,
+  }) {
+    final action = _serverActionForTransport(transport.action);
+    return ServerConnectionViewState(
+      statusLabel: transport.statusLabel,
+      subtitle: '$endpoint\n${transport.message}',
+      tone: transport.tone,
+      icon: transport.icon,
+      showSpinner: transport.showSpinner,
+      canOpenTerminal: canOpenTerminal,
+      canInput: false,
+      terminalOverlay: transport.message,
+      primaryAction: action,
+      tapAction: action,
+    );
+  }
+
+  static ServerConnectionAction _serverActionForTransport(
+    TransportAction action,
+  ) => switch (action) {
+    TransportAction.none => ServerConnectionAction.none,
+    TransportAction.setup => ServerConnectionAction.setupTransport,
+    TransportAction.retry => ServerConnectionAction.retry,
+  };
+
+  static String _subtitleEndpoint(MotifServer server) {
+    if (server.kind != ServerKind.ssh) return server.endpoint;
+    final user = server.sshUsername.trim();
+    final ssh = user.isEmpty
+        ? server.sshEndpoint
+        : '$user@${server.sshEndpoint}';
+    return '${server.endpoint} via SSH $ssh';
   }
 }

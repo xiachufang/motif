@@ -24,122 +24,147 @@ void main() {
     await relay.stop();
   });
 
-  test('resolves to a loopback target that reaches motifd via the relay',
-      () async {
-    relay = await _FakeRelay.start();
-    final s = MotifServer(
-      id: 'rzv-1',
-      name: 'studio',
-      host: 'studio',
-      kind: ServerKind.rendezvous,
-      relay: '127.0.0.1:${relay.port}',
-      psk: pskB64,
-    );
+  test(
+    'resolves to a loopback target that reaches motifd via the relay',
+    () async {
+      relay = await _FakeRelay.start();
+      final s = MotifServer(
+        id: 'rzv-1',
+        name: 'studio',
+        host: 'studio',
+        kind: ServerKind.rendezvous,
+        relay: '127.0.0.1:${relay.port}',
+        psk: pskB64,
+      );
 
-    final res = await resolver.resolve(s);
-    expect(res, isA<TransportReady>());
-    final ready = res as TransportReady;
-    expect(ready.target.host, '127.0.0.1');
-    expect(ready.target.scheme, 'http');
-    expect(ready.target.port, greaterThan(0));
+      final res = await resolver.resolve(s);
+      expect(res, isA<TransportReady>());
+      final ready = res as TransportReady;
+      expect(ready.target.host, '127.0.0.1');
+      expect(ready.target.scheme, 'http');
+      expect(ready.target.port, greaterThan(0));
 
-    // The loopback target really tunnels through the relay: connect to it and
-    // confirm the fake relay echoes (i.e. the forwarder paired and spliced).
-    final client = await Socket.connect('127.0.0.1', ready.target.port);
-    final payload = Uint8List.fromList('via-resolver'.codeUnits);
-    final echo = _collect(client, payload.length);
-    client.add(payload);
-    await client.flush();
-    expect(
-      await echo.timeout(const Duration(seconds: 5)),
-      payload,
-    );
-    expect(relay.hellos, hasLength(1));
-    expect(
-      RzvProtocol.parseHello(relay.hellos.single).token,
-      RzvProtocol.deriveToken(pskBytes),
-      reason: 'wire token is HKDF-derived from the pairing secret, not the raw psk',
-    );
+      // The loopback target really tunnels through the relay: connect to it and
+      // confirm the fake relay echoes (i.e. the forwarder paired and spliced).
+      final client = await Socket.connect('127.0.0.1', ready.target.port);
+      final payload = Uint8List.fromList('via-resolver'.codeUnits);
+      final echo = _collect(client, payload.length);
+      client.add(payload);
+      await client.flush();
+      expect(await echo.timeout(const Duration(seconds: 5)), payload);
+      expect(relay.hellos, hasLength(1));
+      expect(
+        RzvProtocol.parseHello(relay.hellos.single).token,
+        RzvProtocol.deriveToken(pskBytes),
+        reason:
+            'wire token is HKDF-derived from the pairing secret, not the raw psk',
+      );
 
-    await client.close();
-    await resolver.stopForwarder('rzv-1');
-  }, timeout: const Timeout(Duration(seconds: 15)));
+      await client.close();
+      await resolver.stopForwarder('rzv-1');
+    },
+    timeout: const Timeout(Duration(seconds: 15)),
+  );
 
-  test('reuses one forwarder across repeated resolves', () async {
-    relay = await _FakeRelay.start();
-    final s = MotifServer(
-      id: 'rzv-1',
-      name: 'studio',
-      host: 'studio',
-      kind: ServerKind.rendezvous,
-      relay: '127.0.0.1:${relay.port}',
-      psk: pskB64,
-    );
-    final a = await resolver.resolve(s) as TransportReady;
-    final b = await resolver.resolve(s) as TransportReady;
-    expect(a.target.port, b.target.port, reason: 'same forwarder reused');
-    await resolver.stopForwarder('rzv-1');
-  }, timeout: const Timeout(Duration(seconds: 15)));
+  test(
+    'reuses one forwarder across repeated resolves',
+    () async {
+      relay = await _FakeRelay.start();
+      final s = MotifServer(
+        id: 'rzv-1',
+        name: 'studio',
+        host: 'studio',
+        kind: ServerKind.rendezvous,
+        relay: '127.0.0.1:${relay.port}',
+        psk: pskB64,
+      );
+      final a = await resolver.resolve(s) as TransportReady;
+      final b = await resolver.resolve(s) as TransportReady;
+      expect(a.target.port, b.target.port, reason: 'same forwarder reused');
+      await resolver.stopForwarder('rzv-1');
+    },
+    timeout: const Timeout(Duration(seconds: 15)),
+  );
 
-  test('with a cert pin in the QR resolves to https + 32-byte certPin',
-      () async {
-    relay = await _FakeRelay.start();
-    final pin = base64Url
-        .encode(Uint8List.fromList(List.generate(32, (i) => i + 1)))
-        .replaceAll('=', '');
-    final s = MotifServer(
-      id: 'rzv-pin',
-      name: 'studio',
-      host: 'studio',
-      kind: ServerKind.rendezvous,
-      relay: '127.0.0.1:${relay.port}',
-      psk: pskB64,
-      pubKey: pin,
-    );
-    final res = await resolver.resolve(s) as TransportReady;
-    expect(res.target.scheme, 'https');
-    expect(res.certPin, isNotNull);
-    expect(res.certPin!.length, 32);
-    await resolver.stopForwarder('rzv-pin');
-  }, timeout: const Timeout(Duration(seconds: 15)));
+  test(
+    'with a cert pin in the QR resolves to https + 32-byte certPin',
+    () async {
+      relay = await _FakeRelay.start();
+      final pin = base64Url
+          .encode(Uint8List.fromList(List.generate(32, (i) => i + 1)))
+          .replaceAll('=', '');
+      final s = MotifServer(
+        id: 'rzv-pin',
+        name: 'studio',
+        host: 'studio',
+        kind: ServerKind.rendezvous,
+        relay: '127.0.0.1:${relay.port}',
+        psk: pskB64,
+        pubKey: pin,
+      );
+      final res = await resolver.resolve(s) as TransportReady;
+      expect(res.target.scheme, 'https');
+      expect(res.certPin, isNotNull);
+      expect(res.certPin!.length, 32);
+      await resolver.stopForwarder('rzv-pin');
+    },
+    timeout: const Timeout(Duration(seconds: 15)),
+  );
 
-  test('fails cleanly on a bad relay address or pairing secret', () async {
-    relay = await _FakeRelay.start();
-    final badRelay = MotifServer(
-      id: 'x',
-      name: 'x',
-      host: 'x',
-      kind: ServerKind.rendezvous,
-      relay: 'no-port',
-      psk: pskB64,
-    );
-    expect(await resolver.resolve(badRelay), isA<TransportFailed>());
+  test(
+    'blocks cleanly on a bad relay address or pairing secret',
+    () async {
+      relay = await _FakeRelay.start();
+      final badRelay = MotifServer(
+        id: 'x',
+        name: 'x',
+        host: 'x',
+        kind: ServerKind.rendezvous,
+        relay: 'no-port',
+        psk: pskB64,
+      );
+      final badRelayResult = await resolver.resolve(badRelay);
+      expect(badRelayResult, isA<TransportBlocked>());
+      expect(
+        (badRelayResult as TransportBlocked).blocker.message,
+        contains('relay address'),
+      );
 
-    final badPsk = MotifServer(
-      id: 'y',
-      name: 'y',
-      host: 'y',
-      kind: ServerKind.rendezvous,
-      relay: '127.0.0.1:${relay.port}',
-      psk: 'too-short',
-    );
-    expect(await resolver.resolve(badPsk), isA<TransportFailed>());
-  }, timeout: const Timeout(Duration(seconds: 15)));
+      final badPsk = MotifServer(
+        id: 'y',
+        name: 'y',
+        host: 'y',
+        kind: ServerKind.rendezvous,
+        relay: '127.0.0.1:${relay.port}',
+        psk: 'too-short',
+      );
+      final badPskResult = await resolver.resolve(badPsk);
+      expect(badPskResult, isA<TransportBlocked>());
+      expect(
+        (badPskResult as TransportBlocked).blocker.message,
+        contains('pairing secret'),
+      );
+    },
+    timeout: const Timeout(Duration(seconds: 15)),
+  );
 }
 
 Future<Uint8List> _collect(Socket sock, int n) {
   final out = BytesBuilder();
   final c = Completer<Uint8List>();
   late StreamSubscription<Uint8List> sub;
-  sub = sock.listen((chunk) {
-    out.add(chunk);
-    if (out.length >= n && !c.isCompleted) {
-      c.complete(Uint8List.sublistView(out.toBytes(), 0, n));
-      sub.cancel();
-    }
-  }, onError: (Object e) {
-    if (!c.isCompleted) c.completeError(e);
-  });
+  sub = sock.listen(
+    (chunk) {
+      out.add(chunk);
+      if (out.length >= n && !c.isCompleted) {
+        c.complete(Uint8List.sublistView(out.toBytes(), 0, n));
+        sub.cancel();
+      }
+    },
+    onError: (Object e) {
+      if (!c.isCompleted) c.completeError(e);
+    },
+  );
   return c.future;
 }
 

@@ -13,12 +13,26 @@ import 'dart:typed_data';
 enum ServerKind {
   tailscale,
   direct,
-  rendezvous;
+  rendezvous,
+  ssh;
 
   static ServerKind fromWire(Object? v) => switch (v) {
-        'tailscale' => ServerKind.tailscale,
-        'rendezvous' => ServerKind.rendezvous,
-        _ => ServerKind.direct,
+    'tailscale' => ServerKind.tailscale,
+    'rendezvous' => ServerKind.rendezvous,
+    'ssh' => ServerKind.ssh,
+    _ => ServerKind.direct,
+  };
+}
+
+enum SshAuthMethod {
+  password,
+  privateKey;
+
+  static SshAuthMethod fromWire(Object? v, {bool hasPrivateKey = false}) =>
+      switch (v) {
+        'privateKey' || 'private_key' || 'key' => SshAuthMethod.privateKey,
+        'password' => SshAuthMethod.password,
+        _ => hasPrivateKey ? SshAuthMethod.privateKey : SshAuthMethod.password,
       };
 }
 
@@ -41,6 +55,19 @@ class MotifServer {
   final String psk;
   final String pubKey;
 
+  /// SSH-only fields (`kind == ServerKind.ssh`). [host]/[port] remain the
+  /// motifd endpoint as seen from the SSH server (usually `127.0.0.1:7777`);
+  /// [sshHost]/[sshPort] are the SSH login endpoint. Credentials are currently
+  /// persisted with the rest of the server record; see `ServerStore`'s storage
+  /// note for the secure-storage follow-up.
+  final String sshHost;
+  final int sshPort;
+  final String sshUsername;
+  final SshAuthMethod sshAuthMethod;
+  final String sshPassword;
+  final String sshPrivateKey;
+  final String sshPrivateKeyPassphrase;
+
   const MotifServer({
     required this.id,
     required this.name,
@@ -52,10 +79,18 @@ class MotifServer {
     this.relay = '',
     this.psk = '',
     this.pubKey = '',
+    this.sshHost = '',
+    this.sshPort = 22,
+    this.sshUsername = '',
+    this.sshAuthMethod = SshAuthMethod.password,
+    this.sshPassword = '',
+    this.sshPrivateKey = '',
+    this.sshPrivateKeyPassphrase = '',
   });
 
   String get endpoint => '$host:$port';
   String get origin => '$scheme://$endpoint';
+  String get sshEndpoint => '$sshHost:$sshPort';
 
   MotifServer copyWith({
     String? name,
@@ -67,6 +102,13 @@ class MotifServer {
     String? relay,
     String? psk,
     String? pubKey,
+    String? sshHost,
+    int? sshPort,
+    String? sshUsername,
+    SshAuthMethod? sshAuthMethod,
+    String? sshPassword,
+    String? sshPrivateKey,
+    String? sshPrivateKeyPassphrase,
   }) => MotifServer(
     id: id,
     name: name ?? this.name,
@@ -78,6 +120,14 @@ class MotifServer {
     relay: relay ?? this.relay,
     psk: psk ?? this.psk,
     pubKey: pubKey ?? this.pubKey,
+    sshHost: sshHost ?? this.sshHost,
+    sshPort: sshPort ?? this.sshPort,
+    sshUsername: sshUsername ?? this.sshUsername,
+    sshAuthMethod: sshAuthMethod ?? this.sshAuthMethod,
+    sshPassword: sshPassword ?? this.sshPassword,
+    sshPrivateKey: sshPrivateKey ?? this.sshPrivateKey,
+    sshPrivateKeyPassphrase:
+        sshPrivateKeyPassphrase ?? this.sshPrivateKeyPassphrase,
   );
 
   Map<String, Object?> toJson() => {
@@ -91,11 +141,24 @@ class MotifServer {
     if (relay.isNotEmpty) 'relay': relay,
     if (psk.isNotEmpty) 'psk': psk,
     if (pubKey.isNotEmpty) 'pubKey': pubKey,
+    if (kind == ServerKind.ssh && sshHost.isNotEmpty) 'sshHost': sshHost,
+    if (kind == ServerKind.ssh && sshPort != 22) 'sshPort': sshPort,
+    if (kind == ServerKind.ssh && sshUsername.isNotEmpty)
+      'sshUsername': sshUsername,
+    if (kind == ServerKind.ssh && sshAuthMethod != SshAuthMethod.password)
+      'sshAuthMethod': sshAuthMethod.name,
+    if (kind == ServerKind.ssh && sshPassword.isNotEmpty)
+      'sshPassword': sshPassword,
+    if (kind == ServerKind.ssh && sshPrivateKey.isNotEmpty)
+      'sshPrivateKey': sshPrivateKey,
+    if (kind == ServerKind.ssh && sshPrivateKeyPassphrase.isNotEmpty)
+      'sshPrivateKeyPassphrase': sshPrivateKeyPassphrase,
   };
 
   factory MotifServer.fromJson(Map<String, Object?> j) {
     final kind = ServerKind.fromWire(j['kind']);
     final relay = (j['relay'] as String?) ?? '';
+    final sshPrivateKey = (j['sshPrivateKey'] as String?) ?? '';
     var host = (j['host'] as String?) ?? '';
     var port = (j['port'] as num?)?.toInt() ?? 7777;
     // Heal legacy rendezvous records: an earlier version stored the whole relay
@@ -119,6 +182,16 @@ class MotifServer {
       relay: relay,
       psk: (j['psk'] as String?) ?? '',
       pubKey: (j['pubKey'] as String?) ?? '',
+      sshHost: (j['sshHost'] as String?) ?? '',
+      sshPort: (j['sshPort'] as num?)?.toInt() ?? 22,
+      sshUsername: (j['sshUsername'] as String?) ?? '',
+      sshAuthMethod: SshAuthMethod.fromWire(
+        j['sshAuthMethod'],
+        hasPrivateKey: sshPrivateKey.isNotEmpty,
+      ),
+      sshPassword: (j['sshPassword'] as String?) ?? '',
+      sshPrivateKey: sshPrivateKey,
+      sshPrivateKeyPassphrase: (j['sshPrivateKeyPassphrase'] as String?) ?? '',
     );
   }
 

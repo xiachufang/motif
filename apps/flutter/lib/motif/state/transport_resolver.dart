@@ -5,6 +5,7 @@ import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/rzv/rzv_forwarder.dart';
 import '../net/rzv/rzv_protocol.dart';
+import '../net/ssh/ssh_forwarder.dart';
 import '../platform/services.dart';
 import 'connection_state.dart';
 
@@ -34,51 +35,87 @@ class TransportBlocked extends TransportResolution {
   const TransportBlocked(this.blocker);
 }
 
-class TransportFailed extends TransportResolution {
-  final String message;
-
-  const TransportFailed(this.message);
-}
-
 class TransportResolver {
   final PlatformServices platform;
 
   /// Live loopback forwarders for `rendezvous` servers, keyed by server id.
   /// Started lazily on [resolve] and torn down by [stopForwarder] when the
   /// owning connection disconnects or the server is removed.
-  final Map<String, RzvForwarder> _forwarders = {};
+  final Map<String, RzvForwarder> _rzvForwarders = {};
+
+  /// Live loopback forwarders for `ssh` servers, keyed by server id.
+  final Map<String, SshForwarder> _sshForwarders = {};
+
+  /// Last runtime transport failure for a server, keyed by server id. Validation
+  /// errors are computed from the server config; this map is only for failures
+  /// discovered while starting a relay/tunnel.
+  final Map<String, TransportViewState> _transportFailures = {};
 
   TransportResolver(this.platform);
 
+  TransportViewState transportViewState(
+    MotifServer server, {
+    bool includeFailure = true,
+  }) {
+    final base = switch (server.kind) {
+      ServerKind.direct => TransportViewState.direct(server),
+      ServerKind.tailscale => TransportViewState.tailscale(
+        server,
+        platform.tailscale.state,
+      ),
+      ServerKind.rendezvous => TransportViewState.rendezvous(
+        server,
+        validationMessage: _validateRendezvous(server),
+      ),
+      ServerKind.ssh => TransportViewState.ssh(
+        server,
+        validationMessage: _validateSsh(server),
+      ),
+    };
+    if (!base.isReady) return base;
+    if (!includeFailure) return base;
+    return _transportFailures[server.id] ?? base;
+  }
+
   ConnectionBlocker? currentBlocker(MotifServer server) {
-    if (server.kind != ServerKind.tailscale) return null;
-    final tailscale = platform.tailscale.state;
-    if (tailscale.status == TailscaleStatus.running) return null;
-    return ConnectionBlocker.tailscale(tailscale);
+    final transport = transportViewState(server);
+    if (transport.isReady) return null;
+    return ConnectionBlocker.fromTransport(transport);
   }
 
   Future<TransportResolution> resolve(MotifServer server) async {
+    final blocker = _preflightBlocker(server);
+    if (blocker != null) return TransportBlocked(blocker);
+    _transportFailures.remove(server.id);
     switch (server.kind) {
       case ServerKind.rendezvous:
         return _resolveRendezvous(server);
       case ServerKind.tailscale:
         return _resolveTailscale(server);
+      case ServerKind.ssh:
+        return _resolveSsh(server);
       case ServerKind.direct:
         return TransportReady(target: server, proxy: ProxySettings.none);
     }
   }
 
+  ConnectionBlocker? _preflightBlocker(MotifServer server) {
+    final transport = transportViewState(server, includeFailure: false);
+    if (transport.isReady) return null;
+    return ConnectionBlocker.fromTransport(transport);
+  }
+
   /// Stop and forget the forwarder for [serverId], if any. Safe to call when
   /// none exists.
   Future<void> stopForwarder(String serverId) async {
-    final fwd = _forwarders.remove(serverId);
-    await fwd?.stop();
+    final rzv = _rzvForwarders.remove(serverId);
+    final ssh = _sshForwarders.remove(serverId);
+    _transportFailures.remove(serverId);
+    await rzv?.stop();
+    await ssh?.stop();
   }
 
   Future<TransportResolution> _resolveTailscale(MotifServer server) async {
-    final blocker = currentBlocker(server);
-    if (blocker != null) return TransportBlocked(blocker);
-
     var target = server;
     try {
       final resolved = await platform.tailscale.resolveHost(server.host);
@@ -102,8 +139,14 @@ class TransportResolver {
   Future<TransportResolution> _resolveRendezvous(MotifServer server) async {
     final relay = MotifServer.splitHostPort(server.relay);
     if (relay == null) {
-      return const TransportFailed(
-        'rendezvous server has no valid relay address (expected host:port)',
+      return TransportBlocked(
+        ConnectionBlocker.fromTransport(
+          TransportViewState.rendezvous(
+            server,
+            validationMessage:
+                'Rendezvous server has no valid relay address (expected host:port)',
+          ),
+        ),
       );
     }
 
@@ -111,7 +154,15 @@ class TransportResolver {
     try {
       token = _rzvToken(server.psk);
     } on FormatException catch (e) {
-      return TransportFailed('rendezvous pairing secret invalid: ${e.message}');
+      return TransportBlocked(
+        ConnectionBlocker.fromTransport(
+          TransportViewState.rendezvous(
+            server,
+            validationMessage:
+                'Rendezvous pairing secret invalid: ${e.message}',
+          ),
+        ),
+      );
     }
 
     // End-to-end TLS pin (`pk` in the pairing QR). Present => motifd terminates
@@ -122,23 +173,37 @@ class TransportResolver {
       try {
         certPin = base64Url.decode(base64Url.normalize(server.pubKey));
       } on FormatException {
-        return const TransportFailed('rendezvous cert pin is not base64url');
+        return TransportBlocked(
+          ConnectionBlocker.fromTransport(
+            TransportViewState.rendezvous(
+              server,
+              validationMessage: 'Rendezvous cert pin is not base64url',
+            ),
+          ),
+        );
       }
       if (certPin.length != 32) {
-        return const TransportFailed('rendezvous cert pin must be 32 bytes');
+        return TransportBlocked(
+          ConnectionBlocker.fromTransport(
+            TransportViewState.rendezvous(
+              server,
+              validationMessage: 'Rendezvous cert pin must be 32 bytes',
+            ),
+          ),
+        );
       }
       scheme = 'https';
     }
 
     // Reuse a running forwarder for this server; restart it if the relay
     // endpoint changed (e.g. the server was re-paired with a new QR).
-    var fwd = _forwarders[server.id];
+    var fwd = _rzvForwarders[server.id];
     if (fwd != null &&
         (fwd.relayHost != relay.$1 || fwd.relayPort != relay.$2)) {
       await stopForwarder(server.id);
       fwd = null;
     }
-    fwd ??= _forwarders[server.id] = RzvForwarder(
+    fwd ??= _rzvForwarders[server.id] = RzvForwarder(
       relayHost: relay.$1,
       relayPort: relay.$2,
       token: token,
@@ -148,7 +213,11 @@ class TransportResolver {
       if (!fwd.isRunning) await fwd.start();
     } catch (e) {
       await stopForwarder(server.id);
-      return TransportFailed('rendezvous forwarder failed to start: $e');
+      return _recordFailure(
+        server,
+        statusLabel: 'Rendezvous failed',
+        message: 'Rendezvous forwarder failed to start: $e',
+      );
     }
 
     final target = server.copyWith(
@@ -161,6 +230,47 @@ class TransportResolver {
       proxy: ProxySettings.none,
       certPin: certPin,
     );
+  }
+
+  /// Bring up (or reuse) a local SSH tunnel. Once started, motifd is reached
+  /// through the loopback port exactly like a direct server.
+  Future<TransportResolution> _resolveSsh(MotifServer server) async {
+    final next = SshForwarder(
+      sshHost: server.sshHost.trim(),
+      sshPort: server.sshPort,
+      username: server.sshUsername.trim(),
+      authMethod: server.sshAuthMethod,
+      password: server.sshPassword,
+      privateKey: server.sshPrivateKey,
+      privateKeyPassphrase: server.sshPrivateKeyPassphrase,
+      remoteHost: server.host.trim(),
+      remotePort: server.port,
+    );
+
+    var fwd = _sshForwarders[server.id];
+    if (fwd != null && !fwd.matches(next)) {
+      await stopForwarder(server.id);
+      fwd = null;
+    }
+    fwd ??= _sshForwarders[server.id] = next;
+
+    try {
+      if (!fwd.isRunning) await fwd.start();
+    } catch (e) {
+      await stopForwarder(server.id);
+      return _recordFailure(
+        server,
+        statusLabel: 'SSH failed',
+        message: 'SSH tunnel failed to start: $e',
+      );
+    }
+
+    final target = server.copyWith(
+      host: '127.0.0.1',
+      port: fwd.port,
+      scheme: 'http',
+    );
+    return TransportReady(target: target, proxy: ProxySettings.none);
   }
 
   // The on-the-wire token is derived one-way from the 32-byte pairing secret
@@ -178,5 +288,72 @@ class TransportResolver {
       throw FormatException('must be ${RzvProtocol.tokenLength} bytes');
     }
     return RzvProtocol.deriveToken(psk);
+  }
+
+  static String? _validateRendezvous(MotifServer server) {
+    final relay = MotifServer.splitHostPort(server.relay);
+    if (relay == null) {
+      return 'Rendezvous server has no valid relay address (expected host:port)';
+    }
+    try {
+      _rzvToken(server.psk);
+    } on FormatException catch (e) {
+      return 'Rendezvous pairing secret invalid: ${e.message}';
+    }
+    if (server.pubKey.isNotEmpty) {
+      Uint8List certPin;
+      try {
+        certPin = base64Url.decode(base64Url.normalize(server.pubKey));
+      } on FormatException {
+        return 'Rendezvous cert pin is not base64url';
+      }
+      if (certPin.length != 32) {
+        return 'Rendezvous cert pin must be 32 bytes';
+      }
+    }
+    return null;
+  }
+
+  static String? _validateSsh(MotifServer server) {
+    if (server.host.trim().isEmpty) {
+      return 'SSH server has no motifd host (as seen from the SSH server)';
+    }
+    if (server.port <= 0 || server.port > 65535) {
+      return 'SSH server has an invalid motifd port';
+    }
+    if (server.sshHost.trim().isEmpty) {
+      return 'SSH server has no SSH host';
+    }
+    if (server.sshPort <= 0 || server.sshPort > 65535) {
+      return 'SSH server has an invalid SSH port';
+    }
+    if (server.sshUsername.trim().isEmpty) {
+      return 'SSH server has no SSH username';
+    }
+    switch (server.sshAuthMethod) {
+      case SshAuthMethod.password:
+        if (server.sshPassword.isEmpty) {
+          return 'SSH password is required';
+        }
+      case SshAuthMethod.privateKey:
+        if (server.sshPrivateKey.trim().isEmpty) {
+          return 'SSH private key is required';
+        }
+    }
+    return null;
+  }
+
+  TransportBlocked _recordFailure(
+    MotifServer server, {
+    required String statusLabel,
+    required String message,
+  }) {
+    final transport = TransportViewState.failure(
+      kind: server.kind,
+      statusLabel: statusLabel,
+      message: message,
+    );
+    _transportFailures[server.id] = transport;
+    return TransportBlocked(ConnectionBlocker.fromTransport(transport));
   }
 }

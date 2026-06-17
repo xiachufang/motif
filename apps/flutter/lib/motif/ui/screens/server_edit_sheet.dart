@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -12,8 +13,14 @@ import '../widgets/motif_form.dart';
 /// Add or edit a server. Returns once saved/cancelled.
 class ServerEditSheet extends StatefulWidget {
   final MotifServer? existing;
+  final ServerKind? initialKind;
   final bool connectOnSave;
-  const ServerEditSheet({super.key, this.existing, this.connectOnSave = false});
+  const ServerEditSheet({
+    super.key,
+    this.existing,
+    this.initialKind,
+    this.connectOnSave = false,
+  });
 
   @override
   State<ServerEditSheet> createState() => _ServerEditSheetState();
@@ -24,7 +31,14 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _host;
   late final TextEditingController _port;
   late final TextEditingController _token;
+  late final TextEditingController _sshHost;
+  late final TextEditingController _sshPort;
+  late final TextEditingController _sshUsername;
+  late final TextEditingController _sshPassword;
+  late final TextEditingController _sshPrivateKey;
+  late final TextEditingController _sshPrivateKeyPassphrase;
   late ServerKind _kind;
+  late SshAuthMethod _sshAuthMethod;
   List<TailscalePeer> _discovered = const [];
   final Map<String, TailscalePingResult> _peerPing = {};
   final Set<String> _checkingPeers = {};
@@ -38,6 +52,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   int _discoveryGeneration = 0;
 
   bool get _supportsTailscale => tailscaleSupported;
+  bool get _supportsSsh => !kIsWeb;
 
   @override
   void initState() {
@@ -47,9 +62,28 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _host = TextEditingController(text: e?.host ?? '');
     _port = TextEditingController(text: '${e?.port ?? 7777}');
     _token = TextEditingController(text: e?.token ?? '');
-    _kind = _supportsTailscale
-        ? (e?.kind ?? ServerKind.tailscale)
-        : ServerKind.direct;
+    _sshHost = TextEditingController(text: e?.sshHost ?? '');
+    _sshPort = TextEditingController(text: '${e?.sshPort ?? 22}');
+    _sshUsername = TextEditingController(text: e?.sshUsername ?? '');
+    _sshPassword = TextEditingController(text: e?.sshPassword ?? '');
+    _sshPrivateKey = TextEditingController(text: e?.sshPrivateKey ?? '');
+    _sshPrivateKeyPassphrase = TextEditingController(
+      text: e?.sshPrivateKeyPassphrase ?? '',
+    );
+    _sshAuthMethod = e?.sshAuthMethod ?? SshAuthMethod.password;
+    final existingKind = e?.kind ?? widget.initialKind;
+    if (existingKind == ServerKind.tailscale && !_supportsTailscale) {
+      _kind = ServerKind.direct;
+    } else if (existingKind == ServerKind.ssh && !_supportsSsh) {
+      _kind = ServerKind.direct;
+    } else {
+      _kind =
+          existingKind ??
+          (_supportsTailscale ? ServerKind.tailscale : ServerKind.direct);
+    }
+    if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
+      _host.text = '127.0.0.1';
+    }
   }
 
   @override
@@ -58,13 +92,38 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _host.dispose();
     _port.dispose();
     _token.dispose();
+    _sshHost.dispose();
+    _sshPort.dispose();
+    _sshUsername.dispose();
+    _sshPassword.dispose();
+    _sshPrivateKey.dispose();
+    _sshPrivateKeyPassphrase.dispose();
     super.dispose();
   }
 
-  bool get _valid =>
-      _name.text.trim().isNotEmpty &&
-      _host.text.trim().isNotEmpty &&
-      int.tryParse(_port.text.trim()) != null;
+  bool get _valid {
+    final motifdPort = int.tryParse(_port.text.trim());
+    final base =
+        _name.text.trim().isNotEmpty &&
+        _host.text.trim().isNotEmpty &&
+        motifdPort != null &&
+        motifdPort > 0 &&
+        motifdPort <= 65535;
+    if (!base) return false;
+    if (_kind != ServerKind.ssh) return true;
+    final sshPort = int.tryParse(_sshPort.text.trim());
+    if (_sshHost.text.trim().isEmpty ||
+        _sshUsername.text.trim().isEmpty ||
+        sshPort == null ||
+        sshPort <= 0 ||
+        sshPort > 65535) {
+      return false;
+    }
+    return switch (_sshAuthMethod) {
+      SshAuthMethod.password => _sshPassword.text.isNotEmpty,
+      SshAuthMethod.privateKey => _sshPrivateKey.text.trim().isNotEmpty,
+    };
+  }
 
   bool get _isNew => widget.existing == null;
 
@@ -118,6 +177,13 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       scheme: widget.existing?.scheme ?? 'http',
       token: _token.text,
       kind: _kind,
+      sshHost: _sshHost.text.trim(),
+      sshPort: int.tryParse(_sshPort.text.trim()) ?? 22,
+      sshUsername: _sshUsername.text.trim(),
+      sshAuthMethod: _sshAuthMethod,
+      sshPassword: _sshPassword.text,
+      sshPrivateKey: _sshPrivateKey.text,
+      sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
     );
     if (widget.existing == null) {
       await store.add(server);
@@ -207,12 +273,23 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   void _onKindChanged(Set<ServerKind> selected) {
-    if (!_supportsTailscale) return;
-    setState(() => _kind = selected.first);
+    final next = selected.first;
+    if (next == ServerKind.tailscale && !_supportsTailscale) return;
+    if (next == ServerKind.ssh && !_supportsSsh) return;
+    setState(() {
+      _kind = next;
+      if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
+        _host.text = '127.0.0.1';
+      }
+    });
     if (_isNew && _kind == ServerKind.tailscale) {
       _discoveryStarted = true;
       Future.microtask(_loadDiscovery);
     }
+  }
+
+  void _onSshAuthChanged(Set<SshAuthMethod> selected) {
+    setState(() => _sshAuthMethod = selected.first);
   }
 
   Future<void> _saveRendezvousName() async {
@@ -220,12 +297,14 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     if (_saving) return;
     setState(() => _saving = true);
     final name = _name.text.trim();
-    final updated = existing.copyWith(name: name.isEmpty ? existing.name : name);
+    final updated = existing.copyWith(
+      name: name.isEmpty ? existing.name : name,
+    );
     await context.read<AppState>().servers.update(updated);
     if (mounted) {
-      Navigator.of(context).pop(
-        ServerEditResult(server: updated, connectAfterSave: false),
-      );
+      Navigator.of(
+        context,
+      ).pop(ServerEditResult(server: updated, connectAfterSave: false));
     }
   }
 
@@ -309,7 +388,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(label, style: TextStyle(color: c.textTertiary, fontSize: 12)),
+                Text(
+                  label,
+                  style: TextStyle(color: c.textTertiary, fontSize: 12),
+                ),
                 const SizedBox(height: 2),
                 SelectableText(
                   value,
@@ -404,30 +486,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                 MediaQuery.of(context).viewInsets.bottom + MotifSpacing.xl,
               ),
               children: [
-                if (_supportsTailscale) ...[
-                  MotifSection(
-                    title: 'Reach via',
-                    dividerIndent: MotifSpacing.lg,
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.all(MotifSpacing.sm),
-                        child: SegmentedButton<ServerKind>(
-                          segments: const [
-                            ButtonSegment(
-                              value: ServerKind.direct,
-                              label: Text('Direct'),
-                            ),
-                            ButtonSegment(
-                              value: ServerKind.tailscale,
-                              label: Text('Tailscale'),
-                            ),
-                          ],
-                          selected: {_kind},
-                          onSelectionChanged: _onKindChanged,
-                        ),
-                      ),
-                    ],
-                  ),
+                if (_supportsTailscale || _supportsSsh) ...[
+                  _reachViaSection(),
                   const SizedBox(height: MotifSpacing.xl),
                 ],
                 if (_supportsTailscale &&
@@ -442,24 +502,13 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                   children: [_field(_name, 'Name', 'e.g. Dev box')],
                 ),
                 const SizedBox(height: MotifSpacing.xl),
-                MotifSection(
-                  title: 'motifd address',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [
-                    _field(_host, 'Host', 'hostname or IP'),
-                    _field(
-                      _port,
-                      'Port',
-                      '7777',
-                      keyboard: TextInputType.number,
-                      onChanged: () {
-                        if (_discovered.isNotEmpty) {
-                          Future.microtask(_refreshVisiblePeerPings);
-                        }
-                      },
-                    ),
-                  ],
-                ),
+                if (_kind == ServerKind.ssh) ...[
+                  _sshLoginSection(),
+                  const SizedBox(height: MotifSpacing.xl),
+                  _sshAuthSection(),
+                  const SizedBox(height: MotifSpacing.xl),
+                ],
+                _motifdAddressSection(),
                 const SizedBox(height: MotifSpacing.xl),
                 MotifSection(
                   title: 'Token',
@@ -478,6 +527,131 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     );
   }
 
+  Widget _reachViaSection() {
+    final segments = <ButtonSegment<ServerKind>>[
+      const ButtonSegment(
+        value: ServerKind.direct,
+        icon: Icon(Icons.public, size: 16),
+        label: Text('Direct'),
+      ),
+      if (_supportsSsh)
+        const ButtonSegment(
+          value: ServerKind.ssh,
+          icon: Icon(Icons.key_outlined, size: 16),
+          label: Text('SSH'),
+        ),
+      if (_supportsTailscale)
+        const ButtonSegment(
+          value: ServerKind.tailscale,
+          icon: Icon(Icons.hub_outlined, size: 16),
+          label: Text('Tailscale'),
+        ),
+    ];
+    return MotifSection(
+      title: 'Reach via',
+      footer: 'Choose the network path Motif uses before it talks to motifd.',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(MotifSpacing.sm),
+          child: SegmentedButton<ServerKind>(
+            showSelectedIcon: false,
+            segments: segments,
+            selected: {_kind},
+            onSelectionChanged: _onKindChanged,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _sshLoginSection() {
+    return MotifSection(
+      title: 'SSH login',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        _field(_sshHost, 'SSH Host', 'ssh.example.com'),
+        _field(_sshPort, 'SSH Port', '22', keyboard: TextInputType.number),
+        _field(_sshUsername, 'Username', 'user'),
+      ],
+    );
+  }
+
+  Widget _sshAuthSection() {
+    return MotifSection(
+      title: 'SSH auth',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(MotifSpacing.sm),
+          child: SegmentedButton<SshAuthMethod>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: SshAuthMethod.password,
+                icon: Icon(Icons.password_outlined, size: 16),
+                label: Text('Password'),
+              ),
+              ButtonSegment(
+                value: SshAuthMethod.privateKey,
+                icon: Icon(Icons.vpn_key_outlined, size: 16),
+                label: Text('Private Key'),
+              ),
+            ],
+            selected: {_sshAuthMethod},
+            onSelectionChanged: _onSshAuthChanged,
+          ),
+        ),
+        if (_sshAuthMethod == SshAuthMethod.password)
+          _field(_sshPassword, 'SSH Password', '', obscure: true)
+        else ...[
+          _field(
+            _sshPrivateKey,
+            'Private Key PEM',
+            '-----BEGIN OPENSSH PRIVATE KEY-----',
+            minLines: 4,
+            maxLines: 8,
+          ),
+          _field(
+            _sshPrivateKeyPassphrase,
+            'Key Passphrase (optional)',
+            '',
+            obscure: true,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _motifdAddressSection() {
+    final isSsh = _kind == ServerKind.ssh;
+    return MotifSection(
+      title: isSsh ? 'motifd target' : 'motifd address',
+      footer: isSsh
+          ? 'Host and port as seen from the SSH server. Use 127.0.0.1 when motifd only listens locally on that machine.'
+          : null,
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        _field(
+          _host,
+          isSsh ? 'Remote Host' : 'Host',
+          isSsh ? '127.0.0.1' : 'hostname or IP',
+        ),
+        _field(
+          _port,
+          isSsh ? 'Remote Port' : 'Port',
+          '7777',
+          keyboard: TextInputType.number,
+          onChanged: () {
+            if (_discovered.isNotEmpty) {
+              Future.microtask(_refreshVisiblePeerPings);
+            }
+          },
+        ),
+      ],
+    );
+  }
+
   Widget _field(
     TextEditingController ctrl,
     String label,
@@ -485,6 +659,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     TextInputType? keyboard,
     bool obscure = false,
     VoidCallback? onChanged,
+    int? minLines,
+    int? maxLines,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -495,6 +671,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         controller: ctrl,
         keyboardType: keyboard,
         obscureText: obscure,
+        minLines: obscure ? 1 : minLines,
+        maxLines: obscure ? 1 : maxLines ?? 1,
         autocorrect: false,
         enableSuggestions: false,
         onChanged: (_) {
@@ -705,11 +883,15 @@ class ServerEditResult {
 Future<ServerEditResult?> showServerEditSheet(
   BuildContext context, {
   MotifServer? existing,
+  ServerKind? initialKind,
   bool connectOnSave = false,
 }) {
   return showAdaptivePanel<ServerEditResult>(
     context,
-    builder: (_) =>
-        ServerEditSheet(existing: existing, connectOnSave: connectOnSave),
+    builder: (_) => ServerEditSheet(
+      existing: existing,
+      initialKind: initialKind,
+      connectOnSave: connectOnSave,
+    ),
   );
 }

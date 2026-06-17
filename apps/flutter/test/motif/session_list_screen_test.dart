@@ -278,10 +278,13 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Tailscale is not connected'), findsOneWidget);
-    expect(find.text('Start Tailscale to reach Tailnet Dev.'), findsOneWidget);
+    expect(find.text('Tailscale setup'), findsOneWidget);
+    expect(
+      find.text('Start Tailscale to reach tailnet servers.'),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.text('Setup Tailscale'));
+    await tester.tap(find.text('Setup Reach Via'));
     await tester.pumpAndSettle();
 
     expect(find.text('Setup Tailscale'), findsWidgets);
