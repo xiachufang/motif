@@ -8,7 +8,6 @@ import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
-import '../widgets/reach_via_section.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -104,16 +103,6 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
-            const SizedBox(height: MotifSpacing.xl),
-            ReachViaSection(
-              onAddDirect: () => unawaited(
-                _connectServer(context, initialKind: ServerKind.direct),
-              ),
-              onPairRendezvous: () => unawaited(_pairServer(context)),
-              onAddSsh: () => unawaited(
-                _connectServer(context, initialKind: ServerKind.ssh),
-              ),
             ),
             const SizedBox(height: MotifSpacing.xl),
             MotifSection(

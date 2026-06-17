@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +11,7 @@ import '../../state/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/tailscale_section.dart';
 
 /// Add or edit a server. Returns once saved/cancelled.
 class ServerEditSheet extends StatefulWidget {
@@ -211,7 +214,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       setState(() {
         _discoveryLoading = false;
         _discovered = const [];
-        _discoveryMessage = 'Connect Tailscale first to scan the tailnet.';
+        _discoveryMessage = null;
       });
       return;
     }
@@ -270,6 +273,16 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     if (_name.text.trim().isEmpty) _name.text = peer.hostname;
     _selectedPeerId = peer.id;
     setState(() {});
+  }
+
+  Future<void> _openTailscaleSetup(TailscaleService svc) async {
+    await showTailscaleConnectionSheet(context, svc: svc);
+    if (!mounted || _kind != ServerKind.tailscale) return;
+    if (svc.state.status == TailscaleStatus.running) {
+      await _loadDiscovery();
+    } else {
+      setState(() {});
+    }
   }
 
   void _onKindChanged(Set<ServerKind> selected) {
@@ -410,7 +423,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.motif;
     // A rendezvous server has no host/port/token/transport to edit (it's reached
     // through a relay via a scanned pairing link). Show a safe read-only panel
     // instead of the Direct/Tailscale form, which can't represent it.
@@ -436,47 +448,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
               ),
             ],
           ),
-          if (widget.connectOnSave) ...[
-            Material(
-              color: c.background,
-              child: InkWell(
-                key: const ValueKey('save-without-connecting'),
-                onTap: _valid && !_saving
-                    ? () => _save(connectAfterSave: false)
-                    : null,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: MotifSpacing.lg,
-                    vertical: MotifSpacing.sm,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Icon(
-                        Icons.save_outlined,
-                        color: _valid && !_saving
-                            ? c.textSecondary
-                            : c.textTertiary,
-                        size: 16,
-                      ),
-                      const SizedBox(width: MotifSpacing.xs),
-                      Text(
-                        'Save without connecting',
-                        style: TextStyle(
-                          color: _valid && !_saving
-                              ? c.textSecondary
-                              : c.textTertiary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            Divider(height: 1, color: c.border),
-          ],
           Expanded(
             child: ListView(
               padding: EdgeInsets.fromLTRB(
@@ -695,60 +666,137 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   Widget _discoverySection(BuildContext context) {
-    final peers = _visiblePeers;
-    return MotifSection(
-      title: 'Discovered on tailnet',
-      headerTrailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextButton.icon(
-            onPressed: () {
-              setState(() => _showAllPeers = !_showAllPeers);
-              Future.microtask(_refreshVisiblePeerPings);
-            },
-            icon: Icon(
-              _showAllPeers ? Icons.check_box : Icons.check_box_outline_blank,
-              size: 17,
-            ),
-            label: const Text('Show all'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh, size: 18),
-            tooltip: 'Refresh peers',
-            onPressed: _discoveryLoading ? null : _loadDiscovery,
-          ),
-        ],
-      ),
-      footer: widget.connectOnSave
-          ? 'Choose a reachable peer, then connect. Token still has to be entered manually.'
-          : 'Tap a peer to fill in the address. Token still has to be entered manually.',
+    final svc = context.read<AppState>().platform.tailscale;
+    return StreamBuilder<TailscaleState>(
+      stream: svc.states,
+      initialData: svc.state,
+      builder: (context, snap) {
+        final state = snap.data ?? svc.state;
+        final ready = state.status == TailscaleStatus.running;
+        final peers = _visiblePeers;
+        return MotifSection(
+          title: 'Discovered on tailnet',
+          headerTrailing: ready ? _discoveryHeaderActions() : null,
+          footer: ready
+              ? (widget.connectOnSave
+                    ? 'Choose a reachable peer, then connect. Token still has to be entered manually.'
+                    : 'Tap a peer to fill in the address. Token still has to be entered manually.')
+              : 'Set up Tailscale to discover and prefill tailnet hosts.',
+          children: [
+            if (!ready)
+              _TailscaleSetupMessageRow(
+                state: state,
+                onSetup: () => unawaited(_openTailscaleSetup(svc)),
+              )
+            else if (_discoveryLoading)
+              const _DiscoveryMessageRow(
+                message: 'Scanning tailnet…',
+                loading: true,
+              )
+            else if (_discoveryMessage != null)
+              _DiscoveryMessageRow(message: _discoveryMessage!)
+            else if (_discovered.isEmpty)
+              const _DiscoveryMessageRow(
+                message: 'No peers visible on the tailnet.',
+              )
+            else if (peers.isEmpty)
+              const _DiscoveryMessageRow(
+                message:
+                    'No motifd-named peers. Use Show all to pick a renamed host.',
+              )
+            else
+              for (final peer in peers)
+                _DiscoveredPeerRow(
+                  peer: peer,
+                  ping: _peerPing[peer.id],
+                  checking: _checkingPeers.contains(peer.id),
+                  selected: peer.id == _selectedPeerId,
+                  onTap: () => _applyDiscoveredPeer(peer),
+                ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _discoveryHeaderActions() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        if (_discoveryLoading)
-          const _DiscoveryMessageRow(
-            message: 'Scanning tailnet…',
-            loading: true,
-          )
-        else if (_discoveryMessage != null)
-          _DiscoveryMessageRow(message: _discoveryMessage!)
-        else if (_discovered.isEmpty)
-          const _DiscoveryMessageRow(
-            message: 'No peers visible on the tailnet.',
-          )
-        else if (peers.isEmpty)
-          const _DiscoveryMessageRow(
-            message:
-                'No motifd-named peers. Use Show all to pick a renamed host.',
-          )
-        else
-          for (final peer in peers)
-            _DiscoveredPeerRow(
-              peer: peer,
-              ping: _peerPing[peer.id],
-              checking: _checkingPeers.contains(peer.id),
-              selected: peer.id == _selectedPeerId,
-              onTap: () => _applyDiscoveredPeer(peer),
-            ),
+        TextButton.icon(
+          onPressed: () {
+            setState(() => _showAllPeers = !_showAllPeers);
+            Future.microtask(_refreshVisiblePeerPings);
+          },
+          icon: Icon(
+            _showAllPeers ? Icons.check_box : Icons.check_box_outline_blank,
+            size: 17,
+          ),
+          label: const Text('Show all'),
+        ),
+        IconButton(
+          icon: const Icon(Icons.refresh, size: 18),
+          tooltip: 'Refresh peers',
+          onPressed: _discoveryLoading ? null : _loadDiscovery,
+        ),
       ],
+    );
+  }
+}
+
+class _TailscaleSetupMessageRow extends StatelessWidget {
+  final TailscaleState state;
+  final VoidCallback onSetup;
+
+  const _TailscaleSetupMessageRow({required this.state, required this.onSetup});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final title = switch (state.status) {
+      TailscaleStatus.stopped => 'Tailscale is not connected',
+      TailscaleStatus.starting => 'Tailscale is starting',
+      TailscaleStatus.needsAuth => 'Tailscale needs login',
+      TailscaleStatus.running => 'Tailscale connected',
+      TailscaleStatus.degraded => 'Tailscale is reconnecting',
+      TailscaleStatus.failed => 'Tailscale failed',
+    };
+    final subtitle =
+        state.detail ??
+        switch (state.status) {
+          TailscaleStatus.stopped =>
+            'Sign in before scanning for tailnet servers.',
+          TailscaleStatus.starting =>
+            'Waiting for the embedded Tailscale service.',
+          TailscaleStatus.needsAuth => 'Finish signing in to continue.',
+          TailscaleStatus.running => 'Ready to scan the tailnet.',
+          TailscaleStatus.degraded =>
+            'Open setup to inspect the current Tailscale state.',
+          TailscaleStatus.failed => 'Open setup to retry sign-in.',
+        };
+    final actionLabel = switch (state.status) {
+      TailscaleStatus.needsAuth => 'Sign in',
+      TailscaleStatus.starting => 'Open',
+      TailscaleStatus.failed => 'Retry',
+      _ => 'Setup',
+    };
+    return MotifSectionRow(
+      leading: state.status == TailscaleStatus.starting
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(Icons.shield_outlined, color: c.warning),
+      title: title,
+      subtitle: subtitle,
+      titleWeight: FontWeight.w600,
+      trailing: OutlinedButton(
+        key: const ValueKey('tailscale-setup-from-server-edit'),
+        onPressed: onSetup,
+        child: Text(actionLabel),
+      ),
+      minHeight: 68,
     );
   }
 }

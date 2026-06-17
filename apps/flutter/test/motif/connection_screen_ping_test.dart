@@ -377,7 +377,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct').last);
+    await tester.tap(find.text('Direct'));
     await tester.pumpAndSettle();
     await tester.enterText(_fieldWithLabel('Name'), 'Direct');
     await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
@@ -391,7 +391,9 @@ void main() {
     expect(manual.refreshes, 1);
   });
 
-  testWidgets('add server can save without connecting', (tester) async {
+  testWidgets('connect flow only shows Save and Connect action', (
+    tester,
+  ) async {
     final manual = _ManualMotifClient();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
@@ -406,20 +408,18 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct').last);
+    await tester.tap(find.text('Direct'));
     await tester.pumpAndSettle();
+    expect(find.text('Save without connecting'), findsNothing);
     await tester.enterText(_fieldWithLabel('Name'), 'Direct');
     await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
     await tester.pumpAndSettle();
-    await tester.ensureVisible(
-      find.byKey(const ValueKey('save-without-connecting')),
-    );
-    await tester.tap(find.byKey(const ValueKey('save-without-connecting')));
+    await tester.tap(find.text('Save and Connect'));
     await tester.pumpAndSettle();
 
     expect(app.servers.servers, hasLength(1));
-    expect(app.isServerLive(app.servers.servers.single.id), isFalse);
-    expect(manual.refreshes, 0);
+    expect(app.isServerLive(app.servers.servers.single.id), isTrue);
+    expect(manual.refreshes, 1);
   });
 
   testWidgets('connection failures are shown inline and can retry', (

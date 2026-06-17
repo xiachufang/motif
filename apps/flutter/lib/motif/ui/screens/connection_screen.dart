@@ -12,7 +12,6 @@ import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
-import '../widgets/reach_via_section.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -122,16 +121,6 @@ class ConnectionScreen extends StatelessWidget {
             MotifSpacing.xl,
           ),
           children: [
-            ReachViaSection(
-              onAddDirect: () => unawaited(
-                _addServer(context, app, initialKind: ServerKind.direct),
-              ),
-              onPairRendezvous: () => unawaited(_pairServer(context, app)),
-              onAddSsh: () => unawaited(
-                _addServer(context, app, initialKind: ServerKind.ssh),
-              ),
-            ),
-            const SizedBox(height: MotifSpacing.xl),
             MotifSection(
               title: 'Servers',
               headerTrailing: Row(

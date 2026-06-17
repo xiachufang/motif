@@ -83,12 +83,12 @@ class TailscaleSection extends StatelessWidget {
   }
 }
 
-void showTailscaleConnectionSheet(
+Future<void> showTailscaleConnectionSheet(
   BuildContext context, {
   TailscaleService? svc,
 }) {
   final service = svc ?? context.read<AppState>().platform.tailscale;
-  showAdaptivePanel<void>(
+  return showAdaptivePanel<void>(
     context,
     builder: (_) => _TailscaleConnectionSheet(svc: service),
   );

@@ -12,8 +12,14 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _DiscoveryTailscale implements TailscaleService {
+  final TailscaleState _state;
+
+  const _DiscoveryTailscale([
+    this._state = const TailscaleState(TailscaleStatus.running),
+  ]);
+
   @override
-  TailscaleState get state => const TailscaleState(TailscaleStatus.running);
+  TailscaleState get state => _state;
 
   @override
   Stream<TailscaleState> get states => const Stream.empty();
@@ -58,7 +64,7 @@ class _DiscoveryTailscale implements TailscaleService {
   ProxySettings? get loopbackProxy => null;
 }
 
-Future<AppState> _app() async {
+Future<AppState> _app({TailscaleService? tailscale}) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
   return AppState(
@@ -67,7 +73,7 @@ Future<AppState> _app() async {
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices(
-      tailscale: _DiscoveryTailscale(),
+      tailscale: tailscale ?? const _DiscoveryTailscale(),
       speech: NoopSpeechService(),
       push: NoopPushService(),
     ),
@@ -114,6 +120,41 @@ void main() {
     expect(server.host, 'motifd-dev.tail.ts.net');
     expect(server.port, 7777);
     expect(server.kind, ServerKind.tailscale);
+  });
+
+  testWidgets('Tailscale discovery offers setup when Tailscale is stopped', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app(
+      tailscale: _DiscoveryTailscale(TailscaleState.stopped),
+    );
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('DISCOVERED ON TAILNET'), findsOneWidget);
+    expect(find.text('Tailscale is not connected'), findsOneWidget);
+    expect(find.text('motifd-dev'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('tailscale-setup-from-server-edit')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Setup Tailscale'), findsOneWidget);
+    expect(find.text('Connect with browser'), findsOneWidget);
+
+    Navigator.of(tester.element(find.text('Setup Tailscale'))).pop();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('rendezvous server shows a safe read-only panel, not the form', (
@@ -185,12 +226,14 @@ void main() {
     await tester.tap(find.text('SSH'));
     await tester.pumpAndSettle();
     expect(find.text('SSH LOGIN'), findsOneWidget);
-    expect(find.text('MOTIFD TARGET'), findsOneWidget);
-
     await tester.enterText(_fieldWithLabel('Name'), 'Bastion');
     await tester.enterText(_fieldWithLabel('SSH Host'), 'bastion.example.com');
     await tester.enterText(_fieldWithLabel('Username'), 'fei');
+    await _scrollTo(tester, _fieldWithLabel('SSH Password'));
     await tester.enterText(_fieldWithLabel('SSH Password'), 'secret');
+    await _scrollTo(tester, find.text('MOTIFD TARGET'));
+    expect(find.text('MOTIFD TARGET'), findsOneWidget);
+    await _scrollTo(tester, _fieldWithLabel('Remote Host'));
     await tester.enterText(_fieldWithLabel('Remote Host'), '127.0.0.1');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
@@ -223,18 +266,20 @@ void main() {
 
     await tester.tap(find.text('SSH'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Private Key'));
-    await tester.pumpAndSettle();
-
     await tester.enterText(_fieldWithLabel('Name'), 'Key Host');
     await tester.enterText(_fieldWithLabel('SSH Host'), 'key.example.com');
     await tester.enterText(_fieldWithLabel('SSH Port'), '2222');
     await tester.enterText(_fieldWithLabel('Username'), 'deploy');
+    await _scrollTo(tester, find.text('Private Key'));
+    await tester.tap(find.text('Private Key').first);
+    await tester.pumpAndSettle();
+    await _scrollTo(tester, _fieldWithLabel('Private Key PEM'));
     await tester.enterText(
       _fieldWithLabel('Private Key PEM'),
       '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----',
     );
     await tester.enterText(_fieldWithLabel('Key Passphrase (optional)'), 'pw');
+    await _scrollTo(tester, _fieldWithLabel('Remote Host'));
     await tester.enterText(_fieldWithLabel('Remote Host'), '127.0.0.1');
     await tester.enterText(_fieldWithLabel('Remote Port'), '17777');
     await tester.tap(find.text('Save'));
@@ -286,3 +331,19 @@ void main() {
 Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
+
+Finder _serverEditScrollable() => find
+    .descendant(
+      of: find.byType(ServerEditSheet),
+      matching: find.byType(Scrollable),
+    )
+    .first;
+
+Future<void> _scrollTo(WidgetTester tester, Finder finder) async {
+  for (var i = 0; i < 12; i++) {
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.drag(_serverEditScrollable(), const Offset(0, -140));
+    await tester.pumpAndSettle();
+  }
+  expect(finder, findsWidgets);
+}
