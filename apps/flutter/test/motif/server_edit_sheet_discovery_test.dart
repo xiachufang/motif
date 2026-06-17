@@ -167,6 +167,91 @@ void main() {
     expect(saved.port, 8765);
   });
 
+  testWidgets('saves an SSH server with password auth', (tester) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('SSH'));
+    await tester.pumpAndSettle();
+    expect(find.text('SSH LOGIN'), findsOneWidget);
+    expect(find.text('MOTIFD TARGET'), findsOneWidget);
+
+    await tester.enterText(_fieldWithLabel('Name'), 'Bastion');
+    await tester.enterText(_fieldWithLabel('SSH Host'), 'bastion.example.com');
+    await tester.enterText(_fieldWithLabel('Username'), 'fei');
+    await tester.enterText(_fieldWithLabel('SSH Password'), 'secret');
+    await tester.enterText(_fieldWithLabel('Remote Host'), '127.0.0.1');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final server = app.servers.servers.single;
+    expect(server.kind, ServerKind.ssh);
+    expect(server.host, '127.0.0.1');
+    expect(server.port, 7777);
+    expect(server.sshHost, 'bastion.example.com');
+    expect(server.sshPort, 22);
+    expect(server.sshUsername, 'fei');
+    expect(server.sshAuthMethod, SshAuthMethod.password);
+    expect(server.sshPassword, 'secret');
+  });
+
+  testWidgets('saves an SSH server with private key auth', (tester) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('SSH'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Private Key'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(_fieldWithLabel('Name'), 'Key Host');
+    await tester.enterText(_fieldWithLabel('SSH Host'), 'key.example.com');
+    await tester.enterText(_fieldWithLabel('SSH Port'), '2222');
+    await tester.enterText(_fieldWithLabel('Username'), 'deploy');
+    await tester.enterText(
+      _fieldWithLabel('Private Key PEM'),
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----',
+    );
+    await tester.enterText(_fieldWithLabel('Key Passphrase (optional)'), 'pw');
+    await tester.enterText(_fieldWithLabel('Remote Host'), '127.0.0.1');
+    await tester.enterText(_fieldWithLabel('Remote Port'), '17777');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final server = app.servers.servers.single;
+    expect(server.kind, ServerKind.ssh);
+    expect(server.host, '127.0.0.1');
+    expect(server.port, 17777);
+    expect(server.sshHost, 'key.example.com');
+    expect(server.sshPort, 2222);
+    expect(server.sshUsername, 'deploy');
+    expect(server.sshAuthMethod, SshAuthMethod.privateKey);
+    expect(server.sshPrivateKey, contains('OPENSSH PRIVATE KEY'));
+    expect(server.sshPrivateKeyPassphrase, 'pw');
+  });
+
   testWidgets('web hides Tailscale server options', (tester) async {
     if (!kIsWeb) return;
 

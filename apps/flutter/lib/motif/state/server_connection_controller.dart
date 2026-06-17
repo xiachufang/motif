@@ -86,10 +86,14 @@ class ServerConnectionController {
         _setState(ServerAttached(session));
       case ConnSuspended(:final session, :final message):
         if (_state is! ServerSuspended) {
+          final server = serverProvider();
           _setState(
             ServerSuspended(
               session: session,
-              blocker: ConnectionBlocker.transport(message),
+              blocker: ConnectionBlocker.transport(
+                message,
+                kind: server?.kind ?? ServerKind.direct,
+              ),
             ),
           );
         }
@@ -102,16 +106,16 @@ class ServerConnectionController {
     }
   }
 
-  void handleTailscaleState(TailscaleState tailscaleState) {
+  void handleTailscaleState(TailscaleState _) {
     final server = serverProvider();
     if (server == null || server.kind != ServerKind.tailscale) return;
 
-    if (tailscaleState.status == TailscaleStatus.running) {
+    final blocker = resolver.currentBlocker(server);
+    if (blocker == null) {
       _handleTailscaleRunning();
       return;
     }
 
-    final blocker = ConnectionBlocker.tailscale(tailscaleState);
     _cancelReconnect();
     if (client.isLive || client.hasTerminalSnapshot) {
       _wantsConnection = true;
@@ -200,10 +204,6 @@ class ServerConnectionController {
         } else {
           _setState(ServerBlocked(blocker));
         }
-        return;
-      case TransportFailed(:final message):
-        _setState(ServerFailed(message, session: session));
-        _maybeScheduleReconnect();
         return;
       case TransportReady(:final target, :final proxy, :final certPin):
         try {

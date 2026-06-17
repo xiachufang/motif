@@ -1,9 +1,10 @@
 /// Persisted app stores: servers, terminal settings, quick commands.
 ///
 /// Ported from the iOS `*Store` types. Backed by `shared_preferences` (works on
-/// all six target platforms). The server token is sensitive; on a hardened
-/// build it should move to platform secure storage (Keychain/Keystore/DPAPI/
-/// libsecret) — tracked as a follow-up. For now servers persist as JSON.
+/// all six target platforms). Server tokens and SSH credentials are sensitive;
+/// on a hardened build they should move to platform secure storage
+/// (Keychain/Keystore/DPAPI/libsecret) — tracked as a follow-up. For now
+/// servers persist as JSON.
 library;
 
 import 'dart:convert';

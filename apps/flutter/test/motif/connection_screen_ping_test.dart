@@ -208,6 +208,8 @@ Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
 
+Finder _serverRow(String id) => find.byKey(ValueKey('server-row-$id'));
+
 void _mockDirectPing(
   Map<String, Object?> body, {
   List<Map<String, Object?>> sessions = const [],
@@ -283,7 +285,7 @@ void main() {
 
     await _pumpConnectionScreen(tester, app);
 
-    expect(find.text('Tailscale off'), findsOneWidget);
+    expect(find.text('Tailscale setup'), findsOneWidget);
     expect(tailscale.pingedHosts, isEmpty);
   });
 
@@ -309,7 +311,13 @@ void main() {
     await _pumpConnectionScreen(tester, app);
     await _pumpUntilFound(tester, find.text('Reachable'));
 
-    expect(find.text('Direct'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: _serverRow('server-1'),
+        matching: find.text('Direct'),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Reachable'), findsOneWidget);
     expect(tailscale.pingedHosts, isEmpty);
   });
@@ -344,7 +352,7 @@ void main() {
     expect(tester.widget<Icon>(icon).color, MotifColors.dark.textSecondary);
     expect(find.byIcon(Icons.circle), findsNothing);
 
-    await tester.tap(find.text('Direct'));
+    await tester.tap(_serverRow('server-1'));
     await tester.pumpAndSettle();
 
     expect(app.isServerLive('server-1'), isTrue);
@@ -369,7 +377,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct'));
+    await tester.tap(find.text('Direct').last);
     await tester.pumpAndSettle();
     await tester.enterText(_fieldWithLabel('Name'), 'Direct');
     await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
@@ -398,7 +406,7 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct'));
+    await tester.tap(find.text('Direct').last);
     await tester.pumpAndSettle();
     await tester.enterText(_fieldWithLabel('Name'), 'Direct');
     await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
@@ -437,7 +445,7 @@ void main() {
 
     await _pumpConnectionScreen(tester, app);
 
-    await tester.tap(find.text('Direct'));
+    await tester.tap(_serverRow('server-1'));
     await tester.pumpAndSettle();
 
     expect(failing.attempts, 1);
@@ -488,7 +496,7 @@ void main() {
 
     expect(find.byType(ConnectionScreen), findsOneWidget);
 
-    await tester.tap(find.text('Direct'));
+    await tester.tap(_serverRow('server-1'));
     await tester.pumpAndSettle();
 
     expect(find.byType(ConnectionScreen), findsNothing);
@@ -519,7 +527,13 @@ void main() {
     await _pumpConnectionScreen(tester, app);
     await _pumpUntilFound(tester, find.text('No ping'));
 
-    expect(find.text('Direct'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: _serverRow('server-1'),
+        matching: find.text('Direct'),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('No ping'), findsOneWidget);
     expect(tailscale.pingedHosts, isEmpty);
   });

@@ -73,6 +73,33 @@ void main() {
       expect(decoded.single.endpoint, 'dev.ts.net:7777');
     });
 
+    test('MotifServer SSH fields round-trip through JSON', () {
+      const server = MotifServer(
+        id: 'ssh-1',
+        name: 'Bastion',
+        host: '127.0.0.1',
+        port: 7777,
+        token: 'tok',
+        kind: ServerKind.ssh,
+        sshHost: 'bastion.example.com',
+        sshPort: 2222,
+        sshUsername: 'fei',
+        sshAuthMethod: SshAuthMethod.privateKey,
+        sshPrivateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nkey',
+        sshPrivateKeyPassphrase: 'phrase',
+      );
+
+      final decoded = MotifServer.decodeList(MotifServer.encodeList([server]));
+
+      expect(decoded.single.kind, ServerKind.ssh);
+      expect(decoded.single.endpoint, '127.0.0.1:7777');
+      expect(decoded.single.sshEndpoint, 'bastion.example.com:2222');
+      expect(decoded.single.sshUsername, 'fei');
+      expect(decoded.single.sshAuthMethod, SshAuthMethod.privateKey);
+      expect(decoded.single.sshPrivateKey, contains('OPENSSH'));
+      expect(decoded.single.sshPrivateKeyPassphrase, 'phrase');
+    });
+
     test('TerminalSettings clamps font size', () {
       final s = TerminalSettings.fromJson({'fontSize': 100, 'theme': 'dark'});
       expect(s.fontSize, TerminalSettings.maxFontSize);

@@ -3,11 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../platform/tailscale_support.dart';
+import '../../models/settings.dart';
 import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/reach_via_section.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -16,16 +17,22 @@ import 'server_edit_sheet.dart';
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
-  Future<void> _connectServer(BuildContext context) async {
+  Future<void> _connectServer(
+    BuildContext context, {
+    ServerKind? initialKind,
+  }) async {
     final app = context.read<AppState>();
-    final result = await showServerEditSheet(context, connectOnSave: true);
+    final result = await showServerEditSheet(
+      context,
+      initialKind: initialKind,
+      connectOnSave: true,
+    );
     if (result == null || !result.connectAfterSave) return;
     await app.connectServerAndRefresh(result.server.id, force: true);
-    if (tailscaleSupported &&
-        context.mounted &&
+    if (context.mounted &&
         app.serverViewState(result.server.id).primaryAction ==
-            ServerConnectionAction.openTailscale) {
-      showTailscaleConnectionSheet(context);
+            ServerConnectionAction.setupTransport) {
+      _setupTransport(context, result.server);
     }
   }
 
@@ -34,6 +41,22 @@ class WelcomeScreen extends StatelessWidget {
     final id = await showRzvPairingSheet(context);
     if (id == null || !context.mounted) return;
     await app.connectServerAndRefresh(id, force: true);
+  }
+
+  void _setupTransport(BuildContext context, MotifServer server) {
+    switch (server.kind) {
+      case ServerKind.tailscale:
+        showTailscaleConnectionSheet(context);
+        return;
+      case ServerKind.ssh:
+        unawaited(showServerEditSheet(context, existing: server));
+        return;
+      case ServerKind.rendezvous:
+        unawaited(_pairServer(context));
+        return;
+      case ServerKind.direct:
+        return;
+    }
   }
 
   @override
@@ -82,15 +105,16 @@ class WelcomeScreen extends StatelessWidget {
                 ),
               ],
             ),
-            if (tailscaleSupported) ...[
-              const SizedBox(height: MotifSpacing.xl),
-              const MotifSection(
-                title: 'Tailscale',
-                footer:
-                    'motifd is reached over the tailnet. Connect first to discover servers automatically.',
-                children: [TailscaleSection()],
+            const SizedBox(height: MotifSpacing.xl),
+            ReachViaSection(
+              onAddDirect: () => unawaited(
+                _connectServer(context, initialKind: ServerKind.direct),
               ),
-            ],
+              onPairRendezvous: () => unawaited(_pairServer(context)),
+              onAddSsh: () => unawaited(
+                _connectServer(context, initialKind: ServerKind.ssh),
+              ),
+            ),
             const SizedBox(height: MotifSpacing.xl),
             MotifSection(
               title: 'Servers',

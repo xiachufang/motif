@@ -185,6 +185,61 @@ Future<AppState> _appWith({
 
 void main() {
   group('TransportResolver', () {
+    test('maps Tailscale states to transport view state', () {
+      const server = MotifServer(
+        id: 'tailnet',
+        name: 'Tailnet',
+        host: 'motifd.tail.ts.net',
+        kind: ServerKind.tailscale,
+      );
+      final cases = [
+        (
+          TailscaleState.stopped,
+          TransportStatus.setupNeeded,
+          TransportAction.setup,
+          false,
+        ),
+        (
+          const TailscaleState(TailscaleStatus.needsAuth),
+          TransportStatus.setupNeeded,
+          TransportAction.setup,
+          false,
+        ),
+        (
+          const TailscaleState(TailscaleStatus.starting),
+          TransportStatus.starting,
+          TransportAction.none,
+          true,
+        ),
+        (
+          const TailscaleState(TailscaleStatus.running),
+          TransportStatus.ready,
+          TransportAction.none,
+          false,
+        ),
+        (
+          const TailscaleState(TailscaleStatus.degraded),
+          TransportStatus.degraded,
+          TransportAction.setup,
+          true,
+        ),
+        (
+          const TailscaleState(TailscaleStatus.failed),
+          TransportStatus.failed,
+          TransportAction.setup,
+          false,
+        ),
+      ];
+
+      for (final entry in cases) {
+        final view = TransportViewState.tailscale(server, entry.$1);
+        expect(view.status, entry.$2);
+        expect(view.action, entry.$3);
+        expect(view.showSpinner, entry.$4);
+        expect(view.kind, ServerKind.tailscale);
+      }
+    });
+
     test('returns direct ready without touching Tailscale', () async {
       final tailscale = _FakeTailscale(TailscaleState.stopped);
       addTearDown(tailscale.close);
@@ -253,6 +308,94 @@ void main() {
       expect((result as TransportReady).target.host, '100.64.0.10');
       expect(result.proxy, proxy);
     });
+
+    test('blocks SSH servers with incomplete login settings', () async {
+      final tailscale = _FakeTailscale(TailscaleState.stopped);
+      addTearDown(tailscale.close);
+      final resolver = TransportResolver(_platform(tailscale));
+
+      final missingUser = await resolver.resolve(
+        const MotifServer(
+          id: 'ssh',
+          name: 'SSH',
+          host: '127.0.0.1',
+          kind: ServerKind.ssh,
+          sshHost: 'bastion.example.com',
+          sshPassword: 'secret',
+        ),
+      );
+      expect(missingUser, isA<TransportBlocked>());
+      final missingUserBlocker = (missingUser as TransportBlocked).blocker;
+      expect(missingUserBlocker.transport.status, TransportStatus.setupNeeded);
+      expect(missingUserBlocker.transport.action, TransportAction.setup);
+      expect(missingUserBlocker.message, contains('username'));
+
+      final missingKey = await resolver.resolve(
+        const MotifServer(
+          id: 'ssh',
+          name: 'SSH',
+          host: '127.0.0.1',
+          kind: ServerKind.ssh,
+          sshHost: 'bastion.example.com',
+          sshUsername: 'fei',
+          sshAuthMethod: SshAuthMethod.privateKey,
+        ),
+      );
+      expect(missingKey, isA<TransportBlocked>());
+      final missingKeyBlocker = (missingKey as TransportBlocked).blocker;
+      expect(missingKeyBlocker.transport.status, TransportStatus.setupNeeded);
+      expect(missingKeyBlocker.transport.action, TransportAction.setup);
+      expect(missingKeyBlocker.message, contains('private key'));
+    });
+
+    test('blocks rendezvous servers with invalid pairing settings', () async {
+      final tailscale = _FakeTailscale(TailscaleState.stopped);
+      addTearDown(tailscale.close);
+      final resolver = TransportResolver(_platform(tailscale));
+      const server = MotifServer(
+        id: 'rzv',
+        name: 'Rendezvous',
+        host: '127.0.0.1',
+        kind: ServerKind.rendezvous,
+        relay: 'relay.example.com',
+      );
+
+      final view = resolver.transportViewState(server);
+      expect(view.status, TransportStatus.setupNeeded);
+      expect(view.action, TransportAction.setup);
+      expect(view.message, contains('relay address'));
+
+      final result = await resolver.resolve(server);
+      expect(result, isA<TransportBlocked>());
+      expect(
+        (result as TransportBlocked).blocker.transport.kind,
+        ServerKind.rendezvous,
+      );
+    });
+
+    test('runtime transport failure maps to retry action', () {
+      const server = MotifServer(
+        id: 'ssh',
+        name: 'SSH',
+        host: '127.0.0.1',
+        kind: ServerKind.ssh,
+      );
+      final transport = TransportViewState.failure(
+        kind: ServerKind.ssh,
+        statusLabel: 'SSH failed',
+        message: 'SSH tunnel failed to start',
+      );
+
+      final view = ServerConnectionViewState.from(
+        server: server,
+        state: ServerBlocked(ConnectionBlocker.fromTransport(transport)),
+        transport: transport,
+      );
+
+      expect(view.statusLabel, 'SSH failed');
+      expect(view.primaryAction, ServerConnectionAction.retry);
+      expect(view.tapAction, ServerConnectionAction.retry);
+    });
   });
 
   test('blocked Tailscale connect does not call MotifClient.connect', () async {
@@ -268,8 +411,11 @@ void main() {
     expect(app.connectionStateForServer('tailnet'), isA<ServerBlocked>());
     expect(
       app.serverViewState('tailnet').primaryAction,
-      ServerConnectionAction.openTailscale,
+      ServerConnectionAction.setupTransport,
     );
+    final transport = app.transportViewStateForServer('tailnet');
+    expect(transport.status, TransportStatus.setupNeeded);
+    expect(transport.action, TransportAction.setup);
   });
 
   test('Tailscale resumes a suspended attached terminal', () async {

@@ -207,17 +207,31 @@ class AppState extends ChangeNotifier {
     return blocker == null ? const ServerIdle() : ServerBlocked(blocker);
   }
 
+  TransportViewState transportViewStateForServer(String serverId) {
+    final server = serverById(serverId);
+    if (server == null) {
+      return TransportViewState.direct(
+        const MotifServer(id: '', name: '', host: ''),
+      );
+    }
+    return _transportResolver.transportViewState(server);
+  }
+
   ServerConnectionViewState serverViewState(String serverId) {
     final server = serverById(serverId);
     if (server == null) {
       return ServerConnectionViewState.from(
         server: const MotifServer(id: '', name: '', host: ''),
         state: const ServerIdle(),
+        transport: TransportViewState.direct(
+          const MotifServer(id: '', name: '', host: ''),
+        ),
       );
     }
     return ServerConnectionViewState.from(
       server: server,
       state: connectionStateForServer(serverId),
+      transport: _transportResolver.transportViewState(server),
     );
   }
 

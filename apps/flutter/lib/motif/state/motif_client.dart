@@ -1103,6 +1103,10 @@ class MotifClient extends ChangeNotifier {
       return "Can't reach ${server.endpoint} over Tailscale. Check MagicDNS "
           'and that the peer is online.\n$msg';
     }
+    if (server.kind == ServerKind.ssh) {
+      return "Can't reach ${server.endpoint} through the SSH tunnel. Check the "
+          'SSH login, remote motifd host/port, and that motifd is running.\n$msg';
+    }
     return "Can't reach ${server.endpoint}. Check the host/port and that "
         'motifd is running.\n$msg';
   }
