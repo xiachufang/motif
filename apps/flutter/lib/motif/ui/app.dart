@@ -10,7 +10,6 @@ import '../platform/desktop_window.dart';
 import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
-import 'screens/embedded_server_settings_sheet.dart';
 import 'screens/session_list_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/motif_theme.dart';
@@ -22,6 +21,18 @@ final motifRouteObserver = RouteObserver<ModalRoute<void>>();
 /// Navigator key so non-widget code (the system tray) can open dialogs/screens
 /// against a live context.
 final motifNavigatorKey = GlobalKey<NavigatorState>();
+
+typedef EmbeddedServerPageFactory = Widget Function();
+
+EmbeddedServerPageFactory _embeddedServerPageFactory = () =>
+    const SizedBox.shrink();
+
+/// Desktop entrypoints install the real embedded-server page. Shared web/mobile
+/// builds keep the default pure-Dart placeholder and never import the desktop
+/// settings screen.
+void installEmbeddedServerPageFactory(EmbeddedServerPageFactory factory) {
+  _embeddedServerPageFactory = factory;
+}
 
 class MotifApp extends StatelessWidget {
   const MotifApp({super.key});
@@ -66,7 +77,11 @@ class MotifApp extends StatelessWidget {
 Map<ShortcutActivator, VoidCallback> get _closeWindowShortcuts {
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
   return {
-    SingleActivator(LogicalKeyboardKey.keyW, meta: isMac, control: !isMac): () =>
+    SingleActivator(
+      LogicalKeyboardKey.keyW,
+      meta: isMac,
+      control: !isMac,
+    ): () =>
         unawaited(DesktopWindow.hide()),
   };
 }
@@ -87,19 +102,16 @@ class _HomeShell extends StatelessWidget {
 
     return Column(
       children: [
-        _ModeToolbar(
-          mode: app.viewMode,
-          onChanged: app.setViewMode,
-        ),
+        _ModeToolbar(mode: app.viewMode, onChanged: app.setViewMode),
         Expanded(
           child: IndexedStack(
             index: app.viewMode == AppViewMode.server ? 1 : 0,
-            children: const [
+            children: [
               // The client keeps its own Navigator so pushing a session screen
               // stays inside this pane (under the toolbar) instead of covering
               // the whole window.
-              _ClientNavigator(),
-              EmbeddedServerPage(),
+              const _ClientNavigator(),
+              _embeddedServerPageFactory(),
             ],
           ),
         ),
@@ -237,11 +249,7 @@ class _ModeSwitch extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                icon,
-                size: 15,
-                color: selected ? c.accent : c.textTertiary,
-              ),
+              Icon(icon, size: 15, color: selected ? c.accent : c.textTertiary),
               const SizedBox(width: 5),
               Text(
                 label,

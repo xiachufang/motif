@@ -46,11 +46,19 @@ flutter pub get
 
 ### 4. Run
 
-`lib/main.dart` is the default entrypoint, so no `-t` flag is needed:
+`lib/main.dart` is the default web/mobile/client entrypoint, so no `-t` flag is
+needed for those targets:
 
 ```bash
-flutter run            # pick a device, or:
-flutter run -d macos
+flutter run            # pick a device
+flutter run -d chrome
+```
+
+Desktop builds use `lib/main_desktop.dart` so they can include the embedded
+`motifd` server, tray, and native window controls:
+
+```bash
+flutter run -d macos -t lib/main_desktop.dart
 ```
 
 On first launch, add a **server** (your `motifd` host/port) in the app to
@@ -92,12 +100,12 @@ Requires **Zig 0.15.2** on `PATH` for the libghostty native asset.
 
 | Platform | Build | Native engine | Notes |
 |---|---|---|---|
-| macOS | `flutter build macos` | libghostty dylib | ✅ builds + runs |
+| macOS | `flutter build macos -t lib/main_desktop.dart` | libghostty dylib | ✅ builds + runs |
 | iOS | `flutter build ios --simulator` | libghostty dylib/framework | sim ✅; device needs signing |
 | Android | `flutter build apk` | libghostty `.so` | ✅ bundles `lib*/libghostty-vt.so`; needs NDK 28 + JDK 17 |
 | Web | `flutter build web --no-wasm-dry-run` | libghostty WASM | ✅ builds (`web/ghostty-vt.wasm` + `web/ghostty_vt.js`) |
-| Linux | `flutter build linux` (on a Linux host) | libghostty `.so` (cross-builds from macOS) | app assembly needs a Linux host/CI |
-| Windows | `flutter build windows` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
+| Linux | `flutter build linux -t lib/main_desktop.dart` (on a Linux host) | libghostty `.so` (cross-builds from macOS) | app assembly needs a Linux host/CI |
+| Windows | `flutter build windows -t lib/main_desktop.dart` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
 
 ### Terminal renderer
 

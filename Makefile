@@ -223,7 +223,7 @@ release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build
 
 release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the Flutter macOS app.
 	$(call require_host,macos)
-	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build macos --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
+	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build macos -t lib/main_desktop.dart --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
 	@rm -rf "$(RELEASE_DIR)/macos/flutter"
 	@mkdir -p "$(RELEASE_DIR)/macos/flutter"
 	@cp -R "$(FLUTTER_MACOS_APP)" "$(RELEASE_DIR)/macos/flutter/Motif.app"
@@ -232,7 +232,7 @@ release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the F
 
 release-flutter-linux: deps-flutter ## Build and archive the Flutter Linux app on a Linux host.
 	$(call require_host,linux)
-	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build linux --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
+	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build linux -t lib/main_desktop.dart --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
 	@bundle="$$(find "$(FLUTTER_DIR)/build/linux" -path '*/release/bundle' -type d -print -quit)"; \
 		test -n "$$bundle" || { echo "Flutter Linux bundle not found."; exit 1; }; \
 		rm -rf "$(RELEASE_DIR)/flutter/linux-$(UNAME_M)/Motif"; \
@@ -243,7 +243,7 @@ release-flutter-linux: deps-flutter ## Build and archive the Flutter Linux app o
 
 release-flutter-windows: deps-flutter ## Build and archive the Flutter Windows app on a Windows host.
 	$(call require_host,windows)
-	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build windows --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
+	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build windows -t lib/main_desktop.dart --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
 	@bundle="$$(find "$(FLUTTER_DIR)/build/windows" -path '*/runner/Release' -type d -print -quit)"; \
 		test -n "$$bundle" || { echo "Flutter Windows bundle not found."; exit 1; }; \
 		rm -rf "$(RELEASE_DIR)/flutter/windows-$(UNAME_M)/Motif"; \

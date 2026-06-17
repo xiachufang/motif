@@ -1,52 +1,26 @@
-/// Desktop-only owner of the *embedded* motifd server. The app can run a
-/// server in-process (over the `motif-embed` cdylib) and control it from the
-/// tray — the Flutter equivalent of the Tauri menu-bar app. This service holds
-/// the persisted config, drives start/stop, polls status, and surfaces the
-/// running server as a connectable [MotifServer] so the existing connection
-/// flow can attach to it over loopback.
-///
-/// On platforms where the native library isn't bundled (web, mobile), or if it
-/// fails to load, [available] is false and every operation is a no-op.
+/// Public embedded-server surface used by the shared app. The default
+/// implementation is a pure-Dart no-op so web/mobile builds do not compile the
+/// desktop-only motif-embed FFI library at all. Desktop entrypoints can inject a
+/// real implementation with [EmbeddedServerFactory].
 library;
 
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import '../platform/motif_embed_ffi.dart';
-// jsonDecodeMap / jsonEncodeMap live here (the ServerStore type is no longer
-// used — the service is client-agnostic).
-import 'stores.dart';
 
 /// Stable id of the auto-managed loopback server entry.
 const String kEmbeddedServerId = 'embedded-local';
 
-const String _kConfigKey = 'motif.embedded.v1';
+typedef EmbeddedServerFactory =
+    Future<EmbeddedServerService> Function(SharedPreferences prefs);
 
-bool get _isDesktop =>
-    !kIsWeb && (Platform.isMacOS || Platform.isLinux || Platform.isWindows);
+Future<EmbeddedServerService> createNoopEmbeddedServerService(
+  SharedPreferences prefs,
+) async => NoopEmbeddedServerService();
 
 /// How the embedded server should listen. Mirrors the Rust `ListenMode`
-/// (serialized lowercase).
-enum EmbeddedListenMode {
-  loopback,
-  lan,
-  off;
+/// (serialized lowercase) in the desktop implementation.
+enum EmbeddedListenMode { loopback, lan, off }
 
-  static EmbeddedListenMode fromWire(Object? v) => switch (v) {
-    'lan' => EmbeddedListenMode.lan,
-    'off' => EmbeddedListenMode.off,
-    _ => EmbeddedListenMode.loopback,
-  };
-}
-
-/// Embedded-server settings. JSON shape mirrors the Rust `MenuConfig`
-/// field-for-field (snake_case) — it is passed verbatim into
-/// `motif_embed_start`.
 @immutable
 class EmbeddedServerConfig {
   final EmbeddedListenMode listenMode;
@@ -100,45 +74,10 @@ class EmbeddedServerConfig {
     rzvRelay: rzvRelay ?? this.rzvRelay,
     autostart: autostart ?? this.autostart,
   );
-
-  Map<String, Object?> toJson() => {
-    'listen_mode': listenMode.name,
-    'port': port,
-    'tailscale': {
-      'enabled': tsEnabled,
-      'hostname': tsHostname,
-      'authkey': tsAuthkey,
-      'control_url': tsControlUrl,
-    },
-    'auth': {'enabled': authEnabled, 'token': authToken},
-    'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
-    'autostart': autostart,
-  };
-
-  factory EmbeddedServerConfig.fromJson(Map<String, Object?> j) {
-    final ts = (j['tailscale'] as Map?)?.cast<String, Object?>() ?? const {};
-    final auth = (j['auth'] as Map?)?.cast<String, Object?>() ?? const {};
-    final rzv = (j['rzv'] as Map?)?.cast<String, Object?>() ?? const {};
-    return EmbeddedServerConfig(
-      listenMode: EmbeddedListenMode.fromWire(j['listen_mode']),
-      port: (j['port'] as num?)?.toInt() ?? 7777,
-      tsEnabled: ts['enabled'] == true,
-      tsHostname: (ts['hostname'] as String?) ?? '',
-      tsAuthkey: (ts['authkey'] as String?) ?? '',
-      tsControlUrl: (ts['control_url'] as String?) ?? '',
-      authEnabled: auth['enabled'] == true,
-      authToken: (auth['token'] as String?) ?? '',
-      rzvEnabled: rzv['enabled'] == true,
-      rzvRelay: (rzv['relay'] as String?) ?? '',
-      autostart: j['autostart'] == true,
-    );
-  }
 }
 
-/// Run phase the UI/tray reflect.
 enum EmbeddedRunState { stopped, starting, running, failed }
 
-/// Decoded snapshot of the embedded server (mirrors the Rust `StatusDto`).
 @immutable
 class EmbeddedServerStatus {
   final bool running;
@@ -168,9 +107,8 @@ class EmbeddedServerStatus {
     return EmbeddedRunState.stopped;
   }
 
-  /// The loopback `host:port` a local client can reach, derived from a
-  /// `tcp://…` bound address (LAN's `0.0.0.0` is reachable via `127.0.0.1`).
-  /// Null when the server only listens on Tailscale.
+  /// The loopback `host:port` a local client can reach. Desktop implementations
+  /// derive it from bound TCP addresses; no-op implementations return null.
   ({String host, int port})? get loopbackEndpoint {
     for (final a in boundAddrs) {
       final hp = a.startsWith('tcp://') ? a.substring(6) : null;
@@ -183,152 +121,43 @@ class EmbeddedServerStatus {
     }
     return null;
   }
-
-  factory EmbeddedServerStatus.fromJson(Map<String, Object?> j) {
-    final ts = (j['tailscale'] as Map?)?.cast<String, Object?>();
-    return EmbeddedServerStatus(
-      running: j['running'] == true,
-      starting: j['starting'] == true,
-      boundAddrs:
-          (j['bound_addrs'] as List?)?.map((e) => e.toString()).toList() ??
-          const [],
-      sessionCount: (j['session_count'] as num?)?.toInt() ?? 0,
-      tailscaleState: ts?['backend_state'] as String?,
-      authUrl: j['auth_url'] as String?,
-      pairingUri: j['pairing_uri'] as String?,
-      error: j['error'] as String?,
-    );
-  }
 }
 
-class EmbeddedServerService extends ChangeNotifier {
-  final SharedPreferences _prefs;
-  final LibMotifEmbed? _lib;
+abstract class EmbeddedServerService extends ChangeNotifier {
+  bool get available;
+  EmbeddedServerConfig get config;
+  EmbeddedServerStatus get status;
+  EmbeddedRunState get phase => status.phase;
 
-  EmbeddedServerConfig _config = const EmbeddedServerConfig();
-  EmbeddedServerStatus _status = const EmbeddedServerStatus();
-  Timer? _poll;
+  Future<void> updateConfig(EmbeddedServerConfig next);
+  String generateToken();
+  Future<void> start();
+  Future<void> stop();
+  List<String> tailLogs([int n = 200]);
+}
 
-  EmbeddedServerService._(this._prefs, this._lib) {
-    final raw = _prefs.getString(_kConfigKey);
-    if (raw != null) {
-      final map = jsonDecodeMap(raw);
-      if (map != null) _config = EmbeddedServerConfig.fromJson(map);
-    }
-  }
-
-  /// Build the service, loading the native library and initializing logging on
-  /// desktop. Best-effort autostart if the saved config asks for it. The
-  /// service is client-agnostic — registering the running server as a
-  /// connectable target is the host's (AppState's) job, by observing status.
-  static Future<EmbeddedServerService> create(SharedPreferences prefs) async {
-    LibMotifEmbed? lib;
-    if (_isDesktop) {
-      lib = LibMotifEmbed.tryOpenDefault();
-      if (lib != null) {
-        try {
-          final support = await getApplicationSupportDirectory();
-          lib.init('${support.path}/motif/logs');
-        } catch (_) {
-          // Logging init is best-effort; the server still runs without it.
-        }
-      }
-    }
-    final svc = EmbeddedServerService._(prefs, lib);
-    if (svc.available && svc._config.autostart) {
-      unawaited(svc.start());
-    }
-    return svc;
-  }
-
-  /// Whether the embedded-server capability is present (desktop + library
-  /// loaded). When false, the tray/settings hide the feature.
-  bool get available => _lib != null;
-
-  EmbeddedServerConfig get config => _config;
-  EmbeddedServerStatus get status => _status;
-  EmbeddedRunState get phase => _status.phase;
-
-  Future<void> updateConfig(EmbeddedServerConfig next) async {
-    _config = next;
-    await _prefs.setString(_kConfigKey, jsonEncodeMap(next.toJson()));
-    notifyListeners();
-  }
-
-  /// Generate a fresh bearer token via the native RNG (empty if unavailable).
-  String generateToken() => _lib?.generateToken() ?? '';
-
-  /// Start the embedded server with the current config. Non-blocking; status
-  /// is reflected through [status] as the poller advances.
-  Future<void> start() async {
-    final lib = _lib;
-    if (lib == null) return;
-    lib.start(jsonEncode(_config.toJson()));
-    _startPolling();
-    await _refresh();
-  }
-
-  /// Stop the embedded server. Idempotent.
-  Future<void> stop() async {
-    final lib = _lib;
-    if (lib == null) return;
-    lib.stop();
-    await _refresh();
-    if (!_status.starting && !_status.running) _stopPolling();
-  }
-
-  /// Last [n] log lines from the native ring (empty list if unavailable).
-  List<String> tailLogs([int n = 200]) {
-    final lib = _lib;
-    if (lib == null) return const [];
-    try {
-      final raw = jsonDecode(lib.tailLogs(n));
-      if (raw is List) return raw.map((e) => e.toString()).toList();
-    } catch (_) {}
-    return const [];
-  }
-
-  void _startPolling() {
-    _poll ??= Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => unawaited(_refresh()),
-    );
-  }
-
-  void _stopPolling() {
-    _poll?.cancel();
-    _poll = null;
-  }
-
-  String _lastRaw = '';
-
-  Future<void> _refresh() async {
-    final lib = _lib;
-    if (lib == null) return;
-    final String raw;
-    try {
-      raw = lib.statusJson();
-    } catch (_) {
-      return;
-    }
-    // Only react when the status actually changed — the poll runs every couple
-    // of seconds and an unchanged snapshot shouldn't rebuild the app.
-    if (raw == _lastRaw) return;
-    _lastRaw = raw;
-    final map = jsonDecodeMap(raw);
-    _status = map == null
-        ? const EmbeddedServerStatus()
-        : EmbeddedServerStatus.fromJson(map);
-    // Stop the poll loop once we settle into a terminal (non-running) state.
-    if (!_status.running && !_status.starting) _stopPolling();
-    // The host (AppState) listens to this notifier and registers the running
-    // server as a connectable target — the service itself stays client-agnostic.
-    notifyListeners();
-  }
+class NoopEmbeddedServerService extends EmbeddedServerService {
+  @override
+  bool get available => false;
 
   @override
-  void dispose() {
-    _stopPolling();
-    super.dispose();
-  }
+  EmbeddedServerConfig get config => const EmbeddedServerConfig();
+
+  @override
+  EmbeddedServerStatus get status => const EmbeddedServerStatus();
+
+  @override
+  Future<void> updateConfig(EmbeddedServerConfig next) async {}
+
+  @override
+  String generateToken() => '';
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  List<String> tailLogs([int n = 200]) => const [];
 }

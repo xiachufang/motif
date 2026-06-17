@@ -1,0 +1,109 @@
+name: motifd-image
+
+# Build the production/self-hosted motifd image (deploy/motifd/Dockerfile) and
+# push it to GHCR. This image embeds Flutter Web and keeps motifd's default
+# Tailscale support enabled. The review/demo sandbox remains a separate image:
+# ghcr.io/<owner>/motifd-review.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'apps/flutter/lib/**'
+      - 'apps/flutter/web/**'
+      - 'apps/flutter/hook/**'
+      - 'apps/flutter/pubspec.yaml'
+      - 'apps/flutter/pubspec.lock'
+      - 'deploy/motifd/**'
+      - '.github/workflows/motifd-image.yml'
+      - '.dockerignore'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+    tags: ['v*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: motifd-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/motifd
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/motifd/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          docker run -d --name motifd-smoke -p 127.0.0.1:7777:7777 \
+            -e MOTIFD_TOKEN=ci-smoke-token \
+            "$TAG"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:7777/ping >/tmp/ping.json; then
+              break
+            fi
+            sleep 1
+          done
+          docker ps --filter name=motifd-smoke --format '{{.Status}}' | grep -q Up \
+            || { echo "container exited"; docker logs motifd-smoke; exit 1; }
+          grep -q '"service":"motif-server"' /tmp/ping.json
+          noauth=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:7777/rpc/session.list)
+          auth=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Authorization: Bearer ci-smoke-token' -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:7777/rpc/session.list)
+          page=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7777/)
+          echo "page=$page noauth=$noauth auth=$auth"
+          test "$page" = 200 && test "$noauth" = 401 && test "$auth" = 200
+          docker rm -f motifd-smoke
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/motifd/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

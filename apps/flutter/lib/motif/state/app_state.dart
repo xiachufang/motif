@@ -99,6 +99,7 @@ class AppState extends ChangeNotifier {
     PlatformServices? platform,
     Uri? embeddedWebUri,
     String embeddedWebToken = '',
+    EmbeddedServerFactory? embeddedServerFactory,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final servers = ServerStore(prefs);
@@ -121,7 +122,9 @@ class AppState extends ChangeNotifier {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: platform ?? PlatformServices.defaults(),
-      embeddedServer: await EmbeddedServerService.create(prefs),
+      embeddedServer: embeddedServerFactory == null
+          ? null
+          : await embeddedServerFactory(prefs),
     );
   }
 

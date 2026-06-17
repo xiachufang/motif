@@ -51,7 +51,7 @@ retry flutter pub get
 # `flutter pub get` alone does NOT create these (they live in macos/Flutter/ephemeral,
 # which is gitignored), so `xcodebuild archive` would fail with
 # "Unable to load contents of file list: .../FlutterInputs.xcfilelist".
-retry flutter build macos --config-only --release
+retry flutter build macos -t lib/main_desktop.dart --config-only --release
 
 # Warm zig's global package cache for the ghostty native build. During
 # `xcodebuild archive`, the Flutter "Run Script" phase compiles libghostty-vt

@@ -25,6 +25,7 @@ apps/
                          controlled from the system tray (crates/motif-embed)
 
 docs/                    architecture + protocol
+├─ usage.md              how to use Motif as a remote server or local desktop server
 ├─ prd.md                product / architecture
 ├─ rpc.md                JSON-RPC method + event catalog (TUI and web share it)
 ├─ web-client.md         web SPA details
@@ -32,6 +33,11 @@ docs/                    architecture + protocol
 ├─ tailscale.md          tsnet wiring
 ├─ ssh-tunnel.md         `motif-tui --via ssh://…`
 └─ review-server.md      hardened no-tailscale motifd for App Review (image + VPS deploy)
+
+deploy/
+├─ motifd/               production/self-hosted motifd Docker image (GHCR)
+├─ rendezvous/           motif-rendezvous relay image
+└─ review/               hardened disposable motifd image for App Review
 ```
 
 ## Build
@@ -81,6 +87,30 @@ wrong OS. Mobile targets intentionally fail early if Android is still using debu
 signing or iOS is still configured with development APNs entitlements.
 
 ## Run
+
+Motif has two normal usage modes:
+
+- **Run on a server**: start `motifd` as a daemon on a VPS/dev box, then attach
+  from the Flutter app or browser.
+- **Run on a computer**: use the desktop Flutter app's embedded `motifd`, managed
+  from the Server view or system tray.
+
+See [`docs/usage.md`](docs/usage.md) for the full guide, including Direct,
+SSH, Tailscale, and rendezvous-pairing connection paths.
+
+Docker image:
+
+```bash
+docker run -d --name motifd --restart=unless-stopped \
+  -p 7777:7777 \
+  -v motifd-data:/data \
+  -v "$PWD:/work" \
+  -e MOTIFD_TOKEN="$(openssl rand -base64 32)" \
+  ghcr.io/<owner>/motifd:latest
+```
+
+See [`deploy/motifd/README.md`](deploy/motifd/README.md) for image tags,
+configuration, GHCR publishing details, and the currently published platform.
 
 ```bash
 # Server (insecure-no-auth is for local dev)

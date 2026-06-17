@@ -1,13 +1,31 @@
-# Keep the Docker build context small. The review image (deploy/review/Dockerfile)
-# only needs the Cargo workspace (crates/, Cargo.toml, Cargo.lock); it skips the
-# Flutter web embed. Excluding build artifacts and VCS keeps `COPY . .` fast and
-# avoids baking local secrets/outputs into the image.
+# Keep the Docker build context small and avoid baking local secrets/outputs
+# into images. The production motifd image needs Flutter Web sources, so keep
+# apps/flutter/lib + web + hook + pubspec files in the context while excluding
+# platform projects and generated build/cache dirs.
 .git
 target
 **/target
 
-# Flutter client + its build artifacts (not needed by motifd's build)
-apps
+# Flutter generated/build artifacts and platform projects not needed for web.
+apps/flutter/build
+apps/flutter/.dart_tool
+apps/flutter/.flutter-plugins*
+apps/flutter/.metadata
+apps/flutter/.amp
+apps/flutter/android
+apps/flutter/ios
+apps/flutter/linux
+apps/flutter/macos
+apps/flutter/windows
+apps/flutter/integration_test
+apps/flutter/test
+apps/flutter/ghostty
+apps/flutter/tool
+apps/flutter/scripts
+apps/flutter/MOTIF_FLUTTER_PLAN.md
+apps/flutter/PLAN.md
+apps/flutter/devtools_options.yaml
+apps/flutter/ffigen.yaml
 
 # Logs, packaging outputs, local env
 *.log

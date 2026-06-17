@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import '../../platform/desktop_launch.dart';
+import '../../platform/desktop_launch_desktop.dart';
 import '../../state/embedded_server_service.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
@@ -58,8 +58,9 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
     _rzvRelay = TextEditingController(text: c.rzvRelay);
-    _tsControl =
-        c.tsControlUrl.trim().isEmpty ? _TsControl.official : _TsControl.custom;
+    _tsControl = c.tsControlUrl.trim().isEmpty
+        ? _TsControl.official
+        : _TsControl.custom;
     _tsAuth = c.tsAuthkey.trim().isEmpty ? _TsAuth.browser : _TsAuth.authKey;
   }
 
@@ -152,7 +153,10 @@ class _EmbeddedServerSettingsSheetState
                 Container(
                   width: 8,
                   height: 8,
-                  decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
                 ),
               const SizedBox(width: MotifSpacing.sm),
               Text(label, style: TextStyle(color: c.textSecondary)),
@@ -314,7 +318,8 @@ class _EmbeddedServerSettingsSheetState
       children: [
         MotifSection(
           title: 'Tailscale',
-          footer: 'Serve the embedded server over your tailnet, reachable from '
+          footer:
+              'Serve the embedded server over your tailnet, reachable from '
               'anywhere without exposing a port.',
           children: [
             MotifSectionRow(
@@ -392,7 +397,8 @@ class _EmbeddedServerSettingsSheetState
   ) {
     return MotifSection(
       title: 'Sign-in',
-      footer: 'Browser login opens a one-time URL after you start the server. '
+      footer:
+          'Browser login opens a one-time URL after you start the server. '
           'An auth key signs in headlessly — paste one from your admin console.',
       children: [
         _tsRadio(
@@ -462,7 +468,8 @@ class _EmbeddedServerSettingsSheetState
     final pairingUri = status.pairingUri;
     return MotifSection(
       title: 'Pair over a relay',
-      footer: 'Park this server at a rendezvous relay so a phone can reach it '
+      footer:
+          'Park this server at a rendezvous relay so a phone can reach it '
           'without direct connectivity. The relay only sees encrypted traffic; '
           'the phone pins this server. Restart the server after changing this.',
       children: [

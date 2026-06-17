@@ -17,7 +17,7 @@ import 'package:nativeapi/nativeapi.dart' as na;
 
 import '../state/app_state.dart';
 import '../state/embedded_server_service.dart';
-import 'desktop_launch.dart';
+import 'desktop_launch_desktop.dart';
 import 'desktop_window.dart';
 import 'tray_icons.g.dart';
 
