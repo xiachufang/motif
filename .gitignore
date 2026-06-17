@@ -20,6 +20,7 @@ motif-rpc.log
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # Xcode / iOS build artifacts
 apps/ios/build/

@@ -26,7 +26,14 @@ retry() {
 retry brew install zig@0.15 go
 
 # The default execution directory of this script is the ci_scripts directory.
-cd $CI_PRIMARY_REPOSITORY_PATH/apps/flutter # change working directory to the root of your cloned repo.
+# Xcode Cloud checks out the primary repository, but submodules are not
+# guaranteed to be populated. The Flutter native-asset hook builds libghostty-vt
+# from apps/flutter/ghostty, so initialize that submodule before any build step.
+cd "$CI_PRIMARY_REPOSITORY_PATH"
+retry git submodule sync --recursive apps/flutter/ghostty
+retry git submodule update --init --recursive apps/flutter/ghostty
+
+cd "$CI_PRIMARY_REPOSITORY_PATH/apps/flutter" # change working directory to the root of your cloned repo.
 
 # Install Flutter using git. rm -rf first so a retry after a partial clone starts
 # clean (git clone refuses a non-empty target).

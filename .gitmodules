@@ -1,0 +1,4 @@
+[submodule "apps/flutter/ghostty"]
+	path = apps/flutter/ghostty
+	url = https://github.com/ghostty-org/ghostty.git
+	branch = main

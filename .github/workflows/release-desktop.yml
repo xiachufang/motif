@@ -38,6 +38,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # Flutter + Rust + Go + Zig are all needed at build time: the flutter
       # build hook compiles the motif-embed cdylib (Rust) and libtailscale (Go)
