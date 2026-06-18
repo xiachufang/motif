@@ -87,6 +87,7 @@ void main() {
         sshAuthMethod: SshAuthMethod.privateKey,
         sshPrivateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nkey',
         sshPrivateKeyPassphrase: 'phrase',
+        sshAutoInitialize: true,
       );
 
       final decoded = MotifServer.decodeList(MotifServer.encodeList([server]));
@@ -98,6 +99,7 @@ void main() {
       expect(decoded.single.sshAuthMethod, SshAuthMethod.privateKey);
       expect(decoded.single.sshPrivateKey, contains('OPENSSH'));
       expect(decoded.single.sshPrivateKeyPassphrase, 'phrase');
+      expect(decoded.single.sshAutoInitialize, isTrue);
     });
 
     test('TerminalSettings clamps font size', () {

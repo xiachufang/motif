@@ -42,6 +42,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _sshPrivateKeyPassphrase;
   late ServerKind _kind;
   late SshAuthMethod _sshAuthMethod;
+  late bool _sshAutoInitialize;
   List<TailscalePeer> _discovered = const [];
   final Map<String, TailscalePingResult> _peerPing = {};
   final Set<String> _checkingPeers = {};
@@ -74,6 +75,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       text: e?.sshPrivateKeyPassphrase ?? '',
     );
     _sshAuthMethod = e?.sshAuthMethod ?? SshAuthMethod.password;
+    _sshAutoInitialize = e?.sshAutoInitialize ?? false;
     final existingKind = e?.kind ?? widget.initialKind;
     if (existingKind == ServerKind.tailscale && !_supportsTailscale) {
       _kind = ServerKind.direct;
@@ -187,6 +189,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       sshPassword: _sshPassword.text,
       sshPrivateKey: _sshPrivateKey.text,
       sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
+      sshAutoInitialize: _sshAutoInitialize,
     );
     if (widget.existing == null) {
       await store.add(server);
@@ -478,6 +481,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                   const SizedBox(height: MotifSpacing.xl),
                   _sshAuthSection(),
                   const SizedBox(height: MotifSpacing.xl),
+                  _sshMotifdSection(),
+                  const SizedBox(height: MotifSpacing.xl),
                 ],
                 _motifdAddressSection(),
                 const SizedBox(height: MotifSpacing.xl),
@@ -590,6 +595,27 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             obscure: true,
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _sshMotifdSection() {
+    return MotifSection(
+      title: 'Remote motifd',
+      footer:
+          'Uses the latest GitHub Release when the remote binary is missing; existing installs are reused.',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        MotifSectionRow(
+          leading: const Icon(Icons.download_for_offline_outlined, size: 18),
+          title: 'Auto initialize',
+          subtitle: 'Install and start motifd over SSH when needed.',
+          trailing: Switch(
+            value: _sshAutoInitialize,
+            onChanged: (value) => setState(() => _sshAutoInitialize = value),
+          ),
+          onTap: () => setState(() => _sshAutoInitialize = !_sshAutoInitialize),
+        ),
       ],
     );
   }

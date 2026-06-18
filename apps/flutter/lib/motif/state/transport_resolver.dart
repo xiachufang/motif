@@ -5,9 +5,27 @@ import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/rzv/rzv_forwarder.dart';
 import '../net/rzv/rzv_protocol.dart';
+import '../net/ssh/ssh_bootstrapper.dart';
 import '../net/ssh/ssh_forwarder.dart';
+import '../net/ssh/ssh_forwarder_handle.dart';
 import '../platform/services.dart';
 import 'connection_state.dart';
+
+typedef SshForwarderFactory =
+    SshForwarderHandle Function({
+      required String sshHost,
+      required int sshPort,
+      required String username,
+      required SshAuthMethod authMethod,
+      required String password,
+      required String privateKey,
+      required String privateKeyPassphrase,
+      required String remoteHost,
+      required int remotePort,
+      required Duration connectTimeout,
+    });
+
+typedef SshAutoInitializer = Future<void> Function(MotifServer server);
 
 sealed class TransportResolution {
   const TransportResolution();
@@ -37,6 +55,8 @@ class TransportBlocked extends TransportResolution {
 
 class TransportResolver {
   final PlatformServices platform;
+  final SshForwarderFactory _sshForwarderFactory;
+  final SshAutoInitializer _sshAutoInitializer;
 
   /// Live loopback forwarders for `rendezvous` servers, keyed by server id.
   /// Started lazily on [resolve] and torn down by [stopForwarder] when the
@@ -44,14 +64,46 @@ class TransportResolver {
   final Map<String, RzvForwarder> _rzvForwarders = {};
 
   /// Live loopback forwarders for `ssh` servers, keyed by server id.
-  final Map<String, SshForwarder> _sshForwarders = {};
+  final Map<String, SshForwarderHandle> _sshForwarders = {};
 
   /// Last runtime transport failure for a server, keyed by server id. Validation
   /// errors are computed from the server config; this map is only for failures
   /// discovered while starting a relay/tunnel.
   final Map<String, TransportViewState> _transportFailures = {};
 
-  TransportResolver(this.platform);
+  TransportResolver(
+    this.platform, {
+    SshForwarderFactory? sshForwarderFactory,
+    SshAutoInitializer? sshAutoInitializer,
+  }) : _sshForwarderFactory = sshForwarderFactory ?? _defaultSshForwarder,
+       _sshAutoInitializer = sshAutoInitializer ?? _defaultSshAutoInitialize;
+
+  static SshForwarderHandle _defaultSshForwarder({
+    required String sshHost,
+    required int sshPort,
+    required String username,
+    required SshAuthMethod authMethod,
+    required String password,
+    required String privateKey,
+    required String privateKeyPassphrase,
+    required String remoteHost,
+    required int remotePort,
+    required Duration connectTimeout,
+  }) => SshForwarder(
+    sshHost: sshHost,
+    sshPort: sshPort,
+    username: username,
+    authMethod: authMethod,
+    password: password,
+    privateKey: privateKey,
+    privateKeyPassphrase: privateKeyPassphrase,
+    remoteHost: remoteHost,
+    remotePort: remotePort,
+    connectTimeout: connectTimeout,
+  );
+
+  static Future<void> _defaultSshAutoInitialize(MotifServer server) =>
+      SshBootstrapper(server: server).ensureMotifd();
 
   TransportViewState transportViewState(
     MotifServer server, {
@@ -235,7 +287,19 @@ class TransportResolver {
   /// Bring up (or reuse) a local SSH tunnel. Once started, motifd is reached
   /// through the loopback port exactly like a direct server.
   Future<TransportResolution> _resolveSsh(MotifServer server) async {
-    final next = SshForwarder(
+    if (server.sshAutoInitialize) {
+      try {
+        await _sshAutoInitializer(server);
+      } catch (e) {
+        return _recordFailure(
+          server,
+          statusLabel: 'SSH init failed',
+          message: 'SSH auto-initialize failed: $e',
+        );
+      }
+    }
+
+    final next = _sshForwarderFactory(
       sshHost: server.sshHost.trim(),
       sshPort: server.sshPort,
       username: server.sshUsername.trim(),
@@ -245,6 +309,7 @@ class TransportResolver {
       privateKeyPassphrase: server.sshPrivateKeyPassphrase,
       remoteHost: server.host.trim(),
       remotePort: server.port,
+      connectTimeout: const Duration(seconds: 15),
     );
 
     var fwd = _sshForwarders[server.id];

@@ -67,6 +67,7 @@ class MotifServer {
   final String sshPassword;
   final String sshPrivateKey;
   final String sshPrivateKeyPassphrase;
+  final bool sshAutoInitialize;
 
   const MotifServer({
     required this.id,
@@ -86,6 +87,7 @@ class MotifServer {
     this.sshPassword = '',
     this.sshPrivateKey = '',
     this.sshPrivateKeyPassphrase = '',
+    this.sshAutoInitialize = false,
   });
 
   String get endpoint => '$host:$port';
@@ -109,6 +111,7 @@ class MotifServer {
     String? sshPassword,
     String? sshPrivateKey,
     String? sshPrivateKeyPassphrase,
+    bool? sshAutoInitialize,
   }) => MotifServer(
     id: id,
     name: name ?? this.name,
@@ -128,6 +131,7 @@ class MotifServer {
     sshPrivateKey: sshPrivateKey ?? this.sshPrivateKey,
     sshPrivateKeyPassphrase:
         sshPrivateKeyPassphrase ?? this.sshPrivateKeyPassphrase,
+    sshAutoInitialize: sshAutoInitialize ?? this.sshAutoInitialize,
   );
 
   Map<String, Object?> toJson() => {
@@ -153,6 +157,8 @@ class MotifServer {
       'sshPrivateKey': sshPrivateKey,
     if (kind == ServerKind.ssh && sshPrivateKeyPassphrase.isNotEmpty)
       'sshPrivateKeyPassphrase': sshPrivateKeyPassphrase,
+    if (kind == ServerKind.ssh && sshAutoInitialize)
+      'sshAutoInitialize': sshAutoInitialize,
   };
 
   factory MotifServer.fromJson(Map<String, Object?> j) {
@@ -192,6 +198,7 @@ class MotifServer {
       sshPassword: (j['sshPassword'] as String?) ?? '',
       sshPrivateKey: sshPrivateKey,
       sshPrivateKeyPassphrase: (j['sshPrivateKeyPassphrase'] as String?) ?? '',
+      sshAutoInitialize: j['sshAutoInitialize'] == true,
     );
   }
 

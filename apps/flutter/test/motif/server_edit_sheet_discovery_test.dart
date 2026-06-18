@@ -231,6 +231,11 @@ void main() {
     await tester.enterText(_fieldWithLabel('Username'), 'fei');
     await _scrollTo(tester, _fieldWithLabel('SSH Password'));
     await tester.enterText(_fieldWithLabel('SSH Password'), 'secret');
+    await _scrollTo(tester, find.text('Auto initialize'));
+    await tester.drag(_serverEditScrollable(), const Offset(0, -160));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto initialize'));
+    await tester.pumpAndSettle();
     await _scrollTo(tester, find.text('MOTIFD TARGET'));
     expect(find.text('MOTIFD TARGET'), findsOneWidget);
     await _scrollTo(tester, _fieldWithLabel('Remote Host'));
@@ -247,6 +252,7 @@ void main() {
     expect(server.sshUsername, 'fei');
     expect(server.sshAuthMethod, SshAuthMethod.password);
     expect(server.sshPassword, 'secret');
+    expect(server.sshAutoInitialize, isTrue);
   });
 
   testWidgets('saves an SSH server with private key auth', (tester) async {
@@ -295,6 +301,7 @@ void main() {
     expect(server.sshAuthMethod, SshAuthMethod.privateKey);
     expect(server.sshPrivateKey, contains('OPENSSH PRIVATE KEY'));
     expect(server.sshPrivateKeyPassphrase, 'pw');
+    expect(server.sshAutoInitialize, isFalse);
   });
 
   testWidgets('web hides Tailscale server options', (tester) async {

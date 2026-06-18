@@ -4,8 +4,9 @@
 library;
 
 import '../../models/settings.dart';
+import 'ssh_forwarder_handle.dart';
 
-class SshForwarder {
+class SshForwarder implements SshForwarderHandle {
   SshForwarder({
     required this.sshHost,
     required this.sshPort,
@@ -30,15 +31,20 @@ class SshForwarder {
   final int remotePort;
   final Duration connectTimeout;
 
+  @override
   bool get isRunning => false;
 
+  @override
   int get port =>
       throw UnsupportedError('SSH transport is not available on web');
 
-  bool matches(SshForwarder other) => false;
+  @override
+  bool matches(SshForwarderHandle other) => false;
 
+  @override
   Future<int> start() async =>
       throw UnsupportedError('SSH transport is not available on web');
 
+  @override
   Future<void> stop() async {}
 }

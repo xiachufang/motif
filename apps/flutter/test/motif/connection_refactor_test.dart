@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
+import 'package:motif/motif/net/ssh/ssh_forwarder_handle.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/connection_state.dart';
@@ -149,6 +150,42 @@ class _RecordingMotifClient extends MotifClient {
     views = [];
     activeViewId = null;
     notifyListeners();
+  }
+}
+
+class _FakeSshForwarder implements SshForwarderHandle {
+  _FakeSshForwarder({required this.remoteHost, required this.remotePort});
+
+  final String remoteHost;
+  final int remotePort;
+  final int localPort = 41000;
+  int startCalls = 0;
+  int stopCalls = 0;
+  bool _running = false;
+
+  @override
+  int get port => localPort;
+
+  @override
+  bool get isRunning => _running;
+
+  @override
+  bool matches(SshForwarderHandle other) =>
+      other is _FakeSshForwarder &&
+      remoteHost == other.remoteHost &&
+      remotePort == other.remotePort;
+
+  @override
+  Future<int> start() async {
+    startCalls++;
+    _running = true;
+    return localPort;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+    _running = false;
   }
 }
 
@@ -347,6 +384,111 @@ void main() {
       expect(missingKeyBlocker.transport.action, TransportAction.setup);
       expect(missingKeyBlocker.message, contains('private key'));
     });
+
+    test('auto-initializes SSH motifd before starting the tunnel', () async {
+      final tailscale = _FakeTailscale(TailscaleState.stopped);
+      addTearDown(tailscale.close);
+      final bootstrapped = <MotifServer>[];
+      final forwarders = <_FakeSshForwarder>[];
+      final resolver = TransportResolver(
+        _platform(tailscale),
+        sshAutoInitializer: (server) async => bootstrapped.add(server),
+        sshForwarderFactory:
+            ({
+              required sshHost,
+              required sshPort,
+              required username,
+              required authMethod,
+              required password,
+              required privateKey,
+              required privateKeyPassphrase,
+              required remoteHost,
+              required remotePort,
+              required connectTimeout,
+            }) {
+              final fwd = _FakeSshForwarder(
+                remoteHost: remoteHost,
+                remotePort: remotePort,
+              );
+              forwarders.add(fwd);
+              return fwd;
+            },
+      );
+
+      final result = await resolver.resolve(
+        const MotifServer(
+          id: 'ssh',
+          name: 'SSH',
+          host: '127.0.0.1',
+          port: 7777,
+          kind: ServerKind.ssh,
+          sshHost: 'bastion.example.com',
+          sshUsername: 'fei',
+          sshPassword: 'secret',
+          sshAutoInitialize: true,
+        ),
+      );
+
+      expect(bootstrapped, hasLength(1));
+      expect(forwarders, hasLength(1));
+      expect(forwarders.single.startCalls, 1);
+      expect(result, isA<TransportReady>());
+      final ready = result as TransportReady;
+      expect(ready.target.host, '127.0.0.1');
+      expect(ready.target.port, 41000);
+    });
+
+    test(
+      'reports SSH auto-initialize failures before opening a tunnel',
+      () async {
+        final tailscale = _FakeTailscale(TailscaleState.stopped);
+        addTearDown(tailscale.close);
+        var forwarderCreated = false;
+        final resolver = TransportResolver(
+          _platform(tailscale),
+          sshAutoInitializer: (_) async => throw StateError('download failed'),
+          sshForwarderFactory:
+              ({
+                required sshHost,
+                required sshPort,
+                required username,
+                required authMethod,
+                required password,
+                required privateKey,
+                required privateKeyPassphrase,
+                required remoteHost,
+                required remotePort,
+                required connectTimeout,
+              }) {
+                forwarderCreated = true;
+                return _FakeSshForwarder(
+                  remoteHost: remoteHost,
+                  remotePort: remotePort,
+                );
+              },
+        );
+
+        final result = await resolver.resolve(
+          const MotifServer(
+            id: 'ssh',
+            name: 'SSH',
+            host: '127.0.0.1',
+            port: 7777,
+            kind: ServerKind.ssh,
+            sshHost: 'bastion.example.com',
+            sshUsername: 'fei',
+            sshPassword: 'secret',
+            sshAutoInitialize: true,
+          ),
+        );
+
+        expect(forwarderCreated, isFalse);
+        expect(result, isA<TransportBlocked>());
+        final blocker = (result as TransportBlocked).blocker;
+        expect(blocker.transport.statusLabel, 'SSH init failed');
+        expect(blocker.message, contains('download failed'));
+      },
+    );
 
     test('blocks rendezvous servers with invalid pairing settings', () async {
       final tailscale = _FakeTailscale(TailscaleState.stopped);

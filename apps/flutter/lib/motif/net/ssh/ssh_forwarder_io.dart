@@ -13,8 +13,9 @@ import 'package:dartssh2/dartssh2.dart';
 
 import '../../log/log.dart';
 import '../../models/settings.dart';
+import 'ssh_forwarder_handle.dart';
 
-class SshForwarder {
+class SshForwarder implements SshForwarderHandle {
   SshForwarder({
     required this.sshHost,
     required this.sshPort,
@@ -43,15 +44,19 @@ class SshForwarder {
   SSHClient? _client;
   final Set<_Conn> _conns = {};
 
+  @override
   int get port {
     final s = _server;
     if (s == null) throw StateError('SshForwarder not started');
     return s.port;
   }
 
+  @override
   bool get isRunning => _server != null && !(_client?.isClosed ?? true);
 
-  bool matches(SshForwarder other) =>
+  @override
+  bool matches(SshForwarderHandle other) =>
+      other is SshForwarder &&
       sshHost == other.sshHost &&
       sshPort == other.sshPort &&
       username == other.username &&
@@ -62,6 +67,7 @@ class SshForwarder {
       remoteHost == other.remoteHost &&
       remotePort == other.remotePort;
 
+  @override
   Future<int> start() async {
     if (isRunning) return _server!.port;
     await stop();
@@ -109,6 +115,7 @@ class SshForwarder {
     return s.port;
   }
 
+  @override
   Future<void> stop() async {
     final s = _server;
     _server = null;
