@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
+import 'package:motif/motif/net/ssh/ssh_bootstrapper.dart';
 import 'package:motif/motif/net/ssh/ssh_forwarder_handle.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
@@ -446,7 +447,20 @@ void main() {
         var forwarderCreated = false;
         final resolver = TransportResolver(
           _platform(tailscale),
-          sshAutoInitializer: (_) async => throw StateError('download failed'),
+          sshAutoInitializer: (_) async => throw const SshBootstrapException(
+            stage: 'running remote bootstrap script',
+            message:
+                'SSH auto-initialize failed while running remote bootstrap script.\n'
+                'SSH: fei@bastion.example.com:22\n'
+                'Remote motifd target: 127.0.0.1:7777\n'
+                'Auth: password\n'
+                'Remote bootstrap script failed before motifd became ready.',
+            exitCode: 22,
+            stderr: 'latest release has no motifd asset for linux-armv7',
+            stdout:
+                'checking motifd on 127.0.0.1:7777\n'
+                'remote platform: linux-armv7',
+          ),
           sshForwarderFactory:
               ({
                 required sshHost,
@@ -486,7 +500,13 @@ void main() {
         expect(result, isA<TransportBlocked>());
         final blocker = (result as TransportBlocked).blocker;
         expect(blocker.transport.statusLabel, 'SSH init failed');
-        expect(blocker.message, contains('download failed'));
+        expect(blocker.message, contains('Exit code: 22'));
+        expect(
+          blocker.message,
+          contains('latest release has no motifd asset for linux-armv7'),
+        );
+        expect(blocker.message, contains('remote platform: linux-armv7'));
+        expect(blocker.message, contains('fei@bastion.example.com:22'));
       },
     );
 

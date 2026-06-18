@@ -294,7 +294,7 @@ class TransportResolver {
         return _recordFailure(
           server,
           statusLabel: 'SSH init failed',
-          message: 'SSH auto-initialize failed: $e',
+          message: _sshInitFailureMessage(e),
         );
       }
     }
@@ -421,4 +421,9 @@ class TransportResolver {
     _transportFailures[server.id] = transport;
     return TransportBlocked(ConnectionBlocker.fromTransport(transport));
   }
+
+  static String _sshInitFailureMessage(Object error) =>
+      error is SshBootstrapException
+      ? error.toString()
+      : 'SSH auto-initialize failed: $error';
 }
