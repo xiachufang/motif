@@ -4,9 +4,23 @@ import FlutterMacOS
 @main
 class AppDelegate: FlutterAppDelegate {
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    // Tray-first: closing the window keeps the app (and the embedded server)
-    // alive in the menu-bar tray. Only the tray's Quit terminates.
+    // Closing the window keeps the app, tray, and embedded server alive.
     return false
+  }
+
+  override func applicationShouldHandleReopen(
+    _ sender: NSApplication,
+    hasVisibleWindows flag: Bool
+  ) -> Bool {
+    if !flag {
+      for window in sender.windows {
+        if let mainWindow = window as? MainFlutterWindow {
+          mainWindow.showWindow()
+          break
+        }
+      }
+    }
+    return true
   }
 
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

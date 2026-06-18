@@ -1,4 +1,4 @@
-/// Desktop window show/hide for the tray-first ("accessory") model.
+/// Desktop window show/hide for the regular desktop app shell.
 library;
 
 import 'package:flutter/foundation.dart';
@@ -19,8 +19,7 @@ bool get _isDesktop =>
 class NativeDesktopWindowDelegate implements DesktopWindowDelegate {
   const NativeDesktopWindowDelegate();
 
-  /// Bring the main window to the front (promoting to a regular, Dock-visible
-  /// app on macOS).
+  /// Bring the main window to the front.
   @override
   Future<void> show() async {
     if (!_isDesktop) return;
@@ -37,7 +36,7 @@ class NativeDesktopWindowDelegate implements DesktopWindowDelegate {
     } catch (_) {}
   }
 
-  /// Hide the main window (dropping back to a Dock-less accessory app on macOS).
+  /// Hide the main window while keeping the app and tray alive.
   @override
   Future<void> hide() async {
     if (!_isDesktop) return;
@@ -52,10 +51,8 @@ class NativeDesktopWindowDelegate implements DesktopWindowDelegate {
     } catch (_) {}
   }
 
-  /// Open the main window on launch (promoting to a regular, Dock-visible app
-  /// on macOS). Called once after the first frame so the window appears with
-  /// content already rendered rather than blank. The red close button still
-  /// drops it back to the tray.
+  /// Open the main window on launch. Called once after the first frame so the
+  /// window appears with content already rendered rather than blank.
   @override
   Future<void> showAtLaunch() => show();
 

@@ -24,10 +24,8 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
-    // Tray-first model: the app lives in the menu-bar tray and the window
-    // appears on demand. Dart drives show/hide (and the Dock-icon dance) over
-    // this channel — the same activation-policy promotion the Tauri menu-bar
-    // app does for an Accessory app.
+    // Dart drives show/hide over this channel. The app is a regular Dock app;
+    // the tray remains as an additional quick-access surface.
     let channel = FlutterMethodChannel(
       name: "motif/desktop_window",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -117,28 +115,17 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       self.titlebarSeparatorStyle = .none
     }
 
-    // Show the window on whatever Space (desktop) is currently active, instead
-    // of yanking the user back to the Space the window was last shown on. A
-    // plain window is bound to its home Space, so `makeKeyAndOrderFront` from a
-    // different Space would switch desktops; `.moveToActiveSpace` makes the
-    // window follow the user instead.
-    self.collectionBehavior = [.moveToActiveSpace]
-
-    // Start hidden in the tray (no flash thanks to LSUIElement).
-    self.orderOut(nil)
   }
 
-  /// Promote to a regular, Dock-visible app and bring the window front.
+  /// Bring the main window to the front.
   func showWindow() {
-    NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
     self.makeKeyAndOrderFront(nil)
   }
 
-  /// Hide the window and drop back to a Dock-less accessory app.
+  /// Hide the main window while keeping the app and embedded server alive.
   func hideWindow() {
     self.orderOut(nil)
-    NSApp.setActivationPolicy(.accessory)
   }
 
   /// The red close button hides the window (keeping the app + embedded server
