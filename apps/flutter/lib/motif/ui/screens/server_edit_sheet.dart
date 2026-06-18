@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/settings.dart';
+import '../../net/ssh/ssh_config_discovery.dart';
 import '../../platform/services.dart';
 import '../../platform/tailscale_support.dart';
 import '../../state/app_state.dart';
@@ -13,16 +14,21 @@ import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
 
+typedef SshConfigDiscoveryLoader = Future<SshConfigSnapshot> Function();
+
 /// Add or edit a server. Returns once saved/cancelled.
 class ServerEditSheet extends StatefulWidget {
   final MotifServer? existing;
   final ServerKind? initialKind;
   final bool connectOnSave;
+  final SshConfigDiscoveryLoader? sshConfigDiscoveryLoader;
+
   const ServerEditSheet({
     super.key,
     this.existing,
     this.initialKind,
     this.connectOnSave = false,
+    this.sshConfigDiscoveryLoader,
   });
 
   @override
@@ -43,16 +49,21 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late ServerKind _kind;
   late SshAuthMethod _sshAuthMethod;
   late bool _sshAutoInitialize;
+  List<SshConfigHost> _sshConfigHosts = const [];
+  List<SshIdentity> _sshIdentities = const [];
   List<TailscalePeer> _discovered = const [];
   final Map<String, TailscalePingResult> _peerPing = {};
   final Set<String> _checkingPeers = {};
   bool _discoveryStarted = false;
   bool _discoveryLoading = false;
+  bool _sshDiscoveryStarted = false;
+  bool _sshDiscoveryLoading = false;
   bool _showAllPeers = false;
   bool _saving = false;
   bool _savingConnect = false;
   String? _selectedPeerId;
   String? _discoveryMessage;
+  String? _sshDiscoveryMessage;
   int _discoveryGeneration = 0;
 
   bool get _supportsTailscale => tailscaleSupported;
@@ -88,6 +99,9 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     }
     if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
       _host.text = '127.0.0.1';
+    }
+    if (_kind == ServerKind.ssh) {
+      Future.microtask(_loadSshDiscovery);
     }
   }
 
@@ -301,11 +315,68 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     if (_isNew && _kind == ServerKind.tailscale) {
       _discoveryStarted = true;
       Future.microtask(_loadDiscovery);
+    } else if (_kind == ServerKind.ssh) {
+      Future.microtask(_loadSshDiscovery);
     }
   }
 
   void _onSshAuthChanged(Set<SshAuthMethod> selected) {
     setState(() => _sshAuthMethod = selected.first);
+    if (_sshAuthMethod == SshAuthMethod.privateKey) {
+      Future.microtask(_loadSshDiscovery);
+    }
+  }
+
+  Future<void> _loadSshDiscovery({bool force = false}) async {
+    if (!_supportsSsh || _sshDiscoveryLoading) return;
+    if (_sshDiscoveryStarted && !force) return;
+    _sshDiscoveryStarted = true;
+    setState(() {
+      _sshDiscoveryLoading = true;
+      _sshDiscoveryMessage = null;
+    });
+    try {
+      final loader = widget.sshConfigDiscoveryLoader;
+      final snapshot = loader == null
+          ? await const SshConfigDiscovery().load()
+          : await loader();
+      if (!mounted) return;
+      setState(() {
+        _sshConfigHosts = snapshot.hosts;
+        _sshIdentities = snapshot.identities;
+        _sshDiscoveryLoading = false;
+        _sshDiscoveryMessage = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _sshDiscoveryLoading = false;
+        _sshDiscoveryMessage = '$e';
+      });
+    }
+  }
+
+  void _applySshConfigHost(SshConfigHost host) {
+    final identity = _sshIdentityForPath(host.identityFile);
+    setState(() {
+      _sshHost.text = host.hostName.isEmpty ? host.alias : host.hostName;
+      if (host.user != null && host.user!.isNotEmpty) {
+        _sshUsername.text = host.user!;
+      }
+      if (host.port != null) _sshPort.text = '${host.port}';
+      if (_name.text.trim().isEmpty) _name.text = host.alias;
+      if (identity != null) {
+        _sshAuthMethod = SshAuthMethod.privateKey;
+        _sshPrivateKey.text = identity.contents;
+      }
+    });
+  }
+
+  void _applySshIdentity(SshIdentity identity) {
+    setState(() {
+      _sshAuthMethod = SshAuthMethod.privateKey;
+      _sshPrivateKey.text = identity.contents;
+    });
   }
 
   Future<void> _saveRendezvousName() async {
@@ -546,6 +617,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       title: 'SSH login',
       dividerIndent: MotifSpacing.lg,
       children: [
+        _sshConfigHostRow(),
         _field(_sshHost, 'SSH Host', 'ssh.example.com'),
         _field(_sshPort, 'SSH Port', '22', keyboard: TextInputType.number),
         _field(_sshUsername, 'Username', 'user'),
@@ -581,6 +653,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         if (_sshAuthMethod == SshAuthMethod.password)
           _field(_sshPassword, 'SSH Password', '', obscure: true)
         else ...[
+          _sshIdentityRow(),
           _field(
             _sshPrivateKey,
             'Private Key PEM',
@@ -597,6 +670,115 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         ],
       ],
     );
+  }
+
+  Widget _sshConfigHostRow() {
+    return MotifSectionRow(
+      leading: const Icon(Icons.list_alt_outlined, size: 18),
+      title: 'SSH Config Host',
+      subtitle: _sshDiscoveryLoading
+          ? 'Scanning ~/.ssh/config'
+          : _sshConfigHosts.isEmpty
+          ? (_sshDiscoveryMessage ?? 'No Host entries found')
+          : 'Choose a saved Host entry',
+      trailing: _sshDiscoveryLoading
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : _sshConfigHosts.isEmpty
+          ? IconButton(
+              tooltip: 'Refresh SSH config',
+              icon: const Icon(Icons.refresh, size: 18),
+              onPressed: () => _loadSshDiscovery(force: true),
+            )
+          : PopupMenuButton<int>(
+              tooltip: 'Choose SSH host',
+              icon: const Icon(Icons.arrow_drop_down_circle_outlined),
+              onSelected: (index) =>
+                  _applySshConfigHost(_sshConfigHosts[index]),
+              itemBuilder: (context) => [
+                for (var i = 0; i < _sshConfigHosts.length; i++)
+                  PopupMenuItem(
+                    value: i,
+                    child: ListTile(
+                      leading: const Icon(Icons.dns_outlined),
+                      title: Text(_sshConfigHosts[i].alias),
+                      subtitle: Text(_sshHostSummary(_sshConfigHosts[i])),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _sshIdentityRow() {
+    final selected = _selectedSshIdentity;
+    return MotifSectionRow(
+      leading: const Icon(Icons.key_outlined, size: 18),
+      title: 'Current Key',
+      subtitle: _sshDiscoveryLoading
+          ? 'Scanning ~/.ssh'
+          : selected?.name ??
+                (_sshDiscoveryMessage ?? 'Choose a private key from ~/.ssh'),
+      trailing: _sshDiscoveryLoading
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : _sshIdentities.isEmpty
+          ? IconButton(
+              tooltip: 'Refresh SSH keys',
+              icon: const Icon(Icons.refresh, size: 18),
+              onPressed: () => _loadSshDiscovery(force: true),
+            )
+          : PopupMenuButton<int>(
+              tooltip: 'Choose SSH key',
+              icon: const Icon(Icons.arrow_drop_down_circle_outlined),
+              onSelected: (index) => _applySshIdentity(_sshIdentities[index]),
+              itemBuilder: (context) => [
+                for (var i = 0; i < _sshIdentities.length; i++)
+                  PopupMenuItem(
+                    value: i,
+                    child: ListTile(
+                      leading: const Icon(Icons.vpn_key_outlined),
+                      title: Text(_sshIdentities[i].name),
+                      subtitle: Text(_sshIdentities[i].path),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  String _sshHostSummary(SshConfigHost host) {
+    final parts = <String>[host.hostName.isEmpty ? host.alias : host.hostName];
+    if (host.user != null && host.user!.isNotEmpty) {
+      parts.add(host.user!);
+    }
+    if (host.port != null) parts.add('${host.port}');
+    return parts.join(' / ');
+  }
+
+  SshIdentity? _sshIdentityForPath(String? path) {
+    if (path == null || path.isEmpty) return null;
+    for (final identity in _sshIdentities) {
+      if (identity.path == path) return identity;
+    }
+    return null;
+  }
+
+  SshIdentity? get _selectedSshIdentity {
+    final key = _sshPrivateKey.text;
+    if (key.isEmpty) return null;
+    for (final identity in _sshIdentities) {
+      if (identity.contents == key) return identity;
+    }
+    return null;
   }
 
   Widget _sshMotifdSection() {

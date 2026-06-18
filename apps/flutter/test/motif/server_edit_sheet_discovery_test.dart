@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
+import 'package:motif/motif/net/ssh/ssh_config_discovery.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/stores.dart';
@@ -79,6 +80,34 @@ Future<AppState> _app({TailscaleService? tailscale}) async {
     ),
   );
 }
+
+Future<SshConfigSnapshot> _emptySshConfig() async =>
+    const SshConfigSnapshot(hosts: [], identities: []);
+
+const _fixturePrivateKey = '''
+-----BEGIN OPENSSH PRIVATE KEY-----
+fixture
+-----END OPENSSH PRIVATE KEY-----
+''';
+
+Future<SshConfigSnapshot> _fixtureSshConfig() async => const SshConfigSnapshot(
+  hosts: [
+    SshConfigHost(
+      alias: 'devbox',
+      hostName: 'devbox.example.com',
+      user: 'fei',
+      port: 2222,
+      identityFile: '/Users/fei/.ssh/id_ed25519',
+    ),
+  ],
+  identities: [
+    SshIdentity(
+      path: '/Users/fei/.ssh/id_ed25519',
+      name: 'id_ed25519',
+      contents: _fixturePrivateKey,
+    ),
+  ],
+);
 
 void main() {
   testWidgets('discovers Tailscale peers and saves a selected motifd server', (
@@ -217,7 +246,9 @@ void main() {
         value: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
-          home: const Scaffold(body: ServerEditSheet()),
+          home: Scaffold(
+            body: ServerEditSheet(sshConfigDiscoveryLoader: _emptySshConfig),
+          ),
         ),
       ),
     );
@@ -264,7 +295,9 @@ void main() {
         value: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
-          home: const Scaffold(body: ServerEditSheet()),
+          home: Scaffold(
+            body: ServerEditSheet(sshConfigDiscoveryLoader: _emptySshConfig),
+          ),
         ),
       ),
     );
@@ -304,6 +337,41 @@ void main() {
     expect(server.sshAutoInitialize, isFalse);
   });
 
+  testWidgets('prefills SSH login and key from discovered config', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(
+            body: ServerEditSheet(
+              initialKind: ServerKind.ssh,
+              sshConfigDiscoveryLoader: _fixtureSshConfig,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Choose SSH host'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('devbox').last);
+    await tester.pumpAndSettle();
+
+    expect(_fieldValue(tester, 'Name'), 'devbox');
+    expect(_fieldValue(tester, 'SSH Host'), 'devbox.example.com');
+    expect(_fieldValue(tester, 'SSH Port'), '2222');
+    expect(_fieldValue(tester, 'Username'), 'fei');
+    await _scrollTo(tester, _fieldWithLabel('Private Key PEM'));
+    expect(_fieldValue(tester, 'Private Key PEM'), _fixturePrivateKey);
+  });
+
   testWidgets('web hides Tailscale server options', (tester) async {
     if (!kIsWeb) return;
 
@@ -339,6 +407,11 @@ Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
 
+String _fieldValue(WidgetTester tester, String label) {
+  final field = tester.widget<TextField>(_fieldWithLabel(label));
+  return field.controller?.text ?? '';
+}
+
 Finder _serverEditScrollable() => find
     .descendant(
       of: find.byType(ServerEditSheet),
@@ -348,9 +421,15 @@ Finder _serverEditScrollable() => find
 
 Future<void> _scrollTo(WidgetTester tester, Finder finder) async {
   for (var i = 0; i < 12; i++) {
-    if (finder.evaluate().isNotEmpty) return;
+    if (finder.evaluate().isNotEmpty) {
+      await tester.ensureVisible(finder.first);
+      await tester.pumpAndSettle();
+      return;
+    }
     await tester.drag(_serverEditScrollable(), const Offset(0, -140));
     await tester.pumpAndSettle();
   }
   expect(finder, findsWidgets);
+  await tester.ensureVisible(finder.first);
+  await tester.pumpAndSettle();
 }
