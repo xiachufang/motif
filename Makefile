@@ -41,6 +41,8 @@ IOS_ALLOW_DEVELOPMENT_APS ?= 0
 
 RUST_RELEASE_PACKAGES := motif-server motif-cast motif-push-relay
 RUST_RELEASE_BINS := motifd motif-cast motif-push-relay
+MOTIFD_RELEASE_PACKAGE := motif-server
+MOTIFD_RELEASE_BIN := motifd
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
 FLUTTER_MACOS_APP := $(FLUTTER_DIR)/build/macos/Build/Products/Release/Motif.app
 
@@ -52,6 +54,7 @@ require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host 
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
 	release-rust-macos release-rust-linux release-rust-windows \
+	release-motifd-macos release-motifd-linux \
 	release-flutter-macos release-flutter-linux \
 	release-flutter-windows release-flutter-android release-flutter-ios \
 	release-manifest verify-release clean-release
@@ -220,6 +223,24 @@ release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin).exe" "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin/$(bin).exe";)
 	@tar -czf "$(RELEASE_DIR)/motif-rust-$(ARTIFACT_SUFFIX)-windows-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/rust/windows-$(UNAME_M)" bin
 	@echo "Rust binaries: $(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin"
+
+release-motifd-macos: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for macOS.
+	$(call require_host,macos)
+	@$(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@rm -rf "$(RELEASE_DIR)/motifd/macos-$(UNAME_M)"
+	@mkdir -p "$(RELEASE_DIR)/motifd/macos-$(UNAME_M)"
+	@install -m 0755 "target/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/macos-$(UNAME_M)/$(MOTIFD_RELEASE_BIN)"
+	@tar -czf "$(RELEASE_DIR)/motifd-$(ARTIFACT_SUFFIX)-macos-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/motifd/macos-$(UNAME_M)" "$(MOTIFD_RELEASE_BIN)"
+	@echo "motifd binary: $(RELEASE_DIR)/motifd/macos-$(UNAME_M)/$(MOTIFD_RELEASE_BIN)"
+
+release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for Linux.
+	$(call require_host,linux)
+	@$(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@rm -rf "$(RELEASE_DIR)/motifd/linux-$(UNAME_M)"
+	@mkdir -p "$(RELEASE_DIR)/motifd/linux-$(UNAME_M)"
+	@install -m 0755 "target/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/linux-$(UNAME_M)/$(MOTIFD_RELEASE_BIN)"
+	@tar -czf "$(RELEASE_DIR)/motifd-$(ARTIFACT_SUFFIX)-linux-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/motifd/linux-$(UNAME_M)" "$(MOTIFD_RELEASE_BIN)"
+	@echo "motifd binary: $(RELEASE_DIR)/motifd/linux-$(UNAME_M)/$(MOTIFD_RELEASE_BIN)"
 
 release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the Flutter macOS app.
 	$(call require_host,macos)
