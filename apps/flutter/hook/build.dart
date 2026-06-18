@@ -13,6 +13,11 @@ const _tailscaleAssetName = 'motif/platform/tailscale_ffi.dart';
 const _motifEmbedAssetName = 'motif/platform/motif_embed_ffi.dart';
 const _homebrewZig = '/opt/homebrew/opt/zig@0.15/bin/zig';
 
+bool _envFlagEnabled(String name) {
+  final value = Platform.environment[name]?.toLowerCase();
+  return value == '1' || value == 'true' || value == 'yes';
+}
+
 /// Whether the Zig toolchain is discoverable on PATH.
 Future<bool> _hasZig() async {
   for (final candidate in ['zig', _homebrewZig]) {
@@ -24,6 +29,15 @@ Future<bool> _hasZig() async {
     }
   }
   return false;
+}
+
+Future<bool> _hasCargo() async {
+  try {
+    final result = await Process.run('cargo', ['--version']);
+    return result.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// Resolve a bash to run the build scripts with.
@@ -135,9 +149,9 @@ void _addBundledMotifEmbedDynamicFile(
   );
 }
 
-/// Find the prebuilt motif-embed cdylib (or build it via cargo) and bundle it.
-/// Mirrors [_addOrBuildBundledTailscaleDynamic]; desktop targets only. A null
-/// `buildTarget` (e.g. mobile) means "don't build" and is a no-op.
+/// Build motif-embed via cargo and bundle it. Cargo handles freshness, so Rust
+/// source changes update the bundled embedded server without deleting build/.
+/// Set MOTIF_EMBED_USE_PREBUILT=1 to force the old prebuilt-only path.
 Future<void> _addOrBuildBundledMotifEmbedDynamic(
   BuildInput input,
   BuildOutputBuilder output, {
@@ -145,10 +159,31 @@ Future<void> _addOrBuildBundledMotifEmbedDynamic(
   String? buildTarget,
   Map<String, String>? environment,
 }) async {
-  var lib = _findRelativeFile(input, relativeCandidates);
-  if (lib == null && buildTarget != null) {
-    await _runMotifEmbedBuild(input, buildTarget, environment: environment);
-    lib = _findRelativeFile(input, relativeCandidates);
+  final usePrebuilt = _envFlagEnabled('MOTIF_EMBED_USE_PREBUILT');
+  var lib = usePrebuilt ? _findRelativeFile(input, relativeCandidates) : null;
+
+  if (buildTarget != null && !usePrebuilt) {
+    final canBuild = await _hasCargo();
+    if (!canBuild) {
+      lib = _findRelativeFile(input, relativeCandidates);
+      if (lib == null) {
+        throw StateError(
+          'cargo is required to build motif-embed, or set '
+          'MOTIF_EMBED_USE_PREBUILT=1 and provide a prebuilt library.',
+        );
+      }
+    } else {
+      await _runMotifEmbedBuild(input, buildTarget, environment: environment);
+      lib = _findRelativeFile(input, relativeCandidates);
+    }
+  }
+
+  lib ??= _findRelativeFile(input, relativeCandidates);
+  if (lib == null && buildTarget != null && usePrebuilt) {
+    throw StateError(
+      'MOTIF_EMBED_USE_PREBUILT=1 was set, but no prebuilt motif-embed '
+      'library was found.',
+    );
   }
   if (lib == null) return;
   _addBundledMotifEmbedDynamicFile(input, output, lib);

@@ -65,7 +65,9 @@ if [[ "$os" == "macos" ]]; then
   # fails with "larger updated load commands do not fit".
   extra_rustflags="-C link-arg=-Wl,-install_name,@rpath/$out_name -C link-arg=-Wl,-headerpad_max_install_names"
   : "${MACOSX_DEPLOYMENT_TARGET:=${MACOS_MIN_VERSION:-11.0}}"
+  : "${SDKROOT:=$(xcrun --sdk macosx --show-sdk-path)}"
   export MACOSX_DEPLOYMENT_TARGET
+  export SDKROOT
 fi
 
 mkdir -p "$(dirname "$OUT")"
