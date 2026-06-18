@@ -89,22 +89,24 @@ class _EmbeddedServerSettingsSheetState
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _serverSection(svc, status, c),
-        const SizedBox(height: MotifSpacing.xl),
+        const SizedBox(height: MotifSpacing.lg),
         _listenSection(cfg, c),
-        const SizedBox(height: MotifSpacing.xl),
+        const SizedBox(height: MotifSpacing.lg),
         _authSection(cfg, c),
-        const SizedBox(height: MotifSpacing.xl),
+        const SizedBox(height: MotifSpacing.lg),
         _tailscaleSection(cfg, status, c),
-        const SizedBox(height: MotifSpacing.xl),
+        const SizedBox(height: MotifSpacing.lg),
         _rzvSection(cfg, status, c),
-        const SizedBox(height: MotifSpacing.xl),
+        const SizedBox(height: MotifSpacing.lg),
         MotifSection(
           title: 'App',
           children: [
             MotifSectionRow(
               leading: Icon(Icons.rocket_launch_outlined, color: c.accent),
               title: 'Start server on launch',
-              subtitle: 'Bring the server up automatically when Motif opens',
+              subtitle: cfg.autostart
+                  ? 'Server starts automatically with Motif'
+                  : 'Start manually from this page or the tray',
               onTap: () => _save(cfg.copyWith(autostart: !cfg.autostart)),
               trailing: Switch(
                 value: cfg.autostart,
@@ -136,57 +138,94 @@ class _EmbeddedServerSettingsSheetState
     return MotifSection(
       title: 'Server',
       children: [
-        MotifSectionRow(
-          leading: Icon(Icons.dns_outlined, color: c.accent),
-          title: 'Status',
-          subtitle: _statusSubtitle(status),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (starting)
-                const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: color,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              const SizedBox(width: MotifSpacing.sm),
-              Text(label, style: TextStyle(color: c.textSecondary)),
-            ],
-          ),
-        ),
-        if (status.error != null)
-          MotifSectionRow(
-            leading: Icon(Icons.error_outline, color: c.danger),
-            title: status.error!,
-            titleColor: c.danger,
-          ),
         Padding(
-          padding: const EdgeInsets.all(MotifSpacing.md),
-          child: Row(
+          padding: const EdgeInsets.all(MotifSpacing.lg),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: running || starting ? null : () => svc.start(),
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Start'),
-                ),
+              Row(
+                children: [
+                  _IconTile(icon: Icons.dns_outlined, color: c.accent),
+                  const SizedBox(width: MotifSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Local Server',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: c.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _statusSubtitle(status) ??
+                              'Ready to serve sessions from this computer',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: c.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: MotifSpacing.md),
+                  _StatusPill(label: label, color: color, starting: starting),
+                ],
               ),
-              const SizedBox(width: MotifSpacing.md),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: running || starting ? () => svc.stop() : null,
-                  icon: const Icon(Icons.stop),
-                  label: const Text('Stop'),
+              if (status.running) ...[
+                const SizedBox(height: MotifSpacing.md),
+                _statusChips(status),
+              ],
+              if (status.error != null) ...[
+                const SizedBox(height: MotifSpacing.md),
+                _InlineNotice(
+                  icon: Icons.error_outline,
+                  text: status.error!,
+                  color: c.danger,
                 ),
+              ],
+              const SizedBox(height: MotifSpacing.lg),
+              Row(
+                children: [
+                  Expanded(
+                    child: running || starting
+                        ? OutlinedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.play_arrow),
+                            label: const Text('Start'),
+                          )
+                        : FilledButton.icon(
+                            onPressed: () => svc.start(),
+                            icon: const Icon(Icons.play_arrow),
+                            label: const Text('Start'),
+                          ),
+                  ),
+                  const SizedBox(width: MotifSpacing.md),
+                  Expanded(
+                    child: running || starting
+                        ? FilledButton.icon(
+                            onPressed: () => svc.stop(),
+                            icon: const Icon(Icons.stop),
+                            label: const Text('Stop'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: c.danger,
+                              foregroundColor: c.textOnAccent,
+                            ),
+                          )
+                        : OutlinedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.stop),
+                            label: const Text('Stop'),
+                          ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -195,52 +234,91 @@ class _EmbeddedServerSettingsSheetState
     );
   }
 
-  String? _statusSubtitle(EmbeddedServerStatus status) {
-    if (!status.running) return null;
-    final parts = <String>[];
-    if (status.boundAddrs.isNotEmpty) parts.add(status.boundAddrs.join(', '));
-    parts.add(
-      '${status.sessionCount} session${status.sessionCount == 1 ? '' : 's'}',
+  Widget _statusChips(EmbeddedServerStatus status) {
+    final chips = <Widget>[];
+    for (final addr in status.boundAddrs) {
+      chips.add(_InfoChip(icon: Icons.link_outlined, label: addr));
+    }
+    chips.add(
+      _InfoChip(
+        icon: Icons.terminal_outlined,
+        label:
+            '${status.sessionCount} session${status.sessionCount == 1 ? '' : 's'}',
+      ),
     );
     if (status.tailscaleState != null) {
-      parts.add('Tailscale: ${status.tailscaleState}');
+      chips.add(
+        _InfoChip(
+          icon: Icons.hub_outlined,
+          label: 'Tailscale ${status.tailscaleState}',
+        ),
+      );
     }
-    return parts.join(' · ');
+    return Wrap(
+      spacing: MotifSpacing.sm,
+      runSpacing: MotifSpacing.sm,
+      children: chips,
+    );
+  }
+
+  String? _statusSubtitle(EmbeddedServerStatus status) {
+    if (!status.running) return null;
+    final endpointCount = status.boundAddrs.length;
+    final endpoints = switch (endpointCount) {
+      0 =>
+        status.tailscaleState == null
+            ? 'No active endpoints'
+            : 'Tailscale ${status.tailscaleState}',
+      1 => '1 active endpoint',
+      _ => '$endpointCount active endpoints',
+    };
+    return '$endpoints · ${status.sessionCount} session${status.sessionCount == 1 ? '' : 's'}';
   }
 
   // ── Listen mode + port ──
 
   Widget _listenSection(EmbeddedServerConfig cfg, MotifColors c) {
-    Widget modeRow(EmbeddedListenMode mode, String title, String subtitle) {
-      final selected = cfg.listenMode == mode;
-      return MotifSectionRow(
-        leading: Icon(
-          selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-          color: selected ? c.accent : c.textTertiary,
-        ),
-        title: title,
-        subtitle: subtitle,
-        onTap: () => _save(cfg.copyWith(listenMode: mode)),
-      );
-    }
-
+    final selected = _listenModeText(cfg.listenMode);
     return MotifSection(
       title: 'Listen',
       children: [
-        modeRow(
-          EmbeddedListenMode.loopback,
-          'Loopback only',
-          'This computer (127.0.0.1) — private',
-        ),
-        modeRow(
-          EmbeddedListenMode.lan,
-          'Local network',
-          'Reachable on the LAN (0.0.0.0) — use a token',
-        ),
-        modeRow(
-          EmbeddedListenMode.off,
-          'Off',
-          'No local listener; Tailscale only',
+        Padding(
+          padding: const EdgeInsets.all(MotifSpacing.md),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SegmentedButton<EmbeddedListenMode>(
+                showSelectedIcon: false,
+                segments: const [
+                  ButtonSegment(
+                    value: EmbeddedListenMode.loopback,
+                    label: Text('Loopback'),
+                    icon: Icon(Icons.computer_outlined),
+                  ),
+                  ButtonSegment(
+                    value: EmbeddedListenMode.lan,
+                    label: Text('LAN'),
+                    icon: Icon(Icons.lan_outlined),
+                  ),
+                  ButtonSegment(
+                    value: EmbeddedListenMode.off,
+                    label: Text('Off'),
+                    icon: Icon(Icons.power_settings_new),
+                  ),
+                ],
+                selected: {cfg.listenMode},
+                onSelectionChanged: (next) =>
+                    _save(cfg.copyWith(listenMode: next.first)),
+              ),
+              const SizedBox(height: MotifSpacing.md),
+              _ModeSummary(
+                icon: selected.icon,
+                title: selected.title,
+                subtitle: selected.subtitle,
+                tone: selected.tone(c),
+              ),
+            ],
+          ),
         ),
         if (cfg.listenMode != EmbeddedListenMode.off)
           _field(
@@ -259,6 +337,35 @@ class _EmbeddedServerSettingsSheetState
     );
   }
 
+  ({
+    IconData icon,
+    String title,
+    String subtitle,
+    Color Function(MotifColors) tone,
+  })
+  _listenModeText(EmbeddedListenMode mode) {
+    return switch (mode) {
+      EmbeddedListenMode.loopback => (
+        icon: Icons.lock_outline,
+        title: 'Loopback only',
+        subtitle: 'Private to this computer at 127.0.0.1',
+        tone: (MotifColors c) => c.success,
+      ),
+      EmbeddedListenMode.lan => (
+        icon: Icons.lan_outlined,
+        title: 'Local network',
+        subtitle: 'Reachable on the LAN at 0.0.0.0; token recommended',
+        tone: (MotifColors c) => c.warning,
+      ),
+      EmbeddedListenMode.off => (
+        icon: Icons.power_settings_new,
+        title: 'Local listener off',
+        subtitle: 'Use Tailscale or relay pairing only',
+        tone: (MotifColors c) => c.textTertiary,
+      ),
+    };
+  }
+
   // ── Auth ──
 
   Widget _authSection(EmbeddedServerConfig cfg, MotifColors c) {
@@ -268,6 +375,9 @@ class _EmbeddedServerSettingsSheetState
         MotifSectionRow(
           leading: Icon(Icons.key_outlined, color: c.accent),
           title: 'Require a token',
+          subtitle: cfg.authEnabled
+              ? 'Clients must include the bearer token'
+              : 'Open access for reachable transports',
           onTap: () => _save(cfg.copyWith(authEnabled: !cfg.authEnabled)),
           trailing: Switch(
             value: cfg.authEnabled,
@@ -282,9 +392,11 @@ class _EmbeddedServerSettingsSheetState
             onChanged: () => _save(cfg.copyWith(authToken: _token.text.trim())),
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: MotifSpacing.md,
-              vertical: MotifSpacing.sm,
+            padding: const EdgeInsets.fromLTRB(
+              MotifSpacing.md,
+              0,
+              MotifSpacing.md,
+              MotifSpacing.sm,
             ),
             child: Align(
               alignment: Alignment.centerLeft,
@@ -296,7 +408,7 @@ class _EmbeddedServerSettingsSheetState
                   _save(cfg.copyWith(authToken: t));
                   setState(() {});
                 },
-                icon: const Icon(Icons.casino_outlined),
+                icon: const Icon(Icons.auto_awesome),
                 label: const Text('Generate token'),
               ),
             ),
@@ -325,6 +437,9 @@ class _EmbeddedServerSettingsSheetState
             MotifSectionRow(
               leading: Icon(Icons.hub_outlined, color: c.accent),
               title: 'Enable Tailscale',
+              subtitle: cfg.tsEnabled
+                  ? 'Tailnet access is configured for this server'
+                  : 'Reach this server from your tailnet',
               onTap: () => _save(cfg.copyWith(tsEnabled: !cfg.tsEnabled)),
               trailing: Switch(
                 value: cfg.tsEnabled,
@@ -342,9 +457,9 @@ class _EmbeddedServerSettingsSheetState
           ],
         ),
         if (cfg.tsEnabled) ...[
-          const SizedBox(height: MotifSpacing.xl),
+          const SizedBox(height: MotifSpacing.lg),
           _tsControlSection(cfg, c),
-          const SizedBox(height: MotifSpacing.xl),
+          const SizedBox(height: MotifSpacing.lg),
           _tsSignInSection(cfg, status, c),
         ],
       ],
@@ -476,6 +591,9 @@ class _EmbeddedServerSettingsSheetState
         MotifSectionRow(
           leading: Icon(Icons.qr_code_2, color: c.accent),
           title: 'Enable relay pairing',
+          subtitle: cfg.rzvEnabled
+              ? 'Generate a QR link through your relay'
+              : 'Pair another device without direct connectivity',
           onTap: () => _save(cfg.copyWith(rzvEnabled: !cfg.rzvEnabled)),
           trailing: Switch(
             value: cfg.rzvEnabled,
@@ -582,6 +700,221 @@ class _EmbeddedServerSettingsSheetState
           focusedBorder: InputBorder.none,
           isDense: true,
         ),
+      ),
+    );
+  }
+}
+
+class _IconTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+
+  const _IconTile({required this.icon, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+      ),
+      child: Icon(icon, color: color, size: 20),
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final String label;
+  final Color color;
+  final bool starting;
+
+  const _StatusPill({
+    required this.label,
+    required this.color,
+    required this.starting,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.sm,
+        vertical: 5,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.24)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (starting)
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2, color: color),
+            )
+          else
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: c.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _InfoChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 360),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: MotifSpacing.sm,
+          vertical: 6,
+        ),
+        decoration: BoxDecoration(
+          color: c.subtleFill,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: c.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: c.textSecondary),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: c.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineNotice extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Color color;
+
+  const _InlineNotice({
+    required this.icon,
+    required this.text,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(MotifSpacing.sm),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 13),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeSummary extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color tone;
+
+  const _ModeSummary({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.tone,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      padding: const EdgeInsets.all(MotifSpacing.md),
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+        border: Border.all(color: tone.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: tone, size: 20),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: c.textPrimary,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.textSecondary, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
