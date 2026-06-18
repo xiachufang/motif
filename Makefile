@@ -49,7 +49,7 @@ RUST_RELEASE_PACKAGES := motif-server motif-cast motif-push-relay
 RUST_RELEASE_BINS := motifd motif-cast motif-push-relay
 MOTIFD_RELEASE_PACKAGE := motif-server
 MOTIFD_RELEASE_BIN := motifd
-MOTIFD_LINUX_TARGET := x86_64-unknown-linux-musl
+MOTIFD_LINUX_TARGET := x86_64-unknown-linux-gnu
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
 FLUTTER_MACOS_APP := $(FLUTTER_DIR)/build/macos/Build/Products/Release/Motif.app
 
@@ -243,8 +243,7 @@ release-motifd-macos: check-cargo check-zig deps-rust build-flutter-web ## Build
 release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for Linux.
 	$(call require_host,linux)
 	@rustup target add $(MOTIFD_LINUX_TARGET)
-	@command -v cargo-zigbuild >/dev/null || $(CARGO) install cargo-zigbuild --locked
-	@$(CARGO) zigbuild --release $(CARGO_LOCKED) --target $(MOTIFD_LINUX_TARGET) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@$(CARGO) build --release $(CARGO_LOCKED) --target $(MOTIFD_LINUX_TARGET) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
 	@rm -rf "$(RELEASE_DIR)/motifd/linux-x86_64"
 	@mkdir -p "$(RELEASE_DIR)/motifd/linux-x86_64"
 	@install -m 0755 "target/$(MOTIFD_LINUX_TARGET)/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/linux-x86_64/$(MOTIFD_RELEASE_BIN)"
