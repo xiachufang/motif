@@ -11,6 +11,7 @@ class SceneDelegate: FlutterSceneDelegate {
 
     if let controller = window?.rootViewController as? FlutterViewController {
       MotifBrowserChannel.register(binaryMessenger: controller.binaryMessenger)
+      MotifImeDocumentChannel.register(binaryMessenger: controller.binaryMessenger)
     }
   }
 }

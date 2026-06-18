@@ -19,7 +19,7 @@ import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
-import '../../platform/mac_input_document.dart';
+import '../../platform/apple_input_document.dart';
 import '../../platform/window_title.dart';
 import '../../state/app_state.dart';
 import '../../state/motif_client.dart';
@@ -84,7 +84,7 @@ class _SessionScreenState extends State<SessionScreen>
 
   final StickyModifiers _modifiers = StickyModifiers();
   final Set<String> _mountedViewIds = <String>{};
-  final Set<String> _macInputDocumentIds = <String>{};
+  final Set<String> _appleInputDocumentIds = <String>{};
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
   late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
@@ -98,7 +98,7 @@ class _SessionScreenState extends State<SessionScreen>
   bool _attachingSession = false;
   bool _recording = false;
   bool _micStarting = false;
-  String? _lastMacInputDocumentId;
+  String? _lastAppleInputDocumentId;
   String _asrBase = '';
   String _lastAsrText = ''; // last value ASR wrote to the input bar
   String? _asrInputViewId;
@@ -178,10 +178,10 @@ class _SessionScreenState extends State<SessionScreen>
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
     HardwareKeyboard.instance.removeHandler(_handleShortcut);
-    for (final id in _macInputDocumentIds) {
-      unawaited(MacInputDocument.dispose(id).catchError((_) {}));
+    for (final id in _appleInputDocumentIds) {
+      unawaited(AppleInputDocument.dispose(id).catchError((_) {}));
     }
-    _macInputDocumentIds.clear();
+    _appleInputDocumentIds.clear();
     _disposeInputState(_fallbackInput);
     for (final input in _tabInputs.values) {
       _disposeInputState(input);
@@ -312,7 +312,7 @@ class _SessionScreenState extends State<SessionScreen>
                     ? null
                     : _activeView(motif);
                 _reconcileTabInputs(motif, activeView);
-                _syncMacInputDocument(activeView?.id);
+                _syncAppleInputDocument(activeView?.id);
                 final inputState = _inputStateForView(activeView?.id);
                 final inputPtyId = _switchingSession
                     ? null

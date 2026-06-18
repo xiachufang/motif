@@ -1,4 +1,5 @@
 import Flutter
+import ObjectiveC.runtime
 import UIKit
 import UserNotifications
 
@@ -52,6 +53,10 @@ import UserNotifications
 
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MotifBrowser") {
       MotifBrowserChannel.register(binaryMessenger: registrar.messenger())
+    }
+
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MotifImeDocument") {
+      MotifImeDocumentChannel.register(binaryMessenger: registrar.messenger())
     }
   }
 
@@ -139,5 +144,140 @@ enum MotifBrowserChannel {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+}
+
+enum MotifImeDocumentChannel {
+  static func register(binaryMessenger: FlutterBinaryMessenger) {
+    MotifIosImeDocumentCoordinator.shared.installFlutterTextInputContextIdentifierHook()
+
+    let channel = FlutterMethodChannel(
+      name: "motif/ime_document",
+      binaryMessenger: binaryMessenger
+    )
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "activateDocument":
+        guard let args = call.arguments as? [String: Any],
+              let id = args["id"] as? String else {
+          result(FlutterError(
+            code: "bad_args",
+            message: "activateDocument requires an id",
+            details: nil))
+          return
+        }
+        let defaultEnglish = args["defaultEnglish"] as? Bool ?? false
+        MotifIosImeDocumentCoordinator.shared.activateDocument(
+          id,
+          defaultEnglish: defaultEnglish)
+        result(nil)
+      case "disposeDocument":
+        guard let args = call.arguments as? [String: Any],
+              let id = args["id"] as? String else {
+          result(FlutterError(
+            code: "bad_args",
+            message: "disposeDocument requires an id",
+            details: nil))
+          return
+        }
+        MotifIosImeDocumentCoordinator.shared.disposeDocument(id)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+}
+
+private final class MotifIosImeDocumentCoordinator {
+  static let shared = MotifIosImeDocumentCoordinator()
+
+  private let fallbackDocumentId = "__motif_default__"
+  private let contextIdentifierPrefix = "io.allsunday.motif.ime-document."
+  private var currentDocumentId = "__motif_default__"
+  private var hookInstalled = false
+
+  private init() {}
+
+  func installFlutterTextInputContextIdentifierHook() {
+    guard !hookInstalled else { return }
+    guard let textInputViewClass = NSClassFromString("FlutterTextInputView") else {
+      return
+    }
+
+    let selector = #selector(getter: UIResponder.textInputContextIdentifier)
+    let block: @convention(block) (AnyObject) -> NSString? = { _ in
+      MotifIosImeDocumentCoordinator.shared.currentContextIdentifier as NSString
+    }
+    let implementation = imp_implementationWithBlock(block)
+    class_replaceMethod(textInputViewClass, selector, implementation, "@@:")
+    hookInstalled = true
+  }
+
+  func activateDocument(_ id: String, defaultEnglish: Bool) {
+    guard !id.isEmpty else { return }
+    DispatchQueue.main.async {
+      self.installFlutterTextInputContextIdentifierHook()
+      self.currentDocumentId = id
+
+      // iOS has no public API to select a keyboard input source. Clearing a
+      // brand-new identifier avoids restoring another tab's remembered mode;
+      // the Dart text configuration uses UIKeyboardTypeASCIICapable for an
+      // English-friendly first keyboard.
+      if defaultEnglish {
+        UIResponder.clearTextInputContextIdentifier(
+          self.contextIdentifier(for: id))
+      }
+
+      self.reloadCurrentTextInput()
+    }
+  }
+
+  func disposeDocument(_ id: String) {
+    guard !id.isEmpty else { return }
+    DispatchQueue.main.async {
+      UIResponder.clearTextInputContextIdentifier(self.contextIdentifier(for: id))
+      if self.currentDocumentId == id {
+        self.currentDocumentId = self.fallbackDocumentId
+        self.reloadCurrentTextInput()
+      }
+    }
+  }
+
+  private var currentContextIdentifier: String {
+    contextIdentifier(for: currentDocumentId)
+  }
+
+  private func contextIdentifier(for id: String) -> String {
+    contextIdentifierPrefix + id
+  }
+
+  private func reloadCurrentTextInput() {
+    currentFlutterTextInputResponder()?.reloadInputViews()
+  }
+
+  private func currentFlutterTextInputResponder() -> UIResponder? {
+    for scene in UIApplication.shared.connectedScenes {
+      guard let windowScene = scene as? UIWindowScene else { continue }
+      for window in windowScene.windows where window.isKeyWindow {
+        guard let responder = window.motifFirstResponder() else { continue }
+        if NSStringFromClass(type(of: responder)).contains("FlutterTextInputView") {
+          return responder
+        }
+      }
+    }
+    return nil
+  }
+}
+
+private extension UIView {
+  func motifFirstResponder() -> UIResponder? {
+    if isFirstResponder { return self }
+    for subview in subviews {
+      if let responder = subview.motifFirstResponder() {
+        return responder
+      }
+    }
+    return nil
   }
 }

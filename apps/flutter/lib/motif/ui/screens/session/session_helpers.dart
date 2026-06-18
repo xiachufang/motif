@@ -50,12 +50,12 @@ extension _SessionScreenTabInputs on _SessionScreenState {
   void _reconcileTabInputs(MotifClient motif, ViewInfo? activeView) {
     final liveIds = {for (final view in motif.views) view.id};
     if (activeView != null) liveIds.add(activeView.id);
-    final staleMacDocumentIds = [
-      for (final id in _macInputDocumentIds)
+    final staleAppleDocumentIds = [
+      for (final id in _appleInputDocumentIds)
         if (!liveIds.contains(id)) id,
     ];
-    for (final id in staleMacDocumentIds) {
-      _disposeMacInputDocument(id);
+    for (final id in staleAppleDocumentIds) {
+      _disposeAppleInputDocument(id);
     }
     final staleIds = [
       for (final id in _tabInputs.keys)
@@ -68,24 +68,26 @@ extension _SessionScreenTabInputs on _SessionScreenState {
     }
   }
 
-  void _syncMacInputDocument(String? viewId) {
-    if (viewId == null || viewId.isEmpty || _lastMacInputDocumentId == viewId) {
+  void _syncAppleInputDocument(String? viewId) {
+    if (viewId == null ||
+        viewId.isEmpty ||
+        _lastAppleInputDocumentId == viewId) {
       return;
     }
-    _lastMacInputDocumentId = viewId;
-    final isNewDocument = _macInputDocumentIds.add(viewId);
+    _lastAppleInputDocumentId = viewId;
+    final isNewDocument = _appleInputDocumentIds.add(viewId);
     unawaited(
-      MacInputDocument.activate(
+      AppleInputDocument.activate(
         viewId,
         defaultEnglish: isNewDocument,
       ).catchError((_) {}),
     );
   }
 
-  void _disposeMacInputDocument(String id) {
-    _macInputDocumentIds.remove(id);
-    if (_lastMacInputDocumentId == id) _lastMacInputDocumentId = null;
-    unawaited(MacInputDocument.dispose(id).catchError((_) {}));
+  void _disposeAppleInputDocument(String id) {
+    _appleInputDocumentIds.remove(id);
+    if (_lastAppleInputDocumentId == id) _lastAppleInputDocumentId = null;
+    unawaited(AppleInputDocument.dispose(id).catchError((_) {}));
   }
 
   void _disposeInputState(_TabInputState input) {
