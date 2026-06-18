@@ -9,6 +9,8 @@ import 'platform/platform_factory.dart';
 import 'platform/window_title.dart';
 import 'state/app_state.dart';
 import 'state/embedded_server_service.dart';
+import 'state/motif_runtime.dart';
+import 'state/server_connection_runtime.dart';
 import 'ui/app.dart';
 
 typedef MotifStartupHook = FutureOr<void> Function(AppState appState);
@@ -20,6 +22,8 @@ typedef MotifStartupHook = FutureOr<void> Function(AppState appState);
 /// into the compile graph. Desktop builds opt in from `main_desktop.dart`.
 Future<void> runMotif({
   EmbeddedServerFactory? embeddedServerFactory,
+  MotifClientRuntime? clientRuntime,
+  ServerConnectionRuntime? serverConnectionRuntime,
   MotifStartupHook? afterFirstFrame,
 }) {
   return runZonedGuarded<Future<void>>(
@@ -57,6 +61,8 @@ Future<void> runMotif({
           final appState = await AppState.load(
             platform: makePlatformServices(),
             embeddedServerFactory: embeddedServerFactory,
+            clientRuntime: clientRuntime,
+            serverConnectionRuntime: serverConnectionRuntime,
           );
           final embedded = appState.embeddedServer;
           runApp(

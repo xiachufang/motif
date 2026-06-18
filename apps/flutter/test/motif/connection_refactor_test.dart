@@ -12,6 +12,7 @@ import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/connection_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
 import 'package:motif/motif/state/server_connection_controller.dart';
+import 'package:motif/motif/state/server_connection_runtime.dart';
 import 'package:motif/motif/state/stores.dart';
 import 'package:motif/motif/state/transport_resolver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -664,7 +665,7 @@ void main() {
   });
 
   test(
-    'app resume reconnects attached session to rebuild websocket transport',
+    'mobile app resume reconnects attached session to rebuild websocket transport',
     () async {
       final tailscale = _FakeTailscale(
         const TailscaleState(TailscaleStatus.running),
@@ -703,6 +704,50 @@ void main() {
       expect(client.isForeground, isTrue);
       expect(client.connectCalls, 2);
       expect(client.connectForces.last, isTrue);
+      expect(controller.state, isA<ServerAttached>());
+    },
+  );
+
+  test(
+    'desktop app pause and resume keep attached transport connected',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final client = _RecordingMotifClient()..intendedSession = 'dev';
+      final controller = ServerConnectionController(
+        serverId: 'tailnet',
+        client: client,
+        serverProvider: () => const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        resolver: TransportResolver(_platform(tailscale)),
+        onChanged: () {},
+        runtime: const DesktopServerConnectionRuntime(),
+      );
+      client.addListener(controller.handleClientStateChanged);
+      addTearDown(() {
+        client.removeListener(controller.handleClientStateChanged);
+        controller.dispose();
+      });
+
+      await controller.connect(force: true);
+      expect(client.connectCalls, 1);
+      expect(client.isForeground, isTrue);
+
+      controller.handleAppPaused();
+      expect(client.isForeground, isTrue);
+
+      controller.handleAppResumed();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.isForeground, isTrue);
+      expect(client.connectCalls, 1);
       expect(controller.state, isA<ServerAttached>());
     },
   );

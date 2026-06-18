@@ -23,7 +23,9 @@ import 'connection_state.dart';
 import 'embedded_server_service.dart';
 import 'embedded_web_server.dart';
 import 'motif_client.dart';
+import 'motif_runtime.dart';
 import 'server_connection_controller.dart';
+import 'server_connection_runtime.dart';
 import 'stores.dart';
 import 'transport_resolver.dart';
 
@@ -44,6 +46,7 @@ class AppState extends ChangeNotifier {
   final String? startupActiveServerId;
   final SessionSidebarUiState sessionSidebar = SessionSidebarUiState();
   final MotifClient Function(MotifServer server) _clientFactory;
+  final ServerConnectionRuntime _serverConnectionRuntime;
   late final TransportResolver _transportResolver;
   final Map<String, MotifClient> _clientsByServer = {};
   final Map<String, ServerConnectionController> _controllersByServer = {};
@@ -70,8 +73,13 @@ class AppState extends ChangeNotifier {
     required this.platform,
     this.embeddedServer,
     MotifClient Function(MotifServer server)? clientFactory,
+    MotifClientRuntime? clientRuntime,
+    ServerConnectionRuntime? serverConnectionRuntime,
   }) : startupActiveServerId = servers.activeId,
-       _clientFactory = clientFactory ?? ((_) => MotifClient()) {
+       _clientFactory =
+           clientFactory ?? ((_) => MotifClient(runtime: clientRuntime)),
+       _serverConnectionRuntime =
+           serverConnectionRuntime ?? const MobileServerConnectionRuntime() {
     _transportResolver = TransportResolver(platform);
     servers.addListener(_relayStoreChange);
     commands.addListener(_relayStoreChange);
@@ -100,6 +108,8 @@ class AppState extends ChangeNotifier {
     Uri? embeddedWebUri,
     String embeddedWebToken = '',
     EmbeddedServerFactory? embeddedServerFactory,
+    MotifClientRuntime? clientRuntime,
+    ServerConnectionRuntime? serverConnectionRuntime,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final servers = ServerStore(prefs);
@@ -125,6 +135,8 @@ class AppState extends ChangeNotifier {
       embeddedServer: embeddedServerFactory == null
           ? null
           : await embeddedServerFactory(prefs),
+      clientRuntime: clientRuntime,
+      serverConnectionRuntime: serverConnectionRuntime,
     );
   }
 
@@ -181,6 +193,7 @@ class AppState extends ChangeNotifier {
       serverProvider: () => serverById(serverId),
       resolver: _transportResolver,
       onChanged: _relayControllerChange,
+      runtime: _serverConnectionRuntime,
     );
     _wireClient(serverId, client);
     _applyTerminalPaletteTo(client);

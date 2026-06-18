@@ -7,9 +7,10 @@ import '../models/settings.dart';
 import '../platform/services.dart';
 import 'connection_state.dart';
 import 'motif_client.dart';
+import 'server_connection_runtime.dart';
 import 'transport_resolver.dart';
 
-class ServerConnectionController {
+class ServerConnectionController implements ServerConnectionRuntimeHost {
   static const Duration _reconnectBaseDelay = Duration(milliseconds: 500);
   static const Duration _reconnectMaxDelay = Duration(seconds: 30);
 
@@ -18,6 +19,7 @@ class ServerConnectionController {
   final MotifServer? Function() serverProvider;
   final TransportResolver resolver;
   final VoidCallback onChanged;
+  final ServerConnectionRuntime runtime;
 
   ServerConnectionController({
     required this.serverId,
@@ -25,7 +27,8 @@ class ServerConnectionController {
     required this.serverProvider,
     required this.resolver,
     required this.onChanged,
-  });
+    ServerConnectionRuntime? runtime,
+  }) : runtime = runtime ?? const MobileServerConnectionRuntime();
 
   ServerConnectionState _state = const ServerIdle();
   ServerConnectionState get state => _state;
@@ -128,13 +131,19 @@ class ServerConnectionController {
     }
   }
 
-  void handleAppPaused() {
+  void handleAppPaused() => runtime.handleAppPaused(this);
+
+  void handleAppResumed() => runtime.handleAppResumed(this);
+
+  @override
+  void handleMobileAppPaused() {
     _appPaused = true;
     client.setForeground(false);
     _cancelReconnect();
   }
 
-  void handleAppResumed() {
+  @override
+  void handleMobileAppResumed() {
     _appPaused = false;
     client.setForeground(true);
     if (!_wantsConnection) return;
@@ -164,6 +173,11 @@ class ServerConnectionController {
     if (client.isLive) {
       unawaited(_probeLiveConnectionAfterResume());
     }
+  }
+
+  @override
+  void reclaimForeground() {
+    client.setForeground(true);
   }
 
   void handleRefreshFailed(Object error, [StackTrace? stackTrace]) {
