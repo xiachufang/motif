@@ -48,14 +48,17 @@ class _ShellContextBar extends StatelessWidget {
 class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
+  final Object groupId;
   final VoidCallback onSend;
   final bool recording;
   final bool micStarting;
   final VoidCallback onMic;
   final VoidCallback onAttach;
   const _InputBar({
+    super.key,
     required this.controller,
     required this.focusNode,
+    required this.groupId,
     required this.onSend,
     required this.recording,
     required this.micStarting,
@@ -101,10 +104,17 @@ class _InputBar extends StatelessWidget {
                 children: [
                   Expanded(
                     child: TextField(
+                      groupId: groupId,
                       controller: controller,
                       focusNode: focusNode,
+                      keyboardType: terminalKeyboardType,
+                      hintLocales: terminalEnglishHintLocales,
                       autocorrect: false,
+                      smartDashesType: SmartDashesType.disabled,
+                      smartQuotesType: SmartQuotesType.disabled,
                       enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      enableInlinePrediction: false,
                       minLines: 1,
                       maxLines: 5,
                       style: TextStyle(color: c.textPrimary, fontSize: 16),

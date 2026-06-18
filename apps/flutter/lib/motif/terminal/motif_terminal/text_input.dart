@@ -73,20 +73,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
       return;
     }
     _worker?.scrollToBottom();
-    _textInputValue = _MotifTerminalViewState._softKeyboardValue;
-    final connection = TextInput.attach(
-      this,
-      const TextInputConfiguration(
-        inputType: TextInputType.text,
-        inputAction: TextInputAction.newline,
-        autocorrect: false,
-        smartDashesType: SmartDashesType.disabled,
-        smartQuotesType: SmartQuotesType.disabled,
-        enableSuggestions: false,
-        enableInteractiveSelection: false,
-        enableIMEPersonalizedLearning: false,
-      ),
-    );
+    final connection = TextInput.attach(this, terminalTextInputConfiguration);
     _textInputConnection = connection;
     connection.setEditingState(_textInputValue);
     _syncImeRect();
@@ -100,7 +87,6 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
       connection.close();
     }
     _textInputConnection = null;
-    _textInputValue = _MotifTerminalViewState._softKeyboardValue;
   }
 
   void _resetTextInputValue() {

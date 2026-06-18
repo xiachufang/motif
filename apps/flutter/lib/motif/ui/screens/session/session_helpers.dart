@@ -14,6 +14,87 @@ class _SwitchSessionAction extends _SessionMenuAction {
   const _SwitchSessionAction(this.serverId, this.name);
 }
 
+class _TabInputState {
+  _TabInputState(String id)
+    : controller = TextEditingController(),
+      focusNode = FocusNode(debugLabel: 'Motif input bar $id'),
+      groupId = Object();
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final Object groupId;
+}
+
+extension _SessionScreenTabInputs on _SessionScreenState {
+  TextEditingController get _input => _activeInputState.controller;
+
+  _TabInputState get _activeInputState =>
+      _inputStateForView(_activeView(_motif)?.id);
+
+  _TabInputState _createInputState(String id) {
+    final input = _TabInputState(id);
+    input.controller.addListener(_onInputChanged);
+    return input;
+  }
+
+  _TabInputState _inputStateForView(String? viewId) {
+    if (viewId == null || viewId.isEmpty) return _fallbackInput;
+    return _tabInputs.putIfAbsent(viewId, () => _createInputState(viewId));
+  }
+
+  TextEditingController? _inputControllerForView(String? viewId) {
+    if (viewId == null || viewId.isEmpty) return _fallbackInput.controller;
+    return _tabInputs[viewId]?.controller;
+  }
+
+  void _reconcileTabInputs(MotifClient motif, ViewInfo? activeView) {
+    final liveIds = {for (final view in motif.views) view.id};
+    if (activeView != null) liveIds.add(activeView.id);
+    final staleMacDocumentIds = [
+      for (final id in _macInputDocumentIds)
+        if (!liveIds.contains(id)) id,
+    ];
+    for (final id in staleMacDocumentIds) {
+      _disposeMacInputDocument(id);
+    }
+    final staleIds = [
+      for (final id in _tabInputs.keys)
+        if (!liveIds.contains(id)) id,
+    ];
+    for (final id in staleIds) {
+      final input = _tabInputs.remove(id);
+      if (input != null) _disposeInputState(input);
+      if (_asrInputViewId == id) _asrInputViewId = null;
+    }
+  }
+
+  void _syncMacInputDocument(String? viewId) {
+    if (viewId == null || viewId.isEmpty || _lastMacInputDocumentId == viewId) {
+      return;
+    }
+    _lastMacInputDocumentId = viewId;
+    final isNewDocument = _macInputDocumentIds.add(viewId);
+    unawaited(
+      MacInputDocument.activate(
+        viewId,
+        defaultEnglish: isNewDocument,
+      ).catchError((_) {}),
+    );
+  }
+
+  void _disposeMacInputDocument(String id) {
+    _macInputDocumentIds.remove(id);
+    if (_lastMacInputDocumentId == id) _lastMacInputDocumentId = null;
+    unawaited(MacInputDocument.dispose(id).catchError((_) {}));
+  }
+
+  void _disposeInputState(_TabInputState input) {
+    input.controller.removeListener(_onInputChanged);
+    input.controller.dispose();
+    input.focusNode.dispose();
+  }
+}
+
 Route<void> _sessionSwitchRoute(String serverId, String session) {
   return PageRouteBuilder<void>(
     transitionDuration: const Duration(milliseconds: 180),

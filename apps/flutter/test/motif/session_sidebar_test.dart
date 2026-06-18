@@ -10,6 +10,7 @@ import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
 import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/terminal/terminal_input.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
@@ -390,6 +391,50 @@ void main() {
       44,
     );
     expect(find.text('test-session'), findsOneWidget);
+  });
+
+  testWidgets('bottom input state is scoped to the active tab', (tester) async {
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [
+        PtyInfo(id: 'pty-1', cols: 80, rows: 24),
+        PtyInfo(id: 'pty-2', cols: 80, rows: 24),
+      ]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'v2', spec: PtyViewSpec('pty-2')),
+      ]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+    TextField inputField() => tester.widget<TextField>(find.byType(TextField));
+
+    await tester.enterText(find.byType(TextField), 'first tab');
+    await tester.pump();
+    final firstGroup = inputField().groupId;
+    expect(inputField().keyboardType, terminalKeyboardType);
+    expect(inputField().hintLocales?.single.toLanguageTag(), 'en-US');
+
+    await tester.tap(find.byKey(const ValueKey('tab-v2')));
+    await tester.pump();
+    expect(motif.activeViewId, 'v2');
+    expect(inputField().controller?.text, isEmpty);
+    expect(inputField().groupId, isNot(same(firstGroup)));
+
+    await tester.enterText(find.byType(TextField), 'second tab');
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('tab-v1')));
+    await tester.pump();
+    expect(inputField().controller?.text, 'first tab');
+
+    await tester.tap(find.byKey(const ValueKey('tab-v2')));
+    await tester.pump();
+    expect(inputField().controller?.text, 'second tab');
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyT);
+    expect(motif.activeViewId, 'new-view-1');
+    expect(inputField().controller?.text, isEmpty);
   });
 
   testWidgets('iPad-width buttons toggle left sidebar panels', (tester) async {

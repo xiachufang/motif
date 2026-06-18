@@ -336,7 +336,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   @override
   void connectionClosed() {
     _textInputConnection = null;
-    _textInputValue = _softKeyboardValue;
     _showSoftKeyboardOnFocus = false;
     _focusNode.unfocus();
   }

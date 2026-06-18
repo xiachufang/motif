@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import ObjectiveC.runtime
 
 // C symbol from the linked cnativeapi library (the tray plugin's backend),
 // used to destroy a stale tray icon left over from a hot restart by its raw
@@ -64,6 +65,42 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       }
     }
 
+    MotifImeDocumentCoordinator.shared.installFlutterTextInputContextHook()
+    let imeDocumentChannel = FlutterMethodChannel(
+      name: "motif/ime_document",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    imeDocumentChannel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "activateDocument":
+        guard let args = call.arguments as? [String: Any],
+              let id = args["id"] as? String else {
+          result(FlutterError(
+            code: "bad_args",
+            message: "activateDocument requires an id",
+            details: nil))
+          return
+        }
+        let defaultEnglish = args["defaultEnglish"] as? Bool ?? false
+        MotifImeDocumentCoordinator.shared.activateDocument(
+          id,
+          defaultEnglish: defaultEnglish)
+        result(nil)
+      case "disposeDocument":
+        guard let args = call.arguments as? [String: Any],
+              let id = args["id"] as? String else {
+          result(FlutterError(
+            code: "bad_args",
+            message: "disposeDocument requires an id",
+            details: nil))
+          return
+        }
+        MotifImeDocumentCoordinator.shared.disposeDocument(id)
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     self.delegate = self
     super.awakeFromNib()
 
@@ -109,5 +146,169 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     hideWindow()
     return false
+  }
+}
+
+private final class MotifImeDocumentCoordinator {
+  static let shared = MotifImeDocumentCoordinator()
+
+  private let fallbackDocumentId = "__motif_default__"
+  private let englishInputSourceIds = [
+    "com.apple.keylayout.ABC",
+    "com.apple.keylayout.US",
+    "com.apple.keyboardlayout.US",
+    "com.apple.keylayout.USExtended",
+  ]
+  private var currentDocumentId = "__motif_default__"
+  private var contexts: [String: NSTextInputContext] = [:]
+  private var pendingEnglishDefaultDocumentIds: Set<String> = []
+  private var textInputContextIvar: Ivar?
+  private var swizzleInstalled = false
+
+  private init() {}
+
+  func installFlutterTextInputContextHook() {
+    guard !swizzleInstalled else { return }
+    guard let textInputClass = NSClassFromString("FlutterTextInputPlugin") else {
+      return
+    }
+    let originalSelector = Selector(("inputContext"))
+    let replacementSelector = #selector(NSObject.motifInputContextForDocument)
+    guard let originalMethod = class_getInstanceMethod(textInputClass, originalSelector),
+          let replacementMethod = class_getInstanceMethod(NSObject.self, replacementSelector) else {
+      return
+    }
+    let added = class_addMethod(
+      textInputClass,
+      replacementSelector,
+      method_getImplementation(replacementMethod),
+      method_getTypeEncoding(replacementMethod))
+    guard added,
+          let addedMethod = class_getInstanceMethod(textInputClass, replacementSelector) else {
+      return
+    }
+    method_exchangeImplementations(originalMethod, addedMethod)
+    swizzleInstalled = true
+  }
+
+  func activateDocument(_ id: String, defaultEnglish: Bool) {
+    installFlutterTextInputContextHook()
+    let nextDocumentId = normalizedDocumentId(id)
+    DispatchQueue.main.async {
+      let previousContext = self.currentFlutterTextInputContext()
+      previousContext?.deactivate()
+      self.currentDocumentId = nextDocumentId
+      if defaultEnglish {
+        self.pendingEnglishDefaultDocumentIds.insert(nextDocumentId)
+      }
+      let nextContext = self.currentFlutterTextInputContext()
+      nextContext?.activate()
+      self.applyPendingEnglishDefaultIfNeeded(
+        to: nextContext,
+        documentId: nextDocumentId)
+    }
+  }
+
+  func disposeDocument(_ id: String) {
+    let documentId = normalizedDocumentId(id)
+    DispatchQueue.main.async {
+      if self.currentDocumentId == documentId {
+        self.currentFlutterTextInputContext()?.deactivate()
+        self.currentDocumentId = self.fallbackDocumentId
+      }
+      self.pendingEnglishDefaultDocumentIds.remove(documentId)
+      let suffix = ":\(documentId)"
+      for key in Array(self.contexts.keys) where key.hasSuffix(suffix) {
+        self.contexts.removeValue(forKey: key)
+      }
+    }
+  }
+
+  func inputContext(for client: NSTextInputClient, owner: NSObject) -> NSTextInputContext {
+    let documentId = currentDocumentId
+    let key = contextKey(client: client, documentId: documentId)
+    let context: NSTextInputContext
+    if let existing = contexts[key] {
+      context = existing
+    } else {
+      context = NSTextInputContext(client: client)
+      contexts[key] = context
+    }
+    install(context: context, on: owner)
+    applyPendingEnglishDefaultIfNeeded(to: context, documentId: documentId)
+    return context
+  }
+
+  private func normalizedDocumentId(_ id: String) -> String {
+    id.isEmpty ? fallbackDocumentId : id
+  }
+
+  private func contextKey(client: NSTextInputClient, documentId: String) -> String {
+    let clientId = ObjectIdentifier(client as AnyObject).hashValue
+    return "\(clientId):\(documentId)"
+  }
+
+  private func currentFlutterTextInputContext() -> NSTextInputContext? {
+    guard let responder = NSApp.keyWindow?.firstResponder as? NSObject else { return nil }
+    guard NSStringFromClass(type(of: responder)).contains("FlutterTextInputPlugin") else {
+      return nil
+    }
+    guard let client = responder as? NSTextInputClient else { return nil }
+    return inputContext(for: client, owner: responder)
+  }
+
+  private func install(context: NSTextInputContext, on owner: NSObject) {
+    guard let ivar = flutterTextInputContextIvar(for: owner) else { return }
+    object_setIvar(owner, ivar, context)
+  }
+
+  private func flutterTextInputContextIvar(for owner: NSObject) -> Ivar? {
+    if let textInputContextIvar {
+      return textInputContextIvar
+    }
+    var currentClass: AnyClass? = object_getClass(owner)
+    while let cls = currentClass {
+      if let ivar = class_getInstanceVariable(cls, "_textInputContext") {
+        textInputContextIvar = ivar
+        return ivar
+      }
+      currentClass = class_getSuperclass(cls)
+    }
+    return nil
+  }
+
+  private func applyPendingEnglishDefaultIfNeeded(
+    to context: NSTextInputContext?,
+    documentId: String
+  ) {
+    guard pendingEnglishDefaultDocumentIds.contains(documentId),
+          let context else {
+      return
+    }
+    guard let source = preferredEnglishInputSource(in: context.keyboardInputSources) else {
+      return
+    }
+    pendingEnglishDefaultDocumentIds.remove(documentId)
+    context.selectedKeyboardInputSource = source
+  }
+
+  private func preferredEnglishInputSource(
+    in sources: [NSTextInputSourceIdentifier]?
+  ) -> NSTextInputSourceIdentifier? {
+    guard let sources, !sources.isEmpty else { return nil }
+    for id in englishInputSourceIds where sources.contains(id) {
+      return id
+    }
+    return sources.first { id in
+      id.localizedCaseInsensitiveContains("ABC") ||
+        id.localizedCaseInsensitiveContains("US")
+    }
+  }
+}
+
+private extension NSObject {
+  @objc func motifInputContextForDocument() -> NSTextInputContext? {
+    guard let client = self as? NSTextInputClient else { return nil }
+    return MotifImeDocumentCoordinator.shared.inputContext(for: client, owner: self)
   }
 }

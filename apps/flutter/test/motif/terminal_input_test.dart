@@ -25,6 +25,32 @@ TerminalKeyRoute _classify({
 }
 
 void main() {
+  group('terminal input configuration', () {
+    test('defaults terminal text input to English-friendly settings', () {
+      expect(terminalKeyboardType, TextInputType.visiblePassword);
+      expect(terminalEnglishHintLocales.single.toLanguageTag(), 'en-US');
+      expect(
+        terminalTextInputConfiguration.inputType,
+        TextInputType.visiblePassword,
+      );
+      expect(terminalTextInputConfiguration.autocorrect, isFalse);
+      expect(terminalTextInputConfiguration.enableSuggestions, isFalse);
+      expect(
+        terminalTextInputConfiguration.smartDashesType,
+        SmartDashesType.disabled,
+      );
+      expect(
+        terminalTextInputConfiguration.smartQuotesType,
+        SmartQuotesType.disabled,
+      );
+      expect(
+        terminalTextInputConfiguration.hintLocales?.single.toLanguageTag(),
+        'en-US',
+      );
+      expect(terminalTextInputConfiguration.enableInlinePrediction, isFalse);
+    });
+  });
+
   group('terminalInputModeFor', () {
     test('maps each platform', () {
       expect(

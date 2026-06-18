@@ -47,7 +47,8 @@ extension _SessionScreenInputActions on _SessionScreenState {
   /// recording (a change ASR didn't make), discard the in-flight transcript and
   /// stop listening.
   void _onInputChanged() {
-    if (_recording && _input.text != _lastAsrText) {
+    final recordingInput = _inputControllerForView(_asrInputViewId) ?? _input;
+    if (_recording && recordingInput.text != _lastAsrText) {
       _ignoreFinal = true;
       _toggleMic(); // stop
     }
@@ -58,15 +59,19 @@ extension _SessionScreenInputActions on _SessionScreenState {
     final speech = context.read<AppState>().platform.speech;
     if (_recording) {
       final finalText = await speech.stop();
+      final input = _inputControllerForView(_asrInputViewId) ?? _input;
       if (!_ignoreFinal && finalText.isNotEmpty) {
         _lastAsrText = _mergeAsr(_asrBase, finalText);
-        _input.text = _lastAsrText;
+        input.text = _lastAsrText;
       }
       _ignoreFinal = false;
+      _asrInputViewId = null;
       if (mounted) setState(() => _recording = false);
       return;
     }
-    _asrBase = _input.text;
+    _asrInputViewId = _activeView(_motif)?.id;
+    final input = _inputControllerForView(_asrInputViewId) ?? _input;
+    _asrBase = input.text;
     _ignoreFinal = false;
     if (mounted) {
       setState(() {
@@ -79,8 +84,9 @@ extension _SessionScreenInputActions on _SessionScreenState {
       await speech.start(
         onPartial: (partial) {
           if (_ignoreFinal) return;
+          final input = _inputControllerForView(_asrInputViewId) ?? _input;
           _lastAsrText = _mergeAsr(_asrBase, partial);
-          _input.text = _lastAsrText;
+          input.text = _lastAsrText;
         },
         onError: (e) {
           failed = true;
@@ -93,6 +99,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
               _micStarting = false;
               _recording = false;
             });
+            _asrInputViewId = null;
             showMotifToast(context, 'Voice input: $e');
           }
         },
@@ -109,6 +116,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
           _micStarting = false;
           _recording = false;
         });
+        _asrInputViewId = null;
         showMotifToast(context, 'Voice input unavailable: $e');
       }
     }

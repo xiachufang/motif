@@ -19,6 +19,7 @@ import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
+import '../../platform/mac_input_document.dart';
 import '../../platform/window_title.dart';
 import '../../state/app_state.dart';
 import '../../state/motif_client.dart';
@@ -26,6 +27,7 @@ import '../../state/sticky_modifiers.dart';
 import '../../terminal/native_terminal.dart';
 import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
+import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
 import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
@@ -80,10 +82,11 @@ class _SessionScreenState extends State<SessionScreen>
   static const double _sidebarMaxWidthFraction = 0.6;
   static const double _mainMinWidth = 360;
 
-  final TextEditingController _input = TextEditingController();
   final StickyModifiers _modifiers = StickyModifiers();
   final Set<String> _mountedViewIds = <String>{};
-  final FocusNode _inputFocusNode = FocusNode(debugLabel: 'Motif input bar');
+  final Set<String> _macInputDocumentIds = <String>{};
+  final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
+  late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(116);
   DateTime? _lastKeyboardInsetLogAt;
@@ -95,17 +98,19 @@ class _SessionScreenState extends State<SessionScreen>
   bool _attachingSession = false;
   bool _recording = false;
   bool _micStarting = false;
+  String? _lastMacInputDocumentId;
   String _asrBase = '';
   String _lastAsrText = ''; // last value ASR wrote to the input bar
+  String? _asrInputViewId;
   bool _ignoreFinal = false; // set when the user bailed out of ASR by typing
 
   @override
   void initState() {
     super.initState();
+    _fallbackInput = _createInputState('fallback');
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
     HardwareKeyboard.instance.addHandler(_handleShortcut);
-    _input.addListener(_onInputChanged);
     _syncWindowTitle();
     _attachIfNeeded();
   }
@@ -173,9 +178,15 @@ class _SessionScreenState extends State<SessionScreen>
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
     HardwareKeyboard.instance.removeHandler(_handleShortcut);
-    _input.removeListener(_onInputChanged);
-    _input.dispose();
-    _inputFocusNode.dispose();
+    for (final id in _macInputDocumentIds) {
+      unawaited(MacInputDocument.dispose(id).catchError((_) {}));
+    }
+    _macInputDocumentIds.clear();
+    _disposeInputState(_fallbackInput);
+    for (final input in _tabInputs.values) {
+      _disposeInputState(input);
+    }
+    _tabInputs.clear();
     _modifiers.dispose();
     super.dispose();
   }
@@ -300,6 +311,9 @@ class _SessionScreenState extends State<SessionScreen>
                 final activeView = _switchingSession
                     ? null
                     : _activeView(motif);
+                _reconcileTabInputs(motif, activeView);
+                _syncMacInputDocument(activeView?.id);
+                final inputState = _inputStateForView(activeView?.id);
                 final inputPtyId = _switchingSession
                     ? null
                     : _activePtyId(motif);
@@ -337,8 +351,12 @@ class _SessionScreenState extends State<SessionScreen>
                           ),
                         ),
                         _InputBar(
-                          controller: _input,
-                          focusNode: _inputFocusNode,
+                          key: ValueKey(
+                            'bottom-input-${activeView?.id ?? 'fallback'}',
+                          ),
+                          controller: inputState.controller,
+                          focusNode: inputState.focusNode,
+                          groupId: inputState.groupId,
                           onSend: _send,
                           recording: _recording,
                           micStarting: _micStarting,

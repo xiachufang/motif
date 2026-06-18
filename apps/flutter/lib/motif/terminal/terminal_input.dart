@@ -1,9 +1,38 @@
 import 'dart:convert';
+import 'dart:ui' show Locale;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'keyboard_chars.dart';
+
+/// English hint used for terminal-like input controls.
+///
+/// Flutter exposes this as a language hint to the platform IME, not as a
+/// cross-platform command to switch the user's system input source.
+const List<Locale> terminalEnglishHintLocales = <Locale>[Locale('en', 'US')];
+
+/// Keyboard type used by terminal input controls.
+///
+/// `visiblePassword` keeps text visible while requesting a keyboard with ready
+/// access to letters and numbers, which is a better fit for shell input than
+/// a natural-language text keyboard.
+const TextInputType terminalKeyboardType = TextInputType.visiblePassword;
+
+/// Shared TextInput configuration for terminal panes.
+const TextInputConfiguration terminalTextInputConfiguration =
+    TextInputConfiguration(
+      inputType: terminalKeyboardType,
+      inputAction: TextInputAction.newline,
+      autocorrect: false,
+      smartDashesType: SmartDashesType.disabled,
+      smartQuotesType: SmartQuotesType.disabled,
+      enableSuggestions: false,
+      enableInteractiveSelection: false,
+      enableIMEPersonalizedLearning: false,
+      hintLocales: terminalEnglishHintLocales,
+      enableInlinePrediction: false,
+    );
 
 /// How the terminal takes keyboard/text input on the current platform.
 ///
