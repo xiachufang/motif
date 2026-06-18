@@ -12,6 +12,7 @@ import '../../state/motif_client.dart';
 import '../app.dart';
 import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
 import 'create_session_dialog.dart';
@@ -574,25 +575,26 @@ class _SessionListEmptyState extends StatelessWidget {
     final view = active == null ? null : app.serverViewState(active.id);
     final action = view?.primaryAction ?? ServerConnectionAction.none;
     final connecting = view?.showSpinner ?? false;
+    final connectionFailed = view?.tone == ServerConnectionTone.danger;
+    final showDetails = view != null && hasConnectionDetails(view);
     final transportSetupNeeded =
         action == ServerConnectionAction.setupTransport;
-    final failed = view?.statusLabel == 'Failed';
     final title = active == null
         ? 'No servers configured'
         : transportSetupNeeded
         ? view?.statusLabel ?? 'Reach via setup needed'
         : connecting
         ? 'Connecting to ${active.name}'
-        : failed
-        ? 'Connection failed'
+        : connectionFailed
+        ? view?.statusLabel ?? 'Connection failed'
         : 'No connected servers';
     final subtitle = active == null
         ? 'Connect a motifd server to load sessions.'
         : transportSetupNeeded
         ? (view?.subtitle.split('\n').last ??
               'Set up reach via for ${active.name}.')
-        : failed
-        ? (view?.subtitle.split('\n').last ?? 'Connection failed')
+        : connectionFailed
+        ? connectionStatusSummary(view, fallback: 'Connection failed')
         : 'Connect ${active.name} to load its sessions.';
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
@@ -632,7 +634,7 @@ class _SessionListEmptyState extends StatelessWidget {
                           ? 'Setup Reach Via'
                           : connecting
                           ? 'Connecting…'
-                          : failed
+                          : connectionFailed
                           ? 'Retry ${active.name}'
                           : 'Connect ${active.name}',
                       icon: active == null
@@ -647,6 +649,19 @@ class _SessionListEmptyState extends StatelessWidget {
                           ? () => unawaited(onAddServer())
                           : () => _performAction(context, active, action),
                     ),
+                    if (showDetails && active != null)
+                      MotifButton(
+                        label: 'Details',
+                        icon: Icons.info_outline,
+                        role: MotifButtonRole.bordered,
+                        onPressed: () => unawaited(
+                          showConnectionDetailsDialog(
+                            context,
+                            title: '${active.name}: ${view.statusLabel}',
+                            detail: view.subtitle,
+                          ),
+                        ),
+                      ),
                     MotifButton(
                       label: 'Pair with Link',
                       icon: Icons.qr_code_2,

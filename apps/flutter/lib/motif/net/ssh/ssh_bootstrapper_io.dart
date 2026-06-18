@@ -245,15 +245,7 @@ ping_motifd() {
   fi
 }
 
-echo "checking motifd on \$LISTEN"
-if ping_motifd; then
-  echo "motifd already running on \$LISTEN"
-  exit 0
-fi
-
-mkdir -p "\$BIN_DIR" "\$STATE_DIR" "\$(dirname "\$TOKEN_FILE")"
-
-if [ ! -x "\$BIN" ]; then
+install_motifd() {
   os=\$(uname -s | tr '[:upper:]' '[:lower:]')
   case "\$os" in
     linux) platform=linux ;;
@@ -294,6 +286,30 @@ if [ ! -x "\$BIN" ]; then
   cp "\$found" "\$BIN"
   chmod 0755 "\$BIN"
   echo "installed motifd at \$BIN"
+}
+
+echo "checking motifd on \$LISTEN"
+if ping_motifd; then
+  echo "motifd already running on \$LISTEN"
+  exit 0
+fi
+
+mkdir -p "\$BIN_DIR" "\$STATE_DIR" "\$(dirname "\$TOKEN_FILE")"
+
+version_check_err="\$STATE_DIR/motifd-version-check.err"
+needs_install=0
+if [ ! -x "\$BIN" ]; then
+  needs_install=1
+elif "\$BIN" --version >/dev/null 2>"\$version_check_err"; then
+  rm -f "\$version_check_err"
+else
+  echo "installed motifd failed version check; reinstalling" >&2
+  cat "\$version_check_err" >&2 2>/dev/null || true
+  needs_install=1
+fi
+
+if [ "\$needs_install" -eq 1 ]; then
+  install_motifd
 fi
 
 if [ -n "\$TOKEN_VALUE" ]; then

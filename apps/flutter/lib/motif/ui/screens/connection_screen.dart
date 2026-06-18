@@ -11,6 +11,7 @@ import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
@@ -312,6 +313,7 @@ class _ServerRowState extends State<_ServerRow> {
     final view = widget.viewState;
     final action = view.primaryAction;
     final showPingBadge = view.statusLabel == 'Offline';
+    final showDetails = hasConnectionDetails(view);
     return MotifSectionRow(
       key: ValueKey('server-row-${widget.server.id}'),
       leading: Icon(
@@ -330,6 +332,20 @@ class _ServerRowState extends State<_ServerRow> {
             _ServerPingBadge(indicator: _pingIndicator)
           else
             _ServerConnectionBadge(viewState: view),
+          if (showDetails) ...[
+            const SizedBox(width: MotifSpacing.xs),
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              tooltip: 'Show connection details',
+              onPressed: () => unawaited(
+                showConnectionDetailsDialog(
+                  context,
+                  title: '${widget.server.name}: ${view.statusLabel}',
+                  detail: view.subtitle,
+                ),
+              ),
+            ),
+          ],
           const SizedBox(width: MotifSpacing.sm),
           if (action != ServerConnectionAction.none)
             IconButton(
@@ -557,28 +573,31 @@ class _ServerConnectionBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     final color = _toneColor(c, viewState.tone);
-    return Semantics(
-      label: 'Server connection',
-      value: viewState.statusLabel,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (viewState.showSpinner)
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Icon(_iconForViewState(viewState), size: 14, color: color),
-          const SizedBox(width: 4),
-          Text(
-            viewState.statusLabel,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color, fontSize: 12),
-          ),
-        ],
+    return Tooltip(
+      message: viewState.subtitle,
+      child: Semantics(
+        label: 'Server connection',
+        value: '${viewState.statusLabel}\n${viewState.subtitle}',
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (viewState.showSpinner)
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(_iconForViewState(viewState), size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(
+              viewState.statusLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 12),
+            ),
+          ],
+        ),
       ),
     );
   }
