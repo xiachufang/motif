@@ -89,6 +89,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   Simulation? _scrollSimulation;
   Duration? _scrollSimulationStart;
   final Set<LogicalKeyboardKey> _hostShortcutKeys = <LogicalKeyboardKey>{};
+  final Set<LogicalKeyboardKey> _textInputCancelKeys = <LogicalKeyboardKey>{};
   double _scrollSimulationLastPosition = 0;
   double _scrollVelocity = 0;
   Duration? _lastScrollUpdateTime;

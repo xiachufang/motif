@@ -164,6 +164,10 @@ enum TerminalKeyRouteKind {
 
   /// Nothing to do; the key path returns `KeyEventResult.ignored`.
   ignore,
+
+  /// Cancel the active `TextInput` composition instead of sending Escape to the
+  /// terminal.
+  cancelTextInputComposition,
 }
 
 class TerminalKeyRoute {
@@ -181,6 +185,9 @@ class TerminalKeyRoute {
     TerminalKeyRouteKind.encodeViaGhostty,
   );
   static const ignore = TerminalKeyRoute._(TerminalKeyRouteKind.ignore);
+  static const cancelTextInputComposition = TerminalKeyRoute._(
+    TerminalKeyRouteKind.cancelTextInputComposition,
+  );
 
   factory TerminalKeyRoute.send(List<int> bytes) =>
       TerminalKeyRoute._(TerminalKeyRouteKind.sendBytes, bytes);
@@ -193,6 +200,8 @@ class TerminalKeyRoute {
 /// null), so the caller can reuse it for the ghostty encoder. [textInputAttached]
 /// is whether a `TextInput` connection is currently live; when it is, it owns
 /// plain text and the plain newline (Enter), so the key path defers them.
+/// [textInputComposing] is whether that connection currently has an active
+/// composition; plain Escape cancels it before it can reach the terminal.
 /// [isPressOrRepeat] is false for key-up events.
 ///
 /// Branch order is significant and mirrors a real terminal: control combos →
@@ -206,7 +215,19 @@ TerminalKeyRoute classifyTerminalKey({
   required bool meta,
   required bool isPressOrRepeat,
   required bool textInputAttached,
+  bool textInputComposing = false,
 }) {
+  if (isPressOrRepeat &&
+      textInputAttached &&
+      textInputComposing &&
+      logicalKey == LogicalKeyboardKey.escape &&
+      !shift &&
+      !control &&
+      !alt &&
+      !meta) {
+    return TerminalKeyRoute.cancelTextInputComposition;
+  }
+
   // Ctrl[+Alt]+<key> → control code (e.g. Ctrl+A → 0x01). Never deferred.
   if (isPressOrRepeat && control && !meta) {
     final code = logicalKeyControlCode(logicalKey, shift: shift);

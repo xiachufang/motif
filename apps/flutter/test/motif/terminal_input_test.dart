@@ -11,6 +11,7 @@ TerminalKeyRoute _classify({
   bool meta = false,
   bool pressOrRepeat = true,
   required bool attached,
+  bool composing = false,
 }) {
   return classifyTerminalKey(
     logicalKey: key,
@@ -21,6 +22,7 @@ TerminalKeyRoute _classify({
     meta: meta,
     isPressOrRepeat: pressOrRepeat,
     textInputAttached: attached,
+    textInputComposing: composing,
   );
 }
 
@@ -227,6 +229,27 @@ void main() {
 
     test('plain Enter goes to ghostty when no IME is attached', () {
       final r = _classify(key: LogicalKeyboardKey.enter, attached: false);
+      expect(r.kind, TerminalKeyRouteKind.encodeViaGhostty);
+    });
+
+    test(
+      'plain Escape cancels active IME composition before terminal input',
+      () {
+        final r = _classify(
+          key: LogicalKeyboardKey.escape,
+          attached: true,
+          composing: true,
+        );
+        expect(r.kind, TerminalKeyRouteKind.cancelTextInputComposition);
+      },
+    );
+
+    test('plain Escape reaches ghostty when the IME is not composing', () {
+      final r = _classify(
+        key: LogicalKeyboardKey.escape,
+        attached: true,
+        composing: false,
+      );
       expect(r.kind, TerminalKeyRouteKind.encodeViaGhostty);
     });
 

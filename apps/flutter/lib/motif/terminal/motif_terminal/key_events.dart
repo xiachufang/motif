@@ -23,7 +23,13 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         _hostShortcutKeys.add(event.logicalKey);
         return KeyEventResult.ignored;
       }
+      if (_textInputCancelKeys.contains(event.logicalKey)) {
+        return KeyEventResult.handled;
+      }
     } else if (event is KeyUpEvent) {
+      if (_textInputCancelKeys.remove(event.logicalKey)) {
+        return KeyEventResult.handled;
+      }
       final wasHostShortcut = _hostShortcutKeys.remove(event.logicalKey);
       if (hostShortcut || wasHostShortcut) return KeyEventResult.ignored;
     }
@@ -78,10 +84,17 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
       meta: metaPressed,
       isPressOrRepeat: isPressOrRepeat,
       textInputAttached: _textInputConnectionIsActive,
+      textInputComposing: _textInputHasComposing,
     );
     switch (route.kind) {
       case TerminalKeyRouteKind.deferToTextInput:
       case TerminalKeyRouteKind.ignore:
+        return KeyEventResult.ignored;
+      case TerminalKeyRouteKind.cancelTextInputComposition:
+        if (_cancelTextInputComposition()) {
+          _textInputCancelKeys.add(event.logicalKey);
+          return KeyEventResult.handled;
+        }
         return KeyEventResult.ignored;
       case TerminalKeyRouteKind.sendBytes:
         _clearTerminalSelection();
