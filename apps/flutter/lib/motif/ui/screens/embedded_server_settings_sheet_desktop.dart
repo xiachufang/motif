@@ -3,6 +3,8 @@
 /// the native-screen replacement for the Tauri menu-bar app's settings webview.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -45,6 +47,11 @@ class _EmbeddedServerSettingsSheetState
   // Derived UI state for the two Tailscale axes (see the enum docs above).
   late _TsControl _tsControl;
   late _TsAuth _tsAuth;
+  bool _tailscaleExpanded = false;
+  Timer? _restartPromptTimer;
+  bool _restartPromptShowing = false;
+  bool _restartPromptDeferred = false;
+  bool _restartPromptPendingOnBlur = false;
 
   EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
 
@@ -72,10 +79,136 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey.dispose();
     _tsControlUrl.dispose();
     _rzvRelay.dispose();
+    _restartPromptTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _save(EmbeddedServerConfig next) => _svc.updateConfig(next);
+  Future<void> _save(
+    EmbeddedServerConfig next, {
+    bool restartRequired = false,
+    bool restartOnBlur = false,
+  }) async {
+    final svc = _svc;
+    final previous = svc.config;
+    await svc.updateConfig(next);
+    if (!restartRequired || !_restartRelevantChanged(previous, next)) return;
+    if (restartOnBlur) {
+      _markRestartPromptPending(svc);
+      return;
+    }
+    _scheduleRestartPrompt(svc);
+  }
+
+  bool _restartRelevantChanged(
+    EmbeddedServerConfig previous,
+    EmbeddedServerConfig next,
+  ) {
+    return previous.listenMode != next.listenMode ||
+        previous.port != next.port ||
+        previous.tsEnabled != next.tsEnabled ||
+        previous.tsHostname != next.tsHostname ||
+        previous.tsAuthkey != next.tsAuthkey ||
+        previous.tsControlUrl != next.tsControlUrl ||
+        previous.authEnabled != next.authEnabled ||
+        previous.authToken != next.authToken ||
+        previous.rzvEnabled != next.rzvEnabled ||
+        previous.rzvRelay != next.rzvRelay;
+  }
+
+  bool _serverIsActive(EmbeddedServerService svc) {
+    return svc.status.running || svc.status.starting;
+  }
+
+  void _scheduleRestartPrompt(EmbeddedServerService svc) {
+    _restartPromptTimer?.cancel();
+    if (!_serverIsActive(svc)) {
+      _restartPromptDeferred = false;
+      _restartPromptPendingOnBlur = false;
+      return;
+    }
+    if (_restartPromptShowing || _restartPromptDeferred) return;
+    _restartPromptPendingOnBlur = false;
+    _restartPromptTimer = Timer(Duration.zero, () {
+      if (!mounted) return;
+      unawaited(_showRestartPrompt());
+    });
+  }
+
+  void _markRestartPromptPending(EmbeddedServerService svc) {
+    if (!_serverIsActive(svc)) {
+      _restartPromptPendingOnBlur = false;
+      return;
+    }
+    if (_restartPromptShowing || _restartPromptDeferred) return;
+    _restartPromptPendingOnBlur = true;
+  }
+
+  void _showPendingRestartPrompt() {
+    if (!_restartPromptPendingOnBlur) return;
+    _restartPromptPendingOnBlur = false;
+    _scheduleRestartPrompt(_svc);
+  }
+
+  Future<void> _showRestartPrompt() async {
+    final svc = _svc;
+    if (_restartPromptShowing ||
+        _restartPromptDeferred ||
+        !_serverIsActive(svc)) {
+      return;
+    }
+    _restartPromptShowing = true;
+    _restartPromptPendingOnBlur = false;
+    final restart = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Restart server?'),
+        content: const Text(
+          'This setting is saved, but the running server needs to restart '
+          'before it takes effect.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Later'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Restart'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    _restartPromptShowing = false;
+    if (restart == true) {
+      await _restartServer(svc);
+    } else {
+      _restartPromptDeferred = true;
+    }
+  }
+
+  Future<void> _startServer(EmbeddedServerService svc) async {
+    _restartPromptTimer?.cancel();
+    _restartPromptDeferred = false;
+    _restartPromptPendingOnBlur = false;
+    await svc.start();
+  }
+
+  Future<void> _stopServer(EmbeddedServerService svc) async {
+    _restartPromptTimer?.cancel();
+    _restartPromptDeferred = false;
+    _restartPromptPendingOnBlur = false;
+    await svc.stop();
+  }
+
+  Future<void> _restartServer(EmbeddedServerService svc) async {
+    _restartPromptTimer?.cancel();
+    _restartPromptDeferred = false;
+    _restartPromptPendingOnBlur = false;
+    await svc.stop();
+    await svc.start();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -202,7 +335,7 @@ class _EmbeddedServerSettingsSheetState
                             label: const Text('Start'),
                           )
                         : FilledButton.icon(
-                            onPressed: () => svc.start(),
+                            onPressed: () => unawaited(_startServer(svc)),
                             icon: const Icon(Icons.play_arrow),
                             label: const Text('Start'),
                           ),
@@ -211,7 +344,7 @@ class _EmbeddedServerSettingsSheetState
                   Expanded(
                     child: running || starting
                         ? FilledButton.icon(
-                            onPressed: () => svc.stop(),
+                            onPressed: () => unawaited(_stopServer(svc)),
                             icon: const Icon(Icons.stop),
                             label: const Text('Stop'),
                             style: FilledButton.styleFrom(
@@ -307,8 +440,10 @@ class _EmbeddedServerSettingsSheetState
                   ),
                 ],
                 selected: {cfg.listenMode},
-                onSelectionChanged: (next) =>
-                    _save(cfg.copyWith(listenMode: next.first)),
+                onSelectionChanged: (next) => _save(
+                  cfg.copyWith(listenMode: next.first),
+                  restartRequired: true,
+                ),
               ),
               const SizedBox(height: MotifSpacing.md),
               _ModeSummary(
@@ -329,9 +464,14 @@ class _EmbeddedServerSettingsSheetState
             onChanged: () {
               final p = int.tryParse(_port.text.trim());
               if (p != null && p > 0 && p < 65536) {
-                _save(cfg.copyWith(port: p));
+                _save(
+                  cfg.copyWith(port: p),
+                  restartRequired: true,
+                  restartOnBlur: true,
+                );
               }
             },
+            onFocusLost: _showPendingRestartPrompt,
           ),
       ],
     );
@@ -378,10 +518,14 @@ class _EmbeddedServerSettingsSheetState
           subtitle: cfg.authEnabled
               ? 'Clients must include the bearer token'
               : 'Open access for reachable transports',
-          onTap: () => _save(cfg.copyWith(authEnabled: !cfg.authEnabled)),
+          onTap: () => _save(
+            cfg.copyWith(authEnabled: !cfg.authEnabled),
+            restartRequired: true,
+          ),
           trailing: Switch(
             value: cfg.authEnabled,
-            onChanged: (v) => _save(cfg.copyWith(authEnabled: v)),
+            onChanged: (v) =>
+                _save(cfg.copyWith(authEnabled: v), restartRequired: true),
           ),
         ),
         if (cfg.authEnabled) ...[
@@ -389,7 +533,12 @@ class _EmbeddedServerSettingsSheetState
             _token,
             'Token',
             'bearer token',
-            onChanged: () => _save(cfg.copyWith(authToken: _token.text.trim())),
+            onChanged: () => _save(
+              cfg.copyWith(authToken: _token.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            ),
+            onFocusLost: _showPendingRestartPrompt,
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -405,7 +554,7 @@ class _EmbeddedServerSettingsSheetState
                   final t = _svc.generateToken();
                   if (t.isEmpty) return;
                   _token.text = t;
-                  _save(cfg.copyWith(authToken: t));
+                  _save(cfg.copyWith(authToken: t), restartRequired: true);
                   setState(() {});
                 },
                 icon: const Icon(Icons.auto_awesome),
@@ -440,23 +589,50 @@ class _EmbeddedServerSettingsSheetState
               subtitle: cfg.tsEnabled
                   ? 'Tailnet access is configured for this server'
                   : 'Reach this server from your tailnet',
-              onTap: () => _save(cfg.copyWith(tsEnabled: !cfg.tsEnabled)),
+              onTap: () => _save(
+                cfg.copyWith(tsEnabled: !cfg.tsEnabled),
+                restartRequired: true,
+              ),
               trailing: Switch(
                 value: cfg.tsEnabled,
-                onChanged: (v) => _save(cfg.copyWith(tsEnabled: v)),
+                onChanged: (v) =>
+                    _save(cfg.copyWith(tsEnabled: v), restartRequired: true),
               ),
             ),
             if (cfg.tsEnabled)
+              MotifSectionRow(
+                leading: Icon(Icons.tune_outlined, color: c.textSecondary),
+                title: 'Tailscale settings',
+                subtitle: _tailscaleSummary(cfg),
+                onTap: () =>
+                    setState(() => _tailscaleExpanded = !_tailscaleExpanded),
+                trailing: Icon(
+                  _tailscaleExpanded
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down,
+                  color: c.textTertiary,
+                ),
+              ),
+          ],
+        ),
+        if (cfg.tsEnabled && _tailscaleExpanded) ...[
+          const SizedBox(height: MotifSpacing.lg),
+          MotifSection(
+            title: 'Tailscale settings',
+            children: [
               _field(
                 _tsHostname,
                 'Hostname',
                 'defaults to motifd-<host>',
-                onChanged: () =>
-                    _save(cfg.copyWith(tsHostname: _tsHostname.text.trim())),
+                onChanged: () => _save(
+                  cfg.copyWith(tsHostname: _tsHostname.text.trim()),
+                  restartRequired: true,
+                  restartOnBlur: true,
+                ),
+                onFocusLost: _showPendingRestartPrompt,
               ),
-          ],
-        ),
-        if (cfg.tsEnabled) ...[
+            ],
+          ),
           const SizedBox(height: MotifSpacing.lg),
           _tsControlSection(cfg, c),
           const SizedBox(height: MotifSpacing.lg),
@@ -464,6 +640,15 @@ class _EmbeddedServerSettingsSheetState
         ],
       ],
     );
+  }
+
+  String _tailscaleSummary(EmbeddedServerConfig cfg) {
+    final host = cfg.tsHostname.trim().isEmpty
+        ? 'Default hostname'
+        : cfg.tsHostname.trim();
+    final control = _tsControl == _TsControl.custom ? 'Headscale' : 'Official';
+    final auth = _tsAuth == _TsAuth.authKey ? 'Auth key' : 'Browser login';
+    return '$host · $control · $auth';
   }
 
   // Which control plane the node joins: official Tailscale or a custom
@@ -481,7 +666,7 @@ class _EmbeddedServerSettingsSheetState
           onTap: () {
             _tsControlUrl.clear();
             setState(() => _tsControl = _TsControl.official);
-            _save(cfg.copyWith(tsControlUrl: ''));
+            _save(cfg.copyWith(tsControlUrl: ''), restartRequired: true);
           },
         ),
         _tsRadio(
@@ -496,8 +681,12 @@ class _EmbeddedServerSettingsSheetState
             _tsControlUrl,
             'Control URL',
             'https://headscale.example.com',
-            onChanged: () =>
-                _save(cfg.copyWith(tsControlUrl: _tsControlUrl.text.trim())),
+            onChanged: () => _save(
+              cfg.copyWith(tsControlUrl: _tsControlUrl.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            ),
+            onFocusLost: _showPendingRestartPrompt,
           ),
       ],
     );
@@ -524,7 +713,7 @@ class _EmbeddedServerSettingsSheetState
           onTap: () {
             _tsAuthkey.clear();
             setState(() => _tsAuth = _TsAuth.browser);
-            _save(cfg.copyWith(tsAuthkey: ''));
+            _save(cfg.copyWith(tsAuthkey: ''), restartRequired: true);
           },
         ),
         _tsRadio(
@@ -540,8 +729,12 @@ class _EmbeddedServerSettingsSheetState
             'Auth key',
             'tskey-…',
             obscure: true,
-            onChanged: () =>
-                _save(cfg.copyWith(tsAuthkey: _tsAuthkey.text.trim())),
+            onChanged: () => _save(
+              cfg.copyWith(tsAuthkey: _tsAuthkey.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            ),
+            onFocusLost: _showPendingRestartPrompt,
           ),
         if (_tsAuth == _TsAuth.browser && status.authUrl != null)
           MotifSectionRow(
@@ -586,7 +779,7 @@ class _EmbeddedServerSettingsSheetState
       footer:
           'Park this server at a rendezvous relay so a phone can reach it '
           'without direct connectivity. The relay only sees encrypted traffic; '
-          'the phone pins this server. Restart the server after changing this.',
+          'the phone pins this server.',
       children: [
         MotifSectionRow(
           leading: Icon(Icons.qr_code_2, color: c.accent),
@@ -594,10 +787,14 @@ class _EmbeddedServerSettingsSheetState
           subtitle: cfg.rzvEnabled
               ? 'Generate a QR link through your relay'
               : 'Pair another device without direct connectivity',
-          onTap: () => _save(cfg.copyWith(rzvEnabled: !cfg.rzvEnabled)),
+          onTap: () => _save(
+            cfg.copyWith(rzvEnabled: !cfg.rzvEnabled),
+            restartRequired: true,
+          ),
           trailing: Switch(
             value: cfg.rzvEnabled,
-            onChanged: (v) => _save(cfg.copyWith(rzvEnabled: v)),
+            onChanged: (v) =>
+                _save(cfg.copyWith(rzvEnabled: v), restartRequired: true),
           ),
         ),
         if (cfg.rzvEnabled) ...[
@@ -605,15 +802,19 @@ class _EmbeddedServerSettingsSheetState
             _rzvRelay,
             'Relay address',
             'host:port of your rendezvous relay',
-            onChanged: () =>
-                _save(cfg.copyWith(rzvRelay: _rzvRelay.text.trim())),
+            onChanged: () => _save(
+              cfg.copyWith(rzvRelay: _rzvRelay.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            ),
+            onFocusLost: _showPendingRestartPrompt,
           ),
           if (pairingUri != null)
             _pairingQr(pairingUri, c)
           else if (status.running)
             MotifSectionRow(
               leading: Icon(Icons.info_outline, color: c.textTertiary),
-              title: 'Set a relay address, then restart the server.',
+              title: 'Set a relay address, then restart when prompted.',
               titleColor: c.textSecondary,
               titleWeight: FontWeight.w400,
             )
@@ -678,27 +879,33 @@ class _EmbeddedServerSettingsSheetState
     TextInputType? keyboard,
     bool obscure = false,
     VoidCallback? onChanged,
+    VoidCallback? onFocusLost,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: MotifSpacing.md,
         vertical: MotifSpacing.sm,
       ),
-      child: TextField(
-        controller: ctrl,
-        keyboardType: keyboard,
-        obscureText: obscure,
-        autocorrect: false,
-        enableSuggestions: false,
-        onChanged: (_) => onChanged?.call(),
-        decoration: InputDecoration(
-          labelText: label,
-          hintText: hint,
-          filled: false,
-          border: InputBorder.none,
-          enabledBorder: InputBorder.none,
-          focusedBorder: InputBorder.none,
-          isDense: true,
+      child: Focus(
+        onFocusChange: (hasFocus) {
+          if (!hasFocus) onFocusLost?.call();
+        },
+        child: TextField(
+          controller: ctrl,
+          keyboardType: keyboard,
+          obscureText: obscure,
+          autocorrect: false,
+          enableSuggestions: false,
+          onChanged: (_) => onChanged?.call(),
+          decoration: InputDecoration(
+            labelText: label,
+            hintText: hint,
+            filled: false,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            isDense: true,
+          ),
         ),
       ),
     );
