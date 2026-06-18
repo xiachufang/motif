@@ -15,6 +15,7 @@ import '../models/motif_proto.dart';
 import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/rpc_client.dart';
+import 'motif_runtime.dart';
 
 const int _kSessionNotFound = -32007;
 
@@ -78,7 +79,12 @@ class _PendingViewActivation {
   _PendingViewActivation({required this.viewId, required this.previousViewId});
 }
 
-class MotifClient extends ChangeNotifier {
+class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
+  MotifClient({MotifClientRuntime? runtime})
+    : runtime = runtime ?? const MobileMotifClientRuntime();
+
+  final MotifClientRuntime runtime;
+
   MotifConnState _state = const ConnDisconnected();
   MotifConnState get state => _state;
 
@@ -402,6 +408,7 @@ class MotifClient extends ChangeNotifier {
     resumeSeqs.remove(name);
 
     _setState(ConnAttached(name));
+    runtime.onSessionAttached(this);
     Log.i(
       'attach session=$name ptys=${ptys.map(_describePty).join(",")} '
       'views=${views.map(_describeView).join(",")} active=$activeViewId '
@@ -424,6 +431,22 @@ class MotifClient extends ChangeNotifier {
   String? _activePtyId() {
     final vid = activeViewId;
     return _ptyIdForViewId(vid);
+  }
+
+  @override
+  String? get activePtyId => _activePtyId();
+
+  @override
+  Set<String> get liveTabPtyIds {
+    final byId = {for (final pty in ptys) pty.id: pty};
+    final ids = <String>{};
+    for (final view in views) {
+      final spec = view.spec;
+      if (spec is! PtyViewSpec) continue;
+      final pty = byId[spec.ptyId];
+      if (pty == null || (pty.alive ?? true)) ids.add(spec.ptyId);
+    }
+    return ids;
   }
 
   String? _ptyIdForViewId(String? viewId) {
@@ -545,6 +568,7 @@ class MotifClient extends ChangeNotifier {
     );
     if (!ptys.any((p) => p.id == info.id)) {
       ptys = [...ptys, info];
+      runtime.onPtySubscriptionsChanged(this);
       notifyListeners();
     }
     return info;
@@ -554,11 +578,23 @@ class MotifClient extends ChangeNotifier {
       _rpc?.call('pty.resize', {'pty_id': ptyId, 'cols': cols, 'rows': rows}) ??
       Future<void>.value();
 
-  Future<void> activatePtyStream(String ptyId) =>
+  @override
+  Future<void> ensurePtyStream(String ptyId) =>
       _rpc?.activatePty(ptyId) ?? Future<void>.value();
 
-  Future<void> deactivatePtyStream(String ptyId) =>
+  @override
+  Future<void> closePtyStream(String ptyId) =>
       _rpc?.deactivatePty(ptyId) ?? Future<void>.value();
+
+  @override
+  Future<void> syncPtyStreams(Set<String> ptyIds) =>
+      _rpc?.syncPtyStreams(ptyIds) ?? Future<void>.value();
+
+  Future<void> activatePtyStream(String ptyId) =>
+      runtime.onTerminalSurfaceReady(this, ptyId);
+
+  Future<void> deactivatePtyStream(String ptyId) =>
+      runtime.onTerminalSurfaceDisposed(this, ptyId);
 
   Future<void> killPty(String ptyId) =>
       _rpc?.call('pty.kill', {'pty_id': ptyId}) ?? Future<void>.value();
@@ -640,6 +676,7 @@ class MotifClient extends ChangeNotifier {
     }
     views = nextViews;
     activeViewId = nextActiveViewId;
+    runtime.onPtySubscriptionsChanged(this);
     notifyListeners();
 
     final rpc = _rpc;
@@ -652,6 +689,7 @@ class MotifClient extends ChangeNotifier {
         views = previousViews;
         activeViewId = previousActiveViewId;
         pendingLocalViewId = previousPendingLocalViewId;
+        runtime.onPtySubscriptionsChanged(this);
         notifyListeners();
       }
       rethrow;
@@ -771,6 +809,7 @@ class MotifClient extends ChangeNotifier {
     );
     if (!views.any((v) => v.id == view.id)) {
       views = [...views, view];
+      runtime.onPtySubscriptionsChanged(this);
       notifyListeners();
     }
     return view;
@@ -949,12 +988,16 @@ class MotifClient extends ChangeNotifier {
           runningCommand.remove(id);
           shellKind.remove(id);
           shellContext.remove(id);
+          runtime.onPtySubscriptionsChanged(this);
         }
       case 'pty.created':
         final info = PtyInfo.fromJson(
           (p['info'] as Map).cast<String, Object?>(),
         );
-        if (!ptys.any((x) => x.id == info.id)) ptys = [...ptys, info];
+        if (!ptys.any((x) => x.id == info.id)) {
+          ptys = [...ptys, info];
+          runtime.onPtySubscriptionsChanged(this);
+        }
       case 'pty.resize':
         final id = p['pty_id'] as String?;
         if (id != null) {
@@ -993,6 +1036,7 @@ class MotifClient extends ChangeNotifier {
       case 'view.opened':
         final v = ViewInfo.fromJson((p['view'] as Map).cast<String, Object?>());
         if (!views.any((x) => x.id == v.id)) views = [...views, v];
+        runtime.onPtySubscriptionsChanged(this);
       case 'view.closed':
         final id = p['view_id'] as String?;
         views = views.where((v) => v.id != id).toList();
@@ -1005,6 +1049,7 @@ class MotifClient extends ChangeNotifier {
             pending.confirmed.complete();
           }
         }
+        runtime.onPtySubscriptionsChanged(this);
       case 'view.active_changed':
         final id = p['view_id'] as String?;
         final pending = _pendingViewActivation;
@@ -1050,9 +1095,7 @@ class MotifClient extends ChangeNotifier {
   }
 
   void _onActiveViewChanged() {
-    // Terminal widgets own their PTY stream lifecycle. They first synchronize
-    // the visible grid to motifd, then open /pty so cold replay is generated
-    // for the same dimensions it will be rendered into.
+    runtime.onActiveViewChanged(this);
   }
 
   void _rememberPtyBytes(String ptyId, Uint8List bytes) {

@@ -3,7 +3,7 @@
 /// Ported from `apps/ios/Motif/Native/RpcClient.swift`. RPC is HTTP POST to
 /// `/rpc/<method>`; the `/events` WebSocket carries server notifications and is
 /// opened lazily after `session.attach`; per-PTY `/pty/<id>` WebSockets stream
-/// raw terminal bytes for the active tab.
+/// raw terminal bytes for whichever PTYs the platform runtime subscribes to.
 ///
 /// Transport is cross-platform: `package:http` for RPC and
 /// `package:web_socket_channel` for the WebSockets (via [connectWebSocket],
@@ -13,7 +13,7 @@
 /// Routing (mirrors the Rust Coordinator):
 ///   - `session.attach` → POST; on success store session id + open `/events`.
 ///   - `session.detach` → close PTY + events WS, then POST.
-///   - `pty.create`     → POST; the `view.active_changed` event opens `/pty`.
+///   - `pty.create`     → POST; higher-level runtime decides PTY subscription.
 ///   - `pty.kill`       → POST; then close that PTY WS.
 ///   - everything else  → POST passthrough.
 library;
@@ -71,6 +71,7 @@ class RpcClient {
 
   http.Client _http;
   ProxySettings _proxy = ProxySettings.none;
+
   /// rzv end-to-end TLS cert pin (`sha256(cert.der)`), or null for plaintext
   /// transports. Applied to the RPC http client and every PTY/events WS.
   Uint8List? _certPin;
@@ -88,6 +89,8 @@ class RpcClient {
   final Map<String, _PtyChannel> _ptys = {};
   String? _activePtyId;
   final Set<String> _streamingPtys = {};
+  Set<String> _desiredStreamingPtys = {};
+  Future<void>? _ptyStreamSync;
 
   final StreamController<MotifEvent> _events =
       StreamController<MotifEvent>.broadcast();
@@ -134,6 +137,7 @@ class RpcClient {
     _ptys.clear();
     _activePtyId = null;
     _streamingPtys.clear();
+    _desiredStreamingPtys = {};
     _sessionId = null;
     if (!_events.isClosed) await _events.close();
     _http.close();
@@ -233,6 +237,7 @@ class RpcClient {
     _ptys.clear();
     _activePtyId = null;
     _streamingPtys.clear();
+    _desiredStreamingPtys = {};
     await _eventsSub?.cancel();
     _eventsSub = null;
     await _eventsSocket?.sink.close(1000);
@@ -249,6 +254,7 @@ class RpcClient {
       await _closePty(pid, removeState: true);
       if (_activePtyId == pid) _activePtyId = null;
       _streamingPtys.remove(pid);
+      _desiredStreamingPtys.remove(pid);
     }
     return body;
   }
@@ -366,6 +372,7 @@ class RpcClient {
   Future<void> activatePty(String ptyId) async {
     _activePtyId = ptyId;
     _streamingPtys.add(ptyId);
+    _desiredStreamingPtys.add(ptyId);
     Log.i(
       'activate pty=$ptyId streaming=${_streamingPtys.length}',
       name: 'motif.rpc',
@@ -373,9 +380,47 @@ class RpcClient {
     await _openPty(ptyId);
   }
 
+  Future<void> syncPtyStreams(Set<String> ptyIds) {
+    _desiredStreamingPtys = Set<String>.from(ptyIds);
+    final running = _ptyStreamSync;
+    if (running != null) return running;
+    late final Future<void> sync;
+    sync = _drainPtyStreamSync().whenComplete(() {
+      if (identical(_ptyStreamSync, sync)) _ptyStreamSync = null;
+    });
+    _ptyStreamSync = sync;
+    return _ptyStreamSync!;
+  }
+
+  Future<void> _drainPtyStreamSync() async {
+    while (true) {
+      final wanted = Set<String>.from(_desiredStreamingPtys);
+      await _applyPtyStreamSet(wanted);
+      if (_sameStringSet(wanted, _desiredStreamingPtys)) return;
+    }
+  }
+
+  Future<void> _applyPtyStreamSet(Set<String> wanted) async {
+    final current = Set<String>.from(_streamingPtys);
+    final toClose = current.difference(wanted);
+
+    for (final ptyId in toClose) {
+      if (_activePtyId == ptyId) _activePtyId = null;
+      _streamingPtys.remove(ptyId);
+      await _closePty(ptyId, removeState: false);
+    }
+
+    for (final ptyId in wanted) {
+      _streamingPtys.add(ptyId);
+    }
+
+    await Future.wait([for (final ptyId in wanted) _openPty(ptyId)]);
+  }
+
   Future<void> deactivatePty(String ptyId) async {
     if (_activePtyId == ptyId) _activePtyId = null;
     _streamingPtys.remove(ptyId);
+    _desiredStreamingPtys.remove(ptyId);
     Log.i(
       'deactivate pty=$ptyId streaming=${_streamingPtys.length}',
       name: 'motif.rpc',
@@ -691,4 +736,7 @@ class RpcClient {
     } catch (_) {}
     return null;
   }
+
+  static bool _sameStringSet(Set<String> a, Set<String> b) =>
+      a.length == b.length && a.containsAll(b);
 }
