@@ -65,9 +65,19 @@ class MotifApp extends StatelessWidget {
       // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
       // terminal's own handler claims ⌘W first (close tab) — this only fires on
       // the screens that don't, plus the session view's last-tab fallback.
+      //
+      // CallbackShortcuts is focus-based: its onKeyEvent only runs when the
+      // primary focus is a descendant. The plain screens (session list, welcome,
+      // connection) have no widget that grabs focus, and with the desktop shell's
+      // nested navigator the default focus sits on the root route's scope — an
+      // *ancestor* of CallbackShortcuts — so ⌘W never reached it. The autofocus
+      // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
         bindings: _closeWindowShortcuts,
-        child: const _HomeShell(),
+        child: const Focus(
+          autofocus: true,
+          child: _HomeShell(),
+        ),
       ),
     );
   }
