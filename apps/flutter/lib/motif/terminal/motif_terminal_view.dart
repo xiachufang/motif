@@ -108,6 +108,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final ValueNotifier<double> _keyboardLiftOffset = ValueNotifier(0);
   TextInputConnection? _textInputConnection;
   TextEditingValue _textInputValue = _softKeyboardValue;
+  String? _composingText;
   _CursorSnapshot? _lastCursorSnapshot;
   bool _showSoftKeyboardOnFocus = false;
 
@@ -278,9 +279,16 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
         previousComposing.isValid && !previousComposing.isCollapsed;
     final composing = value.composing;
     if (composing.isValid && !composing.isCollapsed) {
+      // Render the in-progress composition inline at the cursor; nothing is
+      // sent to the PTY until it commits.
+      final raw = composing
+          .textInside(value.text)
+          .replaceAll(_softKeyboardSeed, '');
+      _setComposingText(raw.isEmpty ? null : raw);
       _scheduleImeRectSync();
       return;
     }
+    _setComposingText(null);
 
     // Enter is owned solely by performAction(newline). With
     // TextInputAction.newline some platforms (notably iOS) ALSO insert the
@@ -338,6 +346,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   void connectionClosed() {
     _textInputConnection = null;
     _showSoftKeyboardOnFocus = false;
+    _setComposingText(null);
     _focusNode.unfocus();
   }
 
@@ -424,6 +433,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                         alpha: 0.72,
                       ),
                       selectionForeground: colorScheme.onPrimary,
+                      preeditText: _composingText,
                     ),
                     size: Size(constraints.maxWidth, constraints.maxHeight),
                   );

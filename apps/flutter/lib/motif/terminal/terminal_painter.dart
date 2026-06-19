@@ -262,6 +262,11 @@ class TerminalSnapshotPainter extends CustomPainter {
   final Color selectionBackground;
   final Color selectionForeground;
 
+  /// IME composition (preedit) text to render inline at the cursor. Null when
+  /// no composition is active. This is a client-side overlay only — nothing is
+  /// sent to the remote PTY until the composition commits.
+  final String? preeditText;
+
   TerminalSnapshotPainter({
     required this.snapshot,
     required this.cellWidth,
@@ -274,6 +279,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.selection,
     this.selectionBackground = const Color(0x996EA8FE),
     this.selectionForeground = Colors.white,
+    this.preeditText,
   });
 
   @override
@@ -369,6 +375,99 @@ class TerminalSnapshotPainter extends CustomPainter {
           break;
       }
     }
+
+    _drawPreedit(canvas);
+  }
+
+  /// Draw the IME composition string on the cursor row. Mirrors ghostty's
+  /// renderer: the preedit stays on a single line and, when it runs past the
+  /// right edge, shifts left so the active tail stays visible (the oldest
+  /// codepoints are clipped off the left). See ghostty `State.zig` Preedit.range.
+  void _drawPreedit(Canvas canvas) {
+    final text = preeditText;
+    if (text == null || text.isEmpty) return;
+    if (cellWidth <= 0 || cellHeight <= 0) return;
+    if (!snapshot.cursorInViewport ||
+        snapshot.cursorX < 0 ||
+        snapshot.cursorY < 0) {
+      return;
+    }
+
+    final y = padding + snapshot.cursorY * cellHeight;
+    final startX = padding + snapshot.cursorX * cellWidth;
+    // The preedit must never paint left of the cursor — content there is
+    // already-committed terminal output. This is the hard left boundary.
+    final leftEdge = startX;
+    final rightEdge = padding + snapshot.cols * cellWidth;
+
+    final fg = Color(snapshot.foregroundArgb);
+    final bg = Color(snapshot.backgroundArgb);
+
+    // Lay out the composing string on a single unwrapped line.
+    final paragraph =
+        (ui.ParagraphBuilder(
+              ui.ParagraphStyle(
+                fontFamily: fontFamily,
+                fontSize: fontSize,
+                strutStyle: ui.StrutStyle(
+                  fontFamily: fontFamily,
+                  fontSize: fontSize,
+                  forceStrutHeight: true,
+                ),
+              ),
+            )
+              ..pushStyle(
+                ui.TextStyle(
+                  color: fg,
+                  fontFamily: fontFamily,
+                  fontFamilyFallback: fontFamilyFallback,
+                  fontSize: fontSize,
+                ),
+              )
+              ..addText(text))
+            .build()
+          ..layout(const ui.ParagraphConstraints(width: double.infinity));
+    final textWidth = paragraph.longestLine;
+    if (textWidth <= 0) return;
+
+    // Anchor at the cursor; shift left if the tail would overflow the right
+    // edge. drawX may end up left of leftEdge — the clip below trims it.
+    var drawX = startX;
+    if (drawX + textWidth > rightEdge) {
+      drawX = rightEdge - textWidth;
+    }
+
+    final visibleLeft = drawX < leftEdge ? leftEdge : drawX;
+    final spanRight = drawX + textWidth;
+    final visibleRight = spanRight > rightEdge ? rightEdge : spanRight;
+    if (visibleRight <= visibleLeft) return;
+
+    canvas.save();
+    // Confine drawing to the cursor row between the terminal margins.
+    canvas.clipRect(
+      Rect.fromLTWH(leftEdge, y, rightEdge - leftEdge, cellHeight),
+    );
+
+    // Mask the underlying grid so the composition is legible.
+    canvas.drawRect(
+      Rect.fromLTWH(visibleLeft, y, visibleRight - visibleLeft, cellHeight),
+      Paint()..color = bg,
+    );
+
+    canvas.drawParagraph(paragraph, Offset(drawX, y));
+
+    // Underline the span — the conventional preedit affordance.
+    canvas.drawRect(
+      Rect.fromLTWH(
+        visibleLeft,
+        y + cellHeight - 1,
+        visibleRight - visibleLeft,
+        1,
+      ),
+      Paint()..color = fg,
+    );
+
+    canvas.restore();
   }
 
   void _drawSelection(Canvas canvas) {
@@ -396,7 +495,8 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.showCursor != showCursor ||
       oldDelegate.selection != selection ||
       oldDelegate.selectionBackground != selectionBackground ||
-      oldDelegate.selectionForeground != selectionForeground;
+      oldDelegate.selectionForeground != selectionForeground ||
+      oldDelegate.preeditText != preeditText;
 }
 
 void _drawTerminalText(

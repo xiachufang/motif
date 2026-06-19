@@ -106,11 +106,19 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
 
   void _resetTextInputValue() {
     _textInputValue = _MotifTerminalViewState._softKeyboardValue;
+    _setComposingText(null);
     final connection = _textInputConnection;
     if (connection != null && connection.attached) {
       connection.setEditingState(_textInputValue);
       _scheduleImeRectSync();
     }
+  }
+
+  /// Update the inline IME composition text and repaint if it changed.
+  void _setComposingText(String? text) {
+    if (_composingText == text) return;
+    _composingText = text;
+    if (mounted) setState(() {});
   }
 
   void _scheduleImeRectSync() {
