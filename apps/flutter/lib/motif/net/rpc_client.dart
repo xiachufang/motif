@@ -428,6 +428,18 @@ class RpcClient {
     await _closePty(ptyId, removeState: false);
   }
 
+  /// Seed the per-PTY shell parser with a command the server reports as
+  /// running on cold attach, so the client recognizes it even though the VT
+  /// snapshot carried no start marker. The next live `command end` marker then
+  /// clears it through the normal parser path. Safe to call before the socket
+  /// opens — the channel (and its [ShellState]) is created on demand and reused
+  /// by [_openPty].
+  void primePtyRunning(String ptyId, String cmd) {
+    if (cmd.isEmpty) return;
+    final ch = _ptys[ptyId] ?? (_ptys[ptyId] = _PtyChannel());
+    ch.shell.primeRunning(cmd);
+  }
+
   Future<void> _openPty(String ptyId) async {
     final sid = _sessionId;
     if (sid == null) throw const RpcException('not connected');

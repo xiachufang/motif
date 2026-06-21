@@ -217,6 +217,11 @@ pub(crate) struct PtyState {
     /// engages.
     pub primary: Option<ClientId>,
     pub alive: bool,
+    /// Command currently executing, tracked server-side from shell-integration
+    /// OSC 7777 C/D markers so a cold-attaching client (which only gets a VT
+    /// snapshot, no markers) can still learn what is running. `None` at a
+    /// prompt or when the shell has no integration.
+    pub running_command: Option<String>,
 }
 
 impl Pty {
@@ -232,6 +237,7 @@ impl Pty {
             rows: s.rows,
             alive: s.alive,
             created_at: self.created_at,
+            running_command: s.running_command.clone(),
         }
     }
 
@@ -548,6 +554,7 @@ impl PtyPool {
                 sizes,
                 primary: Some(owner_client),
                 alive: true,
+                running_command: None,
             }),
             emu_tx,
             _bootstrap: bootstrap,
@@ -604,6 +611,35 @@ impl PtyPool {
     }
 }
 
+/// Advance the per-PTY running-command tracker for one shell-integration
+/// marker. `running` is the authoritative state surfaced in [`PtyInfo`];
+/// `pending` carries the explicit command text (OSC 7777;E) seen just before a
+/// command-start marker (OSC 7777;C), since fish emits the text separately and
+/// slightly earlier. Non-command markers (prompt start/end, cwd, context) leave
+/// both untouched.
+fn track_running_command(
+    running: &mut Option<String>,
+    pending: &mut Option<String>,
+    kind: &QueryKind,
+) {
+    match kind {
+        QueryKind::Osc7770Cmd { text } => *pending = Some(text.clone()),
+        QueryKind::Osc133CmdStart { cmdline_url } => {
+            *running = Some(
+                cmdline_url
+                    .clone()
+                    .or_else(|| pending.take())
+                    .unwrap_or_default(),
+            );
+        }
+        QueryKind::Osc133CmdEnd { .. } => {
+            *running = None;
+            *pending = None;
+        }
+        _ => {}
+    }
+}
+
 fn reader_loop(
     mut reader: Box<dyn Read + Send>,
     pty: Arc<Pty>,
@@ -623,6 +659,9 @@ fn reader_loop(
     //     round trip, so its 10s "Primary Device Attribute" timeout never
     //     fires even when no client is attached.
     let mut scanner = QueryScanner::new();
+    // Explicit command text (OSC 7777;E) arrives just before the command-start
+    // marker (7777;C); stash it here so the C transition can name the command.
+    let mut pending_cmd: Option<String> = None;
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
@@ -638,10 +677,21 @@ fn reader_loop(
                     match item {
                         ScanItem::Query { kind, raw } => {
                             if kind.is_shell_integration() {
-                                // Server no longer parses shell-integration
-                                // OSC; clients do it themselves off the
-                                // /pty/<id> stream. Pass the raw bytes
-                                // through so client-side parsers see them.
+                                // Clients still parse shell-integration OSC off
+                                // the /pty/<id> stream themselves, so pass the
+                                // raw bytes through verbatim. But also track the
+                                // running command server-side: a cold-attaching
+                                // client only gets a VT snapshot (no markers),
+                                // so this is the only way it can learn what is
+                                // currently executing.
+                                {
+                                    let mut s = pty.state.lock();
+                                    track_running_command(
+                                        &mut s.running_command,
+                                        &mut pending_cmd,
+                                        &kind,
+                                    );
+                                }
                                 pty.feed(&raw);
                             } else if matches!(kind, QueryKind::Cpr) {
                                 // Cursor Position Report must reflect the real
@@ -1063,6 +1113,58 @@ mod tests {
 
     fn find(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn track_running_command_follows_explicit_then_start_then_end() {
+        let mut running: Option<String> = None;
+        let mut pending: Option<String> = None;
+
+        // Prompt markers don't change anything.
+        track_running_command(&mut running, &mut pending, &QueryKind::Osc133PromptStart);
+        track_running_command(&mut running, &mut pending, &QueryKind::Osc133PromptEnd);
+        assert_eq!(running, None);
+
+        // Explicit command text (7777;E) arrives, then command start (7777;C)
+        // promotes it to the running command.
+        track_running_command(
+            &mut running,
+            &mut pending,
+            &QueryKind::Osc7770Cmd {
+                text: "cargo build".to_string(),
+            },
+        );
+        assert_eq!(running, None, "E alone must not mark running");
+        track_running_command(
+            &mut running,
+            &mut pending,
+            &QueryKind::Osc133CmdStart { cmdline_url: None },
+        );
+        assert_eq!(running.as_deref(), Some("cargo build"));
+        assert_eq!(pending, None, "pending text consumed by start");
+
+        // Command end (7777;D) clears it.
+        track_running_command(
+            &mut running,
+            &mut pending,
+            &QueryKind::Osc133CmdEnd { exit: Some(0) },
+        );
+        assert_eq!(running, None);
+    }
+
+    #[test]
+    fn track_running_command_prefers_cmdline_url_over_pending() {
+        let mut running: Option<String> = None;
+        let mut pending: Option<String> = Some("stale".to_string());
+        // fish's native 133;C carries the authoritative commandline.
+        track_running_command(
+            &mut running,
+            &mut pending,
+            &QueryKind::Osc133CmdStart {
+                cmdline_url: Some("git status".to_string()),
+            },
+        );
+        assert_eq!(running.as_deref(), Some("git status"));
     }
 
     #[test]

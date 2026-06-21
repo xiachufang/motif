@@ -139,6 +139,21 @@ class ShellState {
     return ShellFeedResult(passthrough.takeBytes(), events);
   }
 
+  /// Seed the parser into a "command running" state for a command the server
+  /// reports as in-flight on cold attach. The VT snapshot replayed on attach
+  /// carries no shell-integration markers, so the parser would otherwise stay
+  /// in [_Unknown] and never emit the matching finish. Priming [_Running] means
+  /// the next live `command end`/`prompt start` marker finalizes it through the
+  /// normal path, clearing the stale running-command entry.
+  void primeRunning(String cmd) {
+    final blockId = _ulid();
+    final cwd = _currentCwd.isEmpty ? '/' : _currentCwd;
+    _stage = _Running(blockId, cmd, cwd, _nowMs());
+    bootstrapAnnounced = true;
+    activeBlockId = blockId;
+    activeScope = ShellOutputScope.output;
+  }
+
   /// Force-finalize any in-flight block (e.g. when the WS closes).
   ShellEvent? onClose() {
     final s = _stage;
@@ -416,6 +431,12 @@ _OscMarker? _parseOscBody(List<int> body) {
       return _Osc7Cwd(rest);
     case '133':
       return _parse133(rest);
+    // Motif private shell-integration OSC. Commit b4209b1 moved the shell from
+    // OSC 777 to 7777 (777 collides with rxvt-unicode's extension namespace).
+    // Both share the same A/B/C/D/E/P sub-grammar; 777 is kept for back-compat
+    // with older servers. Without the 7777 case, native markers from a current
+    // server fall through unparsed and command/cwd tracking silently breaks.
+    case '7777':
     case '777':
       return _parse777(rest);
     case '7770':

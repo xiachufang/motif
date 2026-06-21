@@ -10,6 +10,16 @@ void main() {
       expect(p.cmd, 'fish');
       expect(p.cols, 80);
       expect(p.rows, 24);
+      expect(p.runningCommand, isNull);
+    });
+
+    test('PtyInfo decodes running_command when present', () {
+      final p = PtyInfo.fromJson({
+        'id': 'p1',
+        'cmd': 'fish',
+        'running_command': 'sleep 60',
+      });
+      expect(p.runningCommand, 'sleep 60');
     });
 
     test('ViewSpec tagged union round-trips', () {

@@ -403,6 +403,17 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     final result = AttachResult.fromJson(body);
 
     ptys = result.ptys;
+    // Cold attach replays a VT snapshot with no shell-integration markers, so
+    // the client-side OSC parser can't discover a command that was already
+    // running. Seed it from the server's authoritative state and prime the
+    // per-PTY shell parser so the next live `command end` marker clears it.
+    for (final p in ptys) {
+      final rc = p.runningCommand;
+      if (rc != null && rc.isNotEmpty) {
+        runningCommand[p.id] = rc;
+        rpc.primePtyRunning(p.id, rc);
+      }
+    }
     views = result.views;
     _completePendingViewActivation();
     activeViewId = result.activeView;

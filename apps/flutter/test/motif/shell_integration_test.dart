@@ -91,4 +91,61 @@ void main() {
     }
     expect(sawPrompt, isTrue);
   });
+
+  group('native 7777 markers (current shell protocol)', () {
+    // The shell emits OSC 7777 (assets/shell/bash.sh); the scanner must parse
+    // it, not just the legacy 777. Regression guard for the 777→7777 migration
+    // (commit b4209b1) that left the Dart scanner behind.
+    String hex(String s) =>
+        utf8.encode(s).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+    test('full block cycle drives the running-command state', () {
+      final st = ShellState();
+      st.feed(_b(_osc('7777;A')));
+      st.feed(_b(_osc('7777;B')));
+      st.feed(_b(_osc('7777;E;${hex('cargo build')}')));
+      final r = st.feed(_b(_osc('7777;C')));
+      final started = r.events.whereType<ShellCommandStarted>().single;
+      expect(started.text, 'cargo build');
+      expect(st.activeScope, ShellOutputScope.output);
+
+      final end = st.feed(_b(_osc('7777;D;0')));
+      expect(end.events.whereType<ShellCommandFinished>().single.exitCode, 0);
+    });
+
+    test('7777;P;Cwd updates cwd', () {
+      final st = ShellState();
+      final r = st.feed(_b(_osc('7777;P;Cwd=file:///home/me/proj')));
+      expect(r.events.whereType<ShellCwdChanged>().single.cwd, '/home/me/proj');
+    });
+  });
+
+  group('primeRunning (cold attach restore)', () {
+    test('enters running scope without emitting a start', () {
+      final st = ShellState();
+      st.primeRunning('sleep 60');
+      expect(st.activeScope, ShellOutputScope.output);
+      expect(st.activeBlockId, isNotNull);
+    });
+
+    test('a later live command-end marker finalizes the primed command', () {
+      final st = ShellState();
+      st.primeRunning('sleep 60');
+      final blockId = st.activeBlockId;
+
+      // The next live `command end` marker (native 7777;D) clears the primed
+      // state, self-healing the stale running-command entry.
+      final r = st.feed(_b(_osc('7777;D;0')));
+      final finished = r.events.whereType<ShellCommandFinished>().single;
+      expect(finished.blockId, blockId);
+      expect(st.activeScope, ShellOutputScope.passthrough);
+    });
+
+    test('a new prompt also finalizes the primed command', () {
+      final st = ShellState();
+      st.primeRunning('sleep 60');
+      final r = st.feed(_b(_osc('133;A')));
+      expect(r.events.whereType<ShellCommandFinished>(), isNotEmpty);
+    });
+  });
 }

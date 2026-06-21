@@ -167,6 +167,11 @@ class PtyInfo {
   final bool? alive;
   final int? createdAt;
 
+  /// Command currently executing, as tracked server-side from shell-integration
+  /// markers. Present on cold attach so a restored client can recognize a
+  /// running command whose start marker it never saw. Null at a prompt.
+  final String? runningCommand;
+
   const PtyInfo({
     required this.id,
     this.cmd,
@@ -175,6 +180,7 @@ class PtyInfo {
     required this.rows,
     this.alive,
     this.createdAt,
+    this.runningCommand,
   });
 
   factory PtyInfo.fromJson(Map<String, Object?> j) => PtyInfo(
@@ -185,6 +191,7 @@ class PtyInfo {
     rows: _asInt(j['rows']) ?? 24,
     alive: j['alive'] as bool?,
     createdAt: _asInt(j['created_at']),
+    runningCommand: _asString(j['running_command']),
   );
 
   PtyInfo copyWith({
@@ -201,6 +208,7 @@ class PtyInfo {
     rows: rows ?? this.rows,
     alive: alive ?? this.alive,
     createdAt: createdAt,
+    runningCommand: runningCommand,
   );
 }
 

@@ -129,6 +129,11 @@ pub struct PtyInfo {
     pub rows: u16,
     pub alive: bool,
     pub created_at: UnixMs,
+    /// Command currently executing in the PTY, if shell integration has
+    /// reported one (OSC 7777 C/D). Carried on cold attach so a restored
+    /// client can recognize a running command it never saw start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
