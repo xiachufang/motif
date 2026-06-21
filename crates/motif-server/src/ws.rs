@@ -31,6 +31,19 @@ pub struct AppState {
     /// Push-notification state: device-token store + optional relay client.
     /// Carried so `device.register`/`device.unregister` RPCs can reach it.
     pub devices: crate::relay::DeviceState,
+    /// LAN-direct advertisement, set only when a rendezvous server also opened a
+    /// plaintext, non-loopback, tokenless `--listen` (see `main.rs`). `/ping`
+    /// echoes it so a same-LAN rendezvous client can probe and upgrade off the
+    /// relay onto a direct connection. `None` ⇒ `/ping` omits the hint.
+    pub rzv_direct: Option<Arc<RzvDirectInfo>>,
+}
+
+/// The LAN-direct hint advertised over `/ping`: the plaintext `--listen` port
+/// plus this host's non-loopback NIC addresses.
+#[derive(Debug, Clone)]
+pub struct RzvDirectInfo {
+    pub port: u16,
+    pub addrs: Vec<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -65,10 +78,18 @@ fn cors_layer() -> CorsLayer {
 /// hold a token, plus the build version for diagnostics. The payload and
 /// magic string live in `motif_proto::ping` so client and server can't
 /// drift.
-async fn ping() -> axum::Json<motif_proto::ping::PingInfo> {
+async fn ping(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<motif_proto::ping::PingInfo> {
+    let (rzv_direct_port, rzv_direct_addrs) = match &state.rzv_direct {
+        Some(d) => (Some(d.port), d.addrs.clone()),
+        None => (None, Vec::new()),
+    };
     axum::Json(motif_proto::ping::PingInfo {
         service: motif_proto::ping::PING_SERVICE.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        rzv_direct_port,
+        rzv_direct_addrs,
     })
 }
 

@@ -72,13 +72,14 @@ class SshBootstrapper {
       }
 
       final result = await _runBootstrapScript(client);
-      if (result.exitCode != 0) {
+      final stdout = _decode(result.stdout);
+      if (!bootstrapReady(exitCode: result.exitCode, stdout: stdout)) {
         throw _failure(
           'running remote bootstrap script',
           'Remote bootstrap script failed before motifd became ready.',
           exitCode: result.exitCode,
           exitSignal: result.exitSignal?.toString(),
-          stdout: _decode(result.stdout),
+          stdout: stdout,
           stderr: _decode(result.stderr),
         );
       }
@@ -179,6 +180,26 @@ class SshBootstrapper {
           : server.sshPrivateKeyPassphrase,
     );
   }
+
+  /// Whether a finished bootstrap run means motifd is ready.
+  ///
+  /// A zero exit code is the clean success path. dartssh2 also reports a *null*
+  /// exit code on servers that close the channel without sending an exit-status
+  /// message even after a clean `exit 0` — so a null code alone must NOT be
+  /// treated as failure (the bug behind "failed before motifd became ready"
+  /// despite stdout saying "motifd already running"). Accept null only when the
+  /// script printed a definitive readiness marker, so a genuine crash (null
+  /// exit, no marker) still fails. Any non-zero code is always a failure (the
+  /// script exits 0 immediately after the marker).
+  static bool bootstrapReady({required int? exitCode, required String stdout}) {
+    if (exitCode == 0) return true;
+    if (exitCode == null) return _stdoutShowsReady(stdout);
+    return false;
+  }
+
+  static bool _stdoutShowsReady(String stdout) =>
+      stdout.contains('motifd already running on') ||
+      stdout.contains('motifd started on');
 
   static String buildScript({
     required String repository,
@@ -312,12 +333,6 @@ if [ "\$needs_install" -eq 1 ]; then
   install_motifd
 fi
 
-if [ -n "\$TOKEN_VALUE" ]; then
-  echo "writing motifd token file at \$TOKEN_FILE"
-  umask 077
-  printf '%s\\n' "\$TOKEN_VALUE" > "\$TOKEN_FILE"
-fi
-
 if [ -f "\$PID_FILE" ]; then
   old_pid=\$(cat "\$PID_FILE" 2>/dev/null || true)
   if [ -n "\$old_pid" ] && kill -0 "\$old_pid" 2>/dev/null && ping_motifd; then
@@ -326,13 +341,11 @@ if [ -f "\$PID_FILE" ]; then
   fi
 fi
 
-if [ -n "\$TOKEN_VALUE" ]; then
-  echo "starting motifd on \$LISTEN with token file; log: \$LOG_FILE"
-  nohup "\$BIN" --listen "\$LISTEN" --token-file "\$TOKEN_FILE" >>"\$LOG_FILE" 2>&1 </dev/null &
-else
-  echo "starting motifd on \$LISTEN; log: \$LOG_FILE"
-  nohup "\$BIN" --listen "\$LISTEN" >>"\$LOG_FILE" 2>&1 </dev/null &
-fi
+# The SSH tunnel terminates at the remote's loopback, so motifd runs plaintext
+# and unauthenticated there — SSH is the auth boundary. (motifd no longer takes
+# a token file; a network listener would auto-encrypt + psk-pair instead.)
+echo "starting motifd on \$LISTEN; log: \$LOG_FILE"
+nohup "\$BIN" --listen "\$LISTEN" >>"\$LOG_FILE" 2>&1 </dev/null &
 pid=\$!
 printf '%s\\n' "\$pid" > "\$PID_FILE"
 

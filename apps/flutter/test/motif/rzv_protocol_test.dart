@@ -69,6 +69,25 @@ void main() {
     });
   });
 
+  group('RzvProtocol.deriveAuthBearer', () {
+    test('matches the cross-language HKDF vector', () {
+      // psk = bytes 0..31; must equal the Rust `derive_bearer` fixture in
+      // crates/motif-server/src/rzv.rs.
+      final psk = Uint8List.fromList(List.generate(32, (i) => i));
+      final bearer = RzvProtocol.deriveAuthBearer(psk);
+      final hex = bearer.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+      expect(
+        hex,
+        'b15f7d9c90b425671f2fd6b31584ad68b3f177a73bbc7e49fbc882505e329ddf',
+      );
+    });
+
+    test('differs from the relay token (distinct HKDF label)', () {
+      final psk = Uint8List.fromList(List.generate(32, (i) => i));
+      expect(RzvProtocol.deriveAuthBearer(psk), isNot(RzvProtocol.deriveToken(psk)));
+    });
+  });
+
   group('ServerKind', () {
     test('rendezvous round-trips through wire form', () {
       expect(ServerKind.fromWire('rendezvous'), ServerKind.rendezvous);

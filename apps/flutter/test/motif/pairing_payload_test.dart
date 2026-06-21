@@ -133,6 +133,52 @@ void main() {
       expect(json.containsKey('pubKey'), isFalse);
     });
   });
+
+  group('direct form (no relay)', () {
+    test('parses a comma-separated host list and maps to a direct server', () {
+      final uri = 'motif://pair?v=1&host=192.168.1.9,10.0.0.4&port=7777'
+          '&psk=${base64Like(psk)}&pk=${base64Like(pk)}';
+      final p = MotifPairingPayload.parse(uri);
+      expect(p.isRendezvous, isFalse);
+      expect(p.hosts, ['192.168.1.9', '10.0.0.4']);
+      expect(p.port, 7777);
+
+      final s = p.toServer(id: 'd');
+      expect(s.kind, ServerKind.direct);
+      expect(s.scheme, 'https'); // pin present ⇒ TLS
+      expect(s.host, '192.168.1.9'); // first candidate, for display
+      expect(s.directHosts, ['192.168.1.9', '10.0.0.4']);
+      expect(s.psk, isNotEmpty);
+      expect(s.pubKey, isNotEmpty);
+
+      // directHosts survives a JSON round-trip.
+      final back = MotifServer.fromJson(s.toJson());
+      expect(back.kind, ServerKind.direct);
+      expect(back.directHosts, ['192.168.1.9', '10.0.0.4']);
+    });
+
+    test('toUri round-trips the direct form', () {
+      final p = MotifPairingPayload(
+        hosts: const ['192.168.1.9', '10.0.0.4'],
+        port: 8000,
+        psk: psk,
+        pubKey: pk,
+      );
+      final back = MotifPairingPayload.parse(p.toUri());
+      expect(back.isRendezvous, isFalse);
+      expect(back.hosts, ['192.168.1.9', '10.0.0.4']);
+      expect(back.port, 8000);
+    });
+
+    test('rejects a link with neither rzv nor host', () {
+      expect(
+        () => MotifPairingPayload.parse(
+          'motif://pair?v=1&psk=${base64Like(psk)}',
+        ),
+        throwsFormatException,
+      );
+    });
+  });
 }
 
 /// base64url-no-pad encoder for test fixtures.

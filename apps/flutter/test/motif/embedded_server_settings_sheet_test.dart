@@ -12,8 +12,6 @@ void main() {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
         listenMode: EmbeddedListenMode.lan,
-        authEnabled: true,
-        authToken: 'test-token',
       ),
       status: const EmbeddedServerStatus(
         running: true,
@@ -31,7 +29,8 @@ void main() {
     expect(find.text('Running'), findsWidgets);
     expect(find.text('Loopback'), findsOneWidget);
     expect(find.text('LAN'), findsOneWidget);
-    expect(find.text('Require a token'), findsOneWidget);
+    expect(find.text('PAIRING'), findsOneWidget); // MotifSection uppercases titles
+    expect(find.text('Pair over a relay'), findsOneWidget);
     expect(errors, isEmpty);
   });
 

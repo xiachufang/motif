@@ -7,6 +7,38 @@ import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 
+/// Presents [ChangeDirectoryPanel] as a bottom sheet. [onChoose] fires with the
+/// selected directory; the panel dismisses the sheet itself afterward.
+Future<void> showChangeDirectorySheet(
+  BuildContext context, {
+  required MotifClient motif,
+  required String baseDir,
+  required void Function(String path) onChoose,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    clipBehavior: Clip.antiAlias,
+    builder: (sheetContext) {
+      final media = MediaQuery.of(sheetContext);
+      return AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+        padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+        child: SizedBox(
+          height: media.size.height * 0.82,
+          child: ChangeDirectoryPanel(
+            motif: motif,
+            baseDir: baseDir,
+            onChoose: onChoose,
+          ),
+        ),
+      );
+    },
+  );
+}
+
 /// A `cd` directory picker (mirrors ChangeDirectoryPanel): browse subdirectories
 /// of a base path and send `cd '<path>'` to the active PTY on confirm.
 class ChangeDirectoryPanel extends StatefulWidget {
@@ -160,8 +192,11 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
   void _drill(String name) {
     final next = _asDirectoryPath(_join(_baseDir, name));
     setState(() => _input = next);
-    _setPathField(next);
+    // Focus first, then set the (collapsed) selection: re-focusing the field
+    // selects-all on macOS/desktop, so collapsing afterwards keeps a plain
+    // cursor at the end instead of a highlighted selection on a directory tap.
     _pathFocusNode.requestFocus();
+    _setPathField(next);
     unawaited(_load(_baseDirFor(next)));
   }
 
@@ -170,8 +205,8 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
     if (baseDir == '/') return;
     final next = _asDirectoryPath(_dirname(baseDir));
     setState(() => _input = next);
-    _setPathField(next);
     _pathFocusNode.requestFocus();
+    _setPathField(next);
     unawaited(_load(_baseDirFor(next)));
   }
 

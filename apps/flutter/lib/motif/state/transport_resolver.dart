@@ -1,6 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
+import '../log/log.dart';
+import '../models/motif_proto.dart';
 import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/rzv/rzv_forwarder.dart';
@@ -62,6 +67,13 @@ class TransportResolver {
   /// Started lazily on [resolve] and torn down by [stopForwarder] when the
   /// owning connection disconnects or the server is removed.
   final Map<String, RzvForwarder> _rzvForwarders = {};
+
+  /// LAN-direct candidates learned from a rendezvous server's `/ping`, keyed by
+  /// server id. In-memory only (never persisted): each session starts on the
+  /// relay, learns candidates via [learnRzvDirect], then [resolve] probes them
+  /// to upgrade to a direct connection. Cleared by [forgetRzvDirect] on a
+  /// deliberate disconnect — NOT by [stopForwarder], so reconnects stay direct.
+  final Map<String, _RzvDirect> _rzvDirect = {};
 
   /// Live loopback forwarders for `ssh` servers, keyed by server id.
   final Map<String, SshForwarderHandle> _sshForwarders = {};
@@ -147,7 +159,7 @@ class TransportResolver {
       case ServerKind.ssh:
         return _resolveSsh(server);
       case ServerKind.direct:
-        return TransportReady(target: server, proxy: ProxySettings.none);
+        return _resolveDirect(server);
     }
   }
 
@@ -158,13 +170,123 @@ class TransportResolver {
   }
 
   /// Stop and forget the forwarder for [serverId], if any. Safe to call when
-  /// none exists.
+  /// none exists. Deliberately does NOT clear learned LAN-direct candidates —
+  /// the relay→direct upgrade stops the forwarder while keeping the candidates.
   Future<void> stopForwarder(String serverId) async {
     final rzv = _rzvForwarders.remove(serverId);
     final ssh = _sshForwarders.remove(serverId);
     _transportFailures.remove(serverId);
     await rzv?.stop();
     await ssh?.stop();
+  }
+
+  /// Record the LAN-direct candidates a rendezvous server advertised over
+  /// `/ping`. Returns `true` only when candidates become available for the
+  /// first time (no entry yet) — the controller uses that as the cue to kick an
+  /// immediate reconnect so [resolve] can upgrade onto the direct path. Repeat
+  /// calls (already direct, or refreshing the same set) return `false` so we
+  /// don't reconnect on a loop. IPv6 candidates are dropped (LAN-direct targets
+  /// IPv4; link-local IPv6 is already filtered server-side).
+  bool learnRzvDirect(MotifServer server, PingInfo? ping) {
+    if (server.kind != ServerKind.rendezvous) return false;
+    final port = ping?.rzvDirectPort;
+    final v4 = (ping?.rzvDirectAddrs ?? const <String>[])
+        .where((a) => !a.contains(':'))
+        .toList(growable: false);
+    if (port == null || port <= 0 || v4.isEmpty) {
+      // The server no longer advertises a usable direct port; drop stale state.
+      _rzvDirect.remove(server.id);
+      return false;
+    }
+    final firstTime = !_rzvDirect.containsKey(server.id);
+    _rzvDirect[server.id] = _RzvDirect(port: port, addrs: v4);
+    return firstTime;
+  }
+
+  /// Forget any learned LAN-direct candidates for [serverId], so the next
+  /// session starts on the relay again. Call on a deliberate disconnect /
+  /// server removal — not on the transient forwarder teardown of an upgrade.
+  void forgetRzvDirect(String serverId) {
+    _rzvDirect.remove(serverId);
+  }
+
+  /// Probe [addrs] (at [port]) concurrently and resolve to the first that
+  /// answers as a motif-server, or `null` if none do within the per-probe
+  /// timeout. When [certPin] is set the probe runs over TLS (`https`) pinning
+  /// that cert; otherwise plaintext. Never throws.
+  Future<String?> _firstReachableDirect(
+    List<String> addrs,
+    int port, {
+    Uint8List? certPin,
+  }) {
+    if (addrs.isEmpty) return Future.value(null);
+    final completer = Completer<String?>();
+    var pending = addrs.length;
+    for (final addr in addrs) {
+      _probeDirect(addr, port, certPin: certPin).then((ok) {
+        if (completer.isCompleted) return;
+        if (ok) {
+          completer.complete(addr);
+        } else if (--pending == 0) {
+          completer.complete(null);
+        }
+      });
+    }
+    return completer.future;
+  }
+
+  /// `GET {http,https}://addr:port/ping`, true iff it answers as a
+  /// motif-server. With [certPin] it pins motifd's self-signed cert. Short
+  /// timeout so a dead candidate doesn't stall the connect.
+  Future<bool> _probeDirect(String addr, int port, {Uint8List? certPin}) async {
+    final scheme = certPin == null ? 'http' : 'https';
+    final client = makeHttpClient(ProxySettings.none, certPin: certPin);
+    try {
+      final resp = await client
+          .get(Uri.parse('$scheme://$addr:$port/ping'))
+          .timeout(const Duration(milliseconds: 600));
+      if (resp.statusCode != 200) return false;
+      final info =
+          PingInfo.fromJson(jsonDecode(resp.body) as Map<String, Object?>);
+      return info.isMotifServer;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Parse the base64url cert pin (`pk`). `null` when empty (plaintext); throws
+  /// [FormatException] on malformed / non-32-byte input.
+  static Uint8List? _parsePin(String pubKeyB64) {
+    if (pubKeyB64.isEmpty) return null;
+    final Uint8List pin;
+    try {
+      pin = base64Url.decode(base64Url.normalize(pubKeyB64));
+    } on FormatException {
+      throw const FormatException('not base64url');
+    }
+    if (pin.length != 32) {
+      throw const FormatException('must be 32 bytes');
+    }
+    return pin;
+  }
+
+  /// The motifd access bearer (`base64url(deriveAuthBearer(psk))`) the client
+  /// sends as `Authorization: Bearer`. Empty when the server has no psk (a
+  /// manually-typed direct/loopback server with no pairing secret).
+  static String _authBearer(String pskB64) {
+    if (pskB64.isEmpty) return '';
+    final Uint8List psk;
+    try {
+      psk = base64Url.decode(base64Url.normalize(pskB64));
+    } on FormatException {
+      return '';
+    }
+    if (psk.length != RzvProtocol.tokenLength) return '';
+    return base64Url
+        .encode(RzvProtocol.deriveAuthBearer(psk))
+        .replaceAll('=', '');
   }
 
   Future<TransportResolution> _resolveTailscale(MotifServer server) async {
@@ -182,6 +304,68 @@ class TransportResolver {
     return TransportReady(
       target: target,
       proxy: platform.tailscale.loopbackProxy ?? ProxySettings.none,
+    );
+  }
+
+  /// Resolve a `direct` server. A **paired** direct server (from a no-relay QR)
+  /// carries [MotifServer.directHosts] (all of motifd's NIC addresses), a cert
+  /// pin, and a psk: probe the candidates over TLS and dial whichever is
+  /// reachable, authenticating with the psk bearer. A **manually-typed** direct
+  /// server has no candidates — connect to its host as configured (plaintext,
+  /// its own token), unchanged from before.
+  Future<TransportResolution> _resolveDirect(MotifServer server) async {
+    if (server.directHosts.isEmpty) {
+      // Manually-typed direct server (no candidate list): connect as configured.
+      // If it carries a psk (e.g. the embedded loopback server in relay mode),
+      // send the derived bearer; otherwise leave its token as-is.
+      final bearer = _authBearer(server.psk);
+      final target = bearer.isEmpty ? server : server.copyWith(token: bearer);
+      return TransportReady(target: target, proxy: ProxySettings.none);
+    }
+
+    final Uint8List? certPin;
+    try {
+      certPin = _parsePin(server.pubKey);
+    } on FormatException catch (e) {
+      return _recordFailure(
+        server,
+        statusLabel: 'Direct failed',
+        message: 'Direct server cert pin ${e.message}',
+      );
+    }
+    final scheme = certPin != null ? 'https' : 'http';
+    final bearer = _authBearer(server.psk);
+
+    // Web can't reach arbitrary LAN IPs / pin certs; just take the first.
+    if (kIsWeb) {
+      return TransportReady(
+        target: server.copyWith(
+          host: server.directHosts.first,
+          scheme: scheme,
+          token: bearer,
+        ),
+        proxy: ProxySettings.none,
+        certPin: certPin,
+      );
+    }
+
+    final hit = await _firstReachableDirect(
+      server.directHosts,
+      server.port,
+      certPin: certPin,
+    );
+    if (hit == null) {
+      return _recordFailure(
+        server,
+        statusLabel: 'Direct unreachable',
+        message:
+            'None of ${server.directHosts.length} advertised address(es) reachable',
+      );
+    }
+    return TransportReady(
+      target: server.copyWith(host: hit, scheme: scheme, token: bearer),
+      proxy: ProxySettings.none,
+      certPin: certPin,
     );
   }
 
@@ -217,34 +401,58 @@ class TransportResolver {
       );
     }
 
-    // End-to-end TLS pin (`pk` in the pairing QR). Present => motifd terminates
-    // TLS and we connect over https/wss pinning sha256(cert.der) == pin.
-    Uint8List? certPin;
-    var scheme = 'http';
-    if (server.pubKey.isNotEmpty) {
-      try {
-        certPin = base64Url.decode(base64Url.normalize(server.pubKey));
-      } on FormatException {
-        return TransportBlocked(
-          ConnectionBlocker.fromTransport(
-            TransportViewState.rendezvous(
-              server,
-              validationMessage: 'Rendezvous cert pin is not base64url',
-            ),
+    // TLS pin (`pk` in the QR): the client verifies motifd's self-signed cert
+    // by `sha256(cert.der) == pin` over both the relay and the LAN-direct path.
+    final Uint8List? certPin;
+    try {
+      certPin = _parsePin(server.pubKey);
+    } on FormatException catch (e) {
+      return TransportBlocked(
+        ConnectionBlocker.fromTransport(
+          TransportViewState.rendezvous(
+            server,
+            validationMessage: 'Rendezvous cert pin ${e.message}',
           ),
+        ),
+      );
+    }
+    final scheme = certPin != null ? 'https' : 'http';
+    // psk-derived motifd access bearer, sent on every connection (relay or
+    // direct) over its TLS channel.
+    final bearer = _authBearer(server.psk);
+
+    // Same-LAN fast path: if this server's direct candidates have been learned
+    // (from a prior connection's /ping), probe them (TLS-pinned) and, on a hit,
+    // dial motifd directly — bypassing the relay entirely. Needs the pin (the
+    // direct port is TLS). Skipped on web (can't reach arbitrary LAN IPs). On a
+    // miss (e.g. we've left the LAN) we fall through to the relay path; the
+    // candidates stay cached so a later reconnect can try again.
+    if (!kIsWeb && certPin != null) {
+      final direct = _rzvDirect[server.id];
+      if (direct != null) {
+        final hit = await _firstReachableDirect(
+          direct.addrs,
+          direct.port,
+          certPin: certPin,
         );
-      }
-      if (certPin.length != 32) {
-        return TransportBlocked(
-          ConnectionBlocker.fromTransport(
-            TransportViewState.rendezvous(
-              server,
-              validationMessage: 'Rendezvous cert pin must be 32 bytes',
+        if (hit != null) {
+          await stopForwarder(server.id); // release the relay loopback
+          Log.i(
+            'rzv ${server.id}: upgraded to LAN-direct https://$hit:${direct.port}',
+            name: 'motif.rzv',
+          );
+          return TransportReady(
+            target: server.copyWith(
+              host: hit,
+              port: direct.port,
+              scheme: 'https',
+              token: bearer,
             ),
-          ),
-        );
+            proxy: ProxySettings.none,
+            certPin: certPin,
+          );
+        }
       }
-      scheme = 'https';
     }
 
     // Reuse a running forwarder for this server; restart it if the relay
@@ -276,6 +484,7 @@ class TransportResolver {
       host: '127.0.0.1',
       port: fwd.port,
       scheme: scheme,
+      token: bearer,
     );
     return TransportReady(
       target: target,
@@ -426,4 +635,13 @@ class TransportResolver {
       error is SshBootstrapException
       ? error.toString()
       : 'SSH auto-initialize failed: $error';
+}
+
+/// LAN-direct candidates for one rendezvous server: the plaintext port plus the
+/// IPv4 addresses to try at it, learned from the server's `/ping`.
+class _RzvDirect {
+  const _RzvDirect({required this.port, required this.addrs});
+
+  final int port;
+  final List<String> addrs;
 }

@@ -107,7 +107,12 @@ class _InputBar extends StatelessWidget {
                       groupId: groupId,
                       controller: controller,
                       focusNode: focusNode,
-                      keyboardType: terminalKeyboardType,
+                      // Keep the default (multiline) keyboard — NOT
+                      // `visiblePassword`, which on iOS is ASCII-capable with no
+                      // language switch and blocks CJK IMEs. The English locale
+                      // hint only biases a *fresh* keyboard toward English; the
+                      // globe key still switches, and per-tab memory restores
+                      // each tab's last-used input source.
                       hintLocales: terminalEnglishHintLocales,
                       autocorrect: false,
                       smartDashesType: SmartDashesType.disabled,

@@ -277,9 +277,11 @@ motifd \
   --tailscale-authkey "$(cat /etc/motif/ts.authkey)" \# 首次 / 无人值守用，缺省时启动会打印 OAuth URL
   --tailscale-state-dir /var/lib/motifd/tsnet \       # 默认 $XDG_DATA_HOME/motifd/tsnet
   --tailscale-control-url https://hs.example.com \    # Headscale 自托管时填
-  --tailscale-ephemeral \                             # 退出即从 tailnet 移除
-  --token-file /etc/motif/motifd.token
+  --tailscale-ephemeral                               # 退出即从 tailnet 移除
 ```
+
+tailscale-only 由 tailnet ACL 把门，无需 token（手动 token 已移除）。若同时开网络
+`--listen`，那条会自动加密 + psk 鉴权并打印 `motif://pair` 链接。
 
 `--listen` 与 `--tailscale` 可独立开关，至少有一个；`ServerConfig::validate` 兜底校验（见 `crates/motif-server/src/config.rs`）。两边都开时 `motif-net::Listener` 并行 accept，业务层共享一套 axum router。
 
@@ -288,7 +290,7 @@ motifd \
 不要 TCP 暴露时：
 
 ```bash
-motifd --tailscale --tailscale-port 7777 --token-file /etc/motif/motifd.token
+motifd --tailscale --tailscale-port 7777
 ```
 
 可以无 token 启动（loopback / tailnet-only 是 ServerConfig::validate 允许的"private surface"），但会 WARN 一条提示——生产环境强烈建议保留 token。

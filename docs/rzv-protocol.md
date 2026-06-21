@@ -108,32 +108,44 @@ Cross-language fixture: `psk = bytes 0..31` ⇒
 Future refinement: rotate by binding a coarse epoch into `info` (motifd would
 park under adjacent epochs to cover the boundary); not yet implemented.
 
-Trust is established separately by the layer above:
+Trust and access are established separately by the layer above:
 
-- **Default**: end-to-end TLS over the relayed pipe; the client pins `motifd`'s
-  cert (`pk`), delivered out-of-band via the pairing QR (see below). The relay
-  sees only ciphertext, defeating both the relay and anyone who squats the
-  token. motifd runs this by default; `--rzv-no-tls` opts out.
-- **Plaintext** (`--rzv-no-tls`, no `pk`): for a fully trusted relay/segment —
-  the token finds the peer and the one-way derivation keeps `psk` off the wire,
-  but bytes are not encrypted end-to-end.
+- **Encryption + server auth**: end-to-end TLS over the relayed pipe; the client
+  pins `motifd`'s cert (`pk`), delivered out-of-band via the pairing QR. The
+  relay sees only ciphertext, defeating both the relay and anyone who squats the
+  token. This is always on (there is no plaintext-relay mode).
+- **Client access**: a bearer derived from `psk` under a distinct HKDF label
+  (`motif-auth-bearer-v1`, vs the relay token's `motif-rzv-token-v1`). motifd
+  requires it; the client derives the same value from the QR's `psk` and sends
+  it inside the TLS channel. So "having the QR" is the single capability — the
+  relay never sees the bearer.
 
 ## Pairing QR / deep link
 
-First-time pairing is bootstrapped by a `motif://pair` URI that `motifd`
-renders as a QR (client scans it). One-time / short-lived.
+First-time pairing is bootstrapped by a single `motif://pair` URI that `motifd`
+renders as a QR (client scans it). A server has exactly **one** QR at a time;
+the client routes by content. Two forms:
 
 ```
+# rzv form (relay set): reach motifd through the relay
 motif://pair?v=1
-  &rzv=<relay host:port>      required
-  &psk=<base64url 32 bytes>   required — pairing secret
-  &pk=<base64url 32 bytes>    present iff motifd runs with end-to-end TLS —
-                              SHA-256 of motifd's self-signed cert DER (the pin)
+  &rzv=<relay host:port>      selects the rzv path
+  &psk=<base64url 32 bytes>   pairing secret (→ relay token + access bearer)
+  &pk=<base64url 32 bytes>    SHA-256 of motifd's self-signed cert DER (the pin)
   &name=<display name>        optional
-  &id=<instance id>           optional
+
+# direct form (no relay): reach motifd directly on the LAN/public address
+motif://pair?v=1
+  &host=<ip1,ip2,…>           comma-separated NIC/advertised hosts to probe
+  &port=<port>                motifd's direct port
+  &psk=<base64url 32 bytes>   pairing secret (→ access bearer)
+  &pk=<base64url 32 bytes>    cert pin
+  &name=<display name>        optional
 ```
 
-`psk`/`pk` are base64url (URL-safe alphabet, padding optional).
+`psk`/`pk` are base64url (URL-safe alphabet, padding optional). The absence of
+`rzv` is what routes the client to the direct path; it probes `host` candidates
+over TLS (pinned by `pk`) and dials whichever is reachable.
 
 **End-to-end TLS (when `pk` is present).** motifd terminates a TLS handshake on
 its `accept` side of the relayed pipe using a persisted self-signed identity
@@ -144,8 +156,9 @@ disabled). This defeats both the relay and anyone who squats the token: without
 motifd's actual cert the handshake the client accepts cannot be produced.
 Reference: `motif_server::rzv::load_or_create_identity` (Rust server),
 `crates/motif-net` `park_accept` TLS branch, and the pinning client in
-`crates/motif-net/tests/rzv_tls.rs`. When `pk` is absent, traffic is plaintext
-through the relay (bring-up / trusted-relay deployments).
+`crates/motif-net/tests/rzv_tls.rs`. The same identity (and thus the same `pk`)
+backs the direct `--listen` path, so the pin matches whichever way a client
+reaches motifd.
 
 ## Lifecycle (P1)
 

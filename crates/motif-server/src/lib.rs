@@ -44,6 +44,7 @@ fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'st
 }
 
 pub use config::{RzvListenConfig, ServerConfig, TailscaleListenConfig};
+pub use ws::RzvDirectInfo;
 
 /// Default embedded-tsnet hostname (`motifd-<sanitized system hostname>`).
 /// Shared by the `motifd` binary and embedding hosts (the menu-bar app) so
@@ -409,14 +410,14 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
         None => {
-            // `validate()` already refuses to expose a token-less listener
-            // on non-loopback TCP, so reaching here means the surface is
-            // private (loopback or tailscale-only). Still WARN so the
-            // operator knows auth is off.
+            // No psk-derived bearer — reaching here means the surface is private
+            // (loopback / embed / tailscale-only). A network `--listen` gets a
+            // psk bearer wired up in main.rs. Still WARN so the operator knows
+            // auth is off for this listener.
             tracing::warn!(
-                "no --token-file configured: motifd will accept WebSocket upgrades without \
-                 a Bearer token. Make sure access to this listener is gated elsewhere \
-                 (loopback only / tailnet ACLs)."
+                "auth disabled: motifd will accept WebSocket upgrades without a Bearer \
+                 token. This is expected for a loopback / tailscale-only surface; a \
+                 network --listen is auto-encrypted + psk-authenticated instead."
             );
             auth::TokenStore::disabled()
         }
@@ -440,6 +441,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         auth: Arc::new(token_store),
         conns: conn_registry::ConnRegistry::new(),
         devices: device_state.clone(),
+        rzv_direct: cfg.rzv_direct.clone(),
     };
     let app = ws::router(state);
 

@@ -235,30 +235,13 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   void _openChangeDirectory(MotifClient motif) {
-    final base = motif.activeCwd ?? '~';
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      clipBehavior: Clip.antiAlias,
-      builder: (sheetContext) {
-        final media = MediaQuery.of(sheetContext);
-        return AnimatedPadding(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOut,
-          padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
-          child: SizedBox(
-            height: media.size.height * 0.82,
-            child: ChangeDirectoryPanel(
-              motif: motif,
-              baseDir: base,
-              onChoose: (path) {
-                final cmd = "cd '$path'";
-                _sendBytes(_terminalBytes(cmd, enter: true));
-              },
-            ),
-          ),
-        );
+    showChangeDirectorySheet(
+      context,
+      motif: motif,
+      baseDir: motif.activeCwd ?? '~',
+      onChoose: (path) {
+        final cmd = "cd '$path'";
+        _sendBytes(_terminalBytes(cmd, enter: true));
       },
     );
   }

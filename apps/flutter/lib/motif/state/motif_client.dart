@@ -124,6 +124,11 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   MotifNotification? latestNotification;
   String? connectionNotice;
 
+  /// The most recent `/ping` payload from a successful [connect]. The
+  /// rendezvous direct-upgrade path reads its `rzvDirect*` fields to learn
+  /// motifd's LAN addresses. `null` until the first successful connect.
+  PingInfo? lastPing;
+
   /// Show an in-app notification (e.g. a decrypted foreground push).
   void showNotification(MotifNotification n) {
     latestNotification = n;
@@ -192,6 +197,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
         _setState(ConnFailed('Not a motif server at ${server.endpoint}'));
         return;
       }
+      lastPing = ping;
     } catch (e) {
       await rpc.close();
       _setState(ConnFailed(_friendlyError(server, e)));

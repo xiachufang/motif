@@ -9,10 +9,12 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "motifd", version, about = "motif remote dev agent — server")]
 struct Args {
-    /// TCP listen address. Omit to run tailscale-only. Non-loopback without
-    /// --token-file requires --insecure-no-auth. At least one of --listen /
-    /// --tailscale must be set. motifd does not terminate TLS — front it with
-    /// a proxy, or use the tailnet, if you need encryption.
+    /// TCP listen address. Omit to run tailscale-/rzv-only. A non-loopback
+    /// address is automatically encrypted (self-signed TLS, client pins the
+    /// cert) and authenticated (psk-derived bearer) — motifd prints a
+    /// `motif://pair` link/QR carrying its NIC addresses, psk, and pin.
+    /// Loopback stays plaintext (local / embedded use). At least one of
+    /// --listen / --tailscale / --rzv-relay must be set.
     #[arg(long)]
     listen: Option<SocketAddr>,
 
@@ -61,18 +63,18 @@ struct Args {
     #[arg(long, requires = "tailscale")]
     tailscale_ephemeral: bool,
 
-    /// Bearer-token file. The server reads this once at startup; rotate by
-    /// restart. Omit to run with auth disabled — only allowed when the
-    /// listener surface is private (loopback TCP or tailscale-only).
+    /// 32-byte pairing secret as base64url. The single capability for both rzv
+    /// and direct: the relay token and the motifd access bearer are derived from
+    /// it, and it goes in the `motif://pair` QR. Omit to auto-generate and
+    /// persist one (stable across restarts). Pass a fixed value for unattended
+    /// deployments (e.g. a public review server) so the QR/link stays constant.
     #[arg(long)]
-    token_file: Option<PathBuf>,
+    psk: Option<String>,
 
-    /// Permit a non-loopback --listen without --token-file, disabling auth on
-    /// a network-reachable port. Off by default; this is an explicit, unsafe
-    /// override (anyone who can reach the port can attach). Logs a warning at
-    /// startup.
+    /// Where to persist the auto-generated pairing secret. Defaults to
+    /// `<data-dir>/motif/rzv_psk`. Ignored when --psk is given.
     #[arg(long)]
-    insecure_no_auth: bool,
+    psk_file: Option<PathBuf>,
 
     /// Push-relay base URL for iOS background notifications. When set, Claude
     /// Code hook notifications are forwarded here (end-to-end encrypted) for
@@ -81,35 +83,22 @@ struct Args {
     #[arg(long)]
     push_relay_url: Option<String>,
 
+    /// Host(s) to advertise in the **direct** pairing QR instead of this
+    /// machine's NIC addresses. Use for a server reached at a stable public
+    /// address / behind NAT (e.g. `--advertise-host 203.0.113.5` or a domain);
+    /// comma-separate multiple. Omit on a LAN to advertise all local NIC IPs.
+    #[arg(long)]
+    advertise_host: Option<String>,
+
     /// Rendezvous relay address (`host:port`) to park `accept` waiters at, so
     /// clients can reach this motifd through the relay without direct
-    /// connectivity. Requires --rzv-token. The relay only sees ciphertext.
+    /// connectivity. The relay only ever sees ciphertext (end-to-end TLS).
     #[arg(long)]
     rzv_relay: Option<String>,
-
-    /// 32-byte pairing secret as base64url. Omit to auto-generate and persist
-    /// one (printed as a `motif://pair` QR/link to pair a client). The
-    /// on-the-wire token is derived one-way from this, so the relay never sees
-    /// the secret.
-    #[arg(long, requires = "rzv_relay")]
-    rzv_psk: Option<String>,
-
-    /// Where to persist the auto-generated pairing secret. Defaults to
-    /// `<data-dir>/motif/rzv_psk`. Ignored when --rzv-psk is given.
-    #[arg(long, requires = "rzv_relay")]
-    rzv_psk_file: Option<PathBuf>,
 
     /// How many idle `accept` waiters to keep parked at the relay (default 2).
     #[arg(long, requires = "rzv_relay")]
     rzv_pool: Option<usize>,
-
-    /// Disable rzv end-to-end TLS. By default motifd terminates TLS over the
-    /// relayed pipe with a persisted self-signed identity and advertises its pin
-    /// in the pairing QR, so the relay only ever sees ciphertext and the client
-    /// verifies motifd. Pass this only for a fully trusted relay/segment, where
-    /// rzv traffic then travels as plaintext through the relay.
-    #[arg(long, requires = "rzv_relay")]
-    rzv_no_tls: bool,
 
     /// Log filter (env: MOTIFD_LOG). Examples: info, debug, motif_server=trace.
     #[arg(long, env = "MOTIFD_LOG", default_value = "info")]
@@ -145,19 +134,14 @@ async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     motif_server::init_tracing(&args.log, args.rpc_log.as_deref())?;
 
-    let token = match args.token_file.as_deref() {
-        Some(path) => {
-            let raw = std::fs::read_to_string(path).map_err(|e| {
-                anyhow::anyhow!("failed to read --token-file {}: {e}", path.display())
-            })?;
-            let trimmed = raw.trim().to_string();
-            if trimmed.is_empty() {
-                anyhow::bail!("token file is empty: {}", path.display());
-            }
-            Some(trimmed)
-        }
-        None => None,
-    };
+    let listen = args.listen;
+    // A non-loopback --listen is a network-reachable surface: encrypt + auth it.
+    // Loopback (embed / local) stays plaintext & unauthenticated as before.
+    let is_network_listen = listen.map(|a| !a.ip().is_loopback()).unwrap_or(false);
+    let rzv_on = args.rzv_relay.is_some();
+    // "Pairing mode": a network surface exists (relay or non-loopback --listen),
+    // so motifd needs a psk (→ access bearer), a TLS identity, and a pairing QR.
+    let pairing = rzv_on || is_network_listen;
 
     // Built without the `tailscale` feature, the `--tailscale*` flags don't
     // exist and the listener carries no tsnet backend, so the field is `None`.
@@ -186,67 +170,114 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
-    let rendezvous = match args.rzv_relay {
-        Some(url) => {
-            // Obtain the pairing secret: explicit flag, or persisted/auto-gen.
-            let psk: [u8; 32] = match args.rzv_psk {
-                Some(b64) => {
-                    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .decode(b64.trim())
-                        .map_err(|e| anyhow::anyhow!("--rzv-psk is not base64url: {e}"))?;
-                    bytes.as_slice().try_into().map_err(|_| {
-                        anyhow::anyhow!("--rzv-psk must decode to 32 bytes, got {}", bytes.len())
-                    })?
-                }
-                None => {
-                    let path = args
-                        .rzv_psk_file
-                        .unwrap_or_else(motif_server::default_rzv_psk_path);
-                    motif_server::rzv::load_or_create_psk(&path)?
-                }
-            };
-
-            // The wire token is derived one-way from the secret.
-            let token = motif_server::rzv::derive_token(&psk);
-
-            // End-to-end TLS is on by default (relay sees only ciphertext);
-            // build/persist the identity and pin unless explicitly disabled.
-            let psk_dir = motif_server::default_rzv_psk_path();
-            let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let identity = if args.rzv_no_tls {
-                None
-            } else {
-                Some(motif_server::rzv::load_or_create_identity(rzv_dir)?)
-            };
-            let pin = identity.as_ref().map(|id| id.cert_sha256);
-
-            // Print the pairing QR/link for a client to scan.
-            let name = motif_server::default_tailscale_hostname();
-            let uri = motif_server::rzv::pair_uri(&url, &psk, pin.as_ref(), Some(&name));
-            if let Some(qr) = motif_server::rzv::render_qr(&uri) {
-                println!("\n{qr}");
+    // In pairing mode, derive everything from one psk: the TLS identity (→ pin),
+    // the relay token, and the access bearer. One secret in the QR; the relay
+    // never sees the bearer (distinct HKDF label). Outside pairing mode
+    // (tailscale-only / loopback / embed) there is no psk: auth disabled, no TLS.
+    let (psk, identity, token) = if pairing {
+        let psk: [u8; 32] = match args.psk {
+            Some(b64) => {
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(b64.trim())
+                    .map_err(|e| anyhow::anyhow!("--psk is not base64url: {e}"))?;
+                bytes.as_slice().try_into().map_err(|_| {
+                    anyhow::anyhow!("--psk must decode to 32 bytes, got {}", bytes.len())
+                })?
             }
-            println!("Pair a client by scanning the QR above or opening this link:\n  {uri}\n");
+            None => {
+                let path = args
+                    .psk_file
+                    .unwrap_or_else(motif_server::default_rzv_psk_path);
+                motif_server::rzv::load_or_create_psk(&path)?
+            }
+        };
+        let psk_dir = motif_server::default_rzv_psk_path();
+        let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let identity = motif_server::rzv::load_or_create_identity(rzv_dir)?;
+        let bearer = motif_server::rzv::bearer_token(&psk);
+        (Some(psk), Some(identity), Some(bearer))
+    } else {
+        (None, None, None)
+    };
+    let pin = identity.as_ref().map(|id| id.cert_sha256);
 
-            let mut c = motif_server::RzvListenConfig::new(url, token);
+    let rendezvous = match &args.rzv_relay {
+        Some(url) => {
+            let psk = psk.expect("rzv ⇒ pairing ⇒ psk present");
+            let mut c =
+                motif_server::RzvListenConfig::new(url.clone(), motif_server::rzv::derive_token(&psk));
             if let Some(pool) = args.rzv_pool {
                 c.pool = pool;
             }
-            c.tls = identity.map(|id| id.server_config);
+            c.tls = identity.as_ref().map(|id| id.server_config.clone());
             Some(c)
         }
         None => None,
     };
 
+    // A non-loopback --listen terminates TLS with the same identity (client
+    // pins the cert); loopback stays plaintext.
+    let listen_tls = if is_network_listen {
+        identity.as_ref().map(|id| id.server_config.clone())
+    } else {
+        None
+    };
+
+    // LAN-direct /ping hint: only for rzv + a network --listen, so a same-LAN
+    // rzv client can upgrade off the relay onto the (TLS-pinned) direct port.
+    // Pure-direct deployments carry their NIC candidates in the QR instead.
+    let rzv_direct = if rzv_on && is_network_listen {
+        let addr = listen.expect("is_network_listen ⇒ listen present");
+        let addrs = if addr.ip().is_unspecified() {
+            motif_server::rzv::local_nic_addrs()
+        } else {
+            vec![addr.ip().to_string()]
+        };
+        (!addrs.is_empty()).then(|| {
+            std::sync::Arc::new(motif_server::RzvDirectInfo {
+                port: addr.port(),
+                addrs,
+            })
+        })
+    } else {
+        None
+    };
+
+    // One pairing QR per server: rzv form when a relay is set, else the direct
+    // form carrying every NIC address (the client probes them to pick one).
+    if pairing {
+        let name = motif_server::default_tailscale_hostname();
+        let psk = psk.as_ref().expect("pairing ⇒ psk present");
+        let uri = match &args.rzv_relay {
+            Some(url) => motif_server::rzv::pair_uri(url, psk, pin.as_ref(), Some(&name)),
+            None => {
+                let addr = listen.expect("pairing without relay ⇒ network listen");
+                // Explicit --advertise-host (public/NAT) wins; else all NICs for
+                // an unspecified bind, or the specific bind IP.
+                let hosts = match &args.advertise_host {
+                    Some(h) => h.split(',').map(|s| s.trim().to_string()).collect(),
+                    None if addr.ip().is_unspecified() => motif_server::rzv::local_nic_addrs(),
+                    None => vec![addr.ip().to_string()],
+                };
+                motif_server::rzv::pair_uri_direct(&hosts, addr.port(), psk, pin.as_ref(), Some(&name))
+            }
+        };
+        if let Some(qr) = motif_server::rzv::render_qr(&uri) {
+            println!("\n{qr}");
+        }
+        println!("Pair a client by scanning the QR above or opening this link:\n  {uri}\n");
+    }
+
     let cfg = motif_server::ServerConfig {
-        listen: args.listen,
+        listen,
+        listen_tls,
         #[cfg(feature = "tailscale")]
         tailscale,
         #[cfg(not(feature = "tailscale"))]
         tailscale: None,
         rendezvous,
+        rzv_direct,
         token,
-        allow_insecure_no_auth: args.insecure_no_auth,
         push_relay_url: args.push_relay_url,
     };
     motif_server::serve(cfg).await

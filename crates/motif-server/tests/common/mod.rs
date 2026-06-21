@@ -58,6 +58,7 @@ impl TestServer {
                 store: motif_server::devices::DeviceStore::new(),
                 relay: None,
             },
+            rzv_direct: None,
         };
         let app = motif_server::ws::router(state);
         // Serve through motif-net's Listener (like motifd does) so the
@@ -66,6 +67,7 @@ impl TestServer {
         // `axum::serve(TcpListener, app)` would 500 with "missing extension".
         let listener = motif_net::Listener::bind(&motif_net::ListenConfig {
             tcp: Some("127.0.0.1:0".parse().expect("parse loopback addr")),
+            tcp_tls: None,
             tailscale: None,
             rendezvous: None,
         })

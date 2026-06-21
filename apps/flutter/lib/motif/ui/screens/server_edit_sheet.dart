@@ -39,7 +39,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _name;
   late final TextEditingController _host;
   late final TextEditingController _port;
-  late final TextEditingController _token;
   late final TextEditingController _sshHost;
   late final TextEditingController _sshPort;
   late final TextEditingController _sshUsername;
@@ -76,7 +75,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _name = TextEditingController(text: e?.name ?? '');
     _host = TextEditingController(text: e?.host ?? '');
     _port = TextEditingController(text: '${e?.port ?? 7777}');
-    _token = TextEditingController(text: e?.token ?? '');
     _sshHost = TextEditingController(text: e?.sshHost ?? '');
     _sshPort = TextEditingController(text: '${e?.sshPort ?? 22}');
     _sshUsername = TextEditingController(text: e?.sshUsername ?? '');
@@ -93,9 +91,14 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     } else if (existingKind == ServerKind.ssh && !_supportsSsh) {
       _kind = ServerKind.direct;
     } else {
+      // Direct is no longer offered as a choice for new servers; prefer
+      // Tailscale, then SSH, falling back to direct only where neither exists
+      // (e.g. web, which shows no "Reach via" selector at all).
       _kind =
           existingKind ??
-          (_supportsTailscale ? ServerKind.tailscale : ServerKind.direct);
+          (_supportsTailscale
+              ? ServerKind.tailscale
+              : (_supportsSsh ? ServerKind.ssh : ServerKind.direct));
     }
     if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
       _host.text = '127.0.0.1';
@@ -110,7 +113,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _name.dispose();
     _host.dispose();
     _port.dispose();
-    _token.dispose();
     _sshHost.dispose();
     _sshPort.dispose();
     _sshUsername.dispose();
@@ -194,7 +196,9 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       host: _host.text.trim(),
       port: int.parse(_port.text.trim()),
       scheme: widget.existing?.scheme ?? 'http',
-      token: _token.text,
+      // Auth is the psk-derived bearer from pairing now; preserve any legacy
+      // token on an existing record but no longer expose it for editing.
+      token: widget.existing?.token ?? '',
       kind: _kind,
       sshHost: _sshHost.text.trim(),
       sshPort: int.tryParse(_sshPort.text.trim()) ?? 22,
@@ -556,16 +560,6 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                   const SizedBox(height: MotifSpacing.xl),
                 ],
                 _motifdAddressSection(),
-                const SizedBox(height: MotifSpacing.xl),
-                MotifSection(
-                  title: 'Token',
-                  footer:
-                      'Required only if motifd was started with a non-empty token. Leave blank for an unauthenticated server.',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [
-                    _field(_token, 'Token (optional)', '', obscure: true),
-                  ],
-                ),
               ],
             ),
           ),
@@ -576,11 +570,15 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   Widget _reachViaSection() {
     final segments = <ButtonSegment<ServerKind>>[
-      const ButtonSegment(
-        value: ServerKind.direct,
-        icon: Icon(Icons.public, size: 16),
-        label: Text('Direct'),
-      ),
+      // Direct is no longer offered when adding a server. Only surface it while
+      // editing a server that is already direct, so its transport still shows
+      // (and isn't silently rewritten on save).
+      if (_kind == ServerKind.direct)
+        const ButtonSegment(
+          value: ServerKind.direct,
+          icon: Icon(Icons.public, size: 16),
+          label: Text('Direct'),
+        ),
       if (_supportsSsh)
         const ButtonSegment(
           value: ServerKind.ssh,
@@ -887,8 +885,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
           headerTrailing: ready ? _discoveryHeaderActions() : null,
           footer: ready
               ? (widget.connectOnSave
-                    ? 'Choose a reachable peer, then connect. Token still has to be entered manually.'
-                    : 'Tap a peer to fill in the address. Token still has to be entered manually.')
+                    ? 'Choose a reachable peer, then connect.'
+                    : 'Tap a peer to fill in the address.')
               : 'Set up Tailscale to discover and prefill tailnet hosts.',
           children: [
             if (!ready)

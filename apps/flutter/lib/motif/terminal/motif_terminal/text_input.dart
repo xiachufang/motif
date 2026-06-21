@@ -88,7 +88,14 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
       return;
     }
     _worker?.scrollToBottom();
-    final connection = TextInput.attach(this, terminalTextInputConfiguration);
+    // Mobile gets a plain text keyboard so iOS exposes the language switch and
+    // CJK IMEs are reachable; desktop keeps the shell-friendly config.
+    final connection = TextInput.attach(
+      this,
+      _usesSoftKeyboard
+          ? terminalSoftKeyboardInputConfiguration
+          : terminalTextInputConfiguration,
+    );
     _textInputConnection = connection;
     connection.setEditingState(_textInputValue);
     _syncImeRect();

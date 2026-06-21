@@ -2,8 +2,6 @@
 set -euo pipefail
 
 listen="${MOTIFD_LISTEN:-0.0.0.0:7777}"
-token_file="${MOTIFD_TOKEN_FILE:-}"
-token="${MOTIFD_TOKEN:-}"
 log="${MOTIFD_LOG:-info}"
 rpc_log="${MOTIFD_RPC_LOG:-}"
 push_relay_url="${MOTIFD_PUSH_RELAY_URL:-}"
@@ -14,26 +12,15 @@ if [[ -n "$listen" && "$listen" != "off" && "$listen" != "none" ]]; then
     args+=(--listen "$listen")
 fi
 
-tmp_token_file=""
-cleanup() {
-    if [[ -n "$tmp_token_file" && -f "$tmp_token_file" ]]; then
-        rm -f "$tmp_token_file"
-    fi
-}
-trap cleanup EXIT
-
-if [[ -n "$token_file" ]]; then
-    args+=(--token-file "$token_file")
-elif [[ -n "$token" ]]; then
-    tmp_token_file="$(mktemp /tmp/motifd-token.XXXXXX)"
-    chmod 0600 "$tmp_token_file"
-    printf '%s\n' "$token" > "$tmp_token_file"
-    args+=(--token-file "$tmp_token_file")
-fi
-
-if [[ "${MOTIFD_INSECURE_NO_AUTH:-}" == "1" || "${MOTIFD_INSECURE_NO_AUTH:-}" == "true" ]]; then
-    args+=(--insecure-no-auth)
-fi
+# A non-loopback --listen is auto-encrypted (self-signed TLS, the client pins
+# the cert) and authenticated (psk-derived bearer); motifd prints a motif://pair
+# link/QR carrying its psk + pin. Pass a fixed psk for a stable link across
+# restarts (the TLS identity persists under the data dir — bind-mount it too).
+[[ -n "${MOTIFD_PSK:-}" ]] && args+=(--psk "$MOTIFD_PSK")
+[[ -n "${MOTIFD_PSK_FILE:-}" ]] && args+=(--psk-file "$MOTIFD_PSK_FILE")
+# Host(s) put in the direct pairing QR for a public/NAT server (default: all
+# local NIC IPs). Comma-separate multiple.
+[[ -n "${MOTIFD_ADVERTISE_HOST:-}" ]] && args+=(--advertise-host "$MOTIFD_ADVERTISE_HOST")
 
 if [[ -n "$rpc_log" ]]; then
     args+=(--rpc-log "$rpc_log")
@@ -57,12 +44,7 @@ fi
 
 if [[ -n "${MOTIFD_RZV_RELAY:-}" ]]; then
     args+=(--rzv-relay "$MOTIFD_RZV_RELAY")
-    [[ -n "${MOTIFD_RZV_PSK:-}" ]] && args+=(--rzv-psk "$MOTIFD_RZV_PSK")
-    [[ -n "${MOTIFD_RZV_PSK_FILE:-}" ]] && args+=(--rzv-psk-file "$MOTIFD_RZV_PSK_FILE")
     [[ -n "${MOTIFD_RZV_POOL:-}" ]] && args+=(--rzv-pool "$MOTIFD_RZV_POOL")
-    if [[ "${MOTIFD_RZV_NO_TLS:-}" == "1" || "${MOTIFD_RZV_NO_TLS:-}" == "true" ]]; then
-        args+=(--rzv-no-tls)
-    fi
 fi
 
 if [[ "$#" -gt 0 ]]; then

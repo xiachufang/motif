@@ -239,7 +239,7 @@ class _SessionScreenState extends State<SessionScreen>
                           key: const ValueKey('close-session-button'),
                           icon: const Icon(Icons.close),
                           tooltip:
-                              'Close session (${_primaryShortcutLabel('W', shift: true)})',
+                              'Close all sessions (${_primaryShortcutLabel('W', shift: true)})',
                           onPressed: () => _closeSession(motif),
                         ),
                         IconButton(

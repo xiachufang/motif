@@ -288,20 +288,45 @@ class AppState extends ChangeNotifier {
     if (svc == null) return;
     final endpoint = svc.status.loopbackEndpoint;
     if (endpoint == null) return;
+
+    // In LAN mode the embedded listener is TLS + psk-bearer even on loopback, so
+    // the local client must speak https + pin + bearer. In Loopback mode it's
+    // plaintext (and a bearer only when relay pairing is on). The pairing link
+    // carries the psk (+ pin), which the resolver turns into the bearer.
+    final isLan = svc.config.listenMode == EmbeddedListenMode.lan;
+    final pairingUri = svc.status.pairingUri;
+    var psk = '';
+    var pubKey = '';
+    if (pairingUri != null) {
+      try {
+        final p = MotifPairingPayload.parse(pairingUri);
+        psk = base64Url.encode(p.psk).replaceAll('=', '');
+        if (isLan && p.pubKey != null) {
+          pubKey = base64Url.encode(p.pubKey!).replaceAll('=', '');
+        }
+      } catch (_) {
+        // Unparseable link → fall back to a plaintext loopback entry.
+      }
+    }
     final desired = MotifServer(
       id: kEmbeddedServerId,
       name: 'This computer',
       host: endpoint.host,
       port: endpoint.port,
-      token: svc.config.authEnabled ? svc.config.authToken : '',
+      scheme: isLan ? 'https' : 'http',
       kind: ServerKind.direct,
+      psk: psk,
+      pubKey: pubKey,
+      directHosts: isLan ? [endpoint.host] : const [],
     );
     final existing = serverById(kEmbeddedServerId);
     if (existing == null) {
       await servers.add(desired);
     } else if (existing.host != desired.host ||
         existing.port != desired.port ||
-        existing.token != desired.token) {
+        existing.scheme != desired.scheme ||
+        existing.psk != desired.psk ||
+        existing.pubKey != desired.pubKey) {
       await servers.update(desired);
     }
   }

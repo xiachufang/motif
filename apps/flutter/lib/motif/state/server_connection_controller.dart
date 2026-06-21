@@ -58,6 +58,9 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
     // so we don't keep parked relay connections open after an explicit
     // disconnect. Reconnects re-resolve and start a fresh one.
     await resolver.stopForwarder(serverId);
+    // Drop learned LAN-direct candidates so the next session starts on the
+    // relay and re-learns them (the network may have changed meanwhile).
+    resolver.forgetRzvDirect(serverId);
     _setState(const ServerIdle());
   }
 
@@ -196,6 +199,7 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
   void dispose() {
     _cancelReconnect();
     unawaited(resolver.stopForwarder(serverId));
+    resolver.forgetRzvDirect(serverId);
   }
 
   Future<void> _connect({required bool force, required bool reconnect}) async {
@@ -227,10 +231,22 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
             proxy: proxy,
             certPin: certPin,
           );
+          _maybeUpgradeToDirect(server);
         } catch (e) {
           _setState(ServerFailed('$e', session: session));
           _maybeScheduleReconnect();
         }
+    }
+  }
+
+  /// After a successful rendezvous connect over the relay, learn the LAN-direct
+  /// candidates the server advertised on `/ping`. When they first become
+  /// available, kick an immediate reconnect so [resolve] can probe them and
+  /// upgrade onto a direct connection (the relay forwarder is torn down there).
+  void _maybeUpgradeToDirect(MotifServer server) {
+    if (kIsWeb || server.kind != ServerKind.rendezvous) return;
+    if (resolver.learnRzvDirect(server, client.lastPing)) {
+      _maybeScheduleReconnect(immediate: true);
     }
   }
 

@@ -19,10 +19,36 @@ const List<Locale> terminalEnglishHintLocales = <Locale>[Locale('en', 'US')];
 /// a natural-language text keyboard.
 const TextInputType terminalKeyboardType = TextInputType.visiblePassword;
 
-/// Shared TextInput configuration for terminal panes.
+/// TextInput configuration for terminal panes on a hardware keyboard
+/// (macOS/Linux/Windows). The on-screen keyboard type is moot here — the system
+/// IME composes regardless — so we keep the shell-friendly visiblePassword
+/// keyboard and the English locale hint.
 const TextInputConfiguration terminalTextInputConfiguration =
     TextInputConfiguration(
       inputType: terminalKeyboardType,
+      inputAction: TextInputAction.newline,
+      autocorrect: false,
+      smartDashesType: SmartDashesType.disabled,
+      smartQuotesType: SmartQuotesType.disabled,
+      enableSuggestions: false,
+      enableInteractiveSelection: false,
+      enableIMEPersonalizedLearning: false,
+      hintLocales: terminalEnglishHintLocales,
+      enableInlinePrediction: false,
+    );
+
+/// TextInput configuration for the on-screen keyboard (iOS/Android).
+///
+/// Uses a plain text keyboard — NOT visiblePassword, which on iOS is
+/// ASCII-capable with no language switch and makes CJK (and other non-Latin)
+/// IMEs unreachable. The English [hintLocales] only biases a *fresh* keyboard
+/// toward English: the globe key still switches input source, and on Apple
+/// platforms the native per-tab `textInputContextIdentifier` restores each tab's
+/// last-used IME (see `AppleInputDocument`). Autocorrect / suggestions / smart
+/// punctuation stay disabled so the shell never receives substituted text.
+const TextInputConfiguration terminalSoftKeyboardInputConfiguration =
+    TextInputConfiguration(
+      inputType: TextInputType.text,
       inputAction: TextInputAction.newline,
       autocorrect: false,
       smartDashesType: SmartDashesType.disabled,

@@ -81,6 +81,13 @@ class _BlockingDetachMotifClient extends _SessionMenuMotifClient {
   }
 }
 
+/// Connected to a server but not attached to any session — `session.detach`
+/// would be rejected server-side, so close-all must skip it.
+class _ConnectedNotAttachedMotifClient extends _SessionMenuMotifClient {
+  @override
+  MotifConnState get state => const ConnConnected();
+}
+
 class _ShortcutMotifClient extends MotifClient {
   int createdPtys = 0;
   final List<String> closedViews = [];
@@ -412,8 +419,12 @@ void main() {
     await tester.enterText(find.byType(TextField), 'first tab');
     await tester.pump();
     final firstGroup = inputField().groupId;
-    expect(inputField().keyboardType, terminalKeyboardType);
-    expect(inputField().hintLocales?.single.toLanguageTag(), 'en-US');
+    // The compose box must NOT force the ASCII keyboard (visiblePassword) the
+    // terminal once used — that hides the iOS language switch and blocks CJK
+    // IMEs. It keeps the full multiline keyboard; the English locale hint only
+    // biases a fresh keyboard toward English without locking out switching.
+    expect(inputField().keyboardType, TextInputType.multiline);
+    expect(inputField().hintLocales, terminalEnglishHintLocales);
 
     await tester.tap(find.byKey(const ValueKey('tab-v2')));
     await tester.pump();
@@ -680,6 +691,89 @@ void main() {
 
     expect(motif.detaches, 1);
     expect(find.text('home'), findsOneWidget);
+    expect(find.byType(SessionScreen), findsNothing);
+  });
+
+  testWidgets('close session detaches every connected session', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final current = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    final prod = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final app = await _appStateWith({'server-1': current, 'server-2': prod});
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: Text('home')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    Navigator.of(tester.element(find.text('home'))).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const SessionScreen(serverId: 'server-1', session: 'test-session'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('close-session-button')));
+    await tester.pumpAndSettle();
+
+    // Closes ALL open sessions, not just the current server's.
+    expect(current.detaches, 1);
+    expect(prod.detaches, 1);
+    expect(find.text('home'), findsOneWidget);
+    expect(find.byType(SessionScreen), findsNothing);
+  });
+
+  testWidgets('close session skips connected-but-unattached clients', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final current = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    final idle = _ConnectedNotAttachedMotifClient();
+    final app = await _appStateWith({'server-1': current, 'server-2': idle});
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: Text('home')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    Navigator.of(tester.element(find.text('home'))).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const SessionScreen(serverId: 'server-1', session: 'test-session'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('close-session-button')));
+    await tester.pumpAndSettle();
+
+    // The attached session detaches; the merely-connected one is left alone so
+    // it can't raise a "missing X-Motif-Session" error.
+    expect(current.detaches, 1);
+    expect(idle.detaches, 0);
     expect(find.byType(SessionScreen), findsNothing);
   });
 

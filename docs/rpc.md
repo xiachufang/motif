@@ -24,9 +24,10 @@ shell-integration OSC 协议见 `shell-integration.md`。
 ### 1.2 鉴权
 
 所有四类入口都先过 `TokenStore`（`crates/motif-server/src/auth.rs`）。配置了
-token 时，`TokenStore` 做常时间 Bearer 比对；token 是 `motifd --token-file`
-指向文件的整行字符串，空 token 文件一律拒绝启动。未配置 token 时，
-`TokenStore::Disabled` 接受请求。鉴权失败：
+token 时，`TokenStore` 做常时间 Bearer 比对。现在网络监听的 bearer 由配对 psk
+派生（`rzv::derive_bearer`，写进 `motif://pair` 链接），客户端从 psk 派生同一个
+bearer 发送；loopback/embed/tailscale-only 无 psk 时 `TokenStore::Disabled` 接受
+请求。鉴权失败：
 
 - `/rpc/*`：HTTP 401，body 是 `missing or invalid Bearer token`。
 - `/events`、`/pty/<id>`：同样 HTTP 401，连接不会升级到 WS。

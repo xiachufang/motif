@@ -11,10 +11,24 @@ pub const PING_SERVICE: &str = "motif-server";
 
 /// Body of `GET /ping`. `service` is always [`PING_SERVICE`]; `version`
 /// carries the server build's `CARGO_PKG_VERSION` for diagnostics only.
+///
+/// The `rzv_direct_*` fields are an optional LAN-direct hint: when a
+/// rendezvous-mode server also exposes a plaintext, non-loopback `--listen`
+/// port, it advertises that port plus its non-loopback NIC addresses here so a
+/// same-LAN client can probe and upgrade off the relay. Both are omitted from
+/// the wire when empty, so older peers are unaffected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingInfo {
     pub service: String,
     pub version: String,
+    /// Plaintext direct port a same-LAN client can dial, or `None` when no
+    /// direct listener is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rzv_direct_port: Option<u16>,
+    /// motifd's non-loopback NIC addresses (IPv4/IPv6 literals) to try at
+    /// `rzv_direct_port`. Empty unless a direct port is configured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rzv_direct_addrs: Vec<String>,
 }
 
 impl PingInfo {

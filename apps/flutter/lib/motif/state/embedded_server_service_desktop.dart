@@ -37,7 +37,6 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
       'authkey': tsAuthkey,
       'control_url': tsControlUrl,
     },
-    'auth': {'enabled': authEnabled, 'token': authToken},
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
     'autostart': autostart,
   };
@@ -45,7 +44,6 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
 
 EmbeddedServerConfig _configFromJson(Map<String, Object?> j) {
   final ts = (j['tailscale'] as Map?)?.cast<String, Object?>() ?? const {};
-  final auth = (j['auth'] as Map?)?.cast<String, Object?>() ?? const {};
   final rzv = (j['rzv'] as Map?)?.cast<String, Object?>() ?? const {};
   return EmbeddedServerConfig(
     listenMode: _listenModeFromWire(j['listen_mode']),
@@ -54,8 +52,6 @@ EmbeddedServerConfig _configFromJson(Map<String, Object?> j) {
     tsHostname: (ts['hostname'] as String?) ?? '',
     tsAuthkey: (ts['authkey'] as String?) ?? '',
     tsControlUrl: (ts['control_url'] as String?) ?? '',
-    authEnabled: auth['enabled'] == true,
-    authToken: (auth['token'] as String?) ?? '',
     rzvEnabled: rzv['enabled'] == true,
     rzvRelay: (rzv['relay'] as String?) ?? '',
     autostart: j['autostart'] == true,

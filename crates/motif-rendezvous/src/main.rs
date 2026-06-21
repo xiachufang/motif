@@ -1,11 +1,10 @@
 //! Motif rendezvous relay binary.
 //!
 //! Pairs a `motifd` `accept` connection with a client `connect` connection by
-//! token, then pipes bytes. With motifd's default end-to-end TLS it only ever
+//! token, then pipes bytes. With motifd's always-on end-to-end TLS it only ever
 //! sees ciphertext (and tokens are one-way derived from the pairing secret), so
 //! the plaintext port can be exposed directly on a public address — both motifd
-//! and clients dial out to it. (Only `motifd --rzv-no-tls` puts plaintext on the
-//! relay, in which case keep it on a trusted segment.)
+//! and clients dial out to it.
 //!
 //!   motif-rendezvous --listen 0.0.0.0:8765
 

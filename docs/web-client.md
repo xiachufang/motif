@@ -69,8 +69,9 @@ initial server config only if the user has no saved servers yet:
 This is what makes a release binary work as a one-step browser client:
 
 ```bash
-./target/release/motifd --listen 0.0.0.0:7777 --insecure-no-auth
-# open http://localhost:7777
+./target/release/motifd --listen 127.0.0.1:7777
+# open http://localhost:7777  (loopback is plaintext; a network --listen is
+# auto-encrypted + paired, which a browser can't pin — use the app there)
 ```
 
 If a server list already exists in local browser storage, launch bootstrap does

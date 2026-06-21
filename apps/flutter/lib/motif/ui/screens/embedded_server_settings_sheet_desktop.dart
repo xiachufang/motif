@@ -38,7 +38,6 @@ class EmbeddedServerSettingsSheet extends StatefulWidget {
 class _EmbeddedServerSettingsSheetState
     extends State<EmbeddedServerSettingsSheet> {
   late final TextEditingController _port;
-  late final TextEditingController _token;
   late final TextEditingController _tsHostname;
   late final TextEditingController _tsAuthkey;
   late final TextEditingController _tsControlUrl;
@@ -60,7 +59,6 @@ class _EmbeddedServerSettingsSheetState
     super.initState();
     final c = _svc.config;
     _port = TextEditingController(text: '${c.port}');
-    _token = TextEditingController(text: c.authToken);
     _tsHostname = TextEditingController(text: c.tsHostname);
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
@@ -74,7 +72,6 @@ class _EmbeddedServerSettingsSheetState
   @override
   void dispose() {
     _port.dispose();
-    _token.dispose();
     _tsHostname.dispose();
     _tsAuthkey.dispose();
     _tsControlUrl.dispose();
@@ -109,8 +106,6 @@ class _EmbeddedServerSettingsSheetState
         previous.tsHostname != next.tsHostname ||
         previous.tsAuthkey != next.tsAuthkey ||
         previous.tsControlUrl != next.tsControlUrl ||
-        previous.authEnabled != next.authEnabled ||
-        previous.authToken != next.authToken ||
         previous.rzvEnabled != next.rzvEnabled ||
         previous.rzvRelay != next.rzvRelay;
   }
@@ -225,11 +220,9 @@ class _EmbeddedServerSettingsSheetState
         const SizedBox(height: MotifSpacing.lg),
         _listenSection(cfg, c),
         const SizedBox(height: MotifSpacing.lg),
-        _authSection(cfg, c),
+        _pairingSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
         _tailscaleSection(cfg, status, c),
-        const SizedBox(height: MotifSpacing.lg),
-        _rzvSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
         MotifSection(
           title: 'App',
@@ -298,7 +291,10 @@ class _EmbeddedServerSettingsSheetState
                         Text(
                           _statusSubtitle(status) ??
                               'Ready to serve sessions from this computer',
-                          maxLines: 2,
+                          // Single line keeps this block's height constant as
+                          // the status updates, so the page doesn't reflow (and
+                          // yank a bottom-pinned scroll) every poll.
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: c.textSecondary,
@@ -387,10 +383,20 @@ class _EmbeddedServerSettingsSheetState
         ),
       );
     }
-    return Wrap(
-      spacing: MotifSpacing.sm,
-      runSpacing: MotifSpacing.sm,
-      children: chips,
+    // A single horizontal row (scrolls if it overflows) instead of a Wrap, so
+    // the block's height stays constant as bound addresses / session count /
+    // tailscale state change — otherwise the row count flips and reflows the
+    // page, jittering a bottom-pinned scroll.
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (var i = 0; i < chips.length; i++) ...[
+            if (i > 0) const SizedBox(width: MotifSpacing.sm),
+            chips[i],
+          ],
+        ],
+      ),
     );
   }
 
@@ -494,8 +500,8 @@ class _EmbeddedServerSettingsSheetState
       EmbeddedListenMode.lan => (
         icon: Icons.lan_outlined,
         title: 'Local network',
-        subtitle: 'Reachable on the LAN at 0.0.0.0; token recommended',
-        tone: (MotifColors c) => c.warning,
+        subtitle: 'Reachable on the LAN at 0.0.0.0; encrypted, pair via QR',
+        tone: (MotifColors c) => c.success,
       ),
       EmbeddedListenMode.off => (
         icon: Icons.power_settings_new,
@@ -504,67 +510,6 @@ class _EmbeddedServerSettingsSheetState
         tone: (MotifColors c) => c.textTertiary,
       ),
     };
-  }
-
-  // ── Auth ──
-
-  Widget _authSection(EmbeddedServerConfig cfg, MotifColors c) {
-    return MotifSection(
-      title: 'Authentication',
-      children: [
-        MotifSectionRow(
-          leading: Icon(Icons.key_outlined, color: c.accent),
-          title: 'Require a token',
-          subtitle: cfg.authEnabled
-              ? 'Clients must include the bearer token'
-              : 'Open access for reachable transports',
-          onTap: () => _save(
-            cfg.copyWith(authEnabled: !cfg.authEnabled),
-            restartRequired: true,
-          ),
-          trailing: Switch(
-            value: cfg.authEnabled,
-            onChanged: (v) =>
-                _save(cfg.copyWith(authEnabled: v), restartRequired: true),
-          ),
-        ),
-        if (cfg.authEnabled) ...[
-          _field(
-            _token,
-            'Token',
-            'bearer token',
-            onChanged: () => _save(
-              cfg.copyWith(authToken: _token.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
-            ),
-            onFocusLost: _showPendingRestartPrompt,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              MotifSpacing.md,
-              0,
-              MotifSpacing.md,
-              MotifSpacing.sm,
-            ),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () {
-                  final t = _svc.generateToken();
-                  if (t.isEmpty) return;
-                  _token.text = t;
-                  _save(cfg.copyWith(authToken: t), restartRequired: true);
-                  setState(() {});
-                },
-                icon: const Icon(Icons.auto_awesome),
-                label: const Text('Generate token'),
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
   }
 
   // ── Tailscale ──
@@ -766,27 +711,39 @@ class _EmbeddedServerSettingsSheetState
     );
   }
 
-  // ── Rendezvous relay + pairing QR ──
+  // ── Pairing (QR + link) + optional relay ──
 
-  Widget _rzvSection(
+  Widget _pairingSection(
     EmbeddedServerConfig cfg,
     EmbeddedServerStatus status,
     MotifColors c,
   ) {
     final pairingUri = status.pairingUri;
     return MotifSection(
-      title: 'Pair over a relay',
+      title: 'Pairing',
       footer:
-          'Park this server at a rendezvous relay so a phone can reach it '
-          'without direct connectivity. The relay only sees encrypted traffic; '
-          'the phone pins this server.',
+          'Pair a device by scanning this QR (or copying the link). It is the '
+          'only credential — the connection is encrypted and the device pins '
+          'this server. On the LAN it connects directly; enable a relay to also '
+          'reach it without direct connectivity.',
       children: [
+        if (pairingUri != null)
+          _pairingQr(pairingUri, c)
+        else
+          MotifSectionRow(
+            leading: Icon(Icons.info_outline, color: c.textTertiary),
+            title: status.running
+                ? 'Use LAN or a relay to generate the QR.'
+                : 'Start the server to generate the QR.',
+            titleColor: c.textSecondary,
+            titleWeight: FontWeight.w400,
+          ),
         MotifSectionRow(
-          leading: Icon(Icons.qr_code_2, color: c.accent),
-          title: 'Enable relay pairing',
+          leading: Icon(Icons.cloud_outlined, color: c.accent),
+          title: 'Pair over a relay',
           subtitle: cfg.rzvEnabled
-              ? 'Generate a QR link through your relay'
-              : 'Pair another device without direct connectivity',
+              ? 'Reach it without direct connectivity'
+              : 'Off — pair directly on the LAN',
           onTap: () => _save(
             cfg.copyWith(rzvEnabled: !cfg.rzvEnabled),
             restartRequired: true,
@@ -797,7 +754,7 @@ class _EmbeddedServerSettingsSheetState
                 _save(cfg.copyWith(rzvEnabled: v), restartRequired: true),
           ),
         ),
-        if (cfg.rzvEnabled) ...[
+        if (cfg.rzvEnabled)
           _field(
             _rzvRelay,
             'Relay address',
@@ -809,23 +766,6 @@ class _EmbeddedServerSettingsSheetState
             ),
             onFocusLost: _showPendingRestartPrompt,
           ),
-          if (pairingUri != null)
-            _pairingQr(pairingUri, c)
-          else if (status.running)
-            MotifSectionRow(
-              leading: Icon(Icons.info_outline, color: c.textTertiary),
-              title: 'Set a relay address, then restart when prompted.',
-              titleColor: c.textSecondary,
-              titleWeight: FontWeight.w400,
-            )
-          else
-            MotifSectionRow(
-              leading: Icon(Icons.info_outline, color: c.textTertiary),
-              title: 'Start the server to generate the pairing QR.',
-              titleColor: c.textSecondary,
-              titleWeight: FontWeight.w400,
-            ),
-        ],
       ],
     );
   }

@@ -221,9 +221,10 @@ private final class MotifIosImeDocumentCoordinator {
       self.currentDocumentId = id
 
       // iOS has no public API to select a keyboard input source. Clearing a
-      // brand-new identifier avoids restoring another tab's remembered mode;
-      // the Dart text configuration uses UIKeyboardTypeASCIICapable for an
-      // English-friendly first keyboard.
+      // brand-new identifier avoids restoring another tab's remembered mode, so
+      // a fresh tab falls back to the Dart config's English locale hint. That
+      // config uses a plain text keyboard (not ASCII-capable), so the globe key
+      // still reaches CJK IMEs and each tab's identifier remembers its choice.
       if defaultEnglish {
         UIResponder.clearTextInputContextIdentifier(
           self.contextIdentifier(for: id))

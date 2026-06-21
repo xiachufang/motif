@@ -55,6 +55,13 @@ class MotifServer {
   final String psk;
   final String pubKey;
 
+  /// Direct-only (`kind == ServerKind.direct`, from a no-relay pairing QR): all
+  /// of motifd's advertised NIC addresses. The resolver probes them (TLS+pin)
+  /// and connects to whichever is reachable. Empty for a manually-typed direct
+  /// server (which uses [host] directly). [host] holds the first candidate for
+  /// display.
+  final List<String> directHosts;
+
   /// SSH-only fields (`kind == ServerKind.ssh`). [host]/[port] remain the
   /// motifd endpoint as seen from the SSH server (usually `127.0.0.1:7777`);
   /// [sshHost]/[sshPort] are the SSH login endpoint. Credentials are currently
@@ -80,6 +87,7 @@ class MotifServer {
     this.relay = '',
     this.psk = '',
     this.pubKey = '',
+    this.directHosts = const [],
     this.sshHost = '',
     this.sshPort = 22,
     this.sshUsername = '',
@@ -104,6 +112,7 @@ class MotifServer {
     String? relay,
     String? psk,
     String? pubKey,
+    List<String>? directHosts,
     String? sshHost,
     int? sshPort,
     String? sshUsername,
@@ -123,6 +132,7 @@ class MotifServer {
     relay: relay ?? this.relay,
     psk: psk ?? this.psk,
     pubKey: pubKey ?? this.pubKey,
+    directHosts: directHosts ?? this.directHosts,
     sshHost: sshHost ?? this.sshHost,
     sshPort: sshPort ?? this.sshPort,
     sshUsername: sshUsername ?? this.sshUsername,
@@ -145,6 +155,7 @@ class MotifServer {
     if (relay.isNotEmpty) 'relay': relay,
     if (psk.isNotEmpty) 'psk': psk,
     if (pubKey.isNotEmpty) 'pubKey': pubKey,
+    if (directHosts.isNotEmpty) 'directHosts': directHosts,
     if (kind == ServerKind.ssh && sshHost.isNotEmpty) 'sshHost': sshHost,
     if (kind == ServerKind.ssh && sshPort != 22) 'sshPort': sshPort,
     if (kind == ServerKind.ssh && sshUsername.isNotEmpty)
@@ -188,6 +199,8 @@ class MotifServer {
       relay: relay,
       psk: (j['psk'] as String?) ?? '',
       pubKey: (j['pubKey'] as String?) ?? '',
+      directHosts:
+          (j['directHosts'] as List?)?.whereType<String>().toList() ?? const [],
       sshHost: (j['sshHost'] as String?) ?? '',
       sshPort: (j['sshPort'] as num?)?.toInt() ?? 22,
       sshUsername: (j['sshUsername'] as String?) ?? '',

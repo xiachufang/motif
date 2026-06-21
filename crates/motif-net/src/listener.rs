@@ -24,6 +24,9 @@ use std::sync::Arc;
 
 pub struct Listener {
     tcp: Option<TcpListener>,
+    /// TLS config for the `tcp` backend, when it should terminate TLS
+    /// (see [`ListenConfig::tcp_tls`]). `None` ⇒ plaintext tcp.
+    tcp_tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     #[cfg(feature = "tailscale")]
     ts: Option<TsBackend>,
     /// Rendezvous backend: a pool of `accept` waiters parked at the relay,
@@ -107,6 +110,7 @@ impl Listener {
 
         Ok(Self {
             tcp,
+            tcp_tls: cfg.tcp_tls.clone(),
             #[cfg(feature = "tailscale")]
             ts,
             rzv,
@@ -323,20 +327,20 @@ impl axum::serve::Listener for Listener {
                 // back-off on accept errors.
                 #[cfg(feature = "tailscale")]
                 let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp, ts, rzv } = self;
+                    let Self { tcp, tcp_tls, ts, rzv } = self;
                     tokio::select! {
                         biased;
-                        r = accept_tcp(tcp.as_ref()) => r,
+                        r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
                         r = accept_ts(ts.as_mut())   => r,
                         r = accept_rzv(rzv.as_mut())  => r,
                     }
                 };
                 #[cfg(not(feature = "tailscale"))]
                 let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp, rzv } = self;
+                    let Self { tcp, tcp_tls, rzv } = self;
                     tokio::select! {
                         biased;
-                        r = accept_tcp(tcp.as_ref()) => r,
+                        r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
                         r = accept_rzv(rzv.as_mut())  => r,
                     }
                 };
@@ -373,12 +377,27 @@ impl axum::serve::Listener for Listener {
     }
 }
 
-async fn accept_tcp(o: Option<&TcpListener>) -> io::Result<(Stream, SocketAddr)> {
+async fn accept_tcp(
+    o: Option<&TcpListener>,
+    tls: Option<&std::sync::Arc<rustls::ServerConfig>>,
+) -> io::Result<(Stream, SocketAddr)> {
     match o {
         Some(t) => {
             let (s, a) = t.accept().await?;
-            tracing::info!(peer = %a, transport = "tcp", "motif-net: accept");
-            Ok((Stream::from_tcp(s), a))
+            match tls {
+                Some(cfg) => {
+                    // Terminate TLS with the self-signed identity; the client
+                    // pins the cert. Same path rzv uses (see `park_accept`).
+                    let acceptor = tokio_rustls::TlsAcceptor::from(cfg.clone());
+                    let tls_stream = acceptor.accept(s).await?;
+                    tracing::info!(peer = %a, transport = "tcp+tls", "motif-net: accept");
+                    Ok((Stream::from_tls(tls_stream), a))
+                }
+                None => {
+                    tracing::info!(peer = %a, transport = "tcp", "motif-net: accept");
+                    Ok((Stream::from_tcp(s), a))
+                }
+            }
         }
         None => std::future::pending().await,
     }

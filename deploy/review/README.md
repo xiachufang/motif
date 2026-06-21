@@ -3,34 +3,35 @@
 A hardened, disposable motifd you can hand to Apple's App Review (or any "let a
 stranger drive a terminal" demo) without exposing your host.
 
-`motifd` is, by design, a remote shell: whoever has the bearer token can run
-arbitrary commands and read any file the process can reach (the file tree
-follows the PTY cwd anywhere on disk). For review you put the token in the
-review notes, so treat it as public — and contain it accordingly.
+`motifd` is, by design, a remote shell: whoever has the `motif://pair` link
+(its psk) can run arbitrary commands and read any file the process can reach
+(the file tree follows the PTY cwd anywhere on disk). For review you put the
+link in the review notes, so treat it as public — and contain it accordingly.
 
 ## What's here
 
 | file | role |
 |------|------|
 | `Dockerfile`     | builds motifd **without** bundled Tailscale (no Go needed), ships a minimal non-root runtime with a seeded demo git repo |
-| `entrypoint.sh`  | seeds the writable demo workspace, then execs motifd (token-gated, no TLS) |
+| `entrypoint.sh`  | seeds the writable demo workspace, then execs motifd (auto TLS + psk bearer) |
 | `run-review.sh`  | the launcher — applies all the isolation and tears everything down on exit |
 
 ## Use
 
 ```sh
 # from the repo root
-deploy/review/run-review.sh --build --tunnel
+deploy/review/run-review.sh --build --bind 0.0.0.0 --advertise <public-ip>
 ```
 
-That builds the image, starts the container locked down, opens a Cloudflare
-quick tunnel, and prints a ready-to-paste review-notes block with the
-`wss://…trycloudflare.com` URL and a random token. Ctrl-C tears down the
-container, network, firewall rules, and shreds the token.
+That builds the image, starts the container locked down, and prints a
+ready-to-paste review-notes block with a `motif://pair?host=…&port=…&psk=…&pk=…`
+link. The reviewer opens it in the app (or scans the QR) — the connection is
+encrypted (self-signed TLS, the client pins the cert) and authenticated (psk
+bearer); no reverse proxy or tunnel needed. Ctrl-C tears down the container,
+network, and firewall rules.
 
-Without `--tunnel` it prints the local `ws://127.0.0.1:8080` and you point your
-own reverse proxy / `cloudflared` at it. iOS ATS needs a **trusted-cert wss://**,
-so always go through the tunnel/proxy — never the plaintext port directly.
+Default `--bind 127.0.0.1` is local-only (loopback). For a public reviewer use
+`--bind 0.0.0.0` and open the port in your firewall/security group.
 
 ## Isolation applied (run-review.sh)
 

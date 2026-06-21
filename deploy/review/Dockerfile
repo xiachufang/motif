@@ -7,8 +7,9 @@
 # Cloudflare Tunnel, so the tailnet transport isn't needed or wanted. As a
 # result the builder needs only Rust + Zig, not Go.
 #
-# motifd itself does NOT terminate TLS — run this behind your VPS reverse proxy
-# or `cloudflared tunnel`, which gives the iOS client a trusted wss:// endpoint.
+# A network listener now terminates its own TLS (self-signed; the client pins
+# the cert) and authenticates with a psk-derived bearer — no reverse proxy or
+# tunnel needed. motifd prints a motif://pair link for the reviewer to scan.
 #
 # Build:  docker build -f deploy/review/Dockerfile -t motifd:review .
 #         (build context must be the repo root)
@@ -101,7 +102,6 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/motifd
 ENV SHELL=/bin/bash \
     HOME=/home/demo \
     MOTIFD_LOG=info \
-    MOTIFD_TOKEN_FILE=/run/secrets/motifd_token \
     MOTIFD_LISTEN=0.0.0.0:8080
 EXPOSE 8080
 USER demo

@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rzv/rzv_protocol.dart';
 import 'package:motif/motif/platform/services.dart';
@@ -147,6 +149,174 @@ void main() {
     },
     timeout: const Timeout(Duration(seconds: 15)),
   );
+
+  // sha256 of the shared self-signed test cert → the pin (`pk`); and the psk
+  // bearer the client must send.
+  final pin = Uint8List.fromList(sha256.convert(base64.decode(_certDerB64)).bytes);
+  final pinB64 = base64Url.encode(pin).replaceAll('=', '');
+  final expectedBearer =
+      base64Url.encode(RzvProtocol.deriveAuthBearer(pskBytes)).replaceAll('=', '');
+
+  group('LAN-direct upgrade (TLS-pinned)', () {
+    MotifServer rzvServer(int relayPort, {String id = 'rzv-d'}) => MotifServer(
+      id: id,
+      name: 'studio',
+      host: 'studio',
+      kind: ServerKind.rendezvous,
+      relay: '127.0.0.1:$relayPort',
+      psk: pskB64,
+      pubKey: pinB64,
+    );
+
+    test('learnRzvDirect fires once, then stays quiet', () async {
+      relay = await _FakeRelay.start();
+      final s = rzvServer(relay.port);
+      PingInfo ping(List<String> addrs, int? port) => PingInfo(
+        service: 'motif-server',
+        version: 't',
+        rzvDirectPort: port,
+        rzvDirectAddrs: addrs,
+      );
+
+      // First time candidates appear → true (cue an upgrade reconnect).
+      expect(resolver.learnRzvDirect(s, ping(['192.168.1.9'], 7777)), isTrue);
+      // Refreshing the same/again → false (no reconnect loop).
+      expect(resolver.learnRzvDirect(s, ping(['192.168.1.9'], 7777)), isFalse);
+
+      // No usable candidates → false, and stale state is dropped so the next
+      // appearance fires again.
+      expect(resolver.learnRzvDirect(s, ping(const [], null)), isFalse);
+      expect(resolver.learnRzvDirect(s, ping(['192.168.1.9'], 7777)), isTrue);
+
+      // IPv6-only candidates are ignored (LAN-direct is IPv4).
+      resolver.forgetRzvDirect(s.id);
+      expect(resolver.learnRzvDirect(s, ping(['fd00::1'], 7777)), isFalse);
+    });
+
+    test('probes a learned candidate and upgrades to a TLS-pinned direct target',
+        () async {
+      relay = await _FakeRelay.start();
+      final motifd = await _fakeMotifd();
+      final s = rzvServer(relay.port);
+
+      resolver.learnRzvDirect(
+        s,
+        PingInfo(
+          service: 'motif-server',
+          version: 't',
+          rzvDirectPort: motifd.port,
+          rzvDirectAddrs: const ['127.0.0.1'],
+        ),
+      );
+
+      final res = await resolver.resolve(s) as TransportReady;
+      expect(res.target.host, '127.0.0.1');
+      expect(res.target.port, motifd.port, reason: 'dials the direct port');
+      expect(res.target.scheme, 'https');
+      expect(res.target.token, expectedBearer, reason: 'psk-derived bearer');
+      expect(res.certPin, isNotNull);
+      expect(res.certPin!.length, 32);
+      expect(relay.hellos, isEmpty, reason: 'relay never dialed on a direct hit');
+
+      await motifd.close(force: true);
+      await resolver.stopForwarder(s.id);
+    });
+
+    test('falls back to the relay when no candidate answers as motifd',
+        () async {
+      relay = await _FakeRelay.start();
+      // Pinned TLS but the wrong service tag → probe rejects it.
+      final impostor = await _fakeMotifd(service: 'something-else');
+      final s = rzvServer(relay.port);
+
+      resolver.learnRzvDirect(
+        s,
+        PingInfo(
+          service: 'motif-server',
+          version: 't',
+          rzvDirectPort: impostor.port,
+          rzvDirectAddrs: const ['127.0.0.1'],
+        ),
+      );
+
+      final res = await resolver.resolve(s) as TransportReady;
+      // Relay path: loopback forwarder port, not the (rejected) direct port.
+      expect(res.target.host, '127.0.0.1');
+      expect(res.target.port, isNot(impostor.port));
+      expect(res.target.token, expectedBearer, reason: 'relay path carries bearer too');
+
+      // The forwarder dials the relay lazily, on the first local connection —
+      // drive one through to confirm we really fell back to the relay tunnel.
+      final client = await Socket.connect('127.0.0.1', res.target.port);
+      final payload = Uint8List.fromList('fallback'.codeUnits);
+      final echo = _collect(client, payload.length);
+      client.add(payload);
+      await client.flush();
+      expect(await echo.timeout(const Duration(seconds: 5)), payload);
+      expect(relay.hellos, hasLength(1), reason: 'forwarder dialed the relay');
+
+      await client.close();
+      await impostor.close(force: true);
+      await resolver.stopForwarder(s.id);
+    });
+  });
+
+  group('direct server (TLS-pinned candidate probe)', () {
+    MotifServer directServer(int port, List<String> hosts, {String id = 'd1'}) =>
+        MotifServer(
+          id: id,
+          name: 'box',
+          host: hosts.first,
+          port: port,
+          scheme: 'https',
+          kind: ServerKind.direct,
+          psk: pskB64,
+          pubKey: pinB64,
+          directHosts: hosts,
+        );
+
+    test('probes directHosts and connects to the reachable one', () async {
+      final motifd = await _fakeMotifd();
+      final s = directServer(motifd.port, const ['127.0.0.1']);
+
+      final res = await resolver.resolve(s) as TransportReady;
+      expect(res.target.host, '127.0.0.1');
+      expect(res.target.scheme, 'https');
+      expect(res.target.token, expectedBearer);
+      expect(res.certPin!.length, 32);
+
+      await motifd.close(force: true);
+    });
+
+    test('blocks when no advertised host is reachable', () async {
+      final impostor = await _fakeMotifd(service: 'nope');
+      final s = directServer(impostor.port, const ['127.0.0.1']);
+
+      final res = await resolver.resolve(s);
+      expect(res, isA<TransportBlocked>());
+
+      await impostor.close(force: true);
+    });
+  });
+}
+
+/// Minimal motifd stand-in over TLS (the shared self-signed cert below):
+/// answers `GET /ping` with the given `service` tag.
+Future<HttpServer> _fakeMotifd({String service = 'motif-server'}) async {
+  final ctx = SecurityContext()
+    ..useCertificateChainBytes(utf8.encode(_certPem))
+    ..usePrivateKeyBytes(utf8.encode(_keyPem));
+  final srv = await HttpServer.bindSecure(InternetAddress.loopbackIPv4, 0, ctx);
+  srv.listen((req) async {
+    if (req.uri.path == '/ping') {
+      req.response.headers.contentType = ContentType.json;
+      req.response.write(jsonEncode({'service': service, 'version': 't'}));
+    } else {
+      req.response.statusCode = HttpStatus.notFound;
+    }
+    await req.response.close();
+  });
+  return srv;
 }
 
 Future<Uint8List> _collect(Socket sock, int n) {
@@ -214,3 +384,27 @@ class _FakeRelay {
     await _server.close();
   }
 }
+
+// Shared self-signed test cert (CN=motif-rzv), mirroring rzv_cert_pin_test —
+// `_fakeMotifd` serves it and `sha256(cert.der)` is the pin the client checks.
+const _certPem = '''
+-----BEGIN CERTIFICATE-----
+MIIBGDCBvgIJAN3cKs11oLe8MAoGCCqGSM49BAMCMBQxEjAQBgNVBAMMCW1vdGlm
+LXJ6djAeFw0yNjA2MTQwMjAyMTdaFw0zNjA2MTEwMjAyMTdaMBQxEjAQBgNVBAMM
+CW1vdGlmLXJ6djBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLnr4uPTJuGzjFkr
+lpMXEw72hbT+hl2vzRl5kpbGrboCWZFkPULEPI7Iybbblej3eiWnyxEto8ECoA/7
+TwcyLq4wCgYIKoZIzj0EAwIDSQAwRgIhAJ49Kv+WGepl6xRkUkD5rtt3LninNhil
+I4uoajUuGocyAiEAkbyhMYabjUmYNk2jzBu9LFnXb1PaljrFckXqRksw1do=
+-----END CERTIFICATE-----
+''';
+
+const _keyPem = '''
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLb4jGWtyrLJ/hy55
+LsPL6WemFjte/4Vtq6xmQMhaFHmhRANCAAS56+Lj0ybhs4xZK5aTFxMO9oW0/oZd
+r80ZeZKWxq26AlmRZD1CxDyOyMm225Xo93olp8sRLaPBAqAP+08HMi6u
+-----END PRIVATE KEY-----
+''';
+
+const _certDerB64 =
+    'MIIBGDCBvgIJAN3cKs11oLe8MAoGCCqGSM49BAMCMBQxEjAQBgNVBAMMCW1vdGlmLXJ6djAeFw0yNjA2MTQwMjAyMTdaFw0zNjA2MTEwMjAyMTdaMBQxEjAQBgNVBAMMCW1vdGlmLXJ6djBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABLnr4uPTJuGzjFkrlpMXEw72hbT+hl2vzRl5kpbGrboCWZFkPULEPI7Iybbblej3eiWnyxEto8ECoA/7TwcyLq4wCgYIKoZIzj0EAwIDSQAwRgIhAJ49Kv+WGepl6xRkUkD5rtt3LninNhilI4uoajUuGocyAiEAkbyhMYabjUmYNk2jzBu9LFnXb1PaljrFckXqRksw1do=';

@@ -70,11 +70,27 @@ class PingInfo {
   final String service;
   final String version;
 
-  const PingInfo({required this.service, required this.version});
+  /// LAN-direct hint for a rendezvous server: the plaintext port and this
+  /// host's NIC addresses to try at it. Empty/`null` unless the paired motifd
+  /// opened a non-loopback `--listen` (see the rzv direct-upgrade path). A
+  /// same-LAN client probes these and upgrades off the relay.
+  final int? rzvDirectPort;
+  final List<String> rzvDirectAddrs;
+
+  const PingInfo({
+    required this.service,
+    required this.version,
+    this.rzvDirectPort,
+    this.rzvDirectAddrs = const [],
+  });
 
   factory PingInfo.fromJson(Map<String, Object?> j) => PingInfo(
     service: (j['service'] as String?) ?? '',
     version: (j['version'] as String?) ?? '',
+    rzvDirectPort: (j['rzv_direct_port'] as num?)?.toInt(),
+    rzvDirectAddrs:
+        (j['rzv_direct_addrs'] as List?)?.whereType<String>().toList() ??
+        const [],
   );
 
   /// True when the peer is a genuine motif-server (vs. some other HTTP service

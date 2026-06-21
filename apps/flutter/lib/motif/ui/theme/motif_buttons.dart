@@ -110,12 +110,19 @@ class MotifButton extends StatelessWidget {
               Icon(icon, size: 16, color: fg),
               const SizedBox(width: MotifSpacing.xs),
             ],
-            Text(
-              label,
-              style: TextStyle(
-                color: fg,
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
+            // Ellipsize rather than overflow when the button is width-bounded
+            // (e.g. wrapped in a Wrap/row of fixed width). Flexible is safe here
+            // because every call site gives the button a bounded width.
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: fg,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
               ),
             ),
           ],

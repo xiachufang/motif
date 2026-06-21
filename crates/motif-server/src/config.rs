@@ -1,31 +1,39 @@
 //! Server-side configuration.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 pub use motif_net::{RzvListenConfig, TailscaleListenConfig};
 
-#[derive(Debug, Clone)]
+use crate::ws::RzvDirectInfo;
+
+#[derive(Clone)]
 pub struct ServerConfig {
     /// TCP listen address. `None` to disable the TCP backend (e.g.
     /// tailscale-only deployments).
     pub listen: Option<SocketAddr>,
+    /// When set, the `listen` backend terminates TLS with this self-signed
+    /// identity (the client pins the cert). motifd sets it for any non-loopback
+    /// `listen` (encrypted direct surface); loopback stays plaintext. Shares the
+    /// identity used for rzv end-to-end TLS, so the pin matches either path.
+    pub listen_tls: Option<Arc<rustls::ServerConfig>>,
     /// Embedded-Tailscale listener. Independently optional from `listen`;
     /// at least one must be set.
     pub tailscale: Option<TailscaleListenConfig>,
     /// Rendezvous-relay accept backend. motifd parks `accept` waiters at the
-    /// relay so clients can reach it without direct connectivity. Like
-    /// tailscale, it's a private surface (relay-mediated), so it satisfies the
-    /// "at least one listener" requirement and needs no public-port auth guard.
+    /// relay so clients can reach it without direct connectivity.
     pub rendezvous: Option<RzvListenConfig>,
-    /// Bearer token expected on HTTP RPC and WS upgrades. `None` disables
-    /// auth — only allowed when no public TCP surface is exposed (loopback or
-    /// tailscale-only); see `validate`.
+    /// LAN-direct `/ping` advertisement: this host's NIC addresses + the
+    /// `listen` port, surfaced so a same-LAN rendezvous client can probe and
+    /// upgrade off the relay onto a direct (TLS-pinned) connection. `None` ⇒
+    /// `/ping` omits the hint. See `main.rs`.
+    pub rzv_direct: Option<Arc<RzvDirectInfo>>,
+    /// Bearer token required on HTTP RPC and WS upgrades. motifd sets it to the
+    /// psk-derived access bearer (`base64url(rzv::derive_bearer(psk))`) whenever
+    /// a `psk` exists (pairing mode); `None` disables auth (loopback / embed /
+    /// tailscale-only, where the surface is otherwise gated). Every client —
+    /// rzv or direct — derives the same value from the QR's psk and sends it.
     pub token: Option<String>,
-    /// Explicit opt-out of the token-less non-loopback guard in `validate`.
-    /// When set, a network-reachable TCP port without auth is permitted (with
-    /// a loud startup warning). Off by default; operators must consciously
-    /// enable it.
-    pub allow_insecure_no_auth: bool,
     /// Push-relay base URL. When set, Claude Code hook notifications arriving
     /// on the local hook socket are forwarded here (encrypted) for APNs
     /// delivery. `None` disables push entirely. motifd never holds the APNs
@@ -33,42 +41,31 @@ pub struct ServerConfig {
     pub push_relay_url: Option<String>,
 }
 
+// rustls::ServerConfig isn't Debug; render listen_tls as a presence flag.
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("listen", &self.listen)
+            .field("listen_tls", &self.listen_tls.is_some())
+            .field("tailscale", &self.tailscale)
+            .field("rendezvous", &self.rendezvous)
+            .field("rzv_direct", &self.rzv_direct)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("push_relay_url", &self.push_relay_url)
+            .finish()
+    }
+}
+
 impl ServerConfig {
-    /// Reject misconfigurations:
-    /// - At least one of `listen` / `tailscale` must be set.
-    /// - Token-less mode is rejected on non-loopback TCP (no auth on a
-    ///   network-reachable port is never what the operator means), unless
-    ///   `allow_insecure_no_auth` is set as an explicit override.
-    ///   Loopback or tailscale-only is fine: tailnet membership is the
-    ///   auth boundary.
-    ///
-    /// motifd itself never terminates TLS: operators expose it on loopback /
-    /// a trusted segment / the tailnet, and terminate TLS at an upstream
-    /// proxy if they need it. The token guard below is the auth boundary.
+    /// The only structural requirement: at least one listener. Access control is
+    /// the psk-derived bearer (`token`) when a psk exists; encryption is TLS
+    /// (`listen_tls` / rzv). There is no token-less non-loopback escape hatch —
+    /// any network `listen` is set up by `main.rs` with both TLS and a bearer.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.listen.is_none() && self.tailscale.is_none() && self.rendezvous.is_none() {
             anyhow::bail!(
                 "must specify at least one of --listen / --tailscale-hostname / --rzv-relay"
             );
-        }
-        if let Some(addr) = self.listen {
-            let is_loopback = addr.ip().is_loopback();
-            if !is_loopback && self.token.is_none() {
-                if self.allow_insecure_no_auth {
-                    tracing::warn!(
-                        %addr,
-                        "listening on non-loopback address with auth DISABLED \
-                         (--insecure-no-auth): anyone reachable on the network can attach"
-                    );
-                } else {
-                    anyhow::bail!(
-                        "refusing to listen on non-loopback address {} without --token-file \
-                         (anyone reachable on the network could attach otherwise; \
-                         pass --insecure-no-auth to override)",
-                        addr
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -76,6 +73,7 @@ impl ServerConfig {
     pub(crate) fn to_listen_config(&self) -> motif_net::ListenConfig {
         motif_net::ListenConfig {
             tcp: self.listen,
+            tcp_tls: self.listen_tls.clone(),
             tailscale: self.tailscale.clone(),
             rendezvous: self.rendezvous.clone(),
         }

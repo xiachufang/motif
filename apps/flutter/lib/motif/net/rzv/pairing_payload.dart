@@ -1,10 +1,14 @@
-/// QR / deep-link payload for first-time rendezvous pairing.
+/// QR / deep-link payload for first-time pairing.
 ///
-/// `motifd` renders a `motif://pair?...` URI as a QR code; the client scans it
-/// to learn where to meet ([relay]), the shared pairing secret ([psk]) used to
-/// derive the rendezvous token, and `motifd`'s identity public key ([pubKey])
-/// used to pin the end-to-end TLS session (P2). The URI is one-time /
-/// short-lived — see `docs/rzv-protocol.md`.
+/// `motifd` renders a single `motif://pair?...` URI as a QR code; the client
+/// scans it and routes by content:
+///   - **rzv form** (`rzv=<relay>`): reach motifd through the rendezvous relay.
+///   - **direct form** (`host=<ip1,ip2,…>&port=`): reach motifd directly over
+///     the LAN; the client probes the NIC candidates and dials the reachable
+///     one.
+/// Both forms carry `psk` (the access capability — the motifd bearer and, for
+/// rzv, the relay token are derived from it) and `pk` (the cert pin verifying
+/// motifd's self-signed TLS). One server has exactly one QR at a time.
 library;
 
 import 'dart:convert';
@@ -16,16 +20,21 @@ class MotifPairingPayload {
   /// Payload schema version.
   final int version;
 
-  /// Relay endpoint to meet at, as `host:port`.
-  final String relay;
+  /// Relay endpoint (`host:port`) for the rzv form; `null`/empty for direct.
+  final String? relay;
 
-  /// 32-byte pairing secret. The rendezvous token is derived from this.
+  /// Direct-form NIC candidates (from `host=ip1,ip2,…`); empty for the rzv form.
+  final List<String> hosts;
+
+  /// Direct-form motifd port.
+  final int port;
+
+  /// 32-byte pairing secret. The motifd access bearer (and, for rzv, the relay
+  /// token) are derived from this.
   final Uint8List psk;
 
-  /// The end-to-end TLS pin: SHA-256 of `motifd`'s self-signed cert DER, present
-  /// iff motifd runs with `--rzv-tls`. The client verifies the presented cert by
-  /// `sha256(cert.der) == pubKey`. Absent for plaintext (trusted-relay) setups.
-  /// (Wire field is `pk`; it's a cert pin, not a public key.)
+  /// The TLS pin: SHA-256 of motifd's self-signed cert DER. The client verifies
+  /// the presented cert by `sha256(cert.der) == pubKey`. (Wire field is `pk`.)
   final Uint8List? pubKey;
 
   /// Optional display name and instance id, for the UI.
@@ -33,9 +42,11 @@ class MotifPairingPayload {
   final String? instanceId;
 
   const MotifPairingPayload({
-    required this.relay,
     required this.psk,
     this.version = 1,
+    this.relay,
+    this.hosts = const [],
+    this.port = 7777,
     this.pubKey,
     this.name,
     this.instanceId,
@@ -44,8 +55,12 @@ class MotifPairingPayload {
   static const String scheme = 'motif';
   static const String host = 'pair';
 
+  /// True when this pairs a rendezvous (relay) server vs a direct one.
+  bool get isRendezvous => relay != null && relay!.isNotEmpty;
+
   /// Parse a scanned `motif://pair?...` URI. Throws [FormatException] when the
   /// URI is not a motif pairing link or a required/!32-byte field is missing.
+  /// Presence of `rzv` selects the rzv form; otherwise `host` selects direct.
   factory MotifPairingPayload.parse(String input) {
     final Uri uri;
     try {
@@ -58,11 +73,6 @@ class MotifPairingPayload {
     }
     final q = uri.queryParameters;
 
-    final relay = q['rzv'];
-    if (relay == null || relay.isEmpty) {
-      throw const FormatException('pairing URI missing rzv');
-    }
-
     final pskStr = q['psk'];
     if (pskStr == null) throw const FormatException('pairing URI missing psk');
     final psk = _decodeKey(pskStr, 'psk');
@@ -70,9 +80,39 @@ class MotifPairingPayload {
     final pkStr = q['pk'];
     final pk = pkStr == null ? null : _decodeKey(pkStr, 'pk');
 
+    final version = int.tryParse(q['v'] ?? '1') ?? 1;
+    final relay = q['rzv'];
+
+    if (relay != null && relay.isNotEmpty) {
+      // rzv form.
+      return MotifPairingPayload(
+        version: version,
+        relay: relay,
+        psk: psk,
+        pubKey: pk,
+        name: q['name'],
+        instanceId: q['id'],
+      );
+    }
+
+    // direct form: comma-separated NIC candidates + port.
+    final hostStr = q['host'];
+    if (hostStr == null || hostStr.isEmpty) {
+      throw const FormatException('pairing URI missing rzv or host');
+    }
+    final hosts = hostStr
+        .split(',')
+        .map((h) => h.trim())
+        .where((h) => h.isNotEmpty)
+        .toList(growable: false);
+    if (hosts.isEmpty) {
+      throw const FormatException('pairing URI host list is empty');
+    }
+    final port = int.tryParse(q['port'] ?? '7777') ?? 7777;
     return MotifPairingPayload(
-      version: int.tryParse(q['v'] ?? '1') ?? 1,
-      relay: relay,
+      version: version,
+      hosts: hosts,
+      port: port,
       psk: psk,
       pubKey: pk,
       name: q['name'],
@@ -80,36 +120,51 @@ class MotifPairingPayload {
     );
   }
 
-  /// Render back to a `motif://pair?...` URI (used by tests and, eventually,
-  /// any Dart-side QR generation).
+  /// Render back to a `motif://pair?...` URI (used by tests and Dart-side QR).
   String toUri() {
-    final params = <String, String>{
-      'v': '$version',
-      'rzv': relay,
-      'psk': _encodeKey(psk),
-    };
+    final params = <String, String>{'v': '$version', 'psk': _encodeKey(psk)};
+    if (isRendezvous) {
+      params['rzv'] = relay!;
+    } else {
+      params['host'] = hosts.join(',');
+      params['port'] = '$port';
+    }
     if (pubKey != null) params['pk'] = _encodeKey(pubKey!);
     if (name != null) params['name'] = name!;
     if (instanceId != null) params['id'] = instanceId!;
     return Uri(scheme: scheme, host: host, queryParameters: params).toString();
   }
 
-  /// Build a persistable [MotifServer] of `kind == rendezvous` from this
-  /// scanned payload. Keys are re-encoded canonically (base64url, no padding)
-  /// so the stored form is stable regardless of how the QR encoded them.
+  /// Build a persistable [MotifServer] from this scanned payload — `rendezvous`
+  /// or `direct` depending on the form. Keys are re-encoded canonically
+  /// (base64url, no padding) so the stored form is stable.
   MotifServer toServer({required String id}) {
-    // Store a clean host/port (the relay endpoint) so `endpoint`/display are
-    // sensible; the rendezvous transport ignores them and dials `relay` anyway.
-    final hp = MotifServer.splitHostPort(relay);
+    if (isRendezvous) {
+      // Store a clean host/port (the relay endpoint) for display; the rzv
+      // transport ignores them and dials `relay`.
+      final hp = MotifServer.splitHostPort(relay!);
+      return MotifServer(
+        id: id,
+        name: (name == null || name!.isEmpty) ? relay! : name!,
+        host: hp?.$1 ?? relay!,
+        port: hp?.$2 ?? 7777,
+        kind: ServerKind.rendezvous,
+        relay: relay!,
+        psk: _encodeKey(psk),
+        pubKey: pubKey == null ? '' : _encodeKey(pubKey!),
+      );
+    }
+    // Direct: candidates + pin + psk; the resolver probes `directHosts`.
     return MotifServer(
       id: id,
-      name: (name == null || name!.isEmpty) ? relay : name!,
-      host: hp?.$1 ?? relay,
-      port: hp?.$2 ?? 7777,
-      kind: ServerKind.rendezvous,
-      relay: relay,
+      name: (name == null || name!.isEmpty) ? hosts.first : name!,
+      host: hosts.first, // first candidate, for display
+      port: port,
+      scheme: pubKey == null ? 'http' : 'https',
+      kind: ServerKind.direct,
       psk: _encodeKey(psk),
       pubKey: pubKey == null ? '' : _encodeKey(pubKey!),
+      directHosts: hosts,
     );
   }
 

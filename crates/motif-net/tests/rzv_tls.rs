@@ -42,6 +42,7 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
     let token = [42u8; 32];
     let mut listener = motif_net::Listener::bind(&ListenConfig {
         tcp: None,
+        tcp_tls: None,
         tailscale: None,
         rendezvous: Some(RzvListenConfig {
             url: relay_addr.to_string(),

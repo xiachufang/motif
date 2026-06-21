@@ -51,6 +51,37 @@ void main() {
       );
       expect(terminalTextInputConfiguration.enableInlinePrediction, isFalse);
     });
+
+    test('soft keyboard config is English-biased but allows CJK switching', () {
+      // A plain text keyboard (not visiblePassword), so iOS shows the language
+      // switch and CJK IMEs are reachable...
+      expect(
+        terminalSoftKeyboardInputConfiguration.inputType,
+        TextInputType.text,
+      );
+      // ...while the English locale hint only biases a fresh keyboard toward
+      // English (the globe key still switches; per-tab memory restores choices).
+      expect(
+        terminalSoftKeyboardInputConfiguration.hintLocales?.single
+            .toLanguageTag(),
+        'en-US',
+      );
+      // ...while substitution stays off so the shell never gets altered text.
+      expect(terminalSoftKeyboardInputConfiguration.autocorrect, isFalse);
+      expect(terminalSoftKeyboardInputConfiguration.enableSuggestions, isFalse);
+      expect(
+        terminalSoftKeyboardInputConfiguration.smartDashesType,
+        SmartDashesType.disabled,
+      );
+      expect(
+        terminalSoftKeyboardInputConfiguration.smartQuotesType,
+        SmartQuotesType.disabled,
+      );
+      expect(
+        terminalSoftKeyboardInputConfiguration.enableInlinePrediction,
+        isFalse,
+      );
+    });
   });
 
   group('terminalInputModeFor', () {

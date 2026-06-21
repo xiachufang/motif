@@ -29,8 +29,6 @@ class EmbeddedServerConfig {
   final String tsHostname;
   final String tsAuthkey;
   final String tsControlUrl;
-  final bool authEnabled;
-  final String authToken;
   final bool rzvEnabled;
   final String rzvRelay;
   final bool autostart;
@@ -42,8 +40,6 @@ class EmbeddedServerConfig {
     this.tsHostname = '',
     this.tsAuthkey = '',
     this.tsControlUrl = '',
-    this.authEnabled = false,
-    this.authToken = '',
     this.rzvEnabled = false,
     this.rzvRelay = '',
     this.autostart = false,
@@ -56,8 +52,6 @@ class EmbeddedServerConfig {
     String? tsHostname,
     String? tsAuthkey,
     String? tsControlUrl,
-    bool? authEnabled,
-    String? authToken,
     bool? rzvEnabled,
     String? rzvRelay,
     bool? autostart,
@@ -66,10 +60,8 @@ class EmbeddedServerConfig {
     port: port ?? this.port,
     tsEnabled: tsEnabled ?? this.tsEnabled,
     tsHostname: tsHostname ?? this.tsHostname,
-    tsAuthkey: tsAuthkey ?? this.tsAuthkey,
     tsControlUrl: tsControlUrl ?? this.tsControlUrl,
-    authEnabled: authEnabled ?? this.authEnabled,
-    authToken: authToken ?? this.authToken,
+    tsAuthkey: tsAuthkey ?? this.tsAuthkey,
     rzvEnabled: rzvEnabled ?? this.rzvEnabled,
     rzvRelay: rzvRelay ?? this.rzvRelay,
     autostart: autostart ?? this.autostart,

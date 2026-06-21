@@ -70,7 +70,7 @@ extension _SessionScreenMenuActions on _SessionScreenState {
           children: [
             Icon(Icons.close),
             SizedBox(width: 12),
-            Text('Close session'),
+            Text('Close all sessions'),
           ],
         ),
       ),
@@ -113,14 +113,28 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     return entries;
   }
 
+  /// "Close session" leaves *every* open session, not just the current one:
+  /// detach all connected clients (one per connected server) and return to the
+  /// list. Detach is non-destructive — the sessions keep running server-side.
   Future<void> _closeSession(MotifClient motif) async {
+    final app = context.read<AppState>();
+    // Only detach clients that are actually attached to a session. A merely
+    // connected client (ConnConnected) has no X-Motif-Session, so
+    // `session.detach` would be rejected by the server ("missing X-Motif-Session
+    // header") and surface a spurious "Close failed" toast.
+    final clients = <MotifClient>{
+      if (motif.state is ConnAttached) motif,
+      for (final group in app.connectedServerClients)
+        if (group.client.state is ConnAttached) group.client,
+    };
     if (mounted) Navigator.of(context).pop();
     unawaited(
-      motif.detach().catchError((Object e) {
-        if (mounted) {
-          showMotifToast(context, 'Close failed: $e');
-        }
-      }),
+      Future.wait([
+        for (final client in clients)
+          client.detach().catchError((Object e) {
+            if (mounted) showMotifToast(context, 'Close failed: $e');
+          }),
+      ]),
     );
   }
 

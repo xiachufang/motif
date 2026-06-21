@@ -10,10 +10,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn loopback_cfg() -> ServerConfig {
     ServerConfig {
         listen: Some(([127, 0, 0, 1], 0).into()), // port 0 → OS-assigned
+        listen_tls: None,
         tailscale: None,
         rendezvous: None,
+        rzv_direct: None,
         token: None,
-        allow_insecure_no_auth: false,
         push_relay_url: None,
     }
 }

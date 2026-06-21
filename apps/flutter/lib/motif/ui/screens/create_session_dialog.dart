@@ -6,6 +6,7 @@ import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/top_toast.dart';
+import 'change_directory_panel.dart';
 
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
@@ -13,7 +14,7 @@ Future<SessionInfo?> createSessionWithDialog(
 ) async {
   final result = await showAdaptiveModal<(String, String)>(
     context,
-    builder: (_) => const _CreateSessionDialog(),
+    builder: (_) => _CreateSessionDialog(motif: motif),
   );
   if (result == null) return null;
   try {
@@ -27,7 +28,9 @@ Future<SessionInfo?> createSessionWithDialog(
 }
 
 class _CreateSessionDialog extends StatefulWidget {
-  const _CreateSessionDialog();
+  const _CreateSessionDialog({required this.motif});
+
+  final MotifClient motif;
 
   @override
   State<_CreateSessionDialog> createState() => _CreateSessionDialogState();
@@ -57,7 +60,15 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
             label: 'Name',
             onChanged: (_) => setState(() {}),
           ),
-          _sectionField(controller: _workdir, label: 'Working directory'),
+          _sectionField(
+            controller: _workdir,
+            label: 'Working directory',
+            trailing: IconButton(
+              icon: const Icon(Icons.folder_open),
+              tooltip: 'Browse',
+              onPressed: _pickWorkdir,
+            ),
+          ),
         ],
       ),
       actions: [
@@ -74,10 +85,21 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
     );
   }
 
+  void _pickWorkdir() {
+    final current = _workdir.text.trim();
+    showChangeDirectorySheet(
+      context,
+      motif: widget.motif,
+      baseDir: current.isEmpty ? '~' : current,
+      onChoose: (path) => setState(() => _workdir.text = path),
+    );
+  }
+
   Widget _sectionField({
     required TextEditingController controller,
     required String label,
     ValueChanged<String>? onChanged,
+    Widget? trailing,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -97,6 +119,7 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
           errorBorder: InputBorder.none,
           focusedErrorBorder: InputBorder.none,
           isDense: true,
+          suffixIcon: trailing,
         ),
         onChanged: onChanged,
       ),

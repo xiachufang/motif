@@ -17,10 +17,14 @@ use crate::session::Session;
 /// follow the active PTY's cwd anywhere on disk (per design call: workdir is
 /// not a security boundary, this server already runs as the user).
 pub fn resolve(workdir: &Path, rel: &str) -> Result<PathBuf, RpcError> {
-    // Path::join replaces with `rel` if `rel` is absolute, so this single
-    // expression handles both the "tree.tsx?path=/Users/x/foo" and the legacy
-    // "tree.tsx?path=src/foo.go" shapes.
-    let candidate = workdir.join(rel);
+    // A leading `~` / `~/…` expands against $HOME (so the dir picker can start
+    // at home, including before a session exists). Otherwise Path::join replaces
+    // with `rel` when it is absolute, so the fallthrough handles both the
+    // "path=/Users/x/foo" and the legacy "path=src/foo.go" shapes.
+    let candidate = match tilde_home(rel) {
+        Some(home) => home,
+        None => workdir.join(rel),
+    };
     let resolved = if candidate.exists() {
         candidate.canonicalize().unwrap_or(candidate)
     } else {
@@ -35,8 +39,21 @@ pub fn resolve(workdir: &Path, rel: &str) -> Result<PathBuf, RpcError> {
     Ok(resolved)
 }
 
-pub fn tree(s: &Session, p: &TreeParams) -> Result<TreeResult, RpcError> {
-    let dir = resolve(&s.workdir, &p.path)?;
+/// Expand a leading `~` / `~/…` against `$HOME`. `None` when `rel` isn't a tilde
+/// path (or `$HOME` is unset). `~user` is intentionally unsupported.
+fn tilde_home(rel: &str) -> Option<PathBuf> {
+    if rel == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from);
+    }
+    let rest = rel.strip_prefix("~/")?;
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest))
+}
+
+/// List a directory under `base_dir`. `base_dir` is the attached session's
+/// workdir, or `$HOME` when browsing without a session (the dir picker before a
+/// session exists). Absolute / `~` paths in `p.path` ignore `base_dir`.
+pub fn tree(base_dir: &Path, p: &TreeParams) -> Result<TreeResult, RpcError> {
+    let dir = resolve(base_dir, &p.path)?;
     if !dir.is_dir() {
         return Err(RpcError::invalid_params(format!(
             "not a directory: {}",

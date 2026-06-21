@@ -5,12 +5,10 @@ out** to it; the relay pairs them by token and splices the two TCP streams
 together. It coexists with the `tcp` and `tailscale` transports — pick `rzv`
 when neither end can accept an inbound connection.
 
-It is **zero-trust by design**: with motifd's default end-to-end TLS the relay
+It is **zero-trust by design**: motifd's always-on end-to-end TLS means the relay
 only ever forwards ciphertext, and the pairing token is one-way derived from the
 pairing secret (HKDF), so the relay never learns the secret and can't read or
-forge traffic. That's what makes it safe to run `0.0.0.0:<port>` on a public
-box. (Only `motifd --rzv-no-tls` puts plaintext on the relay — keep that on a
-trusted segment.)
+forge traffic. That's what makes it safe to run `0.0.0.0:<port>` on a public box.
 
 ## What's here
 

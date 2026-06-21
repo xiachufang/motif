@@ -27,16 +27,20 @@ if [ ! -s "$HOME/.gitconfig" ]; then
     git config --global --add safe.directory "$WORK"
 fi
 
-TOKEN_FILE="${MOTIFD_TOKEN_FILE:-/run/secrets/motifd_token}"
 LISTEN="${MOTIFD_LISTEN:-0.0.0.0:8080}"
+# Public address testers reach. The pairing link's cert pin is tied to the
+# self-signed identity persisted under $XDG_DATA_HOME/motifd — run-review.sh
+# bind-mounts a persistent dir there so the pin (and psk) survive restarts.
+ADVERTISE_HOST="${MOTIFD_ADVERTISE_HOST:-}"
 
-if [ ! -s "$TOKEN_FILE" ]; then
-    echo "entrypoint: token file '$TOKEN_FILE' is missing or empty." >&2
-    echo "            run-review.sh should mount it read-only — refusing to start" >&2
-    echo "            an auth-less remote shell on a public port." >&2
-    exit 1
-fi
-
-# No --tailscale, no --insecure-no-auth: a single TCP listener gated by the
-# bearer token. TLS is terminated upstream (reverse proxy / cloudflared).
-exec motifd --listen "$LISTEN" --token-file "$TOKEN_FILE"
+# A network --listen now auto-encrypts (self-signed TLS, the client pins the
+# cert) and authenticates with the psk-derived bearer — no token file, no
+# upstream TLS terminator. motifd auto-generates+persists the psk (or pass a
+# fixed one via MOTIFD_PSK) and prints a `motif://pair` link/QR on startup;
+# paste it into the App Store review notes. --advertise-host makes that link
+# carry the public address rather than the container's internal NIC IP.
+PSK_ARG=()
+[ -n "${MOTIFD_PSK:-}" ] && PSK_ARG=(--psk "$MOTIFD_PSK")
+ADV_ARG=()
+[ -n "$ADVERTISE_HOST" ] && ADV_ARG=(--advertise-host "$ADVERTISE_HOST")
+exec motifd --listen "$LISTEN" "${PSK_ARG[@]}" "${ADV_ARG[@]}"

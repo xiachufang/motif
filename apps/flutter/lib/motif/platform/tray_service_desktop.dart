@@ -200,17 +200,13 @@ class TrayService {
     return item;
   }
 
-  /// Open the running server's served web UI in the default browser, with the
-  /// auth token appended so it auto-connects (mirrors the menu-bar app).
+  /// Open the running server's served web UI in the default browser. The
+  /// loopback listener is plaintext and unauthenticated (LAN/relay pairing adds
+  /// TLS + a bearer, which a browser can't pin — use the app/QR for those).
   void _openWebUi(EmbeddedServerService svc) {
     final ep = svc.status.loopbackEndpoint;
     if (ep == null) return;
-    var url = 'http://${ep.host}:${ep.port}/';
-    final token = svc.config.authEnabled ? svc.config.authToken.trim() : '';
-    if (token.isNotEmpty) {
-      url = '$url?token=${Uri.encodeQueryComponent(token)}';
-    }
-    openExternalUrl(url);
+    openExternalUrl('http://${ep.host}:${ep.port}/');
   }
 
   /// Switch the app to [mode] and bring the window forward.

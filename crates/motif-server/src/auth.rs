@@ -16,9 +16,9 @@ pub fn generate_token() -> String {
 pub enum TokenStore {
     /// Verify `Authorization: Bearer <token>` against the configured value.
     Required(String),
-    /// No token configured — accept every upgrade. The operator opted in via
-    /// the absence of `--token-file`; lib.rs gates this against the listen
-    /// surface so we can't accidentally expose a public TCP port.
+    /// No token configured — accept every upgrade. Used for private surfaces
+    /// (loopback / embed / tailscale-only) that carry no psk; a network
+    /// `--listen` always gets a psk-derived bearer (`Required`) instead.
     Disabled,
 }
 

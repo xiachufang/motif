@@ -276,6 +276,49 @@ async fn fs_operations_and_events() {
         .all(|e| e.name != "a.txt" && e.name != "b.txt"));
 }
 
+/// `fs.tree` must list directories WITHOUT an attached session, so the dir
+/// picker works before a session exists. `TestServer::call` sends no session
+/// header, exercising exactly that path.
+#[tokio::test]
+async fn fs_tree_browses_without_a_session() {
+    let server = TestServer::start().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("alpha")).unwrap();
+    std::fs::write(tmp.path().join("beta.txt"), b"x").unwrap();
+
+    // Absolute path: ignores the (home) browse base, lists the temp dir.
+    let tree: pfs::TreeResult = server
+        .call(
+            "fs.tree",
+            pfs::TreeParams {
+                path: tmp.path().to_string_lossy().to_string(),
+                depth: 1,
+                show_hidden: false,
+            },
+        )
+        .await
+        .expect("fs.tree without a session should succeed");
+    assert!(tree
+        .entries
+        .iter()
+        .any(|e| e.name == "alpha" && e.kind == pfs::FileType::Dir));
+    assert!(tree.entries.iter().any(|e| e.name == "beta.txt"));
+
+    // `~` expands to $HOME even unattached (smoke: the call resolves & succeeds).
+    server
+        .call::<_, pfs::TreeResult>(
+            "fs.tree",
+            pfs::TreeParams {
+                path: "~".into(),
+                depth: 1,
+                show_hidden: false,
+            },
+        )
+        .await
+        .expect("fs.tree ~ should resolve to $HOME without a session");
+}
+
 // ─────────────────────────── 3. git_operations ───────────────────────────
 
 #[tokio::test]

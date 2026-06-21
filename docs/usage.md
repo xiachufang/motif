@@ -47,8 +47,10 @@ docker run -d --name motifd --restart=unless-stopped \
   -p 7777:7777 \
   -v motifd-data:/data \
   -v "$PWD:/work" \
-  -e MOTIFD_TOKEN="$(openssl rand -base64 32)" \
+  -e MOTIFD_ADVERTISE_HOST=<公网IP或域名> \
   ghcr.io/<owner>/motifd:latest
+# 用打印出来的链接配对：
+docker logs motifd 2>&1 | grep -o 'motif://pair[^ ]*'
 ```
 
 把 `<owner>` 换成仓库所属 GitHub org/user。更多环境变量、Tailscale/rendezvous
@@ -74,107 +76,99 @@ cargo build -p motif-server --release
 从源码构建 `motifd` 需要 Zig 0.15.x；默认启用嵌入式 Tailscale 时还需要 Go。
 完整构建要求见根目录 [`README.md`](../README.md#build)。
 
-### 2.3 准备 token
+### 2.3 准入与加密（无需手动 token）
 
-只要 `motifd` 会通过 Direct TCP 或 Tailscale 被其它机器访问，就建议启用
-bearer token。
+不再需要手动管理 bearer token。**网络可达的监听（非 loopback `--listen` 或
+relay）会自动加密 + 自动鉴权**：
 
-```bash
-mkdir -p ~/.config/motifd
-openssl rand -base64 32 > ~/.config/motifd/token
-chmod 600 ~/.config/motifd/token
-```
+- **加密**：motifd 用持久化的自签证书终止 TLS，客户端按 `pk`（证书哈希）pin。
+- **鉴权**：从持久化的 **psk** 派生一个 bearer，客户端从配对链接里的 psk 派生
+  同一个 bearer 发送。
+- motifd 启动只打印**一个** `motif://pair` 链接/二维码，里面带 `psk` + `pk` +
+  可达信息——它就是唯一凭证。把数据目录（`/data` 或 `$XDG_DATA_HOME`）持久化，
+  psk 和证书就跨重启稳定，链接的 pin 一直有效。
 
-`motifd` 启动时只读取一次 token；轮换 token 后需要重启进程。
-
-注意：当前 `motif://pair` rendezvous 链接不携带 bearer token，App 里的
-rendezvous server 也不能单独编辑 token。因此 relay pairing 模式暂时不要和
-`--token-file` 混用；用 relay 的端到端 TLS pin 保护连接，或等 pairing payload
-支持 token 后再叠加应用层 token。
+loopback `--listen`（仅本机）保持明文、无鉴权。`--psk <base64url>` 可固定 psk
+（无人值守/固定链接场景），不传则自动生成并持久化。
 
 ### 2.4 启动方式
 
-**只在 server 本机访问，或配合 SSH 隧道：**
+**只在 server 本机访问，或配合 SSH 隧道（明文 loopback）：**
 
 ```bash
-./target/release/motifd \
-  --listen 127.0.0.1:7777 \
-  --token-file ~/.config/motifd/token
+./target/release/motifd --listen 127.0.0.1:7777
 ```
 
-这是最保守的默认部署。外部 client 通过 SSH local forward 进来：
+外部 client 通过 SSH local forward 进来：
 
 ```bash
 ssh -N -L 17777:127.0.0.1:7777 user@server.example.com
 ```
 
-然后浏览器打开 `http://127.0.0.1:17777/?token=<token>`，或在 Motif App 里添加
-Direct server：`127.0.0.1:17777`。
+然后浏览器打开 `http://127.0.0.1:17777/`，或在 Motif App 里添加 Direct server
+`127.0.0.1:17777`。
 
-**在内网或反向代理后直接访问：**
+**在内网/公网直接访问（自动 TLS + psk 配对）：**
 
 ```bash
-./target/release/motifd \
-  --listen 0.0.0.0:7777 \
-  --token-file ~/.config/motifd/token
+./target/release/motifd --listen 0.0.0.0:7777 --advertise-host <公网IP或域名>
 ```
 
-`motifd` 自己不终止 TLS。公网暴露时，把它放在 Nginx/Caddy/Cloudflare Tunnel
-等 TLS 终止层后面，或只通过 VPN/Tailscale 访问。
+启动打印一个直连形态的 `motif://pair?host=…&port=…&psk=…&pk=…` 链接/二维码；
+App 扫码/粘贴即连（`https://` + pin + bearer），**不需要**反向代理/隧道来终止
+TLS。`--advertise-host` 给公网/NAT 用；局域网省略则自动带上全部网卡 IP，客户端
+探测可达的那个。
 
 **只通过嵌入式 Tailscale 访问：**
 
 ```bash
-./target/release/motifd \
-  --tailscale \
-  --tailscale-port 7777 \
-  --token-file ~/.config/motifd/token
+./target/release/motifd --tailscale --tailscale-port 7777
 ```
 
-第一次启动如果没有 `--tailscale-authkey`，日志会打印登录 URL。打开后授权，
-之后状态会持久化到默认 tsnet state dir。默认 hostname 是
-`motifd-<system-hostname>`，也可以用 `--tailscale-hostname` 覆盖。
+tailscale-only 由 tailnet ACL 把门（无 `--listen` 时不用 psk/bearer）。第一次
+启动如果没有 `--tailscale-authkey`，日志会打印登录 URL。
 
 **通过 rendezvous relay 配对：**
 
 ```bash
-./target/release/motifd \
-  --rzv-relay relay.example.com:9999
+./target/release/motifd --rzv-relay relay.example.com:9999
 ```
 
-启动后会打印 `motif://pair` 链接和 QR。其它设备在 Motif App 里选择扫码/粘贴
-pairing link，即可通过 relay 连接。relay 只转发加密字节，详细协议见
+启动打印一个 rzv 形态的 `motif://pair` 链接和 QR。App 扫码/粘贴即可通过 relay
+连接（端到端 TLS pin + psk bearer）；relay 只转发加密字节。同时再开一个
+`--listen 0.0.0.0:7777` 还能让同网段客户端经 `/ping` 自动升级到 LAN 直连。详见
 [`rzv-protocol.md`](./rzv-protocol.md)。
-
-当前 pairing link 不包含 bearer token，所以这个模式不要同时传 `--token-file`。
 
 ### 2.5 Client 怎么连
 
-**浏览器：**
+**浏览器（仅 loopback 明文场景）：**
 
-- 直接访问：`http://server.example.com:7777/?token=<token>`
-- 走 SSH 隧道：`http://127.0.0.1:17777/?token=<token>`
-- 已有 HTTPS 反代时：`https://motif.example.com/?token=<token>`
+- 走 SSH 隧道：`http://127.0.0.1:17777/`
+- 已有 HTTPS 反代时：`https://motif.example.com/`
 
-Flutter Web 首次从 `motifd` origin 打开时，会自动把当前 host/port 作为一个
-server 写入本地浏览器存储；URL 里的 `token` 会被读入配置后从地址栏移除。
+浏览器无法 pin 自签证书，所以网络/relay 的加密直连请用 App 扫码配对。Flutter Web
+首次从 `motifd` origin 打开时，会自动把当前 host/port 作为一个 server 写入本地
+浏览器存储。
 
 **Motif App：**
 
 1. 打开 Client 页。
 2. 点 Add Server。
 3. 选择连接类型：
-   - Direct：填 host、port、token。
+   - Pair：扫描/粘贴 `motif://pair` 链接——按内容自动走 relay 或直连，自带加密 +
+     psk 鉴权（推荐）。
+   - Direct：手动填 host、port（连旧的明文/loopback motifd）。
    - Tailscale：先在 App 里完成 Tailscale 登录，再选择 tailnet peer 或填 hostname。
-   - Pair：扫描/粘贴 `motif://pair` 链接。
 4. 连接后创建或进入 Session，workdir 使用 server 上的路径。
 
 ### 2.6 运维建议
 
 - 用 systemd、supervisor、launchd 或容器托管 `motifd`，保证它重启后仍在线。
-- Public/LAN TCP listener 一定要配 token；公网还要配 TLS 终止层。
-- `127.0.0.1` + SSH forward 是最容易审计的部署方式。
-- Tailscale 解决连通性，token 仍然是 Motif 应用层鉴权；共享 tailnet 时建议保留 token。
+- 持久化数据目录（`/data` 或 `$XDG_DATA_HOME`），让 psk + 自签证书跨重启稳定，
+  配对链接的 pin 一直有效。
+- 网络监听自动加密 + psk 鉴权，无需手动 token 或 TLS 终止层；把 `motif://pair`
+  链接当作密钥保管，轮换就清掉数据目录重新生成。
+- `127.0.0.1` + SSH forward 仍是最容易审计的明文部署方式。
 - Session 的 shell 权限就是启动 `motifd` 的系统用户权限，不要用 root 跑日常开发服务。
 
 ## 3. 场景 B：跑在电脑上
@@ -217,8 +211,8 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 
 | 模式 | 监听地址 | 适合 |
 | --- | --- | --- |
-| Loopback only | `127.0.0.1:<port>` | 默认模式。只给这台电脑自己用，安全、无需 token |
-| Local network | `0.0.0.0:<port>` | 同一局域网里的手机/平板/电脑直连，强烈建议开启 token |
+| Loopback only | `127.0.0.1:<port>` | 默认模式。只给这台电脑自己用，明文、无鉴权 |
+| Local network | `0.0.0.0:<port>` | 同一局域网里的手机/平板/电脑直连；自动加密 + psk 配对，扫 Pairing 区的二维码即可 |
 | Off | 不开 TCP listener | 只通过 Tailscale 或 relay pairing 访问 |
 
 默认端口是 `7777`。如果端口被占用，在 Server 页的 Listen 区域改成其它端口。
@@ -226,30 +220,22 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 当 embedded server 有 loopback endpoint 时，Motif App 会自动在 Client 页注册一个
 `This computer` server。你可以直接从 Client 页进入本机 Session。
 
-### 3.4 认证
+### 3.4 认证与加密
 
-Server 页的 **Authentication** 区域可以开启 token，用于 Loopback、Local network
-和 Tailscale 连接：
+不再有单独的 token 设置。**Local network 和 relay pairing 自动加密 + 自动鉴权**：
+桌面 App 从持久化的 psk 派生 bearer、用自签证书终止 TLS，并在 **Pairing** 区显示
+一个 `motif://pair` 二维码/链接——它就是唯一凭证，无论走 LAN 直连还是 relay 都展示。
 
-1. 打开 **Require a token**。
-2. 点 **Generate token**，或手动粘贴 token。
-3. 保存后 Start server。已经运行时，建议 Stop 再 Start，使配置清晰生效。
-
-Local network 模式虽然允许不带 token 启动，但这意味着同网段能访问端口的人都能
-attach 到你的 shell。除非只是临时测试，否则不要这么用。
-
-如果使用 **Enable relay pairing**，当前 pairing link 不携带 bearer token；不要同时
-开启 **Require a token**，否则扫码添加的 rendezvous server 无法完成 RPC 鉴权。
+Loopback 模式保持明文、无鉴权（只给本机用）。
 
 ### 3.5 让其它设备连回这台电脑
 
 **同一局域网直连：**
 
-1. Server 页选择 **Local network**。
-2. 开启 token。
-3. Start server。
-4. 在手机/平板/另一台电脑的 Motif App 里添加 Direct server，host 填这台电脑的
-   LAN IP，port 默认 `7777`，token 填刚才的值。
+1. Server 页选择 **Local network**，Start server。
+2. 在 **Pairing** 区扫描二维码（或复制链接）。
+3. 在手机/平板/另一台电脑的 Motif App 里选 **Pair**，扫码/粘贴即连——自动 `https://`
+   + 证书 pin + psk bearer，无需手填 token。
 
 **Tailscale：**
 
@@ -263,10 +249,10 @@ attach 到你的 shell。除非只是临时测试，否则不要这么用。
 
 **Relay pairing：**
 
-1. Server 页打开 **Enable relay pairing**。
+1. Pairing 区打开 **Pair over a relay**。
 2. 填 rendezvous relay 地址，例如 `relay.example.com:9999`。
 3. Start 或重启 server。
-4. 页面会显示 QR 和 pairing link。
+4. Pairing 区会显示 QR 和 pairing link（rzv 形态）。
 5. 其它设备在 Motif App 里扫描 QR 或粘贴 link。
 
 这适合手机接入、两端都在 NAT 后、或者不想配置局域网/Tailscale 的场景。前提是你有
@@ -274,8 +260,9 @@ attach 到你的 shell。除非只是临时测试，否则不要这么用。
 
 **浏览器打开本机 Web UI：**
 
-托盘菜单里的 **Open in Browser** 会打开 embedded server 的 Web UI，并在 URL 上附带
-token。这个入口只在 server 正在运行且有 loopback endpoint 时出现。
+托盘菜单里的 **Open in Browser** 打开 embedded server 的 Web UI（明文 loopback）。
+这个入口只在 server 正在运行且有 loopback endpoint 时出现；LAN/relay 的加密直连请
+用 App 扫码（浏览器无法 pin 自签证书）。
 
 ### 3.6 本机模式的注意事项
 
@@ -293,20 +280,22 @@ token。这个入口只在 server 正在运行且有 loopback endpoint 时出现
 
 | 连接方式 | Server 模式 | 电脑模式 | 备注 |
 | --- | --- | --- | --- |
-| Direct TCP | `--listen host:port` | Local network | 简单，但网络可达面最大，建议 token + TLS/VPN |
-| SSH forward | `--listen 127.0.0.1:7777` | 不常用 | 适合已有 SSH 的远端 server |
+| Direct TCP | `--listen 0.0.0.0:port` | Local network | 自动加密 + psk 配对，扫码即连；公网用 `--advertise-host` |
+| SSH forward | `--listen 127.0.0.1:7777` | 不常用 | 明文 loopback + 已有 SSH 的远端 server |
 | Tailscale | `--tailscale` | Enable Tailscale | 适合多设备、NAT 后、移动办公 |
-| Rendezvous relay | `--rzv-relay` | Enable relay pairing | 适合扫码配对和无直连网络；当前不要叠加 bearer token |
+| Rendezvous relay | `--rzv-relay` | Pair over a relay | 适合扫码配对和无直连网络（端到端 TLS pin + psk bearer） |
 | Browser same-origin | `motifd` 内嵌 Web UI | Tray Open in Browser | Web client 与 RPC/WS 共用同一个 origin |
 
 ## 5. 快速排错
 
 - 打不开 Web UI：先确认 `motifd` 是否在监听，浏览器访问 `/ping` 应返回 Motif server 信息。
-- App 显示 `No ping`：host/port/token 可能不对，或当前网络到不了 server。
+- App 显示 `No ping`：host/port 可能不对，或当前网络到不了 server；配对链接里的 pin/psk
+  过期（数据目录被清）也会连不上，重新配对即可。
 - Tailscale 一直需要登录：打开 Server 页或托盘里的登录 URL，完成授权；headless 环境用 auth key。
 - LAN 模式连不上：检查系统防火墙、路由器隔离、端口是否被占用。
 - Session 里路径不存在：workdir 是 server 机器上的路径，不是 client 机器上的路径。
-- 从公网访问：不要裸奔 `http://0.0.0.0:7777`；使用 token，并在反向代理/Tunnel/VPN 后访问。
+- 公网部署：`--listen 0.0.0.0:port` 已自动加密 + psk 鉴权；把 `motif://pair` 链接当密钥保管，
+  在防火墙/安全组里开放该端口即可。
 
 相关文档：
 

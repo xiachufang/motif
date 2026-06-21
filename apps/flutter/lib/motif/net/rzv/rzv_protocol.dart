@@ -37,16 +37,27 @@ class RzvProtocol {
   static const int helloLength = 4 + 1 + 1 + tokenLength; // 38
 
   static const String _tokenInfo = 'motif-rzv-token-v1';
+  static const String _bearerInfo = 'motif-auth-bearer-v1';
 
-  /// Derive the on-the-wire token from the 32-byte pairing secret via
+  /// Derive the on-the-wire relay token from the 32-byte pairing secret via
   /// HKDF-SHA256 (RFC 5869, empty salt, L = 32). Byte-identical with the Rust
   /// `motif_server::rzv::derive_token`. One-way, so the relay — which sees the
-  /// token — never learns the pairing secret (reserved for the P2 E2E layer).
-  static Uint8List deriveToken(Uint8List psk) {
+  /// token — never learns the pairing secret.
+  static Uint8List deriveToken(Uint8List psk) => _hkdf(psk, _tokenInfo);
+
+  /// Derive the **motifd access bearer** from the same `psk` under a distinct
+  /// label. Sent as `Authorization: Bearer <base64url>` on every connection
+  /// (rzv or direct) over its TLS channel; motifd requires it. Byte-identical
+  /// with the Rust `motif_server::rzv::derive_bearer`. Independent of the relay
+  /// token (the relay never sees this value).
+  static Uint8List deriveAuthBearer(Uint8List psk) => _hkdf(psk, _bearerInfo);
+
+  /// HKDF-SHA256 (empty salt, single-block expand, L = 32) under [info].
+  static Uint8List _hkdf(Uint8List psk, String info) {
     final salt = Uint8List(tokenLength); // empty salt -> HashLen zero bytes
     final prk = Hmac(sha256, salt).convert(psk).bytes;
-    final info = <int>[...utf8.encode(_tokenInfo), 0x01];
-    return Uint8List.fromList(Hmac(sha256, prk).convert(info).bytes);
+    final ctr = <int>[...utf8.encode(info), 0x01];
+    return Uint8List.fromList(Hmac(sha256, prk).convert(ctr).bytes);
   }
 
   /// Build the fixed-length HELLO frame for [role] carrying [token].

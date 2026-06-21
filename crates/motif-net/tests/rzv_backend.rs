@@ -19,6 +19,7 @@ async fn rzv_backend_pairs_and_pipes() {
     let token = [9u8; 32];
     let mut listener = motif_net::Listener::bind(&ListenConfig {
         tcp: None,
+        tcp_tls: None,
         tailscale: None,
         rendezvous: Some(RzvListenConfig {
             url: relay_addr.to_string(),

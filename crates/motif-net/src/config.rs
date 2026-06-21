@@ -8,11 +8,29 @@ use std::sync::Arc;
 /// Where the server should accept connections. At least one of `tcp` /
 /// `tailscale` / `rendezvous` must be `Some` — `Listener::bind` rejects the
 /// empty case.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ListenConfig {
     pub tcp: Option<SocketAddr>,
+    /// When set, the `tcp` backend terminates **TLS** with this server config
+    /// (self-signed; the client pins the cert). Encrypts the direct `--listen`
+    /// surface without an upstream proxy. `None` ⇒ plaintext `tcp` (loopback /
+    /// trusted segment). Same identity motifd uses for rzv end-to-end TLS, so
+    /// the pin matches whichever path a client takes.
+    pub tcp_tls: Option<Arc<rustls::ServerConfig>>,
     pub tailscale: Option<TailscaleListenConfig>,
     pub rendezvous: Option<RzvListenConfig>,
+}
+
+// rustls::ServerConfig isn't Debug; render it as a presence flag.
+impl std::fmt::Debug for ListenConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenConfig")
+            .field("tcp", &self.tcp)
+            .field("tcp_tls", &self.tcp_tls.is_some())
+            .field("tailscale", &self.tailscale)
+            .field("rendezvous", &self.rendezvous)
+            .finish()
+    }
 }
 
 /// Bring up an embedded tsnet node and listen on `port`.

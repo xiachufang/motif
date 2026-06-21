@@ -52,16 +52,6 @@ impl Default for TsConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AuthConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// User-set bearer token. Empty while `enabled` blocks start with a
-    /// clear error so the user goes and sets/generates one.
-    #[serde(default)]
-    pub token: String,
-}
-
 /// Rendezvous-relay backend for the embedded server: park `accept` waiters at
 /// a relay so a phone can pair with this in-process motifd without direct
 /// connectivity. The pairing secret + identity cert are auto-generated and
@@ -92,8 +82,6 @@ pub struct MenuConfig {
     #[serde(default)]
     pub tailscale: TsConfig,
     #[serde(default)]
-    pub auth: AuthConfig,
-    #[serde(default)]
     pub rzv: RzvConfig,
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
@@ -111,7 +99,6 @@ impl Default for MenuConfig {
             listen_mode: ListenMode::default(),
             port: default_port(),
             tailscale: TsConfig::default(),
-            auth: AuthConfig::default(),
             rzv: RzvConfig::default(),
             autostart: false,
         }
@@ -129,30 +116,76 @@ impl MenuConfig {
             ListenMode::Off => None,
         };
 
-        let (rendezvous, pairing_uri) = self.build_rzv()?;
+        let rzv_on = self.rzv.enabled && !self.rzv.relay.trim().is_empty();
+        // A LAN listener is a network surface: encrypt it (self-signed TLS,
+        // client pins the cert) and authenticate with a psk-derived bearer, same
+        // as the `motifd` CLI. Loopback stays plaintext (local host app only).
+        let is_lan = matches!(self.listen_mode, ListenMode::Lan);
 
-        if listen.is_none() && !self.tailscale.enabled && rendezvous.is_none() {
+        if listen.is_none() && !self.tailscale.enabled && !rzv_on {
             return Err(
                 "Listener is Off, Tailscale is disabled, and no relay is set — nothing to serve."
                     .into(),
             );
         }
 
-        let token = if self.auth.enabled {
-            let t = self.auth.token.trim();
-            if t.is_empty() {
-                return Err("Auth is on but no token is set — enter or generate one.".into());
-            }
-            Some(t.to_string())
-        } else {
-            None
-        };
+        // In a pairing mode (LAN listen or relay), derive everything from one
+        // persisted psk: the TLS identity (→ pin), the relay token, the access
+        // bearer, and a single `motif://pair` link (rzv form or direct form).
+        let mut rendezvous = None;
+        let mut listen_tls = None;
+        let mut rzv_direct = None;
+        let mut token = None;
+        let mut pairing_uri = None;
+        if is_lan || rzv_on {
+            let psk_path = motif_server::default_rzv_psk_path();
+            let psk = motif_server::rzv::load_or_create_psk(&psk_path)
+                .map_err(|e| format!("pairing secret: {e}"))?;
+            let rzv_dir = psk_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let identity = motif_server::rzv::load_or_create_identity(&rzv_dir)
+                .map_err(|e| format!("TLS identity: {e}"))?;
+            let pin = identity.cert_sha256;
+            let name = motif_server::default_tailscale_hostname();
 
-        // LAN without a token is permitted by request. The server's
-        // `validate()` refuses a non-loopback listener without auth unless we
-        // explicitly opt in, so flip the override in exactly that case.
-        let allow_insecure_no_auth =
-            matches!(self.listen_mode, ListenMode::Lan) && token.is_none();
+            token = Some(motif_server::rzv::bearer_token(&psk));
+
+            if is_lan {
+                listen_tls = Some(identity.server_config.clone());
+            }
+            if rzv_on {
+                let relay = self.rzv.relay.trim().to_string();
+                let mut c = motif_server::RzvListenConfig::new(
+                    relay.clone(),
+                    motif_server::rzv::derive_token(&psk),
+                );
+                c.tls = Some(identity.server_config.clone());
+                rendezvous = Some(c);
+                pairing_uri =
+                    Some(motif_server::rzv::pair_uri(&relay, &psk, Some(&pin), Some(&name)));
+                if is_lan {
+                    let addrs = motif_server::rzv::local_nic_addrs();
+                    if !addrs.is_empty() {
+                        rzv_direct = Some(std::sync::Arc::new(motif_server::RzvDirectInfo {
+                            port: self.port,
+                            addrs,
+                        }));
+                    }
+                }
+            } else {
+                // Direct (no relay): advertise all NIC addresses in the QR.
+                let hosts = motif_server::rzv::local_nic_addrs();
+                pairing_uri = Some(motif_server::rzv::pair_uri_direct(
+                    &hosts,
+                    self.port,
+                    &psk,
+                    Some(&pin),
+                    Some(&name),
+                ));
+            }
+        }
 
         let tailscale = if self.tailscale.enabled {
             let authkey = {
@@ -191,10 +224,11 @@ impl MenuConfig {
         Ok(BuiltServerConfig {
             server: ServerConfig {
                 listen,
+                listen_tls,
                 tailscale,
                 rendezvous,
+                rzv_direct,
                 token,
-                allow_insecure_no_auth,
                 // The embedded server runs motifd on loopback/LAN for local use;
                 // push notifications (which need a public relay) aren't wired
                 // here.
@@ -202,38 +236,6 @@ impl MenuConfig {
             },
             pairing_uri,
         })
-    }
-
-    /// Build the rendezvous backend (and its pairing link) when enabled. The
-    /// pairing secret + identity cert are persisted under the same data dir the
-    /// `motifd` CLI uses, so the QR is stable across restarts and end-to-end TLS
-    /// is on (the relay only sees ciphertext).
-    fn build_rzv(
-        &self,
-    ) -> Result<(Option<motif_server::RzvListenConfig>, Option<String>), String> {
-        let relay = self.rzv.relay.trim();
-        if !self.rzv.enabled || relay.is_empty() {
-            return Ok((None, None));
-        }
-
-        let psk_path = motif_server::default_rzv_psk_path();
-        let psk = motif_server::rzv::load_or_create_psk(&psk_path)
-            .map_err(|e| format!("rzv pairing secret: {e}"))?;
-        let token = motif_server::rzv::derive_token(&psk);
-
-        let rzv_dir = psk_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let identity = motif_server::rzv::load_or_create_identity(&rzv_dir)
-            .map_err(|e| format!("rzv identity: {e}"))?;
-
-        let name = motif_server::default_tailscale_hostname();
-        let uri = motif_server::rzv::pair_uri(relay, &psk, Some(&identity.cert_sha256), Some(&name));
-
-        let mut cfg = motif_server::RzvListenConfig::new(relay.to_string(), token);
-        cfg.tls = Some(identity.server_config);
-        Ok((Some(cfg), Some(uri)))
     }
 }
 
@@ -256,41 +258,28 @@ mod tests {
     }
 
     #[test]
-    fn lan_without_token_allowed_insecure() {
-        let mut c = MenuConfig::default();
-        c.listen_mode = ListenMode::Lan;
-        let sc = c
-            .to_server_config(&tsnet())
-            .expect("lan without token is allowed")
-            .server;
-        assert!(sc.token.is_none());
-        assert!(
-            sc.allow_insecure_no_auth,
-            "must opt into insecure for non-loopback no-auth"
-        );
-    }
+    fn lan_is_encrypted_and_paired() {
+        // A LAN listener auto-derives a psk bearer + self-signed TLS identity and
+        // a direct pairing link. Point XDG_DATA_HOME at a throwaway dir so the
+        // persisted psk/cert don't touch the real data dir.
+        let tmp = std::env::temp_dir().join(format!("motif-embed-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &tmp);
 
-    #[test]
-    fn lan_with_token_ok() {
         let mut c = MenuConfig::default();
         c.listen_mode = ListenMode::Lan;
-        c.auth = AuthConfig {
-            enabled: true,
-            token: "secret".into(),
-        };
-        let sc = c.to_server_config(&tsnet()).expect("lan+token should map").server;
-        assert_eq!(sc.token.as_deref(), Some("secret"));
+        let built = c.to_server_config(&tsnet()).expect("lan should map");
+        let sc = &built.server;
         assert!(!sc.listen.unwrap().ip().is_loopback());
-    }
+        assert!(sc.token.is_some(), "LAN derives a psk bearer");
+        assert!(sc.listen_tls.is_some(), "LAN terminates TLS");
+        let uri = built.pairing_uri.expect("LAN advertises a direct pairing link");
+        assert!(uri.starts_with("motif://pair?"));
+        assert!(uri.contains("&pk="), "carries the cert pin");
+        assert!(!uri.contains("&rzv="), "direct form (no relay)");
 
-    #[test]
-    fn auth_on_empty_token_rejected() {
-        let mut c = MenuConfig::default();
-        c.auth = AuthConfig {
-            enabled: true,
-            token: "  ".into(),
-        };
-        assert!(c.to_server_config(&tsnet()).is_err());
+        std::env::remove_var("XDG_DATA_HOME");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
@@ -311,6 +300,7 @@ mod tests {
     #[test]
     fn config_parses_from_host_json() {
         // The Dart `EmbeddedServerConfig` shape must deserialize cleanly.
+        // A legacy `auth` key is tolerated (ignored) for forward-compat.
         let json = r#"{
             "listen_mode": "lan",
             "port": 9001,
@@ -323,7 +313,6 @@ mod tests {
         assert_eq!(c.listen_mode, ListenMode::Lan);
         assert!(c.tailscale.enabled);
         assert_eq!(c.tailscale.hostname, "my-dev");
-        assert!(c.auth.enabled);
         assert!(c.autostart);
     }
 
@@ -334,7 +323,6 @@ mod tests {
         assert_eq!(c.port, 7777);
         assert_eq!(c.listen_mode, ListenMode::Loopback);
         assert!(!c.tailscale.enabled);
-        assert!(!c.auth.enabled);
         assert!(!c.rzv.enabled);
     }
 

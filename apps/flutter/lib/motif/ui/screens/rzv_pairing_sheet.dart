@@ -163,6 +163,12 @@ class _Preview extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     final pinned = payload.pubKey != null;
+    final reach = payload.isRendezvous
+        ? 'relay ${payload.relay}'
+        : 'direct ${payload.hosts.join(", ")}:${payload.port}';
+    final title = payload.name?.isNotEmpty == true
+        ? payload.name!
+        : (payload.isRendezvous ? payload.relay! : payload.hosts.first);
     return Container(
       padding: const EdgeInsets.all(MotifSpacing.md),
       decoration: BoxDecoration(
@@ -183,21 +189,21 @@ class _Preview extends StatelessWidget {
               Text(
                 pinned
                     ? 'End-to-end encrypted (cert pinned)'
-                    : 'Plaintext through the relay',
+                    : 'Plaintext',
                 style: TextStyle(color: c.textSecondary, fontSize: 12),
               ),
             ],
           ),
           const SizedBox(height: 6),
           Text(
-            payload.name ?? payload.relay,
+            title,
             style: TextStyle(
               color: c.textPrimary,
               fontWeight: FontWeight.w600,
             ),
           ),
           Text(
-            'relay ${payload.relay}',
+            reach,
             style: TextStyle(color: c.textTertiary, fontSize: 12),
           ),
         ],

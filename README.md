@@ -105,16 +105,20 @@ docker run -d --name motifd --restart=unless-stopped \
   -p 7777:7777 \
   -v motifd-data:/data \
   -v "$PWD:/work" \
-  -e MOTIFD_TOKEN="$(openssl rand -base64 32)" \
+  -e MOTIFD_ADVERTISE_HOST=<your-public-ip-or-domain> \
   ghcr.io/<owner>/motifd:latest
+# Pair the app with the printed link:
+docker logs motifd 2>&1 | grep -o 'motif://pair[^ ]*'
 ```
 
-See [`deploy/motifd/README.md`](deploy/motifd/README.md) for image tags,
-configuration, GHCR publishing details, and the currently published platform.
+A non-loopback listener is automatically encrypted (self-signed TLS, the client
+pins the cert) and authenticated (psk-derived bearer); motifd prints a single
+`motif://pair` link/QR. See [`deploy/motifd/README.md`](deploy/motifd/README.md)
+for image tags, configuration, and GHCR details.
 
 ```bash
-# Server (insecure-no-auth is for local dev)
-./target/release/motifd --listen 0.0.0.0:7777 --insecure-no-auth
+# Local dev: a loopback listener is plaintext + unauthenticated.
+./target/release/motifd --listen 127.0.0.1:7777
 
 # Browser — open http://localhost:7777; the embedded Flutter Web client
 # auto-configures itself to the motifd origin on first launch.
@@ -131,7 +135,7 @@ Two Procfiles (run with `overmind start -f <file>` / `foreman start -f <file>`):
 (auto-rebuild on Rust changes) plus the Flutter web-server:
 
 ```
-motifd: cargo watch ... -x "run -p motif-server --bin motifd -- --listen 0.0.0.0:7777 --insecure-no-auth --tailscale ..."
+motifd: cargo watch ... -x "run -p motif-server --bin motifd -- --listen 127.0.0.1:7777 --tailscale ..."
 relay:  cargo watch -w crates/motif-push-relay -x "run -p motif-push-relay -- ..."
 web-dev: cd apps/flutter && flutter run -d web-server --web-hostname 0.0.0.0 --web-port 5173
 ```

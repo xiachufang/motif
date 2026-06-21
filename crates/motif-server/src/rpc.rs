@@ -127,8 +127,11 @@ pub fn dispatch_concurrent(
         "view.move" => handle_view_move(manager, conn, id, req.params),
 
         // fs.*
-        "fs.tree" => attached(manager, conn, id, req.params, |s, p: pfs::TreeParams| {
-            crate::fs::tree(&s, &p)
+        // Read-only browse: works without an attached session so the dir picker
+        // can list paths before a session exists (relative paths resolve against
+        // the session workdir if attached, else $HOME).
+        "fs.tree" => browse(manager, conn, id, req.params, |base, p: pfs::TreeParams| {
+            crate::fs::tree(base, &p)
         }),
         "fs.stat" => attached(manager, conn, id, req.params, |s, p: pfs::StatParams| {
             crate::fs::stat(&s, &p)
@@ -657,6 +660,42 @@ where
     F: FnOnce(Arc<Session>, P) -> Result<R, RpcError>,
 {
     attached(mgr, conn, id, params, f)
+}
+
+/// Dispatch a read-only browse handler that does NOT require an attached
+/// session. The base directory for resolving relative paths is the attached
+/// session's workdir when present, else `$HOME` (so the dir picker works before
+/// a session exists). Auth (the bearer) is still the boundary — workdir is not.
+fn browse<P, R, F>(
+    mgr: &Arc<SessionManager>,
+    conn: &ConnSnapshot,
+    id: Id,
+    params: Value,
+    f: F,
+) -> Response
+where
+    P: DeserializeOwned,
+    R: serde::Serialize,
+    F: FnOnce(&std::path::Path, P) -> Result<R, RpcError>,
+{
+    let base = current_session(mgr, conn)
+        .map(|s| s.workdir.clone())
+        .unwrap_or_else(home_dir);
+    let p: P = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    match f(&base, p) {
+        Ok(r) => Response::ok(id, r),
+        Err(e) => Response::err(id, e),
+    }
+}
+
+/// `$HOME`, or `/` if unset — the browse base when no session is attached.
+fn home_dir() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }
 
 pub fn on_disconnect(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) {

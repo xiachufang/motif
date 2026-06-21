@@ -6,6 +6,7 @@
 /// helper) to read colors.
 library;
 
+import 'package:flutter/cupertino.dart' show CupertinoPageTransition;
 import 'package:flutter/material.dart';
 
 /// Spacing scale (T-shirt sizes).
@@ -266,6 +267,16 @@ ThemeData motifTheme(Brightness brightness) {
   return ThemeData(
     useMaterial3: true,
     brightness: brightness,
+    // Keep every platform's default page-transition animation, but on macOS
+    // (whose default is Cupertino) swap in a builder that runs the same
+    // Cupertino slide WITHOUT the edge/trackpad swipe-back gesture. Other
+    // platforms (incl. iOS's native swipe-back) are left at their defaults.
+    pageTransitionsTheme: PageTransitionsTheme(
+      builders: {
+        ...const PageTransitionsTheme().builders,
+        TargetPlatform.macOS: const _NoSwipeCupertinoPageTransitionsBuilder(),
+      },
+    ),
     colorScheme: scheme,
     scaffoldBackgroundColor: colors.background,
     extensions: [colors],
@@ -484,4 +495,33 @@ ThemeData motifTheme(Brightness brightness) {
       unselectedLabelColor: colors.textSecondary,
     ),
   );
+}
+
+/// The macOS Cupertino page-slide animation, **without** the back-swipe gesture.
+///
+/// The stock [CupertinoPageTransitionsBuilder] delegates to the Cupertino route
+/// mixin, which wraps the page in a `_CupertinoBackGestureDetector` (the
+/// edge/trackpad swipe-back). This builder renders the identical slide via the
+/// public [CupertinoPageTransition] widget but omits that detector, so the
+/// transition looks the same while the desktop swipe-back is disabled.
+/// `linearTransition` is `false` — the curved (non-gesture) animation, which is
+/// exactly what the stock builder uses when no pop gesture is in flight.
+class _NoSwipeCupertinoPageTransitionsBuilder extends PageTransitionsBuilder {
+  const _NoSwipeCupertinoPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T>? route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    return CupertinoPageTransition(
+      primaryRouteAnimation: animation,
+      secondaryRouteAnimation: secondaryAnimation,
+      linearTransition: false,
+      child: child,
+    );
+  }
 }

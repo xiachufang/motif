@@ -2,40 +2,39 @@
 #
 # run-review.sh — launch a hardened, throwaway motifd for App Review.
 #
-# Threat model: the bearer token is handed to Apple (and written in review
-# notes), so treat it as public for the review window. Anyone with it gets a
-# real shell + file read "anywhere the process can reach". This script's whole
-# job is to make that survivable:
+# Threat model: the motif://pair link (its psk) is handed to Apple (and written
+# in review notes), so treat it as public for the review window. Anyone with it
+# gets a real shell + file read "anywhere the process can reach". This script's
+# whole job is to make that survivable:
 #
 #   * non-root, all capabilities dropped, no-new-privileges, read-only rootfs
 #   * pids / memory / cpu caps so a fork bomb or miner can't take the box down
 #   * an isolated docker network with egress firewalling: the container CANNOT
 #     reach the cloud metadata endpoint (169.254.169.254) or any RFC1918 LAN
-#     address, so a token holder can't steal cloud credentials or pivot inside
+#     address, so a holder can't steal cloud credentials or pivot inside
 #     your VPS. Public internet stays reachable (toggle with --egress none).
 #   * optional gVisor (runsc) runtime for kernel-level syscall isolation —
 #     used automatically if installed.
-#   * the token is random per run and shredded on exit; the container and its
-#     network are torn down on exit.
+#   * the container and its network are torn down on exit.
 #
-# motifd does not terminate TLS. Front it with `cloudflared tunnel` (or your
-# reverse proxy) for a trusted wss:// URL the iOS app can use. Pass --tunnel to
-# have this script start cloudflared for you.
+# A network listener terminates its own TLS (self-signed; the client pins the
+# cert) and authenticates with a psk-derived bearer — no reverse proxy or tunnel
+# needed. motifd prints a motif://pair link this script surfaces for the notes.
 #
 # Usage:
-#   deploy/review/run-review.sh [--build] [--tunnel] [--egress restricted|none]
-#                               [--port N] [--image NAME] [--workspace-size SIZE]
+#   deploy/review/run-review.sh [--build] [--egress restricted|none] [--port N]
+#                  [--bind ADDR] [--advertise HOST] [--image NAME] [--workspace-size SIZE]
 #
 #   --build            docker build the image first (from repo root)
-#   --tunnel           start `cloudflared tunnel --url http://127.0.0.1:PORT`
 #   --egress none      drop ALL container egress (default: restricted = block
 #                      metadata + RFC1918 only, allow public internet)
-#   --port N           host port to publish (default 8080)
+#   --port N           host port to publish + listen on (default 8080)
 #   --bind ADDR        host interface to publish on (default 127.0.0.1). Use
 #                      0.0.0.0 for direct public exposure (open the port in your
-#                      firewall/security group yourself; the bearer token is the
-#                      only auth, and motifd speaks plaintext ws:// — fine only
-#                      if the client allows non-TLS, e.g. an iOS ATS exception).
+#                      firewall/security group yourself). The connection is
+#                      TLS-encrypted and the client pins the cert.
+#   --advertise HOST   host put in the pairing link (default: bind addr, or the
+#                      detected public IP for a 0.0.0.0 bind)
 #   --image NAME       image tag (default motifd:review)
 #   --workspace-size   tmpfs size for /home/demo/work (default 128m)
 #
@@ -45,6 +44,9 @@ set -euo pipefail
 IMAGE="motifd:review"
 PORT=8080
 BIND="127.0.0.1"         # host interface to publish on; 0.0.0.0 = public
+ADVERTISE=""             # host put in the motif://pair link (default: BIND or
+                         # detected public IP). The cert is pinned, so this is
+                         # just where the client dials, not a trust anchor.
 EGRESS="restricted"      # restricted | none
 WORKSPACE_SIZE="128m"
 DO_BUILD=0
@@ -60,6 +62,7 @@ while [ $# -gt 0 ]; do
         --egress) EGRESS="${2:?}"; shift ;;
         --port) PORT="${2:?}"; shift ;;
         --bind) BIND="${2:?}"; shift ;;
+        --advertise) ADVERTISE="${2:?}"; shift ;;
         --image) IMAGE="${2:?}"; shift ;;
         --workspace-size) WORKSPACE_SIZE="${2:?}"; shift ;;
         -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
@@ -85,22 +88,20 @@ if [ "$HAVE_IPTABLES" -eq 0 ]; then
     if [ "$EGRESS" = "none" ]; then echo "--egress none requires iptables." >&2; exit 1; fi
 fi
 
-# ---- token ----------------------------------------------------------------
-TOKEN_DIR="$(mktemp -d)"
-TOKEN_FILE="$TOKEN_DIR/motifd_token"
-umask 077
-if command -v openssl >/dev/null; then
-    openssl rand -hex 32 > "$TOKEN_FILE"
-else
-    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE"
+# ---- advertise host -------------------------------------------------------
+# Where the client dials, embedded in the printed motif://pair link. motifd
+# inside the container only knows its internal NIC IP, so we tell it the real
+# reachable host. Default: the bind interface, or (for a public 0.0.0.0 bind)
+# the detected public IP. The cert is pinned in the link, so a wrong host just
+# fails to connect — it is not a trust anchor. No bearer token to manage now:
+# motifd auto-generates a psk and prints it inside the link.
+if [ -z "$ADVERTISE" ]; then
+    case "$BIND" in
+        0.0.0.0|"") ADVERTISE="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)" ;;
+        *) ADVERTISE="$BIND" ;;
+    esac
 fi
-TOKEN="$(cat "$TOKEN_FILE")"
-# The container runs as uid 10001 and bind-mounts this file read-only. On Linux
-# a bind mount preserves host ownership/perms, so a 0600 file (umask above) is
-# unreadable by the container user — motifd then exits with "token-file:
-# Permission denied". Make the file world-readable; it still sits inside the
-# 0700 mktemp dir, so no other host user can reach it.
-chmod 0644 "$TOKEN_FILE"
+[ -z "$ADVERTISE" ] && ADVERTISE="<this-host-public-ip-or-domain>"
 
 # ---- cleanup --------------------------------------------------------------
 FW_RULES=()           # exact rule specs we inserted, for precise removal
@@ -114,9 +115,6 @@ cleanup() {
         $SUDO iptables -D ${FW_RULES[$i]} 2>/dev/null
     done
     docker network rm "$NET_NAME" >/dev/null 2>&1
-    # shred the token
-    command -v shred >/dev/null && shred -u "$TOKEN_FILE" 2>/dev/null || rm -f "$TOKEN_FILE"
-    rm -rf "$TOKEN_DIR"
     echo "cleaned up." >&2
 }
 trap cleanup EXIT INT TERM
@@ -179,7 +177,11 @@ docker run -d --rm \
     --name "$CTR_NAME" \
     "${RUNTIME_ARGS[@]}" \
     --network "$NET_NAME" \
-    -p "${BIND}:${PORT}:8080" \
+    `# Publish PORT:PORT (not :8080) and listen on PORT inside, so the port in` \
+    `# the advertised motif://pair link matches what the client dials.` \
+    -p "${BIND}:${PORT}:${PORT}" \
+    -e "MOTIFD_LISTEN=0.0.0.0:${PORT}" \
+    -e "MOTIFD_ADVERTISE_HOST=${ADVERTISE}" \
     --user 10001:10001 \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
@@ -193,7 +195,6 @@ docker run -d --rm \
     --pids-limit=256 \
     --memory=512m --memory-swap=512m \
     --cpus=1 \
-    --mount "type=bind,source=${TOKEN_FILE},target=/run/secrets/motifd_token,readonly" \
     "$IMAGE" >/dev/null
 
 # /home/demo is a fresh tmpfs, so the entrypoint reseeds /home/demo/work from
@@ -206,72 +207,56 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$CTR_NAME"; then
     exit 1
 fi
 
-# ---- optional tunnel ------------------------------------------------------
-PUBLIC_URL=""
-if [ "$DO_TUNNEL" -eq 1 ]; then
-    command -v cloudflared >/dev/null || { echo "cloudflared not found (install it or drop --tunnel)" >&2; }
-    if command -v cloudflared >/dev/null; then
-        TLOG="$TOKEN_DIR/cloudflared.log"
-        cloudflared tunnel --url "http://127.0.0.1:${PORT}" >"$TLOG" 2>&1 &
-        TUNNEL_PID=$!
-        echo "==> cloudflared starting, waiting for URL ..." >&2
-        for _ in $(seq 1 30); do
-            PUBLIC_URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TLOG" | head -1 || true)"
-            [ -n "$PUBLIC_URL" ] && break
-            sleep 1
-        done
-    fi
-fi
+[ "$DO_TUNNEL" -eq 1 ] && echo "==> note: --tunnel is no longer needed; motifd now terminates TLS itself (pinned cert)." >&2
+
+# ---- pairing link ---------------------------------------------------------
+# motifd prints a `motif://pair?...` link (+ a QR) on startup. Capture it.
+PAIR_LINK=""
+for _ in $(seq 1 15); do
+    PAIR_LINK="$(docker logs "$CTR_NAME" 2>&1 | grep -oE 'motif://pair[^[:space:]]+' | head -1 || true)"
+    [ -n "$PAIR_LINK" ] && break
+    sleep 1
+done
 
 # ---- summary --------------------------------------------------------------
-WSS_HOST="${PUBLIC_URL#https://}"
 cat >&2 <<EOF
 
 ────────────────────────────────────────────────────────────────────
-  motifd review server is up.
+  motifd review server is up — encrypted (self-signed TLS, client pins the
+  cert) and authenticated (psk-derived bearer). No token, no upstream proxy.
 
-  token:        $TOKEN
-  local:        ws://${BIND}:${PORT}
+  listen:       ${BIND}:${PORT}   (advertised host: ${ADVERTISE})
 EOF
-if [ -n "$PUBLIC_URL" ]; then
+if [ -n "$PAIR_LINK" ]; then
 cat >&2 <<EOF
-  public:       $PUBLIC_URL
-  iOS connect:  wss://${WSS_HOST}        token above
 
   ── paste into App Store review notes ──
-  This app is a client for a self-hosted dev server (motifd). To test:
-    Server URL:  wss://${WSS_HOST}
-    Token:       $TOKEN
-  Add the server in the app, connect, open a terminal, browse files,
-  and view the git diff. The server is a sandbox; no account is needed.
-EOF
-elif [ "$BIND" != "127.0.0.1" ] && [ "$BIND" != "localhost" ]; then
-# Direct public exposure, plaintext ws:// (no TLS). Best-effort public IP.
-PUB_IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-HOST_HINT="${PUB_IP:-<this-host-public-ip-or-domain>}"
-cat >&2 <<EOF
-  exposure:     direct, plaintext ws:// — open port ${PORT}/tcp in your
-                firewall/security group. The bearer token is the only auth.
-  connect:      ws://${HOST_HINT}:${PORT}        token above
+  This app is a client for a self-hosted dev server (motifd). To test, open
+  this link on the device (or scan the QR in the logs) to add the server:
 
-  ── paste into App Store review notes (requires the app's ATS to allow ws://) ──
-  This app is a client for a self-hosted dev server (motifd). To test:
-    Server URL:  ws://${HOST_HINT}:${PORT}
-    Token:       $TOKEN
-  Add the server in the app, connect, open a terminal, browse files,
-  and view the git diff. The server is a sandbox; no account is needed.
+    ${PAIR_LINK}
+
+  Then connect, open a terminal, browse files, and view the git diff. The
+  server is a sandbox; no account is needed.
 EOF
 else
 cat >&2 <<EOF
-  next:         publish publicly with --bind 0.0.0.0 (plaintext ws://, open the
-                port yourself) or front it with TLS via --tunnel / a proxy, then
-                give the app the URL + token above.
+
+  (could not capture the pairing link — run 'docker logs ${CTR_NAME}' and look
+   for the 'motif://pair?...' line / QR.)
 EOF
 fi
 cat >&2 <<EOF
 
+  exposure:     for a public reviewer, --bind 0.0.0.0 and open ${PORT}/tcp in
+                your firewall/security group. The 'pk' in the link pins the
+                cert; the 'psk' is the access credential.
+  pin note:     the cert pin is tied to motifd's identity under \$XDG_DATA_HOME.
+                This ephemeral container regenerates it each start, so the link
+                is valid for THIS run. A persistent server should mount a stable
+                data dir (XDG_DATA_HOME) so the pin + psk survive restarts.
   workspace:    /home/demo/work (seeded git repo, tmpfs — wiped on exit)
-  Ctrl-C to stop and tear everything down (container, network, fw rules, token).
+  Ctrl-C to stop and tear everything down (container, network, fw rules).
 ────────────────────────────────────────────────────────────────────
 EOF
 
