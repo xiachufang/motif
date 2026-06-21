@@ -1,50 +1,5 @@
 part of '../session_screen.dart';
 
-/// Thin status line showing the active PTY's shell context (git branch, venv,
-/// node version) from OSC 777 — hidden when there's nothing to show.
-class _ShellContextBar extends StatelessWidget {
-  final ShellContext? ctx;
-  const _ShellContextBar({required this.ctx});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    final items = <(IconData, String)>[
-      if (ctx?.branch != null && ctx!.branch!.isNotEmpty)
-        (Icons.call_split, ctx!.branch!),
-      if (ctx?.venv != null && ctx!.venv!.isNotEmpty) (Icons.eco, ctx!.venv!),
-      if (ctx?.node != null && ctx!.node!.isNotEmpty)
-        (Icons.hexagon_outlined, ctx!.node!),
-    ];
-    if (items.isEmpty) return const SizedBox.shrink();
-    return Container(
-      width: double.infinity,
-      color: c.surface,
-      padding: const EdgeInsets.symmetric(
-        horizontal: MotifSpacing.md,
-        vertical: 4,
-      ),
-      child: Row(
-        children: [
-          for (final (icon, text) in items) ...[
-            Icon(icon, size: 12, color: c.textTertiary),
-            const SizedBox(width: 3),
-            Text(
-              text,
-              style: TextStyle(
-                color: c.textSecondary,
-                fontSize: 11,
-                fontFamily: 'monospace',
-              ),
-            ),
-            const SizedBox(width: MotifSpacing.md),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 class _InputBar extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;

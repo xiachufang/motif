@@ -45,9 +45,12 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         return true;
       }
       if (key == LogicalKeyboardKey.keyW) {
-        // Close the active tab; on the last tab, hide the window instead so the
-        // close-window shortcut works in the session view too.
-        if (_motif.views.length <= 1) {
+        // Close the active tab whenever one exists; only hide the window when
+        // the session has no tabs left. Claim this ⌘W so the app-level "hide
+        // window" binding (which Flutter fires right after this handler) doesn't
+        // also hide the window on top of a tab close.
+        context.read<AppState>().markCloseShortcutConsumed();
+        if (_motif.views.isEmpty) {
           unawaited(DesktopWindow.hide());
         } else {
           unawaited(_closeActiveTab());

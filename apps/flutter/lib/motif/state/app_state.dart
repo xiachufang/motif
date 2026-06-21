@@ -65,6 +65,22 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Coordinates ⌘W between the session screen's global key handler and the
+  /// app-level "hide window" shortcut. Both fire for one ⌘W press: Flutter runs
+  /// the [HardwareKeyboard] handler (the session screen) before the focus-based
+  /// `CallbackShortcuts` (the window-close binding), and the latter runs even
+  /// when the former returns handled. The session screen sets this when it
+  /// consumes ⌘W (closing a tab, or hiding on the last tab); the window-close
+  /// binding reads-and-clears it to avoid hiding the window on top of that.
+  /// Transient and intentionally does not notify listeners.
+  bool _closeShortcutConsumed = false;
+  void markCloseShortcutConsumed() => _closeShortcutConsumed = true;
+  bool takeCloseShortcutConsumed() {
+    final consumed = _closeShortcutConsumed;
+    _closeShortcutConsumed = false;
+    return consumed;
+  }
+
   AppState({
     required this.servers,
     required this.terminalSettings,

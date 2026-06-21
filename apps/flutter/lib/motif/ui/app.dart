@@ -73,7 +73,7 @@ class MotifApp extends StatelessWidget {
       // *ancestor* of CallbackShortcuts — so ⌘W never reached it. The autofocus
       // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
-        bindings: _closeWindowShortcuts,
+        bindings: _closeWindowShortcuts(context),
         child: const Focus(
           autofocus: true,
           child: _HomeShell(),
@@ -84,15 +84,27 @@ class MotifApp extends StatelessWidget {
 }
 
 /// Platform-appropriate "close window" binding: ⌘W on macOS, ⌃W elsewhere.
-Map<ShortcutActivator, VoidCallback> get _closeWindowShortcuts {
+///
+/// In the session view the terminal's own (global [HardwareKeyboard]) handler
+/// runs first and claims ⌘W to close the active tab — but Flutter still fires
+/// this focus-based binding afterward, so it would hide the window on top of
+/// the tab close. The session handler flags that case via
+/// [AppState.markCloseShortcutConsumed]; we read-and-clear it here and skip the
+/// hide. On the plain screens (session list, welcome, connection) the session
+/// handler never runs, the flag stays clear, and ⌘W hides the window.
+Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
+  BuildContext context,
+) {
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
   return {
     SingleActivator(
       LogicalKeyboardKey.keyW,
       meta: isMac,
       control: !isMac,
-    ): () =>
-        unawaited(DesktopWindow.hide()),
+    ): () {
+      if (context.read<AppState>().takeCloseShortcutConsumed()) return;
+      unawaited(DesktopWindow.hide());
+    },
   };
 }
 

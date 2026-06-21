@@ -338,8 +338,6 @@ class _SessionScreenState extends State<SessionScreen>
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (inputPtyId != null)
-                          _ShellContextBar(ctx: motif.shellContext[inputPtyId]),
                         QuickCommandRow(
                           commands: commandStore.resolved(runningProgram),
                           modifiers: _modifiers,
