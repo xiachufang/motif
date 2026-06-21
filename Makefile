@@ -18,6 +18,9 @@ BUILD_NUMBER ?= $(word 2,$(VERSION_PARTS))
 BUILD_NUMBER := $(if $(BUILD_NUMBER),$(BUILD_NUMBER),1)
 ARTIFACT_SUFFIX ?= $(VERSION)-$(BUILD_NUMBER)
 
+# Which semver component `release-tag` bumps: patch | minor | major.
+BUMP ?= patch
+
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 HOST_TAG ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(UNAME_M)
@@ -312,17 +315,35 @@ release-manifest: ## Write a manifest of generated release files.
 	} > "$(RELEASE_DIR)/MANIFEST.txt"
 	@echo "Manifest: $(RELEASE_DIR)/MANIFEST.txt"
 
-release-tag: ## Create the git tag v$(VERSION) from pubspec (push it to trigger the release CI).
-	@tag="v$(VERSION)"; \
+release-tag: ## Bump pubspec (BUMP=patch|minor|major), commit, tag, and push to trigger the release CI.
+	@case "$(BUMP)" in patch|minor|major) ;; \
+		*) echo "release-tag: BUMP must be patch, minor or major (got '$(BUMP)')." >&2; exit 1;; esac; \
 	if [ -n "$$(git status --porcelain)" ]; then \
-		echo "release-tag: working tree is dirty; commit the version bump first." >&2; exit 1; \
+		echo "release-tag: working tree is dirty; commit or stash changes first." >&2; exit 1; \
 	fi; \
+	IFS=. read -r major minor patch <<<"$(VERSION)"; \
+	case "$(BUMP)" in \
+		patch) patch=$$((patch + 1));; \
+		minor) minor=$$((minor + 1)); patch=0;; \
+		major) major=$$((major + 1)); minor=0; patch=0;; \
+	esac; \
+	new_ver="$$major.$$minor.$$patch"; new_build=$$(($(BUILD_NUMBER) + 1)); tag="v$$new_ver"; \
 	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
-		echo "release-tag: tag $$tag already exists. Bump pubspec.yaml or delete the tag." >&2; exit 1; \
+		echo "release-tag: tag $$tag already exists. Pick a different BUMP or delete the tag." >&2; exit 1; \
 	fi; \
-	git tag -a "$$tag" -m "Release $(VERSION)+$(BUILD_NUMBER)"; \
-	echo "Created $$tag at $$(git rev-parse --short HEAD)."; \
-	echo "Push to trigger the release CI:  git push origin $$tag"
+	awk -v repl="version: $$new_ver+$$new_build" \
+		'!done && /^version:/ {print repl; done=1; next} {print}' \
+		"$(FLUTTER_DIR)/pubspec.yaml" > "$(FLUTTER_DIR)/pubspec.yaml.tmp"; \
+	mv "$(FLUTTER_DIR)/pubspec.yaml.tmp" "$(FLUTTER_DIR)/pubspec.yaml"; \
+	echo "Version: $(VERSION)+$(BUILD_NUMBER) -> $$new_ver+$$new_build ($(BUMP))"; \
+	git add "$(FLUTTER_DIR)/pubspec.yaml"; \
+	git commit -m "Release $$new_ver"; \
+	git tag -a "$$tag" -m "Release $$new_ver+$$new_build"; \
+	branch="$$(git rev-parse --abbrev-ref HEAD)"; \
+	echo "Pushing $$branch and $$tag..."; \
+	git push origin "$$branch"; \
+	git push origin "$$tag"; \
+	echo "Pushed $$tag — release CI triggered."
 
 clean-release: ## Remove generated release artifacts under dist/release.
 	@rm -rf "$(RELEASE_DIR)"

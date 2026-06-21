@@ -21,26 +21,22 @@ iOS/macOS builds.
 
 ## Steps
 
-1. **Bump the version.** Edit `apps/flutter/pubspec.yaml`:
-   - Raise the semantic version (`1.0.0` → `1.0.1`) for a user-facing release.
-   - **Always raise the build number** (`+1` → `+2`), even for a re-spin of the
-     same semantic version — App Store / Play reject a non-increasing build
-     number.
+From a clean working tree, one command does everything — bump, commit, tag, push:
 
-2. **Commit the bump.**
+```sh
+make release-tag                 # BUMP=patch (default): 1.0.0 -> 1.0.1
+make release-tag BUMP=minor      # 1.0.3 -> 1.1.0
+make release-tag BUMP=major      # 1.3.2 -> 2.0.0
+```
 
-   ```sh
-   git commit -am "Release 1.0.1"
-   ```
+`release-tag` will:
 
-3. **Tag and push.** `make release-tag` creates `v<semver>` from pubspec (it
-   refuses a dirty tree or an existing tag), then push the tag to fire the CI:
-
-   ```sh
-   make release-tag
-   git push origin main           # the bump commit
-   git push origin v1.0.1         # the command release-tag printed
-   ```
+1. Refuse to run if the working tree is dirty (so the only change is the bump).
+2. Compute the new version from `BUMP` and **always increment the build number**
+   (`+N` → `+N+1`) — App Store / Play reject a non-increasing build number.
+3. Rewrite `version:` in `apps/flutter/pubspec.yaml`, commit it as
+   `Release <semver>`, create the annotated tag `v<semver>` (refusing if it
+   already exists), then push the current branch **and** the tag.
 
    Pushing the tag triggers:
    - `release-desktop` → Linux + Windows desktop apps
@@ -51,9 +47,9 @@ iOS/macOS builds.
    All assets land on the **same** GitHub Release named after the tag; whichever
    job finishes first creates it, the rest append.
 
-4. **Verify.** Watch the Actions tab go green, then check the `v1.0.1` Release
-   has the desktop `.tar.gz`s, the `motifd` `.tar.gz`s, `MANIFEST.txt`, and the
-   Xcode Cloud `.dmg`.
+**After pushing**, verify: watch the Actions tab go green, then check the new
+Release has the desktop `.tar.gz`s, the `motifd` `.tar.gz`s, `MANIFEST.txt`, and
+the Xcode Cloud `.dmg`.
 
 ## Dry run before tagging
 
