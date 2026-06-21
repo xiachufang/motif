@@ -213,6 +213,10 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
           : const ServerConnecting(),
     );
 
+    if (force || reconnect) {
+      await resolver.stopForwarder(server.id);
+    }
+
     final resolution = await resolver.resolve(server);
     switch (resolution) {
       case TransportBlocked(:final blocker):

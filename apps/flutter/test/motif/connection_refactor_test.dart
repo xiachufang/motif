@@ -664,6 +664,73 @@ void main() {
     expect(app.connectionStateForServer('tailnet'), isA<ServerConnected>());
   });
 
+  test('forced reconnect rebuilds SSH forwarder', () async {
+    final tailscale = _FakeTailscale(TailscaleState.stopped);
+    addTearDown(tailscale.close);
+    final client = _RecordingMotifClient()..failRefresh = true;
+    final forwarders = <_FakeSshForwarder>[];
+    final resolver = TransportResolver(
+      _platform(tailscale),
+      sshForwarderFactory:
+          ({
+            required sshHost,
+            required sshPort,
+            required username,
+            required authMethod,
+            required password,
+            required privateKey,
+            required privateKeyPassphrase,
+            required remoteHost,
+            required remotePort,
+            required connectTimeout,
+          }) {
+            final fwd = _FakeSshForwarder(
+              remoteHost: remoteHost,
+              remotePort: remotePort,
+            );
+            forwarders.add(fwd);
+            return fwd;
+          },
+    );
+    final controller = ServerConnectionController(
+      serverId: 'ssh',
+      client: client,
+      serverProvider: () => const MotifServer(
+        id: 'ssh',
+        name: 'SSH',
+        host: '127.0.0.1',
+        port: 7777,
+        kind: ServerKind.ssh,
+        sshHost: 'bastion.example.com',
+        sshUsername: 'fei',
+        sshPassword: 'secret',
+      ),
+      resolver: resolver,
+      onChanged: () {},
+    );
+    client.addListener(controller.handleClientStateChanged);
+    addTearDown(() {
+      client.removeListener(controller.handleClientStateChanged);
+      controller.dispose();
+    });
+
+    await controller.connect(force: true);
+    expect(client.connectCalls, 1);
+    expect(forwarders, hasLength(1));
+    expect(forwarders.single.startCalls, 1);
+
+    controller.handleRefreshFailed(StateError('stale tunnel'));
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.connectCalls, 2);
+    expect(forwarders, hasLength(2));
+    expect(forwarders.first.stopCalls, 1);
+    expect(forwarders.last.startCalls, 1);
+    expect(controller.state, isA<ServerConnected>());
+  });
+
   test(
     'mobile app resume reconnects attached session to rebuild websocket transport',
     () async {
