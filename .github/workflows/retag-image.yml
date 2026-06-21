@@ -1,0 +1,47 @@
+name: retag-image
+
+# On-demand: add a release tag (e.g. v1.0.19) to an already-published image
+# digest WITHOUT rebuilding. Use when a tag-triggered image build failed but a
+# later, content-identical build (same Dockerfile + code) succeeded under a
+# `:sha-<short>` tag — only CI/non-image files differed, so the published digest
+# already is the release image. `imagetools create` just points a new tag at the
+# existing manifest (multi-arch safe), so no rebuild and no need to move the git
+# tag (which would re-run desktop/motifd builds and re-upload duplicate store
+# builds).
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 'Existing tag to copy from (e.g. sha-83028f6 or latest)'
+        required: true
+      version:
+        description: 'New tag to publish (e.g. v1.0.19)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retag:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [motifd, motifd-review]
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          img="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}"
+          docker buildx imagetools create \
+            -t "$img:${{ inputs.version }}" \
+            "$img:${{ inputs.source_tag }}"
+          docker buildx imagetools inspect "$img:${{ inputs.version }}"
