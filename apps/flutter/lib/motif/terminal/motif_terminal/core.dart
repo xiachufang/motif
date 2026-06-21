@@ -10,14 +10,19 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   void _onRemoteBytes(Uint8List bytes) {
     _remoteChunks++;
     _remoteBytes += bytes.length;
-    if (_remoteChunks <= 3 || _remoteChunks == 10 || _remoteChunks % 100 == 0) {
-      Log.i(
-        'terminal bytes pty=${widget.ptyId} chunk=$_remoteChunks '
-        'bytes=${bytes.length} totalBytes=$_remoteBytes '
-        'initialized=$_initialized queuedChunks=${_remoteByteQueue.length} '
-        'queuedBytes=$_remoteByteQueueBytes',
-        name: 'motif.terminal',
-      );
+    final logAtInfo = _remoteChunks <= 3 || _remoteChunks == 10;
+    final logAtDebug = _remoteChunks == 100 || _remoteChunks % 1000 == 0;
+    if (logAtInfo || logAtDebug) {
+      final message =
+          'terminal bytes pty=${widget.ptyId} chunk=$_remoteChunks '
+          'bytes=${bytes.length} totalBytes=$_remoteBytes '
+          'initialized=$_initialized queuedChunks=${_remoteByteQueue.length} '
+          'queuedBytes=$_remoteByteQueueBytes';
+      if (logAtInfo) {
+        Log.i(message, name: 'motif.terminal');
+      } else {
+        Log.d(message, name: 'motif.terminal');
+      }
     }
     _enqueueRemoteBytes(bytes);
     _flushRemoteBytesToWorker();

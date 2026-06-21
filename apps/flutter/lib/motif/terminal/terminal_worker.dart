@@ -238,8 +238,21 @@ class _TerminalWorker {
   _TerminalWorker(this.events, this.commands);
 
   static const Duration _remoteOutputFrameInterval = Duration(milliseconds: 50);
+  static const Duration _busyRemoteOutputFrameInterval = Duration(
+    milliseconds: 66,
+  );
+  static const Duration _sustainedRemoteOutputFrameInterval = Duration(
+    milliseconds: 80,
+  );
   static const Duration _interactiveFrameInterval = Duration(milliseconds: 16);
   static const Duration _localEchoWindow = Duration(milliseconds: 150);
+  static const Duration _remoteBurstResetGap = Duration(milliseconds: 250);
+  static const Duration _busyOutputWindow = Duration(milliseconds: 500);
+  static const Duration _sustainedOutputWindow = Duration(milliseconds: 1200);
+  static const int _busyOutputMinBytes = 4 * 1024;
+  static const int _busyOutputMinChunks = 12;
+  static const int _sustainedOutputMinBytes = 16 * 1024;
+  static const int _sustainedOutputMinChunks = 30;
   static const Duration _cursorPollInterval = Duration(milliseconds: 500);
 
   final SendPort events;
@@ -252,6 +265,10 @@ class _TerminalWorker {
   int backgroundArgb = 0xff000000;
   _WorkerCursorSnapshot? lastCursor;
   DateTime? lastLocalInputAt;
+  DateTime? lastRemoteFeedAt;
+  DateTime? remoteBurstStartedAt;
+  int remoteBurstBytes = 0;
+  int remoteBurstChunks = 0;
 
   void run() {
     commands.listen(_handleCommand);
@@ -270,6 +287,7 @@ class _TerminalWorker {
         case 'feed':
           final bytes = _materializeBytes(command['bytes']);
           if (bytes != null && bytes.isNotEmpty) {
+            _noteRemoteFeed(bytes.length);
             state?.feedBytes(bytes);
             _scheduleSnapshot(force: true, delay: _feedFrameInterval);
           }
@@ -373,16 +391,51 @@ class _TerminalWorker {
   }
 
   Duration get _feedFrameInterval {
+    final now = DateTime.now();
     final inputAt = lastLocalInputAt;
-    if (inputAt == null) return _remoteOutputFrameInterval;
-    final elapsed = DateTime.now().difference(inputAt);
-    return elapsed <= _localEchoWindow
-        ? _interactiveFrameInterval
-        : _remoteOutputFrameInterval;
+    if (inputAt != null && now.difference(inputAt) <= _localEchoWindow) {
+      return _interactiveFrameInterval;
+    }
+
+    final burstStarted = remoteBurstStartedAt;
+    if (burstStarted == null) return _remoteOutputFrameInterval;
+    final burstElapsed = now.difference(burstStarted);
+    if (burstElapsed >= _sustainedOutputWindow &&
+        (remoteBurstChunks >= _sustainedOutputMinChunks ||
+            remoteBurstBytes >= _sustainedOutputMinBytes)) {
+      return _sustainedRemoteOutputFrameInterval;
+    }
+    if (burstElapsed >= _busyOutputWindow &&
+        (remoteBurstChunks >= _busyOutputMinChunks ||
+            remoteBurstBytes >= _busyOutputMinBytes)) {
+      return _busyRemoteOutputFrameInterval;
+    }
+    return _remoteOutputFrameInterval;
+  }
+
+  void _noteRemoteFeed(int byteCount) {
+    final now = DateTime.now();
+    final previousFeed = lastRemoteFeedAt;
+    if (previousFeed == null ||
+        now.difference(previousFeed) > _remoteBurstResetGap) {
+      remoteBurstStartedAt = now;
+      remoteBurstBytes = 0;
+      remoteBurstChunks = 0;
+    }
+    lastRemoteFeedAt = now;
+    remoteBurstBytes += byteCount;
+    remoteBurstChunks++;
   }
 
   void _markLocalInput() {
     lastLocalInputAt = DateTime.now();
+  }
+
+  void _resetRemoteBurst() {
+    lastRemoteFeedAt = null;
+    remoteBurstStartedAt = null;
+    remoteBurstBytes = 0;
+    remoteBurstChunks = 0;
   }
 
   void _scheduleSnapshot({
@@ -442,6 +495,7 @@ class _TerminalWorker {
     state = null;
     lastCursor = null;
     forceSnapshot = false;
+    _resetRemoteBurst();
   }
 }
 

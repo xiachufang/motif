@@ -89,7 +89,9 @@ class _SessionScreenState extends State<SessionScreen>
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
   late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
-  final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(116);
+  final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
+    _bottomBarCollapsedContentHeight,
+  );
   DateTime? _lastKeyboardInsetLogAt;
   int _terminalFocusSerial = 0;
   bool _keyboardInsetSyncScheduled = false;
@@ -388,23 +390,24 @@ class _SessionScreenState extends State<SessionScreen>
                           _TabBar(motif: motif, onNewPty: _newPty),
                         Expanded(
                           child: ClipRect(
-                            child: _PaneStack(
-                              activeView: activeView,
-                              attaching: _attachingSession,
-                              mountPanes: _paneMountReady,
-                              mountedViews: mountedViews,
-                              motif: motif,
-                              fontSize: fontSize,
-                              palette: terminalPalette,
-                              focusSerial: _terminalFocusSerial,
-                              keyboardInset: _keyboardInset,
+                            child: _BottomBarLiftedPane(
+                              enabled: showBottomBar,
+                              contentHeight: _bottomBarContentHeight,
+                              child: _PaneStack(
+                                activeView: activeView,
+                                attaching: _attachingSession,
+                                mountPanes: _paneMountReady,
+                                mountedViews: mountedViews,
+                                motif: motif,
+                                fontSize: fontSize,
+                                palette: terminalPalette,
+                                focusSerial: _terminalFocusSerial,
+                                keyboardInset: _keyboardInset,
+                              ),
                             ),
                           ),
                         ),
-                        if (showBottomBar)
-                          _BottomBarPlaceholder(
-                            contentHeight: _bottomBarContentHeight,
-                          ),
+                        if (showBottomBar) const _BottomBarPlaceholder(),
                       ],
                     ),
                     if (showBottomBar)

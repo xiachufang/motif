@@ -453,6 +453,31 @@ void main() {
     expect(inputField().controller?.text, isEmpty);
   });
 
+  testWidgets('multiline bottom input lifts terminal without resizing it', (
+    tester,
+  ) async {
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+    final terminal = find.byKey(const ValueKey('terminal-pty-1'));
+    final inputBar = find.byKey(const ValueKey('bottom-bar'));
+    final initialTerminalSize = tester.getSize(terminal);
+    final initialTerminalTop = tester.getTopLeft(terminal).dy;
+    final initialInputHeight = tester.getSize(inputBar).height;
+
+    await tester.enterText(find.byType(TextField), 'a\nb\nc\nd\ne');
+    await tester.pump();
+    await tester.pump();
+
+    expect(tester.getSize(inputBar).height, greaterThan(initialInputHeight));
+    expect(tester.getSize(terminal), initialTerminalSize);
+    expect(tester.getTopLeft(terminal).dy, lessThan(initialTerminalTop));
+  });
+
   testWidgets('iPad-width buttons toggle left sidebar panels', (tester) async {
     final routes = await _pumpSession(tester, const Size(1024, 768));
     final initialPushes = routes.pushes;
@@ -998,10 +1023,10 @@ void main() {
       ..sessions = const [SessionInfo(name: 'test-session')];
     final prod = _SessionMenuMotifClient()
       ..sessions = const [SessionInfo(name: 'prod-session')];
-    final app = await _appStateWith(
-      {'server-1': current, 'server-2': prod},
-      serverConnectionRuntime: const DesktopServerConnectionRuntime(),
-    );
+    final app = await _appStateWith({
+      'server-1': current,
+      'server-2': prod,
+    }, serverConnectionRuntime: const DesktopServerConnectionRuntime());
 
     await tester.pumpWidget(
       ChangeNotifierProvider.value(

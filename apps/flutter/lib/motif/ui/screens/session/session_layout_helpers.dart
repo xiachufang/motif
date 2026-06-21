@@ -1,17 +1,42 @@
 part of '../session_screen.dart';
 
-class _BottomBarPlaceholder extends StatelessWidget {
-  final ValueListenable<double> contentHeight;
+const double _bottomBarCollapsedContentHeight = 116;
 
-  const _BottomBarPlaceholder({required this.contentHeight});
+class _BottomBarPlaceholder extends StatelessWidget {
+  const _BottomBarPlaceholder();
 
   @override
   Widget build(BuildContext context) {
     final bottomViewPadding = MediaQuery.viewPaddingOf(context).bottom;
+    return SizedBox(
+      height: _bottomBarCollapsedContentHeight + bottomViewPadding,
+    );
+  }
+}
+
+class _BottomBarLiftedPane extends StatelessWidget {
+  final bool enabled;
+  final ValueListenable<double> contentHeight;
+  final Widget child;
+
+  const _BottomBarLiftedPane({
+    required this.enabled,
+    required this.contentHeight,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return ValueListenableBuilder<double>(
       valueListenable: contentHeight,
-      builder: (context, height, _) =>
-          SizedBox(height: math.max(0.0, height) + bottomViewPadding),
+      child: child,
+      builder: (context, height, child) {
+        final pane = child!;
+        if (!enabled) return pane;
+        final lift = math.max(0.0, height - _bottomBarCollapsedContentHeight);
+        if (lift <= 0) return pane;
+        return Transform.translate(offset: Offset(0, -lift), child: pane);
+      },
     );
   }
 }

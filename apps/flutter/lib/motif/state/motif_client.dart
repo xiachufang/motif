@@ -1168,13 +1168,19 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     final bytes = (_ptyOutputBytes[ptyId] ?? 0) + byteCount;
     _ptyOutputChunks[ptyId] = chunks;
     _ptyOutputBytes[ptyId] = bytes;
-    if (chunks <= 3 || chunks == 10 || chunks % 100 == 0) {
-      Log.i(
-        'output pty=$ptyId chunk=$chunks bytes=$byteCount totalBytes=$bytes '
-        'hasSink=${_ptySinks.containsKey(ptyId)} '
-        'activePty=${_activePtyId()} replayBytes=${_ptyReplayBytes[ptyId] ?? 0}',
-        name: 'motif.pty',
-      );
+    final logAtInfo = chunks <= 3 || chunks == 10;
+    final logAtDebug = chunks == 100 || chunks % 1000 == 0;
+    if (logAtInfo || logAtDebug) {
+      final message =
+          'output pty=$ptyId chunk=$chunks bytes=$byteCount totalBytes=$bytes '
+          'hasSink=${_ptySinks.containsKey(ptyId)} '
+          'activePty=${_activePtyId()} '
+          'replayBytes=${_ptyReplayBytes[ptyId] ?? 0}';
+      if (logAtInfo) {
+        Log.i(message, name: 'motif.pty');
+      } else {
+        Log.d(message, name: 'motif.pty');
+      }
     }
   }
 
