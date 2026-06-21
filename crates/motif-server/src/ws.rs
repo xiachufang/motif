@@ -60,6 +60,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/events", get(crate::events_ws::events_upgrade))
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
+        .route("/tcp", get(crate::tcp_ws::tcp_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
         .with_state(state)
         .layer(cors_layer())

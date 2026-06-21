@@ -328,6 +328,32 @@ class RpcClient {
     );
   }
 
+  /// Open a raw WebSocket endpoint on motifd using this client's currently
+  /// resolved transport (direct, tailscale proxy, rendezvous loopback, or SSH
+  /// loopback). Callers own the returned channel.
+  WebSocketChannel openRawWebSocket(
+    String path, {
+    Map<String, String> query = const {},
+  }) {
+    if (_host.isEmpty) throw const RpcException('not connected');
+    final uri = Uri(
+      scheme: _wsScheme,
+      host: _host,
+      port: _port,
+      path: path,
+      queryParameters: {...query, 'token': _token},
+    );
+    return connectWebSocket(
+      uri.toString(),
+      headers: {'Authorization': 'Bearer $_token'},
+      proxyHost: _proxy.proxyHost,
+      proxyPort: _proxy.proxyPort,
+      proxyUser: _proxy.username,
+      proxyPass: _proxy.password,
+      certPin: _certPin,
+    );
+  }
+
   void _yieldFrame(Uint8List frame) {
     try {
       final obj = jsonDecode(utf8.decode(frame));

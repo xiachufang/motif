@@ -19,6 +19,7 @@ pub mod rzv;
 pub mod rpc_log;
 pub mod session;
 pub mod shell;
+pub mod tcp_ws;
 pub mod wake_detector;
 pub mod wire;
 pub mod ws;

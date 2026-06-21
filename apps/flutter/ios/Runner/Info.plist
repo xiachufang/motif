@@ -32,6 +32,11 @@
 	<string>Motif uses the microphone for voice input in the terminal composer.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Motif uses the camera to scan a server's pairing QR code.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

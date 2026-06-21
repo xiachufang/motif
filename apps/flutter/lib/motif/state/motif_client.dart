@@ -14,6 +14,7 @@ import '../log/log.dart';
 import '../models/motif_proto.dart';
 import '../models/settings.dart';
 import '../net/proxy_client.dart';
+import '../net/remote_port_forwarder.dart';
 import '../net/rpc_client.dart';
 import 'motif_runtime.dart';
 
@@ -90,6 +91,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
 
   RpcClient? _rpc;
   StreamSubscription<MotifEvent>? _eventSub;
+  final Set<RemotePortForwarder> _remotePortForwarders = {};
 
   // ─── session-scoped state ───
   List<SessionInfo> sessions = [];
@@ -267,6 +269,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   }
 
   Future<void> _teardownRpc() async {
+    await _stopRemotePortForwarders();
     await _eventSub?.cancel();
     _eventSub = null;
     await _rpc?.close();
@@ -877,6 +880,41 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   /// Upload raw bytes to a path via the binary fs.write fast path.
   Future<String> writeFileBytes(String path, Uint8List data) =>
       _rpc?.writeFileBinary(path, data) ?? Future.value('');
+
+  Future<RemotePortForwarder> openRemotePort({
+    String remoteHost = '127.0.0.1',
+    required int remotePort,
+    int? localPort,
+    String localScheme = 'http',
+  }) async {
+    final rpc = _rpc;
+    if (rpc == null) throw const RpcException('not connected');
+    final sessionId = rpc.sessionId;
+    if (sessionId == null) {
+      throw const RpcException('must attach a session before forwarding ports');
+    }
+    final forwarder = await RemotePortForwarder.start(
+      rpc: rpc,
+      sessionId: sessionId,
+      remoteHost: remoteHost,
+      remotePort: remotePort,
+      localPort: localPort,
+      localScheme: localScheme,
+    );
+    _remotePortForwarders.add(forwarder);
+    return forwarder;
+  }
+
+  Future<void> stopRemotePortForwarder(RemotePortForwarder forwarder) async {
+    _remotePortForwarders.remove(forwarder);
+    await forwarder.stop();
+  }
+
+  Future<void> _stopRemotePortForwarders() async {
+    final forwarders = _remotePortForwarders.toList();
+    _remotePortForwarders.clear();
+    await Future.wait([for (final forwarder in forwarders) forwarder.stop()]);
+  }
 
   Future<void> fsMkdir(String path) =>
       _rpc?.call('fs.mkdir', {'path': path}) ?? Future.value();

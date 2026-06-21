@@ -11,11 +11,18 @@ mod common;
 use std::process::Command;
 use std::time::Duration;
 
+use bytes::Bytes;
 use common::{b64_decode, b64_encode, init_git_repo, TestClient, TestServer};
+use futures_util::{SinkExt, StreamExt};
+use http::HeaderValue;
 use motif_proto::event::Event;
 use motif_proto::{fs as pfs, git as pgit, pty as ppty, session as ses, view as pview};
 use serde_json::json;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message;
 
 // ─────────────────────────── 1. session_lifecycle ───────────────────────────
 
@@ -1264,4 +1271,49 @@ async fn fs_watch_subscription_gates_events() {
             .all(|e| !matches!(e, Event::TreeChanged { .. } | Event::GitChanged { .. })),
         "unsubscribed B received tree/git events: {b_collected:?}"
     );
+}
+
+// ─────────────────────────── 9. tcp_ws_forwarding ───────────────────────────
+
+#[tokio::test]
+async fn tcp_ws_forwards_loopback_service() {
+    let server = TestServer::start().await;
+    let dir = TempDir::new().unwrap();
+    let c = TestClient::connect(&server, "tcp", dir.path())
+        .await
+        .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let remote_port = listener.local_addr().unwrap().port();
+    let echo_task = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 16];
+        let n = sock.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"ping");
+        sock.write_all(b"pong").await.unwrap();
+    });
+
+    let url = format!(
+        "ws://{}/tcp?session={}&host=127.0.0.1&port={}",
+        c.addr, c.session_id, remote_port
+    );
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {}", c.token)).unwrap(),
+    );
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(Message::Binary(Bytes::from_static(b"ping")))
+        .await
+        .unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(msg.into_data(), Bytes::from_static(b"pong"));
+    let _ = ws.close(None).await;
+    echo_task.await.unwrap();
 }
