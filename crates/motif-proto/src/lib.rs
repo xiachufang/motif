@@ -11,6 +11,7 @@ pub mod fs;
 pub mod git;
 pub mod ping;
 pub mod pty;
+pub mod remote_port;
 pub mod session;
 pub mod terminal_query;
 pub mod view;

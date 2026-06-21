@@ -9,11 +9,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use motif_proto::common::{ClientId, PtyId, Seq, SessionId, UnixMs};
 use motif_proto::event::Event;
+use motif_proto::remote_port::RemotePortMapping;
 use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{Notify, broadcast};
 
 use crate::pty::PtyPool;
 
@@ -99,6 +100,10 @@ pub struct Session {
     /// UI the same way and PTY output colours match the rendered background.
     theme: Mutex<Option<String>>,
 
+    /// Remote loopback services the user pinned for this session. The client
+    /// owns ephemeral local forwarders; motifd owns this session-scoped config.
+    remote_ports: Mutex<Vec<RemotePortMapping>>,
+
     /// Pending last-wins events keyed by stream, flushed after a trailing quiet
     /// window by the `coalesce_task`. Lets a burst of `view.active_changed` /
     /// `session.theme_changed` / `pty.resize` collapse to its final value
@@ -138,6 +143,7 @@ impl Session {
             fs_subscribers: Mutex::new(HashSet::new()),
             term_palette: Mutex::new(None),
             theme: Mutex::new(None),
+            remote_ports: Mutex::new(Vec::new()),
             coalesce: Mutex::new(HashMap::new()),
             coalesce_wake: Arc::new(Notify::new()),
             coalesce_task: Mutex::new(None),
@@ -189,6 +195,49 @@ impl Session {
     /// reported one.
     pub fn theme(&self) -> Option<String> {
         self.theme.lock().clone()
+    }
+
+    pub fn remote_ports(&self) -> Vec<RemotePortMapping> {
+        self.remote_ports.lock().clone()
+    }
+
+    pub fn add_remote_port(
+        &self,
+        remote_host: String,
+        remote_port: u16,
+        local_scheme: String,
+    ) -> RemotePortMapping {
+        let mapping = RemotePortMapping {
+            id: format!("remote-port-{}", ulid::Ulid::new()),
+            remote_host,
+            remote_port,
+            local_scheme,
+            created_at: now_ms(),
+        };
+        self.remote_ports.lock().push(mapping.clone());
+        mapping
+    }
+
+    pub fn update_remote_port(
+        &self,
+        id: &str,
+        remote_host: String,
+        remote_port: u16,
+        local_scheme: String,
+    ) -> Option<RemotePortMapping> {
+        let mut mappings = self.remote_ports.lock();
+        let mapping = mappings.iter_mut().find(|m| m.id == id)?;
+        mapping.remote_host = remote_host;
+        mapping.remote_port = remote_port;
+        mapping.local_scheme = local_scheme;
+        Some(mapping.clone())
+    }
+
+    pub fn remove_remote_port(&self, id: &str) -> bool {
+        let mut mappings = self.remote_ports.lock();
+        let before = mappings.len();
+        mappings.retain(|m| m.id != id);
+        mappings.len() != before
     }
 
     /// Update the session-wide theme. `None` leaves it untouched. When the
@@ -754,6 +803,29 @@ mod tests {
         let after_mid = s.replay_since(mid);
         assert_eq!(after_mid.len(), total - mid as usize);
         assert_eq!(after_mid.first().unwrap().seq(), mid + 1);
+    }
+
+    #[test]
+    fn remote_ports_are_session_scoped() {
+        let a = Session::new("a", PathBuf::from("/tmp"));
+        let b = Session::new("b", PathBuf::from("/tmp"));
+
+        let first = a.add_remote_port("127.0.0.1".into(), 3000, "http".into());
+        let second = a.add_remote_port("localhost".into(), 8443, "https".into());
+
+        assert!(b.remote_ports().is_empty());
+        assert_eq!(a.remote_ports(), vec![first.clone(), second.clone()]);
+
+        let updated = a
+            .update_remote_port(&first.id, "127.0.0.1".into(), 3001, "http".into())
+            .expect("mapping should update");
+        assert_eq!(updated.created_at, first.created_at);
+        assert_eq!(updated.remote_port, 3001);
+        assert_eq!(a.remote_ports()[0], updated);
+
+        assert!(a.remove_remote_port(&second.id));
+        assert_eq!(a.remote_ports(), vec![updated]);
+        assert!(!a.remove_remote_port("missing"));
     }
 
     /// A burst of distinct `view.active_changed` within the trailing window

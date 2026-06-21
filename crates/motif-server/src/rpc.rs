@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use motif_proto::envelope::{Id, Request, Response};
 use motif_proto::error::{ErrorCode, RpcError};
+use motif_proto::remote_port as premote;
 use motif_proto::view as pview;
 use motif_proto::{event::Event, fs as pfs, git as pgit, pty as ppty, session as ses};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::session::manager::{ManagerError, SessionManager};
 use crate::session::Session;
+use crate::session::manager::{ManagerError, SessionManager};
 
 pub struct ConnState {
     pub client_id: motif_proto::common::ClientId,
@@ -125,6 +126,49 @@ pub fn dispatch_concurrent(
         "view.close" => handle_view_close(manager, conn, id, req.params),
         "view.activate" => handle_view_activate(manager, conn, id, req.params),
         "view.move" => handle_view_move(manager, conn, id, req.params),
+
+        // remote_port.* (session-scoped remote loopback shortcuts)
+        "remote_port.list" => attached(
+            manager,
+            conn,
+            id,
+            req.params,
+            |s, _: premote::ListParams| {
+                Ok(premote::ListResult {
+                    mappings: s.remote_ports(),
+                })
+            },
+        ),
+        "remote_port.add" => attached(manager, conn, id, req.params, |s, p: premote::AddParams| {
+            validate_remote_port(&p.remote_host, p.remote_port, &p.local_scheme)?;
+            Ok(premote::AddResult {
+                mapping: s.add_remote_port(p.remote_host, p.remote_port, p.local_scheme),
+            })
+        }),
+        "remote_port.update" => attached(
+            manager,
+            conn,
+            id,
+            req.params,
+            |s, p: premote::UpdateParams| {
+                validate_remote_port(&p.remote_host, p.remote_port, &p.local_scheme)?;
+                let mapping =
+                    s.update_remote_port(&p.id, p.remote_host, p.remote_port, p.local_scheme);
+                mapping
+                    .map(|mapping| premote::UpdateResult { mapping })
+                    .ok_or_else(|| RpcError::invalid_params("remote port mapping not found"))
+            },
+        ),
+        "remote_port.remove" => attached(
+            manager,
+            conn,
+            id,
+            req.params,
+            |s, p: premote::RemoveParams| {
+                s.remove_remote_port(&p.id);
+                Ok(premote::RemoveResult::default())
+            },
+        ),
 
         // fs.*
         // Read-only browse: works without an attached session so the dir picker
@@ -581,6 +625,27 @@ fn handle_view_move(
     };
     s.move_view(&p.view_id, p.to_index);
     Response::ok(id, pview::MoveResult::default())
+}
+
+fn validate_remote_port(
+    remote_host: &str,
+    remote_port: u16,
+    local_scheme: &str,
+) -> Result<(), RpcError> {
+    if remote_port == 0 {
+        return Err(RpcError::invalid_params("remote_port must be 1-65535"));
+    }
+    if !matches!(remote_host, "127.0.0.1" | "localhost" | "::1") {
+        return Err(RpcError::invalid_params(
+            "remote_host must be a loopback host",
+        ));
+    }
+    if !matches!(local_scheme, "http" | "https") {
+        return Err(RpcError::invalid_params(
+            "local_scheme must be http or https",
+        ));
+    }
+    Ok(())
 }
 
 // ─────────────────────────── helpers ───────────────────────────

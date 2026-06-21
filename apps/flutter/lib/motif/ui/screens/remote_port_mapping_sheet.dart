@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -18,10 +20,41 @@ Future<void> showRemotePortMappingsSheet(
   );
 }
 
-class _RemotePortMappingsPanel extends StatelessWidget {
+class _RemotePortMappingsPanel extends StatefulWidget {
   const _RemotePortMappingsPanel({required this.motif});
 
   final MotifClient motif;
+  @override
+  State<_RemotePortMappingsPanel> createState() =>
+      _RemotePortMappingsPanelState();
+}
+
+class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
+  bool _loading = true;
+  String? _error;
+
+  MotifClient get motif => widget.motif;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_refreshMappings());
+  }
+
+  Future<void> _refreshMappings() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await motif.refreshRemotePortMappings();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
   Future<void> _addMapping(BuildContext context) async {
     final request = await _showRemotePortForm(context);
@@ -104,15 +137,56 @@ class _RemotePortMappingsPanel extends StatelessWidget {
       title: 'Remote ports',
       actions: [
         IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: 'Refresh',
+          onPressed: _loading ? null : _refreshMappings,
+        ),
+        IconButton(
           icon: const Icon(Icons.add),
           tooltip: 'Add port',
-          onPressed: () => _addMapping(context),
+          onPressed: _loading ? null : () => _addMapping(context),
         ),
       ],
       body: ListenableBuilder(
         listenable: motif,
         builder: (context, _) {
           final mappings = motif.remotePortMappings;
+          if (_loading && mappings.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (_error != null && mappings.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(MotifSpacing.xl),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.error_outline, size: 40, color: c.danger),
+                    const SizedBox(height: MotifSpacing.md),
+                    Text(
+                      'Could not load ports',
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: MotifSpacing.xs),
+                    Text(
+                      _error!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: c.textTertiary),
+                    ),
+                    const SizedBox(height: MotifSpacing.lg),
+                    FilledButton.icon(
+                      onPressed: _refreshMappings,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
           if (mappings.isEmpty) {
             return Center(
               child: Padding(

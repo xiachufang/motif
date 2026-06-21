@@ -103,19 +103,40 @@ class RemotePortMapping {
   String get remoteEndpoint => '$remoteHost:$remotePort';
   String get displayTitle => '$localScheme://$remoteHost:$remotePort';
 
-  RemotePortMapping _copyWith({
-    required String remoteHost,
-    required int remotePort,
-    required String localScheme,
-    required RemotePortForwarder forwarder,
-  }) => RemotePortMapping._(
-    id: id,
-    remoteHost: remoteHost,
-    remotePort: remotePort,
-    localScheme: localScheme,
-    createdAt: createdAt,
-    forwarder: forwarder,
-  );
+  bool _matchesConfig(_RemotePortMappingConfig config) =>
+      id == config.id &&
+      remoteHost == config.remoteHost &&
+      remotePort == config.remotePort &&
+      localScheme == config.localScheme;
+}
+
+class _RemotePortMappingConfig {
+  const _RemotePortMappingConfig({
+    required this.id,
+    required this.remoteHost,
+    required this.remotePort,
+    required this.localScheme,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String remoteHost;
+  final int remotePort;
+  final String localScheme;
+  final DateTime createdAt;
+
+  factory _RemotePortMappingConfig.fromJson(Map<String, Object?> json) {
+    final createdAtMs = (json['created_at'] as num?)?.toInt();
+    return _RemotePortMappingConfig(
+      id: json['id'] as String,
+      remoteHost: (json['remote_host'] as String?) ?? '127.0.0.1',
+      remotePort: (json['remote_port'] as num).toInt(),
+      localScheme: (json['local_scheme'] as String?) ?? 'http',
+      createdAt: createdAtMs == null
+          ? DateTime.now()
+          : DateTime.fromMillisecondsSinceEpoch(createdAtMs),
+    );
+  }
 }
 
 class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
@@ -130,7 +151,6 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   RpcClient? _rpc;
   StreamSubscription<MotifEvent>? _eventSub;
   final List<RemotePortMapping> _remotePortMappings = [];
-  int _nextRemotePortMappingId = 1;
 
   List<RemotePortMapping> get remotePortMappings =>
       List.unmodifiable(_remotePortMappings);
@@ -391,6 +411,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     _eventSub = null;
     await _rpc?.close();
     _rpc = null;
+    await _stopRemotePortForwarders();
     if (_pendingViewActivation != null) {
       pendingLocalViewId = activeViewId;
       _completePendingViewActivation();
@@ -482,6 +503,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   }
 
   Future<void> detach() async {
+    await _stopRemotePortForwarders();
     await _rpc?.call('session.detach');
     intendedSession = null;
     resumeSeqs.clear();
@@ -923,27 +945,110 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   Future<String> writeFileBytes(String path, Uint8List data) =>
       _rpc?.writeFileBinary(path, data) ?? Future.value('');
 
+  Future<List<RemotePortMapping>> refreshRemotePortMappings() async {
+    final rpc = _rpc;
+    if (rpc == null) throw const RpcException('not connected');
+    if (rpc.sessionId == null) {
+      throw const RpcException('must attach a session before listing ports');
+    }
+    final body = await rpc.call('remote_port.list');
+    final configs = ((body['mappings'] as List?) ?? [])
+        .map(
+          (e) => _RemotePortMappingConfig.fromJson(
+            (e as Map).cast<String, Object?>(),
+          ),
+        )
+        .toList();
+    await _reconcileRemotePortMappings(configs);
+    return remotePortMappings;
+  }
+
   Future<RemotePortMapping> addRemotePortMapping({
     String remoteHost = '127.0.0.1',
     required int remotePort,
     String localScheme = 'http',
   }) async {
-    final forwarder = await _startRemotePortForwarder(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localScheme: localScheme,
+    final body = await _rpc!.call('remote_port.add', {
+      'remote_host': remoteHost,
+      'remote_port': remotePort,
+      'local_scheme': localScheme,
+    });
+    final config = _RemotePortMappingConfig.fromJson(
+      ((body['mapping'] as Map?) ?? const {}).cast<String, Object?>(),
     );
-    final mapping = RemotePortMapping._(
-      id: 'remote-port-${_nextRemotePortMappingId++}',
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localScheme: localScheme,
-      createdAt: DateTime.now(),
+    final mapping = await _startRemotePortMapping(config);
+    _upsertRemotePortMapping(mapping);
+    return mapping;
+  }
+
+  Future<RemotePortMapping> _startRemotePortMapping(
+    _RemotePortMappingConfig config, {
+    int? localPort,
+  }) async {
+    final forwarder = await _startRemotePortForwarder(
+      remoteHost: config.remoteHost,
+      remotePort: config.remotePort,
+      localPort: localPort,
+      localScheme: config.localScheme,
+    );
+    return RemotePortMapping._(
+      id: config.id,
+      remoteHost: config.remoteHost,
+      remotePort: config.remotePort,
+      localScheme: config.localScheme,
+      createdAt: config.createdAt,
       forwarder: forwarder,
     );
-    _remotePortMappings.add(mapping);
+  }
+
+  Future<void> _reconcileRemotePortMappings(
+    List<_RemotePortMappingConfig> configs,
+  ) async {
+    final existingById = {
+      for (final mapping in _remotePortMappings) mapping.id: mapping,
+    };
+    final next = <RemotePortMapping>[];
+    final started = <RemotePortForwarder>[];
+    final stopAfterSwap = <RemotePortForwarder>[];
+
+    try {
+      for (final config in configs) {
+        final existing = existingById.remove(config.id);
+        if (existing != null && existing._matchesConfig(config)) {
+          next.add(existing);
+          continue;
+        }
+        final mapping = await _startRemotePortMapping(config);
+        started.add(mapping.forwarder);
+        next.add(mapping);
+        if (existing != null) stopAfterSwap.add(existing.forwarder);
+      }
+    } catch (_) {
+      await Future.wait([for (final forwarder in started) forwarder.stop()]);
+      rethrow;
+    }
+
+    stopAfterSwap.addAll(existingById.values.map((m) => m.forwarder));
+    _remotePortMappings
+      ..clear()
+      ..addAll(next);
     notifyListeners();
-    return mapping;
+
+    await Future.wait([
+      for (final forwarder in stopAfterSwap) forwarder.stop(),
+    ]);
+  }
+
+  void _upsertRemotePortMapping(RemotePortMapping mapping) {
+    final index = _remotePortMappings.indexWhere((m) => m.id == mapping.id);
+    if (index < 0) {
+      _remotePortMappings.add(mapping);
+    } else {
+      final old = _remotePortMappings[index];
+      _remotePortMappings[index] = mapping;
+      unawaited(old.forwarder.stop());
+    }
+    notifyListeners();
   }
 
   Future<RemotePortMapping> updateRemotePortMapping(
@@ -952,41 +1057,27 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     required int remotePort,
     String localScheme = 'http',
   }) async {
-    final originalIndex = _remotePortMappings.indexWhere((m) => m.id == id);
-    if (originalIndex < 0) {
-      throw ArgumentError.value(id, 'id', 'remote port mapping not found');
-    }
-    final original = _remotePortMappings[originalIndex];
-    if (original.remoteHost == remoteHost &&
-        original.remotePort == remotePort &&
-        original.localScheme == localScheme) {
-      return original;
-    }
+    final body = await _rpc!.call('remote_port.update', {
+      'id': id,
+      'remote_host': remoteHost,
+      'remote_port': remotePort,
+      'local_scheme': localScheme,
+    });
+    final config = _RemotePortMappingConfig.fromJson(
+      ((body['mapping'] as Map?) ?? const {}).cast<String, Object?>(),
+    );
+    final existing = _remotePortMappings
+        .where((mapping) => mapping.id == id)
+        .firstOrNull;
+    if (existing != null && existing._matchesConfig(config)) return existing;
 
-    final forwarder = await _startRemotePortForwarder(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localScheme: localScheme,
-    );
-    final index = _remotePortMappings.indexWhere((m) => m.id == id);
-    if (index < 0) {
-      await forwarder.stop();
-      throw ArgumentError.value(id, 'id', 'remote port mapping not found');
-    }
-    final current = _remotePortMappings[index];
-    final updated = current._copyWith(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localScheme: localScheme,
-      forwarder: forwarder,
-    );
-    _remotePortMappings[index] = updated;
-    notifyListeners();
-    await current.forwarder.stop();
-    return updated;
+    final mapping = await _startRemotePortMapping(config);
+    _upsertRemotePortMapping(mapping);
+    return mapping;
   }
 
   Future<void> removeRemotePortMapping(String id) async {
+    await _rpc!.call('remote_port.remove', {'id': id});
     final index = _remotePortMappings.indexWhere((m) => m.id == id);
     if (index < 0) return;
     final mapping = _remotePortMappings.removeAt(index);
@@ -1000,23 +1091,17 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     int? localPort,
     String localScheme = 'http',
   }) async {
-    final forwarder = await _startRemotePortForwarder(
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localPort: localPort,
-      localScheme: localScheme,
+    final body = await _rpc!.call('remote_port.add', {
+      'remote_host': remoteHost,
+      'remote_port': remotePort,
+      'local_scheme': localScheme,
+    });
+    final config = _RemotePortMappingConfig.fromJson(
+      ((body['mapping'] as Map?) ?? const {}).cast<String, Object?>(),
     );
-    final mapping = RemotePortMapping._(
-      id: 'remote-port-${_nextRemotePortMappingId++}',
-      remoteHost: remoteHost,
-      remotePort: remotePort,
-      localScheme: localScheme,
-      createdAt: DateTime.now(),
-      forwarder: forwarder,
-    );
-    _remotePortMappings.add(mapping);
-    notifyListeners();
-    return forwarder;
+    final mapping = await _startRemotePortMapping(config, localPort: localPort);
+    _upsertRemotePortMapping(mapping);
+    return mapping.forwarder;
   }
 
   Future<void> stopRemotePortForwarder(RemotePortForwarder forwarder) async {
@@ -1024,6 +1109,8 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
       (m) => identical(m.forwarder, forwarder),
     );
     if (index >= 0) {
+      final id = _remotePortMappings[index].id;
+      await _rpc?.call('remote_port.remove', {'id': id});
       _remotePortMappings.removeAt(index);
       notifyListeners();
     }
@@ -1053,11 +1140,11 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     }
     return RemotePortForwarder.start(
       rpc: rpc,
-      sessionId: sessionId,
       remoteHost: remoteHost,
       remotePort: remotePort,
       localPort: localPort,
       localScheme: localScheme,
+      sessionId: sessionId,
     );
   }
 
