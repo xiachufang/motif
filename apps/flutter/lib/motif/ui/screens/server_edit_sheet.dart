@@ -421,7 +421,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                 MotifSpacing.lg,
                 MotifSpacing.md,
                 MotifSpacing.lg,
-                MediaQuery.of(context).viewInsets.bottom + MotifSpacing.xl,
+                MotifSpacing.xl,
               ),
               children: [
                 MotifSection(
@@ -532,7 +532,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
                 MotifSpacing.lg,
                 MotifSpacing.md,
                 MotifSpacing.lg,
-                MediaQuery.of(context).viewInsets.bottom + MotifSpacing.xl,
+                MotifSpacing.xl,
               ),
               children: [
                 if (_supportsTailscale || _supportsSsh) ...[

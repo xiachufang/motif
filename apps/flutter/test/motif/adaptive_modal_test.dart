@@ -64,6 +64,42 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets('adaptive panel stays below status bar with keyboard', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.viewPadding = const FakeViewPadding(top: 47, bottom: 34);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 336);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetViewPadding);
+    addTearDown(tester.view.resetViewInsets);
+    try {
+      await _pumpHost(
+        tester,
+        onOpen: (context) => showAdaptivePanel<void>(
+          context,
+          builder: (_) => const Column(
+            children: [
+              AdaptiveModalHeader(title: 'Panel'),
+              Expanded(child: SizedBox()),
+            ],
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      final headerTop = tester.getTopLeft(find.byType(AdaptiveModalHeader)).dy;
+      expect(headerTop, greaterThanOrEqualTo(47 + MotifSpacing.sm));
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
 }
 
 Future<void> _pumpHost(

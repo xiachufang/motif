@@ -12,6 +12,7 @@ bool get _useSheet =>
 const double _modalMinWidth = 360;
 const double _modalMaxWidth = 440;
 const double _modalMaxHeight = 640;
+const double _sheetMaxHeightFraction = 0.86;
 
 /// Shows [builder]'s widget as a modal bottom sheet on iOS/Android
 /// (keyboard-aware, scrollable) and as a dialog elsewhere.
@@ -35,8 +36,8 @@ Future<T?> showAdaptiveModal<T>(
     isScrollControlled: true,
     clipBehavior: Clip.antiAlias,
     backgroundColor: background,
-    builder: (context) => Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+    builder: (context) => _KeyboardAwareSheet(
+      maxHeightFraction: _sheetMaxHeightFraction,
       child: builder(context),
     ),
   );
@@ -71,11 +72,49 @@ Future<T?> showAdaptivePanel<T>(
     isScrollControlled: true,
     clipBehavior: Clip.antiAlias,
     backgroundColor: background,
-    builder: (context) => Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+    builder: (context) => _KeyboardAwareSheet(
+      maxHeightFraction: _sheetMaxHeightFraction,
+      fillHeight: true,
       child: _DraggablePanelSheet(builder: builder),
     ),
   );
+}
+
+class _KeyboardAwareSheet extends StatelessWidget {
+  final Widget child;
+  final double maxHeightFraction;
+  final bool fillHeight;
+
+  const _KeyboardAwareSheet({
+    required this.child,
+    required this.maxHeightFraction,
+    this.fillHeight = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final keyboardInset = media.viewInsets.bottom;
+    final topGap = media.viewPadding.top + MotifSpacing.sm;
+    final maxHeight = (media.size.height - keyboardInset - topGap)
+        .clamp(0.0, media.size.height)
+        .toDouble();
+    final sheetHeight = (media.size.height * maxHeightFraction)
+        .clamp(0.0, maxHeight)
+        .toDouble();
+    final boundedChild = fillHeight
+        ? SizedBox(height: sheetHeight, child: child)
+        : ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: sheetHeight),
+            child: child,
+          );
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+      padding: EdgeInsets.only(bottom: keyboardInset),
+      child: boundedChild,
+    );
+  }
 }
 
 /// Sheet body for [showAdaptivePanel]: a [DraggableScrollableSheet] that
@@ -91,6 +130,8 @@ Future<T?> showAdaptivePanel<T>(
 class _DraggablePanelSheet extends StatefulWidget {
   final WidgetBuilder builder;
 
+  static const restingSize = 1.0;
+
   const _DraggablePanelSheet({required this.builder});
 
   @override
@@ -98,11 +139,9 @@ class _DraggablePanelSheet extends StatefulWidget {
 }
 
 class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
-  static const _restingSize = 0.86;
-
   final _controller = DraggableScrollableController();
   int _pointersDown = 0;
-  double _lastExtent = _restingSize;
+  double _lastExtent = _DraggablePanelSheet.restingSize;
   bool _popped = false;
 
   @override
@@ -116,7 +155,7 @@ class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
     final settlingDown =
         _pointersDown == 0 &&
         extent < _lastExtent &&
-        extent < _restingSize - 0.001;
+        extent < _DraggablePanelSheet.restingSize - 0.001;
     _lastExtent = extent;
     if (settlingDown && !_popped) {
       _popped = true;
@@ -144,9 +183,9 @@ class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
         child: DraggableScrollableSheet(
           controller: _controller,
           expand: false,
-          initialChildSize: _restingSize,
+          initialChildSize: _DraggablePanelSheet.restingSize,
           minChildSize: 0,
-          maxChildSize: _restingSize,
+          maxChildSize: _DraggablePanelSheet.restingSize,
           snap: true,
           builder: (context, scrollController) => PrimaryScrollController(
             controller: scrollController,
