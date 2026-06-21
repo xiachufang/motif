@@ -637,7 +637,8 @@ class RpcClient {
   }
 
   /// Run a /pty byte chunk through the per-PTY shell parser, then synthesize
-  /// `pty.output` + shell events matching the legacy wire shape.
+  /// `pty.output` + shell events. The wire protocol uses `data_b64`, but local
+  /// synthesized events can keep raw bytes to avoid a hot-path base64 roundtrip.
   void _processPtyBytes(String ptyId, Uint8List bytes) {
     final ch = _ptys[ptyId];
     if (ch == null) return;
@@ -649,7 +650,7 @@ class RpcClient {
       _emit(
         MotifEvent('pty.output', {
           'pty_id': ptyId,
-          'data_b64': base64Encode(result.passthrough),
+          'data_bytes': result.passthrough,
           'block_id': blockId,
           'scope': scope.wire,
           'seq': 0,

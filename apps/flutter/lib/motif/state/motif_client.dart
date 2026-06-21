@@ -1019,9 +1019,8 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     switch (e.method) {
       case 'pty.output':
         final id = p['pty_id'] as String?;
-        final b64 = p['data_b64'] as String?;
-        if (id != null && b64 != null) {
-          final bytes = base64Decode(b64);
+        final bytes = _bytesFromPtyOutput(p);
+        if (id != null && bytes != null) {
           _rememberPtyBytes(id, bytes);
           _notePtyOutput(id, bytes.length);
           final delivery = _ptyReplayDeliveries[id];
@@ -1177,6 +1176,15 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
         name: 'motif.pty',
       );
     }
+  }
+
+  Uint8List? _bytesFromPtyOutput(Map<String, Object?> params) {
+    final raw = params['data_bytes'];
+    if (raw is Uint8List) return raw;
+    if (raw is List<int>) return Uint8List.fromList(raw);
+    final b64 = params['data_b64'];
+    if (b64 is String) return base64Decode(b64);
+    return null;
   }
 
   void _updatePty(String id, PtyInfo Function(PtyInfo) f) {

@@ -237,10 +237,15 @@ void _terminalWorkerMain(SendPort events) {
 class _TerminalWorker {
   _TerminalWorker(this.events, this.commands);
 
+  static const Duration _remoteOutputFrameInterval = Duration(milliseconds: 33);
+  static const Duration _interactiveFrameInterval = Duration(milliseconds: 16);
+  static const Duration _cursorPollInterval = Duration(milliseconds: 500);
+
   final SendPort events;
   final ReceivePort commands;
   TerminalState? state;
   Timer? frameTimer;
+  Timer? cursorTimer;
   bool forceSnapshot = false;
   int foregroundArgb = 0xffffffff;
   int backgroundArgb = 0xff000000;
@@ -259,12 +264,12 @@ class _TerminalWorker {
         case 'theme':
           foregroundArgb = command['foregroundArgb'] as int;
           backgroundArgb = command['backgroundArgb'] as int;
-          _scheduleSnapshot(force: true);
+          _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'feed':
           final bytes = _materializeBytes(command['bytes']);
           if (bytes != null && bytes.isNotEmpty) {
             state?.feedBytes(bytes);
-            _scheduleSnapshot(force: true);
+            _scheduleSnapshot(force: true, delay: _remoteOutputFrameInterval);
           }
         case 'resize':
           _resize(command);
@@ -305,11 +310,7 @@ class _TerminalWorker {
     state = terminal;
     _setMouseEncoderSize(command);
     events.send({'type': 'initialized'});
-    frameTimer = Timer.periodic(
-      const Duration(milliseconds: 16),
-      (_) => _pumpFrame(),
-    );
-    _scheduleSnapshot(force: true);
+    _scheduleSnapshot(force: true, delay: Duration.zero);
   }
 
   void _resize(Map command) {
@@ -322,7 +323,7 @@ class _TerminalWorker {
       command['cellHeight'] as int,
     );
     _setMouseEncoderSize(command);
-    _scheduleSnapshot(force: true);
+    _scheduleSnapshot(force: true, delay: Duration.zero);
   }
 
   void _setMouseEncoderSize(Map command) {
@@ -364,11 +365,25 @@ class _TerminalWorker {
     return null;
   }
 
-  void _scheduleSnapshot({required bool force}) {
+  void _scheduleSnapshot({
+    required bool force,
+    Duration delay = _interactiveFrameInterval,
+  }) {
     forceSnapshot = forceSnapshot || force;
+    if (state == null || frameTimer != null) return;
+    cursorTimer?.cancel();
+    cursorTimer = null;
+    frameTimer = Timer(delay, _pumpFrame);
+  }
+
+  void _scheduleCursorPoll() {
+    if (state == null || frameTimer != null || cursorTimer != null) return;
+    cursorTimer = Timer(_cursorPollInterval, _pumpFrame);
   }
 
   void _pumpFrame() {
+    frameTimer = null;
+    cursorTimer = null;
     final terminal = state;
     if (terminal == null) return;
     terminal.updateRenderState();
@@ -378,7 +393,10 @@ class _TerminalWorker {
     final cursor = _WorkerCursorSnapshot.fromState(terminal);
     final cursorChanged = cursor != lastCursor;
     lastCursor = cursor;
-    if (!dirty && !cursorChanged && !forceSnapshot) return;
+    if (!dirty && !cursorChanged && !forceSnapshot) {
+      _scheduleCursorPoll();
+      return;
+    }
     forceSnapshot = false;
     events.send({
       'type': 'snapshot',
@@ -387,6 +405,7 @@ class _TerminalWorker {
         defaultBackgroundArgb: backgroundArgb,
       ),
     });
+    _scheduleCursorPoll();
   }
 
   void _dispose() {
@@ -397,6 +416,8 @@ class _TerminalWorker {
   void _disposeState() {
     frameTimer?.cancel();
     frameTimer = null;
+    cursorTimer?.cancel();
+    cursorTimer = null;
     state?.dispose();
     state = null;
     lastCursor = null;
