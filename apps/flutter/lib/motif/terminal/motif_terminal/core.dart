@@ -296,6 +296,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _snapshot = null;
     _discardTerminalSelectionState();
+    _terminalRenderCache.clear();
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
   }
@@ -352,6 +353,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _snapshot = null;
     _discardTerminalSelectionState();
+    _terminalRenderCache.clear();
     _lastCursorSnapshot = null;
     _remoteByteQueue.clear();
     _remoteByteQueueBytes = 0;

@@ -237,8 +237,9 @@ void _terminalWorkerMain(SendPort events) {
 class _TerminalWorker {
   _TerminalWorker(this.events, this.commands);
 
-  static const Duration _remoteOutputFrameInterval = Duration(milliseconds: 33);
+  static const Duration _remoteOutputFrameInterval = Duration(milliseconds: 50);
   static const Duration _interactiveFrameInterval = Duration(milliseconds: 16);
+  static const Duration _localEchoWindow = Duration(milliseconds: 150);
   static const Duration _cursorPollInterval = Duration(milliseconds: 500);
 
   final SendPort events;
@@ -250,6 +251,7 @@ class _TerminalWorker {
   int foregroundArgb = 0xffffffff;
   int backgroundArgb = 0xff000000;
   _WorkerCursorSnapshot? lastCursor;
+  DateTime? lastLocalInputAt;
 
   void run() {
     commands.listen(_handleCommand);
@@ -269,13 +271,16 @@ class _TerminalWorker {
           final bytes = _materializeBytes(command['bytes']);
           if (bytes != null && bytes.isNotEmpty) {
             state?.feedBytes(bytes);
-            _scheduleSnapshot(force: true, delay: _remoteOutputFrameInterval);
+            _scheduleSnapshot(force: true, delay: _feedFrameInterval);
           }
         case 'resize':
           _resize(command);
         case 'writeBytes':
           final bytes = _materializeBytes(command['bytes']);
-          if (bytes != null) state?.writeToPty(bytes);
+          if (bytes != null) {
+            _markLocalInput();
+            state?.writeToPty(bytes);
+          }
         case 'key':
           _key(command);
         case 'mouse':
@@ -338,6 +343,7 @@ class _TerminalWorker {
   }
 
   void _key(Map command) {
+    _markLocalInput();
     state?.encodeKeyAndWrite(
       GhosttyKey.fromValue(command['key'] as int),
       GhosttyKeyAction.fromValue(command['action'] as int),
@@ -348,6 +354,7 @@ class _TerminalWorker {
   }
 
   void _mouse(Map command) {
+    _markLocalInput();
     state?.encodeMouseAndWrite(
       GhosttyMouseAction.fromValue(command['action'] as int),
       GhosttyMouseButton.fromValue(command['button'] as int),
@@ -363,6 +370,19 @@ class _TerminalWorker {
     }
     if (bytes is Uint8List) return bytes;
     return null;
+  }
+
+  Duration get _feedFrameInterval {
+    final inputAt = lastLocalInputAt;
+    if (inputAt == null) return _remoteOutputFrameInterval;
+    final elapsed = DateTime.now().difference(inputAt);
+    return elapsed <= _localEchoWindow
+        ? _interactiveFrameInterval
+        : _remoteOutputFrameInterval;
+  }
+
+  void _markLocalInput() {
+    lastLocalInputAt = DateTime.now();
   }
 
   void _scheduleSnapshot({

@@ -147,6 +147,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   OverlayEntry? _touchSelectionMenuEntry;
   int _remoteChunks = 0;
   int _remoteBytes = 0;
+  final TerminalRenderCache _terminalRenderCache = TerminalRenderCache();
 
   TerminalFontSpec get _fontSpec {
     final explicit = widget.fontFamily;
@@ -254,6 +255,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _stopScrollInertia(resetVelocity: true);
     _scrollTicker?.dispose();
     _discardTerminalSelectionState();
+    _terminalRenderCache.dispose();
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
     _focusNode.removeListener(_onFocusChanged);
     widget.keyboardInset.removeListener(_syncKeyboardLift);
@@ -433,6 +435,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                         alpha: 0.72,
                       ),
                       selectionForeground: colorScheme.onPrimary,
+                      renderCache: _terminalRenderCache,
                       preeditText: _composingText,
                     ),
                     size: Size(constraints.maxWidth, constraints.maxHeight),

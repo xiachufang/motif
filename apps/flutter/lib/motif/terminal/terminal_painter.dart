@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'ghostty_bindings.g.dart';
@@ -261,6 +262,7 @@ class TerminalSnapshotPainter extends CustomPainter {
   final TerminalSelection? selection;
   final Color selectionBackground;
   final Color selectionForeground;
+  final TerminalRenderCache? renderCache;
 
   /// IME composition (preedit) text to render inline at the cursor. Null when
   /// no composition is active. This is a client-side overlay only — nothing is
@@ -279,6 +281,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.selection,
     this.selectionBackground = const Color(0x996EA8FE),
     this.selectionForeground = Colors.white,
+    this.renderCache,
     this.preeditText,
   });
 
@@ -290,48 +293,31 @@ class TerminalSnapshotPainter extends CustomPainter {
       Paint()..color = bgColor,
     );
 
-    for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
-      final y = padding + rowIdx * cellHeight;
-      for (final cell in snapshot.lines[rowIdx].cells) {
-        final x = padding + cell.col * cellWidth;
-        final drawWidth = cell.widthCells <= 1
-            ? cellWidth
-            : cellWidth * cell.widthCells;
-        if (cell.drawsBackground) {
-          canvas.drawRect(
-            Rect.fromLTWH(x, y, drawWidth, cellHeight),
-            Paint()..color = Color(cell.backgroundArgb),
-          );
-        }
+    final cache = renderCache;
+    if (selection == null && cache != null) {
+      cache.prepare(
+        rowCount: snapshot.lines.length,
+        cellWidth: cellWidth,
+        cellHeight: cellHeight,
+        padding: padding,
+        fontFamily: fontFamily,
+        fontFamilyFallback: fontFamilyFallback,
+        fontSize: fontSize,
+      );
+      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
+        _drawCachedRow(canvas, snapshot.lines[rowIdx], rowIdx, cache);
       }
-    }
+    } else {
+      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
+        final y = padding + rowIdx * cellHeight;
+        _drawCellBackgrounds(canvas, snapshot.lines[rowIdx], y);
+      }
 
-    _drawSelection(canvas);
+      _drawSelection(canvas);
 
-    for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
-      final y = padding + rowIdx * cellHeight;
-      for (final cell in snapshot.lines[rowIdx].cells) {
-        final x = padding + cell.col * cellWidth;
-        if (!cell.invisible && cell.text.isNotEmpty) {
-          final selected = selection?.intersectsCell(
-            row: rowIdx,
-            col: cell.col,
-            widthCells: cell.widthCells,
-            cols: snapshot.cols,
-          );
-          _drawTerminalText(
-            canvas,
-            cell.text,
-            x,
-            y,
-            selected == true ? selectionForeground : Color(cell.foregroundArgb),
-            fontFamily: fontFamily,
-            fontFamilyFallback: fontFamilyFallback,
-            fontSize: fontSize,
-            bold: cell.bold,
-            italic: cell.italic,
-          );
-        }
+      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
+        final y = padding + rowIdx * cellHeight;
+        _drawTextRuns(canvas, snapshot.lines[rowIdx], rowIdx, y);
       }
     }
 
@@ -406,16 +392,16 @@ class TerminalSnapshotPainter extends CustomPainter {
     // Lay out the composing string on a single unwrapped line.
     final paragraph =
         (ui.ParagraphBuilder(
-              ui.ParagraphStyle(
-                fontFamily: fontFamily,
-                fontSize: fontSize,
-                strutStyle: ui.StrutStyle(
+                ui.ParagraphStyle(
                   fontFamily: fontFamily,
                   fontSize: fontSize,
-                  forceStrutHeight: true,
+                  strutStyle: ui.StrutStyle(
+                    fontFamily: fontFamily,
+                    fontSize: fontSize,
+                    forceStrutHeight: true,
+                  ),
                 ),
-              ),
-            )
+              )
               ..pushStyle(
                 ui.TextStyle(
                   color: fg,
@@ -470,6 +456,140 @@ class TerminalSnapshotPainter extends CustomPainter {
     canvas.restore();
   }
 
+  void _drawCellBackgrounds(Canvas canvas, TerminalSnapshotRow row, double y) {
+    _CellBackgroundRun? run;
+
+    void flush() {
+      final current = run;
+      if (current == null) return;
+      final x = padding + current.startCol * cellWidth;
+      final width = (current.endCol - current.startCol + 1) * cellWidth;
+      canvas.drawRect(
+        Rect.fromLTWH(x, y, width, cellHeight),
+        Paint()..color = Color(current.backgroundArgb),
+      );
+      run = null;
+    }
+
+    for (final cell in row.cells) {
+      if (!cell.drawsBackground) {
+        flush();
+        continue;
+      }
+      if (run != null && run!.canAppend(cell)) {
+        run = run!.append(cell);
+        continue;
+      }
+      flush();
+      run = _CellBackgroundRun(
+        startCol: cell.col,
+        endCol: cell.endCol,
+        backgroundArgb: cell.backgroundArgb,
+      );
+    }
+    flush();
+  }
+
+  void _drawTextRuns(
+    Canvas canvas,
+    TerminalSnapshotRow row,
+    int rowIdx,
+    double y,
+  ) {
+    _CellTextRun? run;
+
+    void flush() {
+      final current = run;
+      if (current == null) return;
+      _drawTerminalText(
+        canvas,
+        current.text,
+        padding + current.startCol * cellWidth,
+        y,
+        current.foreground,
+        fontFamily: fontFamily,
+        fontFamilyFallback: fontFamilyFallback,
+        fontSize: fontSize,
+        bold: current.bold,
+        italic: current.italic,
+      );
+      run = null;
+    }
+
+    for (final cell in row.cells) {
+      if (cell.invisible || cell.text.isEmpty) {
+        flush();
+        continue;
+      }
+
+      final selected = selection?.intersectsCell(
+        row: rowIdx,
+        col: cell.col,
+        widthCells: cell.widthCells,
+        cols: snapshot.cols,
+      );
+      final foreground = selected == true
+          ? selectionForeground
+          : Color(cell.foregroundArgb);
+
+      if (!_isAsciiSingleWidthCell(cell)) {
+        flush();
+        _drawTerminalText(
+          canvas,
+          cell.text,
+          padding + cell.col * cellWidth,
+          y,
+          foreground,
+          fontFamily: fontFamily,
+          fontFamilyFallback: fontFamilyFallback,
+          fontSize: fontSize,
+          bold: cell.bold,
+          italic: cell.italic,
+        );
+        continue;
+      }
+
+      if (run != null && run!.canAppend(cell, foreground)) {
+        run!.append(cell);
+        continue;
+      }
+
+      flush();
+      run = _CellTextRun(
+        startCol: cell.col,
+        foreground: foreground,
+        bold: cell.bold,
+        italic: cell.italic,
+      )..append(cell);
+    }
+    flush();
+  }
+
+  void _drawCachedRow(
+    Canvas canvas,
+    TerminalSnapshotRow row,
+    int rowIdx,
+    TerminalRenderCache cache,
+  ) {
+    final signature = _rowRenderSignature(row);
+    var picture = cache.pictureFor(signature);
+    if (picture == null) {
+      final recorder = ui.PictureRecorder();
+      final rowCanvas = Canvas(recorder);
+      _drawCellBackgrounds(rowCanvas, row, 0);
+      _drawTextRuns(rowCanvas, row, rowIdx, 0);
+      picture = recorder.endRecording();
+      cache.put(signature, picture);
+    }
+
+    final y = padding + rowIdx * cellHeight;
+    canvas
+      ..save()
+      ..translate(0, y)
+      ..drawPicture(picture)
+      ..restore();
+  }
+
   void _drawSelection(Canvas canvas) {
     final range = selection;
     if (range == null || cellWidth <= 0 || cellHeight <= 0) return;
@@ -496,7 +616,184 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.selection != selection ||
       oldDelegate.selectionBackground != selectionBackground ||
       oldDelegate.selectionForeground != selectionForeground ||
+      oldDelegate.renderCache != renderCache ||
       oldDelegate.preeditText != preeditText;
+}
+
+class TerminalRenderCache {
+  final LinkedHashMap<int, _CachedTerminalRow> _rows =
+      LinkedHashMap<int, _CachedTerminalRow>();
+  int? _configSignature;
+  int _maxEntries = 256;
+  bool _disposed = false;
+
+  void prepare({
+    required int rowCount,
+    required double cellWidth,
+    required double cellHeight,
+    required double padding,
+    required String fontFamily,
+    required List<String> fontFamilyFallback,
+    required double fontSize,
+  }) {
+    if (_disposed) return;
+    final nextConfig = Object.hash(
+      cellWidth,
+      cellHeight,
+      padding,
+      fontFamily,
+      Object.hashAll(fontFamilyFallback),
+      fontSize,
+    );
+    _maxEntries = (rowCount * 4).clamp(128, 512);
+    if (_configSignature != nextConfig) {
+      clear();
+      _configSignature = nextConfig;
+    }
+    _evictOverflow();
+  }
+
+  ui.Picture? pictureFor(int signature) {
+    if (_disposed) return null;
+    final cached = _rows.remove(signature);
+    if (cached == null) return null;
+    _rows[signature] = cached;
+    return cached.picture;
+  }
+
+  void put(int signature, ui.Picture picture) {
+    if (_disposed) {
+      picture.dispose();
+      return;
+    }
+    _rows.remove(signature)?.picture.dispose();
+    _rows[signature] = _CachedTerminalRow(picture);
+    _evictOverflow();
+  }
+
+  void clear() {
+    for (final row in _rows.values) {
+      row.picture.dispose();
+    }
+    _rows.clear();
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    clear();
+    _disposed = true;
+  }
+
+  void _evictOverflow() {
+    while (_rows.length > _maxEntries) {
+      final key = _rows.keys.first;
+      _rows.remove(key)?.picture.dispose();
+    }
+  }
+}
+
+class _CachedTerminalRow {
+  final ui.Picture picture;
+
+  const _CachedTerminalRow(this.picture);
+}
+
+bool _isAsciiSingleWidthCell(TerminalSnapshotCell cell) {
+  if (cell.widthCells != 1 || cell.text.length != 1) return false;
+  final codeUnit = cell.text.codeUnitAt(0);
+  return codeUnit >= 0x20 && codeUnit <= 0x7e;
+}
+
+int _rowRenderSignature(TerminalSnapshotRow row) {
+  var hash = _hashInt(0, row.cells.length);
+  for (final cell in row.cells) {
+    hash = _hashInt(hash, cell.col);
+    hash = _hashInt(hash, cell.widthCells);
+    hash = _hashString(hash, cell.text);
+    hash = _hashInt(hash, cell.foregroundArgb);
+    hash = _hashInt(hash, cell.backgroundArgb);
+    hash = _hashBool(hash, cell.drawsBackground);
+    hash = _hashBool(hash, cell.bold);
+    hash = _hashBool(hash, cell.italic);
+    hash = _hashBool(hash, cell.invisible);
+  }
+  return _finishHash(hash);
+}
+
+int _hashBool(int hash, bool value) => _hashInt(hash, value ? 1 : 0);
+
+int _hashString(int hash, String value) {
+  hash = _hashInt(hash, value.length);
+  for (var i = 0; i < value.length; i++) {
+    hash = _hashInt(hash, value.codeUnitAt(i));
+  }
+  return hash;
+}
+
+int _hashInt(int hash, int value) {
+  hash = 0x1fffffff & (hash + value);
+  hash = 0x1fffffff & (hash + ((0x0007ffff & hash) << 10));
+  return hash ^ (hash >> 6);
+}
+
+int _finishHash(int hash) {
+  hash = 0x1fffffff & (hash + ((0x03ffffff & hash) << 3));
+  hash = hash ^ (hash >> 11);
+  return 0x1fffffff & (hash + ((0x00003fff & hash) << 15));
+}
+
+class _CellBackgroundRun {
+  final int startCol;
+  final int endCol;
+  final int backgroundArgb;
+
+  const _CellBackgroundRun({
+    required this.startCol,
+    required this.endCol,
+    required this.backgroundArgb,
+  });
+
+  bool canAppend(TerminalSnapshotCell cell) {
+    return cell.backgroundArgb == backgroundArgb && cell.col == endCol + 1;
+  }
+
+  _CellBackgroundRun append(TerminalSnapshotCell cell) {
+    return _CellBackgroundRun(
+      startCol: startCol,
+      endCol: cell.endCol,
+      backgroundArgb: backgroundArgb,
+    );
+  }
+}
+
+class _CellTextRun {
+  final int startCol;
+  final Color foreground;
+  final bool bold;
+  final bool italic;
+  final StringBuffer _text = StringBuffer();
+  int _endCol;
+
+  _CellTextRun({
+    required this.startCol,
+    required this.foreground,
+    required this.bold,
+    required this.italic,
+  }) : _endCol = startCol - 1;
+
+  String get text => _text.toString();
+
+  bool canAppend(TerminalSnapshotCell cell, Color nextForeground) {
+    return cell.col == _endCol + 1 &&
+        nextForeground == foreground &&
+        cell.bold == bold &&
+        cell.italic == italic;
+  }
+
+  void append(TerminalSnapshotCell cell) {
+    _text.write(cell.text);
+    _endCol = cell.endCol;
+  }
 }
 
 void _drawTerminalText(
