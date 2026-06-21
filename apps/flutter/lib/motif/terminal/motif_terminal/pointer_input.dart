@@ -258,6 +258,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _touchSelectionPointer = selectionPointer;
     _touchSelectionGestureActive = true;
     _touchSelectionActive = true;
+    _selectionGestureFeedback();
     _worker?.selectWord(_terminalViewportCellAt(details.localPosition));
   }
 
@@ -471,7 +472,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     DragStartDetails _,
   ) {
     _touchSelectionDragHandle = handle;
+    _selectionGestureFeedback();
     _hideTouchSelectionMenu();
+  }
+
+  void _selectionGestureFeedback() {
+    unawaited(HapticFeedback.selectionClick());
   }
 
   void _onTouchSelectionHandleDragUpdate(DragUpdateDetails details) {

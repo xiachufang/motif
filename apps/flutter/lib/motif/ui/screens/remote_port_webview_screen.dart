@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../platform/desktop_window.dart';
+import '../theme/motif_theme.dart';
 
 const double _desktopTitleBarHeight = 38;
 const double _mobileHistoryEdgeWidth = 28;
@@ -319,17 +320,21 @@ class _DesktopTitleBarPadding extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!DesktopWindow.usesCustomTitleBar) return child;
-    final theme = Theme.of(context);
-    final titleBarColor =
-        theme.appBarTheme.backgroundColor ?? theme.colorScheme.surface;
+    final c = context.motif;
     return Column(
       children: [
         Material(
-          color: titleBarColor,
-          child: Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: (_) => DesktopWindow.startDrag(),
-            child: const SizedBox(height: _desktopTitleBarHeight),
+          color: c.surface,
+          child: Container(
+            height: _desktopTitleBarHeight,
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: c.border)),
+            ),
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) => DesktopWindow.startDrag(),
+              child: const SizedBox.expand(),
+            ),
           ),
         ),
         Expanded(child: child),
