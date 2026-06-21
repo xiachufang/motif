@@ -24,6 +24,8 @@ final motifNavigatorKey = GlobalKey<NavigatorState>();
 
 typedef EmbeddedServerPageFactory = Widget Function();
 
+const double _desktopTitleBarHeight = 38;
+
 EmbeddedServerPageFactory _embeddedServerPageFactory = () =>
     const SizedBox.shrink();
 
@@ -74,10 +76,7 @@ class MotifApp extends StatelessWidget {
       // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
         bindings: _closeWindowShortcuts(context),
-        child: const Focus(
-          autofocus: true,
-          child: _HomeShell(),
-        ),
+        child: const Focus(autofocus: true, child: _HomeShell()),
       ),
     );
   }
@@ -97,11 +96,7 @@ Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
 ) {
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
   return {
-    SingleActivator(
-      LogicalKeyboardKey.keyW,
-      meta: isMac,
-      control: !isMac,
-    ): () {
+    SingleActivator(LogicalKeyboardKey.keyW, meta: isMac, control: !isMac): () {
       if (context.read<AppState>().takeCloseShortcutConsumed()) return;
       unawaited(DesktopWindow.hide());
     },
@@ -120,7 +115,15 @@ class _HomeShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final canServe = app.embeddedServer?.available ?? false;
-    if (!canServe) return const _ClientHome();
+    if (!canServe) {
+      if (!DesktopWindow.usesCustomTitleBar) return const _ClientHome();
+      return const Column(
+        children: [
+          _CustomTitleBarSpacer(),
+          Expanded(child: _ClientHome()),
+        ],
+      );
+    }
 
     return Column(
       children: [
@@ -168,6 +171,26 @@ class _ClientNavigator extends StatelessWidget {
   }
 }
 
+class _CustomTitleBarSpacer extends StatelessWidget {
+  const _CustomTitleBarSpacer();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Material(
+      color: c.surface,
+      elevation: 0,
+      child: Container(
+        height: _desktopTitleBarHeight,
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: c.border)),
+        ),
+        child: const _WindowDragArea(),
+      ),
+    );
+  }
+}
+
 /// Slim top toolbar carrying the compact Client/Server switch.
 class _ModeToolbar extends StatelessWidget {
   const _ModeToolbar({required this.mode, required this.onChanged});
@@ -185,7 +208,7 @@ class _ModeToolbar extends StatelessWidget {
       color: c.surface,
       elevation: 0,
       child: Container(
-        height: 38,
+        height: _desktopTitleBarHeight,
         padding: EdgeInsets.only(
           left: customTitleBar ? 78 : MotifSpacing.sm,
           right: MotifSpacing.sm,

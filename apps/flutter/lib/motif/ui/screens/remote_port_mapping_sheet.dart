@@ -212,76 +212,97 @@ class _RemotePortRequest {
 Future<_RemotePortRequest?> _showRemotePortForm(
   BuildContext context, {
   RemotePortMapping? initial,
-}) async {
-  final portController = TextEditingController(
-    text: '${initial?.remotePort ?? 3000}',
+}) {
+  return showAdaptiveModal<_RemotePortRequest>(
+    context,
+    builder: (_) => _RemotePortFormModal(initial: initial),
   );
-  var scheme = initial?.localScheme ?? 'http';
-  String? errorText;
+}
 
-  _RemotePortRequest? buildRequest() {
-    final port = int.tryParse(portController.text.trim());
-    if (port == null || port <= 0 || port > 65535) return null;
-    return _RemotePortRequest(remotePort: port, scheme: scheme);
+class _RemotePortFormModal extends StatefulWidget {
+  const _RemotePortFormModal({this.initial});
+
+  final RemotePortMapping? initial;
+
+  @override
+  State<_RemotePortFormModal> createState() => _RemotePortFormModalState();
+}
+
+class _RemotePortFormModalState extends State<_RemotePortFormModal> {
+  late final TextEditingController _portController;
+  late String _scheme;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    _portController = TextEditingController(
+      text: '${widget.initial?.remotePort ?? 3000}',
+    );
+    _scheme = widget.initial?.localScheme ?? 'http';
   }
 
-  try {
-    return await showAdaptiveModal<_RemotePortRequest>(
-      context,
-      builder: (modalContext) => StatefulBuilder(
-        builder: (context, setModalState) {
-          void submit() {
-            final request = buildRequest();
-            if (request == null) {
-              setModalState(() => errorText = 'Enter a port from 1 to 65535');
-              return;
-            }
-            Navigator.of(modalContext).pop(request);
-          }
+  @override
+  void dispose() {
+    _portController.dispose();
+    super.dispose();
+  }
 
-          return AdaptiveModal(
-            title: initial == null ? 'Add port' : 'Edit port',
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: portController,
-                  autofocus: true,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  decoration: InputDecoration(
-                    labelText: 'Remote port',
-                    hintText: '3000',
-                    errorText: errorText,
-                  ),
-                  onChanged: (_) {
-                    if (errorText != null) {
-                      setModalState(() => errorText = null);
-                    }
-                  },
-                  onSubmitted: (_) => submit(),
-                ),
-                const SizedBox(height: MotifSpacing.md),
-                DropdownButtonFormField<String>(
-                  initialValue: scheme,
-                  decoration: const InputDecoration(labelText: 'Open as'),
-                  items: const [
-                    DropdownMenuItem(value: 'http', child: Text('http')),
-                    DropdownMenuItem(value: 'https', child: Text('https')),
-                  ],
-                  onChanged: (value) {
-                    if (value == null) return;
-                    setModalState(() => scheme = value);
-                  },
-                ),
-              ],
+  _RemotePortRequest? _buildRequest() {
+    final port = int.tryParse(_portController.text.trim());
+    if (port == null || port <= 0 || port > 65535) return null;
+    return _RemotePortRequest(remotePort: port, scheme: _scheme);
+  }
+
+  void _submit() {
+    final request = _buildRequest();
+    if (request == null) {
+      setState(() => _errorText = 'Enter a port from 1 to 65535');
+      return;
+    }
+    Navigator.of(context).pop(request);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AdaptiveModal(
+      title: widget.initial == null ? 'Add port' : 'Edit port',
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _portController,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            decoration: InputDecoration(
+              labelText: 'Remote port',
+              hintText: '3000',
+              errorText: _errorText,
             ),
-            actions: [TextButton(onPressed: submit, child: const Text('Save'))],
-          );
-        },
+            onChanged: (_) {
+              if (_errorText != null) {
+                setState(() => _errorText = null);
+              }
+            },
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: MotifSpacing.md),
+          DropdownButtonFormField<String>(
+            initialValue: _scheme,
+            decoration: const InputDecoration(labelText: 'Open as'),
+            items: const [
+              DropdownMenuItem(value: 'http', child: Text('http')),
+              DropdownMenuItem(value: 'https', child: Text('https')),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => _scheme = value);
+            },
+          ),
+        ],
       ),
+      actions: [TextButton(onPressed: _submit, child: const Text('Save'))],
     );
-  } finally {
-    portController.dispose();
   }
 }
