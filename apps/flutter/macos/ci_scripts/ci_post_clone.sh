@@ -23,6 +23,27 @@ retry() {
   done
 }
 
+# --- Guard: on tag builds, the tag must match pubspec's version -------------
+# macOS takes its CFBundleShortVersionString / CFBundleVersion from pubspec.yaml
+# (via `flutter build --config-only` below), but the .dmg and the GitHub Release
+# are titled after CI_TAG (see ci_post_xcodebuild.sh). Xcode Cloud doesn't run
+# the GHA version-check, so mirror it here and fail before the long archive if
+# the tag and pubspec disagree — otherwise you publish a Release labelled one
+# version containing an app that reports another. Pre-release/CI suffixes are
+# ignored (v1.0.0-rc1 == 1.0.0); the build number (+N) is not in the tag and not
+# checked.
+if [ -n "$CI_TAG" ]; then
+  tag_base="${CI_TAG#v}"
+  tag_base="${tag_base%%-*}"
+  pubspec="$(awk '/^version:/ {print $2; exit}' "$CI_PRIMARY_REPOSITORY_PATH/apps/flutter/pubspec.yaml")"
+  pubspec="${pubspec%%+*}"
+  if [ "$tag_base" != "$pubspec" ]; then
+    echo "ERROR: tag $CI_TAG (version $tag_base) != pubspec version $pubspec; bump pubspec.yaml or fix the tag." >&2
+    exit 1
+  fi
+  echo "version check: tag $CI_TAG matches pubspec $pubspec"
+fi
+
 retry brew install zig@0.15 go
 
 # The default execution directory of this script is the ci_scripts directory.

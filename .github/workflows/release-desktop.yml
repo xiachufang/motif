@@ -26,7 +26,13 @@ permissions:
   contents: write              # GITHUB_TOKEN creates/updates the Release; no PAT needed
 
 jobs:
+  # Gate: on tag pushes, fail fast if the tag and pubspec version disagree
+  # before spending build minutes. No-op on workflow_dispatch.
+  check-version:
+    uses: ./.github/workflows/version-check.yml
+
   build:
+    needs: check-version
     strategy:
       fail-fast: false
       matrix:

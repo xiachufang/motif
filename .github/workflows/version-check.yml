@@ -1,0 +1,37 @@
+name: version-check
+
+# Reusable guard: on tag pushes, assert the git tag's MAJOR.MINOR.PATCH equals
+# the semantic version in apps/flutter/pubspec.yaml — the single source of truth
+# the Makefile feeds into every build (--build-name / artifact names). Without
+# this, you can tag v1.0.18 while pubspec still says 1.0.0+1: the GitHub Release
+# is titled 1.0.18 but the app reports 1.0.0 and the store rejects the stale
+# build number.
+#
+# Pre-release / CI suffixes are ignored: v1.0.0-rc1 and v1.0.0-ci.20260618.1
+# both match pubspec 1.0.0. The build number (the +N) is intentionally not
+# checked — it never appears in the tag.
+
+on:
+  workflow_call: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4   # only reads pubspec.yaml; no submodules needed
+
+      - name: Assert tag matches pubspec version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_base="${GITHUB_REF_NAME#v}"      # v1.0.0-rc1 -> 1.0.0-rc1
+          tag_base="${tag_base%%-*}"           # 1.0.0-rc1  -> 1.0.0
+          pubspec="$(awk '/^version:/ {print $2; exit}' apps/flutter/pubspec.yaml)"  # 1.0.0+1
+          pubspec="${pubspec%%+*}"             # 1.0.0
+          echo "tag=$GITHUB_REF_NAME  tag_base=$tag_base  pubspec=$pubspec"
+          if [ "$tag_base" != "$pubspec" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' (version $tag_base) does not match apps/flutter/pubspec.yaml version $pubspec. Bump pubspec.yaml or fix the tag." >&2
+            exit 1
+          fi
+          echo "Version check passed: $tag_base"

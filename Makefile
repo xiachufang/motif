@@ -64,7 +64,7 @@ require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host 
 	release-motifd-macos release-motifd-linux \
 	release-flutter-macos release-flutter-linux \
 	release-flutter-windows release-flutter-android release-flutter-ios \
-	release-manifest verify-release clean-release
+	release-manifest verify-release release-tag clean-release
 
 help: ## Show available release targets.
 	@printf "Motif release Makefile\n\n"
@@ -311,6 +311,18 @@ release-manifest: ## Write a manifest of generated release files.
 		find "$(RELEASE_DIR)" -type f | sort; \
 	} > "$(RELEASE_DIR)/MANIFEST.txt"
 	@echo "Manifest: $(RELEASE_DIR)/MANIFEST.txt"
+
+release-tag: ## Create the git tag v$(VERSION) from pubspec (push it to trigger the release CI).
+	@tag="v$(VERSION)"; \
+	if [ -n "$$(git status --porcelain)" ]; then \
+		echo "release-tag: working tree is dirty; commit the version bump first." >&2; exit 1; \
+	fi; \
+	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
+		echo "release-tag: tag $$tag already exists. Bump pubspec.yaml or delete the tag." >&2; exit 1; \
+	fi; \
+	git tag -a "$$tag" -m "Release $(VERSION)+$(BUILD_NUMBER)"; \
+	echo "Created $$tag at $$(git rev-parse --short HEAD)."; \
+	echo "Push to trigger the release CI:  git push origin $$tag"
 
 clean-release: ## Remove generated release artifacts under dist/release.
 	@rm -rf "$(RELEASE_DIR)"
