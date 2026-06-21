@@ -125,7 +125,13 @@ class _SessionScreenState extends State<SessionScreen>
     // (intendedSession); attaching here would just throw "not connected".
     if (!motif.isLive) return;
     final state = motif.state;
-    if (state is ConnAttached && state.session == widget.session) return;
+    if (state is ConnAttached && state.session == widget.session) {
+      // Already attached — this is a switch-back to a session kept warm in the
+      // background. Reclaim the foreground so it reactivates its view and
+      // re-advertises the terminal palette.
+      motif.setForeground(true);
+      return;
+    }
     _attachingSession = true;
     unawaited(_attachToSession(motif));
   }

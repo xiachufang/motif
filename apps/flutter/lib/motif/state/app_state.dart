@@ -169,6 +169,12 @@ class AppState extends ChangeNotifier {
     return clientForServer(id);
   }
 
+  /// Whether a server switched away from should stay attached (warm) instead of
+  /// detaching. Driven by the platform [ServerConnectionRuntime] — desktop
+  /// keeps background workspaces warm, mobile tears them down.
+  bool get keepSessionWarmOnSwitchAway =>
+      _serverConnectionRuntime.keepSessionWarmOnSwitchAway;
+
   MotifClient get motif {
     final client = activeClient;
     if (client == null) {

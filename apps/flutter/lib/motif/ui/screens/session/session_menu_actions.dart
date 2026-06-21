@@ -150,7 +150,15 @@ extension _SessionScreenMenuActions on _SessionScreenState {
         _switchingSession = true;
         _mountedViewIds.clear();
       });
-      await motif.detach();
+      final crossServer = serverId != widget.serverId;
+      if (crossServer && app.keepSessionWarmOnSwitchAway) {
+        // Leave this server attached to its session so switching back is
+        // instant (no cold VT replay). Drop it to background so it stops
+        // claiming primary / pushing the terminal palette while off-screen.
+        motif.setForeground(false);
+      } else {
+        await motif.detach();
+      }
       await app.servers.setActive(serverId);
       if (!mounted) return;
       // Navigate right away; the replacement screen attaches to the target

@@ -9,6 +9,7 @@ import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
+import 'package:motif/motif/state/server_connection_runtime.dart';
 import 'package:motif/motif/state/stores.dart';
 import 'package:motif/motif/terminal/terminal_input.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
@@ -158,7 +159,10 @@ class _SuspendedMotifClient extends _ShortcutMotifClient {
   }
 }
 
-Future<AppState> _appStateWith(Map<String, MotifClient> clients) async {
+Future<AppState> _appStateWith(
+  Map<String, MotifClient> clients, {
+  ServerConnectionRuntime? serverConnectionRuntime,
+}) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
   final app = AppState(
@@ -168,6 +172,7 @@ Future<AppState> _appStateWith(Map<String, MotifClient> clients) async {
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
     clientFactory: (server) => clients[server.id] ?? MotifClient(),
+    serverConnectionRuntime: serverConnectionRuntime,
   );
   for (final entry in clients.entries) {
     await app.servers.add(
@@ -979,5 +984,49 @@ void main() {
       find.byKey(const ValueKey('sidebar-session-server-2-prod-session')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('desktop keeps the previous server warm on cross-server switch', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final current = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    final prod = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final app = await _appStateWith(
+      {'server-1': current, 'server-2': prod},
+      serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('prod-session'));
+    await tester.pumpAndSettle();
+
+    // The server we switched away from stays attached (warm) but drops to the
+    // background; the target server attaches normally.
+    expect(current.detaches, 0);
+    expect(current.isForeground, isFalse);
+    expect(prod.attached, ['prod-session']);
   });
 }
