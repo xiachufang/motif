@@ -76,11 +76,24 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          # A non-loopback --listen (0.0.0.0:7777 here) auto-enables self-signed
+          # TLS + a psk-derived bearer; the plaintext/token path is gone. Derive
+          # the same bearer a client would (HKDF-SHA256, byte-identical with
+          # motif_server::rzv::derive_bearer / Dart RzvProtocol.deriveAuthBearer).
+          creds=$(python3 -c '
+          import hmac,hashlib,base64
+          b=lambda x:base64.urlsafe_b64encode(x).rstrip(b"=").decode()
+          p=bytes(range(32))
+          k=hmac.new(b"\x00"*32,p,hashlib.sha256).digest()
+          o=hmac.new(k,b"motif-auth-bearer-v1\x01",hashlib.sha256).digest()
+          print(b(p),b(o))')
+          PSK=${creds% *}; BEARER=${creds#* }
           docker run -d --name motifd-smoke -p 127.0.0.1:7777:7777 \
-            -e MOTIFD_TOKEN=ci-smoke-token \
+            -e MOTIFD_PSK="$PSK" \
             "$TAG"
+          # Self-signed TLS -> curl -k; /ping is unauthenticated.
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:7777/ping >/tmp/ping.json; then
+            if curl -fsSk https://127.0.0.1:7777/ping >/tmp/ping.json; then
               break
             fi
             sleep 1
@@ -88,11 +101,11 @@ jobs:
           docker ps --filter name=motifd-smoke --format '{{.Status}}' | grep -q Up \
             || { echo "container exited"; docker logs motifd-smoke; exit 1; }
           grep -q '"service":"motif-server"' /tmp/ping.json
-          noauth=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:7777/rpc/session.list)
-          auth=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            -H 'Authorization: Bearer ci-smoke-token' -H 'Content-Type: application/json' \
-            -d '{}' http://127.0.0.1:7777/rpc/session.list)
-          page=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7777/)
+          noauth=$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:7777/rpc/session.list)
+          auth=$(curl -sk -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' \
+            -d '{}' https://127.0.0.1:7777/rpc/session.list)
+          page=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:7777/)
           echo "page=$page noauth=$noauth auth=$auth"
           test "$page" = 200 && test "$noauth" = 401 && test "$auth" = 200
           docker rm -f motifd-smoke

@@ -76,24 +76,37 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
-          # 0644 so the uid-10001 container can read the bind-mounted token on
-          # Linux (host perms are preserved through the mount).
-          TF=$(mktemp); echo "ci-smoke-token" > "$TF"; chmod 0644 "$TF"
+          # A network --listen (0.0.0.0:8080) now auto-encrypts (self-signed TLS,
+          # client pins the cert) and authenticates with a psk-derived bearer —
+          # the token-file path is gone. Pass a fixed psk and derive the same
+          # bearer (HKDF-SHA256, byte-identical with rzv::derive_bearer).
+          creds=$(python3 -c '
+          import hmac,hashlib,base64
+          b=lambda x:base64.urlsafe_b64encode(x).rstrip(b"=").decode()
+          p=bytes(range(32))
+          k=hmac.new(b"\x00"*32,p,hashlib.sha256).digest()
+          o=hmac.new(k,b"motif-auth-bearer-v1\x01",hashlib.sha256).digest()
+          print(b(p),b(o))')
+          PSK=${creds% *}; BEARER=${creds#* }
           docker run -d --name smoke -p 127.0.0.1:8080:8080 --user 10001:10001 \
             --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
             --tmpfs /home/demo:rw,nosuid,nodev,mode=1777,size=128m \
             --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777,size=4m \
-            --mount "type=bind,source=$TF,target=/run/secrets/motifd_token,readonly" \
+            -e MOTIFD_PSK="$PSK" \
             "$TAG"
-          sleep 3
+          # Self-signed TLS -> curl -k; /ping is unauthenticated.
+          for i in $(seq 1 30); do
+            curl -fsSk https://127.0.0.1:8080/ping >/dev/null && break
+            sleep 1
+          done
           docker ps --filter name=smoke --format '{{.Status}}' | grep -q Up \
             || { echo "container exited"; docker logs smoke; exit 1; }
-          ping=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ping)
-          noauth=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/rpc/session.list)
-          auth=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            -H 'Authorization: Bearer ci-smoke-token' -H 'Content-Type: application/json' \
-            -d '{}' http://127.0.0.1:8080/rpc/session.list)
+          ping=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:8080/ping)
+          noauth=$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://127.0.0.1:8080/rpc/session.list)
+          auth=$(curl -sk -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' \
+            -d '{}' https://127.0.0.1:8080/rpc/session.list)
           echo "ping=$ping noauth=$noauth auth=$auth"
           test "$ping" = 200 && test "$noauth" = 401 && test "$auth" = 200
           # No tailscale linked into the --no-default-features binary.
