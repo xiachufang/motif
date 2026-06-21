@@ -15,105 +15,12 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     }
   }
 
-  Future<void> _showRemotePortDialog(MotifClient motif) async {
-    final portController = TextEditingController(text: '3000');
-    var scheme = 'http';
-    try {
-      final request = await showDialog<_RemotePortRequest>(
-        context: context,
-        builder: (dialogContext) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) => AlertDialog(
-              title: const Text('Open remote port'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: portController,
-                    autofocus: true,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    decoration: const InputDecoration(
-                      labelText: 'Remote port',
-                      hintText: '3000',
-                    ),
-                    onSubmitted: (_) => Navigator.of(
-                      dialogContext,
-                    ).maybePop(_remotePortRequest(portController.text, scheme)),
-                  ),
-                  const SizedBox(height: MotifSpacing.md),
-                  DropdownButtonFormField<String>(
-                    initialValue: scheme,
-                    decoration: const InputDecoration(labelText: 'Open as'),
-                    items: const [
-                      DropdownMenuItem(value: 'http', child: Text('http')),
-                      DropdownMenuItem(value: 'https', child: Text('https')),
-                    ],
-                    onChanged: (value) {
-                      if (value == null) return;
-                      setDialogState(() => scheme = value);
-                    },
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.of(
-                    dialogContext,
-                  ).pop(_remotePortRequest(portController.text, scheme)),
-                  child: const Text('Open'),
-                ),
-              ],
-            ),
-          );
-        },
-      );
-      if (!mounted || request == null) return;
-      await _openRemotePort(motif, request);
-    } finally {
-      portController.dispose();
-    }
-  }
-
-  _RemotePortRequest? _remotePortRequest(String rawPort, String scheme) {
-    final port = int.tryParse(rawPort.trim());
-    if (port == null || port <= 0 || port > 65535) return null;
-    return _RemotePortRequest(port: port, scheme: scheme);
-  }
-
-  Future<void> _openRemotePort(
-    MotifClient motif,
-    _RemotePortRequest request,
-  ) async {
+  Future<void> _showRemotePortMappings(MotifClient motif) async {
     if (!_remotePortWebViewSupported()) {
       showMotifToast(context, 'In-app browser is not supported here');
       return;
     }
-    try {
-      final forwarder = await motif.openRemotePort(
-        remotePort: request.port,
-        localScheme: request.scheme,
-      );
-      if (!mounted) {
-        await motif.stopRemotePortForwarder(forwarder);
-        return;
-      }
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => RemotePortWebViewScreen(
-            initialUrl: forwarder.localUrl,
-            title: '${request.scheme}://127.0.0.1:${request.port}',
-            onClose: () => motif.stopRemotePortForwarder(forwarder),
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) showMotifToast(context, 'Open port failed: $e');
-    }
+    await showRemotePortMappingsSheet(context, motif);
   }
 
   bool _remotePortWebViewSupported() {
@@ -366,11 +273,4 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       backgroundColor: c.accentFill(),
     );
   }
-}
-
-class _RemotePortRequest {
-  const _RemotePortRequest({required this.port, required this.scheme});
-
-  final int port;
-  final String scheme;
 }

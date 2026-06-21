@@ -26,6 +26,7 @@ class _RemotePortWebViewScreenState extends State<RemotePortWebViewScreen> {
   bool _loading = true;
   bool _canGoBack = false;
   bool _canGoForward = false;
+  bool _allowClose = false;
 
   @override
   void initState() {
@@ -74,58 +75,72 @@ class _RemotePortWebViewScreenState extends State<RemotePortWebViewScreen> {
     });
   }
 
+  void _close() {
+    setState(() => _allowClose = true);
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(widget.title, overflow: TextOverflow.ellipsis),
-            Text(
-              _url,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall,
+    return PopScope<void>(
+      canPop: _allowClose,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Close',
+            onPressed: _close,
+          ),
+          titleSpacing: 0,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(widget.title, overflow: TextOverflow.ellipsis),
+              Text(
+                _url,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Back',
+              onPressed: _canGoBack
+                  ? () async {
+                      await _controller.goBack();
+                      await _refreshNavigationState();
+                    }
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.arrow_forward),
+              tooltip: 'Forward',
+              onPressed: _canGoForward
+                  ? () async {
+                      await _controller.goForward();
+                      await _refreshNavigationState();
+                    }
+                  : null,
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Reload',
+              onPressed: () => _controller.reload(),
             ),
           ],
+          bottom: _loading
+              ? const PreferredSize(
+                  preferredSize: Size.fromHeight(2),
+                  child: LinearProgressIndicator(minHeight: 2),
+                )
+              : null,
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: _canGoBack
-                ? () async {
-                    await _controller.goBack();
-                    await _refreshNavigationState();
-                  }
-                : null,
-          ),
-          IconButton(
-            icon: const Icon(Icons.arrow_forward),
-            tooltip: 'Forward',
-            onPressed: _canGoForward
-                ? () async {
-                    await _controller.goForward();
-                    await _refreshNavigationState();
-                  }
-                : null,
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Reload',
-            onPressed: () => _controller.reload(),
-          ),
-        ],
-        bottom: _loading
-            ? const PreferredSize(
-                preferredSize: Size.fromHeight(2),
-                child: LinearProgressIndicator(minHeight: 2),
-              )
-            : null,
+        body: WebViewWidget(controller: _controller),
       ),
-      body: WebViewWidget(controller: _controller),
     );
   }
 }

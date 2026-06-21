@@ -38,7 +38,7 @@ import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
 import 'preview_pane.dart';
 import 'quick_command_editor.dart';
-import 'remote_port_webview_screen.dart';
+import 'remote_port_mapping_sheet.dart';
 import 'terminal_settings_sheet.dart';
 
 part 'session/session_helpers.dart';
@@ -306,9 +306,9 @@ class _SessionScreenState extends State<SessionScreen>
                 IconButton(
                   key: const ValueKey('open-remote-port-button'),
                   icon: const Icon(Icons.open_in_browser_outlined),
-                  tooltip: 'Open remote port',
+                  tooltip: 'Remote ports',
                   onPressed: motif.state is ConnAttached
-                      ? () => _showRemotePortDialog(motif)
+                      ? () => _showRemotePortMappings(motif)
                       : null,
                 ),
                 IconButton(
