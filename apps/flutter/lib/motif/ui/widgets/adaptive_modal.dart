@@ -43,10 +43,11 @@ Future<T?> showAdaptiveModal<T>(
   );
 }
 
-/// Shows a full-page panel (own header/scaffold, scrolling body) as an
-/// 86%-height bottom sheet on iOS/Android and as a fixed-size [Dialog]
-/// elsewhere. Unlike [showAdaptiveModal] the builder's widget is used as-is;
-/// it should not be an [AdaptiveModal].
+/// Shows a full-page panel as an 86%-height bottom sheet on iOS/Android and as
+/// a fixed-size [Dialog] elsewhere.
+///
+/// The builder should return an [AdaptivePanel], which renders the shared
+/// header/frame while allowing the body to manage its own scrolling.
 Future<T?> showAdaptivePanel<T>(
   BuildContext context, {
   required WidgetBuilder builder,
@@ -71,16 +72,19 @@ Future<T?> showAdaptivePanel<T>(
     context: context,
     isScrollControlled: true,
     clipBehavior: Clip.antiAlias,
-    backgroundColor: background,
+    backgroundColor: Colors.transparent,
     builder: (context) => _KeyboardAwareSheet(
       maxHeightFraction: _sheetMaxHeightFraction,
       fillHeight: true,
-      child: _DraggablePanelSheet(builder: builder),
+      child: _DraggablePanelSheet(
+        backgroundColor: background,
+        builder: builder,
+      ),
     ),
   );
 }
 
-class _KeyboardAwareSheet extends StatelessWidget {
+class _KeyboardAwareSheet extends StatefulWidget {
   final Widget child;
   final double maxHeightFraction;
   final bool fillHeight;
@@ -92,28 +96,74 @@ class _KeyboardAwareSheet extends StatelessWidget {
   });
 
   @override
+  State<_KeyboardAwareSheet> createState() => _KeyboardAwareSheetState();
+}
+
+class _KeyboardAwareSheetState extends State<_KeyboardAwareSheet> {
+  @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_onFocusChanged);
+  }
+
+  @override
+  void dispose() {
+    FocusManager.instance.removeListener(_onFocusChanged);
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  bool _hasPrimaryFocusInSheet() {
+    final focusedContext = FocusManager.instance.primaryFocus?.context;
+    if (focusedContext is! Element || context is! Element) return false;
+    final sheetElement = context as Element;
+    if (identical(focusedContext, sheetElement)) return true;
+    var containsFocus = false;
+    focusedContext.visitAncestorElements((ancestor) {
+      if (identical(ancestor, sheetElement)) {
+        containsFocus = true;
+        return false;
+      }
+      return true;
+    });
+    return containsFocus;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
-    final keyboardInset = media.viewInsets.bottom;
+    final keyboardInset = _hasPrimaryFocusInSheet()
+        ? media.viewInsets.bottom
+        : 0.0;
     final topGap = media.viewPadding.top + MotifSpacing.sm;
-    final maxHeight = (media.size.height - keyboardInset - topGap)
+    final maxHeight = (media.size.height - topGap)
         .clamp(0.0, media.size.height)
         .toDouble();
-    final sheetHeight = (media.size.height * maxHeightFraction)
+    final sheetHeight = (media.size.height * widget.maxHeightFraction)
         .clamp(0.0, maxHeight)
         .toDouble();
-    final boundedChild = fillHeight
-        ? SizedBox(height: sheetHeight, child: child)
-        : ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: sheetHeight),
-            child: child,
-          );
-    return AnimatedPadding(
+    final minVisibleHeight = (kToolbarHeight + MotifSpacing.lg)
+        .clamp(0.0, sheetHeight)
+        .toDouble();
+    final bottomInset = keyboardInset
+        .clamp(0.0, sheetHeight - minVisibleHeight)
+        .toDouble();
+    final paddedChild = AnimatedPadding(
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
-      padding: EdgeInsets.only(bottom: keyboardInset),
-      child: boundedChild,
+      padding: EdgeInsets.only(bottom: bottomInset),
+      child: widget.child,
     );
+    final boundedChild = widget.fillHeight
+        ? SizedBox(height: sheetHeight, child: paddedChild)
+        : ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: sheetHeight),
+            child: paddedChild,
+          );
+    return boundedChild;
   }
 }
 
@@ -129,10 +179,14 @@ class _KeyboardAwareSheet extends StatelessWidget {
 /// modal-bottom-sheet exit animation — identical to non-scrolling sheets.
 class _DraggablePanelSheet extends StatefulWidget {
   final WidgetBuilder builder;
+  final Color backgroundColor;
 
   static const restingSize = 1.0;
 
-  const _DraggablePanelSheet({required this.builder});
+  const _DraggablePanelSheet({
+    required this.backgroundColor,
+    required this.builder,
+  });
 
   @override
   State<_DraggablePanelSheet> createState() => _DraggablePanelSheetState();
@@ -189,7 +243,17 @@ class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
           snap: true,
           builder: (context, scrollController) => PrimaryScrollController(
             controller: scrollController,
-            child: widget.builder(context),
+            child: Material(
+              color: widget.backgroundColor,
+              surfaceTintColor: Colors.transparent,
+              clipBehavior: Clip.antiAlias,
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(MotifRadius.xl),
+                ),
+              ),
+              child: widget.builder(context),
+            ),
           ),
         ),
       ),
@@ -238,6 +302,8 @@ class AdaptiveModal extends StatelessWidget {
               MotifSpacing.lg,
               MotifSpacing.lg,
             ),
+            scrollContent: true,
+            expandContent: false,
           ),
         ),
       );
@@ -259,7 +325,47 @@ class AdaptiveModal extends StatelessWidget {
             MotifSpacing.lg,
             MotifSpacing.lg,
           ),
+          scrollContent: true,
+          expandContent: false,
         ),
+      ),
+    );
+  }
+}
+
+/// Full-height panel body for [showAdaptivePanel].
+///
+/// Unlike [AdaptiveModal], the body is not wrapped in a scroll view. Pass a
+/// [ListView], [CustomScrollView], or another self-managed layout.
+class AdaptivePanel extends StatelessWidget {
+  final String title;
+  final Widget body;
+  final List<Widget> actions;
+  final bool showCloseButton;
+  final VoidCallback? onClose;
+
+  const AdaptivePanel({
+    super.key,
+    required this.title,
+    required this.body,
+    this.actions = const [],
+    this.showCloseButton = true,
+    this.onClose,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: _AdaptiveModalFrame(
+        title: title,
+        showCloseButton: showCloseButton,
+        actions: actions,
+        onClose: onClose,
+        content: body,
+        contentPadding: EdgeInsets.zero,
+        scrollContent: false,
+        expandContent: true,
       ),
     );
   }
@@ -269,31 +375,43 @@ class _AdaptiveModalFrame extends StatelessWidget {
   final String title;
   final bool showCloseButton;
   final List<Widget> actions;
+  final VoidCallback? onClose;
   final Widget content;
   final EdgeInsetsGeometry contentPadding;
+  final bool scrollContent;
+  final bool expandContent;
 
   const _AdaptiveModalFrame({
     required this.title,
     required this.showCloseButton,
     required this.actions,
+    this.onClose,
     required this.content,
     required this.contentPadding,
+    required this.scrollContent,
+    required this.expandContent,
   });
 
   @override
   Widget build(BuildContext context) {
+    final body = scrollContent
+        ? SingleChildScrollView(
+            padding: contentPadding,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            child: content,
+          )
+        : Padding(padding: contentPadding, child: content);
     return Column(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisSize: expandContent ? MainAxisSize.max : MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         AdaptiveModalHeader(
           title: title,
           showCloseButton: showCloseButton,
           actions: actions,
+          onClose: onClose,
         ),
-        Flexible(
-          child: SingleChildScrollView(padding: contentPadding, child: content),
-        ),
+        if (expandContent) Expanded(child: body) else Flexible(child: body),
       ],
     );
   }

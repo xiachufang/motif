@@ -107,66 +107,80 @@ class ConnectionScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
     final c = context.motif;
-    final servers = app.servers.servers;
     return Scaffold(
       backgroundColor: c.background,
       appBar: const AdaptiveModalHeader(title: 'Connection'),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(
-            MotifSpacing.lg,
-            MotifSpacing.md,
-            MotifSpacing.lg,
-            MotifSpacing.xl,
-          ),
-          children: [
-            MotifSection(
-              title: 'Servers',
-              headerTrailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.qr_code_2),
-                    tooltip: 'Pair with link',
-                    onPressed: () => unawaited(_pairServer(context, app)),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    tooltip: 'Add Server',
-                    onPressed: () => unawaited(_addServer(context, app)),
-                  ),
-                ],
-              ),
-              children: servers.isEmpty
-                  ? [
-                      MotifSectionRow(
-                        title: 'No servers configured. Tap + to add one.',
-                        titleColor: c.textSecondary,
-                        titleWeight: FontWeight.w400,
-                      ),
-                    ]
-                  : [
-                      for (final s in servers)
-                        _ServerRow(
-                          server: s,
-                          viewState: app.serverViewState(s.id),
-                          onAction: (action) =>
-                              _performServerAction(context, app, s, action),
-                          onEdit: () =>
-                              showServerEditSheet(context, existing: s),
-                          onDelete: () {
-                            unawaited(app.disconnectServer(s.id));
-                            unawaited(app.servers.delete(s.id));
-                          },
-                        ),
-                    ],
-            ),
-          ],
+      body: _buildBody(context),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    final app = context.watch<AppState>();
+    final c = context.motif;
+    final servers = app.servers.servers;
+    return SafeArea(
+      child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
         ),
+        children: [
+          MotifSection(
+            title: 'Servers',
+            headerTrailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.qr_code_2),
+                  tooltip: 'Pair with link',
+                  onPressed: () => unawaited(_pairServer(context, app)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add),
+                  tooltip: 'Add Server',
+                  onPressed: () => unawaited(_addServer(context, app)),
+                ),
+              ],
+            ),
+            children: servers.isEmpty
+                ? [
+                    MotifSectionRow(
+                      title: 'No servers configured. Tap + to add one.',
+                      titleColor: c.textSecondary,
+                      titleWeight: FontWeight.w400,
+                    ),
+                  ]
+                : [
+                    for (final s in servers)
+                      _ServerRow(
+                        server: s,
+                        viewState: app.serverViewState(s.id),
+                        onAction: (action) =>
+                            _performServerAction(context, app, s, action),
+                        onEdit: () => showServerEditSheet(context, existing: s),
+                        onDelete: () {
+                          unawaited(app.disconnectServer(s.id));
+                          unawaited(app.servers.delete(s.id));
+                        },
+                      ),
+                  ],
+          ),
+        ],
       ),
     );
+  }
+}
+
+class ConnectionPanel extends ConnectionScreen {
+  const ConnectionPanel({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return AdaptivePanel(title: 'Connection', body: _buildBody(context));
   }
 }
 

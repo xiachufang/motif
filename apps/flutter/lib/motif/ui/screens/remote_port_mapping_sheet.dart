@@ -100,103 +100,90 @@ class _RemotePortMappingsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return ColoredBox(
-      color: c.background,
-      child: Column(
-        children: [
-          AdaptiveModalHeader(
-            title: 'Remote ports',
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.add),
-                tooltip: 'Add port',
-                onPressed: () => _addMapping(context),
+    return AdaptivePanel(
+      title: 'Remote ports',
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.add),
+          tooltip: 'Add port',
+          onPressed: () => _addMapping(context),
+        ),
+      ],
+      body: ListenableBuilder(
+        listenable: motif,
+        builder: (context, _) {
+          final mappings = motif.remotePortMappings;
+          if (mappings.isEmpty) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(MotifSpacing.xl),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.open_in_browser_outlined,
+                      size: 40,
+                      color: c.textTertiary,
+                    ),
+                    const SizedBox(height: MotifSpacing.md),
+                    Text(
+                      'No ports mapped',
+                      style: TextStyle(
+                        color: c.textSecondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: MotifSpacing.lg),
+                    FilledButton.icon(
+                      onPressed: () => _addMapping(context),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add port'),
+                    ),
+                  ],
+                ),
               ),
-            ],
-          ),
-          Expanded(
-            child: ListenableBuilder(
-              listenable: motif,
-              builder: (context, _) {
-                final mappings = motif.remotePortMappings;
-                if (mappings.isEmpty) {
-                  return Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(MotifSpacing.xl),
-                      child: Column(
+            );
+          }
+          return ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.all(MotifSpacing.lg),
+            children: [
+              MotifSection(
+                title: 'Mapped ports',
+                dividerIndent: 64,
+                children: [
+                  for (final mapping in mappings)
+                    MotifSectionRow(
+                      leading: const Icon(
+                        Icons.open_in_browser_outlined,
+                        size: 20,
+                      ),
+                      title: mapping.displayTitle,
+                      subtitle:
+                          'Local ${mapping.localUrl} -> ${mapping.remoteEndpoint}',
+                      minHeight: 64,
+                      trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            Icons.open_in_browser_outlined,
-                            size: 40,
-                            color: c.textTertiary,
+                          IconButton(
+                            icon: const Icon(Icons.edit_outlined),
+                            tooltip: 'Edit',
+                            onPressed: () => _editMapping(context, mapping),
                           ),
-                          const SizedBox(height: MotifSpacing.md),
-                          Text(
-                            'No ports mapped',
-                            style: TextStyle(
-                              color: c.textSecondary,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: MotifSpacing.lg),
-                          FilledButton.icon(
-                            onPressed: () => _addMapping(context),
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add port'),
+                          IconButton(
+                            icon: Icon(Icons.delete_outline, color: c.danger),
+                            tooltip: 'Delete',
+                            onPressed: () => _deleteMapping(context, mapping),
                           ),
                         ],
                       ),
+                      onTap: () => _openWebView(context, mapping),
                     ),
-                  );
-                }
-                return ListView(
-                  padding: const EdgeInsets.all(MotifSpacing.lg),
-                  children: [
-                    MotifSection(
-                      title: 'Mapped ports',
-                      dividerIndent: 64,
-                      children: [
-                        for (final mapping in mappings)
-                          MotifSectionRow(
-                            leading: const Icon(
-                              Icons.open_in_browser_outlined,
-                              size: 20,
-                            ),
-                            title: mapping.displayTitle,
-                            subtitle:
-                                'Local ${mapping.localUrl} -> ${mapping.remoteEndpoint}',
-                            minHeight: 64,
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.edit_outlined),
-                                  tooltip: 'Edit',
-                                  onPressed: () =>
-                                      _editMapping(context, mapping),
-                                ),
-                                IconButton(
-                                  icon: Icon(
-                                    Icons.delete_outline,
-                                    color: c.danger,
-                                  ),
-                                  tooltip: 'Delete',
-                                  onPressed: () =>
-                                      _deleteMapping(context, mapping),
-                                ),
-                              ],
-                            ),
-                            onTap: () => _openWebView(context, mapping),
-                          ),
-                      ],
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        ],
+                ],
+              ),
+            ],
+          );
+        },
       ),
     );
   }

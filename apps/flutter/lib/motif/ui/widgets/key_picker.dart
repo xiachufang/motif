@@ -26,9 +26,8 @@ class TerminalKeyCategory {
 }
 
 /// A printable character key: the byte is just its ASCII code.
-TerminalKeyDef _charKey(String ch) => TerminalKeyDef(ch, ch, [
-  ch.codeUnitAt(0),
-]);
+TerminalKeyDef _charKey(String ch) =>
+    TerminalKeyDef(ch, ch, [ch.codeUnitAt(0)]);
 
 /// Keyboard keys selectable as quick-command payloads, grouped for display.
 /// Byte sequences match xterm defaults (what the ghostty encoder emits).
@@ -66,7 +65,10 @@ final terminalKeyCatalog = [
     for (var c = 0x30; c <= 0x39; c++) _charKey(String.fromCharCode(c)),
   ]),
   TerminalKeyCategory('Symbols', [
-    for (final ch in (r"`~!@#$%^&*()-_=+[]{}\|;:'" '",.<>/?').split(''))
+    for (final ch
+        in (r"`~!@#$%^&*()-_=+[]{}\|;:'"
+                '",.<>/?')
+            .split(''))
       _charKey(ch),
   ]),
   const TerminalKeyCategory('Function', [
@@ -117,70 +119,51 @@ class _KeyPickerPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return SafeArea(
-      top: false,
-      child: Column(
+    return AdaptivePanel(
+      title: 'Select key',
+      body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
         children: [
-          SizedBox(
-            height: 50,
-            child: Center(
+          for (final category in terminalKeyCatalog) ...[
+            Padding(
+              padding: const EdgeInsets.only(
+                top: MotifSpacing.md,
+                bottom: MotifSpacing.sm,
+              ),
               child: Text(
-                'Select key',
+                category.name.toUpperCase(),
                 style: TextStyle(
-                  color: c.textPrimary,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
+                  color: c.textTertiary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
                 ),
               ),
             ),
-          ),
-          Divider(height: 1, color: c.border),
-          Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(
-                MotifSpacing.lg,
-                MotifSpacing.md,
-                MotifSpacing.lg,
-                MotifSpacing.xl,
-              ),
+            Wrap(
+              spacing: MotifSpacing.sm,
+              runSpacing: MotifSpacing.sm,
               children: [
-                for (final category in terminalKeyCatalog) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(
-                      top: MotifSpacing.md,
-                      bottom: MotifSpacing.sm,
-                    ),
-                    child: Text(
-                      category.name.toUpperCase(),
-                      style: TextStyle(
-                        color: c.textTertiary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.5,
+                for (final key in category.keys)
+                  Tooltip(
+                    message: key.name,
+                    child: ActionChip(
+                      label: Text(
+                        key.label,
+                        style: const TextStyle(fontFamily: 'monospace'),
                       ),
+                      onPressed: () => Navigator.pop(context, key),
                     ),
                   ),
-                  Wrap(
-                    spacing: MotifSpacing.sm,
-                    runSpacing: MotifSpacing.sm,
-                    children: [
-                      for (final key in category.keys)
-                        Tooltip(
-                          message: key.name,
-                          child: ActionChip(
-                            label: Text(
-                              key.label,
-                              style: const TextStyle(fontFamily: 'monospace'),
-                            ),
-                            onPressed: () => Navigator.pop(context, key),
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
               ],
             ),
-          ),
+          ],
         ],
       ),
     );

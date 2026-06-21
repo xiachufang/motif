@@ -402,56 +402,48 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   Widget _buildRendezvous(BuildContext context, MotifServer server) {
     final c = context.motif;
     final pinned = server.pubKey.isNotEmpty;
-    return SafeArea(
-      top: false,
-      child: Column(
+    return AdaptivePanel(
+      title: 'Rendezvous Server',
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : _saveRendezvousName,
+          child: Text(_saving ? 'Saving…' : 'Save'),
+        ),
+      ],
+      body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
         children: [
-          AdaptiveModalHeader(
-            title: 'Rendezvous Server',
-            actions: [
-              TextButton(
-                onPressed: _saving ? null : _saveRendezvousName,
-                child: Text(_saving ? 'Saving…' : 'Save'),
+          MotifSection(
+            title: 'Name',
+            dividerIndent: MotifSpacing.lg,
+            children: [_field(_name, 'Name', 'e.g. Studio Mac')],
+          ),
+          const SizedBox(height: MotifSpacing.xl),
+          MotifSection(
+            title: 'Pairing',
+            footer:
+                'Reached through a rendezvous relay — both sides dial out '
+                'and pair by a scanned link. Re-scan the pairing QR to '
+                'change the relay or keys.',
+            dividerIndent: MotifSpacing.lg,
+            children: [
+              _rzvInfoRow(c, Icons.hub_outlined, 'Relay', server.relay),
+              _rzvInfoRow(
+                c,
+                pinned ? Icons.lock_outline : Icons.lock_open_outlined,
+                'Encryption',
+                pinned
+                    ? 'End-to-end encrypted (cert pinned)'
+                    : 'Plaintext through the relay',
+                valueColor: pinned ? c.success : c.warning,
               ),
             ],
-          ),
-          Expanded(
-            child: ListView(
-              padding: EdgeInsets.fromLTRB(
-                MotifSpacing.lg,
-                MotifSpacing.md,
-                MotifSpacing.lg,
-                MotifSpacing.xl,
-              ),
-              children: [
-                MotifSection(
-                  title: 'Name',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [_field(_name, 'Name', 'e.g. Studio Mac')],
-                ),
-                const SizedBox(height: MotifSpacing.xl),
-                MotifSection(
-                  title: 'Pairing',
-                  footer:
-                      'Reached through a rendezvous relay — both sides dial out '
-                      'and pair by a scanned link. Re-scan the pairing QR to '
-                      'change the relay or keys.',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [
-                    _rzvInfoRow(c, Icons.hub_outlined, 'Relay', server.relay),
-                    _rzvInfoRow(
-                      c,
-                      pinned ? Icons.lock_outline : Icons.lock_open_outlined,
-                      'Encryption',
-                      pinned
-                          ? 'End-to-end encrypted (cert pinned)'
-                          : 'Plaintext through the relay',
-                      valueColor: pinned ? c.success : c.warning,
-                    ),
-                  ],
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -511,58 +503,50 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     final title = widget.existing == null
         ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
         : 'Edit Server';
-    return SafeArea(
-      top: false,
-      child: Column(
+    return AdaptivePanel(
+      title: title,
+      actions: [
+        TextButton(
+          onPressed: _valid && !_saving
+              ? () => _save(connectAfterSave: widget.connectOnSave)
+              : null,
+          child: Text(_primaryActionLabel),
+        ),
+      ],
+      body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
         children: [
-          AdaptiveModalHeader(
-            title: title,
-            actions: [
-              TextButton(
-                onPressed: _valid && !_saving
-                    ? () => _save(connectAfterSave: widget.connectOnSave)
-                    : null,
-                child: Text(_primaryActionLabel),
-              ),
-            ],
+          if (_supportsTailscale || _supportsSsh) ...[
+            _reachViaSection(),
+            const SizedBox(height: MotifSpacing.xl),
+          ],
+          if (_supportsTailscale &&
+              _isNew &&
+              _kind == ServerKind.tailscale) ...[
+            _discoverySection(context),
+            const SizedBox(height: MotifSpacing.xl),
+          ],
+          MotifSection(
+            title: 'Name',
+            dividerIndent: MotifSpacing.lg,
+            children: [_field(_name, 'Name', 'e.g. Dev box')],
           ),
-          Expanded(
-            child: ListView(
-              padding: EdgeInsets.fromLTRB(
-                MotifSpacing.lg,
-                MotifSpacing.md,
-                MotifSpacing.lg,
-                MotifSpacing.xl,
-              ),
-              children: [
-                if (_supportsTailscale || _supportsSsh) ...[
-                  _reachViaSection(),
-                  const SizedBox(height: MotifSpacing.xl),
-                ],
-                if (_supportsTailscale &&
-                    _isNew &&
-                    _kind == ServerKind.tailscale) ...[
-                  _discoverySection(context),
-                  const SizedBox(height: MotifSpacing.xl),
-                ],
-                MotifSection(
-                  title: 'Name',
-                  dividerIndent: MotifSpacing.lg,
-                  children: [_field(_name, 'Name', 'e.g. Dev box')],
-                ),
-                const SizedBox(height: MotifSpacing.xl),
-                if (_kind == ServerKind.ssh) ...[
-                  _sshLoginSection(),
-                  const SizedBox(height: MotifSpacing.xl),
-                  _sshAuthSection(),
-                  const SizedBox(height: MotifSpacing.xl),
-                  _sshMotifdSection(),
-                  const SizedBox(height: MotifSpacing.xl),
-                ],
-                _motifdAddressSection(),
-              ],
-            ),
-          ),
+          const SizedBox(height: MotifSpacing.xl),
+          if (_kind == ServerKind.ssh) ...[
+            _sshLoginSection(),
+            const SizedBox(height: MotifSpacing.xl),
+            _sshAuthSection(),
+            const SizedBox(height: MotifSpacing.xl),
+            _sshMotifdSection(),
+            const SizedBox(height: MotifSpacing.xl),
+          ],
+          _motifdAddressSection(),
         ],
       ),
     );

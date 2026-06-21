@@ -164,9 +164,10 @@ class _TailscaleSetupSheetState extends State<_TailscaleSetupSheet> {
         if (_browserLoginRequested && authUrl != null) {
           _openAuthUrlOnce(authUrl);
         }
-        return _SheetScaffold(
+        return AdaptivePanel(
           title: 'Setup Tailscale',
-          child: ListView(
+          body: ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(
               MotifSpacing.lg,
               MotifSpacing.md,
@@ -312,9 +313,10 @@ class _TailscaleDetailsSheet extends StatelessWidget {
       initialData: svc.state,
       builder: (context, snap) {
         final st = snap.data ?? TailscaleState.stopped;
-        return _SheetScaffold(
+        return AdaptivePanel(
           title: 'Tailscale',
-          child: ListView(
+          body: ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(
               MotifSpacing.lg,
               MotifSpacing.md,
@@ -350,26 +352,6 @@ class _TailscaleDetailsSheet extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-class _SheetScaffold extends StatelessWidget {
-  final String title;
-  final Widget child;
-
-  const _SheetScaffold({required this.title, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Column(
-        children: [
-          AdaptiveModalHeader(title: title),
-          Expanded(child: child),
-        ],
-      ),
     );
   }
 }

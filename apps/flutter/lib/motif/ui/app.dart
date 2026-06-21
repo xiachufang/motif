@@ -362,5 +362,5 @@ class _RootState extends State<_Root> {
 /// Shared helper to open the connection/server manager as an adaptive
 /// modal (bottom sheet on phones, dialog on desktop).
 void openConnectionManager(BuildContext context) {
-  showAdaptivePanel<void>(context, builder: (_) => const ConnectionScreen());
+  showAdaptivePanel<void>(context, builder: (_) => const ConnectionPanel());
 }
