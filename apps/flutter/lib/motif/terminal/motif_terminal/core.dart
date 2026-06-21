@@ -234,13 +234,31 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
 
   void _onWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
     if (!_isCurrentWorker(generation)) return;
+    final viewportChanged =
+        _snapshot?.viewportOffset != snapshot.viewportOffset;
+    final selectionChanged = _selection != snapshot.selection;
     _snapshot = snapshot;
+    _selection = snapshot.selection;
     final cursorSnapshot = _readCursorSnapshot();
     final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
     _lastCursorSnapshot = cursorSnapshot;
     if (cursorChanged) {
       _syncKeyboardLift();
       _scheduleImeRectSync();
+    }
+    if (selectionChanged || (viewportChanged && _selection != null)) {
+      if (_canShowTouchSelectionOverlays) {
+        _showTouchSelectionHandles();
+        if (!_touchSelectionGestureActive &&
+            _touchSelectionDragHandle == null) {
+          _showTouchSelectionMenu();
+        } else {
+          _touchSelectionMenuEntry?.markNeedsBuild();
+        }
+      } else {
+        _hideTouchSelectionHandles();
+        _hideTouchSelectionMenu();
+      }
     }
     if (mounted) setState(() {});
   }

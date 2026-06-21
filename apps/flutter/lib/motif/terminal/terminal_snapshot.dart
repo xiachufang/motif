@@ -1,6 +1,7 @@
 class TerminalSnapshot {
   final int cols;
   final int rows;
+  final int viewportOffset;
   final int backgroundArgb;
   final int foregroundArgb;
   final int cursorArgb;
@@ -11,11 +12,13 @@ class TerminalSnapshot {
   final int cursorStyle;
   final bool mouseTrackingActive;
   final bool alternateScreenActive;
+  final TerminalSelection? selection;
   final List<TerminalSnapshotRow> lines;
 
   const TerminalSnapshot({
     required this.cols,
     required this.rows,
+    this.viewportOffset = 0,
     required this.backgroundArgb,
     required this.foregroundArgb,
     required this.cursorArgb,
@@ -26,6 +29,7 @@ class TerminalSnapshot {
     required this.cursorStyle,
     required this.mouseTrackingActive,
     required this.alternateScreenActive,
+    this.selection,
     required this.lines,
   });
 
@@ -39,10 +43,11 @@ class TerminalSnapshot {
 
   String selectedText(TerminalSelection selection) {
     if (lines.isEmpty || cols <= 0) return '';
-    final range = selection.normalized;
+    final range = visibleSelection(selection);
+    if (range == null) return '';
     final maxRow = lines.length - 1;
-    var startRow = _clampInt(range.base.row, 0, maxRow);
-    var endRow = _clampInt(range.extent.row, 0, maxRow);
+    var startRow = _clampInt(range.base.row - viewportOffset, 0, maxRow);
+    var endRow = _clampInt(range.extent.row - viewportOffset, 0, maxRow);
     if (endRow < startRow) {
       final tmp = startRow;
       startRow = endRow;
@@ -67,8 +72,11 @@ class TerminalSnapshot {
   }
 
   TerminalSelection? wordSelectionAt(TerminalCellPoint point) {
-    if (point.row < 0 || point.row >= lines.length || cols <= 0) return null;
-    final row = lines[point.row];
+    final viewportRow = point.row - viewportOffset;
+    if (viewportRow < 0 || viewportRow >= lines.length || cols <= 0) {
+      return null;
+    }
+    final row = lines[viewportRow];
     final hitIndex = row.cellIndexForColumn(point.col);
     if (hitIndex == null) return null;
     final hit = row.cells[hitIndex];
@@ -95,12 +103,35 @@ class TerminalSnapshot {
 
     return TerminalSelection(
       base: TerminalCellPoint(
-        row: point.row,
+        row: viewportOffset + viewportRow,
         col: _clampInt(startCol, 0, cols - 1),
       ),
       extent: TerminalCellPoint(
-        row: point.row,
+        row: viewportOffset + viewportRow,
         col: _clampInt(endCol, 0, cols - 1),
+      ),
+    );
+  }
+
+  TerminalSelection? visibleSelection(TerminalSelection selection) {
+    if (lines.isEmpty || cols <= 0) return null;
+    final range = selection.normalized;
+    final firstVisibleRow = viewportOffset;
+    final lastVisibleRow = viewportOffset + lines.length - 1;
+    if (range.extent.row < firstVisibleRow || range.base.row > lastVisibleRow) {
+      return null;
+    }
+
+    final startRow = _clampInt(range.base.row, firstVisibleRow, lastVisibleRow);
+    final endRow = _clampInt(range.extent.row, firstVisibleRow, lastVisibleRow);
+    return TerminalSelection(
+      base: TerminalCellPoint(
+        row: startRow,
+        col: startRow == range.base.row ? range.base.col : 0,
+      ),
+      extent: TerminalCellPoint(
+        row: endRow,
+        col: endRow == range.extent.row ? range.extent.col : cols - 1,
       ),
     );
   }

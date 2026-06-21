@@ -139,7 +139,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   TerminalSelection? _selection;
   TerminalCellPoint? _mouseSelectionAnchor;
   int? _mouseSelectionPointer;
-  TerminalCellPoint? _touchSelectionAnchor;
   bool _touchSelectionActive = false;
   bool _touchSelectionGestureActive = false;
   _TouchSelectionHandle? _touchSelectionDragHandle;

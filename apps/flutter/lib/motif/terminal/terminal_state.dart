@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
@@ -13,6 +14,8 @@ class TerminalState {
   late GhosttyKeyEvent _keyEvent;
   late GhosttyMouseEncoder _mouseEncoder;
   late GhosttyMouseEvent _mouseEvent;
+  GhosttyTrackedGridRef? _selectionStartRef;
+  GhosttyTrackedGridRef? _selectionEndRef;
 
   // Effect callbacks. The terminal invokes these synchronously during
   // ghostty_terminal_vt_write() to handle sequences that require a response
@@ -131,6 +134,7 @@ class TerminalState {
   }
 
   void dispose() {
+    clearTrackedSelection();
     _writePtyCallable.close();
     _deviceAttrsCallable.close();
     ghostty_mouse_event_free(_mouseEvent);
@@ -460,6 +464,337 @@ class TerminalState {
     return val;
   }
 
+  int get viewportOffset {
+    final out = calloc<GhosttyTerminalScrollbar>();
+    final result = ghostty_terminal_get(
+      _terminal,
+      GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_SCROLLBAR,
+      out.cast(),
+    );
+    final val = result == GhosttyResult.GHOSTTY_SUCCESS ? out.ref.offset : 0;
+    calloc.free(out);
+    return val;
+  }
+
+  bool beginTrackedSelection(TerminalCellPoint viewportPoint) {
+    return setTrackedSelection(viewportPoint, viewportPoint);
+  }
+
+  bool updateTrackedSelectionEnd(TerminalCellPoint viewportPoint) {
+    final start = _selectionStartRef;
+    final end = _selectionEndRef;
+    if (start == null || start.address == 0) {
+      return beginTrackedSelection(viewportPoint);
+    }
+    if (end == null || end.address == 0) {
+      final nextEnd = _trackPoint(
+        GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
+        viewportPoint,
+      );
+      if (nextEnd == null) return false;
+      _selectionEndRef = nextEnd;
+      return true;
+    }
+    return _setTrackedPoint(
+      end,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
+      viewportPoint,
+    );
+  }
+
+  bool setTrackedSelection(
+    TerminalCellPoint baseViewportPoint,
+    TerminalCellPoint extentViewportPoint,
+  ) {
+    final nextStart = _trackPoint(
+      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
+      baseViewportPoint,
+    );
+    if (nextStart == null) return false;
+    final nextEnd = _trackPoint(
+      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
+      extentViewportPoint,
+    );
+    if (nextEnd == null) {
+      ghostty_tracked_grid_ref_free(nextStart);
+      return false;
+    }
+    clearTrackedSelection();
+    _selectionStartRef = nextStart;
+    _selectionEndRef = nextEnd;
+    return true;
+  }
+
+  bool selectTrackedWordAtViewportPoint(TerminalCellPoint viewportPoint) {
+    final ref = calloc<GhosttyGridRef>();
+    final opts = calloc<GhosttyTerminalSelectWordOptions>();
+    final selection = calloc<GhosttySelection>();
+    try {
+      ref.ref.size = sizeOf<GhosttyGridRef>();
+      if (!_gridRefForPoint(
+        GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
+        viewportPoint,
+        ref,
+      )) {
+        clearTrackedSelection();
+        return false;
+      }
+
+      opts.ref.size = sizeOf<GhosttyTerminalSelectWordOptions>();
+      _copyGridRef(opts.ref.ref, ref.ref);
+      opts.ref.boundary_codepoints = nullptr;
+      opts.ref.boundary_codepoints_len = 0;
+
+      selection.ref.size = sizeOf<GhosttySelection>();
+      final result = ghostty_terminal_select_word(_terminal, opts, selection);
+      if (result != GhosttyResult.GHOSTTY_SUCCESS) {
+        clearTrackedSelection();
+        return false;
+      }
+
+      return _setTrackedSelectionFromSnapshot(selection.ref);
+    } finally {
+      calloc.free(selection);
+      calloc.free(opts);
+      calloc.free(ref);
+    }
+  }
+
+  void clearTrackedSelection() {
+    final start = _selectionStartRef;
+    if (start != null && start.address != 0) {
+      ghostty_tracked_grid_ref_free(start);
+    }
+    final end = _selectionEndRef;
+    if (end != null && end.address != 0) {
+      ghostty_tracked_grid_ref_free(end);
+    }
+    _selectionStartRef = null;
+    _selectionEndRef = null;
+  }
+
+  TerminalSelection? trackedSelection() {
+    final start = _selectionStartRef;
+    final end = _selectionEndRef;
+    if (start == null ||
+        end == null ||
+        start.address == 0 ||
+        end.address == 0) {
+      return null;
+    }
+    if (!ghostty_tracked_grid_ref_has_value(start) ||
+        !ghostty_tracked_grid_ref_has_value(end)) {
+      clearTrackedSelection();
+      return null;
+    }
+    final base = _trackedPoint(start, GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN);
+    final extent = _trackedPoint(end, GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN);
+    if (base == null || extent == null) return null;
+    return TerminalSelection(base: base, extent: extent);
+  }
+
+  String? formatTrackedSelection() {
+    final selection = _snapshotTrackedSelection();
+    if (selection == null) return null;
+    final options = calloc<GhosttyTerminalSelectionFormatOptions>();
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      options.ref.size = sizeOf<GhosttyTerminalSelectionFormatOptions>();
+      options.ref.emitAsInt =
+          GhosttyFormatterFormat.GHOSTTY_FORMATTER_FORMAT_PLAIN.value;
+      options.ref.unwrap = true;
+      options.ref.trim = true;
+      options.ref.selection = selection;
+
+      final result = ghostty_terminal_selection_format_alloc(
+        _terminal,
+        nullptr,
+        options.ref,
+        outPtr,
+        outLen,
+      );
+      if (result != GhosttyResult.GHOSTTY_SUCCESS) return null;
+      final len = outLen.value;
+      if (len <= 0 || outPtr.value.address == 0) return '';
+      return utf8.decode(outPtr.value.asTypedList(len));
+    } finally {
+      if (outPtr.value.address != 0 && outLen.value > 0) {
+        ghostty_free(nullptr, outPtr.value, outLen.value);
+      }
+      calloc.free(outLen);
+      calloc.free(outPtr);
+      calloc.free(options);
+      calloc.free(selection);
+    }
+  }
+
+  Pointer<GhosttySelection>? _snapshotTrackedSelection() {
+    final start = _selectionStartRef;
+    final end = _selectionEndRef;
+    if (start == null ||
+        end == null ||
+        start.address == 0 ||
+        end.address == 0) {
+      return null;
+    }
+    final selection = calloc<GhosttySelection>();
+    final startRef = calloc<GhosttyGridRef>();
+    final endRef = calloc<GhosttyGridRef>();
+    try {
+      selection.ref.size = sizeOf<GhosttySelection>();
+      startRef.ref.size = sizeOf<GhosttyGridRef>();
+      endRef.ref.size = sizeOf<GhosttyGridRef>();
+      final startResult = ghostty_tracked_grid_ref_snapshot(start, startRef);
+      final endResult = ghostty_tracked_grid_ref_snapshot(end, endRef);
+      if (startResult != GhosttyResult.GHOSTTY_SUCCESS ||
+          endResult != GhosttyResult.GHOSTTY_SUCCESS) {
+        calloc.free(selection);
+        return null;
+      }
+      _copyGridRef(selection.ref.start, startRef.ref);
+      _copyGridRef(selection.ref.end, endRef.ref);
+      selection.ref.rectangle = false;
+      return selection;
+    } finally {
+      calloc.free(endRef);
+      calloc.free(startRef);
+    }
+  }
+
+  bool _setTrackedSelectionFromSnapshot(GhosttySelection selection) {
+    final nextStart = _trackGridRefSnapshot(selection.start);
+    if (nextStart == null) return false;
+    final nextEnd = _trackGridRefSnapshot(selection.end);
+    if (nextEnd == null) {
+      ghostty_tracked_grid_ref_free(nextStart);
+      return false;
+    }
+    clearTrackedSelection();
+    _selectionStartRef = nextStart;
+    _selectionEndRef = nextEnd;
+    return true;
+  }
+
+  GhosttyTrackedGridRef? _trackGridRefSnapshot(GhosttyGridRef ref) {
+    final point = _pointFromGridRef(
+      ref,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+    );
+    if (point == null) return null;
+    return _trackPoint(GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN, point);
+  }
+
+  GhosttyTrackedGridRef? _trackPoint(
+    GhosttyPointTag tag,
+    TerminalCellPoint point,
+  ) {
+    final out = calloc<GhosttyTrackedGridRef>();
+    final pointPtr = calloc<GhosttyPoint>();
+    try {
+      _setPoint(pointPtr.ref, tag, point);
+      final result = ghostty_terminal_grid_ref_track(
+        _terminal,
+        pointPtr.ref,
+        out,
+      );
+      if (result != GhosttyResult.GHOSTTY_SUCCESS || out.value.address == 0) {
+        return null;
+      }
+      return out.value;
+    } finally {
+      calloc.free(pointPtr);
+      calloc.free(out);
+    }
+  }
+
+  bool _setTrackedPoint(
+    GhosttyTrackedGridRef ref,
+    GhosttyPointTag tag,
+    TerminalCellPoint point,
+  ) {
+    final pointPtr = calloc<GhosttyPoint>();
+    try {
+      _setPoint(pointPtr.ref, tag, point);
+      final result = ghostty_tracked_grid_ref_set(ref, _terminal, pointPtr.ref);
+      return result == GhosttyResult.GHOSTTY_SUCCESS;
+    } finally {
+      calloc.free(pointPtr);
+    }
+  }
+
+  bool _gridRefForPoint(
+    GhosttyPointTag tag,
+    TerminalCellPoint point,
+    Pointer<GhosttyGridRef> outRef,
+  ) {
+    final pointPtr = calloc<GhosttyPoint>();
+    try {
+      outRef.ref.size = sizeOf<GhosttyGridRef>();
+      _setPoint(pointPtr.ref, tag, point);
+      final result = ghostty_terminal_grid_ref(_terminal, pointPtr.ref, outRef);
+      return result == GhosttyResult.GHOSTTY_SUCCESS;
+    } finally {
+      calloc.free(pointPtr);
+    }
+  }
+
+  TerminalCellPoint? _trackedPoint(
+    GhosttyTrackedGridRef ref,
+    GhosttyPointTag tag,
+  ) {
+    final out = calloc<GhosttyPointCoordinate>();
+    try {
+      final result = ghostty_tracked_grid_ref_point(ref, tag, out);
+      if (result != GhosttyResult.GHOSTTY_SUCCESS) return null;
+      return TerminalCellPoint(row: out.ref.y, col: out.ref.x);
+    } finally {
+      calloc.free(out);
+    }
+  }
+
+  TerminalCellPoint? _pointFromGridRef(
+    GhosttyGridRef ref,
+    GhosttyPointTag tag,
+  ) {
+    final refPtr = calloc<GhosttyGridRef>();
+    final out = calloc<GhosttyPointCoordinate>();
+    try {
+      _copyGridRef(refPtr.ref, ref);
+      final result = ghostty_terminal_point_from_grid_ref(
+        _terminal,
+        refPtr,
+        tag,
+        out,
+      );
+      if (result != GhosttyResult.GHOSTTY_SUCCESS) return null;
+      return TerminalCellPoint(row: out.ref.y, col: out.ref.x);
+    } finally {
+      calloc.free(out);
+      calloc.free(refPtr);
+    }
+  }
+
+  void _setPoint(GhosttyPoint point, GhosttyPointTag tag, TerminalCellPoint p) {
+    point.tagAsInt = tag.value;
+    point.value.coordinate.x = _clampInt(p.col, 0, 0xffff);
+    point.value.coordinate.y = p.row < 0 ? 0 : p.row;
+  }
+
+  int _clampInt(int value, int min, int max) {
+    if (max < min) return min;
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+  }
+
+  void _copyGridRef(GhosttyGridRef target, GhosttyGridRef source) {
+    target.size = sizeOf<GhosttyGridRef>();
+    target.node = source.node;
+    target.x = source.x;
+    target.y = source.y;
+  }
+
   // Key encoding
   void encodeKeyAndWrite(
     GhosttyKey key,
@@ -622,6 +957,7 @@ class TerminalState {
   TerminalSnapshot snapshot({
     required int defaultForegroundArgb,
     required int defaultBackgroundArgb,
+    TerminalSelection? selection,
   }) {
     final colors = this.colors;
     final bgColor = defaultBackgroundArgb;
@@ -686,6 +1022,7 @@ class TerminalState {
     final snapshot = TerminalSnapshot(
       cols: cols,
       rows: rows,
+      viewportOffset: viewportOffset,
       backgroundArgb: bgColor,
       foregroundArgb: fgDefault,
       cursorArgb: cursorColor,
@@ -696,6 +1033,7 @@ class TerminalState {
       cursorStyle: cursorStyle.value,
       mouseTrackingActive: mouseTrackingActive,
       alternateScreenActive: alternateScreenActive,
+      selection: selection,
       lines: lines,
     );
     setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);

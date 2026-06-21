@@ -523,7 +523,7 @@ class TerminalSnapshotPainter extends CustomPainter {
       }
 
       final selected = selection?.intersectsCell(
-        row: rowIdx,
+        row: snapshot.viewportOffset + rowIdx,
         col: cell.col,
         widthCells: cell.widthCells,
         cols: snapshot.cols,
@@ -595,7 +595,8 @@ class TerminalSnapshotPainter extends CustomPainter {
     if (range == null || cellWidth <= 0 || cellHeight <= 0) return;
     final paint = Paint()..color = selectionBackground;
     for (var row = 0; row < snapshot.lines.length; row++) {
-      final columns = range.columnsForRow(row, snapshot.cols);
+      final screenRow = snapshot.viewportOffset + row;
+      final columns = range.columnsForRow(screenRow, snapshot.cols);
       if (columns == null || columns.endCol < columns.startCol) continue;
       final x = padding + columns.startCol * cellWidth;
       final y = padding + row * cellHeight;

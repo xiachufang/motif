@@ -35,6 +35,9 @@ class TerminalWorkerClient {
   final TerminalWorkerErrorCallback _onError;
   late final StreamSubscription<Object?> _eventsSub;
   bool _disposed = false;
+  int _nextCopyRequestId = 1;
+  final Map<int, Completer<String?>> _copySelectionRequests =
+      <int, Completer<String?>>{};
 
   static Future<TerminalWorkerClient> spawn({
     required TerminalWorkerBytesCallback onHostWrite,
@@ -194,9 +197,63 @@ class TerminalWorkerClient {
     _send({'type': 'scrollToBottom'});
   }
 
+  void beginSelection(TerminalCellPoint viewportPoint) {
+    _send({
+      'type': 'selectionBegin',
+      'row': viewportPoint.row,
+      'col': viewportPoint.col,
+    });
+  }
+
+  void updateSelectionEnd(TerminalCellPoint viewportPoint) {
+    _send({
+      'type': 'selectionUpdateEnd',
+      'row': viewportPoint.row,
+      'col': viewportPoint.col,
+    });
+  }
+
+  void setSelection({
+    required TerminalCellPoint baseViewportPoint,
+    required TerminalCellPoint extentViewportPoint,
+  }) {
+    _send({
+      'type': 'selectionSet',
+      'baseRow': baseViewportPoint.row,
+      'baseCol': baseViewportPoint.col,
+      'extentRow': extentViewportPoint.row,
+      'extentCol': extentViewportPoint.col,
+    });
+  }
+
+  void selectWord(TerminalCellPoint viewportPoint) {
+    _send({
+      'type': 'selectionWord',
+      'row': viewportPoint.row,
+      'col': viewportPoint.col,
+    });
+  }
+
+  void clearSelection() {
+    _send({'type': 'selectionClear'});
+  }
+
+  Future<String?> copySelection() {
+    if (_disposed) return Future<String?>.value(null);
+    final id = _nextCopyRequestId++;
+    final completer = Completer<String?>();
+    _copySelectionRequests[id] = completer;
+    _send({'type': 'selectionCopy', 'id': id});
+    return completer.future;
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    for (final completer in _copySelectionRequests.values) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    _copySelectionRequests.clear();
     _send({'type': 'dispose'});
     await _eventsSub.cancel();
     _events.close();
@@ -221,6 +278,13 @@ class TerminalWorkerClient {
       case 'snapshot':
         final snapshot = message['snapshot'];
         if (snapshot is TerminalSnapshot) _onSnapshot(snapshot);
+      case 'selectionText':
+        final id = message['id'];
+        final completer = id is int ? _copySelectionRequests.remove(id) : null;
+        if (completer != null && !completer.isCompleted) {
+          final text = message['text'];
+          completer.complete(text is String ? text : null);
+        }
       case 'error':
         _onError(message['error'] ?? 'terminal worker error');
     }
@@ -311,6 +375,48 @@ class _TerminalWorker {
         case 'scrollToBottom':
           state?.scrollToBottom();
           _scheduleSnapshot(force: true);
+        case 'selectionBegin':
+          if (state?.beginTrackedSelection(_pointFromCommand(command)) ==
+              true) {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          }
+        case 'selectionUpdateEnd':
+          if (state?.updateTrackedSelectionEnd(_pointFromCommand(command)) ==
+              true) {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          }
+        case 'selectionSet':
+          if (state?.setTrackedSelection(
+                TerminalCellPoint(
+                  row: command['baseRow'] as int,
+                  col: command['baseCol'] as int,
+                ),
+                TerminalCellPoint(
+                  row: command['extentRow'] as int,
+                  col: command['extentCol'] as int,
+                ),
+              ) ==
+              true) {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          }
+        case 'selectionWord':
+          if (state?.selectTrackedWordAtViewportPoint(
+                _pointFromCommand(command),
+              ) ==
+              true) {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          } else {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          }
+        case 'selectionClear':
+          state?.clearTrackedSelection();
+          _scheduleSnapshot(force: true, delay: Duration.zero);
+        case 'selectionCopy':
+          events.send({
+            'type': 'selectionText',
+            'id': command['id'],
+            'text': state?.formatTrackedSelection(),
+          });
         case 'dispose':
           _dispose();
       }
@@ -388,6 +494,13 @@ class _TerminalWorker {
     }
     if (bytes is Uint8List) return bytes;
     return null;
+  }
+
+  TerminalCellPoint _pointFromCommand(Map command) {
+    return TerminalCellPoint(
+      row: command['row'] as int,
+      col: command['col'] as int,
+    );
   }
 
   Duration get _feedFrameInterval {
@@ -476,6 +589,7 @@ class _TerminalWorker {
       'snapshot': terminal.snapshot(
         defaultForegroundArgb: foregroundArgb,
         defaultBackgroundArgb: backgroundArgb,
+        selection: terminal.trackedSelection(),
       ),
     });
     _scheduleCursorPoll();

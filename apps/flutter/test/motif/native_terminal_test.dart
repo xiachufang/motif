@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:motif/motif/terminal/ghostty_bindings.g.dart';
 import 'package:motif/motif/terminal/key_map.dart';
+import 'package:motif/motif/terminal/terminal_snapshot.dart';
 import 'package:motif/motif/terminal/terminal_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -167,6 +168,30 @@ void main() {
       ts.dispose();
     },
   );
+
+  test('tracked selection keeps pointing at text after scrollback changes', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(20, 3);
+    ts.feedBytes(Uint8List.fromList('alpha beta'.codeUnits));
+
+    expect(
+      ts.beginTrackedSelection(const TerminalCellPoint(row: 0, col: 0)),
+      isTrue,
+    );
+    expect(
+      ts.updateTrackedSelectionEnd(const TerminalCellPoint(row: 0, col: 4)),
+      isTrue,
+    );
+    expect(ts.formatTrackedSelection(), 'alpha');
+
+    ts.feedBytes(
+      Uint8List.fromList('\r\none\r\ntwo\r\nthree\r\nfour'.codeUnits),
+    );
+
+    expect(ts.formatTrackedSelection(), 'alpha');
+
+    ts.dispose();
+  });
 }
 
 String _firstRowText(TerminalState ts) {

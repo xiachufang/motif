@@ -228,7 +228,9 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
     _mouseSelectionPointer = e.pointer;
-    _mouseSelectionAnchor = _terminalCellAt(e.localPosition);
+    final anchor = _terminalViewportCellAt(e.localPosition);
+    _mouseSelectionAnchor = anchor;
+    _worker?.beginSelection(anchor);
   }
 
   void _updateMouseSelection(Offset localPosition) {
@@ -247,10 +249,6 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_usesTouchSelectionGestures) return;
     if (!_isTouchSelectionKind(_lastPointerKind)) return;
     if (!_canSelectTerminalText) return;
-    final wordSelection = _snapshot?.wordSelectionAt(
-      _terminalCellAt(details.localPosition),
-    );
-    if (wordSelection == null) return;
     _requestFocusWithoutKeyboard();
     _stopScrollInertia(resetVelocity: true);
     final selectionPointer = _touchScrollPointer;
@@ -260,25 +258,18 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _touchSelectionPointer = selectionPointer;
     _touchSelectionGestureActive = true;
     _touchSelectionActive = true;
-    _touchSelectionAnchor = wordSelection.base;
-    _setTerminalSelection(wordSelection);
-    _showTouchSelectionHandles();
-    _showTouchSelectionMenu();
+    _worker?.selectWord(_terminalViewportCellAt(details.localPosition));
   }
 
   void _onTerminalLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
     if (!_touchSelectionGestureActive) return;
-    final anchor = _touchSelectionAnchor;
-    if (anchor == null) return;
     _hideTouchSelectionMenu();
-    _updateTerminalSelection(anchor, details.localPosition);
-    _showTouchSelectionHandles();
+    _worker?.updateSelectionEnd(_terminalViewportCellAt(details.localPosition));
   }
 
   void _onTerminalLongPressEnd(LongPressEndDetails _) {
     if (!_touchSelectionGestureActive) return;
     _touchSelectionGestureActive = false;
-    _touchSelectionAnchor = null;
     _showTouchSelectionHandles();
     _showTouchSelectionMenu();
   }
@@ -288,7 +279,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _clearTerminalSelection();
   }
 
-  TerminalCellPoint _terminalCellAt(Offset localPosition) {
+  TerminalCellPoint _terminalViewportCellAt(Offset localPosition) {
     final snapshot = _snapshot;
     final cols = snapshot?.cols ?? _cols;
     final rows = snapshot?.rows ?? _rows;
@@ -306,30 +297,22 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
   }
 
-  void _updateTerminalSelection(
-    TerminalCellPoint anchor,
-    Offset localPosition,
-  ) {
-    final next = TerminalSelection(
-      base: anchor,
-      extent: _terminalCellAt(localPosition),
+  TerminalCellPoint _terminalCellAt(Offset localPosition) {
+    final snapshot = _snapshot;
+    final viewportPoint = _terminalViewportCellAt(localPosition);
+    return TerminalCellPoint(
+      row: (snapshot?.viewportOffset ?? 0) + viewportPoint.row,
+      col: viewportPoint.col,
     );
-    _setTerminalSelection(next);
   }
 
-  void _setTerminalSelection(TerminalSelection next) {
-    if (_selection == next) return;
-    if (mounted) {
-      setState(() => _selection = next);
-    } else {
-      _selection = next;
-    }
-    _touchSelectionHandlesEntry?.markNeedsBuild();
-    _touchSelectionMenuEntry?.markNeedsBuild();
+  void _updateTerminalSelection(TerminalCellPoint _, Offset localPosition) {
+    _worker?.updateSelectionEnd(_terminalViewportCellAt(localPosition));
   }
 
   void _clearTerminalSelection() {
     final hadSelection = _selection != null;
+    _worker?.clearSelection();
     _discardTerminalSelectionState();
     if (!hadSelection) return;
     if (mounted) setState(() {});
@@ -340,7 +323,6 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _hideTouchSelectionHandles();
     _mouseSelectionAnchor = null;
     _mouseSelectionPointer = null;
-    _touchSelectionAnchor = null;
     _touchSelectionActive = false;
     _touchSelectionGestureActive = false;
     _touchSelectionPointer = null;
@@ -358,8 +340,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     return mounted &&
         _usesTouchSelectionGestures &&
         _touchSelectionActive &&
-        _selection != null &&
-        _selectedText().isNotEmpty;
+        _selection != null;
   }
 
   void _showTouchSelectionHandles() {
@@ -459,6 +440,10 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         _cellHeight <= 0) {
       return null;
     }
+    if (_screenPointToViewport(selection.base) == null ||
+        _screenPointToViewport(selection.extent) == null) {
+      return null;
+    }
     return (
       start: terminalBox.localToGlobal(_selectionStartEndpoint(selection.base)),
       end: terminalBox.localToGlobal(_selectionEndEndpoint(selection.extent)),
@@ -466,16 +451,18 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   Offset _selectionStartEndpoint(TerminalCellPoint point) {
+    final viewportRow = _screenPointToViewport(point)?.row ?? point.row;
     return Offset(
       widget.padding + point.col * _cellWidth,
-      widget.padding + (point.row + 1) * _cellHeight,
+      widget.padding + (viewportRow + 1) * _cellHeight,
     );
   }
 
   Offset _selectionEndEndpoint(TerminalCellPoint point) {
+    final viewportRow = _screenPointToViewport(point)?.row ?? point.row;
     return Offset(
       widget.padding + (point.col + 1) * _cellWidth,
-      widget.padding + (point.row + 1) * _cellHeight,
+      widget.padding + (viewportRow + 1) * _cellHeight,
     );
   }
 
@@ -495,9 +482,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (activeHandle == null || current == null || terminalBox == null) {
       return;
     }
-    final point = _terminalCellAt(
-      terminalBox.globalToLocal(details.globalPosition),
-    );
+    final localPosition = terminalBox.globalToLocal(details.globalPosition);
+    final point = _terminalCellAt(localPosition);
     final next = switch (activeHandle) {
       _TouchSelectionHandle.start => _selectionAdjustedFromStart(
         current,
@@ -505,7 +491,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       ),
       _TouchSelectionHandle.end => _selectionAdjustedFromEnd(current, point),
     };
-    _setTerminalSelection(next.selection);
+    final viewportSelection = _selectionToViewport(next.selection);
+    if (viewportSelection == null) return;
+    _worker?.setSelection(
+      baseViewportPoint: viewportSelection.base,
+      extentViewportPoint: viewportSelection.extent,
+    );
     _touchSelectionDragHandle = next.activeHandle;
     _touchSelectionHandlesEntry?.markNeedsBuild();
   }
@@ -589,30 +580,51 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   TextSelectionToolbarAnchors? _touchSelectionToolbarAnchors() {
+    final snapshot = _snapshot;
     final selection = _selection?.normalized;
     final terminalBox =
         _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
-    if (selection == null ||
+    if (snapshot == null ||
+        selection == null ||
         terminalBox == null ||
         !terminalBox.hasSize ||
         _cellWidth <= 0 ||
         _cellHeight <= 0) {
       return null;
     }
-    final sameRow = selection.base.row == selection.extent.row;
+    final visible = snapshot.visibleSelection(selection);
+    if (visible == null) return null;
+    final baseRow = visible.base.row - snapshot.viewportOffset;
+    final extentRow = visible.extent.row - snapshot.viewportOffset;
+    final sameRow = visible.base.row == visible.extent.row;
     final left = sameRow
-        ? widget.padding + selection.base.col * _cellWidth
+        ? widget.padding + visible.base.col * _cellWidth
         : widget.padding;
     final right = sameRow
-        ? widget.padding + (selection.extent.col + 1) * _cellWidth
+        ? widget.padding + (visible.extent.col + 1) * _cellWidth
         : widget.padding + _cols * _cellWidth;
-    final top = widget.padding + selection.base.row * _cellHeight;
-    final bottom = widget.padding + (selection.extent.row + 1) * _cellHeight;
+    final top = widget.padding + baseRow * _cellHeight;
+    final bottom = widget.padding + (extentRow + 1) * _cellHeight;
     final centerX = left + (right - left) / 2;
     return TextSelectionToolbarAnchors(
       primaryAnchor: terminalBox.localToGlobal(Offset(centerX, top)),
       secondaryAnchor: terminalBox.localToGlobal(Offset(centerX, bottom)),
     );
+  }
+
+  TerminalCellPoint? _screenPointToViewport(TerminalCellPoint point) {
+    final snapshot = _snapshot;
+    if (snapshot == null) return null;
+    final row = point.row - snapshot.viewportOffset;
+    if (row < 0 || row >= snapshot.lines.length) return null;
+    return TerminalCellPoint(row: row, col: point.col);
+  }
+
+  TerminalSelection? _selectionToViewport(TerminalSelection selection) {
+    final base = _screenPointToViewport(selection.base);
+    final extent = _screenPointToViewport(selection.extent);
+    if (base == null || extent == null) return null;
+    return TerminalSelection(base: base, extent: extent);
   }
 
   int _clampTerminalInt(int value, int min, int max) {
@@ -756,15 +768,9 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     return _snapshot?.visibleText ?? '';
   }
 
-  String _selectedText() {
-    final selection = _selection;
-    if (selection == null) return '';
-    return _snapshot?.selectedText(selection) ?? '';
-  }
-
   Future<void> _copySelectedText() async {
     if (!_initialized) return;
-    final text = _selectedText();
+    final text = await _worker?.copySelection() ?? '';
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
@@ -780,7 +786,9 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   Future<void> _copySelectionOrVisible() async {
     if (!_initialized) return;
     final selection = _selection;
-    final text = selection == null ? _visibleText() : _selectedText();
+    final text = selection == null
+        ? _visibleText()
+        : await _worker?.copySelection() ?? '';
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (mounted) {
