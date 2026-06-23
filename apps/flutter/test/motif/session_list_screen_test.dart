@@ -9,6 +9,7 @@ import 'package:motif/motif/state/motif_client.dart';
 import 'package:motif/motif/state/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
+import 'package:motif/motif/ui/screens/session_name_generator.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -130,6 +131,30 @@ void main() {
 
     expect(motif.created, [('build', '~/build')]);
     expect(find.text('build'), findsOneWidget);
+  });
+
+  testWidgets('create session dialog pre-fills adjective fruit name', (
+    tester,
+  ) async {
+    final motif = _CreatingMotifClient()
+      ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
+
+    await _pumpSessionList(tester, motif);
+
+    await tester.tap(find.text('Create session'));
+    await tester.pumpAndSettle();
+
+    final nameField = tester.widget<TextField>(_fieldWithLabel('Name'));
+    final generated = nameField.controller!.text;
+    final parts = generated.split('-');
+    expect(parts, hasLength(2));
+    expect(sessionNameAdjectives, contains(parts[0]));
+    expect(sessionNameFruits, contains(parts[1]));
+
+    await tester.tap(find.text('Create'));
+    await tester.pumpAndSettle();
+
+    expect(motif.created, [(generated, '~')]);
   });
 
   testWidgets('groups sessions by connected server', (tester) async {

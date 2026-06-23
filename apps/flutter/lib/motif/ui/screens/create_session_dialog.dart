@@ -7,6 +7,7 @@ import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
+import 'session_name_generator.dart';
 
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
@@ -37,8 +38,18 @@ class _CreateSessionDialog extends StatefulWidget {
 }
 
 class _CreateSessionDialogState extends State<_CreateSessionDialog> {
-  final _name = TextEditingController();
+  late final TextEditingController _name;
   final _workdir = TextEditingController(text: '~');
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(
+      text: generateSessionName(
+        existingNames: widget.motif.sessions.map((session) => session.name),
+      ),
+    );
+  }
 
   @override
   void dispose() {

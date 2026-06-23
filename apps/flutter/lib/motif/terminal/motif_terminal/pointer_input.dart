@@ -230,18 +230,30 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _mouseSelectionPointer = e.pointer;
     final anchor = _terminalViewportCellAt(e.localPosition);
     _mouseSelectionAnchor = anchor;
-    _worker?.beginSelection(anchor);
+    _mouseSelectionDownPosition = e.localPosition;
+    _mouseSelectionStarted = false;
   }
 
   void _updateMouseSelection(Offset localPosition) {
     final anchor = _mouseSelectionAnchor;
     if (anchor == null) return;
+    if (!_mouseSelectionStarted) {
+      final downPosition = _mouseSelectionDownPosition;
+      if (downPosition == null ||
+          (localPosition - downPosition).distance < kTouchSlop) {
+        return;
+      }
+      _mouseSelectionStarted = true;
+      _worker?.beginSelection(anchor);
+    }
     _updateTerminalSelection(anchor, localPosition);
   }
 
   void _finishMouseSelection() {
     _mouseSelectionPointer = null;
     _mouseSelectionAnchor = null;
+    _mouseSelectionDownPosition = null;
+    _mouseSelectionStarted = false;
   }
 
   void _onTerminalLongPressStart(LongPressStartDetails details) {
@@ -249,6 +261,10 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_usesTouchSelectionGestures) return;
     if (!_isTouchSelectionKind(_lastPointerKind)) return;
     if (!_canSelectTerminalText) return;
+    final wordSelection = _snapshot?.wordSelectionAt(
+      _terminalCellAt(details.localPosition),
+    );
+    if (wordSelection == null) return;
     _requestFocusWithoutKeyboard();
     _stopScrollInertia(resetVelocity: true);
     final selectionPointer = _touchScrollPointer;
@@ -324,6 +340,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _hideTouchSelectionHandles();
     _mouseSelectionAnchor = null;
     _mouseSelectionPointer = null;
+    _mouseSelectionDownPosition = null;
+    _mouseSelectionStarted = false;
     _touchSelectionActive = false;
     _touchSelectionGestureActive = false;
     _touchSelectionPointer = null;
