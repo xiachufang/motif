@@ -44,6 +44,11 @@ if [ -n "$CI_TAG" ]; then
   echo "version check: tag $CI_TAG matches pubspec $pubspec"
 fi
 
+# Avoid Homebrew's implicit metadata update/cleanup on Xcode Cloud. Those extra
+# network steps are slow and have been another source of transient DNS/TLS flakes.
+export HOMEBREW_NO_AUTO_UPDATE=1
+export HOMEBREW_NO_INSTALL_CLEANUP=1
+
 retry brew install zig@0.15 go
 
 # The default execution directory of this script is the ci_scripts directory.
