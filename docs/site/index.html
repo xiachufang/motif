@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motif | Remote development sessions</title>
+    <meta
+      name="description"
+      content="Motif is an open-source, self-hosted remote terminal client and motifd server for long-lived remote development sessions."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Motif | Remote development sessions" />
+    <meta
+      property="og:description"
+      content="Open-source, self-hosted remote terminal, files, and git in one long-lived session. Attach from iOS, macOS, Android, Web, Linux, and Windows."
+    />
+    <meta property="og:image" content="./assets/motif-hero.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Motif | Remote development sessions" />
+    <meta
+      name="twitter:description"
+      content="Open-source, self-hosted remote terminal, files, and git in one long-lived session."
+    />
+    <meta name="twitter:image" content="./assets/motif-hero.png" />
+    <link rel="icon" type="image/png" href="./assets/motif-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header" data-header>
+      <a class="brand" href="#top" aria-label="Motif home">
+        <img src="./assets/motif-icon.png" alt="" width="34" height="34" />
+        <span>Motif</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#features" data-i18n="nav.features">Features</a>
+        <a href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
+        <a href="#compare" data-i18n="nav.compare">Compare</a>
+        <a href="#use" data-i18n="nav.use">How to use</a>
+        <a href="#connect" data-i18n="nav.connect">Connect</a>
+        <a href="#architecture" data-i18n="nav.architecture">Architecture</a>
+        <a href="#faq" data-i18n="nav.faq">FAQ</a>
+      </nav>
+      <div class="header-actions">
+        <button class="lang-button" type="button" data-lang-toggle aria-label="Switch language">
+          <span data-i18n="language.toggle">中文</span>
+        </button>
+        <a class="ghost-button" href="https://github.com/xiachufang/motif/tree/main/docs" target="_blank" rel="noopener" data-i18n="nav.docs">Docs</a>
+        <a class="primary-button header-cta" href="https://apps.apple.com/app/motif-ssh-terminal/id6778351644" target="_blank" rel="noopener" data-i18n="nav.appstore">App Store</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-bg" aria-hidden="true"></div>
+        <div class="hero-content">
+          <p class="eyebrow" data-i18n="hero.eyebrow">Remote terminal, files, and git in one live session</p>
+          <h1 id="hero-title" data-i18n="hero.title">Motif</h1>
+          <p class="hero-copy" data-i18n="hero.copy">
+            Run your workdir, shells, file operations, and git state on one machine.
+            Attach from any lightweight client and see the same session.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="primary-button" href="https://apps.apple.com/app/motif-ssh-terminal/id6778351644" target="_blank" rel="noopener" data-i18n="hero.ctaAppStore">Download on the App Store</a>
+            <a class="secondary-button" href="https://github.com/xiachufang/motif/releases/latest" target="_blank" rel="noopener" data-i18n="hero.ctaOther">Other platforms</a>
+          </div>
+          <p class="hero-availability" data-i18n="hero.availability">
+            iOS on the App Store. macOS, Android, Linux, and Windows on GitHub Releases. Web runs in the browser.
+          </p>
+          <p class="hero-availability" data-i18n="hero.openness">
+            Open source (MIT/Apache-2.0) and self-hosted. No account or sign-in—your code stays on the machine running motifd.
+          </p>
+          <dl class="hero-facts" aria-label="Motif highlights">
+            <div>
+              <dt data-i18n="hero.fact1.value">Persistent</dt>
+              <dd data-i18n="hero.fact1.label">sessions stay alive on the machine running motifd</dd>
+            </div>
+            <div>
+              <dt data-i18n="hero.fact2.value">Mirrored</dt>
+              <dd data-i18n="hero.fact2.label">multiple clients see one authoritative session</dd>
+            </div>
+            <div>
+              <dt data-i18n="hero.fact3.value">Reachable</dt>
+              <dd data-i18n="hero.fact3.label">Pair, SSH, Tailscale, relay, or browser same-origin</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="section intro-band" aria-labelledby="intro-title">
+        <div class="section-inner two-column">
+          <div>
+            <p class="section-kicker" data-i18n="intro.kicker">What Motif is</p>
+            <h2 id="intro-title" data-i18n="intro.title">A long-lived development session you can reattach to.</h2>
+          </div>
+          <div class="intro-copy">
+            <p data-i18n="intro.copy1">
+              Motif combines a Rust server named motifd with Flutter clients. The server owns the workdir, PTY pool, filesystem operations, and git diff. Clients are thin surfaces that attach, detach, and reconnect.
+            </p>
+            <p data-i18n="intro.copy2">
+              The result feels like code-server plus tmux attach: open the same session from your laptop, phone, tablet, desktop app, or browser and keep seeing the same file tree, terminals, and diff.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section" aria-labelledby="features-title">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="section-kicker" data-i18n="features.kicker">Everything in the session</p>
+            <h2 id="features-title" data-i18n="features.title">Core features</h2>
+            <p data-i18n="features.copy">
+              Motif focuses on the daily remote development loop: terminals, files, diffs, connection setup, and cross-device continuity.
+            </p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 8 9 12 5 16"/><line x1="12" y1="16" x2="19" y2="16"/></svg>
+              </span>
+              <h3 data-i18n="feature.terminal.title">Ghostty-powered terminal</h3>
+              <p data-i18n="feature.terminal.copy">Render remote PTY bytes locally with libghostty on native platforms and WebAssembly in the browser.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+              </span>
+              <h3 data-i18n="feature.sessions.title">Long-lived sessions</h3>
+              <p data-i18n="feature.sessions.copy">Sessions live on the server with their workdir and terminal state even when a client disconnects.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2"/></svg>
+              </span>
+              <h3 data-i18n="feature.mirror.title">Mirrored clients</h3>
+              <p data-i18n="feature.mirror.copy">Multiple clients attach to the same session and observe the same PTY output, file tree, and git state.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              </span>
+              <h3 data-i18n="feature.files.title">File tree and editing</h3>
+              <p data-i18n="feature.files.copy">Browse, create, rename, delete, preview, edit, and resolve write conflicts inside the server workdir.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="4" x2="6" y2="14"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M18 8.5a8 8 0 0 1-8 8"/></svg>
+              </span>
+              <h3 data-i18n="feature.git.title">Git diff views</h3>
+              <p data-i18n="feature.git.copy">Review all changes or per-file diffs without leaving the remote session.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></svg>
+              </span>
+              <h3 data-i18n="feature.quick.title">Quick commands</h3>
+              <p data-i18n="feature.quick.copy">Use reusable command sets, sticky modifiers, and an editor for fast mobile and desktop terminal input.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 2.7v5.3c0 4.4-3 6.8-7 8.2-4-1.4-7-3.8-7-8.2V5.7z"/></svg>
+              </span>
+              <h3 data-i18n="feature.connectivity.title">Flexible connectivity</h3>
+              <p data-i18n="feature.connectivity.copy">Reach motifd over embedded Tailscale (tsnet), relay, or motif://pair links and QR, with certificate pinning and psk-derived bearer auth.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>
+              </span>
+              <h3 data-i18n="feature.web.title">Embedded Web client</h3>
+              <p data-i18n="feature.web.copy">motifd can serve the Flutter Web client from the same origin as RPC, events, and PTY streams.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><line x1="7" y1="7.5" x2="7.01" y2="7.5"/><line x1="7" y1="16.5" x2="7.01" y2="16.5"/></svg>
+              </span>
+              <h3 data-i18n="feature.desktop.title">Desktop embedded server</h3>
+              <p data-i18n="feature.desktop.copy">Desktop builds can run motifd in-process, managed from the Server view or system tray.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="8 11 12 15 16 11"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+              </span>
+              <h3 data-i18n="feature.sshprov.title">SSH auto-provisioning</h3>
+              <p data-i18n="feature.sshprov.copy">Connect over SSH and Motif can download, install, and start motifd on the remote host automatically when it is missing.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21"/></svg>
+              </span>
+              <h3 data-i18n="feature.input.title">Voice, photo, and image flows</h3>
+              <p data-i18n="feature.input.copy">Native clients support voice input, photo attach, image view, and terminal-focused interaction helpers.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+              </span>
+              <h3 data-i18n="feature.push.title">Encrypted push notifications</h3>
+              <p data-i18n="feature.push.copy">E2E push uses AES-256-GCM and native APNs paths without Firebase in the iOS flow.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="screenshots" class="section screenshot-band" aria-labelledby="screenshots-title">
+        <div class="section-inner">
+          <div class="section-heading screenshot-heading">
+            <p class="section-kicker" data-i18n="screenshots.kicker">Product walkthrough</p>
+            <h2 id="screenshots-title" data-i18n="screenshots.title">Every core workflow, captured from a live review server.</h2>
+            <p data-i18n="screenshots.copy">
+              These are real macOS and iPhone captures connected to the hk.hq motifd review server: session management, terminal attach, files, git diff, mobile input helpers, settings, and the embedded server view.
+            </p>
+          </div>
+          <div class="screenshot-gallery">
+            <figure class="screenshot-card screenshot-card-wide">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-git-diff.png" alt="Motif macOS app showing file tree, working git diff, terminal, and quick input bar" width="2584" height="1784" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macGit.title">Git diff with context</strong>
+                <span data-i18n="screenshots.macGit.copy">Review working changes next to the file tree and live terminal, with quick commands still one tap away.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-phone screenshot-card-phone-feature">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-iphone-git-diff.png" alt="Motif iPhone app showing a working git diff for README.md and src/session.js" width="1206" height="2622" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.iphoneGit.title">iPhone git review</strong>
+                <span data-i18n="screenshots.iphoneGit.copy">The same diff is readable on mobile, including working/staged tabs and per-file patch text.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-medium">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-sessions.png" alt="Motif macOS session list showing docs-demo and a sessions on hk.hq review" width="2584" height="1784" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macSessions.title">Session list</strong>
+                <span data-i18n="screenshots.macSessions.copy">See every long-lived session on the server, its workdir, age, and active client count.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-medium">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-terminal.png" alt="Motif macOS app showing multiple terminal tabs and remote shell output" width="2584" height="1784" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macTerminal.title">Remote terminal tabs</strong>
+                <span data-i18n="screenshots.macTerminal.copy">Attach to PTY-backed shells, keep output on the server, and switch between terminal tabs.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-medium">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-files.png" alt="Motif macOS app showing the motif-docs-demo file tree with src and README.md" width="2584" height="1784" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macFiles.title">File tree</strong>
+                <span data-i18n="screenshots.macFiles.copy">Browse folders and files in the remote workdir without copying the project to the client.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-medium">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-server.png" alt="Motif macOS Server view showing local server endpoints, Tailscale, relay, and LAN listen mode" width="2584" height="1110" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macServer.title">Embedded server</strong>
+                <span data-i18n="screenshots.macServer.copy">Run motifd from the desktop app, choose loopback/LAN/off, and expose relay or Tailscale endpoints.</span>
+              </figcaption>
+            </figure>
+            <figure class="screenshot-card screenshot-card-medium">
+              <div class="screenshot-frame">
+                <img src="./assets/motif-mac-terminal-settings.png" alt="Motif macOS terminal settings dialog with font size and light dark system theme controls" width="2584" height="1784" loading="lazy" />
+              </div>
+              <figcaption>
+                <strong data-i18n="screenshots.macSettings.title">Terminal settings</strong>
+                <span data-i18n="screenshots.macSettings.copy">Tune font size and theme per client while the underlying session keeps running.</span>
+              </figcaption>
+            </figure>
+            <div class="phone-strip" aria-label="iPhone workflow screenshots">
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-sessions.png" alt="Motif iPhone session list showing docs-demo and a sessions on hk.hq review" width="1206" height="2622" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneSessions.title">Mobile session list</strong>
+                  <span data-i18n="screenshots.iphoneSessions.copy">Reconnect from your phone and see the same server state, including attached clients.</span>
+                </figcaption>
+              </figure>
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-terminal.png" alt="Motif iPhone terminal with quick command row, photo attach button, voice input, and send button" width="1206" height="2622" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneTerminal.title">Mobile terminal input</strong>
+                  <span data-i18n="screenshots.iphoneTerminal.copy">Use quick keys, reusable commands, photo attach, voice input, and send controls from the phone.</span>
+                </figcaption>
+              </figure>
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-files.png" alt="Motif iPhone file browser showing src and README.md inside motif-docs-demo" width="1206" height="2622" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneFiles.title">Mobile files</strong>
+                  <span data-i18n="screenshots.iphoneFiles.copy">Open the remote file tree on iPhone for quick inspection and file-level actions.</span>
+                </figcaption>
+              </figure>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="compare" class="section" aria-labelledby="compare-title">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="section-kicker" data-i18n="compare.kicker">How it compares</p>
+            <h2 id="compare-title" data-i18n="compare.title">Why Motif instead of SSH + tmux or a browser IDE?</h2>
+            <p data-i18n="compare.copy">Motif keeps one authoritative session on the server and mirrors it to native clients on every device—with files, git diff, and built-in connectivity. Here is how that compares to the usual setups.</p>
+          </div>
+          <div class="compare-table" role="table" aria-label="How Motif compares">
+            <div class="compare-row compare-head" role="row">
+              <span role="columnheader" data-i18n="compare.col.capability">Capability</span>
+              <span role="columnheader" data-i18n="compare.col.ssh">SSH + tmux</span>
+              <span role="columnheader" data-i18n="compare.col.mosh">mosh</span>
+              <span role="columnheader" data-i18n="compare.col.code">code-server</span>
+              <span role="columnheader" class="compare-motif" data-i18n="compare.col.motif">Motif</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row1">Persistent, mirrored server session</span>
+              <span role="cell" class="yes" aria-label="Yes">✓</span>
+              <span role="cell" class="partial" aria-label="With extra setup">~</span>
+              <span role="cell" class="yes" aria-label="Yes">✓</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row2">Survives roaming and flaky links (local echo)</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="yes" aria-label="Yes">✓</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row3">Native phone, tablet, and desktop apps</span>
+              <span role="cell" class="partial" aria-label="With extra setup">~</span>
+              <span role="cell" class="partial" aria-label="With extra setup">~</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row4">Native scrollback, no copy-mode keys</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="yes" aria-label="Yes">✓</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row5">File tree, editing, and git diff</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="yes" aria-label="Yes">✓</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row6">Custom shortcuts and quick-command input</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row7">Forward remote ports to localhost</span>
+              <span role="cell" class="partial" aria-label="With extra setup">~</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row8">AI agent helpers: image upload, completion hooks</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+            <div class="compare-row" role="row">
+              <span role="rowheader" data-i18n="compare.row9">Built-in Tailscale, relay, and QR pairing</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="no" aria-label="No">—</span>
+              <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
+            </div>
+          </div>
+          <p class="compare-legend" data-i18n="compare.legend">✓ built in · ~ with extra setup · — not really</p>
+        </div>
+      </section>
+
+      <section id="use" class="section use-band" aria-labelledby="use-title">
+        <div class="section-inner">
+          <div class="section-heading compact">
+            <p class="section-kicker" data-i18n="use.kicker">Two ways to run</p>
+            <h2 id="use-title" data-i18n="use.title">Use Motif as a server daemon or as your computer's remote entrance.</h2>
+            <p data-i18n="use.lead">Every session lives in a motifd server. Desktop apps include motifd—run it locally in one click. Mobile, web, and other desktops attach to a motifd you run on a computer or server.</p>
+          </div>
+          <div class="run-grid">
+            <article class="run-card">
+              <h3 data-i18n="run.server.title">Run on a server</h3>
+              <p data-i18n="run.server.copy">Deploy motifd on a VPS, cloud box, remote workstation, or long-lived dev machine. Clients attach from anywhere that can reach it.</p>
+              <pre><code>docker run -d --name motifd --restart=unless-stopped \
+  -p 7777:7777 \
+  -v motifd-data:/data \
+  -v "$PWD:/work" \
+  -e MOTIFD_ADVERTISE_HOST=&lt;host&gt; \
+  ghcr.io/xiachufang/motifd:latest</code></pre>
+              <p data-i18n="run.server.pair">Then read the pairing link from the logs and scan or paste it in any client:</p>
+              <pre><code>docker logs motifd 2&gt;&amp;1 | grep -o 'motif://pair[^ ]*'</code></pre>
+            </article>
+            <article class="run-card">
+              <h3 data-i18n="run.computer.title">Run on your computer</h3>
+              <p data-i18n="run.computer.copy">The desktop app ships motifd built in—no separate install. Start the embedded server from the Server view or tray, then connect from mobile, web, or another desktop.</p>
+              <ol class="steps">
+                <li data-i18n="run.computer.step1">Open Motif desktop.</li>
+                <li data-i18n="run.computer.step2">Choose Loopback, Local network, Tailscale, or relay pairing.</li>
+                <li data-i18n="run.computer.step3">Scan or paste the pairing link from another client.</li>
+              </ol>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="connect" class="section connect-band" aria-labelledby="connect-title">
+        <div class="section-inner">
+          <div class="section-heading">
+            <p class="section-kicker" data-i18n="connect.kicker">Connection paths</p>
+            <h2 id="connect-title" data-i18n="connect.title">Pick the route that matches your network.</h2>
+          </div>
+          <div class="connection-table" role="table" aria-label="Motif connection paths">
+            <div class="table-row table-head" role="row">
+              <span role="columnheader" data-i18n="connect.col.path">Path</span>
+              <span role="columnheader" data-i18n="connect.col.best">Best for</span>
+              <span role="columnheader" data-i18n="connect.col.note">Notes</span>
+            </div>
+            <div class="table-row" role="row">
+              <span role="cell" data-i18n="connect.direct.path">Direct TCP</span>
+              <span role="cell" data-i18n="connect.direct.best">LAN or public host</span>
+              <span role="cell" data-i18n="connect.direct.note">Network listeners auto-encrypt and use pairing credentials.</span>
+            </div>
+            <div class="table-row" role="row">
+              <span role="cell" data-i18n="connect.ssh.path">SSH forward</span>
+              <span role="cell" data-i18n="connect.ssh.best">Existing SSH access</span>
+              <span role="cell" data-i18n="connect.ssh.note">Keep motifd on 127.0.0.1 and forward a local port. The desktop app can auto-install and start motifd over SSH when it is missing.</span>
+            </div>
+            <div class="table-row" role="row">
+              <span role="cell" data-i18n="connect.tailscale.path">Tailscale</span>
+              <span role="cell" data-i18n="connect.tailscale.best">NAT, travel, private devices</span>
+              <span role="cell" data-i18n="connect.tailscale.note">Use embedded tsnet on supported clients and servers.</span>
+            </div>
+            <div class="table-row" role="row">
+              <span role="cell" data-i18n="connect.relay.path">Rendezvous relay</span>
+              <span role="cell" data-i18n="connect.relay.best">QR pairing when direct routes are hard</span>
+              <span role="cell" data-i18n="connect.relay.note">The relay forwards encrypted bytes; clients still pin the server cert.</span>
+            </div>
+            <div class="table-row" role="row">
+              <span role="cell" data-i18n="connect.browser.path">Browser same-origin</span>
+              <span role="cell" data-i18n="connect.browser.best">Local loopback or trusted HTTPS host</span>
+              <span role="cell" data-i18n="connect.browser.note">motifd serves the Flutter Web client next to RPC and WebSocket routes.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="architecture" class="section" aria-labelledby="architecture-title">
+        <div class="section-inner architecture-layout">
+          <div>
+            <p class="section-kicker" data-i18n="architecture.kicker">How it fits together</p>
+            <h2 id="architecture-title" data-i18n="architecture.title">motifd owns state. Clients attach to it.</h2>
+            <p data-i18n="architecture.copy">
+              RPC, event streams, and PTY streams share one protocol surface. The web client can be embedded by motifd, while native clients use the same server model through HTTP and WebSocket transports.
+            </p>
+          </div>
+          <div class="diagram" aria-label="Motif architecture diagram">
+            <div class="diagram-clients">
+              <span data-i18n="diagram.client1">iOS app</span>
+              <span data-i18n="diagram.client2">macOS app</span>
+              <span data-i18n="diagram.client3">Browser</span>
+              <span data-i18n="diagram.client4">Linux / Windows</span>
+            </div>
+            <div class="diagram-link">
+              <span data-i18n="diagram.transport">HTTP RPC + WebSocket</span>
+            </div>
+            <div class="diagram-server">
+              <strong>motifd</strong>
+              <span data-i18n="diagram.server1">Sessions</span>
+              <span data-i18n="diagram.server2">PTY pool</span>
+              <span data-i18n="diagram.server3">File ops</span>
+              <span data-i18n="diagram.server4">Git diff</span>
+            </div>
+            <div class="diagram-host">
+              <span data-i18n="diagram.host">Host filesystem, shell, and git</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section security-band" aria-labelledby="security-title">
+        <div class="section-inner security-grid">
+          <div>
+            <p class="section-kicker" data-i18n="security.kicker">Security model</p>
+            <h2 id="security-title" data-i18n="security.title">Single-user by design, explicit about trust.</h2>
+            <p data-i18n="security.copy">
+              Motif treats the machine running motifd as the trusted execution environment. Shell commands run with that user's permissions, and workdir access is bounded by the server-side path checks.
+            </p>
+          </div>
+          <ul class="security-list">
+            <li data-i18n="security.item1">Network listeners use self-signed TLS with client-side certificate pinning.</li>
+            <li data-i18n="security.item2">Pairing links carry the psk material used to derive bearer auth.</li>
+            <li data-i18n="security.item3">Loopback mode stays plaintext and unauthenticated for local-only workflows.</li>
+            <li data-i18n="security.item4">Tailscale and SSH are available when you want network access without opening a public port.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="faq" class="section" aria-labelledby="faq-title">
+        <div class="section-inner">
+          <div class="section-heading compact">
+            <p class="section-kicker" data-i18n="faq.kicker">FAQ</p>
+            <h2 id="faq-title" data-i18n="faq.title">Common questions</h2>
+          </div>
+          <div class="faq-grid">
+            <details>
+              <summary data-i18n="faq.q1">Does Motif copy my project to the client?</summary>
+              <p data-i18n="faq.a1">No. The workdir stays on the machine running motifd. Clients operate remotely and render the current server state.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q2">Can I use it from a browser?</summary>
+              <p data-i18n="faq.a2">Yes for loopback, SSH-forwarded, or trusted HTTPS origins. Browsers cannot pin Motif's self-signed cert for network pairing, so native apps are recommended there.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q3">What happens when I close the app?</summary>
+              <p data-i18n="faq.a3">The client detaches. The session continues on the server until you destroy it or stop motifd.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q4">Is Motif an AI agent?</summary>
+              <p data-i18n="faq.a4">No. The current product is a remote development surface, not an LLM agent. It focuses on sessions, terminals, files, git, and connectivity.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q5">Which platforms are supported?</summary>
+              <p data-i18n="faq.a5">The Flutter client targets iOS, macOS, Android, Web, Linux, and Windows. Desktop builds can include the embedded server path.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q7">Do I need to install motifd on my remote host?</summary>
+              <p data-i18n="faq.a7">Not necessarily. For an SSH server, enable Auto initialize and the desktop app downloads, installs, and starts motifd on the remote host (Linux or macOS, x86_64 or arm64) when it is missing. On your own computer, motifd is built into the desktop app.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q8">Is Motif free, and do I need an account?</summary>
+              <p data-i18n="faq.a8">Motif is open source (MIT/Apache-2.0) and free to self-host. There is no account or sign-in—clients pair directly with your motifd over pinned TLS, and nothing is sent to a third-party service.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q10">How mature is Motif?</summary>
+              <p data-i18n="faq.a10">Motif is actively developed and ships tagged releases. Check the GitHub Releases page for the current version and changelog.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q11">What does the motifd server need to run?</summary>
+              <p data-i18n="faq.a11">A single motifd binary on Linux or macOS (x86_64 or arm64). Use the Docker image on a Linux host, or run the binary directly. No database or extra services are required.</p>
+            </details>
+            <details>
+              <summary data-i18n="faq.q6">Where should I read more?</summary>
+              <p data-i18n="faq.a6">Browse the docs/ folder in the GitHub repo—usage, rpc, tailscale, and web-client guides. For help or bug reports, open a GitHub issue.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <div>
+          <strong>Motif</strong>
+          <p data-i18n="footer.copy">Remote development sessions for every device you actually use.</p>
+        </div>
+        <div class="footer-links">
+          <a href="https://apps.apple.com/app/motif-ssh-terminal/id6778351644" target="_blank" rel="noopener" data-i18n="footer.appstore">App Store</a>
+          <a href="https://github.com/xiachufang/motif/releases/latest" target="_blank" rel="noopener" data-i18n="footer.releases">Releases</a>
+          <a href="https://github.com/xiachufang/motif/blob/main/docs/usage.md" target="_blank" rel="noopener" data-i18n="footer.usage">Usage</a>
+          <a href="https://github.com/xiachufang/motif/blob/main/docs/rpc.md" target="_blank" rel="noopener" data-i18n="footer.rpc">RPC</a>
+          <a href="https://github.com/xiachufang/motif/blob/main/docs/tailscale.md" target="_blank" rel="noopener" data-i18n="footer.tailscale">Tailscale</a>
+          <a href="https://github.com/xiachufang/motif/issues" target="_blank" rel="noopener" data-i18n="footer.support">Support</a>
+          <a href="https://github.com/xiachufang/motif" target="_blank" rel="noopener" data-i18n="footer.repo">Repository</a>
+        </div>
+      </div>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
