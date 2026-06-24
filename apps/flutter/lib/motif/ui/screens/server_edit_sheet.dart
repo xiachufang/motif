@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -45,6 +46,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _sshPassword;
   late final TextEditingController _sshPrivateKey;
   late final TextEditingController _sshPrivateKeyPassphrase;
+  late final TextEditingController _relay;
+  late final TextEditingController _psk;
+  late final TextEditingController _pubKey;
+  late final TextEditingController _directHosts;
   late ServerKind _kind;
   late SshAuthMethod _sshAuthMethod;
   late bool _sshAutoInitialize;
@@ -83,6 +88,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _sshPrivateKeyPassphrase = TextEditingController(
       text: e?.sshPrivateKeyPassphrase ?? '',
     );
+    _relay = TextEditingController(text: e?.relay ?? '');
+    _psk = TextEditingController(text: e?.psk ?? '');
+    _pubKey = TextEditingController(text: e?.pubKey ?? '');
+    _directHosts = TextEditingController(
+      text: _formatDirectHosts(e?.directHosts ?? const []),
+    );
     _sshAuthMethod = e?.sshAuthMethod ?? SshAuthMethod.password;
     _sshAutoInitialize = e?.sshAutoInitialize ?? false;
     final existingKind = e?.kind ?? widget.initialKind;
@@ -119,6 +130,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _sshPassword.dispose();
     _sshPrivateKey.dispose();
     _sshPrivateKeyPassphrase.dispose();
+    _relay.dispose();
+    _psk.dispose();
+    _pubKey.dispose();
+    _directHosts.dispose();
     super.dispose();
   }
 
@@ -131,6 +146,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         motifdPort > 0 &&
         motifdPort <= 65535;
     if (!base) return false;
+    if (_kind == ServerKind.direct && !_pairingFieldsValid()) return false;
     if (_kind != ServerKind.ssh) return true;
     final sshPort = int.tryParse(_sshPort.text.trim());
     if (_sshHost.text.trim().isEmpty ||
@@ -188,18 +204,27 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       _savingConnect = connectAfterSave;
     });
     final store = context.read<AppState>().servers;
-    final id =
-        widget.existing?.id ?? 'srv-${DateTime.now().microsecondsSinceEpoch}';
+    final existing = widget.existing;
+    final id = existing?.id ?? 'srv-${DateTime.now().microsecondsSinceEpoch}';
+    final isDirect = _kind == ServerKind.direct;
+    final directHosts = isDirect
+        ? _directHostsForSave(existing)
+        : const <String>[];
     final server = MotifServer(
       id: id,
       name: _name.text.trim(),
       host: _host.text.trim(),
       port: int.parse(_port.text.trim()),
-      scheme: widget.existing?.scheme ?? 'http',
+      scheme: isDirect
+          ? _schemeForDirectSave(existing, directHosts)
+          : existing?.scheme ?? 'http',
       // Auth is the psk-derived bearer from pairing now; preserve any legacy
       // token on an existing record but no longer expose it for editing.
-      token: widget.existing?.token ?? '',
+      token: existing?.token ?? '',
       kind: _kind,
+      psk: isDirect ? _psk.text.trim() : '',
+      pubKey: isDirect ? _pubKey.text.trim() : '',
+      directHosts: directHosts,
       sshHost: _sshHost.text.trim(),
       sshPort: int.tryParse(_sshPort.text.trim()) ?? 22,
       sshUsername: _sshUsername.text.trim(),
@@ -209,7 +234,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
       sshAutoInitialize: _sshAutoInitialize,
     );
-    if (widget.existing == null) {
+    if (existing == null) {
       await store.add(server);
     } else {
       await store.update(server);
@@ -220,6 +245,70 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       );
     }
   }
+
+  List<String> _directHostsForSave(MotifServer? existing) {
+    if (_kind != ServerKind.direct) return const [];
+    final parsed = _parseDirectHosts(_directHosts.text);
+    final host = _host.text.trim();
+    final pubKeyPresent = _pubKey.text.trim().isNotEmpty;
+    if (existing == null || existing.kind != ServerKind.direct) {
+      if (parsed.isEmpty && pubKeyPresent && host.isNotEmpty) return [host];
+      return parsed;
+    }
+    if (host.isEmpty) return parsed;
+    if (host == existing.host) {
+      if (parsed.isEmpty && pubKeyPresent) return [host];
+      return parsed;
+    }
+    if (listEquals(parsed, existing.directHosts)) return [host];
+    if (parsed.isEmpty) return pubKeyPresent ? [host] : const [];
+    if (parsed.contains(host)) {
+      return [host, ...parsed.where((h) => h != host)];
+    }
+    return [host, ...parsed];
+  }
+
+  String _schemeForDirectSave(MotifServer? existing, List<String> directHosts) {
+    if (_pubKey.text.trim().isNotEmpty) return 'https';
+    if (directHosts.isNotEmpty) return 'http';
+    return existing?.scheme ?? 'http';
+  }
+
+  bool _pairingFieldsValid({bool pskRequired = false}) =>
+      _keyFieldError(_psk.text.trim(), required: pskRequired) == null &&
+      _keyFieldError(_pubKey.text.trim()) == null;
+
+  bool get _rendezvousValid =>
+      _name.text.trim().isNotEmpty &&
+      MotifServer.splitHostPort(_relay.text.trim()) != null &&
+      _pairingFieldsValid(pskRequired: true);
+
+  String? _keyFieldError(String value, {bool required = false}) {
+    if (value.isEmpty) return required ? 'Required' : null;
+    try {
+      final bytes = base64Url.decode(base64Url.normalize(value));
+      if (bytes.length != 32) return 'Must decode to 32 bytes';
+    } on FormatException {
+      return 'Not base64url';
+    }
+    return null;
+  }
+
+  String? _relayError() {
+    final relay = _relay.text.trim();
+    if (relay.isEmpty) return 'Required';
+    return MotifServer.splitHostPort(relay) == null
+        ? 'Expected host:port'
+        : null;
+  }
+
+  static String _formatDirectHosts(List<String> hosts) => hosts.join(', ');
+
+  static List<String> _parseDirectHosts(String raw) => raw
+      .split(RegExp(r'[\s,]+'))
+      .map((h) => h.trim())
+      .where((h) => h.isNotEmpty)
+      .toList(growable: false);
 
   Future<void> _loadDiscovery() async {
     final generation = ++_discoveryGeneration;
@@ -385,11 +474,18 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   Future<void> _saveRendezvousName() async {
     final existing = widget.existing!;
-    if (_saving) return;
+    if (_saving || !_rendezvousValid) return;
     setState(() => _saving = true);
     final name = _name.text.trim();
+    final relay = _relay.text.trim();
+    final hp = MotifServer.splitHostPort(relay)!;
     final updated = existing.copyWith(
       name: name.isEmpty ? existing.name : name,
+      host: hp.$1,
+      port: hp.$2,
+      relay: relay,
+      psk: _psk.text.trim(),
+      pubKey: _pubKey.text.trim(),
     );
     await context.read<AppState>().servers.update(updated);
     if (mounted) {
@@ -401,12 +497,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   Widget _buildRendezvous(BuildContext context, MotifServer server) {
     final c = context.motif;
-    final pinned = server.pubKey.isNotEmpty;
+    final pinned = _pubKey.text.trim().isNotEmpty;
     return AdaptivePanel(
       title: 'Rendezvous Server',
       actions: [
         TextButton(
-          onPressed: _saving ? null : _saveRendezvousName,
+          onPressed: _saving || !_rendezvousValid ? null : _saveRendezvousName,
           child: Text(_saving ? 'Saving…' : 'Save'),
         ),
       ],
@@ -429,11 +525,32 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             title: 'Pairing',
             footer:
                 'Reached through a rendezvous relay — both sides dial out '
-                'and pair by a scanned link. Re-scan the pairing QR to '
-                'change the relay or keys.',
+                'and pair by a scanned link. These values are copied from '
+                'the pairing QR.',
             dividerIndent: MotifSpacing.lg,
             children: [
-              _rzvInfoRow(c, Icons.hub_outlined, 'Relay', server.relay),
+              _field(
+                _relay,
+                'Relay',
+                'relay.example.com:8765',
+                errorText: _relayError(),
+              ),
+              _field(
+                _psk,
+                'Pairing Secret (psk)',
+                '',
+                minLines: 1,
+                maxLines: 3,
+                errorText: _keyFieldError(_psk.text.trim(), required: true),
+              ),
+              _field(
+                _pubKey,
+                'Certificate Pin (pubKey)',
+                '',
+                minLines: 1,
+                maxLines: 3,
+                errorText: _keyFieldError(_pubKey.text.trim()),
+              ),
               _rzvInfoRow(
                 c,
                 pinned ? Icons.lock_outline : Icons.lock_open_outlined,
@@ -547,8 +664,46 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             const SizedBox(height: MotifSpacing.xl),
           ],
           _motifdAddressSection(),
+          if (_kind == ServerKind.direct) ...[
+            const SizedBox(height: MotifSpacing.xl),
+            _pairingFieldsSection(),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _pairingFieldsSection() {
+    return MotifSection(
+      title: 'Pairing',
+      footer:
+          'Values copied from a motif://pair link. Leave blank for a plain manually entered direct server.',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        _field(
+          _psk,
+          'Pairing Secret (psk)',
+          '',
+          minLines: 1,
+          maxLines: 3,
+          errorText: _keyFieldError(_psk.text.trim()),
+        ),
+        _field(
+          _pubKey,
+          'Certificate Pin (pubKey)',
+          '',
+          minLines: 1,
+          maxLines: 3,
+          errorText: _keyFieldError(_pubKey.text.trim()),
+        ),
+        _field(
+          _directHosts,
+          'Direct Hosts',
+          '192.168.1.9, 10.0.0.4',
+          minLines: 1,
+          maxLines: 3,
+        ),
+      ],
     );
   }
 
@@ -822,6 +977,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     VoidCallback? onChanged,
     int? minLines,
     int? maxLines,
+    String? errorText,
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -843,6 +999,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,
+          errorText: errorText,
           filled: false,
           border: InputBorder.none,
           enabledBorder: InputBorder.none,

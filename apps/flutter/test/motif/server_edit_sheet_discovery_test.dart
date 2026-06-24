@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -192,7 +194,9 @@ void main() {
     if (kIsWeb) return;
 
     final app = await _app();
-    const server = MotifServer(
+    final psk = _base64Key(3);
+    final pubKey = _base64Key(4);
+    final server = MotifServer(
       id: 'srv-rzv',
       name: 'Studio',
       host: 'us.allsunday.io',
@@ -200,8 +204,8 @@ void main() {
       scheme: 'https',
       kind: ServerKind.rendezvous,
       relay: 'us.allsunday.io:8765',
-      psk: 'AAA',
-      pubKey: 'BBB',
+      psk: psk,
+      pubKey: pubKey,
     );
     await app.servers.add(server);
 
@@ -210,7 +214,7 @@ void main() {
         value: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
-          home: const Scaffold(body: ServerEditSheet(existing: server)),
+          home: Scaffold(body: ServerEditSheet(existing: server)),
         ),
       ),
     );
@@ -220,11 +224,14 @@ void main() {
     expect(find.text('Rendezvous Server'), findsOneWidget);
     expect(find.text('us.allsunday.io:8765'), findsOneWidget);
     expect(find.text('End-to-end encrypted (cert pinned)'), findsOneWidget);
+    expect(_fieldWithLabel('Relay'), findsOneWidget);
+    expect(_fieldWithLabel('Pairing Secret (psk)'), findsOneWidget);
+    expect(_fieldWithLabel('Certificate Pin (pubKey)'), findsOneWidget);
     expect(_fieldWithLabel('Host'), findsNothing);
     expect(_fieldWithLabel('Port'), findsNothing);
     expect(find.text('Tailscale'), findsNothing);
 
-    // Saving only updates the name; the kind/relay are never coerced.
+    // Saving keeps the rendezvous kind while preserving editable pairing data.
     await tester.enterText(_fieldWithLabel('Name'), 'Studio Mac');
     await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
@@ -235,6 +242,206 @@ void main() {
     expect(saved.relay, 'us.allsunday.io:8765');
     expect(saved.host, 'us.allsunday.io');
     expect(saved.port, 8765);
+    expect(saved.psk, psk);
+    expect(saved.pubKey, pubKey);
+  });
+
+  testWidgets('editing rendezvous pairing fields updates relay and keys', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    final server = MotifServer(
+      id: 'srv-rzv',
+      name: 'Studio',
+      host: 'us.allsunday.io',
+      port: 8765,
+      scheme: 'https',
+      kind: ServerKind.rendezvous,
+      relay: 'us.allsunday.io:8765',
+      psk: _base64Key(3),
+      pubKey: _base64Key(4),
+    );
+    final nextPsk = _base64Key(13);
+    final nextPubKey = _base64Key(14);
+    await app.servers.add(server);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(body: ServerEditSheet(existing: server)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(_fieldWithLabel('Relay'), 'eu.allsunday.io:9999');
+    await tester.enterText(_fieldWithLabel('Pairing Secret (psk)'), nextPsk);
+    await tester.enterText(
+      _fieldWithLabel('Certificate Pin (pubKey)'),
+      nextPubKey,
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.kind, ServerKind.rendezvous);
+    expect(saved.relay, 'eu.allsunday.io:9999');
+    expect(saved.host, 'eu.allsunday.io');
+    expect(saved.port, 9999);
+    expect(saved.psk, nextPsk);
+    expect(saved.pubKey, nextPubKey);
+  });
+
+  testWidgets('editing a paired direct server preserves pairing fields', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    final paired = _pairedDirectServer();
+    await app.servers.add(paired);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(body: ServerEditSheet(existing: paired)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(_fieldWithLabel('Name'), 'Studio LAN renamed');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.kind, ServerKind.direct);
+    expect(saved.name, 'Studio LAN renamed');
+    expect(saved.scheme, 'https');
+    expect(saved.psk, paired.psk);
+    expect(saved.pubKey, paired.pubKey);
+    expect(saved.directHosts, ['192.168.1.9', '10.0.0.4']);
+  });
+
+  testWidgets('editing a paired direct server can update pairing fields', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    final paired = _pairedDirectServer();
+    final nextPsk = _base64Key(11);
+    final nextPubKey = _base64Key(12);
+    await app.servers.add(paired);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(body: ServerEditSheet(existing: paired)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _scrollTo(tester, _fieldWithLabel('Pairing Secret (psk)'));
+    expect(_fieldValue(tester, 'Pairing Secret (psk)'), paired.psk);
+    expect(_fieldValue(tester, 'Certificate Pin (pubKey)'), paired.pubKey);
+    expect(_fieldValue(tester, 'Direct Hosts'), '192.168.1.9, 10.0.0.4');
+
+    await tester.enterText(_fieldWithLabel('Pairing Secret (psk)'), nextPsk);
+    await tester.enterText(
+      _fieldWithLabel('Certificate Pin (pubKey)'),
+      nextPubKey,
+    );
+    await tester.enterText(
+      _fieldWithLabel('Direct Hosts'),
+      'studio.local\n10.0.0.8',
+    );
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.psk, nextPsk);
+    expect(saved.pubKey, nextPubKey);
+    expect(saved.directHosts, ['studio.local', '10.0.0.8']);
+  });
+
+  testWidgets('editing a paired direct host updates direct candidates', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    final paired = _pairedDirectServer();
+    await app.servers.add(paired);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(body: ServerEditSheet(existing: paired)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(_fieldWithLabel('Host'), 'studio.local');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.host, 'studio.local');
+    expect(saved.psk, paired.psk);
+    expect(saved.pubKey, paired.pubKey);
+    expect(saved.directHosts, ['studio.local']);
+  });
+
+  testWidgets('direct cert pin with no candidates uses the host as candidate', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    final server = MotifServer(
+      id: 'srv-manual',
+      name: 'Manual',
+      host: 'studio.local',
+      port: 7777,
+      kind: ServerKind.direct,
+    );
+    final pubKey = _base64Key(15);
+    await app.servers.add(server);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Scaffold(body: ServerEditSheet(existing: server)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _scrollTo(tester, _fieldWithLabel('Certificate Pin (pubKey)'));
+    expect(_fieldValue(tester, 'Direct Hosts'), isEmpty);
+    await tester.enterText(_fieldWithLabel('Certificate Pin (pubKey)'), pubKey);
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.scheme, 'https');
+    expect(saved.pubKey, pubKey);
+    expect(saved.directHosts, ['studio.local']);
   });
 
   testWidgets('saves an SSH server with password auth', (tester) async {
@@ -411,6 +618,22 @@ String _fieldValue(WidgetTester tester, String label) {
   final field = tester.widget<TextField>(_fieldWithLabel(label));
   return field.controller?.text ?? '';
 }
+
+String _base64Key(int seed) => base64Url
+    .encode(Uint8List.fromList(List.generate(32, (i) => seed + i)))
+    .replaceAll('=', '');
+
+MotifServer _pairedDirectServer() => MotifServer(
+  id: 'srv-direct',
+  name: 'Studio LAN',
+  host: '192.168.1.9',
+  port: 7777,
+  scheme: 'https',
+  kind: ServerKind.direct,
+  psk: _base64Key(1),
+  pubKey: _base64Key(2),
+  directHosts: const ['192.168.1.9', '10.0.0.4'],
+);
 
 Finder _serverEditScrollable() => find
     .descendant(
