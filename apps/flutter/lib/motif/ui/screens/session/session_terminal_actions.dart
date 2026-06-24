@@ -173,7 +173,12 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     if (!_usesSidebarLayout) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
-          builder: (_) => GitDiffPanel(cwd: motif.activeCwd, motif: motif),
+          builder: (_) => GitDiffPanel(
+            cwd: motif.activeCwd,
+            motif: motif,
+            onOpenDiff: ({path, required staged}) =>
+                _pushDiffView(motif, path: path, staged: staged),
+          ),
         ),
       );
       return;
@@ -274,6 +279,46 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     } catch (e) {
       if (mounted) {
         showMotifToast(context, 'Open preview failed: $e');
+      }
+    }
+  }
+
+  Future<void> _pushDiffView(
+    MotifClient motif, {
+    String? path,
+    required bool staged,
+  }) async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => GitDiffView(
+          cwd: motif.activeCwd,
+          initialStaged: staged,
+          path: path,
+          motif: motif,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openDiff({String? path, required bool staged}) async {
+    final motif = _motif;
+    final existing = motif.views.where((v) {
+      final spec = v.spec;
+      return spec is DiffViewSpec && spec.path == path && spec.staged == staged;
+    }).firstOrNull;
+    if (existing != null) {
+      await motif.activateView(existing.id);
+      return;
+    }
+    try {
+      await motif.openView(
+        spec: DiffViewSpec(staged: staged, path: path),
+        activate: true,
+      );
+    } catch (e) {
+      if (mounted) {
+        showMotifToast(context, 'Open diff failed: $e');
       }
     }
   }

@@ -542,9 +542,10 @@ impl Session {
         self.sync_watch_to_active();
     }
 
-    /// Called by the PTY reader after publishing `pty.cwd_changed`. Re-points
-    /// the fswatcher only if the changed PTY is the currently-active one
-    /// (cwd of background tabs doesn't affect what the file tree shows).
+    /// Called by the PTY reader when a shell-integration cwd marker changed the
+    /// PTY's tracked cwd. Re-points the fswatcher only if the changed PTY is the
+    /// currently-active one (cwd of background tabs doesn't affect what the file
+    /// tree shows).
     pub fn note_pty_cwd_changed(&self, pty_id: &str) {
         let active_pty = self
             .active_view

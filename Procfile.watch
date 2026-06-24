@@ -1,3 +1,3 @@
 motifd: MOTIFD_RPC_LOG=./motif-rpc.log cargo watch -w crates/motif-server -w crates/motif-proto -w crates/motif-tailscale -w crates/motif-net -x "run -q -p motif-server --bin motifd -- --listen 0.0.0.0:7777 --insecure-no-auth --tailscale --push-relay-url http://127.0.0.1:8088/v1/push"
-relay: cargo watch -w crates/motif-push-relay -x "run -q -p motif-push-relay -- --apns-key-path apns.p8 --apns-key-id 946S4U9BDG --apns-team-id UWNR93L682 --apns-topic io.allsunday.motif --listen 127.0.0.1:8088"
+relay: cargo watch -w crates/motif-push-relay -x "run -q -p motif-push-relay -- --apns-sandbox-key-path apns-sandbox.p8 --apns-sandbox-key-id SANDBOXK1 --apns-production-key-path apns-production.p8 --apns-production-key-id PRODKEY22 --apns-team-id UWNR93L682 --apns-topic io.allsunday.motif --listen 127.0.0.1:8088"
 web-dev: cd apps/flutter && flutter run -d web-server --web-hostname 0.0.0.0 --web-port 5173

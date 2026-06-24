@@ -6,16 +6,194 @@ import '../../models/motif_proto.dart';
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 
-/// Unified git diff viewer with staged/working toggle + per-file summary.
-/// Mirrors GitDiffPanel. Re-fetches when `git.changed` bumps the tick.
+typedef OpenDiffView =
+    Future<void> Function({String? path, required bool staged});
+
+/// Changed-files navigator for git diff. Re-fetches when `git.changed` bumps
+/// the tick and opens concrete diff tabs through [onOpenDiff].
 class GitDiffPanel extends StatefulWidget {
+  final String? cwd;
+  final bool initialStaged;
+  final MotifClient motif;
+  final bool embedded;
+  final bool popOnOpen;
+  final OpenDiffView onOpenDiff;
+
+  const GitDiffPanel({
+    super.key,
+    this.cwd,
+    this.initialStaged = false,
+    required this.motif,
+    required this.onOpenDiff,
+    this.embedded = false,
+    this.popOnOpen = false,
+  });
+
+  @override
+  State<GitDiffPanel> createState() => _GitDiffPanelState();
+}
+
+class _GitDiffPanelState extends State<GitDiffPanel> {
+  late bool _staged;
+  _DiffFileViewMode _viewMode = _DiffFileViewMode.list;
+  final Set<String> _expandedDirs = {};
+  List<DiffSummaryFile> _summary = const [];
+  bool _loading = true;
+  String? _error;
+  int _lastTick = -1;
+
+  late final MotifClient _motif;
+
+  @override
+  void initState() {
+    super.initState();
+    _staged = widget.initialStaged;
+    _motif = widget.motif;
+    _motif.addListener(_onTick);
+    _load();
+  }
+
+  void _onTick() {
+    if (_motif.gitChangeTick != _lastTick) _load();
+  }
+
+  @override
+  void dispose() {
+    _motif.removeListener(_onTick);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    _lastTick = _motif.gitChangeTick;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final summary = await _motif.gitDiffSummary(
+        staged: _staged,
+        cwd: widget.cwd,
+      );
+      if (!mounted) return;
+      setState(() {
+        _summary = summary;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _openDiff(String? path) async {
+    await widget.onOpenDiff(path: path, staged: _staged);
+    if (widget.popOnOpen && !widget.embedded && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final body = _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _error != null
+        ? Center(
+            child: Text(_error!, style: TextStyle(color: c.danger)),
+          )
+        : _summary.isEmpty
+        ? Center(
+            child: Text('No changes', style: TextStyle(color: c.textSecondary)),
+          )
+        : Column(
+            children: [
+              _SummaryBar(summary: _summary),
+              Expanded(
+                child: _viewMode == _DiffFileViewMode.list
+                    ? _DiffFileList(
+                        summary: _summary,
+                        onOpenFile: (path) => _openDiff(path),
+                      )
+                    : _DiffFileTree(
+                        summary: _summary,
+                        expandedDirs: _expandedDirs,
+                        onToggleDir: _toggleDir,
+                        onOpenFile: (path) => _openDiff(path),
+                      ),
+              ),
+            ],
+          );
+    final actions = _actions();
+    if (!widget.embedded) {
+      return Scaffold(
+        appBar: AppBar(
+          title: _DiffTitle(staged: _staged, onChanged: _setStaged),
+          actions: actions,
+        ),
+        body: body,
+      );
+    }
+    return Column(
+      children: [
+        _EmbeddedDiffHeader(
+          staged: _staged,
+          onChanged: _setStaged,
+          actions: actions,
+        ),
+        Expanded(child: body),
+      ],
+    );
+  }
+
+  void _toggleDir(String path) {
+    setState(() {
+      if (!_expandedDirs.add(path)) _expandedDirs.remove(path);
+    });
+  }
+
+  List<Widget> _actions() => [
+    IconButton(
+      icon: Icon(
+        _viewMode == _DiffFileViewMode.list
+            ? Icons.account_tree_outlined
+            : Icons.format_list_bulleted,
+      ),
+      tooltip: _viewMode == _DiffFileViewMode.list ? 'Tree view' : 'List view',
+      onPressed: () {
+        setState(() {
+          _viewMode = _viewMode == _DiffFileViewMode.list
+              ? _DiffFileViewMode.tree
+              : _DiffFileViewMode.list;
+        });
+      },
+    ),
+    IconButton(
+      icon: const Icon(Icons.description_outlined),
+      tooltip: 'Show diff',
+      onPressed: () => _openDiff(null),
+    ),
+  ];
+
+  void _setStaged(bool staged) {
+    setState(() => _staged = staged);
+    _load();
+  }
+}
+
+enum _DiffFileViewMode { list, tree }
+
+/// Patch viewer for a concrete diff tab. A null [path] shows the full diff.
+class GitDiffView extends StatefulWidget {
   final String? cwd;
   final bool initialStaged;
   final String? path;
   final MotifClient motif;
   final bool embedded;
 
-  const GitDiffPanel({
+  const GitDiffView({
     super.key,
     this.cwd,
     this.initialStaged = false,
@@ -25,15 +203,14 @@ class GitDiffPanel extends StatefulWidget {
   });
 
   @override
-  State<GitDiffPanel> createState() => _GitDiffPanelState();
+  State<GitDiffView> createState() => _GitDiffViewState();
 }
 
-class _GitDiffPanelState extends State<GitDiffPanel> {
+class _GitDiffViewState extends State<GitDiffView> {
   late bool _staged;
-  bool _byFile = false;
-  int _fileIndex = 0;
   String _patch = '';
   List<DiffSummaryFile> _summary = const [];
+  final Set<String> _collapsedPaths = {};
   bool _loading = true;
   String? _error;
   int _lastTick = -1;
@@ -71,12 +248,8 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
         staged: _staged,
         cwd: widget.cwd,
       );
-      if (_byFile && _fileIndex >= summary.length) _fileIndex = 0;
-      final path = _byFile && summary.isNotEmpty
-          ? summary[_fileIndex].path
-          : widget.path;
       final patch = await _motif.gitDiff(
-        path: path,
+        path: widget.path,
         staged: _staged,
         cwd: widget.cwd,
       );
@@ -95,35 +268,6 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
     }
   }
 
-  Future<void> _pickFile() async {
-    final picked = await showModalBottomSheet<int>(
-      context: context,
-      builder: (_) => SafeArea(
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: _summary.length,
-          itemBuilder: (_, i) {
-            final f = _summary[i];
-            return ListTile(
-              selected: i == _fileIndex,
-              title: Text(
-                f.path,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: Text('+${f.additions} -${f.deletions}'),
-              onTap: () => Navigator.pop(context, i),
-            );
-          },
-        ),
-      ),
-    );
-    if (picked != null && picked != _fileIndex) {
-      setState(() => _fileIndex = picked);
-      _load();
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
@@ -135,33 +279,21 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
           )
         : Column(
             children: [
-              if (_byFile && _summary.isNotEmpty)
-                _FileHeader(
-                  file: _summary[_fileIndex.clamp(0, _summary.length - 1)],
-                  index: _fileIndex,
-                  count: _summary.length,
-                  onTap: _pickFile,
-                )
-              else if (_summary.isNotEmpty)
-                _SummaryBar(summary: _summary),
               Expanded(
-                child: _patch.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No changes',
-                          style: TextStyle(color: c.textSecondary),
-                        ),
-                      )
-                    : _DiffText(patch: _patch),
+                child: _PatchBody(
+                  patch: _patch,
+                  summary: _summary,
+                  fallbackPath: widget.path,
+                  collapsedPaths: _collapsedPaths,
+                  onToggleSection: _toggleSection,
+                ),
               ),
             ],
           );
-    final actions = _actions();
     if (!widget.embedded) {
       return Scaffold(
         appBar: AppBar(
           title: _DiffTitle(staged: _staged, onChanged: _setStaged),
-          actions: actions,
         ),
         body: body,
       );
@@ -171,38 +303,594 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
         _EmbeddedDiffHeader(
           staged: _staged,
           onChanged: _setStaged,
-          actions: actions,
+          actions: const [],
         ),
         Expanded(child: body),
       ],
     );
   }
 
-  List<Widget> _actions() => [
-    IconButton(
-      icon: Icon(
-        _byFile ? Icons.view_agenda_outlined : Icons.description_outlined,
-      ),
-      tooltip: _byFile ? 'Show all' : 'By file',
-      onPressed: () {
-        setState(() {
-          _byFile = !_byFile;
-          _fileIndex = 0;
-        });
-        _load();
-      },
-    ),
-    if (_byFile && _summary.length > 1)
-      IconButton(
-        icon: const Icon(Icons.list),
-        tooltip: 'Files',
-        onPressed: _pickFile,
-      ),
-  ];
-
   void _setStaged(bool staged) {
     setState(() => _staged = staged);
     _load();
+  }
+
+  void _toggleSection(String path) {
+    setState(() {
+      if (!_collapsedPaths.add(path)) _collapsedPaths.remove(path);
+    });
+  }
+}
+
+class _PatchBody extends StatelessWidget {
+  final String patch;
+  final List<DiffSummaryFile> summary;
+  final String? fallbackPath;
+  final Set<String> collapsedPaths;
+  final ValueChanged<String> onToggleSection;
+
+  const _PatchBody({
+    required this.patch,
+    required this.summary,
+    required this.fallbackPath,
+    required this.collapsedPaths,
+    required this.onToggleSection,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    if (patch.isEmpty) {
+      return Center(
+        child: Text('No changes', style: TextStyle(color: c.textSecondary)),
+      );
+    }
+    final sections = _splitPatchIntoSections(
+      patch: patch,
+      summary: summary,
+      fallbackPath: fallbackPath,
+    );
+    return CustomScrollView(
+      slivers: [
+        for (var i = 0; i < sections.length; i++)
+          SliverMainAxisGroup(
+            slivers: [
+              SliverPersistentHeader(
+                pinned: true,
+                floating: true,
+                delegate: _DiffFileHeaderDelegate(
+                  file: sections[i].displayFile,
+                  collapsed: collapsedPaths.contains(sections[i].path),
+                  onTap: () => onToggleSection(sections[i].path),
+                ),
+              ),
+              if (!collapsedPaths.contains(sections[i].path))
+                SliverToBoxAdapter(
+                  child: _DiffSectionBody(
+                    lines: sections[i].lines,
+                    last: i == sections.length - 1,
+                  ),
+                ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  List<_DiffFileSection> _splitPatchIntoSections({
+    required String patch,
+    required List<DiffSummaryFile> summary,
+    required String? fallbackPath,
+  }) {
+    final summaryByPath = {for (final file in summary) file.path: file};
+    final lines = patch.split('\n');
+    final sections = <_DiffFileSection>[];
+    var currentLines = <String>[];
+    String? currentPath;
+
+    void flush() {
+      if (currentLines.isEmpty) return;
+      final path = currentPath ?? fallbackPath ?? summary.firstOrNull?.path;
+      sections.add(
+        _DiffFileSection(
+          path: path ?? 'Diff',
+          file: path == null ? null : summaryByPath[path],
+          lines: currentLines,
+        ),
+      );
+      currentLines = <String>[];
+    }
+
+    for (final line in lines) {
+      if (line.startsWith('diff --git ')) {
+        flush();
+        currentPath = _pathFromDiffHeader(line) ?? fallbackPath;
+        continue;
+      }
+      if (_isDiffMetadataLine(line)) continue;
+      currentLines.add(line);
+    }
+    flush();
+
+    if (sections.isNotEmpty) return sections;
+    return [
+      _DiffFileSection(
+        path: fallbackPath ?? summary.firstOrNull?.path ?? 'Diff',
+        file: fallbackPath == null
+            ? summary.firstOrNull
+            : summaryByPath[fallbackPath],
+        lines: lines,
+      ),
+    ];
+  }
+
+  String? _pathFromDiffHeader(String line) {
+    final marker = ' b/';
+    final index = line.lastIndexOf(marker);
+    if (index < 0) return null;
+    return line.substring(index + marker.length).trim();
+  }
+
+  bool _isDiffMetadataLine(String line) =>
+      line.startsWith('@@ ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('new file mode ') ||
+      line.startsWith('deleted file mode ') ||
+      line.startsWith('old mode ') ||
+      line.startsWith('new mode ') ||
+      line.startsWith('similarity index ') ||
+      line.startsWith('rename from ') ||
+      line.startsWith('rename to ');
+}
+
+class _DiffFileSection {
+  final String path;
+  final DiffSummaryFile? file;
+  final List<String> lines;
+
+  const _DiffFileSection({
+    required this.path,
+    required this.file,
+    required this.lines,
+  });
+
+  DiffSummaryFile get displayFile =>
+      file ?? DiffSummaryFile(path: path, additions: 0, deletions: 0);
+}
+
+class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
+  static const double height = 58;
+
+  final DiffSummaryFile file;
+  final bool collapsed;
+  final VoidCallback onTap;
+
+  _DiffFileHeaderDelegate({
+    required this.file,
+    required this.collapsed,
+    required this.onTap,
+  });
+
+  @override
+  double get minExtent => height;
+
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return _FileHeader(file: file, collapsed: collapsed, onTap: onTap);
+  }
+
+  @override
+  bool shouldRebuild(covariant _DiffFileHeaderDelegate oldDelegate) {
+    return oldDelegate.file.path != file.path ||
+        oldDelegate.file.additions != file.additions ||
+        oldDelegate.file.deletions != file.deletions ||
+        oldDelegate.collapsed != collapsed;
+  }
+}
+
+class _DiffSectionBody extends StatelessWidget {
+  final List<String> lines;
+  final bool last;
+
+  const _DiffSectionBody({required this.lines, required this.last});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Padding(
+      padding: EdgeInsets.only(bottom: last ? 0 : MotifSpacing.md),
+      child: Container(
+        decoration: BoxDecoration(
+          color: c.surface,
+          border: Border(bottom: BorderSide(color: c.border)),
+        ),
+        child: _DiffText(lines: lines),
+      ),
+    );
+  }
+}
+
+class _ChangedFileRow extends StatelessWidget {
+  final DiffSummaryFile file;
+  final VoidCallback onTap;
+
+  const _ChangedFileRow({super.key, required this.file, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: MotifSpacing.md,
+          vertical: MotifSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 28,
+              height: 28,
+              decoration: BoxDecoration(
+                color: c.accentFill(0.12),
+                borderRadius: BorderRadius.circular(MotifRadius.xs),
+              ),
+              alignment: Alignment.center,
+              child: Icon(
+                Icons.insert_drive_file_outlined,
+                size: 16,
+                color: c.accent,
+              ),
+            ),
+            const SizedBox(width: MotifSpacing.sm),
+            Expanded(child: _PathTitle(path: file.path)),
+            const SizedBox(width: MotifSpacing.sm),
+            _ChangeStats(additions: file.additions, deletions: file.deletions),
+            const SizedBox(width: MotifSpacing.xs),
+            Icon(Icons.chevron_right, size: 18, color: c.textTertiary),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PathTitle extends StatelessWidget {
+  final String path;
+
+  const _PathTitle({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final slash = path.lastIndexOf('/');
+    final dir = slash <= 0 ? '' : path.substring(0, slash);
+    final name = slash < 0 ? path : path.substring(slash + 1);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: c.textPrimary,
+            fontFamily: 'monospace',
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        if (dir.isNotEmpty)
+          Text(
+            dir,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: c.textTertiary,
+              fontFamily: 'monospace',
+              fontSize: 11,
+              height: 1.25,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ChangeStats extends StatelessWidget {
+  final int additions;
+  final int deletions;
+
+  const _ChangeStats({required this.additions, required this.deletions});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _ChangePill(text: '+$additions', color: c.success),
+        const SizedBox(width: MotifSpacing.xs),
+        _ChangePill(text: '-$deletions', color: c.danger),
+      ],
+    );
+  }
+}
+
+class _ChangePill extends StatelessWidget {
+  final String text;
+  final Color color;
+
+  const _ChangePill({required this.text, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 32),
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.xs,
+        vertical: 2,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        text,
+        maxLines: 1,
+        style: TextStyle(
+          color: color,
+          fontFamily: 'monospace',
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          height: 1.15,
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffFileList extends StatelessWidget {
+  final List<DiffSummaryFile> summary;
+  final ValueChanged<String> onOpenFile;
+
+  const _DiffFileList({required this.summary, required this.onOpenFile});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: MotifSpacing.xs),
+      itemCount: summary.length,
+      separatorBuilder: (_, _) =>
+          Divider(height: 1, thickness: 1, indent: 44, color: c.border),
+      itemBuilder: (context, i) {
+        final f = summary[i];
+        return _ChangedFileRow(
+          key: ValueKey('diff-list-file-${f.path}'),
+          file: f,
+          onTap: () => onOpenFile(f.path),
+        );
+      },
+    );
+  }
+}
+
+class _DiffFileTree extends StatelessWidget {
+  final List<DiffSummaryFile> summary;
+  final Set<String> expandedDirs;
+  final ValueChanged<String> onToggleDir;
+  final ValueChanged<String> onOpenFile;
+
+  const _DiffFileTree({
+    required this.summary,
+    required this.expandedDirs,
+    required this.onToggleDir,
+    required this.onOpenFile,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final root = _DiffTreeNode('');
+    for (final file in summary) {
+      root.add(file);
+    }
+    return ListView(children: _buildRows(context, root, '', 0));
+  }
+
+  List<Widget> _buildRows(
+    BuildContext context,
+    _DiffTreeNode node,
+    String parentPath,
+    int depth,
+  ) {
+    final rows = <Widget>[];
+    final children = node.children.values.toList()
+      ..sort((a, b) {
+        if (a.isFile != b.isFile) return a.isFile ? 1 : -1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+    for (final child in children) {
+      final path = parentPath.isEmpty
+          ? child.name
+          : '$parentPath/${child.name}';
+      if (child.isFile) {
+        rows.add(
+          _DiffTreeFileRow(
+            file: child.file!,
+            name: child.name,
+            depth: depth,
+            onTap: () => onOpenFile(child.file!.path),
+          ),
+        );
+        continue;
+      }
+      final expanded = expandedDirs.contains(path);
+      rows.add(
+        _DiffTreeDirRow(
+          node: child,
+          path: path,
+          depth: depth,
+          expanded: expanded,
+          onTap: () => onToggleDir(path),
+        ),
+      );
+      if (expanded) {
+        rows.addAll(_buildRows(context, child, path, depth + 1));
+      }
+    }
+    return rows;
+  }
+}
+
+class _DiffTreeDirRow extends StatelessWidget {
+  final _DiffTreeNode node;
+  final String path;
+  final int depth;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  const _DiffTreeDirRow({
+    required this.node,
+    required this.path,
+    required this.depth,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return InkWell(
+      key: ValueKey('diff-tree-dir-$path'),
+      onTap: onTap,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: MotifSpacing.md + depth * MotifSpacing.lg,
+          right: MotifSpacing.md,
+          top: MotifSpacing.sm,
+          bottom: MotifSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              expanded ? Icons.folder_open : Icons.folder,
+              size: 19,
+              color: c.accent,
+            ),
+            const SizedBox(width: MotifSpacing.sm),
+            Expanded(
+              child: Text(
+                node.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: c.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            _ChangeStats(additions: node.additions, deletions: node.deletions),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffTreeFileRow extends StatelessWidget {
+  final DiffSummaryFile file;
+  final String name;
+  final int depth;
+  final VoidCallback onTap;
+
+  const _DiffTreeFileRow({
+    required this.file,
+    required this.name,
+    required this.depth,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return InkWell(
+      key: ValueKey('diff-tree-file-${file.path}'),
+      onTap: onTap,
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: MotifSpacing.md + depth * MotifSpacing.lg,
+          right: MotifSpacing.md,
+          top: MotifSpacing.sm,
+          bottom: MotifSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.insert_drive_file_outlined,
+              size: 18,
+              color: c.textSecondary,
+            ),
+            const SizedBox(width: MotifSpacing.sm),
+            Expanded(
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: c.textPrimary,
+                  fontFamily: 'monospace',
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            _ChangeStats(additions: file.additions, deletions: file.deletions),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffTreeNode {
+  final String name;
+  final Map<String, _DiffTreeNode> children = {};
+  DiffSummaryFile? file;
+
+  _DiffTreeNode(this.name);
+
+  bool get isFile => file != null;
+  int get additions =>
+      (file?.additions ?? 0) +
+      children.values.fold<int>(0, (total, node) => total + node.additions);
+  int get deletions =>
+      (file?.deletions ?? 0) +
+      children.values.fold<int>(0, (total, node) => total + node.deletions);
+
+  void add(DiffSummaryFile file) {
+    final parts = file.path
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return;
+    var node = this;
+    for (var i = 0; i < parts.length; i++) {
+      final part = parts[i];
+      node = node.children.putIfAbsent(part, () => _DiffTreeNode(part));
+      if (i == parts.length - 1) node.file = file;
+    }
   }
 }
 
@@ -259,104 +947,87 @@ class _EmbeddedDiffHeader extends StatelessWidget {
     final c = context.motif;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final centeredSelectorMinWidth = math.max(
-          360.0,
-          actions.length * 96.0 + 156.0,
-        );
-        final narrow = constraints.maxWidth < centeredSelectorMinWidth;
+        const horizontalPadding = MotifSpacing.md * 2;
+        const fullTitleWidth = 108.0;
+        const iconTitleWidth = 22.0;
+        final actionsWidth = actions.length * 48.0;
+        final showTitleText =
+            constraints.maxWidth >=
+            horizontalPadding +
+                fullTitleWidth +
+                156.0 +
+                actionsWidth +
+                MotifSpacing.sm * 2;
+        final showTitleIcon =
+            showTitleText ||
+            constraints.maxWidth >=
+                horizontalPadding +
+                    iconTitleWidth +
+                    136.0 +
+                    actionsWidth +
+                    MotifSpacing.sm * 2;
+        final titleWidth = showTitleText
+            ? fullTitleWidth
+            : (showTitleIcon ? iconTitleWidth : 0.0);
+        final spacing =
+            (showTitleIcon ? MotifSpacing.sm : 0.0) + MotifSpacing.xs;
+        final selectorWidth =
+            (constraints.maxWidth -
+                    horizontalPadding -
+                    titleWidth -
+                    actionsWidth -
+                    spacing)
+                .clamp(112.0, 156.0)
+                .toDouble();
         final titleTextStyle = TextStyle(
           color: c.textPrimary,
           fontSize: 14,
           fontWeight: FontWeight.w700,
         );
-        final titleContent = Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.difference_outlined, size: 18, color: c.textSecondary),
-            const SizedBox(width: MotifSpacing.sm),
-            Text(
-              'Git diff',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: titleTextStyle,
-            ),
-          ],
-        );
-        final title = Row(
-          children: [
-            Icon(Icons.difference_outlined, size: 18, color: c.textSecondary),
-            const SizedBox(width: MotifSpacing.sm),
-            Expanded(
-              child: Text(
-                'Git diff',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: titleTextStyle,
-              ),
-            ),
-          ],
-        );
-        final titleWithActions = Row(
-          children: [
-            Expanded(child: title),
-            const SizedBox(width: MotifSpacing.xs),
-            ...actions,
-          ],
-        );
         return Container(
-          height: narrow ? 88 : 48,
+          height: 52,
+          padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
           decoration: BoxDecoration(
             color: c.background,
             border: Border(bottom: BorderSide(color: c.border)),
           ),
-          child: narrow
-              ? Column(
-                  children: [
-                    SizedBox(
-                      height: 48,
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: MotifSpacing.md),
-                        child: titleWithActions,
+          child: Row(
+            children: [
+              if (showTitleIcon)
+                SizedBox(
+                  width: titleWidth,
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.difference_outlined,
+                        size: 18,
+                        color: c.textSecondary,
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    SizedBox(
-                      height: 32,
-                      child: Center(
-                        child: _StageSelector(
-                          staged: staged,
-                          onChanged: onChanged,
-                          compact: true,
+                      if (showTitleText) ...[
+                        const SizedBox(width: MotifSpacing.sm),
+                        Expanded(
+                          child: Text(
+                            'Git diff',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: titleTextStyle,
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
-                )
-              : Stack(
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: MotifSpacing.md),
-                        child: titleContent,
-                      ),
-                    ),
-                    Center(
-                      child: _StageSelector(
-                        staged: staged,
-                        onChanged: onChanged,
-                        compact: true,
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: actions,
-                      ),
-                    ),
-                  ],
+                      ],
+                    ],
+                  ),
                 ),
+              if (showTitleIcon) const SizedBox(width: MotifSpacing.sm),
+              _StageSelector(
+                staged: staged,
+                onChanged: onChanged,
+                compact: true,
+                compactWidth: selectorWidth,
+              ),
+              const Spacer(),
+              Row(mainAxisSize: MainAxisSize.min, children: actions),
+            ],
+          ),
         );
       },
     );
@@ -367,11 +1038,13 @@ class _StageSelector extends StatelessWidget {
   final bool staged;
   final ValueChanged<bool> onChanged;
   final bool compact;
+  final double? compactWidth;
 
   const _StageSelector({
     required this.staged,
     required this.onChanged,
     this.compact = false,
+    this.compactWidth,
   });
 
   @override
@@ -402,7 +1075,11 @@ class _StageSelector extends StatelessWidget {
       ),
       onSelectionChanged: (s) => onChanged(s.first),
     );
-    return SizedBox(width: compact ? 156 : null, height: height, child: button);
+    return SizedBox(
+      width: compact ? compactWidth ?? 156 : null,
+      height: height,
+      child: button,
+    );
   }
 }
 
@@ -446,14 +1123,28 @@ class _SummaryBar extends StatelessWidget {
         horizontal: MotifSpacing.md,
         vertical: MotifSpacing.sm,
       ),
-      color: c.surface,
-      child: Text(
-        '${summary.length} file(s)  +$adds  -$dels',
-        style: TextStyle(
-          color: c.textSecondary,
-          fontFamily: 'monospace',
-          fontSize: 12,
-        ),
+      decoration: BoxDecoration(
+        color: c.surfaceElevated,
+        border: Border(bottom: BorderSide(color: c.border)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.difference_outlined, size: 16, color: c.textSecondary),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(
+            child: Text(
+              '${summary.length} changed file${summary.length == 1 ? '' : 's'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: c.textPrimary,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          _ChangeStats(additions: adds, deletions: dels),
+        ],
       ),
     );
   }
@@ -461,67 +1152,60 @@ class _SummaryBar extends StatelessWidget {
 
 class _FileHeader extends StatelessWidget {
   final DiffSummaryFile file;
-  final int index;
-  final int count;
-  final VoidCallback onTap;
-  const _FileHeader({
-    required this.file,
-    required this.index,
-    required this.count,
-    required this.onTap,
-  });
+  final bool collapsed;
+  final VoidCallback? onTap;
+
+  const _FileHeader({required this.file, this.collapsed = false, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(
-          horizontal: MotifSpacing.md,
-          vertical: MotifSpacing.sm,
-        ),
-        color: c.surface,
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                file.path,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: c.textPrimary,
-                  fontFamily: 'monospace',
-                  fontSize: 13,
-                ),
-              ),
-            ),
+    final content = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.md,
+        vertical: MotifSpacing.sm,
+      ),
+      decoration: BoxDecoration(
+        color: c.surfaceElevated,
+        border: Border(bottom: BorderSide(color: c.border)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.insert_drive_file_outlined, size: 18, color: c.accent),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(child: _PathTitle(path: file.path)),
+          const SizedBox(width: MotifSpacing.sm),
+          _ChangeStats(additions: file.additions, deletions: file.deletions),
+          if (onTap != null) ...[
             const SizedBox(width: MotifSpacing.sm),
-            Text(
-              '+${file.additions} -${file.deletions}',
-              style: TextStyle(color: c.textTertiary, fontSize: 12),
+            Icon(
+              collapsed ? Icons.expand_more : Icons.expand_less,
+              size: 18,
+              color: c.textSecondary,
             ),
-            const SizedBox(width: MotifSpacing.sm),
-            Text(
-              '${index + 1}/$count',
-              style: TextStyle(color: c.textSecondary, fontSize: 12),
-            ),
-            Icon(Icons.expand_more, size: 18, color: c.textSecondary),
           ],
-        ),
+        ],
+      ),
+    );
+    if (onTap == null) return content;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        key: ValueKey('diff-section-header-${file.path}'),
+        onTap: onTap,
+        child: content,
       ),
     );
   }
 }
 
 class _DiffText extends StatelessWidget {
-  final String patch;
-  const _DiffText({required this.patch});
+  final List<String> lines;
+  const _DiffText({required this.lines});
 
   @override
   Widget build(BuildContext context) {
-    final c = context.motif;
-    final lines = patch.split('\n');
     return LayoutBuilder(
       builder: (context, constraints) {
         const fontSize = 12.0;
@@ -531,51 +1215,135 @@ class _DiffText extends StatelessWidget {
         );
         final contentWidth = math.max(
           constraints.maxWidth,
-          longestLine * fontSize * 0.62 + MotifSpacing.sm * 2,
+          longestLine * fontSize * 0.62 + 72,
         );
         return SelectionArea(
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: SizedBox(
               width: contentWidth,
-              height: constraints.maxHeight,
-              child: ListView.builder(
-                itemCount: lines.length,
-                itemBuilder: (context, i) {
-                  final line = lines[i];
-                  final Color color;
-                  if (line.startsWith('+') && !line.startsWith('+++')) {
-                    color = const Color(0xFF4CAF50);
-                  } else if (line.startsWith('-') && !line.startsWith('---')) {
-                    color = c.danger;
-                  } else if (line.startsWith('@@')) {
-                    color = c.accent;
-                  } else {
-                    color = c.textSecondary;
-                  }
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: MotifSpacing.sm,
+              child: Column(
+                children: [
+                  for (var i = 0; i < lines.length; i++)
+                    _DiffLine(
+                      index: i + 1,
+                      line: lines[i],
+                      width: contentWidth,
+                      fontSize: fontSize,
                     ),
-                    child: Text(
-                      line.isEmpty ? ' ' : line,
-                      maxLines: 1,
-                      softWrap: false,
-                      overflow: TextOverflow.visible,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: fontSize,
-                        color: color,
-                        height: 1.3,
-                      ),
-                    ),
-                  );
-                },
+                ],
               ),
             ),
           ),
         );
       },
     );
+  }
+}
+
+enum _DiffLineKind { addition, deletion, hunk, fileHeader, context }
+
+class _DiffLine extends StatelessWidget {
+  final int index;
+  final String line;
+  final double width;
+  final double fontSize;
+
+  const _DiffLine({
+    required this.index,
+    required this.line,
+    required this.width,
+    required this.fontSize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final kind = _kindFor(line);
+    final textColor = switch (kind) {
+      _DiffLineKind.addition => c.success,
+      _DiffLineKind.deletion => c.danger,
+      _DiffLineKind.hunk => c.accent,
+      _DiffLineKind.fileHeader => c.textPrimary,
+      _DiffLineKind.context => c.textSecondary,
+    };
+    final bg = switch (kind) {
+      _DiffLineKind.addition => c.success.withValues(alpha: 0.08),
+      _DiffLineKind.deletion => c.danger.withValues(alpha: 0.08),
+      _DiffLineKind.hunk => c.accentFill(0.10),
+      _DiffLineKind.fileHeader => c.surfaceElevated,
+      _DiffLineKind.context => Colors.transparent,
+    };
+    final gutterBg = switch (kind) {
+      _DiffLineKind.addition => c.success.withValues(alpha: 0.12),
+      _DiffLineKind.deletion => c.danger.withValues(alpha: 0.12),
+      _DiffLineKind.hunk => c.accentFill(0.14),
+      _DiffLineKind.fileHeader => c.surfaceElevated,
+      _DiffLineKind.context => c.background.withValues(alpha: 0.45),
+    };
+    return Container(
+      width: width,
+      color: bg,
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            padding: const EdgeInsets.only(right: MotifSpacing.sm),
+            decoration: BoxDecoration(
+              color: gutterBg,
+              border: Border(right: BorderSide(color: c.border)),
+            ),
+            alignment: Alignment.centerRight,
+            child: Text(
+              '$index',
+              maxLines: 1,
+              style: TextStyle(
+                color: c.textTertiary,
+                fontFamily: 'monospace',
+                fontSize: 11,
+                height: 1.45,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
+              child: Text(
+                line.isEmpty ? ' ' : line,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.visible,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: fontSize,
+                  color: textColor,
+                  height: 1.45,
+                  fontWeight: kind == _DiffLineKind.fileHeader
+                      ? FontWeight.w700
+                      : FontWeight.w400,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  _DiffLineKind _kindFor(String line) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      return _DiffLineKind.addition;
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      return _DiffLineKind.deletion;
+    }
+    if (line.startsWith('@@')) return _DiffLineKind.hunk;
+    if (line.startsWith('diff --git') ||
+        line.startsWith('index ') ||
+        line.startsWith('---') ||
+        line.startsWith('+++')) {
+      return _DiffLineKind.fileHeader;
+    }
+    return _DiffLineKind.context;
   }
 }

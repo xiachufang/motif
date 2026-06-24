@@ -367,11 +367,15 @@ dispatch 表见 `crates/motif-server/src/rpc.rs`：`dispatch_mut` 处理
 {
   "id":         "<PtyId>",
   "cmd":        "<string>",
-  "cwd":        "<path>",
+  "cwd":        "<path>",          // 服务端从 shell-integration OSC 7 追踪的 live cwd
+                                   // （seed=spawn cwd），冷连接据此恢复 cd 后的目录
   "cols":       <u16>,
   "rows":       <u16>,
   "alive":      <bool>,
-  "created_at": <UnixMs>
+  "created_at": <UnixMs>,
+  "running_command": "<string>" | null  // 服务端从 shell-integration OSC 标记追踪的
+                                         // 当前执行命令；prompt 处或无 shell 集成时为 null。
+                                         // 冷连接据此恢复正在跑的命令
 }
 ```
 

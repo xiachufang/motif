@@ -173,7 +173,10 @@ class _TabBar extends StatelessWidget {
         Icons.description_outlined,
         path.split('/').last,
       ),
-      DiffViewSpec() => (Icons.difference_outlined, 'diff'),
+      DiffViewSpec(:final path) => (
+        Icons.difference_outlined,
+        path?.split('/').last ?? 'diff',
+      ),
       ImageViewSpec(:final path) => (
         Icons.image_outlined,
         path.split('/').last,
@@ -302,12 +305,13 @@ class _PaneForView extends StatelessWidget {
         path: path,
         motif: motif,
       ),
-      DiffViewSpec(:final staged, :final path) => GitDiffPanel(
+      DiffViewSpec(:final staged, :final path) => GitDiffView(
         key: ValueKey('diff-$staged-$path'),
         cwd: motif.activeCwd,
         initialStaged: staged,
         path: path,
         motif: motif,
+        embedded: true,
       ),
       ImageViewSpec(:final path) => PreviewPane(
         key: ValueKey('image-$path'),

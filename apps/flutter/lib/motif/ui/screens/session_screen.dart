@@ -455,6 +455,7 @@ class _SessionScreenState extends State<SessionScreen>
                     onSessionSelected: (serverId, session) =>
                         _switchSession(app, motif, serverId, session),
                     onOpenPreview: _openPreview,
+                    onOpenDiff: _openDiff,
                     splitFraction: sidebar.splitFraction,
                     onSplitChanged: (fraction) {
                       setState(() => sidebar.splitFraction = fraction);

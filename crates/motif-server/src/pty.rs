@@ -222,6 +222,12 @@ pub(crate) struct PtyState {
     /// snapshot, no markers) can still learn what is running. `None` at a
     /// prompt or when the shell has no integration.
     pub running_command: Option<String>,
+    /// Live working directory, tracked server-side from shell-integration OSC 7
+    /// / OSC 7777 `Cwd=` markers. Seeded with the spawn cwd; updated as the
+    /// shell `cd`s. Surfaced in [`PtyInfo`] so a cold-attaching client (which
+    /// only gets a VT snapshot, no markers) recovers the real cwd, and so the
+    /// session fswatcher can follow the active PTY's directory.
+    pub cwd: PathBuf,
 }
 
 impl Pty {
@@ -230,9 +236,11 @@ impl Pty {
         PtyInfo {
             id: self.id.clone(),
             cmd: self.cmd.clone(),
-            // cwd is the spawn cwd; live updates flow via shell-integration markers on
-            // /pty/<id> and are tracked client-side.
-            cwd: self.cwd.clone(),
+            // Live cwd, tracked server-side from shell-integration OSC 7 markers
+            // (seeded with the spawn cwd). Carrying it here lets a cold-attaching
+            // client — which only gets a VT snapshot, no markers — recover the
+            // real directory after a `cd`.
+            cwd: s.cwd.clone(),
             cols: s.cols,
             rows: s.rows,
             alive: s.alive,
@@ -555,6 +563,7 @@ impl PtyPool {
                 primary: Some(owner_client),
                 alive: true,
                 running_command: None,
+                cwd: cwd.clone(),
             }),
             emu_tx,
             _bootstrap: bootstrap,
@@ -640,6 +649,22 @@ fn track_running_command(
     }
 }
 
+/// Update the tracked cwd from one shell-integration marker. Returns `true` if
+/// it changed (the caller re-points the session fswatcher). Only OSC 7 / OSC
+/// 7777 `Cwd=` markers move it — both parse to [`QueryKind::Osc7Cwd`]; other
+/// markers leave it untouched. A marker repeating the current cwd (the common
+/// case — shells emit OSC 7 on every prompt) returns `false`, so we don't
+/// thrash the watcher.
+fn track_cwd(cwd: &mut PathBuf, kind: &QueryKind) -> bool {
+    match kind {
+        QueryKind::Osc7Cwd { path } if path != cwd => {
+            *cwd = path.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
 fn reader_loop(
     mut reader: Box<dyn Read + Send>,
     pty: Arc<Pty>,
@@ -683,14 +708,25 @@ fn reader_loop(
                                 // running command server-side: a cold-attaching
                                 // client only gets a VT snapshot (no markers),
                                 // so this is the only way it can learn what is
-                                // currently executing.
-                                {
+                                // currently executing. Likewise track the cwd
+                                // from OSC 7 markers so cold attach recovers the
+                                // real directory and the fswatcher can follow it.
+                                let cwd_changed = {
                                     let mut s = pty.state.lock();
                                     track_running_command(
                                         &mut s.running_command,
                                         &mut pending_cmd,
                                         &kind,
                                     );
+                                    track_cwd(&mut s.cwd, &kind)
+                                };
+                                // Re-point the session fswatcher (only acts if
+                                // this PTY is the active view). Done outside the
+                                // state lock.
+                                if cwd_changed {
+                                    if let Some(sess) = live_session.as_ref() {
+                                        sess.note_pty_cwd_changed(&pty_id);
+                                    }
                                 }
                                 pty.feed(&raw);
                             } else if matches!(kind, QueryKind::Cpr) {
@@ -1165,6 +1201,36 @@ mod tests {
             },
         );
         assert_eq!(running.as_deref(), Some("git status"));
+    }
+
+    #[test]
+    fn track_cwd_follows_osc7_and_dedups() {
+        let mut cwd = PathBuf::from("/home/me");
+
+        // A new cwd is taken and reported as changed.
+        assert!(track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/foo".into() }));
+        assert_eq!(cwd, PathBuf::from("/tmp/foo"));
+
+        // The same cwd again (shells emit OSC 7 every prompt) is a no-op — the
+        // caller must not thrash the fswatcher.
+        assert!(!track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/foo".into() }));
+        assert_eq!(cwd, PathBuf::from("/tmp/foo"));
+
+        // A different cwd changes again.
+        assert!(track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/bar".into() }));
+        assert_eq!(cwd, PathBuf::from("/tmp/bar"));
+
+        // Non-cwd shell-integration markers leave it untouched.
+        assert!(!track_cwd(&mut cwd, &QueryKind::Osc133PromptStart));
+        assert!(!track_cwd(
+            &mut cwd,
+            &QueryKind::Osc7770Cmd { text: "ls".to_string() },
+        ));
+        assert!(!track_cwd(
+            &mut cwd,
+            &QueryKind::Osc133CmdEnd { exit: Some(0) },
+        ));
+        assert_eq!(cwd, PathBuf::from("/tmp/bar"));
     }
 
     #[test]

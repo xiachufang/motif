@@ -6,6 +6,8 @@ import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 
 class _DiffMotifClient extends MotifClient {
+  final diffPaths = <String?>[];
+
   static const _files = [
     DiffSummaryFile(
       path: 'lib/motif/ui/screens/git_diff_panel.dart',
@@ -34,8 +36,24 @@ class _DiffMotifClient extends MotifClient {
     bool staged = false,
     String? cwd,
   }) async {
+    diffPaths.add(path);
+    if (path == null) {
+      return [
+        for (final file in _files) ...[
+          'diff --git a/${file.path} b/${file.path}',
+          'index abc123..def456 100644',
+          '--- a/${file.path}',
+          '+++ b/${file.path}',
+          '@@ -1,1 +1,1 @@',
+          '+changed ${file.path}',
+        ],
+      ].join('\n');
+    }
     return [
       'diff --git a/$path b/$path',
+      'index abc123..def456 100644',
+      '--- a/$path',
+      '+++ b/$path',
       '@@ -1,1 +1,1 @@',
       '+${'very_long_diff_line_' * 18}',
     ].join('\n');
@@ -43,18 +61,25 @@ class _DiffMotifClient extends MotifClient {
 }
 
 void main() {
-  testWidgets('embedded panel adapts to narrow widths', (tester) async {
+  testWidgets('embedded panel lists changed files and opens diff tabs', (
+    tester,
+  ) async {
+    final motif = _DiffMotifClient();
+    final opened = <({String? path, bool staged})>[];
     await tester.pumpWidget(
       MaterialApp(
         theme: motifTheme(Brightness.dark),
         home: Scaffold(
           body: SizedBox(
-            width: 240,
+            width: 420,
             height: 420,
             child: GitDiffPanel(
-              motif: _DiffMotifClient(),
+              motif: motif,
               cwd: '/work',
               embedded: true,
+              onOpenDiff: ({path, required staged}) async {
+                opened.add((path: path, staged: staged));
+              },
             ),
           ),
         ),
@@ -64,31 +89,235 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.text('Git diff'), findsOneWidget);
-    expect(find.byTooltip('By file'), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey(
+          'diff-list-file-lib/motif/ui/screens/git_diff_panel.dart',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('git_diff_panel.dart'), findsOneWidget);
+    expect(find.text('git_diff_panel_test.dart'), findsOneWidget);
+    expect(find.byTooltip('Show diff'), findsOneWidget);
+    expect(motif.diffPaths, isEmpty);
     expect(
       tester
           .getCenter(
             find.byWidgetPredicate((widget) => widget is SegmentedButton<bool>),
           )
           .dx,
-      closeTo(120, 1),
+      greaterThan(160),
+    );
+    expect(
+      tester
+          .getCenter(
+            find.byWidgetPredicate((widget) => widget is SegmentedButton<bool>),
+          )
+          .dy,
+      closeTo(tester.getCenter(find.text('Git diff')).dy, 1),
     );
     expect(
       tester
           .getSize(
             find.byWidgetPredicate(
-              (widget) => widget is IconButton && widget.tooltip == 'By file',
+              (widget) => widget is IconButton && widget.tooltip == 'Tree view',
             ),
           )
           .width,
       48,
     );
 
-    await tester.tap(find.byTooltip('By file'));
+    await tester.tap(
+      find.byKey(
+        const ValueKey(
+          'diff-list-file-lib/motif/ui/screens/git_diff_panel.dart',
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.byTooltip('Show all'), findsOneWidget);
-    expect(find.byTooltip('Files'), findsOneWidget);
+    expect(motif.diffPaths, isEmpty);
+    expect(opened, [
+      (path: 'lib/motif/ui/screens/git_diff_panel.dart', staged: false),
+    ]);
+
+    await tester.tap(find.byTooltip('Show diff'));
+    await tester.pumpAndSettle();
+
+    expect(opened, [
+      (path: 'lib/motif/ui/screens/git_diff_panel.dart', staged: false),
+      (path: null, staged: false),
+    ]);
+  });
+
+  testWidgets('embedded panel can switch to a changed-file tree', (
+    tester,
+  ) async {
+    final motif = _DiffMotifClient();
+    final opened = <String?>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.dark),
+        home: Scaffold(
+          body: SizedBox(
+            width: 360,
+            height: 520,
+            child: GitDiffPanel(
+              motif: motif,
+              cwd: '/work',
+              embedded: true,
+              onOpenDiff: ({path, required staged}) async => opened.add(path),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Tree view'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('List view'), findsOneWidget);
+    expect(find.byKey(const ValueKey('diff-tree-dir-lib')), findsOneWidget);
+
+    for (final dir in [
+      'lib',
+      'lib/motif',
+      'lib/motif/ui',
+      'lib/motif/ui/screens',
+    ]) {
+      await tester.tap(find.byKey(ValueKey('diff-tree-dir-$dir')));
+      await tester.pumpAndSettle();
+    }
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey(
+          'diff-tree-file-lib/motif/ui/screens/git_diff_panel.dart',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(opened, ['lib/motif/ui/screens/git_diff_panel.dart']);
+  });
+
+  testWidgets('diff view renders a concrete patch', (tester) async {
+    final motif = _DiffMotifClient();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.dark),
+        home: Scaffold(
+          body: SizedBox(
+            width: 640,
+            height: 420,
+            child: GitDiffView(
+              motif: motif,
+              cwd: '/work',
+              path: 'lib/motif/ui/screens/git_diff_panel.dart',
+              embedded: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(motif.diffPaths, ['lib/motif/ui/screens/git_diff_panel.dart']);
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.byIcon(Icons.arrow_back), findsNothing);
+    expect(
+      find.text(
+        'diff --git a/lib/motif/ui/screens/git_diff_panel.dart b/lib/motif/ui/screens/git_diff_panel.dart',
+      ),
+      findsNothing,
+    );
+    expect(find.text('index abc123..def456 100644'), findsNothing);
+    expect(
+      find.text('--- a/lib/motif/ui/screens/git_diff_panel.dart'),
+      findsNothing,
+    );
+    expect(
+      find.text('+++ b/lib/motif/ui/screens/git_diff_panel.dart'),
+      findsNothing,
+    );
+    expect(find.text('@@ -1,1 +1,1 @@'), findsNothing);
+    expect(find.textContaining('very_long_diff_line_'), findsOneWidget);
+  });
+
+  testWidgets('diff view groups full patch by changed file', (tester) async {
+    final motif = _DiffMotifClient();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.dark),
+        home: Scaffold(
+          body: SizedBox(
+            width: 720,
+            height: 72,
+            child: GitDiffView(motif: motif, cwd: '/work', embedded: true),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(motif.diffPaths, [null]);
+    expect(find.text('2 changed files'), findsNothing);
+    expect(find.text('git_diff_panel.dart'), findsOneWidget);
+    expect(
+      find.text(
+        'diff --git a/lib/motif/ui/screens/git_diff_panel.dart b/lib/motif/ui/screens/git_diff_panel.dart',
+      ),
+      findsNothing,
+    );
+    expect(
+      find.text(
+        'diff --git a/test/motif/git_diff_panel_test.dart b/test/motif/git_diff_panel_test.dart',
+      ),
+      findsNothing,
+    );
+    expect(find.text('index abc123..def456 100644'), findsNothing);
+    expect(find.text('@@ -1,1 +1,1 @@'), findsNothing);
+
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -120));
+    await tester.pumpAndSettle();
+
+    expect(find.text('git_diff_panel.dart'), findsNothing);
+    expect(find.text('git_diff_panel_test.dart'), findsOneWidget);
+  });
+
+  testWidgets('diff view sections can collapse and expand', (tester) async {
+    final motif = _DiffMotifClient();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.dark),
+        home: Scaffold(
+          body: SizedBox(
+            width: 720,
+            height: 240,
+            child: GitDiffView(motif: motif, cwd: '/work', embedded: true),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    const line = '+changed lib/motif/ui/screens/git_diff_panel.dart';
+    const headerKey = ValueKey(
+      'diff-section-header-lib/motif/ui/screens/git_diff_panel.dart',
+    );
+
+    expect(find.text(line), findsOneWidget);
+
+    await tester.tap(find.byKey(headerKey));
+    await tester.pumpAndSettle();
+
+    expect(find.text(line), findsNothing);
+
+    await tester.tap(find.byKey(headerKey));
+    await tester.pumpAndSettle();
+
+    expect(find.text(line), findsOneWidget);
   });
 }

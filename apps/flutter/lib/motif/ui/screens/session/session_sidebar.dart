@@ -16,6 +16,7 @@ class _SessionSidebar extends StatelessWidget {
   final Future<void> Function(String serverId, String session)
   onSessionSelected;
   final ValueChanged<String> onOpenPreview;
+  final OpenDiffView onOpenDiff;
   final double splitFraction;
   final ValueChanged<double> onSplitChanged;
   final double firstSplitFraction;
@@ -35,6 +36,7 @@ class _SessionSidebar extends StatelessWidget {
     required this.motif,
     required this.onSessionSelected,
     required this.onOpenPreview,
+    required this.onOpenDiff,
     required this.splitFraction,
     required this.onSplitChanged,
     required this.firstSplitFraction,
@@ -73,6 +75,7 @@ class _SessionSidebar extends StatelessWidget {
             key: ValueKey('sidebar-diff-$cwd'),
             cwd: cwd,
             motif: motif,
+            onOpenDiff: onOpenDiff,
             embedded: true,
           ),
         ),

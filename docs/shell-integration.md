@@ -30,8 +30,14 @@ RPC。
 - **shell hook 是唯一 cwd 来源**：bootstrap 成功的 shell 用私有 OSC 属性即时
   emit cwd 变更。未 bootstrap 的 shell（旧版本、SSH 远端、不支持的 shell）
   没有 cwd 信号——bootstrap 没成功的 PTY 状态机停在 `Unknown`，根目录回退到
-  session.workdir。服务端的 pid 轮询机制在协议改造时被移除（曾经服务端发
-  `pty.cwd_changed`，现在 cwd 完全是客户端 OSC 派生事件）。
+  session.workdir。服务端的 pid 轮询机制在协议改造时被移除，不再发
+  `pty.cwd_changed` wire 事件——客户端 *显示* 的 live cwd 完全由它自己的 OSC
+  解析派生。但服务端会从同一份 OSC 标记里**轻量追踪** cwd（与 `running_command`
+  对称，见 `crates/motif-server/src/pty.rs` 的 `track_cwd` / `track_running_command`）：
+  这份 server 侧 cwd 既塞进 `PtyInfo.cwd`，让只拿到 VT 快照、看不到 OSC 标记的
+  冷连接客户端也能恢复 `cd` 之后的真实目录；也用来把服务端 fswatcher 指到活跃
+  PTY 的目录上（`note_pty_cwd_changed` → `desired_watch_root`）。服务端只追踪
+  cwd / running_command 这两个标量，不在服务端复刻整套 block 状态机。
 - **可关闭**：`MOTIF_SHELL_INTEGRATION=0` 跳过注入
   （`crates/motif-server/src/shell/bootstrap.rs:56`），PTY 退化为透明字节
   管道；客户端 5s 超时后把 shell 标成 `Unknown`，停止产出 block 事件

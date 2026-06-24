@@ -1,6 +1,6 @@
 //! Motif APNs push relay.
 //!
-//! Holds the APNs `.p8` signing key (which must never ship in motifd or the
+//! Holds the APNs `.p8` signing keys (which must never ship in motifd or the
 //! iOS app) and forwards **encrypted** notification payloads from self-hosted
 //! motifd instances to Apple. It signs an ES256 provider JWT and POSTs to
 //! APNs over HTTP/2.
@@ -52,13 +52,21 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
 
-    /// Path to the APNs auth key (.p8, PKCS#8 EC PEM).
-    #[arg(long, env = "APNS_KEY_PATH")]
-    apns_key_path: PathBuf,
+    /// Path to the sandbox APNs auth key (.p8, PKCS#8 EC PEM).
+    #[arg(long, env = "APNS_SANDBOX_KEY_PATH")]
+    apns_sandbox_key_path: PathBuf,
 
-    /// APNs Key ID (the 10-char id of the .p8).
-    #[arg(long, env = "APNS_KEY_ID")]
-    apns_key_id: String,
+    /// Sandbox APNs Key ID (the 10-char id of the .p8).
+    #[arg(long, env = "APNS_SANDBOX_KEY_ID")]
+    apns_sandbox_key_id: String,
+
+    /// Path to the production APNs auth key (.p8, PKCS#8 EC PEM).
+    #[arg(long, env = "APNS_PRODUCTION_KEY_PATH")]
+    apns_production_key_path: PathBuf,
+
+    /// Production APNs Key ID (the 10-char id of the .p8).
+    #[arg(long, env = "APNS_PRODUCTION_KEY_ID")]
+    apns_production_key_id: String,
 
     /// Apple Developer Team ID.
     #[arg(long, env = "APNS_TEAM_ID")]
@@ -89,22 +97,28 @@ struct Claims {
 struct Signer {
     key: EncodingKey,
     header: Header,
+    key_id: String,
     team_id: String,
     cache: Mutex<Option<(String, Instant)>>,
 }
 
 impl Signer {
     fn new(key_pem: &[u8], key_id: String, team_id: String) -> anyhow::Result<Self> {
-        let key = EncodingKey::from_ec_pem(key_pem)
-            .context("parse APNs .p8 (expected PKCS#8 EC PEM)")?;
+        let key =
+            EncodingKey::from_ec_pem(key_pem).context("parse APNs .p8 (expected PKCS#8 EC PEM)")?;
         let mut header = Header::new(Algorithm::ES256);
-        header.kid = Some(key_id);
+        header.kid = Some(key_id.clone());
         Ok(Self {
             key,
             header,
+            key_id,
             team_id,
             cache: Mutex::new(None),
         })
+    }
+
+    fn key_id(&self) -> &str {
+        &self.key_id
     }
 
     fn token(&self) -> anyhow::Result<String> {
@@ -118,11 +132,54 @@ impl Signer {
             iss: self.team_id.clone(),
             iat: now_secs(),
         };
-        let tok = jsonwebtoken::encode(&self.header, &claims, &self.key)
-            .context("sign APNs JWT")?;
+        let tok =
+            jsonwebtoken::encode(&self.header, &claims, &self.key).context("sign APNs JWT")?;
         *g = Some((tok.clone(), Instant::now()));
         Ok(tok)
     }
+}
+
+#[derive(Clone)]
+struct ApnsSigners {
+    sandbox: Arc<Signer>,
+    production: Arc<Signer>,
+}
+
+impl ApnsSigners {
+    fn new(sandbox: Arc<Signer>, production: Arc<Signer>) -> Self {
+        Self {
+            sandbox,
+            production,
+        }
+    }
+
+    fn signer_for_env(&self, env: Env) -> &Signer {
+        match env {
+            Env::Sandbox => self.sandbox.as_ref(),
+            Env::Production => self.production.as_ref(),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        self.sandbox
+            .token()
+            .context("initial sandbox APNs JWT sign failed")?;
+        self.production
+            .token()
+            .context("initial production APNs JWT sign failed")?;
+        Ok(())
+    }
+}
+
+fn load_signer(
+    path: &PathBuf,
+    key_id: &str,
+    team_id: &str,
+    label: &str,
+) -> anyhow::Result<Arc<Signer>> {
+    let pem =
+        std::fs::read(path).with_context(|| format!("read {label} APNs key {}", path.display()))?;
+    Signer::new(&pem, key_id.to_string(), team_id.to_string()).map(Arc::new)
 }
 
 // ─────────────────────────── rate limiter ───────────────────────────
@@ -164,7 +221,7 @@ type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Byte
 
 #[derive(Clone)]
 struct AppState {
-    signer: Arc<Signer>,
+    signers: ApnsSigners,
     client: HttpsClient,
     topic: Arc<String>,
     limiter: Arc<Limiter>,
@@ -213,16 +270,28 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(args.log.clone())
         .init();
 
-    let pem = std::fs::read(&args.apns_key_path)
-        .with_context(|| format!("read --apns-key-path {}", args.apns_key_path.display()))?;
-    let signer = Arc::new(Signer::new(&pem, args.apns_key_id.clone(), args.apns_team_id.clone())?);
+    let signers = ApnsSigners::new(
+        load_signer(
+            &args.apns_sandbox_key_path,
+            &args.apns_sandbox_key_id,
+            &args.apns_team_id,
+            "sandbox",
+        )?,
+        load_signer(
+            &args.apns_production_key_path,
+            &args.apns_production_key_id,
+            &args.apns_team_id,
+            "production",
+        )?,
+    );
     // Validate signing up front so misconfig fails at startup, not first push.
-    signer.token().context("initial APNs JWT sign failed")?;
+    signers.validate()?;
     tracing::info!(
-        key_id = %args.apns_key_id,
+        sandbox_key_id = %args.apns_sandbox_key_id,
+        production_key_id = %args.apns_production_key_id,
         team = %args.apns_team_id,
         topic = %args.apns_topic,
-        "APNs signer ready",
+        "APNs signers ready",
     );
 
     let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -251,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let state = AppState {
-        signer,
+        signers,
         client,
         topic: Arc::new(args.apns_topic),
         limiter,
@@ -321,10 +390,15 @@ fn build_apns_payload(e: &str, n: &str) -> Vec<u8> {
 }
 
 async fn send_apns(st: &AppState, env: Env, token: &str, payload: &[u8]) -> Outcome {
-    let jwt = match st.signer.token() {
+    let signer = st.signers.signer_for_env(env);
+    let jwt = match signer.token() {
         Ok(t) => t,
         Err(e) => {
-            tracing::error!("JWT sign failed: {e}");
+            tracing::error!(
+                key_id = signer.key_id(),
+                env = env.host(),
+                "JWT sign failed: {e}"
+            );
             return Outcome::Error;
         }
     };
@@ -402,6 +476,35 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
+    const TEST_KEY_PEM: &[u8] = br#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/QXRaJViEx83Hw49
+KTlY5T5t5DY2sjeZkwgZTsqoD52hRANCAATW3syvfu9pFRmAIjRfEt6PpcyT6+kC
+HBE3cw7QbEU3jppgaNzYXxceTgjgEsz3uIIG/Tm09K92yxFQhJ3Gg22H
+-----END PRIVATE KEY-----"#;
+
+    impl ApnsSigners {
+        fn for_test(sandbox_key_id: &str, production_key_id: &str) -> Self {
+            Self::new(
+                Arc::new(
+                    Signer::new(
+                        TEST_KEY_PEM,
+                        sandbox_key_id.to_string(),
+                        "TEAMID".to_string(),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(
+                    Signer::new(
+                        TEST_KEY_PEM,
+                        production_key_id.to_string(),
+                        "TEAMID".to_string(),
+                    )
+                    .unwrap(),
+                ),
+            )
+        }
+    }
+
     #[test]
     fn apns_payload_has_mutable_content_and_ciphertext() {
         let raw = build_apns_payload("CIPHER", "NONCE");
@@ -414,7 +517,10 @@ mod tests {
 
     #[test]
     fn apns_reason_parses() {
-        assert_eq!(apns_reason(br#"{"reason":"BadDeviceToken"}"#), "BadDeviceToken");
+        assert_eq!(
+            apns_reason(br#"{"reason":"BadDeviceToken"}"#),
+            "BadDeviceToken"
+        );
         assert_eq!(apns_reason(b"not json"), "(no reason)");
     }
 
@@ -429,17 +535,58 @@ mod tests {
         assert!(!lim.allow("a")); // 3rd within the window is rejected
         assert!(lim.allow("b")); // independent per token
     }
-}
 
-
-#[cfg(test)]
-mod genkey_tmp {
     #[test]
-    fn dump_key() {
-        use jsonwebtoken::ring::{rand, signature};
-        let rng = rand::SystemRandom::new();
-        let doc = signature::EcdsaKeyPair::generate_pkcs8(
-            &signature::ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        std::fs::write("/tmp/key.der", doc.as_ref()).unwrap();
+    fn signers_are_selected_by_apns_environment() {
+        let signers = ApnsSigners::for_test("SANDBOXK1", "PRODKEY22");
+
+        assert_eq!(signers.signer_for_env(Env::Sandbox).key_id(), "SANDBOXK1");
+        assert_eq!(
+            signers.signer_for_env(Env::Production).key_id(),
+            "PRODKEY22"
+        );
+    }
+
+    #[test]
+    fn args_accept_environment_specific_keys_with_shared_team() {
+        let args = Args::try_parse_from([
+            "motif-push-relay",
+            "--apns-sandbox-key-path",
+            "sandbox.p8",
+            "--apns-sandbox-key-id",
+            "SANDBOXK1",
+            "--apns-production-key-path",
+            "production.p8",
+            "--apns-production-key-id",
+            "PRODKEY22",
+            "--apns-team-id",
+            "TEAMID",
+        ])
+        .unwrap();
+
+        assert_eq!(args.apns_sandbox_key_path, PathBuf::from("sandbox.p8"));
+        assert_eq!(args.apns_sandbox_key_id, "SANDBOXK1");
+        assert_eq!(
+            args.apns_production_key_path,
+            PathBuf::from("production.p8")
+        );
+        assert_eq!(args.apns_production_key_id, "PRODKEY22");
+        assert_eq!(args.apns_team_id, "TEAMID");
+    }
+
+    #[test]
+    fn args_reject_old_single_key_configuration() {
+        let err = Args::try_parse_from([
+            "motif-push-relay",
+            "--apns-key-path",
+            "apns.p8",
+            "--apns-key-id",
+            "OLDKEYID1",
+            "--apns-team-id",
+            "TEAMID",
+        ])
+        .unwrap_err();
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }

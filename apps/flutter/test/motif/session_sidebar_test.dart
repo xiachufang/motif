@@ -72,6 +72,43 @@ class _SessionMenuMotifClient extends MotifClient {
   }
 }
 
+class _GitDiffRouteMotifClient extends _SessionMenuMotifClient {
+  static const _files = [
+    DiffSummaryFile(
+      path: 'lib/motif/ui/screens/session_screen.dart',
+      additions: 3,
+      deletions: 1,
+    ),
+  ];
+
+  @override
+  Future<List<DiffSummaryFile>> gitDiffSummary({
+    String? path,
+    bool staged = false,
+    String? cwd,
+  }) async {
+    if (path == null) return _files;
+    return _files.where((file) => file.path == path).toList();
+  }
+
+  @override
+  Future<String> gitDiff({
+    String? path,
+    bool staged = false,
+    String? cwd,
+  }) async {
+    final diffPath = path ?? _files.first.path;
+    return [
+      'diff --git a/$diffPath b/$diffPath',
+      'index abc123..def456 100644',
+      '--- a/$diffPath',
+      '+++ b/$diffPath',
+      '@@ -1,1 +1,1 @@',
+      '+narrow route diff',
+    ].join('\n');
+  }
+}
+
 class _BlockingDetachMotifClient extends _SessionMenuMotifClient {
   final Completer<void> detachCompleter = Completer<void>();
 
@@ -661,7 +698,12 @@ void main() {
   });
 
   testWidgets('narrow buttons keep opening pages', (tester) async {
-    final routes = await _pumpSession(tester, const Size(700, 768));
+    final motif = _GitDiffRouteMotifClient();
+    final routes = await _pumpSession(
+      tester,
+      const Size(700, 768),
+      motif: motif,
+    );
     final initialPushes = routes.pushes;
 
     await tester.tap(find.byKey(const ValueKey('file-tree-sidebar-toggle')));
@@ -677,6 +719,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(routes.pushes, initialPushes + 2);
+    expect(find.byType(GitDiffPanel), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Show diff'));
+    await tester.pumpAndSettle();
+
+    expect(routes.pushes, initialPushes + 3);
+    expect(find.byType(GitDiffView), findsOneWidget);
+    expect(find.text('+narrow route diff'), findsOneWidget);
+
+    Navigator.of(tester.element(find.byType(GitDiffView))).pop();
+    await tester.pumpAndSettle();
+
     expect(find.byType(GitDiffPanel), findsOneWidget);
   });
 
