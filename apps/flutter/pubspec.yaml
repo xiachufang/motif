@@ -47,7 +47,7 @@ dependencies:
   opus_flutter:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter
   path_provider: ^2.1.5
   crypto: ^3.0.7
@@ -60,32 +60,27 @@ dependency_overrides:
   opus_flutter_android:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter_android
   opus_flutter_ios:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter_ios
   opus_flutter_macos:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter_macos
   opus_flutter_platform_interface:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter_platform_interface
-  opus_flutter_web:
-    git:
-      url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
-      path: opus_flutter_web
   opus_flutter_windows:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
-      ref: codex/add-macos-spm-support
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
       path: opus_flutter_windows
 
 dev_dependencies:

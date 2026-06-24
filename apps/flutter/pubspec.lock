@@ -77,10 +77,10 @@ packages:
     dependency: transitive
     description:
       name: cnativeapi
-      sha256: "2217a6adc6153b86c2dcb5b2cfbf6c9714ecf78562f095d3e5ea0a8968eff21b"
+      sha256: "8316cee1e5ba8e80a3c6365a188119c3dc044f6a4b7e43a135dc802ab0bdfb0b"
       url: "https://pub.dev"
     source: hosted
-    version: "0.1.3"
+    version: "0.1.4"
   code_assets:
     dependency: "direct main"
     description:
@@ -239,10 +239,10 @@ packages:
     dependency: transitive
     description:
       name: flutter_plugin_android_lifecycle
-      sha256: "38d1c268de9097ff59cf0e844ac38759fc78f76836d37edad06fa21e182055a0"
+      sha256: "3854fe5e3bff0b113c658f260b90c95dea17c92db0f2addeac2e343dd9969785"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.34"
+    version: "2.0.35"
   flutter_test:
     dependency: "direct dev"
     description: flutter
@@ -270,10 +270,10 @@ packages:
     dependency: "direct main"
     description:
       name: hooks
-      sha256: "62ae9bb76d02526c7c2110a19b6e6ad788fe28d35e553e35efb02a41a46ab43a"
+      sha256: "9a62a50b50b769a737bc0a8ff381f333529df3ab746b2f6b02e83760231455ba"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.1"
+    version: "2.0.2"
   http:
     dependency: "direct main"
     description:
@@ -302,10 +302,10 @@ packages:
     dependency: transitive
     description:
       name: image_picker_android
-      sha256: d5b3e1774af29c9ab00103afb0d4614070f924d2e0057ac867ec98800114793f
+      sha256: "6f3a1995eafb000333174fae92202622033b0ee7fd917a6cd3730295264df84a"
       url: "https://pub.dev"
     source: hosted
-    version: "0.8.13+17"
+    version: "0.8.13+19"
   image_picker_for_web:
     dependency: transitive
     description:
@@ -354,14 +354,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.2.2"
-  inject_js:
-    dependency: transitive
-    description:
-      name: inject_js
-      sha256: "849eacfd4b7e9182a7e743843a820d74bf1abcb692bdbe09e34ef0f753ad7227"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.1.0"
   integration_test:
     dependency: "direct dev"
     description: flutter
@@ -475,10 +467,10 @@ packages:
     dependency: "direct main"
     description:
       name: nativeapi
-      sha256: "3270fa9de65fa183bd622766a667e9e079814d135d5167d5da049ad547233721"
+      sha256: bcf391b5fe317c540f3966810400a1a2f0f238e382ff5cfbbbf82203967b4fc4
       url: "https://pub.dev"
     source: hosted
-    version: "0.1.3"
+    version: "0.1.4"
   nested:
     dependency: transitive
     description:
@@ -507,8 +499,8 @@ packages:
     dependency: "direct main"
     description:
       path: opus_flutter
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.3"
@@ -516,8 +508,8 @@ packages:
     dependency: "direct overridden"
     description:
       path: opus_flutter_android
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.1"
@@ -525,8 +517,8 @@ packages:
     dependency: "direct overridden"
     description:
       path: opus_flutter_ios
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.1"
@@ -534,8 +526,8 @@ packages:
     dependency: "direct overridden"
     description:
       path: opus_flutter_macos
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.0"
@@ -543,26 +535,17 @@ packages:
     dependency: "direct overridden"
     description:
       path: opus_flutter_platform_interface
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.0"
-  opus_flutter_web:
-    dependency: "direct overridden"
-    description:
-      path: opus_flutter_web
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
-      url: "https://github.com/gfreezy/opus_flutter.git"
-    source: git
-    version: "3.0.3"
   opus_flutter_windows:
     dependency: "direct overridden"
     description:
       path: opus_flutter_windows
-      ref: "codex/add-macos-spm-support"
-      resolved-ref: "8054ddc19406a09440fd3fab3ed73c825ac21ff6"
+      ref: b8a413cd589019ee96131d0dd72178005bd0a861
+      resolved-ref: b8a413cd589019ee96131d0dd72178005bd0a861
       url: "https://github.com/gfreezy/opus_flutter.git"
     source: git
     version: "3.0.0"
@@ -586,10 +569,10 @@ packages:
     dependency: "direct main"
     description:
       name: path_provider
-      sha256: "50c5dd5b6e1aaf6fb3a78b33f6aa3afca52bf903a8a5298f53101fdaee55bbcd"
+      sha256: a7f4874f987173da295a61c181b8ee71dab59b332a486b391babf26a1b884825
       url: "https://pub.dev"
     source: hosted
-    version: "2.1.5"
+    version: "2.1.6"
   path_provider_android:
     dependency: transitive
     description:
@@ -618,10 +601,10 @@ packages:
     dependency: transitive
     description:
       name: path_provider_platform_interface
-      sha256: "88f5779f72ba699763fa3a3b06aa4bf6de76c8e5de842cf6f29e2e06476c2334"
+      sha256: "484838772624c3a4b94f1e44a3e19897fee738f2d5c4ce448443b0417f7c9dda"
       url: "https://pub.dev"
     source: hosted
-    version: "2.1.2"
+    version: "2.1.3"
   path_provider_windows:
     dependency: transitive
     description:
@@ -714,50 +697,50 @@ packages:
     dependency: "direct main"
     description:
       name: record
-      sha256: "11bab1e1d9e75229588222f66a468aae1967e1ce490c80f8bd782aa165ec822b"
+      sha256: d28ec249ee4af6753a68a7a5077d6a2eee71e38dc61a241724aded53263274ba
       url: "https://pub.dev"
     source: hosted
-    version: "7.0.0"
+    version: "7.1.0"
   record_android:
     dependency: transitive
     description:
       name: record_android
-      sha256: "16e28607ad92dc2e7d93328f4f4720a9f82a78b639497690022e0e135a326f8e"
+      sha256: "28f1108626a190e249b01ffa9f639070e31e5157474b64a5ae380bf36aec9559"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.1"
+    version: "2.1.2"
   record_ios:
     dependency: transitive
     description:
       name: record_ios
-      sha256: a7f456c9b2c5ba10f1ad0a7dfe19dcabcbfda0c2a09d4eef0c43e48e762a7b00
+      sha256: "21d189f49a598af4697dac4cc9e48389ac0a1fb3e916622b5504a58d9b96313e"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.1.1"
   record_linux:
     dependency: transitive
     description:
       name: record_linux
-      sha256: "64c70dede6f3a8235927531067ceb8e2ef1b737071f2ff72390ab49f88644f2a"
+      sha256: "305526af0560866a0cc4219aa3726ef8541f819e14bd5f65b73ffdb7dc5911be"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.1.0"
   record_macos:
     dependency: transitive
     description:
       name: record_macos
-      sha256: b8cd9dd88aff1b7a5873bb2a2a875b376ce1a68c6f84bce3ce0448e413a84700
+      sha256: ced7495abf3d683e8a7dbe8fc96df8ea5722837a26f922b7cb7c5de11661bb46
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.1.1"
   record_platform_interface:
     dependency: transitive
     description:
       name: record_platform_interface
-      sha256: fc1b2b26113b8ab2bffa39148288b0b588c7b3b356a21aeee7bea24b91b6f1a4
+      sha256: d94b37cadb8fe203e64b0e9893271c0b71b34f2550ee7fb0c6105d650e00c1f5
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.1.0"
   record_use:
     dependency: transitive
     description:
@@ -770,18 +753,18 @@ packages:
     dependency: transitive
     description:
       name: record_web
-      sha256: f3374c9ba6b6f9edcb3589be37515e420faba631b9d54421bb28562667831b05
+      sha256: "9d2d43162afff63d8608eb09c2982b9c6898dd8fbf5b05395ca7d08305b6db40"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.1.0"
   record_windows:
     dependency: transitive
     description:
       name: record_windows
-      sha256: "603429b542a2a7120ad988218ebebe50ed5565087db68ab694ae6c2d5a6e7749"
+      sha256: "39ca03e7ae4df5e2512bc3c92b0ef9a7b148d9295ae8ac92df6beb4daf939d94"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.0"
+    version: "2.2.0"
   shared_preferences:
     dependency: "direct main"
     description:
@@ -794,10 +777,10 @@ packages:
     dependency: transitive
     description:
       name: shared_preferences_android
-      sha256: e8d4762b1e2e8578fc4d0fd548cebf24afd24f49719c08974df92834565e2c53
+      sha256: "93ae5884a9df5d3bb696825bceb3a17590754548b5d740eba51500afc8d088f5"
       url: "https://pub.dev"
     source: hosted
-    version: "2.4.23"
+    version: "2.4.26"
   shared_preferences_foundation:
     dependency: transitive
     description:
