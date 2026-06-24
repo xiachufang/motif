@@ -35,7 +35,7 @@ const translations = {
     "screenshots.kicker": "Product walkthrough",
     "screenshots.title": "Every core workflow, captured from a live review server.",
     "screenshots.copy":
-      "These are real macOS and iPhone captures connected to the hk.hq motifd review server: session management, terminal attach, files, git diff, mobile input helpers, settings, and the embedded server view.",
+      "These are real macOS and iPhone captures connected to a public motifd review server: session management, terminal attach, files, git diff, mobile input helpers, settings, and the embedded server view.",
     "screenshots.macGit.title": "Git diff with context",
     "screenshots.macGit.copy":
       "Review working changes next to the file tree and live terminal, with quick commands still one tap away.",
@@ -261,7 +261,7 @@ const translations = {
     "screenshots.kicker": "产品使用截图",
     "screenshots.title": "核心工作流都来自真实 review server。",
     "screenshots.copy":
-      "这些都是真实 macOS 和 iPhone App 连接 hk.hq motifd review server 后截取的画面：Session 管理、终端 attach、文件、Git diff、移动端输入辅助、设置，以及内嵌 server 页面。",
+      "这些都是真实 macOS 和 iPhone App 连接公网可达的 motifd review server 后截取的画面：Session 管理、终端 attach、文件、Git diff、移动端输入辅助、设置，以及内嵌 server 页面。",
     "screenshots.macGit.title": "带上下文的 Git diff",
     "screenshots.macGit.copy":
       "在文件树和实时终端旁边查看 working changes，同时保留快捷命令输入栏。",
