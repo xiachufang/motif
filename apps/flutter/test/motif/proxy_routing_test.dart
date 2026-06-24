@@ -14,35 +14,43 @@ import 'package:flutter_test/flutter_test.dart';
 /// forwards to the live motifd, then `ping`-ing through it. Self-contained
 /// (no tailnet). Skips if no motifd on 127.0.0.1:7777.
 void main() {
-  test('RpcClient.ping reaches motifd through a SOCKS5 proxy', () async {
-    final probe = RpcClient()..connect(host: '127.0.0.1', port: 7777, token: '');
-    try {
-      await probe.ping();
-    } catch (_) {
+  test(
+    'RpcClient.ping reaches motifd through a SOCKS5 proxy',
+    () async {
+      final probe = RpcClient()
+        ..connect(host: '127.0.0.1', port: 7777, token: '');
+      try {
+        await probe.ping();
+      } catch (_) {
+        await probe.close();
+        markTestSkipped('no motifd on 127.0.0.1:7777');
+        return;
+      }
       await probe.close();
-      markTestSkipped('no motifd on 127.0.0.1:7777');
-      return;
-    }
-    await probe.close();
 
-    final proxy = await _MinimalSocks5.start();
-    try {
-      final rpc = RpcClient()
-        ..connect(
-          host: '127.0.0.1',
-          port: 7777,
-          token: '',
-          proxy: ProxySettings(proxyHost: '127.0.0.1', proxyPort: proxy.port),
+      final proxy = await _MinimalSocks5.start();
+      try {
+        final rpc = RpcClient()
+          ..connect(
+            host: '127.0.0.1',
+            port: 7777,
+            token: '',
+            proxy: ProxySettings(proxyHost: '127.0.0.1', proxyPort: proxy.port),
+          );
+        final ping = await rpc.ping();
+        expect(
+          ping.isMotifServer,
+          isTrue,
+          reason: 'ping should reach motifd via the SOCKS5 proxy',
         );
-      final ping = await rpc.ping();
-      expect(ping.isMotifServer, isTrue,
-          reason: 'ping should reach motifd via the SOCKS5 proxy');
-      expect(proxy.connections, greaterThan(0));
-      await rpc.close();
-    } finally {
-      await proxy.close();
-    }
-  }, timeout: const Timeout(Duration(seconds: 20)));
+        expect(proxy.connections, greaterThan(0));
+        await rpc.close();
+      } finally {
+        await proxy.close();
+      }
+    },
+    timeout: const Timeout(Duration(seconds: 20)),
+  );
 }
 
 /// Minimal SOCKS5 (no-auth, CONNECT) proxy that relays to the requested host.
@@ -86,7 +94,11 @@ class _MinimalSocks5 {
       final up = await Socket.connect(host, port);
       connections++;
       client.add([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]); // success
-      up.listen(client.add, onDone: client.destroy, onError: (_) => client.destroy());
+      up.listen(
+        client.add,
+        onDone: client.destroy,
+        onError: (_) => client.destroy(),
+      );
       await r.pumpTo(up);
       await up.close();
     } catch (_) {

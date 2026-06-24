@@ -10,7 +10,12 @@ class ProxySettings {
   final int? proxyPort;
   final String? username;
   final String? password;
-  const ProxySettings({this.proxyHost, this.proxyPort, this.username, this.password});
+  const ProxySettings({
+    this.proxyHost,
+    this.proxyPort,
+    this.username,
+    this.password,
+  });
 
   static const none = ProxySettings();
   bool get isActive => false;

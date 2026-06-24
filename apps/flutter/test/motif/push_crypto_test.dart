@@ -11,14 +11,20 @@ void main() {
   test('AES-256-GCM push payload round-trips', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
-    final key = PushSettingsStore(prefs).encKeyBase64; // 32 random bytes, base64
+    final key = PushSettingsStore(
+      prefs,
+    ).encKeyBase64; // 32 random bytes, base64
 
     const plaintext = '{"title":"Claude","body":"done","session":"dev"}';
     final enc = await encryptPushPayload(
       encKeyB64: key,
       plaintext: utf8.encode(plaintext),
     );
-    final back = await decryptPushPayload(encKeyB64: key, eB64: enc.e, nB64: enc.n);
+    final back = await decryptPushPayload(
+      encKeyB64: key,
+      eB64: enc.e,
+      nB64: enc.n,
+    );
     expect(back, plaintext);
   });
 

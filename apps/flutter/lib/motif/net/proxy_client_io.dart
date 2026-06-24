@@ -18,7 +18,12 @@ class ProxySettings {
   final int? proxyPort;
   final String? username;
   final String? password;
-  const ProxySettings({this.proxyHost, this.proxyPort, this.username, this.password});
+  const ProxySettings({
+    this.proxyHost,
+    this.proxyPort,
+    this.username,
+    this.password,
+  });
 
   static const none = ProxySettings();
   bool get isActive => proxyHost != null && proxyPort != null;
@@ -41,8 +46,8 @@ HttpClient makeProxiedHttpClient(ProxySettings p, {Uint8List? certPin}) {
     ]);
   }
   if (certPin != null) {
-    c.badCertificateCallback =
-        (cert, host, port) => certMatchesPin(cert, certPin);
+    c.badCertificateCallback = (cert, host, port) =>
+        certMatchesPin(cert, certPin);
   }
   return c;
 }

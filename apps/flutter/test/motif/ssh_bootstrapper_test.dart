@@ -29,10 +29,7 @@ void main() {
 
   group('SshBootstrapper.bootstrapReady', () {
     test('a zero exit code is success', () {
-      expect(
-        SshBootstrapper.bootstrapReady(exitCode: 0, stdout: ''),
-        isTrue,
-      );
+      expect(SshBootstrapper.bootstrapReady(exitCode: 0, stdout: ''), isTrue);
     });
 
     test('a null exit code is success when motifd is already running', () {
@@ -41,7 +38,8 @@ void main() {
       expect(
         SshBootstrapper.bootstrapReady(
           exitCode: null,
-          stdout: 'checking motifd on 127.0.0.1:7777\n'
+          stdout:
+              'checking motifd on 127.0.0.1:7777\n'
               'motifd already running on 127.0.0.1:7777',
         ),
         isTrue,
@@ -52,7 +50,8 @@ void main() {
       expect(
         SshBootstrapper.bootstrapReady(
           exitCode: null,
-          stdout: 'starting motifd on 127.0.0.1:7777; log: ...\n'
+          stdout:
+              'starting motifd on 127.0.0.1:7777; log: ...\n'
               'motifd started on 127.0.0.1:7777',
         ),
         isTrue,

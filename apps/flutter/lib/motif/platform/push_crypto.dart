@@ -52,7 +52,10 @@ Future<({String e, String n})> encryptPushPayload({
   );
   final eAndTag = Uint8List(box.cipherText.length + box.mac.bytes.length)
     ..setRange(0, box.cipherText.length, box.cipherText)
-    ..setRange(box.cipherText.length, box.cipherText.length + box.mac.bytes.length,
-        box.mac.bytes);
+    ..setRange(
+      box.cipherText.length,
+      box.cipherText.length + box.mac.bytes.length,
+      box.mac.bytes,
+    );
   return (e: base64Encode(eAndTag), n: base64Encode(box.nonce));
 }

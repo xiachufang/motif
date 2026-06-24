@@ -36,8 +36,10 @@ void main() {
       expect(st.activeScope, ShellOutputScope.prompt);
 
       final r2 = st.feed(_b(_osc('133;B')));
-      expect(r2.events.whereType<ShellPromptEnded>().single.blockId,
-          promptStart.blockId);
+      expect(
+        r2.events.whereType<ShellPromptEnded>().single.blockId,
+        promptStart.blockId,
+      );
       expect(st.activeScope, ShellOutputScope.command);
 
       // Stash explicit command text via OSC 777;E (hex of "ls -la").

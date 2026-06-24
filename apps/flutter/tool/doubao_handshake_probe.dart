@@ -33,66 +33,66 @@ Future<void> main(List<String> argv) async {
     stdout.writeln('== reusing device_id=$deviceId ==');
   } else {
     stdout.writeln('== registering device ==');
-  final header = <String, Object>{
-    ...DoubaoConstants.appConfig,
-    ...DoubaoConstants.deviceConfig,
-    'device_id': 0,
-    'install_id': 0,
-    'openudid': openudid,
-    'clientudid': clientudid,
-    'cdid': cdid,
-    'region': 'CN',
-    'tz_name': 'Asia/Shanghai',
-    'tz_offset': 28800,
-    'sim_region': 'cn',
-    'carrier_region': 'cn',
-    'cpu_abi': 'arm64-v8a',
-    'build_serial': 'unknown',
-    'not_request_sender': 0,
-    'sig_hash': '',
-    'google_aid': '',
-    'mc': '',
-    'serial_number': '',
-  };
-  final regBody = jsonEncode({
-    'magic_tag': 'ss_app_log',
-    'header': header,
-    '_gen_time': DateTime.now().millisecondsSinceEpoch,
-  });
-  final regUri = Uri.parse(DoubaoConstants.registerUrl).replace(
-    queryParameters: {
-      'device_platform': 'android',
-      'os': 'android',
-      'ssmix': 'a',
-      '_rticket': DateTime.now().millisecondsSinceEpoch.toString(),
+    final header = <String, Object>{
+      ...DoubaoConstants.appConfig,
+      ...DoubaoConstants.deviceConfig,
+      'device_id': 0,
+      'install_id': 0,
+      'openudid': openudid,
+      'clientudid': clientudid,
       'cdid': cdid,
-      'channel': '${DoubaoConstants.appConfig['channel']}',
-      'aid': '${DoubaoConstants.aid}',
-      'app_name': '${DoubaoConstants.appConfig['app_name']}',
-      'version_code': '${DoubaoConstants.appConfig['version_code']}',
-      'version_name': '${DoubaoConstants.appConfig['version_name']}',
-      'manifest_version_code':
-          '${DoubaoConstants.appConfig['manifest_version_code']}',
-      'update_version_code':
-          '${DoubaoConstants.appConfig['update_version_code']}',
-      'resolution': '${DoubaoConstants.deviceConfig['resolution']}',
-      'dpi': '${DoubaoConstants.deviceConfig['dpi']}',
-      'device_type': '${DoubaoConstants.deviceConfig['device_type']}',
-      'device_brand': '${DoubaoConstants.deviceConfig['device_brand']}',
-      'language': '${DoubaoConstants.deviceConfig['language']}',
-      'os_api': '${DoubaoConstants.deviceConfig['os_api']}',
-      'os_version': '${DoubaoConstants.deviceConfig['os_version']}',
-      'ac': 'wifi',
-    },
-  );
-  final regResp = await http.post(
-    regUri,
-    headers: {
-      HttpHeaders.contentTypeHeader: 'application/json',
-      HttpHeaders.userAgentHeader: DoubaoConstants.userAgent,
-    },
-    body: regBody,
-  );
+      'region': 'CN',
+      'tz_name': 'Asia/Shanghai',
+      'tz_offset': 28800,
+      'sim_region': 'cn',
+      'carrier_region': 'cn',
+      'cpu_abi': 'arm64-v8a',
+      'build_serial': 'unknown',
+      'not_request_sender': 0,
+      'sig_hash': '',
+      'google_aid': '',
+      'mc': '',
+      'serial_number': '',
+    };
+    final regBody = jsonEncode({
+      'magic_tag': 'ss_app_log',
+      'header': header,
+      '_gen_time': DateTime.now().millisecondsSinceEpoch,
+    });
+    final regUri = Uri.parse(DoubaoConstants.registerUrl).replace(
+      queryParameters: {
+        'device_platform': 'android',
+        'os': 'android',
+        'ssmix': 'a',
+        '_rticket': DateTime.now().millisecondsSinceEpoch.toString(),
+        'cdid': cdid,
+        'channel': '${DoubaoConstants.appConfig['channel']}',
+        'aid': '${DoubaoConstants.aid}',
+        'app_name': '${DoubaoConstants.appConfig['app_name']}',
+        'version_code': '${DoubaoConstants.appConfig['version_code']}',
+        'version_name': '${DoubaoConstants.appConfig['version_name']}',
+        'manifest_version_code':
+            '${DoubaoConstants.appConfig['manifest_version_code']}',
+        'update_version_code':
+            '${DoubaoConstants.appConfig['update_version_code']}',
+        'resolution': '${DoubaoConstants.deviceConfig['resolution']}',
+        'dpi': '${DoubaoConstants.deviceConfig['dpi']}',
+        'device_type': '${DoubaoConstants.deviceConfig['device_type']}',
+        'device_brand': '${DoubaoConstants.deviceConfig['device_brand']}',
+        'language': '${DoubaoConstants.deviceConfig['language']}',
+        'os_api': '${DoubaoConstants.deviceConfig['os_api']}',
+        'os_version': '${DoubaoConstants.deviceConfig['os_version']}',
+        'ac': 'wifi',
+      },
+    );
+    final regResp = await http.post(
+      regUri,
+      headers: {
+        HttpHeaders.contentTypeHeader: 'application/json',
+        HttpHeaders.userAgentHeader: DoubaoConstants.userAgent,
+      },
+      body: regBody,
+    );
     stdout.writeln('register HTTP ${regResp.statusCode}: ${regResp.body}');
     final regJson = jsonDecode(regResp.body) as Map<String, Object?>;
     deviceId = '${regJson['device_id_str'] ?? regJson['device_id'] ?? ''}';
@@ -173,9 +173,8 @@ Future<void> main(List<String> argv) async {
       }
     },
     onError: (Object e) => stdout.writeln('ws error: $e'),
-    onDone: () => stdout.writeln(
-      'ws done code=${ws.closeCode} reason=${ws.closeReason}',
-    ),
+    onDone: () =>
+        stdout.writeln('ws done code=${ws.closeCode} reason=${ws.closeReason}'),
   );
 
   final requestId = _uuidV4();

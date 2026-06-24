@@ -50,16 +50,19 @@ Future<void> _pumpHost(
 }
 
 String _validLink() => MotifPairingPayload(
-      relay: 'relay.example:9999',
-      psk: Uint8List.fromList(List.generate(32, (i) => i)),
-      name: 'studio',
-    ).toUri();
+  relay: 'relay.example:9999',
+  psk: Uint8List.fromList(List.generate(32, (i) => i)),
+  name: 'studio',
+).toUri();
 
 void main() {
   testWidgets('pasting a valid link pairs a rendezvous server', (tester) async {
     final app = await _appState();
-    await _pumpHost(tester, app,
-        onOpen: (context) => showRzvPairingSheet(context));
+    await _pumpHost(
+      tester,
+      app,
+      onOpen: (context) => showRzvPairingSheet(context),
+    );
 
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();
@@ -80,11 +83,15 @@ void main() {
     expect(s.name, 'studio');
   });
 
-  testWidgets('an invalid link keeps Pair disabled and adds nothing',
-      (tester) async {
+  testWidgets('an invalid link keeps Pair disabled and adds nothing', (
+    tester,
+  ) async {
     final app = await _appState();
-    await _pumpHost(tester, app,
-        onOpen: (context) => showRzvPairingSheet(context));
+    await _pumpHost(
+      tester,
+      app,
+      onOpen: (context) => showRzvPairingSheet(context),
+    );
 
     await tester.tap(find.text('Open'));
     await tester.pumpAndSettle();

@@ -191,11 +191,13 @@ class ShellState {
           _stage = _AtPrompt(s.blockId, s.cwd, s.startedAt);
           out.add(ShellPromptStarted(s.blockId));
         } else if (s is _Running) {
-          out.add(ShellCommandFinished(
-            blockId: s.blockId,
-            exitCode: null,
-            finishedAt: _nowMs(),
-          ));
+          out.add(
+            ShellCommandFinished(
+              blockId: s.blockId,
+              exitCode: null,
+              finishedAt: _nowMs(),
+            ),
+          );
           final newId = _ulid();
           _stage = _AtPrompt(newId, cwd, _nowMs());
           out.add(ShellPromptStarted(newId));
@@ -219,22 +221,26 @@ class ShellState {
           _pendingCmd = null;
           final startedAt = _nowMs();
           _stage = _Running(s.blockId, cmd, s.cwd, startedAt);
-          out.add(ShellCommandStarted(
-            blockId: s.blockId,
-            text: cmd,
-            cwd: s.cwd,
-            startedAt: startedAt,
-          ));
+          out.add(
+            ShellCommandStarted(
+              blockId: s.blockId,
+              text: cmd,
+              cwd: s.cwd,
+              startedAt: startedAt,
+            ),
+          );
         }
       case _Osc133CmdEnd(:final exit):
         _pendingCmd = null;
         final s = _stage;
         if (s is _Running) {
-          out.add(ShellCommandFinished(
-            blockId: s.blockId,
-            exitCode: exit,
-            finishedAt: _nowMs(),
-          ));
+          out.add(
+            ShellCommandFinished(
+              blockId: s.blockId,
+              exitCode: exit,
+              finishedAt: _nowMs(),
+            ),
+          );
           _stage = const _Unknown();
         }
       case _Osc7771Context(:final ctx):
@@ -354,7 +360,7 @@ class _OscScanner {
     }
     _pending.add(b);
     if (_pending.length == 2) {
-      if (_pending[1] != 0x5d /* ']' */) {
+      if (_pending[1] != 0x5d /* ']' */ ) {
         for (final byte in _pending) {
           _appendPassthrough(byte, items);
         }
@@ -365,7 +371,9 @@ class _OscScanner {
     }
     final isBel = b == 0x07;
     final isSt =
-        _pending.length >= 3 && _pending[_pending.length - 2] == 0x1b && b == 0x5c;
+        _pending.length >= 3 &&
+        _pending[_pending.length - 2] == 0x1b &&
+        b == 0x5c;
     if (!isBel && !isSt) {
       if (_pending.length > 4096) {
         for (final byte in _pending) {
@@ -459,8 +467,9 @@ _OscMarker? _parse133(String rest) {
     case 'B':
       return const _Osc133PromptEnd();
     case 'C':
-      final cmdlineUrl =
-          parts.length >= 2 ? _parse133CmdlineUrl(parts.sublist(1).join(';')) : null;
+      final cmdlineUrl = parts.length >= 2
+          ? _parse133CmdlineUrl(parts.sublist(1).join(';'))
+          : null;
       return _Osc133CmdStart(cmdlineUrl);
     case 'D':
       final firstField = parts.length >= 2 ? parts[1].trim() : '';

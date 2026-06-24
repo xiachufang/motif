@@ -138,7 +138,13 @@ class ShellContext {
   final String? conda;
   final String? node;
 
-  const ShellContext({this.branch, this.head, this.venv, this.conda, this.node});
+  const ShellContext({
+    this.branch,
+    this.head,
+    this.venv,
+    this.conda,
+    this.node,
+  });
 
   factory ShellContext.fromJson(Map<String, Object?> j) => ShellContext(
     branch: _asString(j['branch']),

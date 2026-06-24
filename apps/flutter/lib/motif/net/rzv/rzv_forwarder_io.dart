@@ -28,9 +28,11 @@ class RzvForwarder {
     required Uint8List token,
     this.pairTimeout = const Duration(seconds: 30),
     this.dialTimeout = const Duration(seconds: 10),
-  })  : token = Uint8List.fromList(token),
-        assert(token.length == RzvProtocol.tokenLength,
-            'rzv token must be ${RzvProtocol.tokenLength} bytes');
+  }) : token = Uint8List.fromList(token),
+       assert(
+         token.length == RzvProtocol.tokenLength,
+         'rzv token must be ${RzvProtocol.tokenLength} bytes',
+       );
 
   final String relayHost;
   final int relayPort;

@@ -38,8 +38,8 @@ WebSocketChannel connectWebSocket(
       ]);
     }
     if (certPin != null) {
-      client.badCertificateCallback =
-          (cert, host, port) => certMatchesPin(cert, certPin);
+      client.badCertificateCallback = (cert, host, port) =>
+          certMatchesPin(cert, certPin);
     }
     return IOWebSocketChannel.connect(
       Uri.parse(url),

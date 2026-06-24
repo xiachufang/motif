@@ -10,9 +10,7 @@ void main() {
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(
-        listenMode: EmbeddedListenMode.lan,
-      ),
+      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
       status: const EmbeddedServerStatus(
         running: true,
         boundAddrs: ['tcp://0.0.0.0:7777', 'tailscale://*:7777'],
@@ -29,7 +27,10 @@ void main() {
     expect(find.text('Running'), findsWidgets);
     expect(find.text('Loopback'), findsOneWidget);
     expect(find.text('LAN'), findsOneWidget);
-    expect(find.text('PAIRING'), findsOneWidget); // MotifSection uppercases titles
+    expect(
+      find.text('PAIRING'),
+      findsOneWidget,
+    ); // MotifSection uppercases titles
     expect(find.text('Pair over a relay'), findsOneWidget);
     expect(errors, isEmpty);
   });

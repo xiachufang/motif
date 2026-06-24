@@ -22,9 +22,12 @@ class ApnsPushService implements PushService {
   Future<PushRegistration?> register({required String encKeyBase64}) async {
     if (!isSupported) return null;
     try {
-      final granted = await _ch.invokeMethod<bool>('requestAuthorization') ?? false;
+      final granted =
+          await _ch.invokeMethod<bool>('requestAuthorization') ?? false;
       if (!granted) return null;
-      final token = await _ch.invokeMethod<String>('registerForRemoteNotifications');
+      final token = await _ch.invokeMethod<String>(
+        'registerForRemoteNotifications',
+      );
       if (token == null || token.isEmpty) return null;
       // Mirror the key into the App Group keychain for the NSE (iOS background
       // decrypt). Best-effort; foreground decrypt works regardless.

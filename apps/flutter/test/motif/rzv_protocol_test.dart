@@ -84,7 +84,10 @@ void main() {
 
     test('differs from the relay token (distinct HKDF label)', () {
       final psk = Uint8List.fromList(List.generate(32, (i) => i));
-      expect(RzvProtocol.deriveAuthBearer(psk), isNot(RzvProtocol.deriveToken(psk)));
+      expect(
+        RzvProtocol.deriveAuthBearer(psk),
+        isNot(RzvProtocol.deriveToken(psk)),
+      );
     });
   });
 

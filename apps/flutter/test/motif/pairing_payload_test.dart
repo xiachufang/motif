@@ -71,10 +71,10 @@ void main() {
 
     test('rejects wrong key length', () {
       final shortKey = Uint8List(16);
-      final uri = MotifPairingPayload(relay: 'h:1', psk: psk)
-          .toUri()
-          .replaceAll(RegExp(r'psk=[^&]*'),
-              'psk=${base64Like(shortKey)}');
+      final uri = MotifPairingPayload(
+        relay: 'h:1',
+        psk: psk,
+      ).toUri().replaceAll(RegExp(r'psk=[^&]*'), 'psk=${base64Like(shortKey)}');
       expect(() => MotifPairingPayload.parse(uri), throwsFormatException);
     });
 
@@ -136,7 +136,8 @@ void main() {
 
   group('direct form (no relay)', () {
     test('parses a comma-separated host list and maps to a direct server', () {
-      final uri = 'motif://pair?v=1&host=192.168.1.9,10.0.0.4&port=7777'
+      final uri =
+          'motif://pair?v=1&host=192.168.1.9,10.0.0.4&port=7777'
           '&psk=${base64Like(psk)}&pk=${base64Like(pk)}';
       final p = MotifPairingPayload.parse(uri);
       expect(p.isRendezvous, isFalse);
@@ -188,7 +189,8 @@ String base64Like(Uint8List b) {
   final sb = StringBuffer();
   var i = 0;
   while (i < b.length) {
-    final n = (b[i] << 16) |
+    final n =
+        (b[i] << 16) |
         (i + 1 < b.length ? b[i + 1] << 8 : 0) |
         (i + 2 < b.length ? b[i + 2] : 0);
     sb.write(chars[(n >> 18) & 63]);

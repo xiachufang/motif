@@ -27,13 +27,15 @@ void main() {
 
   tearDown(() async => server.close(force: true));
 
-  final goodPin =
-      Uint8List.fromList(sha256.convert(base64.decode(_certDerB64)).bytes);
+  final goodPin = Uint8List.fromList(
+    sha256.convert(base64.decode(_certDerB64)).bytes,
+  );
 
   test('accepts the pinned cert over a real TLS handshake', () async {
     final client = makeHttpClient(ProxySettings.none, certPin: goodPin);
-    final resp =
-        await client.get(Uri.parse('https://127.0.0.1:${server.port}/'));
+    final resp = await client.get(
+      Uri.parse('https://127.0.0.1:${server.port}/'),
+    );
     expect(resp.statusCode, 200);
     expect(resp.body, 'ok');
     client.close();

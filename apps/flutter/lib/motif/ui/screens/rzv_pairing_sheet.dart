@@ -82,9 +82,9 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
     if (_parsed == null || _busy) return;
     setState(() => _busy = true);
     try {
-      final id = await context
-          .read<AppState>()
-          .addServerFromPairingUri(_controller.text.trim());
+      final id = await context.read<AppState>().addServerFromPairingUri(
+        _controller.text.trim(),
+      );
       if (mounted) Navigator.of(context).pop(id);
     } catch (e) {
       if (mounted) {
@@ -187,9 +187,7 @@ class _Preview extends StatelessWidget {
               ),
               const SizedBox(width: 6),
               Text(
-                pinned
-                    ? 'End-to-end encrypted (cert pinned)'
-                    : 'Plaintext',
+                pinned ? 'End-to-end encrypted (cert pinned)' : 'Plaintext',
                 style: TextStyle(color: c.textSecondary, fontSize: 12),
               ),
             ],
@@ -197,15 +195,9 @@ class _Preview extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             title,
-            style: TextStyle(
-              color: c.textPrimary,
-              fontWeight: FontWeight.w600,
-            ),
+            style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w600),
           ),
-          Text(
-            reach,
-            style: TextStyle(color: c.textTertiary, fontSize: 12),
-          ),
+          Text(reach, style: TextStyle(color: c.textTertiary, fontSize: 12)),
         ],
       ),
     );

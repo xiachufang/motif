@@ -19,10 +19,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('connect → attach → terminal renders against live motifd',
-      (tester) async {
+  testWidgets('connect → attach → terminal renders against live motifd', (
+    tester,
+  ) async {
     // Probe for a server first.
-    final probe = RpcClient()..connect(host: '127.0.0.1', port: 7777, token: '');
+    final probe = RpcClient()
+      ..connect(host: '127.0.0.1', port: 7777, token: '');
     try {
       await probe.ping();
     } catch (_) {
@@ -34,14 +36,16 @@ void main() {
 
     SharedPreferences.setMockInitialValues({});
     final app = await AppState.load();
-    await app.servers.add(const MotifServer(
-      id: 'live',
-      name: 'Local',
-      host: '127.0.0.1',
-      port: 7777,
-      token: '',
-      kind: ServerKind.direct,
-    ));
+    await app.servers.add(
+      const MotifServer(
+        id: 'live',
+        name: 'Local',
+        host: '127.0.0.1',
+        port: 7777,
+        token: '',
+        kind: ServerKind.direct,
+      ),
+    );
 
     await tester.pumpWidget(
       ChangeNotifierProvider.value(value: app, child: const MotifApp()),
@@ -54,8 +58,11 @@ void main() {
         break;
       }
     }
-    expect(app.motif.state, anyOf(isA<ConnConnected>(), isA<ConnAttached>()),
-        reason: 'should connect to motifd');
+    expect(
+      app.motif.state,
+      anyOf(isA<ConnConnected>(), isA<ConnAttached>()),
+      reason: 'should connect to motifd',
+    );
 
     // If there's a session, attach and confirm the terminal route opens.
     if (app.motif.sessions.isNotEmpty) {

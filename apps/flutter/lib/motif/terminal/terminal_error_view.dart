@@ -50,10 +50,7 @@ class TerminalErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: Icon(Icons.refresh, size: 16, color: c.textPrimary),
-              label: Text(
-                'Retry now',
-                style: TextStyle(color: c.textPrimary),
-              ),
+              label: Text('Retry now', style: TextStyle(color: c.textPrimary)),
               style: OutlinedButton.styleFrom(
                 side: BorderSide(color: c.border),
               ),
