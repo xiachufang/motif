@@ -483,3 +483,154 @@ function updateHeader() {
 window.addEventListener("scroll", updateHeader, { passive: true });
 applyLanguage(currentLanguage);
 updateHeader();
+
+// Screenshot lightbox: click to view large, navigate through all images.
+(function setupLightbox() {
+  const gallery = document.querySelector(".screenshot-gallery");
+  if (!gallery) return;
+  const figures = Array.from(gallery.querySelectorAll(".screenshot-card"));
+  if (!figures.length) return;
+
+  const labels = {
+    en: { close: "Close", prev: "Previous", next: "Next", zoom: "View larger" },
+    zh: { close: "关闭", prev: "上一张", next: "下一张", zoom: "查看大图" },
+  };
+  const lang = () => (document.body.dataset.lang === "zh" ? "zh" : "en");
+
+  const items = figures.map((fig) => ({
+    fig,
+    frame: fig.querySelector(".screenshot-frame"),
+    img: fig.querySelector("img"),
+    titleEl: fig.querySelector("figcaption strong"),
+    copyEl: fig.querySelector("figcaption span"),
+    isPhone: fig.classList.contains("screenshot-card-phone"),
+  }));
+
+  const lb = document.createElement("div");
+  lb.className = "lightbox";
+  lb.setAttribute("aria-hidden", "true");
+  lb.setAttribute("role", "dialog");
+  lb.setAttribute("aria-modal", "true");
+  lb.innerHTML =
+    '<div class="lightbox-backdrop" data-lb-close></div>' +
+    '<button class="lightbox-close" type="button" data-lb-close>' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>' +
+    '<button class="lightbox-nav lightbox-prev" type="button" data-lb-prev>' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg></button>' +
+    '<figure class="lightbox-figure">' +
+    '<div class="lightbox-stage"><img class="lightbox-img" alt="" /></div>' +
+    '<figcaption class="lightbox-caption"><strong class="lightbox-title"></strong><span class="lightbox-copy"></span><span class="lightbox-counter"></span></figcaption>' +
+    "</figure>" +
+    '<button class="lightbox-nav lightbox-next" type="button" data-lb-next>' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg></button>';
+  document.body.appendChild(lb);
+
+  const lbImg = lb.querySelector(".lightbox-img");
+  const lbTitle = lb.querySelector(".lightbox-title");
+  const lbCopy = lb.querySelector(".lightbox-copy");
+  const lbCounter = lb.querySelector(".lightbox-counter");
+  const lbFigure = lb.querySelector(".lightbox-figure");
+  const btnClose = lb.querySelector(".lightbox-close");
+  const btnPrev = lb.querySelector(".lightbox-prev");
+  const btnNext = lb.querySelector(".lightbox-next");
+
+  let current = -1;
+  let lastFocus = null;
+
+  function refreshLabels() {
+    const t = labels[lang()];
+    btnClose.setAttribute("aria-label", t.close);
+    btnPrev.setAttribute("aria-label", t.prev);
+    btnNext.setAttribute("aria-label", t.next);
+    items.forEach((it) => {
+      if (it.frame) it.frame.setAttribute("aria-label", t.zoom);
+    });
+  }
+
+  function render(i) {
+    const it = items[i];
+    lbImg.src = it.img.currentSrc || it.img.src;
+    lbImg.alt = it.img.alt;
+    lbTitle.textContent = it.titleEl ? it.titleEl.textContent : "";
+    lbCopy.textContent = it.copyEl ? it.copyEl.textContent : "";
+    lbCounter.textContent = i + 1 + " / " + items.length;
+    lbFigure.classList.toggle("is-phone", it.isPhone);
+    current = i;
+  }
+
+  function open(i) {
+    lastFocus = document.activeElement;
+    render(i);
+    lb.classList.add("is-open");
+    lb.setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    btnClose.focus();
+  }
+
+  function close() {
+    lb.classList.remove("is-open");
+    lb.setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    current = -1;
+    if (lastFocus && lastFocus.focus) lastFocus.focus();
+  }
+
+  const go = (delta) => render((current + delta + items.length) % items.length);
+
+  items.forEach((it, i) => {
+    if (!it.frame || !it.img) return;
+    it.frame.classList.add("is-zoomable");
+    it.frame.setAttribute("role", "button");
+    it.frame.setAttribute("tabindex", "0");
+    it.frame.addEventListener("click", () => open(i));
+    it.frame.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open(i);
+      }
+    });
+  });
+
+  lb.addEventListener("click", (e) => {
+    if (e.target.closest("[data-lb-close]")) close();
+    else if (e.target.closest("[data-lb-next]")) go(1);
+    else if (e.target.closest("[data-lb-prev]")) go(-1);
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!lb.classList.contains("is-open")) return;
+    if (e.key === "Escape") close();
+    else if (e.key === "ArrowRight") go(1);
+    else if (e.key === "ArrowLeft") go(-1);
+    else if (e.key === "Tab") {
+      // simple focus trap across the three controls
+      const order = [btnClose, btnPrev, btnNext];
+      const idx = order.indexOf(document.activeElement);
+      e.preventDefault();
+      const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length;
+      order[Math.max(0, nextIdx)].focus();
+    }
+  });
+
+  let touchX = null;
+  lb.addEventListener(
+    "touchstart",
+    (e) => {
+      touchX = e.changedTouches[0].clientX;
+    },
+    { passive: true }
+  );
+  lb.addEventListener(
+    "touchend",
+    (e) => {
+      if (touchX === null) return;
+      const dx = e.changedTouches[0].clientX - touchX;
+      touchX = null;
+      if (Math.abs(dx) > 45) go(dx < 0 ? 1 : -1);
+    },
+    { passive: true }
+  );
+
+  document.querySelector("[data-lang-toggle]").addEventListener("click", refreshLabels);
+  refreshLabels();
+})();
