@@ -152,10 +152,13 @@ void main() {
 
   // sha256 of the shared self-signed test cert → the pin (`pk`); and the psk
   // bearer the client must send.
-  final pin = Uint8List.fromList(sha256.convert(base64.decode(_certDerB64)).bytes);
+  final pin = Uint8List.fromList(
+    sha256.convert(base64.decode(_certDerB64)).bytes,
+  );
   final pinB64 = base64Url.encode(pin).replaceAll('=', '');
-  final expectedBearer =
-      base64Url.encode(RzvProtocol.deriveAuthBearer(pskBytes)).replaceAll('=', '');
+  final expectedBearer = base64Url
+      .encode(RzvProtocol.deriveAuthBearer(pskBytes))
+      .replaceAll('=', '');
 
   group('LAN-direct upgrade (TLS-pinned)', () {
     MotifServer rzvServer(int relayPort, {String id = 'rzv-d'}) => MotifServer(
@@ -193,87 +196,106 @@ void main() {
       expect(resolver.learnRzvDirect(s, ping(['fd00::1'], 7777)), isFalse);
     });
 
-    test('probes a learned candidate and upgrades to a TLS-pinned direct target',
-        () async {
-      relay = await _FakeRelay.start();
-      final motifd = await _fakeMotifd();
-      final s = rzvServer(relay.port);
+    test(
+      'probes a learned candidate and upgrades to a TLS-pinned direct target',
+      () async {
+        relay = await _FakeRelay.start();
+        final motifd = await _fakeMotifd();
+        final s = rzvServer(relay.port);
 
-      resolver.learnRzvDirect(
-        s,
-        PingInfo(
-          service: 'motif-server',
-          version: 't',
-          rzvDirectPort: motifd.port,
-          rzvDirectAddrs: const ['127.0.0.1'],
-        ),
-      );
+        resolver.learnRzvDirect(
+          s,
+          PingInfo(
+            service: 'motif-server',
+            version: 't',
+            rzvDirectPort: motifd.port,
+            rzvDirectAddrs: const ['127.0.0.1'],
+          ),
+        );
 
-      final res = await resolver.resolve(s) as TransportReady;
-      expect(res.target.host, '127.0.0.1');
-      expect(res.target.port, motifd.port, reason: 'dials the direct port');
-      expect(res.target.scheme, 'https');
-      expect(res.target.token, expectedBearer, reason: 'psk-derived bearer');
-      expect(res.certPin, isNotNull);
-      expect(res.certPin!.length, 32);
-      expect(relay.hellos, isEmpty, reason: 'relay never dialed on a direct hit');
+        final res = await resolver.resolve(s) as TransportReady;
+        expect(res.target.host, '127.0.0.1');
+        expect(res.target.port, motifd.port, reason: 'dials the direct port');
+        expect(res.target.scheme, 'https');
+        expect(res.target.token, expectedBearer, reason: 'psk-derived bearer');
+        expect(res.certPin, isNotNull);
+        expect(res.certPin!.length, 32);
+        expect(
+          relay.hellos,
+          isEmpty,
+          reason: 'relay never dialed on a direct hit',
+        );
 
-      await motifd.close(force: true);
-      await resolver.stopForwarder(s.id);
-    });
+        await motifd.close(force: true);
+        await resolver.stopForwarder(s.id);
+      },
+    );
 
-    test('falls back to the relay when no candidate answers as motifd',
-        () async {
-      relay = await _FakeRelay.start();
-      // Pinned TLS but the wrong service tag → probe rejects it.
-      final impostor = await _fakeMotifd(service: 'something-else');
-      final s = rzvServer(relay.port);
+    test(
+      'falls back to the relay when no candidate answers as motifd',
+      () async {
+        relay = await _FakeRelay.start();
+        // Pinned TLS but the wrong service tag → probe rejects it.
+        final impostor = await _fakeMotifd(service: 'something-else');
+        final s = rzvServer(relay.port);
 
-      resolver.learnRzvDirect(
-        s,
-        PingInfo(
-          service: 'motif-server',
-          version: 't',
-          rzvDirectPort: impostor.port,
-          rzvDirectAddrs: const ['127.0.0.1'],
-        ),
-      );
+        resolver.learnRzvDirect(
+          s,
+          PingInfo(
+            service: 'motif-server',
+            version: 't',
+            rzvDirectPort: impostor.port,
+            rzvDirectAddrs: const ['127.0.0.1'],
+          ),
+        );
 
-      final res = await resolver.resolve(s) as TransportReady;
-      // Relay path: loopback forwarder port, not the (rejected) direct port.
-      expect(res.target.host, '127.0.0.1');
-      expect(res.target.port, isNot(impostor.port));
-      expect(res.target.token, expectedBearer, reason: 'relay path carries bearer too');
+        final res = await resolver.resolve(s) as TransportReady;
+        // Relay path: loopback forwarder port, not the (rejected) direct port.
+        expect(res.target.host, '127.0.0.1');
+        expect(res.target.port, isNot(impostor.port));
+        expect(
+          res.target.token,
+          expectedBearer,
+          reason: 'relay path carries bearer too',
+        );
 
-      // The forwarder dials the relay lazily, on the first local connection —
-      // drive one through to confirm we really fell back to the relay tunnel.
-      final client = await Socket.connect('127.0.0.1', res.target.port);
-      final payload = Uint8List.fromList('fallback'.codeUnits);
-      final echo = _collect(client, payload.length);
-      client.add(payload);
-      await client.flush();
-      expect(await echo.timeout(const Duration(seconds: 5)), payload);
-      expect(relay.hellos, hasLength(1), reason: 'forwarder dialed the relay');
+        // The forwarder dials the relay lazily, on the first local connection —
+        // drive one through to confirm we really fell back to the relay tunnel.
+        final client = await Socket.connect('127.0.0.1', res.target.port);
+        final payload = Uint8List.fromList('fallback'.codeUnits);
+        final echo = _collect(client, payload.length);
+        client.add(payload);
+        await client.flush();
+        expect(await echo.timeout(const Duration(seconds: 5)), payload);
+        expect(
+          relay.hellos,
+          hasLength(1),
+          reason: 'forwarder dialed the relay',
+        );
 
-      await client.close();
-      await impostor.close(force: true);
-      await resolver.stopForwarder(s.id);
-    });
+        await client.close();
+        await impostor.close(force: true);
+        await resolver.stopForwarder(s.id);
+      },
+    );
   });
 
   group('direct server (TLS-pinned candidate probe)', () {
-    MotifServer directServer(int port, List<String> hosts, {String id = 'd1'}) =>
-        MotifServer(
-          id: id,
-          name: 'box',
-          host: hosts.first,
-          port: port,
-          scheme: 'https',
-          kind: ServerKind.direct,
-          psk: pskB64,
-          pubKey: pinB64,
-          directHosts: hosts,
-        );
+    MotifServer directServer(
+      int port,
+      List<String> hosts, {
+      String id = 'd1',
+    }) => MotifServer(
+      id: id,
+      name: 'box',
+      host: hosts.first,
+      port: port,
+      scheme: 'https',
+      kind: ServerKind.direct,
+      psk: pskB64,
+      pubKey: pinB64,
+      directHosts: hosts,
+    );
 
     test('probes directHosts and connects to the reachable one', () async {
       final motifd = await _fakeMotifd();
@@ -287,6 +309,23 @@ void main() {
 
       await motifd.close(force: true);
     });
+
+    test(
+      'allows public direct probes to take longer than LAN latency',
+      () async {
+        final motifd = await _fakeMotifd(
+          delay: const Duration(milliseconds: 900),
+        );
+        final s = directServer(motifd.port, const ['127.0.0.1']);
+
+        final res = await resolver.resolve(s) as TransportReady;
+        expect(res.target.host, '127.0.0.1');
+        expect(res.target.scheme, 'https');
+        expect(res.target.token, expectedBearer);
+
+        await motifd.close(force: true);
+      },
+    );
 
     test('blocks when no advertised host is reachable', () async {
       final impostor = await _fakeMotifd(service: 'nope');
@@ -302,13 +341,17 @@ void main() {
 
 /// Minimal motifd stand-in over TLS (the shared self-signed cert below):
 /// answers `GET /ping` with the given `service` tag.
-Future<HttpServer> _fakeMotifd({String service = 'motif-server'}) async {
+Future<HttpServer> _fakeMotifd({
+  String service = 'motif-server',
+  Duration delay = Duration.zero,
+}) async {
   final ctx = SecurityContext()
     ..useCertificateChainBytes(utf8.encode(_certPem))
     ..usePrivateKeyBytes(utf8.encode(_keyPem));
   final srv = await HttpServer.bindSecure(InternetAddress.loopbackIPv4, 0, ctx);
   srv.listen((req) async {
     if (req.uri.path == '/ping') {
+      if (delay > Duration.zero) await Future<void>.delayed(delay);
       req.response.headers.contentType = ContentType.json;
       req.response.write(jsonEncode({'service': service, 'version': 't'}));
     } else {

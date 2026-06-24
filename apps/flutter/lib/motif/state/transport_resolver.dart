@@ -59,6 +59,8 @@ class TransportBlocked extends TransportResolution {
 }
 
 class TransportResolver {
+  static const Duration _directProbeTimeout = Duration(seconds: 3);
+
   final PlatformServices platform;
   final SshForwarderFactory _sshForwarderFactory;
   final SshAutoInitializer _sshAutoInitializer;
@@ -244,10 +246,11 @@ class TransportResolver {
     try {
       final resp = await client
           .get(Uri.parse('$scheme://$addr:$port/ping'))
-          .timeout(const Duration(milliseconds: 600));
+          .timeout(_directProbeTimeout);
       if (resp.statusCode != 200) return false;
-      final info =
-          PingInfo.fromJson(jsonDecode(resp.body) as Map<String, Object?>);
+      final info = PingInfo.fromJson(
+        jsonDecode(resp.body) as Map<String, Object?>,
+      );
       return info.isMotifServer;
     } catch (_) {
       return false;
