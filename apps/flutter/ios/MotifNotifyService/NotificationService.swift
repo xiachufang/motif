@@ -3,17 +3,15 @@
 // the app is backgrounded/killed. Mirrors the iOS Motif app's MotifNotifyService
 // and matches motifd's scheme (crates/motif-server/src/relay.rs):
 //   AES-256-GCM, e = base64(ciphertext‖16-byte tag), n = base64(12-byte nonce),
-//   key = base64(32 bytes) read from the shared App Group keychain.
+//   key = base64(32 bytes) read from the shared App Group container.
 //
 // SETUP (needs Xcode, can't be done from Dart alone):
 //   1. Add a "Notification Service Extension" target named MotifNotifyService.
-//   2. Give the app + extension the SAME App Group (e.g. group.io.allsunday.motif);
-//      iOS treats an App Group as a keychain access group, so both can read the
-//      per-device AES key.
+//   2. Give the app + extension the SAME App Group (e.g. group.io.allsunday.motif)
+//      so both can read the per-device AES key file.
 //   3. The Flutter app must mirror PushSettingsStore.encKeyBase64 into that
-//      keychain group (a small MethodChannel writing kSecClassGenericPassword
-//      with kSecAttrAccessGroup = the app group). Until then this falls back to
-//      showing the encrypted stub.
+//      App Group container. Until then this falls back to showing the encrypted
+//      stub.
 import UserNotifications
 import CryptoKit
 import Security
@@ -22,9 +20,9 @@ final class NotificationService: UNNotificationServiceExtension {
   private var contentHandler: ((UNNotificationContent) -> Void)?
   private var bestAttempt: UNMutableNotificationContent?
 
-  // Keep in sync with the Flutter app: App Group id (= keychain access group)
-  // and the account under which the app stores the per-device key.
-  private let accessGroup = "group.io.allsunday.motif"
+  // Keep in sync with the Flutter app.
+  private let appGroup = "group.io.allsunday.motif"
+  private let keyFileName = "motif-push-enc-key"
   private let keyAccount = "motif.push.encKey"
 
   override func didReceive(_ request: UNNotificationRequest,
@@ -48,7 +46,8 @@ final class NotificationService: UNNotificationServiceExtension {
 
     if let title = obj["title"] as? String { content.title = title }
     if let body = obj["body"] as? String { content.body = body }
-    if let session = obj["session"] as? String {
+    let motif = obj["motif"] as? [String: Any]
+    if let session = (motif?["session_id"] as? String) ?? (obj["session"] as? String) {
       content.userInfo["session"] = session
     }
     contentHandler(content)
@@ -77,10 +76,19 @@ final class NotificationService: UNNotificationServiceExtension {
   }
 
   private func loadKeyBase64() -> String? {
+    if let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) {
+      let url = dir.appendingPathComponent(keyFileName, isDirectory: false)
+      if let data = try? Data(contentsOf: url),
+         let key = String(data: data, encoding: .utf8),
+         !key.isEmpty {
+        return key
+      }
+    }
+
     let q: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrAccount as String: keyAccount,
-      kSecAttrAccessGroup as String: accessGroup,
+      kSecAttrAccessGroup as String: appGroup,
       kSecReturnData as String: true,
       kSecMatchLimit as String: kSecMatchLimitOne,
     ]

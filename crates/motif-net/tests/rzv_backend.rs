@@ -30,7 +30,10 @@ async fn rzv_backend_pairs_and_pipes() {
     })
     .await
     .unwrap();
-    assert!(listener.bound_addrs().iter().any(|a| a.starts_with("rzv://")));
+    assert!(listener
+        .bound_addrs()
+        .iter()
+        .any(|a| a.starts_with("rzv://")));
 
     // Client side: dial the relay and present a connect HELLO. The relay queues
     // either side until its partner shows, so ordering vs the pump is fine.

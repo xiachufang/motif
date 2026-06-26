@@ -192,7 +192,9 @@ async fn run() -> anyhow::Result<()> {
             }
         };
         let psk_dir = motif_server::default_rzv_psk_path();
-        let rzv_dir = psk_dir.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let rzv_dir = psk_dir
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
         let identity = motif_server::rzv::load_or_create_identity(rzv_dir)?;
         let bearer = motif_server::rzv::bearer_token(&psk);
         (Some(psk), Some(identity), Some(bearer))
@@ -204,8 +206,10 @@ async fn run() -> anyhow::Result<()> {
     let rendezvous = match &args.rzv_relay {
         Some(url) => {
             let psk = psk.expect("rzv ⇒ pairing ⇒ psk present");
-            let mut c =
-                motif_server::RzvListenConfig::new(url.clone(), motif_server::rzv::derive_token(&psk));
+            let mut c = motif_server::RzvListenConfig::new(
+                url.clone(),
+                motif_server::rzv::derive_token(&psk),
+            );
             if let Some(pool) = args.rzv_pool {
                 c.pool = pool;
             }
@@ -259,7 +263,13 @@ async fn run() -> anyhow::Result<()> {
                     None if addr.ip().is_unspecified() => motif_server::rzv::local_nic_addrs(),
                     None => vec![addr.ip().to_string()],
                 };
-                motif_server::rzv::pair_uri_direct(&hosts, addr.port(), psk, pin.as_ref(), Some(&name))
+                motif_server::rzv::pair_uri_direct(
+                    &hosts,
+                    addr.port(),
+                    psk,
+                    pin.as_ref(),
+                    Some(&name),
+                )
             }
         };
         if let Some(qr) = motif_server::rzv::render_qr(&uri) {

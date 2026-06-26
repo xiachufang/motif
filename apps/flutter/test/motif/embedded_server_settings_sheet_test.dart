@@ -146,6 +146,46 @@ void main() {
     expect(find.text('OK'), findsOneWidget);
   });
 
+  testWidgets(
+    'opens registered push tokens from server settings and tests one',
+    (tester) async {
+      const token =
+          'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+      final service = _FakeEmbeddedServerService(
+        config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+        status: const EmbeddedServerStatus(running: true),
+        pushTokens: const [
+          RegisteredPushToken(
+            deviceToken: token,
+            platform: 'ios',
+            environment: 'sandbox',
+            registeredAt: 1710000000000,
+          ),
+        ],
+      );
+      await _pumpSettings(tester, service);
+
+      await tester.tap(find.text('Registered push tokens'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Registered Push Tokens'), findsOneWidget);
+      expect(find.text(token), findsOneWidget);
+      expect(find.text('ios · sandbox'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Refresh push tokens'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(service.pushTokenListCount, 2);
+
+      await tester.tap(find.text('Test'));
+      await tester.pumpAndSettle();
+
+      expect(service.testedTokens, [token]);
+      expect(find.text('Test push sent'), findsOneWidget);
+    },
+  );
+
   testWidgets('keeps Tailscale details collapsed until opened', (tester) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
@@ -216,10 +256,17 @@ Future<List<FlutterErrorDetails>> _captureFlutterErrors(
 class _FakeEmbeddedServerService extends EmbeddedServerService {
   EmbeddedServerConfig _config;
   EmbeddedServerStatus _status;
+  final List<RegisteredPushToken> pushTokens;
   int startCount = 0;
   int stopCount = 0;
+  int pushTokenListCount = 0;
+  final List<String> testedTokens = [];
 
-  _FakeEmbeddedServerService({required this._config, required this._status});
+  _FakeEmbeddedServerService({
+    required this._config,
+    required this._status,
+    this.pushTokens = const [],
+  });
 
   @override
   bool get available => true;
@@ -249,6 +296,18 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
 
   @override
   List<String> tailLogs([int n = 200]) => const [];
+
+  @override
+  Future<List<RegisteredPushToken>> registeredPushTokens() async {
+    pushTokenListCount += 1;
+    return pushTokens;
+  }
+
+  @override
+  Future<PushTestResult> sendTestPush(String deviceToken) async {
+    testedTokens.add(deviceToken);
+    return const PushTestResult(sent: true);
+  }
 
   @override
   Future<void> updateConfig(EmbeddedServerConfig next) async {

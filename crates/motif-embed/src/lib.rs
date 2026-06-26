@@ -238,12 +238,12 @@ async fn do_status() -> StatusDto {
                 // than trusting the cached cell. Otherwise a finished login
                 // keeps showing a dead "Sign in to Tailscale" row whose URL is
                 // already consumed.
-                let auth_url = raw_ts.as_ref().and_then(|s| {
-                    match s.backend_state.as_str() {
+                let auth_url = raw_ts
+                    .as_ref()
+                    .and_then(|s| match s.backend_state.as_str() {
                         "NeedsLogin" | "NeedsMachineAuth" => s.auth_url.clone(),
                         _ => None,
-                    }
-                });
+                    });
                 let tailscale = raw_ts.map(|s| TsStatusDto {
                     backend_state: s.backend_state,
                     peer_online: s.peer_online,
@@ -268,6 +268,82 @@ async fn do_status() -> StatusDto {
             }
         }
     }
+}
+
+async fn do_push_devices_json() -> String {
+    let st = state();
+    let s = st.server.lock().await;
+    let value = match &*s {
+        ServerState::Running(r) => serde_json::json!({
+            "devices": r.registered_push_devices(),
+            "error": null,
+        }),
+        ServerState::Starting => serde_json::json!({
+            "devices": [],
+            "error": "server is still starting",
+        }),
+        ServerState::Stopped => serde_json::json!({
+            "devices": [],
+            "error": "server is not running",
+        }),
+        ServerState::Failed(e) => serde_json::json!({
+            "devices": [],
+            "error": e,
+        }),
+    };
+    serde_json::to_string(&value).unwrap_or_else(|_| "{\"devices\":[]}".to_string())
+}
+
+async fn do_send_test_push_json(device_token: String) -> String {
+    if device_token.trim().is_empty() {
+        return "{\"sent\":false,\"pruned\":false,\"error\":\"missing push token\"}".to_string();
+    }
+
+    let st = state();
+    let s = st.server.lock().await;
+    let value = match &*s {
+        ServerState::Running(r) => {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                r.send_test_push(device_token.trim()),
+            )
+            .await;
+            match result {
+                Ok(Ok(result)) => serde_json::json!({
+                    "sent": result.sent,
+                    "pruned": result.pruned,
+                    "error": null,
+                }),
+                Ok(Err(e)) => serde_json::json!({
+                    "sent": false,
+                    "pruned": false,
+                    "error": format!("{e:#}"),
+                }),
+                Err(_) => serde_json::json!({
+                    "sent": false,
+                    "pruned": false,
+                    "error": "test push timed out",
+                }),
+            }
+        }
+        ServerState::Starting => serde_json::json!({
+            "sent": false,
+            "pruned": false,
+            "error": "server is still starting",
+        }),
+        ServerState::Stopped => serde_json::json!({
+            "sent": false,
+            "pruned": false,
+            "error": "server is not running",
+        }),
+        ServerState::Failed(e) => serde_json::json!({
+            "sent": false,
+            "pruned": false,
+            "error": e,
+        }),
+    };
+    serde_json::to_string(&value)
+        .unwrap_or_else(|_| "{\"sent\":false,\"pruned\":false}".to_string())
 }
 
 /// Most recent device-auth URL seen in the log ring, if any. Shares the
@@ -415,6 +491,28 @@ pub extern "C" fn motif_embed_status_json() -> *mut c_char {
     let status = rt().block_on(do_status());
     let json = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string());
     into_c_string(json)
+}
+
+/// Registered push-token diagnostics for the running embedded server. Returns
+/// `{"devices":[...],"error":null}` on success.
+#[no_mangle]
+pub extern "C" fn motif_embed_push_devices_json() -> *mut c_char {
+    into_c_string(rt().block_on(do_push_devices_json()))
+}
+
+/// Send an encrypted test push to one registered token. Returns
+/// `{"sent":bool,"pruned":bool,"error":null|string}`.
+///
+/// # Safety
+/// `device_token` must be null or a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn motif_embed_send_test_push(device_token: *const c_char) -> *mut c_char {
+    let Some(device_token) = cstr_to_str(device_token) else {
+        return into_c_string(
+            "{\"sent\":false,\"pruned\":false,\"error\":\"missing push token\"}".to_string(),
+        );
+    };
+    into_c_string(rt().block_on(do_send_test_push_json(device_token.to_string())))
 }
 
 /// Last `n` log lines as a JSON string array. Caller frees with

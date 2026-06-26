@@ -130,7 +130,11 @@ impl InputFocusFilter {
             if self.matched == IN_PREFIX.len() {
                 // Got `ESC[`; expecting `I`/`O`.
                 if b == b'I' || b == b'O' {
-                    events.push(if b == b'I' { FocusEvent::In } else { FocusEvent::Out });
+                    events.push(if b == b'I' {
+                        FocusEvent::In
+                    } else {
+                        FocusEvent::Out
+                    });
                     if forward {
                         out.extend_from_slice(IN_PREFIX);
                         out.push(b);

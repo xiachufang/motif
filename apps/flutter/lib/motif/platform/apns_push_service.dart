@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'services.dart';
@@ -14,6 +15,8 @@ import 'services.dart';
 /// Supported on iOS/macOS (APNs). Other platforms get a no-op.
 class ApnsPushService implements PushService {
   static const _ch = MethodChannel('motif/push');
+  Future<String?>? _tokenRequest;
+  String? _cachedToken;
 
   @override
   bool get isSupported => Platform.isIOS || Platform.isMacOS;
@@ -21,6 +24,32 @@ class ApnsPushService implements PushService {
   @override
   Future<PushRegistration?> register({required String encKeyBase64}) async {
     if (!isSupported) return null;
+    final token = _cachedToken ?? await _requestToken();
+    if (token == null || token.isEmpty) return null;
+    // Mirror the key into the App Group container for the NSE (iOS background
+    // decrypt). Best-effort; foreground decrypt works regardless.
+    if (Platform.isIOS) {
+      try {
+        await _ch.invokeMethod('storeEncKey', {'key': encKeyBase64});
+      } catch (_) {}
+    }
+    return PushRegistration(
+      deviceToken: token,
+      platform: Platform.isIOS ? 'ios' : 'macos',
+      encKeyBase64: encKeyBase64,
+      environment: kReleaseMode ? 'production' : 'sandbox',
+    );
+  }
+
+  Future<String?> _requestToken() {
+    final existing = _tokenRequest;
+    if (existing != null) return existing;
+    final request = _requestTokenImpl();
+    _tokenRequest = request;
+    return request.whenComplete(() => _tokenRequest = null);
+  }
+
+  Future<String?> _requestTokenImpl() async {
     try {
       final granted =
           await _ch.invokeMethod<bool>('requestAuthorization') ?? false;
@@ -29,18 +58,8 @@ class ApnsPushService implements PushService {
         'registerForRemoteNotifications',
       );
       if (token == null || token.isEmpty) return null;
-      // Mirror the key into the App Group keychain for the NSE (iOS background
-      // decrypt). Best-effort; foreground decrypt works regardless.
-      if (Platform.isIOS) {
-        try {
-          await _ch.invokeMethod('storeEncKey', {'key': encKeyBase64});
-        } catch (_) {}
-      }
-      return PushRegistration(
-        deviceToken: token,
-        platform: Platform.isIOS ? 'ios' : 'macos',
-        encKeyBase64: encKeyBase64,
-      );
+      _cachedToken = token;
+      return token;
     } on MissingPluginException {
       // Native side not wired (e.g. running under flutter test) — treat as
       // unavailable rather than crashing.

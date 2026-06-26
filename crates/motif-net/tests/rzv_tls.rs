@@ -27,9 +27,9 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
     let cert_der = cert.cert.der().as_ref().to_vec();
     let mut pin = [0u8; 32];
     pin.copy_from_slice(&Sha256::digest(&cert_der));
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-        rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()),
-    );
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        cert.key_pair.serialize_der(),
+    ));
     let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))

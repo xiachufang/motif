@@ -99,7 +99,7 @@ class AppState extends ChangeNotifier {
     _transportResolver = TransportResolver(platform);
     servers.addListener(_relayStoreChange);
     commands.addListener(_relayStoreChange);
-    push.addListener(_relayStoreChange);
+    push.addListener(_onPushSettingsChanged);
     // One-way bridge: the client observes the embedded server's status and
     // registers/updates its loopback entry as a connectable target. The server
     // service stays unaware of the client's server list.
@@ -295,6 +295,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onPushSettingsChanged() {
+    if (push.enabled) {
+      _registerLiveClientsForPush();
+    } else {
+      _disablePushForKnownServers();
+    }
+    notifyListeners();
+  }
+
   /// The embedded server changed: keep its connectable loopback entry in sync,
   /// then propagate the change to listeners. This is the only place the client
   /// reaches into the server's state — the service never touches the client.
@@ -370,7 +379,21 @@ class AppState extends ChangeNotifier {
   }
 
   void _onClientStateChanged(String serverId, MotifClient client) {
+    final wasLive = _pushLiveServerIds.contains(serverId);
     _controllersByServer[serverId]?.handleClientStateChanged();
+    if (client.isLive) {
+      _pushLiveServerIds.add(serverId);
+      if (push.enabled) {
+        if (!wasLive) unawaited(_registerForPush(serverId, client));
+      } else {
+        unawaited(_unregisterForPush(serverId, client));
+      }
+    } else {
+      _pushLiveServerIds.remove(serverId);
+      _pushClientsByInstanceId.removeWhere(
+        (_, value) => identical(value, client),
+      );
+    }
   }
 
   void _onAppPaused() {
@@ -383,7 +406,15 @@ class AppState extends ChangeNotifier {
     for (final controller in _controllersByServer.values) {
       controller.handleAppResumed();
     }
+    if (push.enabled) {
+      _registerLiveClientsForPush();
+    } else {
+      _disablePushForKnownServers();
+    }
   }
+
+  @visibleForTesting
+  void debugHandleAppResumed() => _onAppResumed();
 
   void _applyTerminalPalette() {
     final scheme = _resolveTerminalScheme(
@@ -444,47 +475,139 @@ class AppState extends ChangeNotifier {
   /// key) once connected, if the user enabled notifications. Best-effort: a
   /// missing token / unsupported platform is a no-op. No Firebase involved.
   bool _pushHandlerWired = false;
+  final Map<String, MotifClient> _pushClientsByInstanceId = {};
+  final Set<String> _pushLiveServerIds = {};
+  final Map<String, String> _pushDeviceTokensByServerId = {};
+  final Map<String, Future<void>> _pushRegistrationByServerId = {};
+
+  void _wirePushHandler() {
+    if (_pushHandlerWired) return;
+    _pushHandlerWired = true;
+    platform.push.onEncryptedPayload((e, n) async {
+      final plain = await decryptPushPayload(
+        encKeyB64: push.encKeyBase64,
+        eB64: e,
+        nB64: n,
+      );
+      if (plain == null) return;
+      try {
+        final obj = jsonDecode(plain) as Map<String, Object?>;
+        final motif =
+            (obj['motif'] as Map?)?.cast<String, Object?>() ??
+            const <String, Object?>{};
+        final instanceId = motif['instance_id'] as String?;
+        final sessionId =
+            motif['session_id'] as String? ??
+            obj['session_id'] as String? ??
+            obj['session'] as String?;
+        final kind =
+            motif['kind'] as String? ?? (obj['kind'] as String?) ?? 'push';
+        if (push.isMuted(sessionId ?? '')) return;
+        final target = instanceId == null
+            ? activeClient
+            : _pushClientsByInstanceId[instanceId];
+        if (target == null) return;
+        target.showNotification(
+          MotifNotification(
+            title: (obj['title'] as String?) ?? 'Motif',
+            body: (obj['body'] as String?) ?? '',
+            sessionId: sessionId,
+            kind: kind,
+          ),
+        );
+      } catch (_) {}
+    });
+  }
 
   Future<void> registerForPush({MotifClient? client}) async {
     final target = client ?? activeClient;
-    if (target == null || !push.enabled || !target.isLive) return;
-    // Decrypt foreground push payloads in-app and surface them as banners
-    // (background/killed delivery is decrypted by the iOS NSE).
-    if (!_pushHandlerWired) {
-      _pushHandlerWired = true;
-      platform.push.onEncryptedPayload((e, n) async {
-        final plain = await decryptPushPayload(
-          encKeyB64: push.encKeyBase64,
-          eB64: e,
-          nB64: n,
-        );
-        if (plain == null) return;
-        try {
-          final obj = jsonDecode(plain) as Map<String, Object?>;
-          if (push.isMuted(obj['session'] as String? ?? '')) return;
-          target.showNotification(
-            MotifNotification(
-              title: (obj['title'] as String?) ?? 'Motif',
-              body: (obj['body'] as String?) ?? '',
-              sessionId: obj['session'] as String?,
-              kind: (obj['kind'] as String?) ?? 'push',
-            ),
-          );
-        } catch (_) {}
-      });
+    if (target == null) return;
+    final serverId = _serverIdForClient(target);
+    if (serverId != null) {
+      await _registerForPush(serverId, target);
+      return;
     }
+    await _doRegisterForPush(null, target);
+  }
+
+  Future<void> _registerForPush(String serverId, MotifClient client) {
+    final existing = _pushRegistrationByServerId[serverId];
+    if (existing != null) return existing;
+    final task = _doRegisterForPush(serverId, client);
+    _pushRegistrationByServerId[serverId] = task;
+    task.whenComplete(() {
+      if (identical(_pushRegistrationByServerId[serverId], task)) {
+        _pushRegistrationByServerId.remove(serverId);
+      }
+    });
+    return task;
+  }
+
+  Future<void> _doRegisterForPush(String? serverId, MotifClient target) async {
+    if (!push.enabled || !target.isLive) return;
+    // Decrypt foreground push payloads in-app and route them by motifd
+    // instance_id. Background/killed delivery is decrypted by the iOS NSE.
+    _wirePushHandler();
     try {
       final reg = await platform.push.register(encKeyBase64: push.encKeyBase64);
       if (reg == null) return;
-      await target.registerDevice(
+      final instanceId = await target.registerDevice(
         deviceToken: reg.deviceToken,
         platform: reg.platform,
         encKeyBase64: reg.encKeyBase64,
+        environment: reg.environment,
+        appVersion: reg.appVersion,
         mutedSessions: push.mutedSessions.toList(),
       );
+      if (serverId != null) {
+        _pushDeviceTokensByServerId[serverId] = reg.deviceToken;
+      }
+      if (instanceId != null && instanceId.isNotEmpty) {
+        _pushClientsByInstanceId[instanceId] = target;
+      }
     } catch (_) {
       // Push is best-effort; never block the session on it.
     }
+  }
+
+  void _registerLiveClientsForPush() {
+    if (!push.enabled) return;
+    for (final entry in _clientsByServer.entries) {
+      final client = entry.value;
+      if (client.isLive) unawaited(_registerForPush(entry.key, client));
+    }
+  }
+
+  Future<void> _unregisterForPush(String serverId, MotifClient client) async {
+    final token = _pushDeviceTokensByServerId[serverId];
+    _pushClientsByInstanceId.removeWhere(
+      (_, value) => identical(value, client),
+    );
+    if (token == null || token.isEmpty || !client.isLive) return;
+    try {
+      await client.unregisterDevice(token);
+    } catch (_) {
+      // Push opt-out is best-effort; if the server is gone, the next live
+      // connection while disabled will retry with the last known token.
+      return;
+    }
+    _pushDeviceTokensByServerId.remove(serverId);
+  }
+
+  void _disablePushForKnownServers() {
+    for (final entry in _clientsByServer.entries) {
+      final client = entry.value;
+      if (client.isLive) unawaited(_unregisterForPush(entry.key, client));
+    }
+    _pushClientsByInstanceId.clear();
+    unawaited(platform.push.unregister());
+  }
+
+  String? _serverIdForClient(MotifClient client) {
+    for (final entry in _clientsByServer.entries) {
+      if (identical(entry.value, client)) return entry.key;
+    }
+    return null;
   }
 
   /// Connect (or reconnect) to the active server through the per-server
@@ -505,10 +628,7 @@ class AppState extends ChangeNotifier {
     if (makeActive && servers.activeId != serverId) {
       await servers.setActive(serverId);
     }
-    final client = clientForServer(server.id);
     await _controllerForServer(server.id).connect(force: force);
-    // Best-effort push registration once the RPC channel is live.
-    unawaited(registerForPush(client: client));
   }
 
   Future<bool> connectServerAndRefresh(
@@ -576,6 +696,12 @@ class AppState extends ChangeNotifier {
       final controller = _controllersByServer.remove(id);
       controller?.dispose();
       if (client == null) continue;
+      _pushClientsByInstanceId.removeWhere(
+        (_, value) => identical(value, client),
+      );
+      _pushLiveServerIds.remove(id);
+      _pushDeviceTokensByServerId.remove(id);
+      _pushRegistrationByServerId.remove(id);
       if (listener != null) client.removeListener(listener);
       unawaited(client.disconnect());
       client.dispose();
@@ -586,7 +712,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     servers.removeListener(_relayStoreChange);
     commands.removeListener(_relayStoreChange);
-    push.removeListener(_relayStoreChange);
+    push.removeListener(_onPushSettingsChanged);
     embeddedServer?.removeListener(_onEmbeddedServerChanged);
     embeddedServer?.dispose();
     terminalSettings.removeListener(_onTerminalSettingsChanged);

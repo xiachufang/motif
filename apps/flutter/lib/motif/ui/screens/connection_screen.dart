@@ -326,7 +326,9 @@ class _ServerRowState extends State<_ServerRow> {
     final c = context.motif;
     final view = widget.viewState;
     final action = view.primaryAction;
-    final showPingBadge = view.statusLabel == 'Offline';
+    final showPingBadge =
+        view.statusLabel == 'Offline' &&
+        _pingIndicator.kind == _ServerPingIndicatorKind.reachable;
     final showDetails = hasConnectionDetails(view);
     return MotifSectionRow(
       key: ValueKey('server-row-${widget.server.id}'),

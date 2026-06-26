@@ -10,8 +10,8 @@ use motif_proto::{event::Event, fs as pfs, git as pgit, pty as ppty, session as 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::session::Session;
 use crate::session::manager::{ManagerError, SessionManager};
+use crate::session::Session;
 
 pub struct ConnState {
     pub client_id: motif_proto::common::ClientId,

@@ -65,3 +65,27 @@ pub struct SetSessionMutedParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SetSessionMutedResult {}
+
+// ─────────────────────────────────────────────── admin/debug surfaces
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisteredDevice {
+    /// APNs device token, lowercase hex.
+    pub device_token: String,
+    pub platform: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    pub registered_at: u64,
+    #[serde(default)]
+    pub muted_sessions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TestPushResult {
+    /// `true` when the relay accepted the test notification for APNs delivery.
+    pub sent: bool,
+    /// `true` when the relay reported this token invalid and motifd pruned it.
+    pub pruned: bool,
+}

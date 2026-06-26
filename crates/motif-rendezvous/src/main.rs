@@ -69,9 +69,7 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .init();
+    tracing_subscriber::fmt().with_target(false).init();
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(addr = %args.listen, "motif-rendezvous listening");

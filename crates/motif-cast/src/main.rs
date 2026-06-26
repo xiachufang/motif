@@ -140,7 +140,10 @@ async fn run(r: Run) -> anyhow::Result<()> {
             info.service
         ));
     }
-    eprintln!("motif-cast: found motif-server {} at {}", info.version, r.url);
+    eprintln!(
+        "motif-cast: found motif-server {} at {}",
+        info.version, r.url
+    );
 
     // 1. session.create — owns the name from here on. Failure to create →
     //    no guard needed, just bail.
@@ -280,9 +283,7 @@ fn read_token(path: Option<&std::path::Path>) -> anyhow::Result<String> {
 /// `None`, leaving the session theme untouched.
 fn theme_from_osc_bg(bg: Option<&str>) -> Option<String> {
     let mut chans = bg?.split('/');
-    let hi_byte = |s: Option<&str>| -> Option<u32> {
-        u32::from_str_radix(s?.get(0..2)?, 16).ok()
-    };
+    let hi_byte = |s: Option<&str>| -> Option<u32> { u32::from_str_radix(s?.get(0..2)?, 16).ok() };
     let r = hi_byte(chans.next())?;
     let g = hi_byte(chans.next())?;
     let b = hi_byte(chans.next())?;

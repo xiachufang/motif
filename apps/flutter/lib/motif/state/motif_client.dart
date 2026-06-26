@@ -1234,7 +1234,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     required String session,
     required bool muted,
   }) =>
-      _rpc?.call('device.setSessionMuted', {
+      _rpc?.call('device.set_session_muted', {
         'device_token': deviceToken,
         'session': session,
         'muted': muted,

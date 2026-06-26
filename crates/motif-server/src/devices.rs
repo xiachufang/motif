@@ -104,6 +104,34 @@ impl DeviceStore {
     pub fn all(&self) -> Vec<DeviceEntry> {
         self.devices.lock().clone()
     }
+
+    /// Public/admin snapshot suitable for diagnostics UI. Deliberately omits
+    /// `enc_key`; motifd needs it for delivery but settings surfaces do not.
+    pub fn registered_devices(&self) -> Vec<motif_proto::device::RegisteredDevice> {
+        let mut out: Vec<_> = self
+            .devices
+            .lock()
+            .iter()
+            .map(|d| {
+                let mut muted_sessions: Vec<_> = d.muted_sessions.iter().cloned().collect();
+                muted_sessions.sort();
+                motif_proto::device::RegisteredDevice {
+                    device_token: d.device_token.clone(),
+                    platform: d.platform.clone(),
+                    environment: d.environment.clone(),
+                    app_version: d.app_version.clone(),
+                    registered_at: d.registered_at,
+                    muted_sessions,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.registered_at
+                .cmp(&a.registered_at)
+                .then_with(|| a.device_token.cmp(&b.device_token))
+        });
+        out
+    }
 }
 
 fn now_ms() -> u64 {
@@ -178,5 +206,32 @@ mod tests {
         assert_ne!(a.instance_id(), b.instance_id());
         // Stable within a store.
         assert_eq!(a.instance_id(), a.instance_id());
+    }
+
+    #[test]
+    fn registered_devices_omits_keys_and_sorts_metadata() {
+        let store = DeviceStore::new();
+        store.register(
+            DeviceEntry {
+                app_version: Some("1.2.3".into()),
+                registered_at: 10,
+                ..entry("bb")
+            },
+            Some(HashSet::from(["z".to_string(), "a".to_string()])),
+        );
+        store.register(
+            DeviceEntry {
+                registered_at: 20,
+                ..entry("aa")
+            },
+            None,
+        );
+
+        let devices = store.registered_devices();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].device_token, "aa");
+        assert_eq!(devices[1].device_token, "bb");
+        assert_eq!(devices[1].app_version.as_deref(), Some("1.2.3"));
+        assert_eq!(devices[1].muted_sessions, ["a", "z"]);
     }
 }

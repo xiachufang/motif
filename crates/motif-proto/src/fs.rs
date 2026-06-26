@@ -111,4 +111,3 @@ pub struct UnwatchParams {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UnwatchResult {}
-

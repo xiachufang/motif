@@ -163,12 +163,7 @@ impl Coordinator {
     /// Same as [`Self::open_pty`] but the caller supplies the duplex
     /// stream (used by motif-cast when it wants to layer its own
     /// transport).
-    pub async fn open_pty_raw<S>(
-        &self,
-        pty_id: &str,
-        since: u64,
-        stream: S,
-    ) -> Result<PtyClient>
+    pub async fn open_pty_raw<S>(&self, pty_id: &str, since: u64, stream: S) -> Result<PtyClient>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {

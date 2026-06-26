@@ -14,7 +14,7 @@ use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, Notify};
 
 use crate::pty::PtyPool;
 

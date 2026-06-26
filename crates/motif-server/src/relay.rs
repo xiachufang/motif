@@ -115,15 +115,7 @@ impl RelayClient {
         if devices.is_empty() {
             return;
         }
-        let plain = match serde_json::to_vec(&Plaintext {
-            title: &notif.title,
-            body: &notif.body,
-            motif: EncMotif {
-                instance_id: &instance_id,
-                session_id: notif.session_id.as_deref(),
-                kind: &notif.kind,
-            },
-        }) {
+        let plain = match plaintext_for(&instance_id, notif) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("push: failed to serialize plaintext: {e}");
@@ -153,6 +145,35 @@ impl RelayClient {
             }
         });
         futures_util::future::join_all(futs).await;
+    }
+
+    pub async fn push_test_to_token(
+        &self,
+        store: &DeviceStore,
+        device_token: &str,
+        notif: &PushNotification,
+    ) -> anyhow::Result<motif_proto::device::TestPushResult> {
+        let device = store
+            .all()
+            .into_iter()
+            .find(|d| d.device_token == device_token)
+            .ok_or_else(|| anyhow::anyhow!("push token is not registered"))?;
+        let plain = plaintext_for(&store.instance_id(), notif)?;
+        let sent = self
+            .push_one(
+                &device.device_token,
+                device.environment.as_deref(),
+                &device.enc_key,
+                &plain,
+            )
+            .await?;
+        if !sent {
+            store.prune(&device.device_token);
+        }
+        Ok(motif_proto::device::TestPushResult {
+            sent,
+            pruned: !sent,
+        })
     }
 
     /// Returns `Ok(true)` on success, `Ok(false)` if the token should be
@@ -188,6 +209,18 @@ impl RelayClient {
             anyhow::bail!("relay returned status {status}");
         }
     }
+}
+
+fn plaintext_for(instance_id: &str, notif: &PushNotification) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&Plaintext {
+        title: &notif.title,
+        body: &notif.body,
+        motif: EncMotif {
+            instance_id,
+            session_id: notif.session_id.as_deref(),
+            kind: &notif.kind,
+        },
+    })?)
 }
 
 /// AES-256-GCM encrypt with a fresh random 12-byte nonce. Returns

@@ -23,6 +23,8 @@ typedef _StopNative = Int32 Function();
 typedef _Stop = int Function();
 typedef _StrOutNative = Pointer<Utf8> Function();
 typedef _StrOut = Pointer<Utf8> Function();
+typedef _StrInOutNative = Pointer<Utf8> Function(Pointer<Utf8>);
+typedef _StrInOut = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _TailNative = Pointer<Utf8> Function(Int32);
 typedef _Tail = Pointer<Utf8> Function(int);
 typedef _FreeNative = Void Function(Pointer<Utf8>);
@@ -46,6 +48,10 @@ class LibMotifEmbed {
   late final _StrOut _statusJson = _lib.lookupFunction<_StrOutNative, _StrOut>(
     'motif_embed_status_json',
   );
+  late final _StrOut _pushDevicesJson = _lib
+      .lookupFunction<_StrOutNative, _StrOut>('motif_embed_push_devices_json');
+  late final _StrInOut _sendTestPush = _lib
+      .lookupFunction<_StrInOutNative, _StrInOut>('motif_embed_send_test_push');
   late final _Tail _tailLogs = _lib.lookupFunction<_TailNative, _Tail>(
     'motif_embed_tail_logs',
   );
@@ -76,10 +82,29 @@ class LibMotifEmbed {
   /// Current status as a JSON string (the `StatusDto` shape).
   String statusJson() => _consume(_statusJson());
 
+  /// Registered push token diagnostics as JSON.
+  String pushDevicesJson() => _consume(_pushDevicesJson());
+
+  /// Send an encrypted test push to one registered token. Returns JSON.
+  String sendTestPush(String deviceToken) =>
+      _consume(_withStrOut(deviceToken, (p) => _sendTestPush(p)));
+
   /// Last [n] log lines as a JSON string array.
   String tailLogs(int n) => _consume(_tailLogs(n));
 
   int _withStr(String s, int Function(Pointer<Utf8>) fn) {
+    final p = s.toNativeUtf8();
+    try {
+      return fn(p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  Pointer<Utf8> _withStrOut(
+    String s,
+    Pointer<Utf8> Function(Pointer<Utf8>) fn,
+  ) {
     final p = s.toNativeUtf8();
     try {
       return fn(p);

@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../log/log.dart';
 import '../../log/log_export.dart';
@@ -26,6 +28,17 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet> {
       await Log.flush();
       final result = await exportLogFiles();
       if (!mounted) return;
+      if (_shouldShareExportedLogs) {
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(result.path, mimeType: 'text/plain')],
+            title: 'Motif logs',
+            subject: 'Motif logs',
+            sharePositionOrigin: _sharePositionOrigin(),
+          ),
+        );
+        return;
+      }
       showMotifToast(context, 'Logs exported: ${result.path}');
     } catch (e) {
       if (!mounted) return;
@@ -33,6 +46,20 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet> {
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
+  }
+
+  bool get _shouldShareExportedLogs {
+    if (kIsWeb) return false;
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android || TargetPlatform.iOS => true,
+      _ => false,
+    };
+  }
+
+  Rect? _sharePositionOrigin() {
+    final renderObject = context.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return null;
+    return renderObject.localToGlobal(Offset.zero) & renderObject.size;
   }
 
   @override

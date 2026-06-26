@@ -165,7 +165,7 @@ impl Hub {
             let mut handed = Some(stream);
             while let Some(waiter) = opposite.pop_front() {
                 match waiter.tx.send(handed.take().expect("stream present")) {
-                    Ok(()) => break,                 // paired — parked task splices
+                    Ok(()) => break,                          // paired — parked task splices
                     Err(returned) => handed = Some(returned), // dead waiter; retry
                 }
             }
@@ -517,7 +517,10 @@ mod tests {
         con.write_all(b"hello").await.unwrap();
         let mut buf = [0u8; 5];
         con.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"world", "server->client payload corrupted (leaked PONG?)");
+        assert_eq!(
+            &buf, b"world",
+            "server->client payload corrupted (leaked PONG?)"
+        );
 
         acc_task.await.unwrap();
     }

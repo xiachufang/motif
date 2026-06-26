@@ -123,6 +123,48 @@ class EmbeddedServerStatus {
   }
 }
 
+@immutable
+class RegisteredPushToken {
+  final String deviceToken;
+  final String platform;
+  final String? environment;
+  final String? appVersion;
+  final int registeredAt;
+  final List<String> mutedSessions;
+
+  const RegisteredPushToken({
+    required this.deviceToken,
+    required this.platform,
+    this.environment,
+    this.appVersion,
+    required this.registeredAt,
+    this.mutedSessions = const [],
+  });
+
+  factory RegisteredPushToken.fromJson(Map<String, Object?> json) {
+    return RegisteredPushToken(
+      deviceToken: (json['device_token'] as String?) ?? '',
+      platform: (json['platform'] as String?) ?? '',
+      environment: json['environment'] as String?,
+      appVersion: json['app_version'] as String?,
+      registeredAt: (json['registered_at'] as num?)?.toInt() ?? 0,
+      mutedSessions:
+          (json['muted_sessions'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
+    );
+  }
+}
+
+@immutable
+class PushTestResult {
+  final bool sent;
+  final bool pruned;
+
+  const PushTestResult({required this.sent, this.pruned = false});
+}
+
 abstract class EmbeddedServerService extends ChangeNotifier {
   bool get available;
   EmbeddedServerConfig get config;
@@ -133,6 +175,8 @@ abstract class EmbeddedServerService extends ChangeNotifier {
   String generateToken();
   Future<void> start();
   Future<void> stop();
+  Future<List<RegisteredPushToken>> registeredPushTokens();
+  Future<PushTestResult> sendTestPush(String deviceToken);
   List<String> tailLogs([int n = 200]);
 }
 
@@ -157,6 +201,13 @@ class NoopEmbeddedServerService extends EmbeddedServerService {
 
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<List<RegisteredPushToken>> registeredPushTokens() async => const [];
+
+  @override
+  Future<PushTestResult> sendTestPush(String deviceToken) async =>
+      const PushTestResult(sent: false);
 
   @override
   List<String> tailLogs([int n = 200]) => const [];

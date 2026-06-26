@@ -1209,23 +1209,40 @@ mod tests {
         let mut cwd = PathBuf::from("/home/me");
 
         // A new cwd is taken and reported as changed.
-        assert!(track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/foo".into() }));
+        assert!(track_cwd(
+            &mut cwd,
+            &QueryKind::Osc7Cwd {
+                path: "/tmp/foo".into()
+            }
+        ));
         assert_eq!(cwd, PathBuf::from("/tmp/foo"));
 
         // The same cwd again (shells emit OSC 7 every prompt) is a no-op — the
         // caller must not thrash the fswatcher.
-        assert!(!track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/foo".into() }));
+        assert!(!track_cwd(
+            &mut cwd,
+            &QueryKind::Osc7Cwd {
+                path: "/tmp/foo".into()
+            }
+        ));
         assert_eq!(cwd, PathBuf::from("/tmp/foo"));
 
         // A different cwd changes again.
-        assert!(track_cwd(&mut cwd, &QueryKind::Osc7Cwd { path: "/tmp/bar".into() }));
+        assert!(track_cwd(
+            &mut cwd,
+            &QueryKind::Osc7Cwd {
+                path: "/tmp/bar".into()
+            }
+        ));
         assert_eq!(cwd, PathBuf::from("/tmp/bar"));
 
         // Non-cwd shell-integration markers leave it untouched.
         assert!(!track_cwd(&mut cwd, &QueryKind::Osc133PromptStart));
         assert!(!track_cwd(
             &mut cwd,
-            &QueryKind::Osc7770Cmd { text: "ls".to_string() },
+            &QueryKind::Osc7770Cmd {
+                text: "ls".to_string()
+            },
         ));
         assert!(!track_cwd(
             &mut cwd,

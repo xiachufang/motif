@@ -15,8 +15,8 @@ pub mod pty;
 pub mod pty_ws;
 pub mod relay;
 pub mod rpc;
-pub mod rzv;
 pub mod rpc_log;
+pub mod rzv;
 pub mod session;
 pub mod shell;
 pub mod tcp_ws;
@@ -318,6 +318,7 @@ pub fn init_tracing_gui(filter: &str, log_dir: &Path, ring: LogRing) -> anyhow::
 pub struct RunningServer {
     bound: Vec<String>,
     manager: Arc<session::manager::SessionManager>,
+    devices: relay::DeviceState,
     #[cfg(feature = "tailscale")]
     ts: Option<Arc<motif_net::motif_tailscale::TsServer>>,
     shutdown: CancellationToken,
@@ -341,6 +342,34 @@ impl RunningServer {
 
     pub fn session_count(&self) -> usize {
         self.manager.list().len()
+    }
+
+    /// Registered push devices for an embedding/admin UI. The per-device
+    /// encryption key is intentionally omitted from this snapshot.
+    pub fn registered_push_devices(&self) -> Vec<motif_proto::device::RegisteredDevice> {
+        self.devices.store.registered_devices()
+    }
+
+    /// Send an encrypted test notification to one registered push token.
+    pub async fn send_test_push(
+        &self,
+        device_token: &str,
+    ) -> anyhow::Result<motif_proto::device::TestPushResult> {
+        let Some(relay) = self.devices.relay.as_ref() else {
+            anyhow::bail!("push relay is disabled");
+        };
+        relay
+            .push_test_to_token(
+                &self.devices.store,
+                device_token,
+                &relay::PushNotification {
+                    title: "Motif test push".to_string(),
+                    body: "Push notifications are working.".to_string(),
+                    session_id: None,
+                    kind: "test_push".to_string(),
+                },
+            )
+            .await
     }
 
     /// tsnet backend snapshot (state, peers, auth URL), or `None` when the
@@ -374,6 +403,7 @@ impl RunningServer {
         let RunningServer {
             bound: _bound,
             manager: _manager,
+            devices: _devices,
             #[cfg(feature = "tailscale")]
                 ts: _ts,
             shutdown,
@@ -531,6 +561,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     Ok(RunningServer {
         bound,
         manager,
+        devices: device_state,
         #[cfg(feature = "tailscale")]
         ts,
         shutdown,

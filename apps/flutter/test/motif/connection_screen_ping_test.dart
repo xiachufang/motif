@@ -377,16 +377,15 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct'));
-    await tester.pumpAndSettle();
-    await tester.enterText(_fieldWithLabel('Name'), 'Direct');
-    await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
+    await tester.enterText(_fieldWithLabel('Name'), 'Tailnet');
+    await tester.enterText(_fieldWithLabel('Host'), 'motifd.tail.ts.net');
     await tester.pumpAndSettle();
     await tester.tap(find.text('Save and Connect'));
     await tester.pumpAndSettle();
 
     expect(app.servers.servers, hasLength(1));
-    expect(app.servers.servers.single.name, 'Direct');
+    expect(app.servers.servers.single.name, 'Tailnet');
+    expect(app.servers.servers.single.kind, ServerKind.tailscale);
     expect(app.isServerLive(app.servers.servers.single.id), isTrue);
     expect(manual.refreshes, 1);
   });
@@ -408,11 +407,9 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Direct'));
-    await tester.pumpAndSettle();
     expect(find.text('Save without connecting'), findsNothing);
-    await tester.enterText(_fieldWithLabel('Name'), 'Direct');
-    await tester.enterText(_fieldWithLabel('Host'), 'direct.local');
+    await tester.enterText(_fieldWithLabel('Name'), 'Tailnet');
+    await tester.enterText(_fieldWithLabel('Host'), 'motifd.tail.ts.net');
     await tester.pumpAndSettle();
     await tester.tap(find.text('Save and Connect'));
     await tester.pumpAndSettle();
@@ -503,7 +500,7 @@ void main() {
     expect(find.text('Sessions home'), findsOneWidget);
   });
 
-  testWidgets('shows no ping badge for direct non-motif services', (
+  testWidgets('keeps offline status for direct non-motif services', (
     tester,
   ) async {
     _mockDirectPing({'service': 'other-service', 'version': 'direct-test'});
@@ -525,7 +522,7 @@ void main() {
     );
 
     await _pumpConnectionScreen(tester, app);
-    await _pumpUntilFound(tester, find.text('No ping'));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(
       find.descendant(
@@ -534,7 +531,8 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('No ping'), findsOneWidget);
+    expect(find.text('Offline'), findsOneWidget);
+    expect(find.text('No ping'), findsNothing);
     expect(tailscale.pingedHosts, isEmpty);
   });
 

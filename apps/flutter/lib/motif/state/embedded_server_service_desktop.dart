@@ -180,6 +180,43 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     return const [];
   }
 
+  @override
+  Future<List<RegisteredPushToken>> registeredPushTokens() async {
+    final lib = _lib;
+    if (lib == null) return const [];
+    final map = jsonDecodeMap(lib.pushDevicesJson());
+    if (map == null) return const [];
+    final error = map['error'] as String?;
+    if (error != null && error.isNotEmpty) {
+      throw StateError(error);
+    }
+    final devices = map['devices'] as List? ?? const [];
+    return devices
+        .whereType<Map>()
+        .map((e) => RegisteredPushToken.fromJson(e.cast<String, Object?>()))
+        .toList();
+  }
+
+  @override
+  Future<PushTestResult> sendTestPush(String deviceToken) async {
+    final lib = _lib;
+    if (lib == null) {
+      throw StateError('embedded server is unavailable');
+    }
+    final map = jsonDecodeMap(lib.sendTestPush(deviceToken));
+    if (map == null) {
+      throw StateError('invalid test push response');
+    }
+    final error = map['error'] as String?;
+    if (error != null && error.isNotEmpty) {
+      throw StateError(error);
+    }
+    return PushTestResult(
+      sent: map['sent'] == true,
+      pruned: map['pruned'] == true,
+    );
+  }
+
   void _startPolling() {
     _poll ??= Timer.periodic(
       const Duration(seconds: 2),

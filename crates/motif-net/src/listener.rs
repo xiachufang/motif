@@ -327,7 +327,12 @@ impl axum::serve::Listener for Listener {
                 // back-off on accept errors.
                 #[cfg(feature = "tailscale")]
                 let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp, tcp_tls, ts, rzv } = self;
+                    let Self {
+                        tcp,
+                        tcp_tls,
+                        ts,
+                        rzv,
+                    } = self;
                     tokio::select! {
                         biased;
                         r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,

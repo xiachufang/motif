@@ -41,7 +41,7 @@ import UserNotifications
           UIApplication.shared.unregisterForRemoteNotifications()
           result(nil)
         case "storeEncKey":
-          // Mirror the per-device AES key into the App Group keychain so the
+          // Mirror the per-device AES key into the App Group container so the
           // Notification Service Extension can decrypt background pushes.
           let key = (call.arguments as? [String: Any])?["key"] as? String
           result(self?.storeEncKey(key) ?? false)
@@ -103,17 +103,31 @@ import UserNotifications
     pushChannel?.invokeMethod("onPush", arguments: ["e": e, "n": n])
   }
 
-  // Write the base64 AES key into the shared App Group keychain under the
-  // account/group the NSE (NotificationService.swift) reads from.
+  // Write the base64 AES key into the shared App Group container the NSE
+  // (NotificationService.swift) reads from. Keep a keychain fallback for builds
+  // that add Keychain Sharing later.
   private static let keyAccount = "motif.push.encKey"
-  private static let accessGroup = "group.io.allsunday.motif"
+  private static let appGroup = "group.io.allsunday.motif"
+  private static let keyFileName = "motif-push-enc-key"
 
   private func storeEncKey(_ keyBase64: String?) -> Bool {
     guard let keyBase64, let data = keyBase64.data(using: .utf8) else { return false }
+    if let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: AppDelegate.appGroup) {
+      let url = dir.appendingPathComponent(AppDelegate.keyFileName, isDirectory: false)
+      do {
+        try data.write(to: url, options: [.atomic])
+        try? (url as NSURL).setResourceValue(
+          URLFileProtection.completeUntilFirstUserAuthentication,
+          forKey: .fileProtectionKey
+        )
+        return true
+      } catch {}
+    }
+
     let base: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrAccount as String: AppDelegate.keyAccount,
-      kSecAttrAccessGroup as String: AppDelegate.accessGroup,
+      kSecAttrAccessGroup as String: AppDelegate.appGroup,
     ]
     SecItemDelete(base as CFDictionary) // replace any prior value
     var add = base

@@ -56,14 +56,13 @@ pub fn load_or_create_identity(dir: &Path) -> anyhow::Result<RzvIdentity> {
 
     let certs = vec![CertificateDer::from(cert_der)];
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
-    let server_config = ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|e| anyhow::anyhow!("rustls protocol versions: {e}"))?
-    .with_no_client_auth()
-    .with_single_cert(certs, key)
-    .map_err(|e| anyhow::anyhow!("rustls server config: {e}"))?;
+    let server_config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| anyhow::anyhow!("rustls protocol versions: {e}"))?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| anyhow::anyhow!("rustls server config: {e}"))?;
 
     Ok(RzvIdentity {
         server_config: Arc::new(server_config),
@@ -218,11 +217,7 @@ pub fn render_qr(uri: &str) -> Option<String> {
     use qrcode::render::unicode;
     use qrcode::QrCode;
     let code = QrCode::new(uri.as_bytes()).ok()?;
-    Some(
-        code.render::<unicode::Dense1x2>()
-            .quiet_zone(true)
-            .build(),
-    )
+    Some(code.render::<unicode::Dense1x2>().quiet_zone(true).build())
 }
 
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
@@ -277,8 +272,7 @@ mod tests {
         // The token is not the psk (one-way).
         assert_ne!(token, psk);
         assert_eq!(
-            hex,
-            "bb48b13937710e30c1fffa843593313a7d403c44236eb01d6c86842e43bfa7da",
+            hex, "bb48b13937710e30c1fffa843593313a7d403c44236eb01d6c86842e43bfa7da",
             "update both this and the Dart fixture if the derivation changes"
         );
     }
@@ -296,8 +290,7 @@ mod tests {
             "bearer must differ from the relay token (distinct HKDF label)"
         );
         assert_eq!(
-            hex,
-            "b15f7d9c90b425671f2fd6b31584ad68b3f177a73bbc7e49fbc882505e329ddf",
+            hex, "b15f7d9c90b425671f2fd6b31584ad68b3f177a73bbc7e49fbc882505e329ddf",
             "update both this and the Dart fixture if the derivation changes"
         );
     }

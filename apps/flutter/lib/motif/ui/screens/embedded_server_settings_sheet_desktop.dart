@@ -233,7 +233,7 @@ class _EmbeddedServerSettingsSheetState
         const SizedBox(height: MotifSpacing.lg),
         _pairingSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
-        _notificationsSection(cfg, c),
+        _notificationsSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
         _tailscaleSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
@@ -827,7 +827,11 @@ class _EmbeddedServerSettingsSheetState
 
   // ── Push notifications ──
 
-  Widget _notificationsSection(EmbeddedServerConfig cfg, MotifColors c) {
+  Widget _notificationsSection(
+    EmbeddedServerConfig cfg,
+    EmbeddedServerStatus status,
+    MotifColors c,
+  ) {
     return MotifSection(
       title: 'Notifications',
       footer: 'Leave blank to disable background push.',
@@ -850,7 +854,26 @@ class _EmbeddedServerSettingsSheetState
           },
           onFocusLost: _showPendingRestartPrompt,
         ),
+        MotifSectionRow(
+          leading: Icon(Icons.notifications_active_outlined, color: c.accent),
+          title: 'Registered push tokens',
+          subtitle: status.running
+              ? 'View tokens and send a test push'
+              : 'Start the server to inspect registered tokens',
+          onTap: status.running ? () => unawaited(_showPushTokens()) : null,
+          showChevron: status.running,
+        ),
       ],
+    );
+  }
+
+  Future<void> _showPushTokens() {
+    return showAdaptiveModal<void>(
+      context,
+      builder: (_) => AdaptiveModal(
+        title: 'Registered Push Tokens',
+        content: _PushTokensView(service: _svc),
+      ),
     );
   }
 
@@ -1010,6 +1033,242 @@ Uri? _pushRelayHealthUri(String address) {
   } catch (_) {
     return null;
   }
+}
+
+class _PushTokensView extends StatefulWidget {
+  final EmbeddedServerService service;
+
+  const _PushTokensView({required this.service});
+
+  @override
+  State<_PushTokensView> createState() => _PushTokensViewState();
+}
+
+class _PushTokensViewState extends State<_PushTokensView> {
+  late Future<List<RegisteredPushToken>> _tokens;
+  final Set<String> _sending = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _tokens = widget.service.registeredPushTokens();
+  }
+
+  void _refresh() {
+    setState(() {
+      _tokens = widget.service.registeredPushTokens();
+    });
+  }
+
+  Future<void> _sendTest(RegisteredPushToken token) async {
+    if (_sending.contains(token.deviceToken)) return;
+    setState(() => _sending.add(token.deviceToken));
+    try {
+      final result = await widget.service.sendTestPush(token.deviceToken);
+      if (!mounted) return;
+      final message = result.pruned
+          ? 'Token was rejected by the relay and removed'
+          : result.sent
+          ? 'Test push sent'
+          : 'Test push was not sent';
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text(message)));
+      if (result.pruned) _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(
+        context,
+      )?.showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+    } finally {
+      if (mounted) {
+        setState(() => _sending.remove(token.deviceToken));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return FutureBuilder<List<RegisteredPushToken>>(
+      future: _tokens,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return SizedBox(
+            height: 180,
+            child: Center(child: CircularProgressIndicator(color: c.accent)),
+          );
+        }
+        if (snap.hasError) {
+          return MotifSection(
+            children: [
+              MotifSectionRow(
+                leading: Icon(Icons.error_outline, color: c.danger),
+                title: 'Could not load push tokens',
+                subtitle: _friendlyError(snap.error!),
+                trailing: TextButton.icon(
+                  onPressed: _refresh,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Retry'),
+                ),
+              ),
+            ],
+          );
+        }
+
+        final tokens = snap.data ?? const [];
+        if (tokens.isEmpty) {
+          return MotifSection(
+            children: [
+              MotifSectionRow(
+                leading: Icon(Icons.notifications_none, color: c.textTertiary),
+                title: 'No registered push tokens',
+                subtitle:
+                    'Connected devices will appear here after registration',
+                titleColor: c.textSecondary,
+                titleWeight: FontWeight.w400,
+              ),
+            ],
+          );
+        }
+
+        return MotifSection(
+          headerTrailing: IconButton(
+            tooltip: 'Refresh push tokens',
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh, size: 18),
+          ),
+          footer:
+              'Use Test to send an encrypted push through the configured relay.',
+          dividerIndent: 60,
+          children: [
+            for (final token in tokens)
+              _PushTokenRow(
+                token: token,
+                sending: _sending.contains(token.deviceToken),
+                onSend: () => unawaited(_sendTest(token)),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _PushTokenRow extends StatelessWidget {
+  final RegisteredPushToken token;
+  final bool sending;
+  final VoidCallback onSend;
+
+  const _PushTokenRow({
+    required this.token,
+    required this.sending,
+    required this.onSend,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: MotifSpacing.md,
+        vertical: MotifSpacing.sm,
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 28,
+            child: Icon(Icons.phone_iphone, color: c.accent, size: 20),
+          ),
+          const SizedBox(width: MotifSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _pushTokenTitle(token),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: c.textPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                SelectableText(
+                  token.deviceToken,
+                  style: TextStyle(
+                    color: c.textSecondary,
+                    fontSize: 12,
+                    fontFamily: 'monospace',
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  _pushTokenSubtitle(token),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: c.textTertiary, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: MotifSpacing.sm),
+          TextButton.icon(
+            onPressed: sending ? null : onSend,
+            icon: sending
+                ? SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: c.textSecondary,
+                    ),
+                  )
+                : const Icon(Icons.send_outlined, size: 16),
+            label: const Text('Test'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _pushTokenTitle(RegisteredPushToken token) {
+  final parts = <String>[
+    token.platform.trim().isEmpty ? 'Unknown platform' : token.platform.trim(),
+    if ((token.environment ?? '').trim().isNotEmpty) token.environment!.trim(),
+    if ((token.appVersion ?? '').trim().isNotEmpty)
+      'v${token.appVersion!.trim()}',
+  ];
+  return parts.join(' · ');
+}
+
+String _pushTokenSubtitle(RegisteredPushToken token) {
+  final parts = <String>[
+    'Registered ${_formatRegisteredAt(token.registeredAt)}',
+  ];
+  if (token.mutedSessions.isNotEmpty) {
+    parts.add(
+      '${token.mutedSessions.length} muted session${token.mutedSessions.length == 1 ? '' : 's'}',
+    );
+  }
+  return parts.join(' · ');
+}
+
+String _formatRegisteredAt(int ms) {
+  if (ms <= 0) return 'at unknown time';
+  final d = DateTime.fromMillisecondsSinceEpoch(ms).toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
+}
+
+String _friendlyError(Object error) {
+  final text = error.toString();
+  return text.startsWith('Bad state: ') ? text.substring(11) : text;
 }
 
 class _IconTile extends StatelessWidget {

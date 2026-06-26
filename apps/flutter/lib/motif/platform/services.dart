@@ -192,10 +192,15 @@ class PushRegistration {
   final String deviceToken;
   final String platform;
   final String encKeyBase64;
+  final String? environment;
+  final String? appVersion;
+
   const PushRegistration({
     required this.deviceToken,
     required this.platform,
     required this.encKeyBase64,
+    this.environment,
+    this.appVersion,
   });
 }
 

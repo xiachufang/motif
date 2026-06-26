@@ -124,8 +124,7 @@ mod auth_url_tests {
         );
         // Glued prefix (e.g. `authURL=`) → dropped.
         assert_eq!(
-            extract_auth_url("control: authURL=https://login.tailscale.com/a/xyz", None)
-                .as_deref(),
+            extract_auth_url("control: authURL=https://login.tailscale.com/a/xyz", None).as_deref(),
             Some("https://login.tailscale.com/a/xyz")
         );
         assert_eq!(extract_auth_url("nothing here", None), None);
@@ -167,12 +166,18 @@ mod auth_url_tests {
 
     #[test]
     fn host_extraction() {
-        assert_eq!(host_of("https://hs.example.com").as_deref(), Some("hs.example.com"));
+        assert_eq!(
+            host_of("https://hs.example.com").as_deref(),
+            Some("hs.example.com")
+        );
         assert_eq!(
             host_of("https://hs.example.com:8080/path").as_deref(),
             Some("hs.example.com:8080")
         );
-        assert_eq!(host_of("  https://hs.example.com/  ").as_deref(), Some("hs.example.com"));
+        assert_eq!(
+            host_of("  https://hs.example.com/  ").as_deref(),
+            Some("hs.example.com")
+        );
         assert_eq!(host_of(""), None);
     }
 }
