@@ -36,6 +36,7 @@ docs/                    architecture + protocol
 
 deploy/
 ├─ motifd/               production/self-hosted motifd Docker image (GHCR)
+├─ push-relay/           motif-push-relay APNs relay image
 ├─ rendezvous/           motif-rendezvous relay image
 └─ review/               hardened disposable motifd image for App Review
 ```

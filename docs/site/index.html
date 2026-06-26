@@ -36,6 +36,7 @@
         <a href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
         <a href="#compare" data-i18n="nav.compare">Compare</a>
         <a href="#use" data-i18n="nav.use">How to use</a>
+        <a href="#rzv" data-i18n="nav.rzv">Relay</a>
         <a href="#connect" data-i18n="nav.connect">Connect</a>
         <a href="#architecture" data-i18n="nav.architecture">Architecture</a>
         <a href="#faq" data-i18n="nav.faq">FAQ</a>
@@ -423,6 +424,64 @@
         </div>
       </section>
 
+      <section id="rzv" class="section rzv-band" aria-labelledby="rzv-title">
+        <div class="section-inner">
+          <div class="section-heading compact">
+            <p class="section-kicker" data-i18n="rzv.kicker">Rendezvous relay</p>
+            <h2 id="rzv-title" data-i18n="rzv.title">Deploy rzv once, then pair through it when direct routes are hard.</h2>
+            <p data-i18n="rzv.lead">Run the relay on any reachable host. motifd and clients both dial out, the relay matches them by token, and Motif's TLS/psk layer stays end-to-end.</p>
+          </div>
+          <div class="rzv-layout">
+            <div class="rzv-cards">
+              <article class="rzv-card">
+                <div class="rzv-card-heading">
+                  <span class="rzv-step" aria-hidden="true">1</span>
+                  <h3 data-i18n="rzv.deploy.title">Run the relay</h3>
+                </div>
+                <p data-i18n="rzv.deploy.copy">Expose one TCP port on a small VPS or internal host. The relay holds only in-flight pairing state.</p>
+                <pre><code>docker run -d --name motif-rzv --restart=unless-stopped \
+  -p 8765:8765 \
+  ghcr.io/xiachufang/motif-rendezvous:latest</code></pre>
+              </article>
+              <article class="rzv-card">
+                <div class="rzv-card-heading">
+                  <span class="rzv-step" aria-hidden="true">2</span>
+                  <h3 data-i18n="rzv.motifd.title">Point motifd at it</h3>
+                </div>
+                <p data-i18n="rzv.motifd.copy">For relay-only Docker deployments, disable the direct listener and set MOTIFD_RZV_RELAY. For source builds, pass --rzv-relay.</p>
+                <p class="code-label" data-i18n="rzv.motifd.docker">Docker:</p>
+                <pre><code>docker run -d --name motifd --restart=unless-stopped \
+  -v motifd-data:/data \
+  -v "$PWD:/work" \
+  -e MOTIFD_LISTEN=off \
+  -e MOTIFD_RZV_RELAY=relay.example.com:8765 \
+  ghcr.io/xiachufang/motifd:latest</code></pre>
+                <p class="code-label" data-i18n="rzv.motifd.binary">Binary:</p>
+                <pre><code>motifd --rzv-relay relay.example.com:8765</code></pre>
+              </article>
+              <article class="rzv-card">
+                <div class="rzv-card-heading">
+                  <span class="rzv-step" aria-hidden="true">3</span>
+                  <h3 data-i18n="rzv.pair.title">Pair and verify</h3>
+                </div>
+                <p data-i18n="rzv.pair.copy">Copy the motif://pair URI from motifd logs, then scan or paste it in Motif. The same link carries the relay address, psk, and cert pin.</p>
+                <pre><code>docker logs motifd 2&gt;&amp;1 | grep -o 'motif://pair[^ ]*'
+docker inspect --format '{{.State.Health.Status}}' motif-rzv</code></pre>
+              </article>
+            </div>
+            <aside class="rzv-notes" aria-label="Rendezvous relay notes">
+              <h3 data-i18n="rzv.notes.title">Operational notes</h3>
+              <ul>
+                <li data-i18n="rzv.note1">The relay forwards ciphertext only; it cannot read terminal, file, or git traffic.</li>
+                <li data-i18n="rzv.note2">Persist /data on motifd so the psk and cert pin survive restarts.</li>
+                <li data-i18n="rzv.note3">One relay can serve many independent motifd servers and clients.</li>
+              </ul>
+              <a class="text-link" href="https://github.com/xiachufang/motif/blob/main/deploy/rendezvous/README.md" target="_blank" rel="noopener" data-i18n="rzv.docs">Full relay docs</a>
+            </aside>
+          </div>
+        </div>
+      </section>
+
       <section id="connect" class="section connect-band" aria-labelledby="connect-title">
         <div class="section-inner">
           <div class="section-heading">
@@ -579,6 +638,7 @@
           <a href="https://github.com/xiachufang/motif/blob/main/docs/usage.md" target="_blank" rel="noopener" data-i18n="footer.usage">Usage</a>
           <a href="https://github.com/xiachufang/motif/blob/main/docs/rpc.md" target="_blank" rel="noopener" data-i18n="footer.rpc">RPC</a>
           <a href="https://github.com/xiachufang/motif/blob/main/docs/tailscale.md" target="_blank" rel="noopener" data-i18n="footer.tailscale">Tailscale</a>
+          <a href="https://github.com/xiachufang/motif/blob/main/deploy/rendezvous/README.md" target="_blank" rel="noopener" data-i18n="footer.rzv">Rendezvous</a>
           <a href="https://github.com/xiachufang/motif/issues" target="_blank" rel="noopener" data-i18n="footer.support">Support</a>
           <a href="https://github.com/xiachufang/motif" target="_blank" rel="noopener" data-i18n="footer.repo">Repository</a>
         </div>

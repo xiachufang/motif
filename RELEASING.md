@@ -41,7 +41,7 @@ make release-tag BUMP=major      # 1.3.2 -> 2.0.0
    Pushing the tag triggers:
    - `release-desktop` → Linux + Windows desktop apps
    - `release-motifd` → Linux + macOS `motifd` binaries
-   - `review-image` / `motifd-image` / `rendezvous-image` → Docker images
+   - `review-image` / `motifd-image` / `rendezvous-image` / `push-relay-image` → Docker images
    - **Xcode Cloud** (separate from GitHub Actions) → macOS `.dmg` + iOS
 
    All assets land on the **same** GitHub Release named after the tag; whichever

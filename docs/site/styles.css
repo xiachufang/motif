@@ -609,6 +609,8 @@ h3 {
 
 .feature-grid > *,
 .run-grid > *,
+.rzv-layout > *,
+.rzv-cards > *,
 .quick-steps > *,
 .faq-grid > *,
 .two-column > *,
@@ -671,6 +673,13 @@ h3 {
   background: var(--surface-2);
 }
 
+.rzv-band {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(238, 243, 240, 0.48)),
+    var(--paper);
+  border-top: 1px solid var(--line);
+}
+
 .connect-band {
   background: var(--surface);
   border-top: 1px solid var(--line);
@@ -691,7 +700,9 @@ h3 {
 }
 
 .run-card h3,
-.step-card h3 {
+.step-card h3,
+.rzv-card h3,
+.rzv-notes h3 {
   font-size: 1.1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -724,6 +735,113 @@ code {
 
 .steps li + li {
   margin-top: 10px;
+}
+
+.rzv-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.rzv-cards {
+  display: grid;
+  gap: 16px;
+}
+
+.rzv-card,
+.rzv-notes {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.rzv-card {
+  padding: 26px;
+}
+
+.rzv-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.rzv-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--teal);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.rzv-card p,
+.rzv-notes li {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.rzv-card p {
+  margin: 10px 0 0;
+}
+
+.rzv-card .code-label {
+  margin-top: 18px;
+  color: var(--ink-2);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.rzv-card .code-label + pre {
+  margin-top: 8px;
+}
+
+.rzv-notes {
+  position: sticky;
+  top: 84px;
+  padding: 26px;
+}
+
+.rzv-notes ul {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.rzv-notes li {
+  position: relative;
+  padding-left: 22px;
+}
+
+.rzv-notes li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.72em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+
+.text-link {
+  color: var(--teal);
+  font-size: 0.94rem;
+  font-weight: 600;
+}
+
+.text-link:hover,
+.text-link:focus-visible {
+  color: var(--ink);
 }
 
 .quick-steps {
@@ -1130,9 +1248,14 @@ details p {
   }
 
   .run-grid,
+  .rzv-layout,
   .quick-steps,
   .faq-grid {
     grid-template-columns: 1fr;
+  }
+
+  .rzv-notes {
+    position: static;
   }
 }
 
@@ -1255,6 +1378,11 @@ details p {
   }
 
   .run-card {
+    padding: 22px;
+  }
+
+  .rzv-card,
+  .rzv-notes {
     padding: 22px;
   }
 
