@@ -24,7 +24,6 @@ Future<LogExportResult> exportLogFiles({
   final sourceDir = await _logDirectory();
   final sources = await _logSources(sourceDir, config);
   final exportDir = await _exportDirectory();
-  await exportDir.create(recursive: true);
 
   final output = File('${exportDir.path}/${_exportFileName()}');
   final out = output.openWrite(mode: FileMode.write);
@@ -67,11 +66,28 @@ Future<List<File>> _logSources(Directory dir, LogConfig config) async {
 }
 
 Future<Directory> _exportDirectory() async {
-  try {
-    final downloads = await getDownloadsDirectory();
-    if (downloads != null) return downloads;
-  } catch (_) {}
-  return getTemporaryDirectory();
+  final candidates = <Future<Directory?> Function()>[
+    if (Platform.isMacOS || Platform.isLinux || Platform.isWindows)
+      getDownloadsDirectory,
+    if (Platform.isAndroid || Platform.isIOS)
+      () async => getApplicationDocumentsDirectory(),
+    () async => getTemporaryDirectory(),
+  ];
+
+  for (final candidate in candidates) {
+    try {
+      final dir = await candidate();
+      if (dir == null) continue;
+      await dir.create(recursive: true);
+      return dir;
+    } catch (_) {
+      // Keep trying less visible but more reliable app-owned locations.
+    }
+  }
+
+  throw const FileSystemException(
+    'Unable to create a writable log export directory',
+  );
 }
 
 String _exportFileName() {
