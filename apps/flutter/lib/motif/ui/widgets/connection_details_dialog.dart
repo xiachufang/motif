@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../state/connection_state.dart';
+import 'top_toast.dart';
 
 bool hasConnectionDetails(ServerConnectionViewState view) {
   if (!view.subtitle.contains('\n')) return false;
@@ -66,9 +67,7 @@ Future<void> showConnectionDetailsDialog(
             await Clipboard.setData(ClipboardData(text: detail));
             if (dialogContext.mounted) Navigator.of(dialogContext).pop();
             if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Connection details copied')),
-              );
+              showMotifToast(context, 'Connection details copied');
             }
           },
         ),

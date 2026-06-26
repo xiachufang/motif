@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/motif_client.dart';

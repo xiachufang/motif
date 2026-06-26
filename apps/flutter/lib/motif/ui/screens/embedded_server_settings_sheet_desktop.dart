@@ -17,6 +17,7 @@ import '../../state/embedded_server_service.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/top_toast.dart';
 
 /// Which control plane the embedded node joins. Derived from `tsControlUrl`
 /// (empty ⇒ official Tailscale; set ⇒ a self-hosted Headscale URL), but held
@@ -812,9 +813,7 @@ class _EmbeddedServerSettingsSheetState
             onPressed: () async {
               await Clipboard.setData(ClipboardData(text: uri));
               if (mounted) {
-                ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                  const SnackBar(content: Text('Pairing link copied')),
-                );
+                showMotifToast(context, 'Pairing link copied');
               }
             },
             icon: const Icon(Icons.copy, size: 16),
@@ -1071,15 +1070,11 @@ class _PushTokensViewState extends State<_PushTokensView> {
           : result.sent
           ? 'Test push sent'
           : 'Test push was not sent';
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(SnackBar(content: Text(message)));
+      showMotifToast(context, message);
       if (result.pruned) _refresh();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.maybeOf(
-        context,
-      )?.showSnackBar(SnackBar(content: Text(_friendlyError(e))));
+      showMotifToast(context, _friendlyError(e));
     } finally {
       if (mounted) {
         setState(() => _sending.remove(token.deviceToken));

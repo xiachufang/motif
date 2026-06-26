@@ -15,6 +15,7 @@ import 'screens/welcome_screen.dart';
 import 'theme/motif_theme.dart';
 import 'widgets/adaptive_modal.dart';
 import 'widgets/notification_banner.dart';
+import 'widgets/top_toast.dart';
 
 final motifRouteObserver = RouteObserver<ModalRoute<void>>();
 
@@ -64,6 +65,8 @@ class MotifApp extends StatelessWidget {
       },
       navigatorKey: motifNavigatorKey,
       navigatorObservers: canServe ? const [] : [motifRouteObserver],
+      builder: (context, child) =>
+          MotifToastHost(child: child ?? const SizedBox.shrink()),
       // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
       // terminal's own handler claims ⌘W first (close tab) — this only fires on
       // the screens that don't, plus the session view's last-tab fallback.

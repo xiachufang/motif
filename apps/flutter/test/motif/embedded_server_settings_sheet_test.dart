@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/state/embedded_server_service.dart';
 import 'package:motif/motif/ui/screens/embedded_server_settings_sheet_desktop.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:motif/motif/ui/widgets/top_toast.dart';
 import 'package:provider/provider.dart';
 
 void main() {
@@ -225,6 +226,8 @@ Future<void> _pumpSettings(
       value: service,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
+        builder: (context, child) =>
+            MotifToastHost(child: child ?? const SizedBox.shrink()),
         home: Scaffold(
           body: SingleChildScrollView(
             padding: const EdgeInsets.all(MotifSpacing.lg),
