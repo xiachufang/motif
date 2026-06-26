@@ -42,6 +42,7 @@ class _EmbeddedServerSettingsSheetState
   late final TextEditingController _tsAuthkey;
   late final TextEditingController _tsControlUrl;
   late final TextEditingController _rzvRelay;
+  late final TextEditingController _pushRelayUrl;
 
   // Derived UI state for the two Tailscale axes (see the enum docs above).
   late _TsControl _tsControl;
@@ -63,6 +64,7 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
     _rzvRelay = TextEditingController(text: c.rzvRelay);
+    _pushRelayUrl = TextEditingController(text: c.pushRelayUrl);
     _tsControl = c.tsControlUrl.trim().isEmpty
         ? _TsControl.official
         : _TsControl.custom;
@@ -76,6 +78,7 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey.dispose();
     _tsControlUrl.dispose();
     _rzvRelay.dispose();
+    _pushRelayUrl.dispose();
     _restartPromptTimer?.cancel();
     super.dispose();
   }
@@ -107,7 +110,8 @@ class _EmbeddedServerSettingsSheetState
         previous.tsAuthkey != next.tsAuthkey ||
         previous.tsControlUrl != next.tsControlUrl ||
         previous.rzvEnabled != next.rzvEnabled ||
-        previous.rzvRelay != next.rzvRelay;
+        previous.rzvRelay != next.rzvRelay ||
+        previous.pushRelayUrl != next.pushRelayUrl;
   }
 
   bool _serverIsActive(EmbeddedServerService svc) {
@@ -221,6 +225,8 @@ class _EmbeddedServerSettingsSheetState
         _listenSection(cfg, c),
         const SizedBox(height: MotifSpacing.lg),
         _pairingSection(cfg, status, c),
+        const SizedBox(height: MotifSpacing.lg),
+        _notificationsSection(cfg),
         const SizedBox(height: MotifSpacing.lg),
         _tailscaleSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
@@ -809,6 +815,29 @@ class _EmbeddedServerSettingsSheetState
           ),
         ],
       ),
+    );
+  }
+
+  // ── Push notifications ──
+
+  Widget _notificationsSection(EmbeddedServerConfig cfg) {
+    return MotifSection(
+      title: 'Notifications',
+      footer: 'Leave blank to disable background push.',
+      children: [
+        _field(
+          _pushRelayUrl,
+          'Push relay',
+          kDefaultPushRelayAddress,
+          keyboard: TextInputType.url,
+          onChanged: () => _save(
+            cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()),
+            restartRequired: true,
+            restartOnBlur: true,
+          ),
+          onFocusLost: _showPendingRestartPrompt,
+        ),
+      ],
     );
   }
 

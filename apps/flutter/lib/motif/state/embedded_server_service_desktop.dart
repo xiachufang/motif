@@ -38,6 +38,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
       'control_url': tsControlUrl,
     },
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
+    'push_relay_url': pushRelayUrl,
     'autostart': autostart,
   };
 }
@@ -54,6 +55,7 @@ EmbeddedServerConfig _configFromJson(Map<String, Object?> j) {
     tsControlUrl: (ts['control_url'] as String?) ?? '',
     rzvEnabled: rzv['enabled'] == true,
     rzvRelay: (rzv['relay'] as String?) ?? '',
+    pushRelayUrl: (j['push_relay_url'] as String?) ?? kDefaultPushRelayAddress,
     autostart: j['autostart'] == true,
   );
 }

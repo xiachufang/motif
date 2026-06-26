@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use motif_server::{ServerConfig, TailscaleListenConfig};
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_PUSH_RELAY_ADDRESS: &str = "motif-push-relay.slothease.com";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ListenMode {
@@ -83,6 +85,10 @@ pub struct MenuConfig {
     pub tailscale: TsConfig,
     #[serde(default)]
     pub rzv: RzvConfig,
+    /// Push relay address or full URL. A bare host is expanded to
+    /// `https://<host>/v1/push`; an empty string disables push.
+    #[serde(default = "default_push_relay_url")]
+    pub push_relay_url: String,
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
     #[serde(default)]
@@ -93,6 +99,10 @@ fn default_port() -> u16 {
     7777
 }
 
+fn default_push_relay_url() -> String {
+    DEFAULT_PUSH_RELAY_ADDRESS.to_string()
+}
+
 impl Default for MenuConfig {
     fn default() -> Self {
         Self {
@@ -100,6 +110,7 @@ impl Default for MenuConfig {
             port: default_port(),
             tailscale: TsConfig::default(),
             rzv: RzvConfig::default(),
+            push_relay_url: default_push_relay_url(),
             autostart: false,
         }
     }
@@ -163,8 +174,12 @@ impl MenuConfig {
                 );
                 c.tls = Some(identity.server_config.clone());
                 rendezvous = Some(c);
-                pairing_uri =
-                    Some(motif_server::rzv::pair_uri(&relay, &psk, Some(&pin), Some(&name)));
+                pairing_uri = Some(motif_server::rzv::pair_uri(
+                    &relay,
+                    &psk,
+                    Some(&pin),
+                    Some(&name),
+                ));
                 if is_lan {
                     let addrs = motif_server::rzv::local_nic_addrs();
                     if !addrs.is_empty() {
@@ -229,13 +244,33 @@ impl MenuConfig {
                 rendezvous,
                 rzv_direct,
                 token,
-                // The embedded server runs motifd on loopback/LAN for local use;
-                // push notifications (which need a public relay) aren't wired
-                // here.
-                push_relay_url: None,
+                push_relay_url: normalize_push_relay_url(&self.push_relay_url),
             },
             pairing_uri,
         })
+    }
+}
+
+fn normalize_push_relay_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+
+    match url::Url::parse(&candidate) {
+        Ok(mut url) => {
+            if url.path().is_empty() || url.path() == "/" {
+                url.set_path("/v1/push");
+            }
+            Some(url.to_string())
+        }
+        Err(_) => Some(candidate),
     }
 }
 
@@ -251,7 +286,10 @@ mod tests {
     #[test]
     fn loopback_tokenless_ok() {
         let c = MenuConfig::default(); // loopback, auth off
-        let sc = c.to_server_config(&tsnet()).expect("loopback should map").server;
+        let sc = c
+            .to_server_config(&tsnet())
+            .expect("loopback should map")
+            .server;
         assert!(sc.listen.unwrap().ip().is_loopback());
         assert!(sc.token.is_none());
         assert!(sc.tailscale.is_none());
@@ -273,7 +311,9 @@ mod tests {
         assert!(!sc.listen.unwrap().ip().is_loopback());
         assert!(sc.token.is_some(), "LAN derives a psk bearer");
         assert!(sc.listen_tls.is_some(), "LAN terminates TLS");
-        let uri = built.pairing_uri.expect("LAN advertises a direct pairing link");
+        let uri = built
+            .pairing_uri
+            .expect("LAN advertises a direct pairing link");
         assert!(uri.starts_with("motif://pair?"));
         assert!(uri.contains("&pk="), "carries the cert pin");
         assert!(!uri.contains("&rzv="), "direct form (no relay)");
@@ -313,6 +353,7 @@ mod tests {
         assert_eq!(c.listen_mode, ListenMode::Lan);
         assert!(c.tailscale.enabled);
         assert_eq!(c.tailscale.hostname, "my-dev");
+        assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
         assert!(c.autostart);
     }
 
@@ -324,12 +365,15 @@ mod tests {
         assert_eq!(c.listen_mode, ListenMode::Loopback);
         assert!(!c.tailscale.enabled);
         assert!(!c.rzv.enabled);
+        assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
     }
 
     #[test]
     fn rzv_disabled_has_no_backend_or_pairing() {
         // Default (rzv off) takes the early-return path — no filesystem I/O.
-        let built = c_default().to_server_config(&tsnet()).expect("default maps");
+        let built = c_default()
+            .to_server_config(&tsnet())
+            .expect("default maps");
         assert!(built.server.rendezvous.is_none());
         assert!(built.pairing_uri.is_none());
     }
@@ -340,6 +384,30 @@ mod tests {
         let c: MenuConfig = serde_json::from_str(json).expect("parse rzv");
         assert!(c.rzv.enabled);
         assert_eq!(c.rzv.relay, "relay.example:9999");
+    }
+
+    #[test]
+    fn default_push_relay_maps_to_full_endpoint() {
+        let built = c_default()
+            .to_server_config(&tsnet())
+            .expect("default maps");
+        assert_eq!(
+            built.server.push_relay_url.as_deref(),
+            Some("https://motif-push-relay.slothease.com/v1/push")
+        );
+    }
+
+    #[test]
+    fn push_relay_url_normalizes_bare_hosts_and_allows_disable() {
+        assert_eq!(
+            normalize_push_relay_url("relay.example.com").as_deref(),
+            Some("https://relay.example.com/v1/push")
+        );
+        assert_eq!(
+            normalize_push_relay_url("https://relay.example.com/custom").as_deref(),
+            Some("https://relay.example.com/custom")
+        );
+        assert_eq!(normalize_push_relay_url("   "), None);
     }
 
     fn c_default() -> MenuConfig {

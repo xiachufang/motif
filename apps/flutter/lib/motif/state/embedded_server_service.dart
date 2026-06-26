@@ -10,6 +10,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Stable id of the auto-managed loopback server entry.
 const String kEmbeddedServerId = 'embedded-local';
 
+/// Default public push relay for embedded motifd. The Rust embed layer accepts
+/// this bare host and expands it to `https://<host>/v1/push`.
+const String kDefaultPushRelayAddress = 'motif-push-relay.slothease.com';
+
 typedef EmbeddedServerFactory =
     Future<EmbeddedServerService> Function(SharedPreferences prefs);
 
@@ -31,6 +35,7 @@ class EmbeddedServerConfig {
   final String tsControlUrl;
   final bool rzvEnabled;
   final String rzvRelay;
+  final String pushRelayUrl;
   final bool autostart;
 
   const EmbeddedServerConfig({
@@ -42,6 +47,7 @@ class EmbeddedServerConfig {
     this.tsControlUrl = '',
     this.rzvEnabled = false,
     this.rzvRelay = '',
+    this.pushRelayUrl = kDefaultPushRelayAddress,
     this.autostart = false,
   });
 
@@ -54,6 +60,7 @@ class EmbeddedServerConfig {
     String? tsControlUrl,
     bool? rzvEnabled,
     String? rzvRelay,
+    String? pushRelayUrl,
     bool? autostart,
   }) => EmbeddedServerConfig(
     listenMode: listenMode ?? this.listenMode,
@@ -64,6 +71,7 @@ class EmbeddedServerConfig {
     tsAuthkey: tsAuthkey ?? this.tsAuthkey,
     rzvEnabled: rzvEnabled ?? this.rzvEnabled,
     rzvRelay: rzvRelay ?? this.rzvRelay,
+    pushRelayUrl: pushRelayUrl ?? this.pushRelayUrl,
     autostart: autostart ?? this.autostart,
   );
 }

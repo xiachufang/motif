@@ -32,6 +32,9 @@ void main() {
       findsOneWidget,
     ); // MotifSection uppercases titles
     expect(find.text('Pair over a relay'), findsOneWidget);
+    expect(find.text('NOTIFICATIONS'), findsOneWidget);
+    expect(find.text('Push relay'), findsOneWidget);
+    expect(find.text(kDefaultPushRelayAddress), findsWidgets);
     expect(errors, isEmpty);
   });
 
@@ -84,6 +87,32 @@ void main() {
 
     expect(service.stopCount, 0);
     expect(service.startCount, 0);
+  });
+
+  testWidgets('saves editable push relay address and restarts after blur', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      status: const EmbeddedServerStatus(running: true),
+    );
+    await _pumpSettings(tester, service);
+
+    final relayField = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField && widget.decoration?.labelText == 'Push relay',
+    );
+    await tester.tap(relayField);
+    await tester.enterText(relayField, 'relay.example.com');
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(service.config.pushRelayUrl, 'relay.example.com');
+    expect(find.text('Restart server?'), findsNothing);
+
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Restart server?'), findsOneWidget);
   });
 
   testWidgets('keeps Tailscale details collapsed until opened', (tester) async {
@@ -142,8 +171,11 @@ Future<List<FlutterErrorDetails>> _captureFlutterErrors(
   final errors = <FlutterErrorDetails>[];
   final previousOnError = FlutterError.onError;
   FlutterError.onError = errors.add;
-  addTearDown(() => FlutterError.onError = previousOnError);
-  await run();
+  try {
+    await run();
+  } finally {
+    FlutterError.onError = previousOnError;
+  }
   return errors;
 }
 
