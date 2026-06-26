@@ -1,21 +1,26 @@
 //! `WS /pty/<pty_id>?session=<sid>&since=<bytes>`
 //! client. One per open PTY tab.
 //!
-//! Bidirectional binary stream — no envelope. Each connection leads with a
-//! single Text meta frame `{"since":<offset>}` (the absolute byte offset of
-//! the first data byte that follows); every subsequent frame is raw PTY
-//! output bytes, and outbound frames are stdin bytes. We adopt that offset
-//! and advance it per Binary frame so [`PtyClient::resume_cursor`] hands the
-//! caller an absolute `?since=` to warm-resume from on the next connect.
-//! On close-with-code 4011 / 4012 the caller is expected to clear its
-//! local terminal buffer and reconnect without `since=`.
+//! Bidirectional binary stream. Each connection leads with a single Text meta
+//! frame `{"since":<offset>}` (the absolute byte offset of the first data byte
+//! that follows). New clients request `pty_frame=v1&pty_compress=zlib`; if the
+//! server confirms it in the meta frame, inbound Binary frames carry a 1-byte
+//! application header (`bit0 = zlib-compressed`) and are decoded before they
+//! reach callers. Outbound frames remain raw stdin bytes. We adopt the meta
+//! offset and advance it by decoded PTY bytes so [`PtyClient::resume_cursor`]
+//! hands the caller an absolute `?since=` to warm-resume from on the next connect.
+//! On close-with-code 4011 (live subscriber lagged) or legacy/compat 4012, the
+//! caller is expected to clear its local terminal buffer and reconnect without
+//! `since=`.
 
+use std::io::Read;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use bytes::Bytes;
+use flate2::read::ZlibDecoder;
 use futures_util::sink::Sink;
 use futures_util::stream::Stream as FuturesStream;
 use futures_util::{SinkExt, StreamExt};
@@ -30,6 +35,8 @@ use tokio_tungstenite::{
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const HEARTBEAT_TICK: Duration = Duration::from_secs(10);
+const FRAME_FLAG_COMPRESSED: u8 = 0x01;
+const FRAME_FLAG_RESERVED: u8 = !FRAME_FLAG_COMPRESSED;
 
 type WsErr = tokio_tungstenite::tungstenite::Error;
 type WsSink = Pin<Box<dyn Sink<Message, Error = WsErr> + Send>>;
@@ -40,16 +47,28 @@ type WsRx = Pin<Box<dyn FuturesStream<Item = Result<Message, WsErr>> + Send>>;
 pub const CLOSE_HISTORY_TRUNCATED: u16 = 4011;
 pub const CLOSE_STALE_CURSOR: u16 = 4012;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyOutputMode {
+    Legacy,
+    FramedZlib,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PtyMeta {
+    since: u64,
+    output_mode: PtyOutputMode,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum CloseReason {
     /// Peer (server) closed gracefully — typically PTY exited or
     /// session detached.
     Normal,
-    /// 4011 — ring rolled past our `since`. Caller should clear the
-    /// local terminal buffer and reconnect without `since=`.
+    /// 4011 — live subscriber lagged past the server broadcast capacity.
+    /// Caller should clear the local terminal buffer and reconnect without
+    /// `since=`.
     HistoryTruncated,
-    /// 4012 — `since` was ahead of server total (server restart).
-    /// Same recovery as 4011.
+    /// 4012 — legacy/compat stale cursor signal. Same recovery as 4011.
     StaleCursor,
     /// Read error, peer dropped without sending a Close frame.
     Transport,
@@ -126,8 +145,9 @@ impl PtyClient {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let url =
-            format!("ws://{authority}/pty/{pty_id}?session={session_id}&since={since}");
+        let url = format!(
+            "ws://{authority}/pty/{pty_id}?session={session_id}&since={since}&pty_frame=v1&pty_compress=zlib"
+        );
         let mut req = url
             .as_str()
             .into_client_request()
@@ -183,6 +203,7 @@ async fn reader_task(
     cursor_set: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
+    let mut output_mode = PtyOutputMode::Legacy;
     while let Some(item) = ws_rx.next().await {
         let msg = match item {
             Ok(m) => m,
@@ -195,13 +216,21 @@ async fn reader_task(
         *liveness.lock().unwrap() = Instant::now();
         match msg {
             Message::Binary(b) => {
+                let bytes = match decode_pty_payload(&b, output_mode) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "/pty/<id> framed decode");
+                        *closed.lock().unwrap() = Some(CloseReason::Transport);
+                        break;
+                    }
+                };
                 // Advance the resume cursor only once the leading meta frame
                 // has seeded its absolute base — otherwise we'd be counting
                 // from 0 and undershoot a snapshot's true `total`.
                 if cursor_set.load(Relaxed) {
-                    cursor.fetch_add(b.len() as u64, Relaxed);
+                    cursor.fetch_add(bytes.len() as u64, Relaxed);
                 }
-                if out_tx.send(Bytes::from(b.to_vec())).is_err() {
+                if out_tx.send(bytes).is_err() {
                     break;
                 }
             }
@@ -220,8 +249,9 @@ async fn reader_task(
             // on the ring `total` for both warm deltas and cold snapshots.
             Message::Text(s) => {
                 if !cursor_set.load(Relaxed) {
-                    if let Some(since) = parse_meta_since(&s) {
-                        cursor.store(since, Relaxed);
+                    if let Some(meta) = parse_meta(&s) {
+                        output_mode = meta.output_mode;
+                        cursor.store(meta.since, Relaxed);
                         cursor_set.store(true, Relaxed);
                     }
                 }
@@ -234,25 +264,89 @@ async fn reader_task(
 /// Pull the absolute byte offset out of a `/pty/<id>` leading meta frame
 /// (`{"since":<offset>}`). Returns `None` for any non-meta / malformed text.
 fn parse_meta_since(s: &str) -> Option<u64> {
-    serde_json::from_str::<serde_json::Value>(s)
-        .ok()?
-        .get("since")?
-        .as_u64()
+    parse_meta(s).map(|meta| meta.since)
+}
+
+fn parse_meta(s: &str) -> Option<PtyMeta> {
+    let value = serde_json::from_str::<serde_json::Value>(s).ok()?;
+    let since = value.get("since")?.as_u64()?;
+    let output_mode = match (
+        value.get("pty_frame").and_then(|v| v.as_str()),
+        value.get("pty_compress").and_then(|v| v.as_str()),
+    ) {
+        (Some("v1"), Some("zlib")) => PtyOutputMode::FramedZlib,
+        _ => PtyOutputMode::Legacy,
+    };
+    Some(PtyMeta { since, output_mode })
+}
+
+fn decode_pty_payload(payload: &[u8], output_mode: PtyOutputMode) -> Result<Bytes, String> {
+    match output_mode {
+        PtyOutputMode::Legacy => Ok(Bytes::copy_from_slice(payload)),
+        PtyOutputMode::FramedZlib => decode_framed_zlib_payload(payload),
+    }
+}
+
+fn decode_framed_zlib_payload(frame: &[u8]) -> Result<Bytes, String> {
+    let (&flags, payload) = frame
+        .split_first()
+        .ok_or_else(|| "empty framed pty frame".to_string())?;
+    if flags & FRAME_FLAG_RESERVED != 0 {
+        return Err(format!("reserved pty frame flags set: 0x{flags:02x}"));
+    }
+    if flags & FRAME_FLAG_COMPRESSED == 0 {
+        return Ok(Bytes::copy_from_slice(payload));
+    }
+    let mut decoder = ZlibDecoder::new(payload);
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| format!("zlib decode failed: {e}"))?;
+    Ok(Bytes::from(out))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_meta_since;
+    use super::{
+        decode_pty_payload, parse_meta, parse_meta_since, PtyMeta, PtyOutputMode,
+        FRAME_FLAG_COMPRESSED,
+    };
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn zlib(data: &[u8]) -> Vec<u8> {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
 
     #[test]
     fn parses_well_formed_meta() {
         assert_eq!(parse_meta_since(r#"{"since":0}"#), Some(0));
-        assert_eq!(parse_meta_since(r#"{"since":1717171717}"#), Some(1_717_171_717));
+        assert_eq!(
+            parse_meta_since(r#"{"since":1717171717}"#),
+            Some(1_717_171_717)
+        );
         // The server seeds the ring origin from MAX_SCROLLBACK (~1.6 GiB),
         // so a snapshot's reported offset is large — must survive as u64.
         assert_eq!(
             parse_meta_since(r#"{"since":1610612736}"#),
             Some(1_610_612_736)
+        );
+        assert_eq!(
+            parse_meta(r#"{"since":5,"pty_frame":"v1","pty_compress":"zlib"}"#),
+            Some(PtyMeta {
+                since: 5,
+                output_mode: PtyOutputMode::FramedZlib,
+            })
+        );
+        assert_eq!(
+            parse_meta(r#"{"since":5,"pty_frame":"v1"}"#),
+            Some(PtyMeta {
+                since: 5,
+                output_mode: PtyOutputMode::Legacy,
+            })
         );
     }
 
@@ -263,6 +357,45 @@ mod tests {
         assert_eq!(parse_meta_since(r#"{"other":5}"#), None);
         assert_eq!(parse_meta_since(r#"{"since":-1}"#), None);
         assert_eq!(parse_meta_since(r#"{"since":"x"}"#), None);
+    }
+
+    #[test]
+    fn decodes_legacy_payload_without_frame_header() {
+        assert_eq!(
+            decode_pty_payload(b"abc", PtyOutputMode::Legacy)
+                .unwrap()
+                .as_ref(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn decodes_framed_raw_payload() {
+        assert_eq!(
+            decode_pty_payload(b"\x00abc", PtyOutputMode::FramedZlib)
+                .unwrap()
+                .as_ref(),
+            b"abc"
+        );
+    }
+
+    #[test]
+    fn decodes_framed_zlib_payload() {
+        let mut frame = vec![FRAME_FLAG_COMPRESSED];
+        frame.extend_from_slice(&zlib(b"abcabcabc"));
+        assert_eq!(
+            decode_pty_payload(&frame, PtyOutputMode::FramedZlib)
+                .unwrap()
+                .as_ref(),
+            b"abcabcabc"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_framed_payloads() {
+        assert!(decode_pty_payload(b"", PtyOutputMode::FramedZlib).is_err());
+        assert!(decode_pty_payload(b"\x02abc", PtyOutputMode::FramedZlib).is_err());
+        assert!(decode_pty_payload(b"\x01not-zlib", PtyOutputMode::FramedZlib).is_err());
     }
 }
 

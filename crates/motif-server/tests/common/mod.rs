@@ -403,6 +403,19 @@ impl TestClient {
         if let Some(s) = since {
             q.push_str(&format!("&since={s}"));
         }
+        self.open_pty_ws_query(pty_id, q).await
+    }
+
+    /// Open a framed `/pty/<id>` WebSocket for this client's session.
+    pub async fn open_pty_ws_framed(&self, pty_id: &str, since: Option<u64>) -> Result<PtyWs> {
+        let mut q = format!("session={}&pty_frame=v1&pty_compress=zlib", self.session_id);
+        if let Some(s) = since {
+            q.push_str(&format!("&since={s}"));
+        }
+        self.open_pty_ws_query(pty_id, q).await
+    }
+
+    async fn open_pty_ws_query(&self, pty_id: &str, q: String) -> Result<PtyWs> {
         let url = format!("ws://{}/pty/{pty_id}?{q}", self.addr);
         let mut req = url.into_client_request().context("build pty ws request")?;
         req.headers_mut().insert(
@@ -447,6 +460,30 @@ pub struct PtyWs {
 }
 
 impl PtyWs {
+    pub async fn read_text(&mut self, timeout_total: Duration) -> Result<String> {
+        let msg = timeout(timeout_total, self.ws.next())
+            .await
+            .context("/pty ws text timeout")?
+            .context("/pty ws closed while waiting for text")?
+            .context("/pty ws read text")?;
+        match msg {
+            Message::Text(t) => Ok(t.to_string()),
+            other => bail!("expected /pty text frame, got {other:?}"),
+        }
+    }
+
+    pub async fn read_binary(&mut self, timeout_total: Duration) -> Result<Bytes> {
+        let msg = timeout(timeout_total, self.ws.next())
+            .await
+            .context("/pty ws binary timeout")?
+            .context("/pty ws closed while waiting for binary")?
+            .context("/pty ws read binary")?;
+        match msg {
+            Message::Binary(b) => Ok(b),
+            other => bail!("expected /pty binary frame, got {other:?}"),
+        }
+    }
+
     /// Read raw bytes until we either accumulate something matching `needle`
     /// or hit `timeout_total`. Returns the full byte log so callers can assert
     /// on it.

@@ -2,8 +2,10 @@
 //! per-PTY raw bytestream WebSocket.
 //!
 //! Carries PTY output (and inbound stdin) as bare master input/output
-//! bytes — no envelope, no codec negotiation, no JSON-RPC. Each PTY tab
-//! on a client opens one of these.
+//! bytes by default — no envelope, no JSON-RPC. New clients may opt in with
+//! `pty_frame=v1&pty_compress=zlib`; then each server-to-client Binary frame
+//! has a 1-byte application header (`bit0 = zlib-compressed`) while stdin
+//! frames remain raw. Each PTY tab on a client opens one of these.
 //!
 //! ## Replay semantics
 //!
@@ -30,9 +32,10 @@
 //!
 //! Every connection leads with a single WebSocket **Text** frame
 //! `{"since":<offset>}` — the absolute byte offset of the first data byte that
-//! follows (`since` for a warm delta, `total` for a snapshot). All data frames
-//! are Binary, so the client tells them apart by frame type and adopts
-//! `offset` as its resume cursor. Both replay kinds are opaque bytes the client
+//! follows (`since` for a warm delta, `total` for a snapshot). Framed-mode
+//! connections add `pty_frame` / `pty_compress` fields. All data frames are
+//! Binary, so the client tells them apart by frame type and adopts `offset` as
+//! its resume cursor. Both replay kinds decode to opaque PTY bytes the client
 //! feeds into its terminal identically.
 //!
 //! A live subscriber that lags past the broadcast capacity is closed with 4011;
@@ -45,10 +48,13 @@ use axum::extract::ws::{CloseCode, CloseFrame, Message, WebSocket, WebSocketUpgr
 use axum::extract::{ConnectInfo, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 use futures_util::{SinkExt, StreamExt};
 use motif_net::PeerAddr;
 use motif_proto::common::{ClientId, PtyId};
 use serde::Deserialize;
+use std::io::Write;
 use tokio::sync::mpsc;
 
 use crate::pty::Pty;
@@ -67,6 +73,8 @@ const CLOSE_HISTORY_TRUNCATED: CloseCode = 4011;
 /// large scrollback renders progressively (and a mid-replay drop only
 /// loses one frame), large enough to amortize per-frame overhead.
 const REPLAY_CHUNK_BYTES: usize = 64 * 1024;
+const LIVE_COMPRESS_THRESHOLD_BYTES: usize = 4 * 1024;
+const FRAME_FLAG_COMPRESSED: u8 = 0x01;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct PtyQuery {
@@ -74,6 +82,14 @@ pub struct PtyQuery {
     pub token: Option<String>,
     #[serde(default)]
     pub since: Option<u64>,
+    pub pty_frame: Option<String>,
+    pub pty_compress: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtyOutputMode {
+    Legacy,
+    FramedZlib,
 }
 
 pub async fn pty_upgrade(
@@ -108,6 +124,10 @@ pub async fn pty_upgrade(
     let Some(pty) = session.pty_pool.get(&pty_id) else {
         return (StatusCode::NOT_FOUND, "pty not found in attached session").into_response();
     };
+    let output_mode = match pty_output_mode(&q) {
+        Ok(mode) => mode,
+        Err((status, message)) => return (status, message).into_response(),
+    };
 
     let client_id = snap.client_id;
     // `Some(n)` ⇒ client owns an absolute cursor (exact replay/truncate
@@ -117,7 +137,16 @@ pub async fn pty_upgrade(
     let since = q.since;
 
     ws.on_upgrade(move |socket| {
-        handle_pty_socket(socket, session, pty, client_id, pty_id, since, peer)
+        handle_pty_socket(
+            socket,
+            session,
+            pty,
+            client_id,
+            pty_id,
+            since,
+            output_mode,
+            peer,
+        )
     })
 }
 
@@ -128,6 +157,7 @@ async fn handle_pty_socket(
     client_id: ClientId,
     pty_id: PtyId,
     since: Option<u64>,
+    output_mode: PtyOutputMode,
     peer: PeerAddr,
 ) {
     tracing::info!(
@@ -174,7 +204,15 @@ async fn handle_pty_socket(
     // `total` — true for both a warm delta and a synthetic snapshot — so the
     // client keeps one dead-simple accounting rule and needs no snapshot flag.
     // All data frames are Binary; this meta is the only Text frame.
-    let meta = format!("{{\"since\":{start}}}");
+    let meta = match output_mode {
+        PtyOutputMode::Legacy => format!("{{\"since\":{start}}}"),
+        PtyOutputMode::FramedZlib => serde_json::json!({
+            "since": start,
+            "pty_frame": "v1",
+            "pty_compress": "zlib",
+        })
+        .to_string(),
+    };
     if ws_tx.send(Message::Text(meta.into())).await.is_err() {
         return;
     }
@@ -189,11 +227,8 @@ async fn handle_pty_socket(
     if !replay.is_empty() {
         let size = replay.len();
         for chunk in replay.chunks(REPLAY_CHUNK_BYTES) {
-            if ws_tx
-                .send(Message::Binary(chunk.to_vec().into()))
-                .await
-                .is_err()
-            {
+            let frame = encode_pty_output_frame(chunk, output_mode, true);
+            if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
                 return;
             }
         }
@@ -270,9 +305,14 @@ async fn handle_pty_socket(
         loop {
             match output_rx.recv().await {
                 Ok(bytes) => {
-                    let size = bytes.len();
+                    let frame = encode_pty_output_frame(
+                        &bytes,
+                        output_mode,
+                        bytes.len() >= LIVE_COMPRESS_THRESHOLD_BYTES,
+                    );
+                    let size = frame.len();
                     let send = out_tx_fwd.send(OutMsg {
-                        msg: Message::Binary(bytes.to_vec().into()),
+                        msg: Message::Binary(frame.into()),
                         enqueued_at: Instant::now(),
                         tag: "pty.output".into(),
                         size,
@@ -343,6 +383,107 @@ async fn handle_pty_socket(
     tracing::info!(client_id = %client_id, pty_id = %pty_id, "pty ws disconnected");
 }
 
+fn pty_output_mode(q: &PtyQuery) -> Result<PtyOutputMode, (StatusCode, &'static str)> {
+    match (q.pty_frame.as_deref(), q.pty_compress.as_deref()) {
+        (None, None) => Ok(PtyOutputMode::Legacy),
+        (Some("v1"), Some("zlib")) => Ok(PtyOutputMode::FramedZlib),
+        (Some("v1"), None) => Err((
+            StatusCode::BAD_REQUEST,
+            "pty_frame=v1 requires pty_compress=zlib",
+        )),
+        (None, Some(_)) => Err((
+            StatusCode::BAD_REQUEST,
+            "pty_compress requires pty_frame=v1",
+        )),
+        (Some(_), _) => Err((StatusCode::BAD_REQUEST, "unsupported pty_frame")),
+    }
+}
+
+fn encode_pty_output_frame(
+    payload: &[u8],
+    mode: PtyOutputMode,
+    allow_compression: bool,
+) -> Vec<u8> {
+    match mode {
+        PtyOutputMode::Legacy => payload.to_vec(),
+        PtyOutputMode::FramedZlib => {
+            if allow_compression {
+                if let Some(compressed) = zlib_compress_if_smaller(payload) {
+                    let mut out = Vec::with_capacity(1 + compressed.len());
+                    out.push(FRAME_FLAG_COMPRESSED);
+                    out.extend_from_slice(&compressed);
+                    return out;
+                }
+            }
+            let mut out = Vec::with_capacity(1 + payload.len());
+            out.push(0);
+            out.extend_from_slice(payload);
+            out
+        }
+    }
+}
+
+fn zlib_compress_if_smaller(payload: &[u8]) -> Option<Vec<u8>> {
+    if payload.is_empty() {
+        return None;
+    }
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(payload).ok()?;
+    let compressed = encoder.finish().ok()?;
+    (compressed.len() < payload.len()).then_some(compressed)
+}
+
 fn us_to_ms(us: u64) -> f64 {
     us as f64 / 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        encode_pty_output_frame, PtyOutputMode, FRAME_FLAG_COMPRESSED,
+        LIVE_COMPRESS_THRESHOLD_BYTES,
+    };
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+
+    fn inflate(bytes: &[u8]) -> Vec<u8> {
+        let mut decoder = ZlibDecoder::new(bytes);
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn legacy_output_frame_is_raw_payload() {
+        let payload = b"raw pty bytes";
+        assert_eq!(
+            encode_pty_output_frame(payload, PtyOutputMode::Legacy, true),
+            payload
+        );
+    }
+
+    #[test]
+    fn framed_output_uses_one_byte_raw_marker_when_compression_loses() {
+        let payload = b"abc";
+        let frame = encode_pty_output_frame(payload, PtyOutputMode::FramedZlib, true);
+        assert_eq!(frame[0], 0);
+        assert_eq!(&frame[1..], payload);
+    }
+
+    #[test]
+    fn framed_output_compresses_when_smaller() {
+        let payload = vec![b'x'; LIVE_COMPRESS_THRESHOLD_BYTES * 2];
+        let frame = encode_pty_output_frame(&payload, PtyOutputMode::FramedZlib, true);
+        assert_eq!(frame[0], FRAME_FLAG_COMPRESSED);
+        assert_eq!(inflate(&frame[1..]), payload);
+        assert!(frame.len() < LIVE_COMPRESS_THRESHOLD_BYTES);
+    }
+
+    #[test]
+    fn framed_output_respects_compression_gate() {
+        let payload = vec![b'x'; LIVE_COMPRESS_THRESHOLD_BYTES * 2];
+        let frame = encode_pty_output_frame(&payload, PtyOutputMode::FramedZlib, false);
+        assert_eq!(frame[0], 0);
+        assert_eq!(&frame[1..], payload.as_slice());
+    }
 }
