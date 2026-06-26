@@ -1,0 +1,3 @@
+// App extensions need the same Flutter build name/number as Runner, but should
+// not inherit Pods-Runner linker settings.
+#include "Generated.xcconfig"
