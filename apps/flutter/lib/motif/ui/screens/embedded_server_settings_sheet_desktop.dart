@@ -4,6 +4,8 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,8 +29,12 @@ enum _TsControl { official, custom }
 /// same reason.
 enum _TsAuth { browser, authKey }
 
+enum _PushRelayHealth { idle, checking, healthy, failed }
+
 class EmbeddedServerSettingsSheet extends StatefulWidget {
-  const EmbeddedServerSettingsSheet({super.key});
+  final Future<bool> Function(String address)? pushRelayHealthChecker;
+
+  const EmbeddedServerSettingsSheet({super.key, this.pushRelayHealthChecker});
 
   @override
   State<EmbeddedServerSettingsSheet> createState() =>
@@ -52,6 +58,7 @@ class _EmbeddedServerSettingsSheetState
   bool _restartPromptShowing = false;
   bool _restartPromptDeferred = false;
   bool _restartPromptPendingOnBlur = false;
+  _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
 
   EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
 
@@ -226,7 +233,7 @@ class _EmbeddedServerSettingsSheetState
         const SizedBox(height: MotifSpacing.lg),
         _pairingSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
-        _notificationsSection(cfg),
+        _notificationsSection(cfg, c),
         const SizedBox(height: MotifSpacing.lg),
         _tailscaleSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
@@ -820,7 +827,7 @@ class _EmbeddedServerSettingsSheetState
 
   // ── Push notifications ──
 
-  Widget _notificationsSection(EmbeddedServerConfig cfg) {
+  Widget _notificationsSection(EmbeddedServerConfig cfg, MotifColors c) {
     return MotifSection(
       title: 'Notifications',
       footer: 'Leave blank to disable background push.',
@@ -830,14 +837,92 @@ class _EmbeddedServerSettingsSheetState
           'Push relay',
           kDefaultPushRelayAddress,
           keyboard: TextInputType.url,
-          onChanged: () => _save(
-            cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()),
-            restartRequired: true,
-            restartOnBlur: true,
-          ),
+          suffix: _pushRelayHealthButton(c),
+          onChanged: () {
+            if (_pushRelayHealth != _PushRelayHealth.idle) {
+              setState(() => _pushRelayHealth = _PushRelayHealth.idle);
+            }
+            _save(
+              cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            );
+          },
           onFocusLost: _showPendingRestartPrompt,
         ),
       ],
+    );
+  }
+
+  Widget _pushRelayHealthButton(MotifColors c) {
+    final status = switch (_pushRelayHealth) {
+      _PushRelayHealth.idle => (
+        label: 'Health',
+        color: c.textSecondary,
+        icon: Icon(
+          Icons.monitor_heart_outlined,
+          size: 16,
+          color: c.textSecondary,
+        ),
+      ),
+      _PushRelayHealth.checking => (
+        label: 'Checking',
+        color: c.textSecondary,
+        icon: SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: c.textSecondary,
+          ),
+        ),
+      ),
+      _PushRelayHealth.healthy => (
+        label: 'OK',
+        color: c.success,
+        icon: Icon(Icons.check_circle_outline, size: 16, color: c.success),
+      ),
+      _PushRelayHealth.failed => (
+        label: 'Failed',
+        color: c.danger,
+        icon: Icon(Icons.error_outline, size: 16, color: c.danger),
+      ),
+    };
+
+    return Tooltip(
+      message: 'Check push relay health',
+      child: TextButton.icon(
+        onPressed: _pushRelayHealth == _PushRelayHealth.checking
+            ? null
+            : () => unawaited(_checkPushRelayHealth()),
+        icon: status.icon,
+        label: Text(status.label),
+        style: TextButton.styleFrom(
+          foregroundColor: status.color,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: const Size(0, 32),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _checkPushRelayHealth() async {
+    final address = _pushRelayUrl.text.trim();
+    if (address.isEmpty) {
+      setState(() => _pushRelayHealth = _PushRelayHealth.failed);
+      return;
+    }
+    setState(() => _pushRelayHealth = _PushRelayHealth.checking);
+    final checker =
+        widget.pushRelayHealthChecker ?? _defaultPushRelayHealthCheck;
+    final ok = await checker(address);
+    if (!mounted) return;
+    setState(
+      () => _pushRelayHealth = ok
+          ? _PushRelayHealth.healthy
+          : _PushRelayHealth.failed,
     );
   }
 
@@ -847,6 +932,7 @@ class _EmbeddedServerSettingsSheetState
     String hint, {
     TextInputType? keyboard,
     bool obscure = false,
+    Widget? suffix,
     VoidCallback? onChanged,
     VoidCallback? onFocusLost,
   }) {
@@ -874,10 +960,55 @@ class _EmbeddedServerSettingsSheetState
             enabledBorder: InputBorder.none,
             focusedBorder: InputBorder.none,
             isDense: true,
+            suffixIcon: suffix == null
+                ? null
+                : Padding(
+                    padding: const EdgeInsets.only(left: MotifSpacing.sm),
+                    child: suffix,
+                  ),
+            suffixIconConstraints: const BoxConstraints(
+              minWidth: 0,
+              minHeight: 0,
+            ),
           ),
         ),
       ),
     );
+  }
+}
+
+Future<bool> _defaultPushRelayHealthCheck(String address) async {
+  final uri = _pushRelayHealthUri(address);
+  if (uri == null) return false;
+
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+  try {
+    final req = await client.getUrl(uri).timeout(const Duration(seconds: 5));
+    final resp = await req.close().timeout(const Duration(seconds: 5));
+    final body = await resp
+        .transform(utf8.decoder)
+        .join()
+        .timeout(const Duration(seconds: 5));
+    return resp.statusCode >= 200 &&
+        resp.statusCode < 300 &&
+        body.trim() == 'ok';
+  } catch (_) {
+    return false;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+Uri? _pushRelayHealthUri(String address) {
+  final trimmed = address.trim();
+  if (trimmed.isEmpty) return null;
+  final candidate = trimmed.contains('://') ? trimmed : 'https://$trimmed';
+  try {
+    final uri = Uri.parse(candidate);
+    if (uri.host.isEmpty) return null;
+    return uri.replace(path: '/healthz', query: null, fragment: null);
+  } catch (_) {
+    return null;
   }
 }
 

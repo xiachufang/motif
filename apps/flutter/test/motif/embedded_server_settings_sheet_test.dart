@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/state/embedded_server_service.dart';
@@ -35,6 +37,7 @@ void main() {
     expect(find.text('NOTIFICATIONS'), findsOneWidget);
     expect(find.text('Push relay'), findsOneWidget);
     expect(find.text(kDefaultPushRelayAddress), findsWidgets);
+    expect(find.text('Health'), findsOneWidget);
     expect(errors, isEmpty);
   });
 
@@ -115,6 +118,34 @@ void main() {
     expect(find.text('Restart server?'), findsOneWidget);
   });
 
+  testWidgets('checks push relay health from the field action', (tester) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      status: const EmbeddedServerStatus(),
+    );
+    final health = Completer<bool>();
+    var checkedAddress = '';
+    await _pumpSettings(
+      tester,
+      service,
+      pushRelayHealthChecker: (address) {
+        checkedAddress = address;
+        return health.future;
+      },
+    );
+
+    await tester.tap(find.text('Health'));
+    await tester.pump();
+
+    expect(checkedAddress, kDefaultPushRelayAddress);
+    expect(find.text('Checking'), findsOneWidget);
+
+    health.complete(true);
+    await tester.pumpAndSettle();
+
+    expect(find.text('OK'), findsOneWidget);
+  });
+
   testWidgets('keeps Tailscale details collapsed until opened', (tester) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
@@ -141,8 +172,9 @@ void main() {
 
 Future<void> _pumpSettings(
   WidgetTester tester,
-  EmbeddedServerService service,
-) async {
+  EmbeddedServerService service, {
+  Future<bool> Function(String address)? pushRelayHealthChecker,
+}) async {
   tester.view.physicalSize = const Size(900, 1200);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -153,10 +185,12 @@ Future<void> _pumpSettings(
       value: service,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
-        home: const Scaffold(
+        home: Scaffold(
           body: SingleChildScrollView(
-            padding: EdgeInsets.all(MotifSpacing.lg),
-            child: EmbeddedServerSettingsSheet(),
+            padding: const EdgeInsets.all(MotifSpacing.lg),
+            child: EmbeddedServerSettingsSheet(
+              pushRelayHealthChecker: pushRelayHealthChecker,
+            ),
           ),
         ),
       ),
