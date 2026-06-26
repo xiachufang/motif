@@ -9,13 +9,17 @@
 
 - HTTP RPC: `POST /rpc/<method>`
 - event stream: `GET /events?session=<sid>&since=<seq>[&token=<token>]`
-- PTY stream: `GET /pty/<id>?session=<sid>[&since=<cursor>][&token=<token>]`
+- PTY stream:
+  `GET /pty/<id>?session=<sid>[&since=<cursor>][&pty_frame=v1&pty_compress=zlib][&token=<token>]`
 - static Flutter Web files: `/`, `flutter_bootstrap.js`, `main.dart.js`,
   `assets/*`, `icons/*`, `canvaskit/*`, `ghostty_vt.js`, `ghostty-vt.wasm`
 
 The browser uses the same protocol surface as native clients. The one web-only
 auth difference is that browser WebSocket APIs cannot set upgrade headers, so
 `motifd` accepts the bearer token in the WebSocket query string as well.
+The Flutter client opts into `/pty` framed zlib output; server-to-client frames
+are decoded back to PTY bytes before they reach the terminal, while stdin frames
+remain raw.
 
 ## Source Layout
 

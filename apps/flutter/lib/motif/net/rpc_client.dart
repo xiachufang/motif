@@ -27,6 +27,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../log/log.dart';
 import '../models/motif_proto.dart';
+import 'pty_frame_codec.dart';
 import 'proxy_client.dart';
 import 'shell_integration.dart';
 import 'ws_channel.dart';
@@ -58,7 +59,14 @@ class _PtyChannel {
   int cursor = 0;
   bool hasCursor = false;
   bool awaitingMeta = true;
+  bool framedZlib = false;
   int generation = 0;
+}
+
+class _PtyMeta {
+  final int since;
+  final bool framedZlib;
+  const _PtyMeta({required this.since, required this.framedZlib});
 }
 
 class RpcClient {
@@ -512,7 +520,7 @@ class RpcClient {
   ) async {
     final sinceQuery = ch.hasCursor ? '&since=${ch.cursor}' : '';
     final url =
-        '$_wsScheme://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&${_wsAuthQuery()}';
+        '$_wsScheme://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&pty_frame=v1&pty_compress=zlib&${_wsAuthQuery()}';
     Log.i(
       'ws open pty=$ptyId gen=$generation since=${ch.hasCursor ? ch.cursor : "full"}',
       name: 'motif.rpc',
@@ -565,6 +573,7 @@ class RpcClient {
     }
     ch.socket = socket;
     ch.awaitingMeta = true;
+    ch.framedZlib = false;
     Log.i('ws ready pty=$ptyId gen=$generation', name: 'motif.rpc');
     ch.sub = socket.stream.listen(
       (msg) => _onPtyMessage(ptyId, socket, msg),
@@ -581,11 +590,15 @@ class RpcClient {
     if (ch.awaitingMeta) {
       ch.awaitingMeta = false;
       if (msg is String) {
-        final since = _parsePtyMetaSince(msg);
-        if (since != null) {
-          ch.cursor = since;
+        final meta = _parsePtyMeta(msg);
+        if (meta != null) {
+          ch.cursor = meta.since;
           ch.hasCursor = true;
-          Log.i('ws meta pty=$ptyId since=$since', name: 'motif.rpc');
+          ch.framedZlib = meta.framedZlib;
+          Log.i(
+            'ws meta pty=$ptyId since=${meta.since} framed=${meta.framedZlib}',
+            name: 'motif.rpc',
+          );
         }
         return;
       }
@@ -600,8 +613,45 @@ class RpcClient {
     } else {
       return;
     }
-    ch.cursor += data.length;
-    _processPtyBytes(ptyId, data);
+    final decoded = _decodePtyPayload(ptyId, ch, data);
+    if (decoded == null) return;
+    ch.cursor += decoded.length;
+    _processPtyBytes(ptyId, decoded);
+  }
+
+  Uint8List? _decodePtyPayload(String ptyId, _PtyChannel ch, Uint8List data) {
+    try {
+      return decodePtyPayload(data, framedZlib: ch.framedZlib);
+    } catch (e, st) {
+      Log.w(
+        'pty $ptyId: framed decode failed',
+        name: 'motif.rpc',
+        error: e,
+        stackTrace: st,
+      );
+      unawaited(_recoverPtyAfterDecodeError(ptyId, ch));
+      return null;
+    }
+  }
+
+  Future<void> _recoverPtyAfterDecodeError(String ptyId, _PtyChannel ch) async {
+    ch
+      ..cursor = 0
+      ..hasCursor = false
+      ..framedZlib = false;
+    final socket = ch.socket;
+    await _closePty(ptyId, matching: socket, removeState: false);
+    if (!_streamingPtys.contains(ptyId) || _ptys[ptyId] == null) return;
+    try {
+      await _openPty(ptyId);
+    } catch (e, st) {
+      Log.w(
+        'pty $ptyId: framed decode recovery failed',
+        name: 'motif.rpc',
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   Future<void> _onPtyDone(String ptyId, WebSocketChannel socket) async {
@@ -766,11 +816,14 @@ class RpcClient {
     }
   }
 
-  static int? _parsePtyMetaSince(String s) {
+  static _PtyMeta? _parsePtyMeta(String s) {
     try {
       final obj = jsonDecode(s);
       if (obj is Map && obj['since'] is num) {
-        return (obj['since'] as num).toInt();
+        return _PtyMeta(
+          since: (obj['since'] as num).toInt(),
+          framedZlib: obj['pty_frame'] == 'v1' && obj['pty_compress'] == 'zlib',
+        );
       }
     } catch (_) {}
     return null;

@@ -19,6 +19,7 @@ serde              = { workspace = true }
 serde_json         = { workspace = true }
 base64             = { workspace = true }
 bytes              = { workspace = true }
+flate2             = { workspace = true }
 
 # Phase-2 HTTP transport for the new /rpc/<method> path.
 hyper              = { workspace = true }

@@ -127,10 +127,10 @@ pub struct Pty {
 /// Both monotonic, never reset for the lifetime of the Pty.
 ///
 /// Replay protocol: client connects with `?since=N`.
-///   - `N == total`              → up to date, no replay.
-///   - `origin <= N < total`     → replay `bytes[(N - origin)..]`.
-///   - `N < origin`              → ring rolled past, signal 4011 (truncated).
-///   - `N > total`               → client claims newer cursor than us; 4012 (stale).
+///   - `origin <= N <= total`    → replay a raw byte delta, unless a VT
+///     snapshot is smaller for a large delta.
+///   - `None`, `N < origin`, or `N > total` → serve a VT snapshot of the
+///     current screen+scrollback instead of closing the socket.
 pub(crate) struct PtyRing {
     pub bytes: VecDeque<u8>,
     pub origin: u64,
@@ -260,7 +260,8 @@ impl Pty {
     ///     snapshot of the current state is smaller, in which case the snapshot
     ///     is sent instead (`start = total - snapshot.len()`).
     ///   - `None` (tail), `n < origin` (truncated), or `n > total` (stale) →
-    ///     a full VT snapshot of the current screen+scrollback, `start = total`.
+    ///     a full VT snapshot of the current screen+scrollback,
+    ///     `start = total - snapshot.len()`.
     ///
     /// Returns `None` if the emulator thread is gone (PTY already exited).
     pub async fn subscribe(&self, since: Option<u64>) -> Option<SubscribeReply> {

@@ -8,11 +8,13 @@
 
 mod common;
 
+use std::io::Read;
 use std::process::Command;
 use std::time::Duration;
 
 use bytes::Bytes;
 use common::{b64_decode, b64_encode, init_git_repo, TestClient, TestServer};
+use flate2::read::ZlibDecoder;
 use futures_util::{SinkExt, StreamExt};
 use http::HeaderValue;
 use motif_proto::event::Event;
@@ -23,6 +25,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+
+const TEST_FRAME_FLAG_COMPRESSED: u8 = 0x01;
+const TEST_FRAME_FLAG_RESERVED: u8 = !TEST_FRAME_FLAG_COMPRESSED;
 
 // ─────────────────────────── 1. session_lifecycle ───────────────────────────
 
@@ -694,6 +699,139 @@ async fn pty_lifecycle_and_mirror() {
             })
             .await;
     }
+}
+
+#[tokio::test]
+async fn pty_ws_framed_output_is_opt_in_and_decodable() {
+    let server = TestServer::start().await;
+    let dir = TempDir::new().unwrap();
+    let client = TestClient::connect(&server, "pty-framed", dir.path())
+        .await
+        .unwrap();
+
+    let created: ppty::PtyCreateResult = client
+        .call(
+            "pty.create",
+            ppty::PtyCreateParams {
+                cmd: Some("/bin/sh".into()),
+                cwd: None,
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let pty_id = created.info.id;
+
+    let mut legacy = client.open_pty_ws(&pty_id, None).await.unwrap();
+    let legacy_meta: serde_json::Value =
+        serde_json::from_str(&legacy.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
+    assert!(legacy_meta.get("since").and_then(|v| v.as_u64()).is_some());
+    assert!(legacy_meta.get("pty_frame").is_none());
+    drop(legacy);
+
+    let mut framed = client.open_pty_ws_framed(&pty_id, None).await.unwrap();
+    let framed_meta: serde_json::Value =
+        serde_json::from_str(&framed.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
+    assert_eq!(
+        framed_meta.get("pty_frame").and_then(|v| v.as_str()),
+        Some("v1")
+    );
+    assert_eq!(
+        framed_meta.get("pty_compress").and_then(|v| v.as_str()),
+        Some("zlib")
+    );
+
+    framed.write(b"stty -echo\n").await.unwrap();
+    framed
+        .write(b"printf 'SMALL_FRAME_MARKER\\n'\n")
+        .await
+        .unwrap();
+    let small = read_framed_until(&mut framed, b"SMALL_FRAME_MARKER", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        !small.decoded.is_empty(),
+        "expected decoded bytes from framed small output"
+    );
+
+    framed
+        .write(b"yes COMPRESSIBLE | head -c 16384; printf '\\nBIG_FRAME_'; printf 'DONE\\n'\n")
+        .await
+        .unwrap();
+    let big = read_framed_until(&mut framed, b"BIG_FRAME_DONE", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        big.decoded
+            .windows(b"BIG_FRAME_DONE".len())
+            .any(|w| w == b"BIG_FRAME_DONE"),
+        "expected decoded framed live output to contain BIG_FRAME_DONE; got {} decoded bytes",
+        big.decoded.len()
+    );
+
+    let mut replay = client.open_pty_ws_framed(&pty_id, None).await.unwrap();
+    let _: serde_json::Value =
+        serde_json::from_str(&replay.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
+    let replayed = read_framed_until(&mut replay, b"BIG_FRAME_DONE", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        replayed.saw_compressed,
+        "expected at least one compressed replay PTY frame; got {} decoded bytes",
+        replayed.decoded.len()
+    );
+}
+
+struct FramedRead {
+    decoded: Vec<u8>,
+    saw_compressed: bool,
+}
+
+async fn read_framed_until(
+    ws: &mut common::PtyWs,
+    needle: &[u8],
+    timeout_total: Duration,
+) -> anyhow::Result<FramedRead> {
+    let deadline = tokio::time::Instant::now() + timeout_total;
+    let mut decoded = Vec::new();
+    let mut saw_compressed = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let frame = ws.read_binary(remaining).await?;
+        let (chunk, compressed) = decode_test_framed_pty(&frame)?;
+        saw_compressed |= compressed;
+        decoded.extend_from_slice(&chunk);
+        if decoded.windows(needle.len()).any(|w| w == needle) {
+            return Ok(FramedRead {
+                decoded,
+                saw_compressed,
+            });
+        }
+    }
+    anyhow::bail!(
+        "timed out waiting for {:?}; decoded {:?}",
+        String::from_utf8_lossy(needle),
+        String::from_utf8_lossy(&decoded),
+    );
+}
+
+fn decode_test_framed_pty(frame: &[u8]) -> anyhow::Result<(Vec<u8>, bool)> {
+    let (&flags, payload) = frame
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("empty framed pty frame"))?;
+    anyhow::ensure!(
+        flags & TEST_FRAME_FLAG_RESERVED == 0,
+        "reserved frame flags set: 0x{flags:02x}"
+    );
+    if flags & TEST_FRAME_FLAG_COMPRESSED == 0 {
+        return Ok((payload.to_vec(), false));
+    }
+    let mut decoder = ZlibDecoder::new(payload);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out)?;
+    Ok((out, true))
 }
 
 // ─────────────────────────── 6. multi_client_mirror ───────────────────────────
