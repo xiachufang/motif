@@ -14,6 +14,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../log/log.dart';
 import '../../models/motif_proto.dart';
@@ -114,6 +115,11 @@ class _SessionScreenState extends State<SessionScreen>
     _scheduleKeyboardInsetSync();
     HardwareKeyboard.instance.addHandler(_handleShortcut);
     _syncWindowTitle();
+    // Keep the screen awake while a terminal session is on screen — a PTY can
+    // sit idle for minutes waiting on output and the user shouldn't have to
+    // tap to keep watching it. Mobile only; desktops manage their own display
+    // sleep and shouldn't be pinned awake. Released in dispose().
+    if (_wakelockApplies) WakelockPlus.enable().ignore();
     _attachIfNeeded();
   }
 
@@ -205,6 +211,7 @@ class _SessionScreenState extends State<SessionScreen>
     }
     _tabInputs.clear();
     _modifiers.dispose();
+    if (_wakelockApplies) WakelockPlus.disable().ignore();
     super.dispose();
   }
 
@@ -212,6 +219,13 @@ class _SessionScreenState extends State<SessionScreen>
   void didChangeMetrics() {
     _scheduleKeyboardInsetSync();
   }
+
+  /// Keep-screen-awake only makes sense on phones/tablets; desktops and web
+  /// manage their own display sleep.
+  static bool get _wakelockApplies =>
+      !kIsWeb &&
+      (defaultTargetPlatform == TargetPlatform.iOS ||
+          defaultTargetPlatform == TargetPlatform.android);
 
   void _mountPaneImmediately() {
     if (_paneMountReady) return;

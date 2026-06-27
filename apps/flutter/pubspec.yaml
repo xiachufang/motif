@@ -58,6 +58,7 @@ dependencies:
   dartssh2: ^2.18.0
   webview_flutter: ^4.14.0
   share_plus: ^13.1.0
+  wakelock_plus: ^1.2.8
 dependency_overrides:
   opus_flutter_android:
     git:

@@ -530,6 +530,7 @@ class QuickCommandSet {
 class QuickKeys {
   static const esc = [0x1b];
   static const tab = [0x09];
+  static const backTab = [0x1b, 0x5b, 0x5a]; // CSI Z (Shift+Tab)
   static const enter = [0x0d];
   static const backspace = [0x7f];
   static const ctrlC = [0x03];
@@ -577,6 +578,49 @@ List<QuickCommand> defaultQuickCommands() {
     QuickCommand.text(nextId(), '~', '~'),
     QuickCommand.text(nextId(), 'cd ..', 'cd ..\n'),
   ];
+}
+
+/// Default per-program command sets seeded alongside the global list. These ride
+/// next to "Global" in QuickCommandSetsView and override it when the matching
+/// agent CLI is the running program. Chips are tuned for each TUI's navigation.
+List<QuickCommandSet> defaultQuickCommandSets() => [
+  _agentSet(
+    id: 'set-claude',
+    name: 'claude',
+    matches: const ['claude'],
+  ),
+  _agentSet(
+    id: 'set-codex',
+    name: 'codex',
+    matches: const ['codex'],
+  ),
+];
+
+/// Build a command set for an interactive coding-agent TUI (claude / codex):
+/// escape, mode toggle, history nav, submit, slash/mention, interrupt, paste.
+QuickCommandSet _agentSet({
+  required String id,
+  required String name,
+  required List<String> matches,
+}) {
+  var n = 0;
+  String nextId() => '$id-${n++}';
+  return QuickCommandSet(
+    id: id,
+    name: name,
+    matches: matches,
+    commands: [
+      QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
+      QuickCommand.bytes(nextId(), '⇧Tab', QuickKeys.backTab),
+      QuickCommand.bytes(nextId(), '↑', QuickKeys.up, symbol: 'arrow.up'),
+      QuickCommand.bytes(nextId(), '↓', QuickKeys.down, symbol: 'arrow.down'),
+      QuickCommand.bytes(nextId(), '⏎', QuickKeys.enter),
+      QuickCommand.text(nextId(), '/', '/', sendImmediately: false),
+      QuickCommand.text(nextId(), '@', '@', sendImmediately: false),
+      QuickCommand.bytes(nextId(), '^C', QuickKeys.ctrlC),
+      QuickCommand.paste(nextId()),
+    ],
+  );
 }
 
 /// Extract the program key (basename of first token) from a running command

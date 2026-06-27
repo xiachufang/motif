@@ -132,6 +132,21 @@ void main() {
       expect(back.label, 'Ctrl');
     });
 
+    test('default command sets seed claude and codex presets', () {
+      final sets = defaultQuickCommandSets();
+      expect(sets.map((s) => s.name), containsAll(['claude', 'codex']));
+      for (final s in sets) {
+        expect(s.matches, contains(s.name));
+        expect(s.commands, isNotEmpty);
+        // ids must be unique within a set (chips key off them).
+        expect(s.commands.map((c) => c.id).toSet().length, s.commands.length);
+        // round-trips through JSON.
+        final back = QuickCommandSet.fromJson(s.toJson());
+        expect(back.name, s.name);
+        expect(back.commands.length, s.commands.length);
+      }
+    });
+
     test('programKey extracts basename of first token', () {
       expect(programKey('/usr/bin/vim file.txt'), 'vim');
       expect(programKey('claude --resume'), 'claude');

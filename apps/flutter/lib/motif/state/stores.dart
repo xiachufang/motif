@@ -195,7 +195,10 @@ class QuickCommandStore extends ChangeNotifier {
   }
 
   static List<QuickCommandSet> _loadSets(String? raw) {
-    final list = raw == null ? null : jsonDecodeList(raw);
+    // Never persisted → seed the built-in agent presets. An explicit empty list
+    // means the user cleared every set, so honor that and stay empty.
+    if (raw == null) return defaultQuickCommandSets();
+    final list = jsonDecodeList(raw);
     if (list == null) return [];
     return list
         .map(
