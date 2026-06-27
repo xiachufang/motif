@@ -186,7 +186,10 @@ class _PreviewPaneState extends State<PreviewPane> {
                     padding: const EdgeInsets.all(MotifSpacing.sm),
                     child: Text(
                       'Truncated preview',
-                      style: TextStyle(color: c.danger, fontSize: 12),
+                      style: MotifType.caption.copyWith(
+                        color: c.danger,
+                        fontWeight: FontWeight.w400,
+                      ),
                     ),
                   ),
                 Expanded(

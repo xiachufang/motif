@@ -88,11 +88,11 @@ class QuickCommandRow extends StatelessWidget {
                       alignment: Alignment.center,
                       decoration: BoxDecoration(
                         color: c.subtleFill,
-                        borderRadius: BorderRadius.circular(20),
+                        borderRadius: BorderRadius.circular(MotifRadius.pill),
                       ),
                       child: Icon(
                         Icons.edit_outlined,
-                        size: 17,
+                        size: MotifIconSize.sm,
                         color: c.textSecondary,
                       ),
                     ),
@@ -129,7 +129,7 @@ class QuickCommandRow extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: bg,
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(MotifRadius.pill),
             border: border == null ? null : Border.all(color: border, width: 1),
           ),
           child: Column(
@@ -166,7 +166,7 @@ class QuickCommandRow extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             color: c.subtleFill,
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(MotifRadius.pill),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -174,11 +174,7 @@ class QuickCommandRow extends StatelessWidget {
               if (glyphs.isNotEmpty)
                 Text(
                   glyphs,
-                  style: TextStyle(
-                    color: c.textPrimary,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                  ),
+                  style: MotifType.callout.copyWith(color: c.textPrimary),
                 ),
               _chipLabel(
                 label: cmd.label,
@@ -213,12 +209,7 @@ class QuickCommandRow extends StatelessWidget {
     }
     return Text(
       label,
-      style: TextStyle(
-        color: color,
-        fontFamily: 'monospace',
-        fontWeight: FontWeight.w500,
-        fontSize: 13,
-      ),
+      style: MotifType.mono.copyWith(color: color, fontWeight: FontWeight.w500),
     );
   }
 

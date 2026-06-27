@@ -535,13 +535,7 @@ class _ReconnectBanner extends StatelessWidget {
         color: c.surfaceElevated,
         borderRadius: BorderRadius.circular(MotifRadius.md),
         border: Border.all(color: c.border),
-        boxShadow: [
-          BoxShadow(
-            color: c.shadow,
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
+        boxShadow: MotifElevation.overlay(c.shadow),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -554,11 +548,7 @@ class _ReconnectBanner extends StatelessWidget {
           const SizedBox(width: MotifSpacing.sm),
           Text(
             message,
-            style: TextStyle(
-              color: c.textPrimary,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
+            style: MotifType.callout.copyWith(color: c.textPrimary),
           ),
         ],
       ),

@@ -13,6 +13,7 @@ import '../app.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/motif_status_badge.dart';
 import '../widgets/tailscale_section.dart';
 import 'create_session_dialog.dart';
 import 'rzv_pairing_sheet.dart';
@@ -332,9 +333,8 @@ class _SessionRow extends StatelessWidget {
                       session.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+                      style: MotifType.body.copyWith(
                         color: c.textPrimary,
-                        fontSize: 15,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -353,10 +353,8 @@ class _SessionRow extends StatelessWidget {
                             child: Text(
                               session.workdir!,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
+                              style: MotifType.monoSmall.copyWith(
                                 color: c.textSecondary,
-                                fontFamily: 'monospace',
-                                fontSize: 12,
                               ),
                             ),
                           ),
@@ -371,9 +369,8 @@ class _SessionRow extends StatelessWidget {
                           const SizedBox(width: 4),
                           Text(
                             '$clients attached',
-                            style: TextStyle(
+                            style: MotifType.micro.copyWith(
                               color: c.accent,
-                              fontSize: 11,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -382,9 +379,8 @@ class _SessionRow extends StatelessWidget {
                         if (session.createdAt != null)
                           Text(
                             SessionListScreen.relativeTime(session.createdAt!),
-                            style: TextStyle(
+                            style: MotifType.micro.copyWith(
                               color: c.textTertiary,
-                              fontSize: 11,
                             ),
                           ),
                       ],
@@ -446,14 +442,13 @@ class _CreateSessionRow extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(Icons.add_circle, color: color, size: 22),
+              Icon(Icons.add_circle, color: color, size: MotifIconSize.md),
               const SizedBox(width: MotifSpacing.md),
               Expanded(
                 child: Text(
                   'Create session',
-                  style: TextStyle(
+                  style: MotifType.body.copyWith(
                     color: color,
-                    fontSize: 15,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -473,20 +468,12 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final label = viewState.statusLabel;
-    final color = _toneColor(c, viewState.tone);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
-      child: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Text(label, style: TextStyle(color: c.textSecondary, fontSize: 12)),
-        ],
+      child: MotifStatusBadge(
+        label: viewState.statusLabel,
+        color: _toneColor(c, viewState.tone),
+        labelColor: c.textSecondary,
       ),
     );
   }
@@ -614,17 +601,13 @@ class _SessionListEmptyState extends StatelessWidget {
                 const SizedBox(height: MotifSpacing.md),
                 Text(
                   title,
-                  style: TextStyle(
-                    color: c.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: MotifType.title.copyWith(color: c.textPrimary),
                 ),
                 const SizedBox(height: MotifSpacing.xs),
                 Text(
                   subtitle,
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: c.textSecondary, fontSize: 13),
+                  style: MotifType.subhead.copyWith(color: c.textSecondary),
                 ),
                 const SizedBox(height: MotifSpacing.lg),
                 Column(

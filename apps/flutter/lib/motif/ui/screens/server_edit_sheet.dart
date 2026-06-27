@@ -590,14 +590,13 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
               children: [
                 Text(
                   label,
-                  style: TextStyle(color: c.textTertiary, fontSize: 12),
+                  style: MotifType.caption.copyWith(color: c.textTertiary),
                 ),
                 const SizedBox(height: 2),
                 SelectableText(
                   value,
-                  style: TextStyle(
+                  style: MotifType.body.copyWith(
                     color: valueColor ?? c.textPrimary,
-                    fontSize: 14,
                   ),
                 ),
               ],
@@ -1240,7 +1239,7 @@ class _PingBadge extends StatelessWidget {
           const SizedBox(width: 4),
           Text(
             'Checking',
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
+            style: MotifType.caption.copyWith(color: c.textSecondary),
           ),
         ],
       );
@@ -1257,9 +1256,8 @@ class _PingBadge extends StatelessWidget {
         const SizedBox(width: 4),
         Text(
           reachable ? 'Reachable' : ping!.message,
-          style: TextStyle(
+          style: MotifType.caption.copyWith(
             color: reachable ? c.success : c.danger,
-            fontSize: 12,
           ),
         ),
       ],

@@ -39,7 +39,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                   padding: const EdgeInsets.all(MotifSpacing.sm),
                   child: Text(
                     'No connected servers',
-                    style: TextStyle(color: c.textSecondary, fontSize: 13),
+                    style: MotifType.subhead.copyWith(color: c.textSecondary),
                   ),
                 )
               else
@@ -55,9 +55,8 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       group.server.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+                      style: MotifType.caption.copyWith(
                         color: c.textSecondary,
-                        fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -91,7 +90,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       ),
                       child: Text(
                         'No sessions',
-                        style: TextStyle(color: c.textTertiary, fontSize: 12),
+                        style: MotifType.caption.copyWith(color: c.textTertiary),
                       ),
                     ),
                 ],
@@ -128,9 +127,8 @@ class _SidebarPanelHeader extends StatelessWidget {
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
+              style: MotifType.body.copyWith(
                 color: c.textPrimary,
-                fontSize: 14,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -186,9 +184,8 @@ class _SidebarSessionRow extends StatelessWidget {
                   session.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: MotifType.subhead.copyWith(
                     color: enabled ? fg : c.textTertiary,
-                    fontSize: 13,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                   ),
                 ),

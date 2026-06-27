@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import '../theme/motif_theme.dart';
+
 /// Full-screen camera scanner that pops back the first `motif://pair` link it
 /// detects (the QR `motifd --rzv-relay` prints). The [MobileScanner] widget
 /// manages its own camera controller lifecycle (start/stop/dispose).
@@ -51,11 +53,11 @@ class _RzvScanScreenState extends State<RzvScanScreen> {
                 ),
                 decoration: BoxDecoration(
                   color: Colors.black54,
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(MotifRadius.xs),
                 ),
-                child: const Text(
+                child: Text(
                   'Point at the motif://pair QR printed by motifd',
-                  style: TextStyle(color: Colors.white, fontSize: 13),
+                  style: MotifType.subhead.copyWith(color: Colors.white),
                 ),
               ),
             ),

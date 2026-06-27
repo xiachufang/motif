@@ -41,19 +41,19 @@ class MotifSection extends StatelessWidget {
       children: [
         if (title != null || headerTrailing != null) ...[
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 8, 6),
+            padding: const EdgeInsets.fromLTRB(
+              MotifSpacing.lg,
+              0,
+              MotifSpacing.sm,
+              MotifSpacing.xs,
+            ),
             child: Row(
               children: [
                 if (title != null)
                   Expanded(
                     child: Text(
                       title!.toUpperCase(),
-                      style: TextStyle(
-                        color: c.textSecondary,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0,
-                      ),
+                      style: MotifType.overline.copyWith(color: c.textSecondary),
                     ),
                   )
                 else
@@ -77,10 +77,10 @@ class MotifSection extends StatelessWidget {
         if (footer != null) ...[
           const SizedBox(height: MotifSpacing.xs),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.lg),
             child: Text(
               footer!,
-              style: TextStyle(color: c.textSecondary, fontSize: 12),
+              style: MotifType.caption.copyWith(color: c.textSecondary),
             ),
           ),
         ],
@@ -125,7 +125,7 @@ class MotifSectionRow extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: MotifSpacing.md,
-          vertical: 9,
+          vertical: MotifSpacing.sm,
         ),
         child: Row(
           children: [
@@ -145,9 +145,8 @@ class MotifSectionRow extends StatelessWidget {
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
+                    style: MotifType.body.copyWith(
                       color: titleColor ?? c.textPrimary,
-                      fontSize: 15,
                       fontWeight: titleWeight,
                     ),
                   ),
@@ -157,7 +156,7 @@ class MotifSectionRow extends StatelessWidget {
                       subtitle!,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: c.textSecondary, fontSize: 13),
+                      style: MotifType.subhead.copyWith(color: c.textSecondary),
                     ),
                   ],
                 ],
@@ -168,7 +167,11 @@ class MotifSectionRow extends StatelessWidget {
               trailing!,
             ] else if (showChevron) ...[
               const SizedBox(width: MotifSpacing.sm),
-              Icon(Icons.chevron_right, color: c.textTertiary, size: 20),
+              Icon(
+                Icons.chevron_right,
+                color: c.textTertiary,
+                size: MotifIconSize.md,
+              ),
             ],
           ],
         ),

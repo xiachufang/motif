@@ -51,7 +51,7 @@ class _InputBar extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
               decoration: BoxDecoration(
                 color: c.subtleFill,
-                borderRadius: BorderRadius.circular(22),
+                borderRadius: BorderRadius.circular(MotifRadius.xl),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -76,7 +76,10 @@ class _InputBar extends StatelessWidget {
                       enableInlinePrediction: false,
                       minLines: 1,
                       maxLines: 5,
-                      style: TextStyle(color: c.textPrimary, fontSize: 16),
+                      style: MotifType.title.copyWith(
+                        color: c.textPrimary,
+                        fontWeight: FontWeight.w400,
+                      ),
                       decoration: InputDecoration(
                         hintText: speechAvailable ? 'type or speak…' : 'type…',
                         hintStyle: TextStyle(color: c.textTertiary),

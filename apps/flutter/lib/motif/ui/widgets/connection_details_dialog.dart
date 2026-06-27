@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../state/connection_state.dart';
+import '../theme/motif_theme.dart';
 import 'top_toast.dart';
 
 bool hasConnectionDetails(ServerConnectionViewState view) {
@@ -55,7 +56,7 @@ Future<void> showConnectionDetailsDialog(
         child: SingleChildScrollView(
           child: SelectableText(
             detail,
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+            style: MotifType.monoSmall,
           ),
         ),
       ),

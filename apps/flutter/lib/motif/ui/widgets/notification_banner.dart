@@ -84,13 +84,7 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
                       color: c.surfaceElevated,
                       borderRadius: BorderRadius.circular(MotifRadius.md),
                       border: Border.all(color: c.border),
-                      boxShadow: [
-                        BoxShadow(
-                          color: c.shadow,
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
+                      boxShadow: MotifElevation.overlay(c.shadow),
                     ),
                     child: Row(
                       children: [
@@ -102,7 +96,7 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
                             children: [
                               Text(
                                 n.title,
-                                style: TextStyle(
+                                style: MotifType.headline.copyWith(
                                   color: c.textPrimary,
                                   fontWeight: FontWeight.w700,
                                 ),
@@ -112,9 +106,8 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
                                   n.body,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
+                                  style: MotifType.subhead.copyWith(
                                     color: c.textSecondary,
-                                    fontSize: 13,
                                   ),
                                 ),
                             ],

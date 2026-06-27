@@ -115,7 +115,7 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
           Text(
             'On the server, run motifd with --rzv-relay; it prints a '
             'motif://pair link (and a QR). Scan the QR or paste the link here.',
-            style: TextStyle(color: c.textSecondary, fontSize: 13),
+            style: MotifType.subhead.copyWith(color: c.textSecondary),
           ),
           const SizedBox(height: MotifSpacing.md),
           if (_scanSupported) ...[
@@ -173,7 +173,7 @@ class _Preview extends StatelessWidget {
       padding: const EdgeInsets.all(MotifSpacing.md),
       decoration: BoxDecoration(
         color: c.subtleFill,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -188,7 +188,10 @@ class _Preview extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 pinned ? 'End-to-end encrypted (cert pinned)' : 'Plaintext',
-                style: TextStyle(color: c.textSecondary, fontSize: 12),
+                style: MotifType.caption.copyWith(
+                  color: c.textSecondary,
+                  fontWeight: FontWeight.w400,
+                ),
               ),
             ],
           ),
@@ -197,7 +200,13 @@ class _Preview extends StatelessWidget {
             title,
             style: TextStyle(color: c.textPrimary, fontWeight: FontWeight.w600),
           ),
-          Text(reach, style: TextStyle(color: c.textTertiary, fontSize: 12)),
+          Text(
+            reach,
+            style: MotifType.caption.copyWith(
+              color: c.textTertiary,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
         ],
       ),
     );

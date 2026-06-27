@@ -13,6 +13,7 @@ import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/motif_status_badge.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -559,25 +560,11 @@ class _ServerPingBadge extends StatelessWidget {
     return Semantics(
       label: 'Server ping',
       value: indicator.accessibilityValue,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (busy)
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Icon(icon, size: 14, color: color),
-          const SizedBox(width: 4),
-          Text(
-            indicator.label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: color, fontSize: 12),
-          ),
-        ],
+      child: MotifStatusBadge(
+        label: indicator.label,
+        color: color,
+        icon: busy ? null : icon,
+        busy: busy,
       ),
     );
   }
@@ -597,25 +584,11 @@ class _ServerConnectionBadge extends StatelessWidget {
       child: Semantics(
         label: 'Server connection',
         value: '${viewState.statusLabel}\n${viewState.subtitle}',
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (viewState.showSpinner)
-              const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            else
-              Icon(_iconForViewState(viewState), size: 14, color: color),
-            const SizedBox(width: 4),
-            Text(
-              viewState.statusLabel,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 12),
-            ),
-          ],
+        child: MotifStatusBadge(
+          label: viewState.statusLabel,
+          color: color,
+          icon: viewState.showSpinner ? null : _iconForViewState(viewState),
+          busy: viewState.showSpinner,
         ),
       ),
     );

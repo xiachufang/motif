@@ -87,17 +87,13 @@ class WelcomeScreen extends StatelessWidget {
                     children: [
                       Text(
                         'Welcome to motif',
-                        style: TextStyle(
-                          color: c.textPrimary,
-                          fontSize: 22,
-                          fontWeight: FontWeight.w700,
-                        ),
+                        style: MotifType.display.copyWith(color: c.textPrimary),
                       ),
                       const SizedBox(height: MotifSpacing.sm),
                       Text(
                         'Add a motifd server to start. The app will connect '
                         'and load its sessions for you.',
-                        style: TextStyle(color: c.textSecondary, fontSize: 15),
+                        style: MotifType.body.copyWith(color: c.textSecondary),
                       ),
                     ],
                   ),
@@ -114,14 +110,22 @@ class WelcomeScreen extends StatelessWidget {
                   titleWeight: FontWeight.w400,
                 ),
                 MotifSectionRow(
-                  leading: Icon(Icons.add_circle, color: c.accent, size: 22),
+                  leading: Icon(
+                    Icons.add_circle,
+                    color: c.accent,
+                    size: MotifIconSize.md,
+                  ),
                   title: 'Connect a Server',
                   titleColor: c.accent,
                   titleWeight: FontWeight.w700,
                   onTap: () => unawaited(_connectServer(context)),
                 ),
                 MotifSectionRow(
-                  leading: Icon(Icons.qr_code_2, color: c.accent, size: 22),
+                  leading: Icon(
+                    Icons.qr_code_2,
+                    color: c.accent,
+                    size: MotifIconSize.md,
+                  ),
                   title: 'Scan or paste a pairing link',
                   titleColor: c.accent,
                   titleWeight: FontWeight.w700,

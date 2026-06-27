@@ -7,6 +7,7 @@ import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/motif_panel_header.dart';
 import '../widgets/top_toast.dart';
 
 /// Lazy file-tree browser rooted at a directory (mirrors FileTreePanel).
@@ -114,9 +115,10 @@ class _FileTreePanelState extends State<FileTreePanel> {
     }
     return Column(
       children: [
-        _EmbeddedPanelHeader(
+        MotifPanelHeader(
           icon: Icons.folder_outlined,
           title: title,
+          padding: const EdgeInsets.only(left: MotifSpacing.md),
           actions: actions,
         ),
         Expanded(child: body),
@@ -185,17 +187,15 @@ class _FileTreePanelState extends State<FileTreePanel> {
             Expanded(
               child: Text(
                 e.name,
-                style: TextStyle(color: c.textPrimary, fontSize: 14),
+                style: MotifType.body.copyWith(color: c.textPrimary),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
             if (e.gitStatus != null && e.gitStatus != GitFileStatus.unmodified)
               Text(
                 _gitGlyph(e.gitStatus!),
-                style: TextStyle(
+                style: MotifType.monoSmall.copyWith(
                   color: c.accent,
-                  fontFamily: 'monospace',
-                  fontSize: 12,
                 ),
               ),
             PopupMenuButton<String>(
@@ -352,46 +352,3 @@ class _FileTreePanelState extends State<FileTreePanel> {
   };
 }
 
-class _EmbeddedPanelHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final List<Widget> actions;
-
-  const _EmbeddedPanelHeader({
-    required this.icon,
-    required this.title,
-    required this.actions,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.only(left: MotifSpacing.md),
-      decoration: BoxDecoration(
-        color: c.background,
-        border: Border(bottom: BorderSide(color: c.border)),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: c.textSecondary),
-          const SizedBox(width: MotifSpacing.sm),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: c.textPrimary,
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          ...actions,
-        ],
-      ),
-    );
-  }
-}

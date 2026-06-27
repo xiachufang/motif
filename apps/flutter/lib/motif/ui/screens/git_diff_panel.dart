@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../models/motif_proto.dart';
 import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/motif_panel_header.dart';
 
 typedef OpenDiffView =
     Future<void> Function({String? path, required bool staged});
@@ -583,10 +584,8 @@ class _PathTitle extends StatelessWidget {
           name,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
+          style: MotifType.mono.copyWith(
             color: c.textPrimary,
-            fontFamily: 'monospace',
-            fontSize: 13,
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -595,10 +594,10 @@ class _PathTitle extends StatelessWidget {
             dir,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
+            style: MotifType.micro.copyWith(
               color: c.textTertiary,
               fontFamily: 'monospace',
-              fontSize: 11,
+              fontWeight: FontWeight.w400,
               height: 1.25,
             ),
           ),
@@ -649,10 +648,9 @@ class _ChangePill extends StatelessWidget {
       child: Text(
         text,
         maxLines: 1,
-        style: TextStyle(
+        style: MotifType.micro.copyWith(
           color: color,
           fontFamily: 'monospace',
-          fontSize: 11,
           fontWeight: FontWeight.w700,
           height: 1.15,
         ),
@@ -795,9 +793,8 @@ class _DiffTreeDirRow extends StatelessWidget {
                 node.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
+                style: MotifType.subhead.copyWith(
                   color: c.textPrimary,
-                  fontSize: 13,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -849,10 +846,8 @@ class _DiffTreeFileRow extends StatelessWidget {
                 name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
+                style: MotifType.mono.copyWith(
                   color: c.textPrimary,
-                  fontFamily: 'monospace',
-                  fontSize: 13,
                 ),
               ),
             ),
@@ -975,18 +970,12 @@ class _EmbeddedDiffHeader extends StatelessWidget {
                     spacing)
                 .clamp(112.0, 156.0)
                 .toDouble();
-        final titleTextStyle = TextStyle(
+        final titleTextStyle = MotifType.body.copyWith(
           color: c.textPrimary,
-          fontSize: 14,
           fontWeight: FontWeight.w700,
         );
-        return Container(
+        return MotifPanelHeader(
           height: 52,
-          padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
-          decoration: BoxDecoration(
-            color: c.background,
-            border: Border(bottom: BorderSide(color: c.border)),
-          ),
           child: Row(
             children: [
               if (showTitleIcon)
@@ -1070,7 +1059,7 @@ class _StageSelector extends StatelessWidget {
             const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
           ),
           textStyle: WidgetStateProperty.all(
-            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            MotifType.caption.copyWith(fontWeight: FontWeight.w600),
           ),
           visualDensity: VisualDensity.compact,
         ),
@@ -1133,10 +1122,9 @@ class _SummaryBar extends StatelessWidget {
               '${summary.length} changed file${summary.length == 1 ? '' : 's'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
+              style: MotifType.caption.copyWith(
                 color: c.textPrimary,
                 fontWeight: FontWeight.w700,
-                fontSize: 12,
               ),
             ),
           ),
@@ -1294,10 +1282,10 @@ class _DiffLine extends StatelessWidget {
             child: Text(
               '$index',
               maxLines: 1,
-              style: TextStyle(
+              style: MotifType.micro.copyWith(
                 color: c.textTertiary,
                 fontFamily: 'monospace',
-                fontSize: 11,
+                fontWeight: FontWeight.w400,
                 height: 1.45,
               ),
             ),

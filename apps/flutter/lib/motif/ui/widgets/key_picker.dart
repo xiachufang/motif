@@ -138,9 +138,8 @@ class _KeyPickerPanel extends StatelessWidget {
               ),
               child: Text(
                 category.name.toUpperCase(),
-                style: TextStyle(
+                style: MotifType.caption.copyWith(
                   color: c.textTertiary,
-                  fontSize: 12,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.5,
                 ),

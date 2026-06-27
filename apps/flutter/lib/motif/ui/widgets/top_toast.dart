@@ -210,17 +210,11 @@ class _MotifToastCard extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: background,
-          borderRadius: BorderRadius.circular(MotifRadius.sm),
+          borderRadius: BorderRadius.circular(MotifRadius.md),
           border: Border.all(
             color: colors?.border ?? theme.colorScheme.outlineVariant,
           ),
-          boxShadow: [
-            BoxShadow(
-              color: (colors?.shadow ?? Colors.black).withValues(alpha: 0.10),
-              blurRadius: 16,
-              offset: const Offset(0, 8),
-            ),
-          ],
+          boxShadow: MotifElevation.overlay(colors?.shadow ?? Colors.black),
         ),
         child: Material(
           type: MaterialType.transparency,

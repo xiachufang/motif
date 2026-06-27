@@ -27,6 +27,9 @@ abstract final class MotifRadius {
   static const double md = 16;
   static const double lg = 20;
   static const double xl = 24;
+
+  /// Fully rounded (capsule/pill). Use instead of magic `circular(999)`.
+  static const double pill = 999;
 }
 
 /// Square control diameters / button heights.
@@ -35,6 +38,75 @@ abstract final class MotifControlSize {
   static const double md = 40;
   static const double lg = 48;
   static const double xl = 64;
+}
+
+/// Icon glyph sizes. Snap all `Icon(size:)` to one of these.
+abstract final class MotifIconSize {
+  static const double sm = 16;
+  static const double md = 20;
+  static const double lg = 24;
+}
+
+/// Semantic type scale. Styles carry **no color** — apply one with
+/// `MotifType.body.copyWith(color: c.textPrimary)`. This is the single source
+/// of truth for font size/weight; avoid inline `TextStyle(fontSize:)`.
+abstract final class MotifType {
+  /// Large headline (welcome / hero titles).
+  static const display = TextStyle(fontSize: 22, fontWeight: FontWeight.w700);
+
+  /// Screen / dialog / nav-bar titles.
+  static const title = TextStyle(fontSize: 17, fontWeight: FontWeight.w700);
+
+  /// Emphasized row/section titles.
+  static const headline = TextStyle(fontSize: 15, fontWeight: FontWeight.w600);
+
+  /// Primary body and list-row titles.
+  static const body = TextStyle(fontSize: 15, fontWeight: FontWeight.w400);
+
+  /// Buttons, chips, and other interactive labels.
+  static const callout = TextStyle(fontSize: 13, fontWeight: FontWeight.w600);
+
+  /// Subtitles and secondary supporting text.
+  static const subhead = TextStyle(fontSize: 13, fontWeight: FontWeight.w400);
+
+  /// Uppercase group headers.
+  static const overline = TextStyle(
+    fontSize: 12,
+    fontWeight: FontWeight.w600,
+    letterSpacing: 0.5,
+  );
+
+  /// Metadata / timestamps / counts.
+  static const caption = TextStyle(fontSize: 12, fontWeight: FontWeight.w500);
+
+  /// Smallest annotations.
+  static const micro = TextStyle(fontSize: 11, fontWeight: FontWeight.w500);
+
+  /// Monospaced (paths, code, diff body).
+  static const mono = TextStyle(fontSize: 13, fontFamily: 'monospace');
+  static const monoSmall = TextStyle(fontSize: 12, fontFamily: 'monospace');
+}
+
+/// Elevation as shadow tuples, built from the theme's shadow color. Replaces
+/// the ad-hoc `BoxShadow` literals scattered across floating surfaces.
+abstract final class MotifElevation {
+  /// Resting cards / subtle lift.
+  static List<BoxShadow> card(Color shadow) => [
+    BoxShadow(
+      color: shadow.withValues(alpha: 0.08),
+      blurRadius: 12,
+      offset: const Offset(0, 3),
+    ),
+  ];
+
+  /// Floating overlays: toasts, banners, menus, the reconnect banner.
+  static List<BoxShadow> overlay(Color shadow) => [
+    BoxShadow(
+      color: shadow.withValues(alpha: 0.12),
+      blurRadius: 20,
+      offset: const Offset(0, 8),
+    ),
+  ];
 }
 
 /// Semantic colors. Values transcribed from the iOS asset catalog colorsets.
@@ -80,7 +152,8 @@ class MotifColors extends ThemeExtension<MotifColors> {
   Color accentFill([double alpha = 0.18]) => accent.withValues(alpha: alpha);
 
   static const light = MotifColors(
-    accent: Color(0xFF3F6188),
+    // Slate-blue identity kept, nudged slightly more saturated/brighter.
+    accent: Color(0xFF36679B),
     accentContainer: Color(0xFFD6E1EE),
     background: Color(0xFFF2F2F0),
     surface: Color(0xFFFFFFFF),
@@ -90,7 +163,8 @@ class MotifColors extends ThemeExtension<MotifColors> {
     borderStrong: Color(0xFFC8C8C4),
     textPrimary: Color(0xFF1A1A18),
     textSecondary: Color(0xFF4A4A48),
-    textTertiary: Color(0xFF888884),
+    // Darkened from 0xFF888884 to clear WCAG AA for small text on background.
+    textTertiary: Color(0xFF6E6E6A),
     textOnAccent: Color(0xFFFFFFFF),
     danger: Color(0xFFD6453E),
     success: Color(0xFF2F8C4C),
@@ -99,7 +173,8 @@ class MotifColors extends ThemeExtension<MotifColors> {
   );
 
   static const dark = MotifColors(
-    accent: Color(0xFF7BA1C7),
+    // Slate-blue identity kept, nudged slightly more saturated.
+    accent: Color(0xFF6FA3D6),
     accentContainer: Color(0xFF1F2C3F),
     background: Color(0xFF0E1013),
     surface: Color(0xFF1C1F25),
@@ -109,7 +184,8 @@ class MotifColors extends ThemeExtension<MotifColors> {
     borderStrong: Color(0xFF3D424A),
     textPrimary: Color(0xFFF5F5F2),
     textSecondary: Color(0xFFB5B5B0),
-    textTertiary: Color(0xFF7B7B76),
+    // Lightened from 0xFF7B7B76 to clear WCAG AA for small text on surfaces.
+    textTertiary: Color(0xFF8E8E88),
     textOnAccent: Color(0xFF0F172A),
     danger: Color(0xFFFF6A60),
     success: Color(0xFF68C47A),
@@ -347,11 +423,7 @@ ThemeData motifTheme(Brightness brightness) {
       // foreground), and the title from titleTextStyle below — so nothing
       // changes visually except the unwanted overlay disappears.
       centerTitle: false,
-      titleTextStyle: TextStyle(
-        color: colors.textPrimary,
-        fontSize: 17,
-        fontWeight: FontWeight.w700,
-      ),
+      titleTextStyle: MotifType.title.copyWith(color: colors.textPrimary),
     ),
     dividerTheme: DividerThemeData(color: colors.border, thickness: 1),
     iconButtonTheme: IconButtonThemeData(
@@ -378,11 +450,10 @@ ThemeData motifTheme(Brightness brightness) {
       selectedColor: colors.accent,
       selectedTileColor: colors.accentFill(0.12),
       textColor: colors.textPrimary,
-      titleTextStyle: TextStyle(color: colors.textPrimary, fontSize: 15),
-      subtitleTextStyle: TextStyle(color: colors.textTertiary, fontSize: 12),
-      leadingAndTrailingTextStyle: TextStyle(
+      titleTextStyle: MotifType.body.copyWith(color: colors.textPrimary),
+      subtitleTextStyle: MotifType.caption.copyWith(color: colors.textTertiary),
+      leadingAndTrailingTextStyle: MotifType.caption.copyWith(
         color: colors.textTertiary,
-        fontSize: 12,
       ),
     ),
     textButtonTheme: TextButtonThemeData(style: textButtonStyle),
@@ -424,12 +495,8 @@ ThemeData motifTheme(Brightness brightness) {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(MotifRadius.lg),
       ),
-      titleTextStyle: TextStyle(
-        color: colors.textPrimary,
-        fontSize: 17,
-        fontWeight: FontWeight.w700,
-      ),
-      contentTextStyle: TextStyle(color: colors.textSecondary, fontSize: 14),
+      titleTextStyle: MotifType.title.copyWith(color: colors.textPrimary),
+      contentTextStyle: MotifType.subhead.copyWith(color: colors.textSecondary),
     ),
     popupMenuTheme: PopupMenuThemeData(
       color: colors.surfaceElevated,
@@ -439,12 +506,12 @@ ThemeData motifTheme(Brightness brightness) {
         borderRadius: BorderRadius.circular(MotifRadius.sm),
         side: BorderSide(color: colors.border),
       ),
-      textStyle: TextStyle(color: colors.textPrimary, fontSize: 15),
+      textStyle: MotifType.body.copyWith(color: colors.textPrimary),
       labelTextStyle: WidgetStateProperty.resolveWith((states) {
         if (states.contains(WidgetState.disabled)) {
-          return TextStyle(color: colors.textTertiary, fontSize: 15);
+          return MotifType.body.copyWith(color: colors.textTertiary);
         }
-        return TextStyle(color: colors.textPrimary, fontSize: 15);
+        return MotifType.body.copyWith(color: colors.textPrimary);
       }),
     ),
     menuTheme: MenuThemeData(
@@ -488,7 +555,7 @@ ThemeData motifTheme(Brightness brightness) {
         color: colors.textPrimary,
         borderRadius: BorderRadius.circular(MotifRadius.xs),
       ),
-      textStyle: TextStyle(color: colors.background, fontSize: 12),
+      textStyle: MotifType.caption.copyWith(color: colors.background),
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((states) {

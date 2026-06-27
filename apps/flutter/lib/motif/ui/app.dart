@@ -263,7 +263,7 @@ class _ModeSwitch extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: c.subtleFill,
-        borderRadius: BorderRadius.circular(7),
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
       ),
       padding: const EdgeInsets.all(2),
       child: Row(
@@ -290,7 +290,7 @@ class _ModeSwitch extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
             color: selected ? c.background : Colors.transparent,
-            borderRadius: BorderRadius.circular(5),
+            borderRadius: BorderRadius.circular(MotifRadius.xs),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -299,9 +299,7 @@ class _ModeSwitch extends StatelessWidget {
               const SizedBox(width: 5),
               Text(
                 label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+                style: MotifType.caption.copyWith(
                   color: selected ? c.textPrimary : c.textTertiary,
                 ),
               ),

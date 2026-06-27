@@ -160,7 +160,7 @@ class _SessionTabChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
           decoration: BoxDecoration(
             color: bg,
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(MotifRadius.pill),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -177,10 +177,8 @@ class _SessionTabChip extends StatelessWidget {
                     const SizedBox(width: 6),
                     Text(
                       label,
-                      style: TextStyle(
+                      style: MotifType.monoSmall.copyWith(
                         color: active ? c.accent : c.textSecondary,
-                        fontSize: 12,
-                        fontFamily: 'monospace',
                         fontWeight: FontWeight.w500,
                       ),
                     ),

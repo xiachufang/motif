@@ -89,30 +89,60 @@ class QuickCommandEditor extends StatelessWidget {
           ),
         ],
       ),
+      // Inset-grouped to match the rest of the settings surfaces. The
+      // ReorderableListView / onReorderItem / item keys are unchanged — only
+      // each row's chrome is restyled — so the reorder behaviour is preserved.
       body: ReorderableListView.builder(
+        padding: const EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
         itemCount: cmds.length,
         onReorderItem: (o, n) => store.moveItemIn(setId, o, n),
         itemBuilder: (context, i) {
           final cmd = cmds[i];
           final editable = cmd.kind == QuickCommandKind.bytes;
-          return ListTile(
+          final first = i == 0;
+          final last = i == cmds.length - 1;
+          return DecoratedBox(
             key: ValueKey(cmd.id),
-            leading: Icon(_iconFor(cmd.kind)),
-            title: Text(cmd.label),
-            subtitle: Text(_describe(cmd)),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (editable)
+            decoration: BoxDecoration(
+              color: c.surface,
+              borderRadius: BorderRadius.vertical(
+                top: Radius.circular(first ? MotifRadius.sm : 0),
+                bottom: Radius.circular(last ? MotifRadius.sm : 0),
+              ),
+              border: Border(
+                left: BorderSide(color: c.border),
+                right: BorderSide(color: c.border),
+                top: BorderSide(color: c.border),
+                bottom: last ? BorderSide(color: c.border) : BorderSide.none,
+              ),
+            ),
+            child: MotifSectionRow(
+              leading: Icon(
+                _iconFor(cmd.kind),
+                color: c.textSecondary,
+                size: MotifIconSize.md,
+              ),
+              title: cmd.label,
+              subtitle: _describe(cmd),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (editable)
+                    IconButton(
+                      icon: const Icon(Icons.edit_outlined),
+                      onPressed: () => _edit(context, cmd),
+                    ),
                   IconButton(
-                    icon: const Icon(Icons.edit_outlined),
-                    onPressed: () => _edit(context, cmd),
+                    icon: Icon(Icons.delete_outline, color: c.danger),
+                    onPressed: () => store.removeAtIn(setId, i),
                   ),
-                IconButton(
-                  icon: Icon(Icons.delete_outline, color: c.danger),
-                  onPressed: () => store.removeAtIn(setId, i),
-                ),
-              ],
+                ],
+              ),
             ),
           );
         },

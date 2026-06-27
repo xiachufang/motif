@@ -295,9 +295,8 @@ class _EmbeddedServerSettingsSheetState
                           'Local Server',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
+                          style: MotifType.title.copyWith(
                             color: c.textPrimary,
-                            fontSize: 16,
                             fontWeight: FontWeight.w700,
                           ),
                         ),
@@ -310,9 +309,8 @@ class _EmbeddedServerSettingsSheetState
                           // yank a bottom-pinned scroll) every poll.
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
+                          style: MotifType.subhead.copyWith(
                             color: c.textSecondary,
-                            fontSize: 13,
                           ),
                         ),
                       ],
@@ -786,7 +784,7 @@ class _EmbeddedServerSettingsSheetState
             padding: const EdgeInsets.all(MotifSpacing.md),
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(MotifRadius.xs),
             ),
             child: QrImageView(
               data: uri,
@@ -798,7 +796,7 @@ class _EmbeddedServerSettingsSheetState
           Text(
             'Scan in the Motif app on another device, or copy the link.',
             textAlign: TextAlign.center,
-            style: TextStyle(color: c.textSecondary, fontSize: 12),
+            style: MotifType.caption.copyWith(color: c.textSecondary),
           ),
           const SizedBox(height: MotifSpacing.xs),
           TextButton.icon(
@@ -1178,19 +1176,16 @@ class _PushTokenRow extends StatelessWidget {
                   _pushTokenTitle(token),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: MotifType.headline.copyWith(
                     color: c.textPrimary,
-                    fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
                 const SizedBox(height: 3),
                 SelectableText(
                   token.deviceToken,
-                  style: TextStyle(
+                  style: MotifType.monoSmall.copyWith(
                     color: c.textSecondary,
-                    fontSize: 12,
-                    fontFamily: 'monospace',
                     height: 1.3,
                   ),
                 ),
@@ -1199,7 +1194,7 @@ class _PushTokenRow extends StatelessWidget {
                   _pushTokenSubtitle(token),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: c.textTertiary, fontSize: 12),
+                  style: MotifType.caption.copyWith(color: c.textTertiary),
                 ),
               ],
             ),
@@ -1300,7 +1295,7 @@ class _StatusPill extends StatelessWidget {
       ),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(MotifRadius.pill),
         border: Border.all(color: color.withValues(alpha: 0.24)),
       ),
       child: Row(
@@ -1321,9 +1316,8 @@ class _StatusPill extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(
+            style: MotifType.caption.copyWith(
               color: c.textPrimary,
-              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1351,7 +1345,7 @@ class _InfoChip extends StatelessWidget {
         ),
         decoration: BoxDecoration(
           color: c.subtleFill,
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(MotifRadius.pill),
           border: Border.all(color: c.border),
         ),
         child: Row(
@@ -1364,9 +1358,8 @@ class _InfoChip extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
+                style: MotifType.caption.copyWith(
                   color: c.textSecondary,
-                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -1408,7 +1401,7 @@ class _InlineNotice extends StatelessWidget {
               text,
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 13),
+              style: MotifType.subhead.copyWith(color: color),
             ),
           ),
         ],
@@ -1452,9 +1445,8 @@ class _ModeSummary extends StatelessWidget {
                   title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: MotifType.body.copyWith(
                     color: c.textPrimary,
-                    fontSize: 14,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -1463,7 +1455,7 @@ class _ModeSummary extends StatelessWidget {
                   subtitle,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: c.textSecondary, fontSize: 12),
+                  style: MotifType.caption.copyWith(color: c.textSecondary),
                 ),
               ],
             ),

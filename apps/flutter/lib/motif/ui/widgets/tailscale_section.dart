@@ -42,7 +42,7 @@ class TailscaleSection extends StatelessWidget {
   _EntryDescription _describe(TailscaleState st, MotifColors c) {
     return switch (st.status) {
       TailscaleStatus.stopped => _EntryDescription(
-        leading: Icon(Icons.shield_outlined, color: c.accent, size: 22),
+        leading: Icon(Icons.shield_outlined, color: c.accent, size: MotifIconSize.md),
         title: 'Setup Tailscale',
         subtitle: 'Sign in so motif can reach your servers',
         bold: true,
@@ -57,24 +57,24 @@ class TailscaleSection extends StatelessWidget {
         subtitle: st.detail,
       ),
       TailscaleStatus.needsAuth => _EntryDescription(
-        leading: Icon(Icons.warning_rounded, color: c.warning, size: 22),
+        leading: Icon(Icons.warning_rounded, color: c.warning, size: MotifIconSize.md),
         title: 'Tailscale needs login',
         subtitle: st.detail ?? 'Tap to finish signing in',
         bold: true,
       ),
       TailscaleStatus.running => _EntryDescription(
-        leading: Icon(Icons.verified_user, color: c.success, size: 22),
+        leading: Icon(Icons.verified_user, color: c.success, size: MotifIconSize.md),
         title: 'Tailscale connected',
         subtitle: st.detail,
       ),
       TailscaleStatus.degraded => _EntryDescription(
-        leading: Icon(Icons.sync_problem, color: c.warning, size: 22),
+        leading: Icon(Icons.sync_problem, color: c.warning, size: MotifIconSize.md),
         title: 'Tailscale reconnecting…',
         subtitle: st.detail,
         bold: true,
       ),
       TailscaleStatus.failed => _EntryDescription(
-        leading: Icon(Icons.error_outline, color: c.danger, size: 22),
+        leading: Icon(Icons.error_outline, color: c.danger, size: MotifIconSize.md),
         title: 'Tailscale failed',
         subtitle: st.detail,
         bold: true,
@@ -217,7 +217,12 @@ class _TailscaleSetupSheetState extends State<_TailscaleSetupSheet> {
                 dividerIndent: MotifSpacing.lg,
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                    padding: const EdgeInsets.fromLTRB(
+                      MotifSpacing.md,
+                      MotifSpacing.sm,
+                      MotifSpacing.md,
+                      MotifSpacing.sm,
+                    ),
                     child: TextField(
                       controller: _key,
                       obscureText: true,
@@ -380,7 +385,7 @@ class _TailscaleStatusRow extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: MotifSpacing.md,
-        vertical: 11,
+        vertical: MotifSpacing.md,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -389,7 +394,7 @@ class _TailscaleStatusRow extends StatelessWidget {
             children: [
               Text(
                 'Status',
-                style: TextStyle(color: c.textPrimary, fontSize: 15),
+                style: MotifType.body.copyWith(color: c.textPrimary),
               ),
               const Spacer(),
               if (state.status == TailscaleStatus.starting) ...[
@@ -400,14 +405,14 @@ class _TailscaleStatusRow extends StatelessWidget {
                 ),
                 const SizedBox(width: MotifSpacing.sm),
               ],
-              Text(value, style: TextStyle(color: color, fontSize: 15)),
+              Text(value, style: MotifType.body.copyWith(color: color)),
             ],
           ),
           if (state.detail != null) ...[
             const SizedBox(height: MotifSpacing.xs),
             Text(
               state.detail!,
-              style: TextStyle(color: c.textSecondary, fontSize: 13),
+              style: MotifType.subhead.copyWith(color: c.textSecondary),
             ),
           ],
         ],

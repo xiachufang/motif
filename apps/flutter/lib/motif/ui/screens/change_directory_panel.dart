@@ -233,7 +233,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
             height: 4,
             decoration: BoxDecoration(
               color: c.borderStrong,
-              borderRadius: BorderRadius.circular(999),
+              borderRadius: BorderRadius.circular(MotifRadius.pill),
             ),
           ),
           _Header(onCancel: () => Navigator.of(context).pop()),
@@ -246,7 +246,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
             ),
             child: Row(
               children: [
-                Icon(Icons.chevron_right, color: c.accent, size: 22),
+                Icon(Icons.chevron_right, color: c.accent, size: MotifIconSize.md),
                 const SizedBox(width: MotifSpacing.sm),
                 Expanded(
                   child: TextField(
@@ -296,7 +296,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
                     padding: const EdgeInsets.all(MotifSpacing.lg),
                     child: Text(
                       _query.isEmpty ? 'No subdirectories' : 'No match',
-                      style: TextStyle(color: c.textSecondary, fontSize: 13),
+                      style: MotifType.subhead.copyWith(color: c.textSecondary),
                     ),
                   ),
                 for (var i = 0; i < candidates.length; i++)
@@ -345,7 +345,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
       leading: Icon(
         Icons.subdirectory_arrow_left,
         color: colors.textSecondary,
-        size: 22,
+        size: MotifIconSize.md,
       ),
       title: Row(
         children: [
@@ -360,7 +360,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
           const SizedBox(width: MotifSpacing.sm),
           Text(
             'parent',
-            style: TextStyle(color: colors.textTertiary, fontSize: 12),
+            style: MotifType.caption.copyWith(color: colors.textTertiary),
           ),
         ],
       ),
@@ -376,7 +376,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
   }) {
     return ListTile(
       tileColor: isFirst ? colors.accentFill(0.12) : null,
-      leading: Icon(Icons.folder, color: colors.accent, size: 22),
+      leading: Icon(Icons.folder, color: colors.accent, size: MotifIconSize.md),
       title: Text(
         entry.name,
         maxLines: 1,
