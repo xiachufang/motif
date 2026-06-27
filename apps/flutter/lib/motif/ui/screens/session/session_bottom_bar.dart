@@ -24,11 +24,17 @@ class _InputBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final speechAvailable = context
-        .read<AppState>()
-        .platform
-        .speech
-        .isAvailable;
+    // Voice input is backed by Doubao ASR (Simplified-Chinese-primary), so only
+    // surface the mic when the device's system language is Simplified Chinese —
+    // exclude Traditional (zh-Hant / zh-TW / zh-HK / zh-MO).
+    final locale = WidgetsBinding.instance.platformDispatcher.locale;
+    final systemLanguageIsChinese =
+        locale.languageCode == 'zh' &&
+        locale.scriptCode != 'Hant' &&
+        !const {'TW', 'HK', 'MO'}.contains(locale.countryCode);
+    final speechAvailable =
+        systemLanguageIsChinese &&
+        context.read<AppState>().platform.speech.isAvailable;
     return Container(
       key: const ValueKey('bottom-bar'),
       padding: const EdgeInsets.symmetric(

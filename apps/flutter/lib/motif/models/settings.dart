@@ -582,26 +582,31 @@ List<QuickCommand> defaultQuickCommands() {
 
 /// Default per-program command sets seeded alongside the global list. These ride
 /// next to "Global" in QuickCommandSetsView and override it when the matching
-/// agent CLI is the running program. Chips are tuned for each TUI's navigation.
+/// agent CLI is the running program. Each set front-loads that agent's commonly
+/// used slash commands, then the keys its TUI needs.
 List<QuickCommandSet> defaultQuickCommandSets() => [
   _agentSet(
     id: 'set-claude',
     name: 'claude',
     matches: const ['claude'],
+    slash: const ['/clear', '/resume', '/compact', '/model'],
   ),
   _agentSet(
     id: 'set-codex',
     name: 'codex',
     matches: const ['codex'],
+    slash: const ['/new', '/clear', '/diff', '/compact'],
   ),
 ];
 
-/// Build a command set for an interactive coding-agent TUI (claude / codex):
-/// escape, mode toggle, history nav, submit, slash/mention, interrupt, paste.
+/// Build a command set for an interactive coding-agent TUI: its frequent slash
+/// commands (run on tap), then mode toggle, history nav, submit, interrupt,
+/// paste. Slash chips type `<cmd>\n` so a single tap runs them.
 QuickCommandSet _agentSet({
   required String id,
   required String name,
   required List<String> matches,
+  required List<String> slash,
 }) {
   var n = 0;
   String nextId() => '$id-${n++}';
@@ -610,13 +615,12 @@ QuickCommandSet _agentSet({
     name: name,
     matches: matches,
     commands: [
-      QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
+      for (final cmd in slash) QuickCommand.text(nextId(), cmd, '$cmd\n'),
       QuickCommand.bytes(nextId(), '⇧Tab', QuickKeys.backTab),
+      QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
       QuickCommand.bytes(nextId(), '↑', QuickKeys.up, symbol: 'arrow.up'),
       QuickCommand.bytes(nextId(), '↓', QuickKeys.down, symbol: 'arrow.down'),
       QuickCommand.bytes(nextId(), '⏎', QuickKeys.enter),
-      QuickCommand.text(nextId(), '/', '/', sendImmediately: false),
-      QuickCommand.text(nextId(), '@', '@', sendImmediately: false),
       QuickCommand.bytes(nextId(), '^C', QuickKeys.ctrlC),
       QuickCommand.paste(nextId()),
     ],
