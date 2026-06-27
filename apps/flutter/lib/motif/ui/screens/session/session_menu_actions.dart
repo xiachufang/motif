@@ -274,7 +274,6 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     if (!selected) return null;
     return context.iconButtonStyle(
       foregroundColor: c.accent,
-      backgroundColor: c.accentFill(),
     );
   }
 }

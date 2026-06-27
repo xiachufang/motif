@@ -919,11 +919,7 @@ class _DiffTitle extends StatelessWidget {
             if (showTitle) const SizedBox(width: MotifSpacing.sm),
             compact
                 ? _StageToggleButton(staged: staged, onChanged: onChanged)
-                : _StageSelector(
-                    staged: staged,
-                    onChanged: onChanged,
-                    compact: true,
-                  ),
+                : _StageSelector(staged: staged, onChanged: onChanged),
           ],
         );
       },
@@ -1021,8 +1017,7 @@ class _EmbeddedDiffHeader extends StatelessWidget {
               _StageSelector(
                 staged: staged,
                 onChanged: onChanged,
-                compact: true,
-                compactWidth: selectorWidth,
+                width: selectorWidth,
               ),
               const Spacer(),
               Row(mainAxisSize: MainAxisSize.min, children: actions),
@@ -1037,48 +1032,50 @@ class _EmbeddedDiffHeader extends StatelessWidget {
 class _StageSelector extends StatelessWidget {
   final bool staged;
   final ValueChanged<bool> onChanged;
-  final bool compact;
-  final double? compactWidth;
+  final double width;
 
   const _StageSelector({
     required this.staged,
     required this.onChanged,
-    this.compact = false,
-    this.compactWidth,
+    this.width = 156,
   });
 
   @override
   Widget build(BuildContext context) {
-    final height = compact ? 32.0 : 40.0;
-    final button = SegmentedButton<bool>(
-      showSelectedIcon: !compact,
-      segments: const [
-        ButtonSegment(
-          value: false,
-          label: Text('Working', maxLines: 1, overflow: TextOverflow.ellipsis),
-        ),
-        ButtonSegment(
-          value: true,
-          label: Text('Staged', maxLines: 1, overflow: TextOverflow.ellipsis),
-        ),
-      ],
-      selected: {staged},
-      style: ButtonStyle(
-        minimumSize: WidgetStateProperty.all(Size(0, height)),
-        padding: WidgetStateProperty.all(
-          EdgeInsets.symmetric(horizontal: compact ? MotifSpacing.sm : 16),
-        ),
-        textStyle: WidgetStateProperty.all(
-          TextStyle(fontSize: compact ? 12 : 14, fontWeight: FontWeight.w600),
-        ),
-        visualDensity: compact ? VisualDensity.compact : VisualDensity.standard,
-      ),
-      onSelectionChanged: (s) => onChanged(s.first),
-    );
     return SizedBox(
-      width: compact ? compactWidth ?? 156 : null,
-      height: height,
-      child: button,
+      width: width,
+      child: SegmentedButton<bool>(
+        showSelectedIcon: false,
+        segments: const [
+          ButtonSegment(
+            value: false,
+            label: Text(
+              'Working',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          ButtonSegment(
+            value: true,
+            label: Text('Staged', maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        ],
+        selected: {staged},
+        style: ButtonStyle(
+          // No hard-coded height: the default minimumSize (40) minus the
+          // compact visualDensity (-8) gives 32, and shrinkWrap stops the tap
+          // target padding it back up to 48.
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: WidgetStateProperty.all(
+            const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
+          ),
+          textStyle: WidgetStateProperty.all(
+            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          visualDensity: VisualDensity.compact,
+        ),
+        onSelectionChanged: (s) => onChanged(s.first),
+      ),
     );
   }
 }

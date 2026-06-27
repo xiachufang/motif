@@ -132,6 +132,9 @@ class _SessionScreenState extends State<SessionScreen>
       // background. Reclaim the foreground so it reactivates its view and
       // re-advertises the terminal palette.
       motif.setForeground(true);
+      // Entering a session with no terminal (e.g. all were closed) should still
+      // land on a usable pane.
+      if (motif.ptys.isEmpty) unawaited(_newPty());
       return;
     }
     _attachingSession = true;
@@ -146,6 +149,12 @@ class _SessionScreenState extends State<SessionScreen>
         'open attach session=${widget.session} took=${sw.elapsedMilliseconds}ms',
         name: 'motif.ui',
       );
+      // A freshly-attached session with no PTYs (brand-new, or every terminal
+      // closed) would open an empty pane — auto-create one. _newPty handles its
+      // own errors, so it won't trip the attach catch/pop below.
+      if (mounted && motif.ptys.isEmpty) {
+        await _newPty();
+      }
     } catch (e) {
       Log.w(
         'open attach failed session=${widget.session}',
@@ -252,7 +261,7 @@ class _SessionScreenState extends State<SessionScreen>
                         ),
                         IconButton(
                           key: const ValueKey('sessions-sidebar-toggle'),
-                          icon: const Icon(Icons.list_alt_outlined),
+                          icon: sidebar.showSessions ? const Icon(Icons.list_alt) : const Icon(Icons.list_alt_outlined),
                           tooltip:
                               'Sessions (${_primaryShortcutLabel('L', shift: true)})',
                           style: _sidebarButtonStyle(
@@ -282,7 +291,7 @@ class _SessionScreenState extends State<SessionScreen>
               actions: [
                 IconButton(
                   key: const ValueKey('file-tree-sidebar-toggle'),
-                  icon: const Icon(Icons.folder_outlined),
+                  icon: sidebar.showFileTree ? const Icon(Icons.folder) : const Icon(Icons.folder_outlined),
                   tooltip: 'Files (${_primaryShortcutLabel('E', shift: true)})',
                   style: _sidebarButtonStyle(
                     context,
@@ -293,7 +302,7 @@ class _SessionScreenState extends State<SessionScreen>
                 ),
                 IconButton(
                   key: const ValueKey('git-diff-sidebar-toggle'),
-                  icon: const Icon(Icons.difference_outlined),
+                  icon: sidebar.showGitDiff ? const Icon(Icons.difference) : const Icon(Icons.difference_outlined),
                   tooltip:
                       'Git diff (${_primaryShortcutLabel('G', shift: true)})',
                   style: _sidebarButtonStyle(
@@ -306,7 +315,7 @@ class _SessionScreenState extends State<SessionScreen>
                 if (usesSidebar)
                   IconButton(
                     key: const ValueKey('bottom-bar-toggle'),
-                    icon: const Icon(Icons.keyboard_alt_outlined),
+                    icon: sidebar.showBottomBar ? const Icon(Icons.keyboard_alt) : const Icon(Icons.keyboard_alt_outlined),
                     tooltip: 'Bottom bar',
                     style: _sidebarButtonStyle(
                       context,
