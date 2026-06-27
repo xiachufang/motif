@@ -93,6 +93,7 @@ class QuickCommandEditor extends StatelessWidget {
       // ReorderableListView / onReorderItem / item keys are unchanged — only
       // each row's chrome is restyled — so the reorder behaviour is preserved.
       body: ReorderableListView.builder(
+        buildDefaultDragHandles: false,
         padding: const EdgeInsets.fromLTRB(
           MotifSpacing.lg,
           MotifSpacing.md,
@@ -140,6 +141,19 @@ class QuickCommandEditor extends StatelessWidget {
                   IconButton(
                     icon: Icon(Icons.delete_outline, color: c.danger),
                     onPressed: () => store.removeAtIn(setId, i),
+                  ),
+                  ReorderableDragStartListener(
+                    index: i,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: MotifSpacing.sm,
+                      ),
+                      child: Icon(
+                        Icons.drag_handle,
+                        color: c.textSecondary,
+                        size: MotifIconSize.md,
+                      ),
+                    ),
                   ),
                 ],
               ),

@@ -24,8 +24,9 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
-    // Dart drives show/hide over this channel. The app is a regular Dock app;
-    // the tray remains as an additional quick-access surface.
+    // Dart drives show/hide over this channel. With a window visible the app is
+    // a regular Dock app; once every window is hidden it drops to a tray-only
+    // accessory (no Dock icon) and the tray is the quick-access surface.
     let channel = FlutterMethodChannel(
       name: "motif/desktop_window",
       binaryMessenger: flutterViewController.engine.binaryMessenger)
@@ -114,18 +115,63 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
     if #available(macOS 11.0, *) {
       self.titlebarSeparatorStyle = .none
     }
-
   }
 
   /// Bring the main window to the front.
   func showWindow() {
-    NSApp.activate(ignoringOtherApps: true)
-    self.makeKeyAndOrderFront(nil)
+    // A non-regular activation policy means the app was hidden as a tray-only
+    // accessory. Only that hidden→show transition gets the move-to-active-space
+    // handling; when the window is already visible, show is a plain bring-to-
+    // front that leaves Space behavior untouched.
+    if NSApp.activationPolicy() != .regular {
+      // Pull the window onto whichever Space is currently active instead of
+      // switching the user back to the Space it was hidden on. Set only for this
+      // transition and cleared once the move lands; not held while visible.
+      self.collectionBehavior.insert(.moveToActiveSpace)
+      // The accessory→regular switch and the Space resolution are async in the
+      // WindowServer; activating in the same turn lands the window on its old
+      // Space. Let the policy change settle (~0.1s, matching the
+      // calculate-widget reference) before activating so it resolves onto the
+      // active Space.
+      NSApp.setActivationPolicy(.regular)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+        guard let self else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        self.makeKeyAndOrderFront(nil)
+        self.clearMoveToActiveSpaceAfterCommit()
+      }
+    } else {
+      NSApp.activate(ignoringOtherApps: true)
+      self.makeKeyAndOrderFront(nil)
+    }
   }
 
   /// Hide the main window while keeping the app and embedded server alive.
+  /// With no visible window the app drops to an accessory (tray-only) app, so
+  /// its Dock icon disappears until a window is shown again.
   func hideWindow() {
-    self.orderOut(nil)
+    // Mark the window as a member of the current Space just before hiding it, so
+    // macOS keeps the user on this Space (picking the next window here) instead
+    // of following the window back to its origin Space. Cleared again right
+    // after it is off-screen — the behavior is only held across the transition,
+    // never while the window is visible.
+    self.collectionBehavior.insert(.moveToActiveSpace)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+          NSApp.hide(nil)
+          self?.clearMoveToActiveSpaceAfterCommit()
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+              NSApp.setActivationPolicy(.accessory)
+          }
+      }
+  }
+
+  /// Drop `.moveToActiveSpace` once the WindowServer has committed the Space
+  /// move/hide (~0.1s after the order in/out). Removing it synchronously cancels
+  /// the move before it lands, so it must be deferred.
+  private func clearMoveToActiveSpaceAfterCommit() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.collectionBehavior.remove(.moveToActiveSpace)
+    }
   }
 
   /// The red close button hides the window (keeping the app + embedded server
