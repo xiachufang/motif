@@ -229,11 +229,16 @@ class QuickCommandStore extends ChangeNotifier {
 
   Future<void> setGlobal(List<QuickCommand> cmds) async {
     _commands = cmds;
+    // Notify synchronously (before the async disk write). ReorderableListView
+    // expects the item list to update in the same frame as the reorder
+    // callback; deferring the rebuild past `await` desyncs its internal
+    // bookkeeping and makes items vanish on drop (worse on mobile). Persist
+    // after.
+    notifyListeners();
     await _prefs.setString(
       _Keys.quickCommands,
       jsonEncodeList(cmds.map((c) => c.toJson()).toList()),
     );
-    notifyListeners();
   }
 
   Future<void> add(QuickCommand cmd) => setGlobal([..._commands, cmd]);
@@ -273,11 +278,13 @@ class QuickCommandStore extends ChangeNotifier {
       setId == null ? _commands : (setById(setId)?.commands ?? const []);
 
   Future<void> _persistSets() async {
+    // Notify synchronously before persisting (same reorder-frame requirement as
+    // setGlobal — see note there).
+    notifyListeners();
     await _prefs.setString(
       _Keys.quickCommandSets,
       jsonEncodeList(_sets.map((s) => s.toJson()).toList()),
     );
-    notifyListeners();
   }
 
   /// Create a set seeded from the current global commands. Returns its id.

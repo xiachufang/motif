@@ -283,12 +283,10 @@ class _ModeSwitch extends StatelessWidget {
     // InkWell) so there's no ink ripple either — the selected pill is the only
     // feedback.
     return MouseRegion(
-      cursor: SystemMouseCursors.click,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => onChanged(m),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
+        child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
             color: selected ? c.background : Colors.transparent,
@@ -303,7 +301,7 @@ class _ModeSwitch extends StatelessWidget {
                 label,
                 style: TextStyle(
                   fontSize: 12,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  fontWeight: FontWeight.w500,
                   color: selected ? c.textPrimary : c.textTertiary,
                 ),
               ),

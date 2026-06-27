@@ -23,7 +23,6 @@ bool get _isDesktop =>
 
 EmbeddedListenMode _listenModeFromWire(Object? v) => switch (v) {
   'lan' => EmbeddedListenMode.lan,
-  'off' => EmbeddedListenMode.off,
   _ => EmbeddedListenMode.loopback,
 };
 

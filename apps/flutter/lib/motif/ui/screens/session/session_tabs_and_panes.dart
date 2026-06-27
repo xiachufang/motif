@@ -18,6 +18,7 @@ class _TabBar extends StatelessWidget {
       height: 44,
       color: inTitleBar ? Colors.transparent : c.background,
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: ReorderableListView.builder(
@@ -64,7 +65,11 @@ class _TabBar extends StatelessWidget {
                 return Padding(
                   key: ValueKey('tab-${v.id}'),
                   padding: const EdgeInsets.only(right: MotifSpacing.xs),
-                  child: GestureDetector(
+                  child: _SessionTabChip(
+                    active: active,
+                    icon: icon,
+                    label: label,
+                    dragIndex: i,
                     onTap: () {
                       if (motif.isLive) {
                         motif.activateView(v.id);
@@ -72,82 +77,20 @@ class _TabBar extends StatelessWidget {
                         motif.selectViewLocally(v.id);
                       }
                     },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: MotifSpacing.md,
-                      ),
-                      decoration: BoxDecoration(
-                        color: active ? c.accentFill() : c.subtleFill,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          ReorderableDragStartListener(
-                            index: i,
-                            child: Row(
-                              children: [
-                                Icon(
-                                  icon,
-                                  size: 14,
-                                  color: active ? c.accent : c.textSecondary,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  label,
-                                  style: TextStyle(
-                                    color: active ? c.accent : c.textSecondary,
-                                    fontSize: 12,
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          Tooltip(
-                            message:
-                                'Close tab (${_primaryShortcutLabel('W')})',
-                            child: GestureDetector(
-                              key: ValueKey('close-tab-${v.id}'),
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => unawaited(
-                                _closeViewWithConfirmation(context, motif, v),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(3),
-                                child: Icon(
-                                  Icons.close,
-                                  size: 13,
-                                  color: active ? c.accent : c.textTertiary,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                    onClose: () => unawaited(
+                      _closeViewWithConfirmation(context, motif, v),
                     ),
+                    closeKey: ValueKey('close-tab-${v.id}'),
                   ),
                 );
               },
             ),
           ),
-          Center(
-            child: Tooltip(
-              message: 'New terminal (${_primaryShortcutLabel('T')})',
-              child: GestureDetector(
-                onTap: onNewPty,
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: EdgeInsets.only(
-                    left: MotifSpacing.xs,
-                    right: inTitleBar ? MotifSpacing.sm : MotifSpacing.md,
-                  ),
-                  child: Icon(Icons.add_circle, size: 20, color: c.accent),
-                ),
-              ),
-            ),
+          IconButton(
+            key: const ValueKey('new-terminal-button'),
+            tooltip: 'New terminal (${_primaryShortcutLabel('T')})',
+            onPressed: onNewPty,
+            icon: Icon(Icons.add_circle, size: 20, color: c.accent),
           ),
         ],
       ),
@@ -183,6 +126,92 @@ class _TabBar extends StatelessWidget {
       ),
       OtherViewSpec(:final typeName) => (Icons.tab, typeName),
     };
+  }
+}
+
+class _SessionTabChip extends StatelessWidget {
+  final bool active;
+  final IconData icon;
+  final String label;
+  final int dragIndex;
+  final VoidCallback onTap;
+  final VoidCallback onClose;
+  final Key closeKey;
+
+  const _SessionTabChip({
+    required this.active,
+    required this.icon,
+    required this.label,
+    required this.dragIndex,
+    required this.onTap,
+    required this.onClose,
+    required this.closeKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final bg = active ? c.accentFill() : c.subtleFill;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: MouseRegion(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ReorderableDragStartListener(
+                index: dragIndex,
+                child: Row(
+                  children: [
+                    Icon(
+                      icon,
+                      size: 14,
+                      color: active ? c.accent : c.textSecondary,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        color: active ? c.accent : c.textSecondary,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              // No Tooltip here: this chip is a ReorderableListView item, and a
+              // Tooltip's OverlayPortal reactivates during reorder (the list
+              // rebuilds inside its own layout callback), which mutates the
+              // overlay's RenderLayoutBuilder mid-layout and throws. The sibling
+              // "New terminal" button keeps its tooltip because it sits outside
+              // the reorderable list.
+              GestureDetector(
+                key: closeKey,
+                behavior: HitTestBehavior.opaque,
+                onTap: onClose,
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(
+                    Icons.close,
+                    size: 13,
+                    color: active ? c.accent : c.textTertiary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

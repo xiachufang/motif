@@ -448,6 +448,12 @@ class AdaptiveModalHeader extends StatelessWidget
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
       centerTitle: true,
       actions: actions,
+      // The leading CloseButton auto-centers in its 56px slot → 16px optical
+      // inset, matching the body. Actions sit flush, so a TextButton's own 12px
+      // padding lands at 12px; nudge right by 4px to make both edges 16px.
+      actionsPadding: actions.isEmpty
+          ? null
+          : const EdgeInsets.only(right: MotifSpacing.xs),
       backgroundColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
       shadowColor: Colors.transparent,

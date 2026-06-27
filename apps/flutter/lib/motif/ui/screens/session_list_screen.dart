@@ -10,7 +10,6 @@ import '../../state/app_state.dart';
 import '../../state/connection_state.dart';
 import '../../state/motif_client.dart';
 import '../app.dart';
-import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
@@ -174,6 +173,7 @@ class _SessionListScreenState extends State<SessionListScreen>
             onPressed: () => openConnectionManager(context),
           ),
         ],
+        // actionsPadding: const EdgeInsets.only(right: MotifSpacing.xs),
       ),
       body: RefreshIndicator(
         triggerMode: RefreshIndicatorTriggerMode.anywhere,
@@ -542,7 +542,12 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
               : const Icon(Icons.refresh),
           tooltip: 'Refresh ${widget.serverName} sessions',
           visualDensity: VisualDensity.compact,
-          color: c.textSecondary,
+          // Use a style (not the legacy `color:` param). IconButton.color routes
+          // through styleFrom(foregroundColor:), which regenerates a
+          // non-transparent overlayColor that overrides the theme's transparent
+          // one — re-adding the hover circle. iconButtonStyle() keeps the
+          // theme's transparent overlay and just swaps the foreground.
+          style: context.iconButtonStyle(foregroundColor: c.textSecondary),
           onPressed: widget.motif.isLive && !_refreshing
               ? () => unawaited(_refresh())
               : null,
@@ -622,38 +627,38 @@ class _SessionListEmptyState extends StatelessWidget {
                   style: TextStyle(color: c.textSecondary, fontSize: 13),
                 ),
                 const SizedBox(height: MotifSpacing.lg),
-                Wrap(
-                  alignment: WrapAlignment.center,
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   spacing: MotifSpacing.md,
-                  runSpacing: MotifSpacing.sm,
                   children: [
-                    MotifButton(
-                      label: active == null
-                          ? 'Connect a Server'
-                          : transportSetupNeeded
-                          ? 'Setup Reach Via'
-                          : connecting
-                          ? 'Connecting…'
-                          : connectionFailed
-                          ? 'Retry ${active.name}'
-                          : 'Connect ${active.name}',
-                      icon: active == null
-                          ? Icons.dns_outlined
-                          : transportSetupNeeded
-                          ? Icons.tune
-                          : Icons.cloud_sync_outlined,
+                    FilledButton.icon(
                       onPressed:
                           connecting || action == ServerConnectionAction.none
                           ? null
                           : active == null
                           ? () => unawaited(onAddServer())
                           : () => _performAction(context, active, action),
+                      icon: Icon(
+                        active == null
+                            ? Icons.dns_outlined
+                            : transportSetupNeeded
+                            ? Icons.tune
+                            : Icons.cloud_sync_outlined,
+                      ),
+                      label: Text(
+                        active == null
+                            ? 'Connect a Server'
+                            : transportSetupNeeded
+                            ? 'Setup Reach Via'
+                            : connecting
+                            ? 'Connecting…'
+                            : connectionFailed
+                            ? 'Retry ${active.name}'
+                            : 'Connect ${active.name}',
+                      ),
                     ),
                     if (showDetails && active != null)
-                      MotifButton(
-                        label: 'Details',
-                        icon: Icons.info_outline,
-                        role: MotifButtonRole.bordered,
+                      OutlinedButton.icon(
                         onPressed: () => unawaited(
                           showConnectionDetailsDialog(
                             context,
@@ -661,18 +666,18 @@ class _SessionListEmptyState extends StatelessWidget {
                             detail: view.subtitle,
                           ),
                         ),
+                        icon: const Icon(Icons.info_outline),
+                        label: const Text('Details'),
                       ),
-                    MotifButton(
-                      label: 'Pair with Link',
-                      icon: Icons.qr_code_2,
-                      role: MotifButtonRole.bordered,
+                    OutlinedButton.icon(
                       onPressed: () => unawaited(onPairServer()),
+                      icon: const Icon(Icons.qr_code_2),
+                      label: const Text('Pair with Link'),
                     ),
-                    MotifButton(
-                      label: 'Manage Servers',
-                      icon: Icons.tune,
-                      role: MotifButtonRole.bordered,
+                    OutlinedButton.icon(
                       onPressed: () => openConnectionManager(context),
+                      icon: const Icon(Icons.tune),
+                      label: const Text('Manage Servers'),
                     ),
                   ],
                 ),

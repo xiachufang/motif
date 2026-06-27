@@ -29,7 +29,6 @@ import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
-import '../theme/motif_buttons.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/quick_command_row.dart';
 import '../widgets/top_toast.dart';
@@ -256,17 +255,28 @@ class _SessionScreenState extends State<SessionScreen>
                           icon: const Icon(Icons.list_alt_outlined),
                           tooltip:
                               'Sessions (${_primaryShortcutLabel('L', shift: true)})',
-                          style: _sidebarButtonStyle(c, sidebar.showSessions),
+                          style: _sidebarButtonStyle(
+                            context,
+                            c,
+                            sidebar.showSessions,
+                          ),
                           onPressed: () => _toggleSessionsPanel(app),
                         ),
                       ],
                     )
-                  : Builder(
-                      builder: (buttonContext) => IconButton(
-                        icon: const Icon(Icons.menu),
-                        tooltip: 'Session menu',
-                        onPressed: () =>
-                            _showSessionMenu(app, motif, buttonContext),
+                  : Center(
+                      child: SizedBox(
+                        width: MotifControlSize.md,
+                        height: MotifControlSize.md,
+                        child: Builder(
+                          builder: (buttonContext) => IconButton(
+                            key: const ValueKey('session-menu-button'),
+                            icon: const Icon(Icons.menu),
+                            tooltip: 'Session menu',
+                            onPressed: () =>
+                                _showSessionMenu(app, motif, buttonContext),
+                          ),
+                        ),
                       ),
                     ),
               actions: [
@@ -275,6 +285,7 @@ class _SessionScreenState extends State<SessionScreen>
                   icon: const Icon(Icons.folder_outlined),
                   tooltip: 'Files (${_primaryShortcutLabel('E', shift: true)})',
                   style: _sidebarButtonStyle(
+                    context,
                     c,
                     usesSidebar && sidebar.showFileTree,
                   ),
@@ -286,6 +297,7 @@ class _SessionScreenState extends State<SessionScreen>
                   tooltip:
                       'Git diff (${_primaryShortcutLabel('G', shift: true)})',
                   style: _sidebarButtonStyle(
+                    context,
                     c,
                     usesSidebar && sidebar.showGitDiff,
                   ),
@@ -296,7 +308,11 @@ class _SessionScreenState extends State<SessionScreen>
                     key: const ValueKey('bottom-bar-toggle'),
                     icon: const Icon(Icons.keyboard_alt_outlined),
                     tooltip: 'Bottom bar',
-                    style: _sidebarButtonStyle(c, sidebar.showBottomBar),
+                    style: _sidebarButtonStyle(
+                      context,
+                      c,
+                      sidebar.showBottomBar,
+                    ),
                     onPressed: () {
                       setState(() {
                         sidebar.showBottomBar = !sidebar.showBottomBar;

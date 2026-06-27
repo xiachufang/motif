@@ -370,6 +370,9 @@ class _ServerRowState extends State<_ServerRow> {
               onPressed: () => widget.onAction(action),
             ),
           PopupMenuButton<String>(
+            // Keep the trigger free of the regenerated hover overlay (see note
+            // in motif_theme.dart: PopupMenuButton(icon:) path).
+            style: motifNoButtonFeedback,
             tooltip: 'Server actions',
             onSelected: (value) {
               switch (value) {

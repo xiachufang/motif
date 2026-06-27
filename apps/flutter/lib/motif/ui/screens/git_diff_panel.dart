@@ -1098,7 +1098,7 @@ class _StageToggleButton extends StatelessWidget {
         icon: Icon(
           staged ? Icons.inventory_2_outlined : Icons.edit_note_outlined,
         ),
-        style: IconButton.styleFrom(
+        style: context.iconButtonStyle(
           foregroundColor: c.accent,
           backgroundColor: c.accentFill(),
         ),

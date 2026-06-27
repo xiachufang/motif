@@ -40,11 +40,10 @@ class _InputBar extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         spacing: 10,
         children: [
-          MotifIconButton(
-            icon: Icons.photo_outlined,
+          IconButton(
             onPressed: onAttach,
             tooltip: 'Attach photo',
-            size: MotifButtonSize.large,
+            icon: const Icon(Icons.photo_outlined),
           ),
           Expanded(
             child: Container(
@@ -105,7 +104,7 @@ class _InputBar extends StatelessWidget {
                             : recording
                             ? 'Stop'
                             : 'Voice input',
-                        style: IconButton.styleFrom(
+                        style: context.iconButtonStyle(
                           backgroundColor: Colors.transparent,
                           foregroundColor: recording ? c.danger : c.textPrimary,
                           fixedSize: const Size(30, 28),
@@ -132,12 +131,17 @@ class _InputBar extends StatelessWidget {
               ),
             ),
           ),
-          MotifIconButton(
-            icon: Icons.arrow_upward,
-            role: MotifButtonRole.filled,
-            size: MotifButtonSize.large,
-            onPressed: onSend,
-            tooltip: 'Send',
+          Tooltip(
+            message: 'Send',
+            child: FilledButton(
+              onPressed: onSend,
+              style: FilledButton.styleFrom(
+                fixedSize: const Size.square(MotifControlSize.lg),
+                padding: EdgeInsets.zero,
+                shape: const CircleBorder(),
+              ).withoutFeedback(),
+              child: const Icon(Icons.arrow_upward),
+            ),
           ),
         ],
       ),

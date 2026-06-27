@@ -52,6 +52,10 @@ class QuickCommandSetsView extends StatelessWidget {
                     : 'matches: ${s.matches.join(", ")}',
               ),
               trailing: PopupMenuButton<String>(
+                // PopupMenuButton feeds the ambient icon color into its internal
+                // IconButton, which regenerates a non-transparent hover overlay;
+                // this shared style forces it back to transparent.
+                style: motifNoButtonFeedback,
                 onSelected: (v) async {
                   if (v == 'matches') {
                     await _editMatches(context, s.id, s.matches);

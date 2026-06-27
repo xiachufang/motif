@@ -360,6 +360,10 @@ class _EmbeddedServerSettingsSheetState
                             style: FilledButton.styleFrom(
                               backgroundColor: c.danger,
                               foregroundColor: c.textOnAccent,
+                              // styleFrom regenerates a non-transparent overlay
+                              // from the colors above; pass transparent so it
+                              // stays feedback-free like the themed buttons.
+                              overlayColor: Colors.transparent,
                             ),
                           )
                         : OutlinedButton.icon(
@@ -453,11 +457,6 @@ class _EmbeddedServerSettingsSheetState
                     label: Text('LAN'),
                     icon: Icon(Icons.lan_outlined),
                   ),
-                  ButtonSegment(
-                    value: EmbeddedListenMode.off,
-                    label: Text('Off'),
-                    icon: Icon(Icons.power_settings_new),
-                  ),
                 ],
                 selected: {cfg.listenMode},
                 onSelectionChanged: (next) => _save(
@@ -475,24 +474,23 @@ class _EmbeddedServerSettingsSheetState
             ],
           ),
         ),
-        if (cfg.listenMode != EmbeddedListenMode.off)
-          _field(
-            _port,
-            'Port',
-            '7777',
-            keyboard: TextInputType.number,
-            onChanged: () {
-              final p = int.tryParse(_port.text.trim());
-              if (p != null && p > 0 && p < 65536) {
-                _save(
-                  cfg.copyWith(port: p),
-                  restartRequired: true,
-                  restartOnBlur: true,
-                );
-              }
-            },
-            onFocusLost: _showPendingRestartPrompt,
-          ),
+        _field(
+          _port,
+          'Port',
+          '7777',
+          keyboard: TextInputType.number,
+          onChanged: () {
+            final p = int.tryParse(_port.text.trim());
+            if (p != null && p > 0 && p < 65536) {
+              _save(
+                cfg.copyWith(port: p),
+                restartRequired: true,
+                restartOnBlur: true,
+              );
+            }
+          },
+          onFocusLost: _showPendingRestartPrompt,
+        ),
       ],
     );
   }
@@ -516,12 +514,6 @@ class _EmbeddedServerSettingsSheetState
         title: 'Local network',
         subtitle: 'Reachable on the LAN at 0.0.0.0; encrypted, pair via QR',
         tone: (MotifColors c) => c.success,
-      ),
-      EmbeddedListenMode.off => (
-        icon: Icons.power_settings_new,
-        title: 'Local listener off',
-        subtitle: 'Use Tailscale or relay pairing only',
-        tone: (MotifColors c) => c.textTertiary,
       ),
     };
   }
@@ -925,6 +917,7 @@ class _EmbeddedServerSettingsSheetState
           padding: const EdgeInsets.symmetric(horizontal: 8),
           minimumSize: const Size(0, 32),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          overlayColor: Colors.transparent,
         ),
       ),
     );

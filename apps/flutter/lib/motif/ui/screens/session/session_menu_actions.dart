@@ -266,9 +266,13 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     await _onSessionMenuSelected(app, motif, action);
   }
 
-  ButtonStyle? _sidebarButtonStyle(MotifColors c, bool selected) {
+  ButtonStyle? _sidebarButtonStyle(
+    BuildContext context,
+    MotifColors c,
+    bool selected,
+  ) {
     if (!selected) return null;
-    return IconButton.styleFrom(
+    return context.iconButtonStyle(
       foregroundColor: c.accent,
       backgroundColor: c.accentFill(),
     );

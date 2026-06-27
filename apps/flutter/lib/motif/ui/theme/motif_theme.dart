@@ -37,13 +37,6 @@ abstract final class MotifControlSize {
   static const double xl = 64;
 }
 
-abstract final class MotifInteraction {
-  static const double pressedOpacity = 0.72;
-  static const double pressedScale = 0.96;
-  static const double disabledOpacity = 0.45;
-  static const Duration pressDuration = Duration(milliseconds: 160);
-}
-
 /// Semantic colors. Values transcribed from the iOS asset catalog colorsets.
 @immutable
 class MotifColors extends ThemeExtension<MotifColors> {
@@ -84,7 +77,6 @@ class MotifColors extends ThemeExtension<MotifColors> {
   });
 
   Color get subtleFill => textPrimary.withValues(alpha: 0.06);
-  Color get pressedFill => textPrimary.withValues(alpha: 0.15);
   Color accentFill([double alpha = 0.18]) => accent.withValues(alpha: alpha);
 
   static const light = MotifColors(
@@ -189,6 +181,48 @@ class MotifColors extends ThemeExtension<MotifColors> {
 
 extension MotifThemeContext on BuildContext {
   MotifColors get motif => Theme.of(this).extension<MotifColors>()!;
+
+  /// Merges custom colors onto [IconButtonTheme] without [IconButton.styleFrom],
+  /// which regenerates hover/press overlays from [foregroundColor].
+  ButtonStyle iconButtonStyle({
+    Color? foregroundColor,
+    Color? backgroundColor,
+    Size? fixedSize,
+    Size? minimumSize,
+    EdgeInsetsGeometry? padding,
+  }) {
+    return (IconButtonTheme.of(this).style ?? const ButtonStyle()).copyWith(
+      foregroundColor: foregroundColor == null
+          ? null
+          : WidgetStatePropertyAll(foregroundColor),
+      backgroundColor: backgroundColor == null
+          ? null
+          : WidgetStatePropertyAll(backgroundColor),
+      fixedSize: fixedSize == null ? null : WidgetStatePropertyAll(fixedSize),
+      minimumSize: minimumSize == null
+          ? null
+          : WidgetStatePropertyAll(minimumSize),
+      padding: padding == null ? null : WidgetStatePropertyAll(padding),
+    );
+  }
+}
+
+/// Single source of truth for "no M3 state-layer overlay" — the transparent
+/// `overlayColor` shared by every interactive component theme (buttons,
+/// selection controls, tab bar, slider) so hover/press feedback removal is
+/// uniform rather than re-declared inline per theme.
+const WidgetStateProperty<Color?> kMotifNoOverlay = WidgetStatePropertyAll(
+  Colors.transparent,
+);
+
+/// Disables Material hover/press/splash overlays when merged onto a [ButtonStyle].
+const ButtonStyle motifNoButtonFeedback = ButtonStyle(
+  overlayColor: kMotifNoOverlay,
+  splashFactory: NoSplash.splashFactory,
+);
+
+extension MotifButtonStyleMerge on ButtonStyle {
+  ButtonStyle withoutFeedback() => merge(motifNoButtonFeedback);
 }
 
 /// Builds the [ThemeData] for a given brightness with the Motif palette.
@@ -246,10 +280,16 @@ ThemeData motifTheme(Brightness brightness) {
   final roundedControlShape = RoundedRectangleBorder(
     borderRadius: BorderRadius.circular(MotifRadius.sm),
   );
+  // overlayColor MUST be passed into styleFrom (not merged afterward via
+  // withoutFeedback). styleFrom only honors an explicitly transparent
+  // overlayColor; otherwise it GENERATES a non-transparent overlay from
+  // foregroundColor, and a later merge can't override that non-null value
+  // (ButtonStyle.merge keeps the receiver's field). So set it here directly.
   final textButtonStyle = TextButton.styleFrom(
     foregroundColor: colors.accent,
     disabledForegroundColor: colors.textTertiary,
     shape: roundedControlShape,
+    overlayColor: Colors.transparent,
   );
   final filledButtonStyle = FilledButton.styleFrom(
     backgroundColor: colors.accent,
@@ -257,12 +297,14 @@ ThemeData motifTheme(Brightness brightness) {
     disabledBackgroundColor: colors.subtleFill,
     disabledForegroundColor: colors.textTertiary,
     shape: roundedControlShape,
+    overlayColor: Colors.transparent,
   );
   final outlinedButtonStyle = OutlinedButton.styleFrom(
     foregroundColor: colors.textPrimary,
     disabledForegroundColor: colors.textTertiary,
     side: BorderSide(color: colors.border),
     shape: roundedControlShape,
+    overlayColor: Colors.transparent,
   );
   return ThemeData(
     useMaterial3: true,
@@ -282,20 +324,34 @@ ThemeData motifTheme(Brightness brightness) {
     extensions: [colors],
     fontFamily: null,
     splashFactory: NoSplash.splashFactory,
+    hoverColor: Colors.transparent,
+    highlightColor: Colors.transparent,
+    splashColor: Colors.transparent,
     textTheme: textTheme,
     appBarTheme: AppBarTheme(
       elevation: 0,
       scrolledUnderElevation: 0,
       backgroundColor: colors.background,
-      foregroundColor: colors.textPrimary,
+      // Actions sit flush at the edge (default actionsPadding is zero); our
+      // 40px icon buttons hold a 20px glyph, so the icon's optical inset is
+      // (40-20)/2 = 10px — tighter than the 16px (lg) titleSpacing/body inset.
+      // Nudge actions in by 6px so the trailing icon also lands at 16px.
+      actionsPadding: const EdgeInsets.only(right: MotifSpacing.xs),
+      // Intentionally NOT setting foregroundColor. When it is set, AppBar sees a
+      // non-default actions icon color and rebuilds the action IconButtons'
+      // style via IconButton.styleFrom — which regenerates a (non-transparent)
+      // overlayColor from the foreground, re-adding the hover/press circle that
+      // our iconButtonTheme disables. Leaving it null keeps AppBar on the path
+      // that preserves our transparent overlay. Icon color still comes from
+      // iconButtonTheme (textPrimary == colorScheme.onSurface, the default
+      // foreground), and the title from titleTextStyle below — so nothing
+      // changes visually except the unwanted overlay disappears.
       centerTitle: false,
       titleTextStyle: TextStyle(
         color: colors.textPrimary,
         fontSize: 17,
         fontWeight: FontWeight.w700,
       ),
-      iconTheme: IconThemeData(color: colors.textPrimary, size: 20),
-      actionsIconTheme: IconThemeData(color: colors.textPrimary, size: 20),
     ),
     dividerTheme: DividerThemeData(color: colors.border, thickness: 1),
     iconButtonTheme: IconButtonThemeData(
@@ -304,10 +360,9 @@ ThemeData motifTheme(Brightness brightness) {
           if (states.contains(WidgetState.disabled)) return colors.textTertiary;
           return colors.textPrimary;
         }),
-        backgroundColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.pressed)) return colors.pressedFill;
-          return Colors.transparent;
-        }),
+        backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+        overlayColor: kMotifNoOverlay,
+        iconSize: WidgetStateProperty.all(20),
         shape: WidgetStateProperty.all(const CircleBorder()),
         minimumSize: WidgetStateProperty.all(
           const Size.square(MotifControlSize.md),
@@ -333,6 +388,12 @@ ThemeData motifTheme(Brightness brightness) {
     textButtonTheme: TextButtonThemeData(style: textButtonStyle),
     filledButtonTheme: FilledButtonThemeData(style: filledButtonStyle),
     outlinedButtonTheme: OutlinedButtonThemeData(style: outlinedButtonStyle),
+    segmentedButtonTheme: const SegmentedButtonThemeData(
+      style: ButtonStyle(
+        overlayColor: kMotifNoOverlay,
+        splashFactory: NoSplash.splashFactory,
+      ),
+    ),
     floatingActionButtonTheme: FloatingActionButtonThemeData(
       elevation: 0,
       highlightElevation: 0,
@@ -402,11 +463,7 @@ ThemeData motifTheme(Brightness brightness) {
           if (states.contains(WidgetState.disabled)) return colors.textTertiary;
           return colors.textPrimary;
         }),
-        overlayColor: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.pressed)) return colors.pressedFill;
-          if (states.contains(WidgetState.hovered)) return colors.subtleFill;
-          return Colors.transparent;
-        }),
+        overlayColor: kMotifNoOverlay,
       ),
     ),
     bottomSheetTheme: BottomSheetThemeData(
@@ -448,6 +505,7 @@ ThemeData motifTheme(Brightness brightness) {
         if (states.contains(WidgetState.selected)) return colors.accent;
         return colors.border;
       }),
+      overlayColor: kMotifNoOverlay,
     ),
     checkboxTheme: CheckboxThemeData(
       fillColor: WidgetStateProperty.resolveWith((states) {
@@ -460,6 +518,7 @@ ThemeData motifTheme(Brightness brightness) {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(MotifRadius.xs),
       ),
+      overlayColor: kMotifNoOverlay,
     ),
     radioTheme: RadioThemeData(
       fillColor: WidgetStateProperty.resolveWith((states) {
@@ -467,12 +526,13 @@ ThemeData motifTheme(Brightness brightness) {
         if (states.contains(WidgetState.selected)) return colors.accent;
         return colors.textSecondary;
       }),
+      overlayColor: kMotifNoOverlay,
     ),
     sliderTheme: SliderThemeData(
       activeTrackColor: colors.accent,
       inactiveTrackColor: colors.subtleFill,
       thumbColor: colors.accent,
-      overlayColor: colors.accentFill(0.12),
+      overlayColor: Colors.transparent,
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
       color: colors.accent,
@@ -493,6 +553,7 @@ ThemeData motifTheme(Brightness brightness) {
       indicatorColor: colors.accent,
       labelColor: colors.accent,
       unselectedLabelColor: colors.textSecondary,
+      overlayColor: kMotifNoOverlay,
     ),
   );
 }

@@ -42,6 +42,7 @@ class QuickCommandEditor extends StatelessWidget {
             ),
           if (setId == null)
             PopupMenuButton<String>(
+              style: motifNoButtonFeedback,
               onSelected: (v) {
                 if (v == 'reset') store.resetToDefaults();
               },
@@ -50,6 +51,7 @@ class QuickCommandEditor extends StatelessWidget {
               ],
             ),
           PopupMenuButton<String>(
+            style: motifNoButtonFeedback,
             icon: const Icon(Icons.add),
             tooltip: 'Add command',
             onSelected: (v) => _add(context, v),

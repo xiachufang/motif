@@ -831,6 +831,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
               onPressed: () => _loadSshDiscovery(force: true),
             )
           : PopupMenuButton<int>(
+              style: motifNoButtonFeedback,
               tooltip: 'Choose SSH host',
               icon: const Icon(Icons.arrow_drop_down_circle_outlined),
               onSelected: (index) =>
@@ -873,6 +874,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
               onPressed: () => _loadSshDiscovery(force: true),
             )
           : PopupMenuButton<int>(
+              style: motifNoButtonFeedback,
               tooltip: 'Choose SSH key',
               icon: const Icon(Icons.arrow_drop_down_circle_outlined),
               onSelected: (index) => _applySshIdentity(_sshIdentities[index]),

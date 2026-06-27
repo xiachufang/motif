@@ -23,7 +23,7 @@ Future<EmbeddedServerService> createNoopEmbeddedServerService(
 
 /// How the embedded server should listen. Mirrors the Rust `ListenMode`
 /// (serialized lowercase) in the desktop implementation.
-enum EmbeddedListenMode { loopback, lan, off }
+enum EmbeddedListenMode { loopback, lan }
 
 @immutable
 class EmbeddedServerConfig {

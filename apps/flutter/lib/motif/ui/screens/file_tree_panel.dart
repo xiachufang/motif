@@ -125,6 +125,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
   }
 
   PopupMenuButton<String> _newEntryMenu() => PopupMenuButton<String>(
+    style: motifNoButtonFeedback,
     icon: const Icon(Icons.add),
     tooltip: 'New',
     onSelected: (v) {
@@ -198,6 +199,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
                 ),
               ),
             PopupMenuButton<String>(
+              style: motifNoButtonFeedback,
               icon: Icon(Icons.more_vert, size: 18, color: c.textTertiary),
               onSelected: (v) {
                 final parent = _parentOf(path);
