@@ -5,7 +5,7 @@
 # Desktop only (macOS/Linux/Windows); the embedded server isn't built for
 # mobile.
 #
-#   scripts/build_motif_embed.sh --target macos-arm64|macos-x64|linux-arm64|linux-x64|windows-arm64|windows-x64 [--out <path>]
+#   scripts/build_motif_embed.sh --target macos-arm64|linux-arm64|linux-x64|windows-arm64|windows-x64 [--out <path>]
 #
 # Requires the Rust toolchain (cargo) with the matching target installed
 # (`rustup target add <triple>`). Host-arch builds work out of the box.
@@ -34,9 +34,9 @@ command -v cargo >/dev/null || { echo "error: cargo not on PATH" >&2; exit 127; 
 # on windows.
 triple=""; artifact=""; out_name=""
 extra_rustflags=""
+cargo_features=()
 case "$TARGET" in
   macos-arm64) triple="aarch64-apple-darwin"; artifact="libmotif_embed.dylib"; out_name="libmotif_embed.dylib";;
-  macos-x64)   triple="x86_64-apple-darwin";  artifact="libmotif_embed.dylib"; out_name="libmotif_embed.dylib";;
   linux-arm64) triple="aarch64-unknown-linux-gnu"; artifact="libmotif_embed.so"; out_name="libmotif_embed.so";;
   linux-x64)   triple="x86_64-unknown-linux-gnu";  artifact="libmotif_embed.so"; out_name="libmotif_embed.so";;
   windows-arm64) triple="aarch64-pc-windows-msvc"; artifact="motif_embed.dll"; out_name="motif_embed.dll";;
@@ -63,11 +63,63 @@ if [[ "$os" == "macos" ]]; then
   # `.dart_tool/lib/...` paths. Without it, deep checkout paths (e.g. a git
   # worktree under `.claude/worktrees/`) overflow the pad and install_name_tool
   # fails with "larger updated load commands do not fit".
-  extra_rustflags="-C link-arg=-Wl,-install_name,@rpath/$out_name -C link-arg=-Wl,-headerpad_max_install_names"
+  extra_rustflags="-C link-arg=-Wl,-install_name,@rpath/$out_name -C link-arg=-Wl,-rpath,@loader_path -C link-arg=-Wl,-headerpad_max_install_names"
   : "${MACOSX_DEPLOYMENT_TARGET:=${MACOS_MIN_VERSION:-11.0}}"
   : "${SDKROOT:=$(xcrun --sdk macosx --show-sdk-path)}"
   export MACOSX_DEPLOYMENT_TARGET
   export SDKROOT
+
+  command -v pkg-config >/dev/null || { echo "error: pkg-config not on PATH (brew install pkg-config)" >&2; exit 127; }
+
+  # Xcode Cloud may run an arm64 Rust toolchain while Homebrew's Zig/Go are
+  # installed from /usr/local and auto-detect x86_64. Build libghostty-vt with
+  # our explicit target and make Cargo pick it up through pkg-config instead of
+  # libghostty-vt-sys' auto-detected vendored build.
+  ghostty_dir="${MOTIF_GHOSTTY_VT_DIR:-$PROJECT_DIR/build/native/ghostty-vt/macos/$arch}"
+  if [[ ! -f "$ghostty_dir/libghostty-vt.dylib" ]]; then
+    bash "$PROJECT_DIR/scripts/build_native_deps.sh" \
+      --target-os macos \
+      --target-arch "$arch" \
+      --out-dir "$ghostty_dir" \
+      --macos-min-version "$MACOSX_DEPLOYMENT_TARGET"
+  fi
+  [[ -f "$ghostty_dir/libghostty-vt.dylib" ]] || {
+    echo "error: expected libghostty-vt.dylib missing under $ghostty_dir" >&2
+    exit 1
+  }
+  pc_dir="$ghostty_dir/pkgconfig"
+  mkdir -p "$pc_dir"
+  cat > "$pc_dir/libghostty-vt.pc" <<EOF
+prefix=$ghostty_dir
+exec_prefix=\${prefix}
+libdir=\${prefix}
+includedir=$PROJECT_DIR/ghostty/include
+
+Name: libghostty-vt
+Description: Ghostty VT engine for Motif
+Version: 0.1.0
+Libs: -L\${libdir} -lghostty-vt
+Cflags: -I\${includedir}
+EOF
+  export PKG_CONFIG_PATH="$pc_dir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  export PKG_CONFIG_ALLOW_CROSS=1
+  unset GHOSTTY_SOURCE_DIR
+  cargo_features+=(--features ghostty-dynamic)
+
+  # libtailscale-sys builds a Go c-archive as part of motif-embed's default
+  # features. Force CGO to the same target arch so the final dylib doesn't mix
+  # x86_64 objects into an arm64 link (or vice versa).
+  clang="$(xcrun --sdk macosx --find clang)"
+  case "$arch" in
+    arm64) goarch="arm64"; clang_arch="arm64";;
+    *) echo "error: unsupported macOS arch '$arch'" >&2; exit 2;;
+  esac
+  export GOOS=darwin
+  export GOARCH="$goarch"
+  export CGO_ENABLED=1
+  export CC="$clang"
+  export CGO_CFLAGS="-arch $clang_arch -isysroot $SDKROOT -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET -Wno-unused-parameter ${CGO_CFLAGS:-}"
+  export CGO_LDFLAGS="-arch $clang_arch -isysroot $SDKROOT -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET ${CGO_LDFLAGS:-}"
 fi
 
 mkdir -p "$(dirname "$OUT")"
@@ -75,15 +127,22 @@ echo ">>> building motif-embed ($TARGET → $triple) → $OUT"
 
 (
   cd "$REPO_ROOT"
+  cargo_args=(build --release -p motif-embed --target "$triple" "${cargo_features[@]}")
   if [[ -n "$extra_rustflags" ]]; then
-    RUSTFLAGS="${RUSTFLAGS:-} $extra_rustflags" cargo build --release -p motif-embed --target "$triple"
+    RUSTFLAGS="${RUSTFLAGS:-} $extra_rustflags" cargo "${cargo_args[@]}"
   else
-    cargo build --release -p motif-embed --target "$triple"
+    cargo "${cargo_args[@]}"
   fi
 )
 
 built="$REPO_ROOT/target/$triple/release/$artifact"
 [[ -f "$built" ]] || { echo "error: expected cargo artifact missing: $built" >&2; exit 1; }
 cp -f "$built" "$OUT"
+
+if [[ "$os" == "macos" ]]; then
+  cp -f "$ghostty_dir/libghostty-vt.dylib" "$(dirname "$OUT")/libghostty-vt.dylib"
+  ln -sf libghostty-vt.dylib "$(dirname "$OUT")/libghostty-vt.0.dylib"
+fi
+
 echo ">>> built:"
 ls -la "$OUT"

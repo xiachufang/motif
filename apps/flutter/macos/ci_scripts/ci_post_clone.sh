@@ -49,7 +49,7 @@ fi
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
 
-retry brew install zig@0.15 go
+retry brew install zig@0.15 go pkg-config
 
 # The default execution directory of this script is the ci_scripts directory.
 # Xcode Cloud checks out the primary repository, but submodules are not
@@ -105,19 +105,17 @@ retry sh -c 'cd ghostty && zig build -Demit-lib-vt=true --fetch'
 export RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo"
 retry sh -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain 1.95"
 . "$CARGO_HOME/env"
-retry rustup target add aarch64-apple-darwin x86_64-apple-darwin
+retry rustup target add aarch64-apple-darwin
 
-# Release archives are universal (arm64 + x86_64); prebuild both slices. These
-# pull crates/modules from the network, so retry the whole build (cargo/go cache
+# Release archives are Apple Silicon only; prebuild the arm64 slice. This pulls
+# crates/modules from the network, so retry the whole build (cargo/go caches
 # what already downloaded).
 retry bash scripts/build_motif_embed.sh --target macos-arm64
-retry bash scripts/build_motif_embed.sh --target macos-x64
 
 # Prebuild libtailscale (Go c-shared lib). The hook otherwise clones
 # tailscale/libtailscale and runs `go build` inside the sandboxed build phase;
 # do it here into build/native/tailscale/macos/<arch>/ (the hook's first scan
 # path) so the in-build hook finds it prebuilt. `go` is installed above.
 retry bash scripts/build_tailscale.sh --target macos-arm64
-retry bash scripts/build_tailscale.sh --target macos-x64
 
 exit 0

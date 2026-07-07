@@ -20,6 +20,15 @@ default            = ["tailscale-bundled"]
 # `motif_tailscale::{extract_auth_url, host_of}` helpers for the log-ring scrape.
 tailscale          = ["motif-server/tailscale", "dep:motif-net", "motif-net/tailscale"]
 tailscale-bundled  = ["tailscale", "motif-server/tailscale-bundled"]
+# Build-time-only feature for the Flutter macOS native-asset prebuild. It keeps
+# motifd's normal release builds static, while letting libmotif_embed.dylib link
+# against the already-arch-specific bundled libghostty-vt.dylib.
+ghostty-dynamic    = [
+  "dep:libghostty-vt",
+  "libghostty-vt/link-dynamic",
+  "dep:libghostty-vt-sys",
+  "libghostty-vt-sys/pkg-config",
+]
 
 [dependencies]
 # default-features = false so this crate's own feature flags decide whether
@@ -28,6 +37,9 @@ motif-server = { path = "../motif-server", default-features = false }
 # Optional, tailscale-only: the auth-URL scraper helpers live at the
 # motif-tailscale crate root, re-exported via motif-net.
 motif-net = { path = "../motif-net", optional = true, default-features = false }
+# Optional feature-forwarding deps used only by `ghostty-dynamic`.
+libghostty-vt = { workspace = true, optional = true }
+libghostty-vt-sys = { workspace = true, optional = true }
 
 tokio      = { workspace = true }
 serde      = { workspace = true }

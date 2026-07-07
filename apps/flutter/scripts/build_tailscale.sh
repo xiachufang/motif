@@ -2,7 +2,7 @@
 # Build libtailscale (Tailscale's C API over Go tsnet) as a dynamic library for
 # the requested Flutter target platform. Requires Go + CGO.
 #
-#   scripts/build_tailscale.sh [--src <libtailscale-dir>] [--target host|macos-arm64|macos-x64|linux-arm64|linux-x64|windows-arm64|windows-x64|android-arm|android-arm64|android-x64|ios|ios-sim|ios-sim-arm64|ios-sim-x64] [--out <path>]
+#   scripts/build_tailscale.sh [--src <libtailscale-dir>] [--target host|macos-arm64|linux-arm64|linux-x64|windows-arm64|windows-x64|android-arm|android-arm64|android-x64|ios|ios-sim|ios-sim-arm64|ios-sim-x64] [--out <path>]
 #
 # If --src is omitted, clones tailscale/libtailscale into build/libtailscale.
 set -euo pipefail
@@ -45,14 +45,11 @@ case "$TARGET" in
       *) echo "error: unsupported host $(uname -s)" >&2; exit 2;;
     esac
     OUT="${OUT:-$PROJECT_DIR/build/native/tailscale/libtailscale.$ext}";;
-  macos-arm64|macos-x64)
+  macos-arm64)
     command -v xcrun >/dev/null || { echo "error: xcrun not on PATH" >&2; exit 127; }
     arch="${TARGET#macos-}"
-    if [[ "$arch" == "arm64" ]]; then
-      goarch="arm64"; clang_arch="arm64";
-    else
-      goarch="amd64"; clang_arch="x86_64";
-    fi
+    goarch="arm64"
+    clang_arch="arm64"
     sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
     clang="$(xcrun --sdk macosx --find clang)"
     min="${MACOSX_DEPLOYMENT_TARGET:-${MACOS_MIN_VERSION:-11.0}}"

@@ -17,8 +17,9 @@
 # runtime not enabled"). Ad-hoc is fine for side-loaded distribution on Apple
 # Silicon as long as the user clears the quarantine flag once after download:
 #     xattr -dr com.apple.quarantine /Applications/Motif.app
-# then it launches normally. Do NOT modify the bundle after signing. The release
-# notes below spell this out for whoever downloads.
+# then it launches normally. The staged app is stripped to arm64-only after
+# copying it out of the archive, then ad-hoc re-signed before it goes into the
+# DMG. The archived app itself is left untouched.
 #
 # To switch to real notarized distribution later: the Account Holder creates a
 # Developer ID Application certificate, enable ENABLE_HARDENED_RUNTIME in the
@@ -39,6 +40,8 @@ set -e
 
 APP_NAME="Motif"
 REPO="xiachufang/motif"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- Guard: tag-only -------------------------------------------------------
 if [ -z "$CI_TAG" ]; then
@@ -70,7 +73,11 @@ rm -rf "$WORK" && mkdir -p "$WORK"
 DMG="$WORK/$APP_NAME-$CI_TAG.dmg"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
-cp -R "$APP_PATH" "$STAGE/"
+STAGED_APP="$STAGE/$APP_NAME.app"
+cp -R "$APP_PATH" "$STAGED_APP"
+bash "$PROJECT_DIR/scripts/strip_macos_x64.sh" "$STAGED_APP" \
+  --resign \
+  --entitlements "$PROJECT_DIR/macos/Runner/Release.entitlements"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" \
   -ov -format UDZO "$DMG"

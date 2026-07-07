@@ -106,6 +106,7 @@ tui-term           = "0.3"
 # (ghostty #10297 / #10337), so shrinking a PTY's columns with large
 # scrollback aborts the process. This rev's build.rs pins ghostty bfe633a9.
 libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543" }
+libghostty-vt-sys  = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543" }
 notify             = "8"
 notify-debouncer-full = "0.7"
 

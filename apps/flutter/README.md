@@ -127,7 +127,7 @@ generated dynamic framework. The native app then uses the real
 for interactive auth, or enter a Tailscale **auth key** for headless auth.
 
 For manual prebuild/debugging:
-`scripts/build_tailscale.sh [--target host|macos-arm64|macos-x64|linux-arm64|linux-x64|windows-arm64|windows-x64|android-arm|android-arm64|android-x64|ios|ios-sim-arm64|ios-sim-x64]`.
+`scripts/build_tailscale.sh [--target host|macos-arm64|linux-arm64|linux-x64|windows-arm64|windows-x64|android-arm|android-arm64|android-x64|ios|ios-sim-arm64|ios-sim-x64]`.
 
 ## Tests
 
