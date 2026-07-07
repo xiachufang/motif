@@ -1,4 +1,4 @@
-# motif
+# motif (website)[https://tech.xiachufang.xyz/motif/]
 
 A remote dev agent in the spirit of code-server + `tmux attach`: a long-lived
 **Session** on a host (workdir + PTY pool + git + file ops) that multiple
