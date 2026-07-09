@@ -498,6 +498,49 @@ void main() {
     expect(inputField().controller?.text, isEmpty);
   });
 
+  testWidgets('bottom quick commands update when command store changes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+    final app = await _appState(motif: motif);
+    await app.commands.setGlobal([
+      QuickCommand.bytes('first', 'First', [1]),
+    ]);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('First'), findsOneWidget);
+    expect(find.byTooltip('Second'), findsNothing);
+
+    await app.commands.setGlobal([
+      QuickCommand.bytes('second', 'Second', [2]),
+    ]);
+    await tester.pump();
+
+    expect(find.byTooltip('First'), findsNothing);
+    expect(find.byTooltip('Second'), findsOneWidget);
+  });
+
   testWidgets('multiline bottom input lifts terminal without resizing it', (
     tester,
   ) async {

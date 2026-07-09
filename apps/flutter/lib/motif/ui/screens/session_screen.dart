@@ -502,48 +502,56 @@ class _SessionScreenState extends State<SessionScreen>
                             final runningProgram = snap.runningProgram;
                             final inputState =
                                 _inputStateForView(snap.activeViewId);
-                            return _MeasureSize(
-                              onChange: _setBottomBarContentSize,
-                              child: ColoredBox(
-                                color: c.background,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    QuickCommandRow(
-                                      commands: commandStore.resolved(
-                                        runningProgram,
-                                      ),
-                                      modifiers: _modifiers,
-                                      onSendBytes: (b) => _sendBytes(b),
-                                      onInsertText: _insertText,
-                                      onChangeDirectory: () =>
-                                          _openChangeDirectory(motif),
-                                      onEdit: () => Navigator.of(context).push(
-                                        MaterialPageRoute<void>(
-                                          builder: (_) => QuickCommandEditor(
-                                            setId: commandStore.effectiveSetId(
-                                              runningProgram,
-                                            ),
+                            return ListenableBuilder(
+                              listenable: commandStore,
+                              builder: (context, _) {
+                                return _MeasureSize(
+                                  onChange: _setBottomBarContentSize,
+                                  child: ColoredBox(
+                                    color: c.background,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        QuickCommandRow(
+                                          commands: commandStore.resolved(
+                                            runningProgram,
                                           ),
+                                          modifiers: _modifiers,
+                                          onSendBytes: (b) => _sendBytes(b),
+                                          onInsertText: _insertText,
+                                          onChangeDirectory: () =>
+                                              _openChangeDirectory(motif),
+                                          onEdit: () =>
+                                              Navigator.of(context).push(
+                                                MaterialPageRoute<void>(
+                                                  builder: (_) =>
+                                                      QuickCommandEditor(
+                                                        setId: commandStore
+                                                            .effectiveSetId(
+                                                              runningProgram,
+                                                            ),
+                                                      ),
+                                                ),
+                                              ),
                                         ),
-                                      ),
+                                        _InputBar(
+                                          key: ValueKey(
+                                            'bottom-input-${snap.activeViewId ?? 'fallback'}',
+                                          ),
+                                          controller: inputState.controller,
+                                          focusNode: inputState.focusNode,
+                                          groupId: inputState.groupId,
+                                          onSend: _send,
+                                          recording: _recording,
+                                          micStarting: _micStarting,
+                                          onMic: _toggleMic,
+                                          onAttach: _attachPhoto,
+                                        ),
+                                      ],
                                     ),
-                                    _InputBar(
-                                      key: ValueKey(
-                                        'bottom-input-${snap.activeViewId ?? 'fallback'}',
-                                      ),
-                                      controller: inputState.controller,
-                                      focusNode: inputState.focusNode,
-                                      groupId: inputState.groupId,
-                                      onSend: _send,
-                                      recording: _recording,
-                                      micStarting: _micStarting,
-                                      onMic: _toggleMic,
-                                      onAttach: _attachPhoto,
-                                    ),
-                                  ],
-                                ),
-                              ),
+                                  ),
+                                );
+                              },
                             );
                           },
                         ),
