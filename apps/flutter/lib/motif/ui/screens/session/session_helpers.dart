@@ -199,3 +199,78 @@ String _primaryShortcutLabel(String key, {bool shift = false}) {
   final primary = _usesCommandShortcuts ? 'Cmd' : 'Ctrl';
   return shift ? '$primary+Shift+$key' : '$primary+$key';
 }
+
+/// Equality key for tab-bar rebuilds (views / active / labels / live).
+({String views, String? activeViewId, String labels, bool isLive})
+_tabBarSelectKey(MotifClient motif) {
+  final labels = <String>[];
+  for (final view in motif.views) {
+    labels.add(switch (view.spec) {
+      PtyViewSpec(:final ptyId) =>
+        motif.runningCommand[ptyId] ??
+            motif.ptys
+                .where((p) => p.id == ptyId)
+                .map((p) => p.cwd?.split('/').last)
+                .firstOrNull ??
+            'shell',
+      PreviewViewSpec(:final path) => path.split('/').last,
+      DiffViewSpec(:final path) => path?.split('/').last ?? 'diff',
+      ImageViewSpec(:final path) => path.split('/').last,
+      OtherViewSpec(:final typeName) => typeName,
+    });
+  }
+  return (
+    views: motif.views.map((v) => v.id).join(','),
+    activeViewId: motif.activeViewId,
+    labels: labels.join('\u{1e}'),
+    isLive: motif.isLive,
+  );
+}
+
+/// Equality key for pane-stack rebuilds.
+({String views, String? activeViewId, String? cwd}) _paneSelectKey(
+  MotifClient motif,
+) => (
+  views: motif.views.map((v) => '${v.id}:${v.spec.runtimeType}').join(','),
+  activeViewId: motif.activeViewId,
+  cwd: motif.activeCwd,
+);
+
+/// Equality key for bottom bar / quick-command rebuilds.
+({String? activeViewId, String? runningProgram}) _bottomBarSelectKey(
+  MotifClient motif,
+) {
+  final activeId = motif.activeViewId;
+  ViewInfo? active;
+  if (activeId != null) {
+    for (final v in motif.views) {
+      if (v.id == activeId) {
+        active = v;
+        break;
+      }
+    }
+  }
+  active ??= motif.views.isEmpty ? null : motif.views.first;
+  final ptyId = switch (active?.spec) {
+    PtyViewSpec(:final ptyId) => ptyId,
+    _ => null,
+  };
+  return (
+    activeViewId: active?.id,
+    runningProgram: ptyId == null ? null : motif.runningCommand[ptyId],
+  );
+}
+
+/// Equality key for connected-sessions sidebar (ignores view/tick noise).
+({String servers, String sessions}) _connectedSessionsSelectKey(AppState app) {
+  final groups = app.connectedServerClients;
+  return (
+    servers: [
+      for (final g in groups) '${g.server.id}:${g.client.isLive}',
+    ].join(','),
+    sessions: [
+      for (final g in groups)
+        '${g.server.id}=${g.client.sessions.map((s) => s.name).join('|')}',
+    ].join(';'),
+  );
+}

@@ -6,7 +6,6 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -17,6 +16,9 @@ import '../net/proxy_client.dart';
 import '../net/remote_port_forwarder.dart';
 import '../net/rpc_client.dart';
 import 'motif_runtime.dart';
+import 'pty_output_hub.dart';
+
+export 'pty_output_hub.dart' show PtyByteSink;
 
 const int _kSessionNotFound = -32007;
 
@@ -51,25 +53,6 @@ class ConnSuspended extends MotifConnState {
   final String message;
   final String? session;
   const ConnSuspended(this.message, {this.session});
-}
-
-/// A sink of decoded PTY output bytes for a single PTY surface (the terminal
-/// widget subscribes to it).
-typedef PtyByteSink = void Function(Uint8List bytes);
-
-class _PtyReplayDelivery {
-  _PtyReplayDelivery(this.sink);
-
-  final PtyByteSink sink;
-  final List<Uint8List> chunks = <Uint8List>[];
-  int index = 0;
-  int offset = 0;
-  Timer? timer;
-
-  void cancel() {
-    timer?.cancel();
-    timer = null;
-  }
 }
 
 class _PendingViewActivation {
@@ -141,9 +124,13 @@ class _RemotePortMappingConfig {
 
 class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   MotifClient({MotifClientRuntime? runtime})
-    : runtime = runtime ?? const MobileMotifClientRuntime();
+    : runtime = runtime ?? const MobileMotifClientRuntime() {
+    _ptyOutput.describeActive = () =>
+        'activeView=$activeViewId activePty=${_activePtyId()}';
+  }
 
   final MotifClientRuntime runtime;
+  final PtyOutputHub _ptyOutput = PtyOutputHub();
 
   MotifConnState _state = const ConnDisconnected();
   MotifConnState get state => _state;
@@ -206,17 +193,6 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
       notifyListeners();
     }
   }
-
-  // PTY output fan-out: one sink per subscribed PTY surface.
-  final Map<String, PtyByteSink> _ptySinks = {};
-  static const int _maxReplayBytesPerPty = 2 * 1024 * 1024;
-  static const int _replayDeliverMaxBytesPerTick = 64 * 1024;
-  static const Duration _replayDeliverInterval = Duration(milliseconds: 16);
-  final Map<String, List<Uint8List>> _ptyReplay = {};
-  final Map<String, int> _ptyReplayBytes = {};
-  final Map<String, _PtyReplayDelivery> _ptyReplayDeliveries = {};
-  final Map<String, int> _ptyOutputChunks = {};
-  final Map<String, int> _ptyOutputBytes = {};
 
   bool get isLive => _rpc != null;
 
@@ -379,13 +355,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     runningCommand.clear();
     shellKind.clear();
     shellContext.clear();
-    _ptySinks.clear();
-    for (final delivery in _ptyReplayDeliveries.values) {
-      delivery.cancel();
-    }
-    _ptyReplayDeliveries.clear();
-    _ptyReplay.clear();
-    _ptyReplayBytes.clear();
+    _ptyOutput.clearAll();
   }
 
   void _completePendingViewActivation() {
@@ -546,87 +516,11 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   // ─────────────────────────── pty I/O ───────────────────────────
 
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
-  void registerPtySink(String ptyId, PtyByteSink sink) {
-    final replacing = _ptySinks.containsKey(ptyId);
-    _ptyReplayDeliveries.remove(ptyId)?.cancel();
-    _ptySinks[ptyId] = sink;
-    final replay = _ptyReplay[ptyId];
-    Log.i(
-      'register sink pty=$ptyId replacing=$replacing '
-      'replayChunks=${replay?.length ?? 0} '
-      'replayBytes=${_ptyReplayBytes[ptyId] ?? 0} '
-      'activeView=$activeViewId activePty=${_activePtyId()}',
-      name: 'motif.pty',
-    );
-    if (replay == null || replay.isEmpty) return;
-    _startReplayDelivery(ptyId, sink, replay);
-  }
+  void registerPtySink(String ptyId, PtyByteSink sink) =>
+      _ptyOutput.registerSink(ptyId, sink);
 
-  void _startReplayDelivery(
-    String ptyId,
-    PtyByteSink sink,
-    List<Uint8List> replay,
-  ) {
-    final delivery = _PtyReplayDelivery(sink)..chunks.addAll(replay);
-    _ptyReplayDeliveries[ptyId] = delivery;
-    Log.i(
-      'replay sink pty=$ptyId chunks=${replay.length} '
-      'bytes=${_ptyReplayBytes[ptyId] ?? 0}',
-      name: 'motif.pty',
-    );
-    _scheduleReplayDelivery(ptyId, delivery);
-  }
-
-  void _scheduleReplayDelivery(String ptyId, _PtyReplayDelivery delivery) {
-    if (delivery.timer != null) return;
-    void deliverBatch() {
-      delivery.timer = null;
-      if (_ptyReplayDeliveries[ptyId] != delivery ||
-          _ptySinks[ptyId] != delivery.sink) {
-        return;
-      }
-      var delivered = 0;
-      while (delivery.index < delivery.chunks.length &&
-          delivered < _replayDeliverMaxBytesPerTick) {
-        final chunk = delivery.chunks[delivery.index];
-        final remaining = chunk.length - delivery.offset;
-        if (remaining <= 0) {
-          delivery.index++;
-          delivery.offset = 0;
-          continue;
-        }
-        final budget = _replayDeliverMaxBytesPerTick - delivered;
-        final take = remaining <= budget ? remaining : budget;
-        final start = delivery.offset;
-        final end = start + take;
-        delivery.sink(Uint8List.sublistView(chunk, start, end));
-        delivered += take;
-        delivery.offset = end;
-        if (delivery.offset >= chunk.length) {
-          delivery.index++;
-          delivery.offset = 0;
-        }
-      }
-      if (delivery.index < delivery.chunks.length) {
-        delivery.timer = Timer(_replayDeliverInterval, deliverBatch);
-      } else if (_ptyReplayDeliveries[ptyId] == delivery) {
-        _ptyReplayDeliveries.remove(ptyId);
-      }
-    }
-
-    delivery.timer = Timer(_replayDeliverInterval, deliverBatch);
-  }
-
-  void unregisterPtySink(String ptyId, [PtyByteSink? sink]) {
-    if (sink != null && _ptySinks[ptyId] != sink) {
-      Log.i('skip unregister stale sink pty=$ptyId', name: 'motif.pty');
-      return;
-    }
-    final hadSink = _ptySinks.containsKey(ptyId);
-    _ptySinks.remove(ptyId);
-    _ptyReplayDeliveries.remove(ptyId)?.cancel();
-    Log.i('unregister sink pty=$ptyId hadSink=$hadSink', name: 'motif.pty');
-  }
+  void unregisterPtySink(String ptyId, [PtyByteSink? sink]) =>
+      _ptyOutput.unregisterSink(ptyId, sink);
 
   Future<void> writePty(String ptyId, List<int> data) {
     // Drop writes while not attached so no input leaks out mid-reconnect.
@@ -1251,26 +1145,16 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     switch (e.method) {
       case 'pty.output':
         final id = p['pty_id'] as String?;
-        final bytes = _bytesFromPtyOutput(p);
+        final bytes = PtyOutputHub.bytesFromPtyOutput(p);
         if (id != null && bytes != null) {
-          _rememberPtyBytes(id, bytes);
-          _notePtyOutput(id, bytes.length);
-          final delivery = _ptyReplayDeliveries[id];
-          if (delivery != null && _ptySinks[id] == delivery.sink) {
-            delivery.chunks.add(bytes);
-            _scheduleReplayDelivery(id, delivery);
-          } else {
-            _ptySinks[id]?.call(bytes);
-          }
+          _ptyOutput.handleOutput(id, bytes);
         }
         return; // hot path: no rebuild
       case 'pty.exited':
         final id = p['pty_id'] as String?;
         if (id != null) {
           _updatePty(id, (pty) => pty.copyWith(alive: false));
-          _ptyReplayDeliveries.remove(id)?.cancel();
-          _ptyReplay.remove(id);
-          _ptyReplayBytes.remove(id);
+          _ptyOutput.clearPty(id);
           runningCommand.remove(id);
           shellKind.remove(id);
           shellContext.remove(id);
@@ -1384,47 +1268,6 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     runtime.onActiveViewChanged(this);
   }
 
-  void _rememberPtyBytes(String ptyId, Uint8List bytes) {
-    if (bytes.isEmpty) return;
-    final chunks = _ptyReplay.putIfAbsent(ptyId, () => <Uint8List>[]);
-    chunks.add(Uint8List.fromList(bytes));
-    var total = (_ptyReplayBytes[ptyId] ?? 0) + bytes.length;
-    while (total > _maxReplayBytesPerPty && chunks.isNotEmpty) {
-      total -= chunks.removeAt(0).length;
-    }
-    _ptyReplayBytes[ptyId] = total;
-  }
-
-  void _notePtyOutput(String ptyId, int byteCount) {
-    final chunks = (_ptyOutputChunks[ptyId] ?? 0) + 1;
-    final bytes = (_ptyOutputBytes[ptyId] ?? 0) + byteCount;
-    _ptyOutputChunks[ptyId] = chunks;
-    _ptyOutputBytes[ptyId] = bytes;
-    final logAtInfo = chunks <= 3 || chunks == 10;
-    final logAtDebug = chunks == 100 || chunks % 1000 == 0;
-    if (logAtInfo || logAtDebug) {
-      final message =
-          'output pty=$ptyId chunk=$chunks bytes=$byteCount totalBytes=$bytes '
-          'hasSink=${_ptySinks.containsKey(ptyId)} '
-          'activePty=${_activePtyId()} '
-          'replayBytes=${_ptyReplayBytes[ptyId] ?? 0}';
-      if (logAtInfo) {
-        Log.i(message, name: 'motif.pty');
-      } else {
-        Log.d(message, name: 'motif.pty');
-      }
-    }
-  }
-
-  Uint8List? _bytesFromPtyOutput(Map<String, Object?> params) {
-    final raw = params['data_bytes'];
-    if (raw is Uint8List) return raw;
-    if (raw is List<int>) return Uint8List.fromList(raw);
-    final b64 = params['data_b64'];
-    if (b64 is String) return base64Decode(b64);
-    return null;
-  }
-
   void _updatePty(String id, PtyInfo Function(PtyInfo) f) {
     ptys = [
       for (final pty in ptys)
@@ -1472,6 +1315,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   @override
   void dispose() {
     _teardownRpc();
+    _ptyOutput.dispose();
     super.dispose();
   }
 }

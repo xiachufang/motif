@@ -52,6 +52,14 @@ class _SessionMenuMotifClient extends MotifClient {
   final List<String> attached = [];
   int detaches = 0;
 
+  _SessionMenuMotifClient() {
+    // Seed a terminal so SessionScreen's attach-if-needed path does not call
+    // createPty (which needs a live RpcClient and would toast + leave a timer).
+    ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
+    views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))];
+    activeViewId = 'v1';
+  }
+
   @override
   MotifConnState get state => const ConnAttached('test-session');
 

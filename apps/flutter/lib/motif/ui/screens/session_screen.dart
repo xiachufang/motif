@@ -31,6 +31,7 @@ import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/listenable_select.dart';
 import '../widgets/quick_command_row.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
@@ -238,18 +239,37 @@ class _SessionScreenState extends State<SessionScreen>
     if ((media.viewInsets.bottom - _keyboardInset.value).abs() >= 0.5) {
       _scheduleKeyboardInsetSync();
     }
-    final app = context.watch<AppState>();
+    final app = context.read<AppState>();
     final motif = app.clientForServer(widget.serverId);
     final c = context.motif;
-    final fontSize = app.terminalSettings.settings.fontSize;
+    final fontSize = context.select<AppState, double>(
+      (a) => a.terminalSettings.settings.fontSize,
+    );
+    final overlayFromApp = context.select<AppState, String?>(
+      (a) => a.serverViewState(widget.serverId).terminalOverlay,
+    );
     final terminalPalette = terminalPaletteForBrightness(
       Theme.of(context).brightness,
     );
     final sidebar = app.sessionSidebar;
+    final overlayMessage =
+        overlayFromApp ?? (_attachingSession ? 'Connecting...' : null);
     return LayoutBuilder(
       builder: (context, constraints) {
         final usesSidebar = constraints.maxWidth >= _sidebarBreakpoint;
         _usesSidebarLayout = usesSidebar;
+        final showBottomBar = !usesSidebar || sidebar.showBottomBar;
+        final showSidebar = usesSidebar && sidebar.hasVisiblePanel;
+        final sidebarMaxWidth = math.max(
+          _sidebarMinWidth,
+          math.min(
+            constraints.maxWidth * _sidebarMaxWidthFraction,
+            constraints.maxWidth - _mainMinWidth,
+          ),
+        );
+        final sidebarWidth = sidebar.width
+            .clamp(_sidebarMinWidth, sidebarMaxWidth)
+            .toDouble();
         return Title(
           title: widget.session,
           color: c.accent,
@@ -257,7 +277,15 @@ class _SessionScreenState extends State<SessionScreen>
             resizeToAvoidBottomInset: false,
             appBar: AppBar(
               title: usesSidebar
-                  ? _TabBar(motif: motif, onNewPty: _newPty, inTitleBar: true)
+                  ? ListenableSelect(
+                      listenable: motif,
+                      selector: () => _tabBarSelectKey(motif),
+                      builder: (context, _, _) => _TabBar(
+                        motif: motif,
+                        onNewPty: _newPty,
+                        inTitleBar: true,
+                      ),
+                    )
                   : Text(widget.session),
               titleSpacing: usesSidebar ? 0 : null,
               toolbarHeight: usesSidebar ? 52 : null,
@@ -275,7 +303,9 @@ class _SessionScreenState extends State<SessionScreen>
                         ),
                         IconButton(
                           key: const ValueKey('sessions-sidebar-toggle'),
-                          icon: sidebar.showSessions ? const Icon(Icons.list_alt) : const Icon(Icons.list_alt_outlined),
+                          icon: sidebar.showSessions
+                              ? const Icon(Icons.list_alt)
+                              : const Icon(Icons.list_alt_outlined),
                           tooltip:
                               'Sessions (${_primaryShortcutLabel('L', shift: true)})',
                           style: _sidebarButtonStyle(
@@ -305,7 +335,9 @@ class _SessionScreenState extends State<SessionScreen>
               actions: [
                 IconButton(
                   key: const ValueKey('file-tree-sidebar-toggle'),
-                  icon: sidebar.showFileTree ? const Icon(Icons.folder) : const Icon(Icons.folder_outlined),
+                  icon: sidebar.showFileTree
+                      ? const Icon(Icons.folder)
+                      : const Icon(Icons.folder_outlined),
                   tooltip: 'Files (${_primaryShortcutLabel('E', shift: true)})',
                   style: _sidebarButtonStyle(
                     context,
@@ -316,7 +348,9 @@ class _SessionScreenState extends State<SessionScreen>
                 ),
                 IconButton(
                   key: const ValueKey('git-diff-sidebar-toggle'),
-                  icon: sidebar.showGitDiff ? const Icon(Icons.difference) : const Icon(Icons.difference_outlined),
+                  icon: sidebar.showGitDiff
+                      ? const Icon(Icons.difference)
+                      : const Icon(Icons.difference_outlined),
                   tooltip:
                       'Git diff (${_primaryShortcutLabel('G', shift: true)})',
                   style: _sidebarButtonStyle(
@@ -329,7 +363,9 @@ class _SessionScreenState extends State<SessionScreen>
                 if (usesSidebar)
                   IconButton(
                     key: const ValueKey('bottom-bar-toggle'),
-                    icon: sidebar.showBottomBar ? const Icon(Icons.keyboard_alt) : const Icon(Icons.keyboard_alt_outlined),
+                    icon: sidebar.showBottomBar
+                        ? const Icon(Icons.keyboard_alt)
+                        : const Icon(Icons.keyboard_alt_outlined),
                     tooltip: 'Bottom bar',
                     style: _sidebarButtonStyle(
                       context,
@@ -342,13 +378,17 @@ class _SessionScreenState extends State<SessionScreen>
                       });
                     },
                   ),
-                IconButton(
-                  key: const ValueKey('open-remote-port-button'),
-                  icon: const Icon(Icons.open_in_browser_outlined),
-                  tooltip: 'Remote ports',
-                  onPressed: motif.state is ConnAttached
-                      ? () => _showRemotePortMappings(motif)
-                      : null,
+                ListenableSelect(
+                  listenable: motif,
+                  selector: () => motif.state is ConnAttached,
+                  builder: (context, attached, _) => IconButton(
+                    key: const ValueKey('open-remote-port-button'),
+                    icon: const Icon(Icons.open_in_browser_outlined),
+                    tooltip: 'Remote ports',
+                    onPressed: attached
+                        ? () => _showRemotePortMappings(motif)
+                        : null,
+                  ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),
@@ -357,171 +397,169 @@ class _SessionScreenState extends State<SessionScreen>
                 ),
               ],
             ),
-            body: ListenableBuilder(
-              listenable: motif,
-              builder: (context, _) {
-                final connectionView = app.serverViewState(widget.serverId);
-                final overlayMessage =
-                    connectionView.terminalOverlay ??
-                    (_attachingSession ? 'Connecting...' : null);
-                final activeView = _switchingSession
-                    ? null
-                    : _activeView(motif);
-                _reconcileTabInputs(motif, activeView);
-                _syncAppleInputDocument(activeView?.id);
-                final inputState = _inputStateForView(activeView?.id);
-                final inputPtyId = _switchingSession
-                    ? null
-                    : _activePtyId(motif);
-                final mountedViews = _paneMountReady
-                    ? _mountedViews(motif, activeView)
-                    : const <ViewInfo>[];
-                final runningProgram = inputPtyId == null
-                    ? null
-                    : motif.runningCommand[inputPtyId];
-                final commandStore = context.read<AppState>().commands;
-                final showBottomBar = !usesSidebar || sidebar.showBottomBar;
-                final bottomBar = _MeasureSize(
-                  onChange: _setBottomBarContentSize,
-                  child: ColoredBox(
-                    color: c.background,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        QuickCommandRow(
-                          commands: commandStore.resolved(runningProgram),
-                          modifiers: _modifiers,
-                          onSendBytes: (b) => _sendBytes(b),
-                          onInsertText: _insertText,
-                          onChangeDirectory: () => _openChangeDirectory(motif),
-                          onEdit: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => QuickCommandEditor(
-                                setId: commandStore.effectiveSetId(
-                                  runningProgram,
+            body: _AnimatedSidebarLayout(
+              visible: showSidebar,
+              width: sidebarWidth,
+              sidebar: ListenableSelect(
+                listenable: motif,
+                selector: () => motif.activeCwd,
+                builder: (context, cwd, _) => _SessionSidebar(
+                  app: app,
+                  showSessions: sidebar.showSessions,
+                  showFileTree: sidebar.showFileTree,
+                  showDiff: sidebar.showGitDiff,
+                  currentServerId: widget.serverId,
+                  currentSession: widget.session,
+                  root: cwd ?? '~',
+                  cwd: cwd,
+                  motif: motif,
+                  onSessionSelected: (serverId, session) =>
+                      _switchSession(app, motif, serverId, session),
+                  onOpenPreview: _openPreview,
+                  onOpenDiff: _openDiff,
+                  splitFraction: sidebar.splitFraction,
+                  onSplitChanged: (fraction) {
+                    setState(() => sidebar.splitFraction = fraction);
+                  },
+                  firstSplitFraction: sidebar.firstSplitFraction,
+                  onFirstSplitChanged: (fraction) {
+                    setState(() => sidebar.firstSplitFraction = fraction);
+                  },
+                  secondSplitFraction: sidebar.secondSplitFraction,
+                  onSecondSplitChanged: (fraction) {
+                    setState(() => sidebar.secondSplitFraction = fraction);
+                  },
+                ),
+              ),
+              resizeHandle: _SidebarResizeHandle(
+                key: const ValueKey('sidebar-horizontal-resize-handle'),
+                axis: Axis.horizontal,
+                onDragDelta: (delta) {
+                  setState(() {
+                    sidebar.width = (sidebar.width + delta)
+                        .clamp(_sidebarMinWidth, sidebarMaxWidth)
+                        .toDouble();
+                  });
+                },
+              ),
+              mainContent: Stack(
+                children: [
+                  Column(
+                    children: [
+                      if (!usesSidebar)
+                        ListenableSelect(
+                          listenable: motif,
+                          selector: () => _tabBarSelectKey(motif),
+                          builder: (context, _, _) =>
+                              _TabBar(motif: motif, onNewPty: _newPty),
+                        ),
+                      Expanded(
+                        child: ClipRect(
+                          child: _BottomBarLiftedPane(
+                            enabled: showBottomBar,
+                            contentHeight: _bottomBarContentHeight,
+                            child: ListenableSelect(
+                              listenable: motif,
+                              selector: () => _paneSelectKey(motif),
+                              builder: (context, _, _) {
+                                final activeView = _switchingSession
+                                    ? null
+                                    : _activeView(motif);
+                                _reconcileTabInputs(motif, activeView);
+                                _syncAppleInputDocument(activeView?.id);
+                                final mountedViews = _paneMountReady
+                                    ? _mountedViews(motif, activeView)
+                                    : const <ViewInfo>[];
+                                return _PaneStack(
+                                  activeView: activeView,
+                                  attaching: _attachingSession,
+                                  mountPanes: _paneMountReady,
+                                  mountedViews: mountedViews,
+                                  motif: motif,
+                                  fontSize: fontSize,
+                                  palette: terminalPalette,
+                                  focusSerial: _terminalFocusSerial,
+                                  keyboardInset: _keyboardInset,
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (showBottomBar) const _BottomBarPlaceholder(),
+                    ],
+                  ),
+                  if (showBottomBar)
+                    Positioned.fill(
+                      child: _KeyboardAnchoredBottomBar(
+                        keyboardInset: _keyboardInset,
+                        child: ListenableSelect(
+                          listenable: motif,
+                          selector: () => _bottomBarSelectKey(motif),
+                          builder: (context, snap, _) {
+                            final commandStore =
+                                context.read<AppState>().commands;
+                            final runningProgram = snap.runningProgram;
+                            final inputState =
+                                _inputStateForView(snap.activeViewId);
+                            return _MeasureSize(
+                              onChange: _setBottomBarContentSize,
+                              child: ColoredBox(
+                                color: c.background,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    QuickCommandRow(
+                                      commands: commandStore.resolved(
+                                        runningProgram,
+                                      ),
+                                      modifiers: _modifiers,
+                                      onSendBytes: (b) => _sendBytes(b),
+                                      onInsertText: _insertText,
+                                      onChangeDirectory: () =>
+                                          _openChangeDirectory(motif),
+                                      onEdit: () => Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) => QuickCommandEditor(
+                                            setId: commandStore.effectiveSetId(
+                                              runningProgram,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    _InputBar(
+                                      key: ValueKey(
+                                        'bottom-input-${snap.activeViewId ?? 'fallback'}',
+                                      ),
+                                      controller: inputState.controller,
+                                      focusNode: inputState.focusNode,
+                                      groupId: inputState.groupId,
+                                      onSend: _send,
+                                      recording: _recording,
+                                      micStarting: _micStarting,
+                                      onMic: _toggleMic,
+                                      onAttach: _attachPhoto,
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ),
-                          ),
-                        ),
-                        _InputBar(
-                          key: ValueKey(
-                            'bottom-input-${activeView?.id ?? 'fallback'}',
-                          ),
-                          controller: inputState.controller,
-                          focusNode: inputState.focusNode,
-                          groupId: inputState.groupId,
-                          onSend: _send,
-                          recording: _recording,
-                          micStarting: _micStarting,
-                          onMic: _toggleMic,
-                          onAttach: _attachPhoto,
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-                final mainContent = Stack(
-                  children: [
-                    Column(
-                      children: [
-                        if (!usesSidebar)
-                          _TabBar(motif: motif, onNewPty: _newPty),
-                        Expanded(
-                          child: ClipRect(
-                            child: _BottomBarLiftedPane(
-                              enabled: showBottomBar,
-                              contentHeight: _bottomBarContentHeight,
-                              child: _PaneStack(
-                                activeView: activeView,
-                                attaching: _attachingSession,
-                                mountPanes: _paneMountReady,
-                                mountedViews: mountedViews,
-                                motif: motif,
-                                fontSize: fontSize,
-                                palette: terminalPalette,
-                                focusSerial: _terminalFocusSerial,
-                                keyboardInset: _keyboardInset,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (showBottomBar) const _BottomBarPlaceholder(),
-                      ],
-                    ),
-                    if (showBottomBar)
-                      Positioned.fill(
-                        child: _KeyboardAnchoredBottomBar(
-                          keyboardInset: _keyboardInset,
-                          child: bottomBar,
+                            );
+                          },
                         ),
                       ),
-                    if (overlayMessage != null)
-                      Positioned(
-                        top: MotifSpacing.sm,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: _ReconnectBanner(message: overlayMessage),
-                        ),
+                    ),
+                  if (overlayMessage != null)
+                    Positioned(
+                      top: MotifSpacing.sm,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: _ReconnectBanner(message: overlayMessage),
                       ),
-                  ],
-                );
-                final showSidebar = usesSidebar && sidebar.hasVisiblePanel;
-                final sidebarMaxWidth = math.max(
-                  _sidebarMinWidth,
-                  math.min(
-                    constraints.maxWidth * _sidebarMaxWidthFraction,
-                    constraints.maxWidth - _mainMinWidth,
-                  ),
-                );
-                final sidebarWidth = sidebar.width
-                    .clamp(_sidebarMinWidth, sidebarMaxWidth)
-                    .toDouble();
-                return _AnimatedSidebarLayout(
-                  visible: showSidebar,
-                  width: sidebarWidth,
-                  sidebar: _SessionSidebar(
-                    app: app,
-                    showSessions: sidebar.showSessions,
-                    showFileTree: sidebar.showFileTree,
-                    showDiff: sidebar.showGitDiff,
-                    currentServerId: widget.serverId,
-                    currentSession: widget.session,
-                    root: motif.activeCwd ?? '~',
-                    cwd: motif.activeCwd,
-                    motif: motif,
-                    onSessionSelected: (serverId, session) =>
-                        _switchSession(app, motif, serverId, session),
-                    onOpenPreview: _openPreview,
-                    onOpenDiff: _openDiff,
-                    splitFraction: sidebar.splitFraction,
-                    onSplitChanged: (fraction) {
-                      setState(() => sidebar.splitFraction = fraction);
-                    },
-                    firstSplitFraction: sidebar.firstSplitFraction,
-                    onFirstSplitChanged: (fraction) {
-                      setState(() => sidebar.firstSplitFraction = fraction);
-                    },
-                    secondSplitFraction: sidebar.secondSplitFraction,
-                    onSecondSplitChanged: (fraction) {
-                      setState(() => sidebar.secondSplitFraction = fraction);
-                    },
-                  ),
-                  resizeHandle: _SidebarResizeHandle(
-                    key: const ValueKey('sidebar-horizontal-resize-handle'),
-                    axis: Axis.horizontal,
-                    onDragDelta: (delta) {
-                      setState(() {
-                        sidebar.width = (sidebar.width + delta)
-                            .clamp(_sidebarMinWidth, sidebarMaxWidth)
-                            .toDouble();
-                      });
-                    },
-                  ),
-                  mainContent: mainContent,
-                );
-              },
+                    ),
+                ],
+              ),
             ),
           ),
         );
