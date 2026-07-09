@@ -11,6 +11,7 @@ import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
 import 'screens/session_list_screen.dart';
+import 'screens/session_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/motif_theme.dart';
 import 'widgets/adaptive_modal.dart';
@@ -65,8 +66,15 @@ class MotifApp extends StatelessWidget {
       },
       navigatorKey: motifNavigatorKey,
       navigatorObservers: canServe ? const [] : [motifRouteObserver],
-      builder: (context, child) =>
-          MotifToastHost(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) {
+        final app = context.read<AppState>();
+        return MotifToastHost(
+          child: NotificationBannerHost(
+            app: app,
+            child: child ?? const SizedBox.shrink(),
+          ),
+        );
+      },
       // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
       // terminal's own handler claims ⌘W first (close tab) — this only fires on
       // the screens that don't, plus the session view's last-tab fallback.
@@ -156,7 +164,9 @@ class _ClientHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasServer = context.select<AppState, bool>((a) => a.hasActiveServer);
-    return hasServer ? const _Root() : const WelcomeScreen();
+    return _PendingSessionOpenListener(
+      child: hasServer ? const _Root() : const WelcomeScreen(),
+    );
   }
 }
 
@@ -352,10 +362,91 @@ class _RootState extends State<_Root> {
   }
 
   @override
-  Widget build(BuildContext context) => NotificationBannerHost(
-    app: context.watch<AppState>(),
-    child: const SessionListScreen(),
-  );
+  Widget build(BuildContext context) => const SessionListScreen();
+}
+
+/// Watches [AppState.pendingSessionOpen] and pushes [SessionScreen] on the
+/// nearest navigator (the nested client navigator on desktop, the root one
+/// elsewhere). Stays mounted under the home route so taps from a live session
+/// still navigate.
+class _PendingSessionOpenListener extends StatefulWidget {
+  const _PendingSessionOpenListener({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PendingSessionOpenListener> createState() =>
+      _PendingSessionOpenListenerState();
+}
+
+class _PendingSessionOpenListenerState
+    extends State<_PendingSessionOpenListener> {
+  AppState? _app;
+  bool _opening = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = context.read<AppState>();
+    if (!identical(_app, app)) {
+      _app?.removeListener(_onAppChanged);
+      _app = app;
+      _app!.addListener(_onAppChanged);
+    }
+    _scheduleOpen();
+  }
+
+  @override
+  void dispose() {
+    _app?.removeListener(_onAppChanged);
+    super.dispose();
+  }
+
+  void _onAppChanged() => _scheduleOpen();
+
+  void _scheduleOpen() {
+    if (!mounted || _opening || _app?.pendingSessionOpen == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_openPending());
+    });
+  }
+
+  Future<void> _openPending() async {
+    final app = _app;
+    if (app == null || _opening) return;
+    final pending = app.takePendingSessionOpen();
+    if (pending == null) return;
+    _opening = true;
+    try {
+      final routeName = sessionRouteName(pending.serverId, pending.session);
+      final nav = Navigator.of(context);
+      String? topName;
+      nav.popUntil((route) {
+        topName ??= route.settings.name;
+        return true;
+      });
+      if (topName == routeName) return;
+
+      if (app.servers.activeId != pending.serverId) {
+        await app.servers.setActive(pending.serverId);
+        if (!mounted) return;
+      }
+      await nav.push<void>(
+        MaterialPageRoute<void>(
+          settings: RouteSettings(name: routeName),
+          builder: (_) => SessionScreen(
+            serverId: pending.serverId,
+            session: pending.session,
+          ),
+        ),
+      );
+    } finally {
+      _opening = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Shared helper to open the connection/server manager as an adaptive

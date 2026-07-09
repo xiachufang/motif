@@ -8,7 +8,8 @@ import '../../state/motif_client.dart';
 import '../theme/motif_theme.dart';
 
 /// Top-anchored in-app banner for server `notification` events (mirrors the iOS
-/// LiveNotificationBanner). Auto-dismisses after a few seconds; tap to dismiss.
+/// LiveNotificationBanner). Auto-dismisses after a few seconds; tap opens the
+/// named session when present, otherwise dismisses.
 class NotificationBannerHost extends StatefulWidget {
   final AppState app;
   final Widget child;
@@ -31,25 +32,51 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
     widget.app.addListener(_onChange);
   }
 
+  @override
+  void didUpdateWidget(covariant NotificationBannerHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.app != widget.app) {
+      oldWidget.app.removeListener(_onChange);
+      widget.app.addListener(_onChange);
+    }
+  }
+
   void _onChange() {
     if (_currentNotification != null) {
       _dismiss?.cancel();
       _dismiss = Timer(const Duration(seconds: 4), () {
         _currentNotification?.client.consumeNotification();
       });
-      if (mounted) setState(() {});
     }
+    if (mounted) setState(() {});
   }
 
-  ({MotifClient client, MotifNotification notification})?
+  ({MotifClient client, MotifNotification notification, String serverId})?
   get _currentNotification {
     for (final group in widget.app.knownServerClients) {
       final notification = group.client.latestNotification;
       if (notification != null) {
-        return (client: group.client, notification: notification);
+        return (
+          client: group.client,
+          notification: notification,
+          serverId: group.server.id,
+        );
       }
     }
     return null;
+  }
+
+  void _onTap(
+    MotifClient client,
+    MotifNotification notification,
+    String serverId,
+  ) {
+    _dismiss?.cancel();
+    final sessionId = notification.sessionId?.trim();
+    client.consumeNotification();
+    if (sessionId != null && sessionId.isNotEmpty) {
+      widget.app.requestOpenSession(serverId: serverId, session: sessionId);
+    }
   }
 
   @override
@@ -67,7 +94,7 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
     return Stack(
       children: [
         widget.child,
-        if (n != null)
+        if (n != null && current != null)
           Positioned(
             top: MediaQuery.of(context).padding.top + MotifSpacing.sm,
             left: MotifSpacing.md,
@@ -77,7 +104,8 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
               child: Material(
                 color: Colors.transparent,
                 child: GestureDetector(
-                  onTap: current?.client.consumeNotification,
+                  onTap: () =>
+                      _onTap(current.client, current.notification, current.serverId),
                   child: Container(
                     padding: const EdgeInsets.all(MotifSpacing.md),
                     decoration: BoxDecoration(

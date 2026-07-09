@@ -234,12 +234,116 @@ void main() {
 
     app.dispose();
   });
+
+  test('system notification open routes by instance id', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"},'
+          '{"id":"s2","name":"Two","host":"127.0.0.1","port":7778,"token":"","kind":"direct"}]',
+      'activeServerID': 's1',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final push = PushSettingsStore(prefs);
+    final platformPush = _FakePushService();
+    final clients = {
+      's1': _PushMotifClient('instance-1'),
+      's2': _PushMotifClient('instance-2'),
+    };
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: push,
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+      clientFactory: (server) => clients[server.id]!,
+    );
+    app.clientForServer('s1');
+    app.clientForServer('s2');
+    await app.registerForPush(client: clients['s1']);
+    await app.registerForPush(client: clients['s2']);
+
+    platformPush.emitNotificationOpen(
+      session: 'work',
+      instanceId: 'instance-2',
+    );
+
+    expect(app.pendingSessionOpen?.serverId, 's2');
+    expect(app.pendingSessionOpen?.session, 'work');
+    app.dispose();
+  });
+
+  test('system notification open falls back to active server', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+      'activeServerID': 's1',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final platformPush = _FakePushService();
+    final client = _PushMotifClient('instance-1');
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+      clientFactory: (_) => client,
+    );
+    app.clientForServer('s1');
+
+    platformPush.emitNotificationOpen(session: 'nightly');
+
+    expect(app.pendingSessionOpen?.serverId, 's1');
+    expect(app.pendingSessionOpen?.session, 'nightly');
+    app.dispose();
+  });
+
+  test('cold-start pending notification open is drained on AppState init', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+      'activeServerID': 's1',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final platformPush = _FakePushService()
+      ..pendingOpen = (session: 'boot-session', instanceId: null);
+    final client = _PushMotifClient('instance-1');
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+      clientFactory: (_) => client,
+    );
+    app.clientForServer('s1');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(app.pendingSessionOpen?.serverId, 's1');
+    expect(app.pendingSessionOpen?.session, 'boot-session');
+    expect(platformPush.pendingOpen, isNull);
+    app.dispose();
+  });
 }
 
 class _FakePushService implements PushService {
   int registerCount = 0;
   int unregisterCount = 0;
   void Function(String e, String n)? _handler;
+  void Function({required String? session, String? instanceId})? _openHandler;
+  ({String? session, String? instanceId})? pendingOpen;
 
   @override
   bool get isSupported => true;
@@ -265,10 +369,29 @@ class _FakePushService implements PushService {
     _handler = handler;
   }
 
+  @override
+  void onNotificationOpen(
+    void Function({required String? session, String? instanceId}) handler,
+  ) {
+    _openHandler = handler;
+  }
+
+  @override
+  Future<({String? session, String? instanceId})?>
+  takePendingNotificationOpen() async {
+    final pending = pendingOpen;
+    pendingOpen = null;
+    return pending;
+  }
+
   Future<void> emitEncrypted(String e, String n) async {
     _handler?.call(e, n);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
+  }
+
+  void emitNotificationOpen({String? session, String? instanceId}) {
+    _openHandler?.call(session: session, instanceId: instanceId);
   }
 }
 

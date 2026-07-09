@@ -231,6 +231,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     unawaited(app.servers.setActive(server.id));
     Navigator.of(context).push(
       MaterialPageRoute<void>(
+        settings: RouteSettings(name: sessionRouteName(server.id, name)),
         builder: (_) => SessionScreen(serverId: server.id, session: name),
       ),
     );

@@ -50,6 +50,9 @@ final class NotificationService: UNNotificationServiceExtension {
     if let session = (motif?["session_id"] as? String) ?? (obj["session"] as? String) {
       content.userInfo["session"] = session
     }
+    if let instanceId = motif?["instance_id"] as? String {
+      content.userInfo["instance_id"] = instanceId
+    }
     contentHandler(content)
   }
 

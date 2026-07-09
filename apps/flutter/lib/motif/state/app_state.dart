@@ -33,6 +33,14 @@ import 'transport_resolver.dart';
 /// administer this machine's embedded server.
 enum AppViewMode { client, server }
 
+/// Request to open a session from an in-app notification / push tap.
+class PendingSessionOpen {
+  const PendingSessionOpen({required this.serverId, required this.session});
+
+  final String serverId;
+  final String session;
+}
+
 class AppState extends ChangeNotifier {
   final ServerStore servers;
   final TerminalSettingsStore terminalSettings;
@@ -63,6 +71,37 @@ class AppState extends ChangeNotifier {
     if (_viewMode == mode) return;
     _viewMode = mode;
     notifyListeners();
+  }
+
+  /// Set when the user taps an in-app notification that names a session.
+  /// Consumed by the client navigator (see `_PendingSessionOpenListener`).
+  PendingSessionOpen? _pendingSessionOpen;
+  PendingSessionOpen? get pendingSessionOpen => _pendingSessionOpen;
+
+  /// Open [session] on [serverId] from a notification tap. Switches the
+  /// desktop shell to the client pane when needed.
+  void requestOpenSession({
+    required String serverId,
+    required String session,
+  }) {
+    final trimmed = session.trim();
+    if (serverId.isEmpty || trimmed.isEmpty) return;
+    if (_viewMode != AppViewMode.client) {
+      _viewMode = AppViewMode.client;
+    }
+    _pendingSessionOpen = PendingSessionOpen(
+      serverId: serverId,
+      session: trimmed,
+    );
+    notifyListeners();
+  }
+
+  /// Take and clear the pending open, or `null` if none.
+  PendingSessionOpen? takePendingSessionOpen() {
+    final pending = _pendingSessionOpen;
+    if (pending == null) return null;
+    _pendingSessionOpen = null;
+    return pending;
   }
 
   /// Coordinates ⌘W between the session screen's global key handler and the
@@ -117,6 +156,10 @@ class AppState extends ChangeNotifier {
       // best-effort.
     }
     _applyTerminalPalette();
+    // Wire push handlers immediately so a cold-start notification tap is not
+    // lost while waiting for the first live-client registration.
+    _wirePushHandler();
+    unawaited(_drainPendingNotificationOpen());
   }
 
   static Future<AppState> load({
@@ -517,6 +560,47 @@ class AppState extends ChangeNotifier {
         );
       } catch (_) {}
     });
+    platform.push.onNotificationOpen(({session, instanceId}) {
+      _openSessionFromNotification(
+        session: session,
+        instanceId: instanceId,
+      );
+    });
+  }
+
+  Future<void> _drainPendingNotificationOpen() async {
+    try {
+      final pending = await platform.push.takePendingNotificationOpen();
+      if (pending == null) return;
+      _openSessionFromNotification(
+        session: pending.session,
+        instanceId: pending.instanceId,
+      );
+    } catch (_) {}
+  }
+
+  /// Resolve a system-notification tap into [requestOpenSession]. Prefers the
+  /// motifd [instanceId] → server mapping from push registration; falls back
+  /// to the active server when the instance is unknown (e.g. cold start before
+  /// reconnect).
+  void _openSessionFromNotification({
+    required String? session,
+    String? instanceId,
+  }) {
+    final sessionId = session?.trim();
+    if (sessionId == null || sessionId.isEmpty) return;
+    if (push.isMuted(sessionId)) return;
+
+    String? serverId;
+    if (instanceId != null && instanceId.isNotEmpty) {
+      final client = _pushClientsByInstanceId[instanceId];
+      if (client != null) {
+        serverId = _serverIdForClient(client);
+      }
+    }
+    serverId ??= servers.activeId;
+    if (serverId == null || serverId.isEmpty) return;
+    requestOpenSession(serverId: serverId, session: sessionId);
   }
 
   Future<void> registerForPush({MotifClient? client}) async {

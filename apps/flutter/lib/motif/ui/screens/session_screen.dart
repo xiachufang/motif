@@ -62,6 +62,11 @@ final bool kUseNativeTerminal =
     !kIsWeb &&
     const bool.fromEnvironment('MOTIF_NATIVE_TERMINAL', defaultValue: true);
 
+/// Route name used for session screens so notification taps can avoid
+/// stacking a duplicate of the already-visible session.
+String sessionRouteName(String serverId, String session) =>
+    'session/$serverId/$session';
+
 /// The main terminal interface: tab bar of views + active pane + input bar.
 /// Mirrors SessionView. PTY panes use the libghostty-backed renderer.
 class SessionScreen extends StatefulWidget {

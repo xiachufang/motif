@@ -99,6 +99,7 @@ extension _SessionScreenTabInputs on _SessionScreenState {
 
 Route<void> _sessionSwitchRoute(String serverId, String session) {
   return PageRouteBuilder<void>(
+    settings: RouteSettings(name: sessionRouteName(serverId, session)),
     transitionDuration: const Duration(milliseconds: 180),
     reverseTransitionDuration: const Duration(milliseconds: 120),
     pageBuilder: (_, _, _) =>
