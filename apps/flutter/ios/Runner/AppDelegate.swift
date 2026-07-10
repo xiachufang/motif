@@ -8,6 +8,9 @@ import UserNotifications
   // Held while waiting for the APNs token delegate callback.
   private var pendingTokenResult: FlutterResult?
   private var pushChannel: FlutterMethodChannel?
+  /// Cold-start / early tap payload held until Dart asks for it (or the
+  /// MethodChannel is ready to push `onNotificationOpen`).
+  private var pendingNotificationOpen: [String: String]?
 
   override func application(
     _ application: UIApplication,
@@ -45,9 +48,20 @@ import UserNotifications
           // Notification Service Extension can decrypt background pushes.
           let key = (call.arguments as? [String: Any])?["key"] as? String
           result(self?.storeEncKey(key) ?? false)
+        case "takePendingNotificationOpen":
+          // Cold start: Dart drains any tap that arrived before the channel
+          // handler was registered.
+          let pending = self?.pendingNotificationOpen
+          self?.pendingNotificationOpen = nil
+          result(pending)
         default:
           result(FlutterMethodNotImplemented)
         }
+      }
+      // If a tap arrived before the channel existed, flush it now.
+      if let pending = pendingNotificationOpen {
+        pendingNotificationOpen = nil
+        channel.invokeMethod("onNotificationOpen", arguments: pending)
       }
     }
 
@@ -89,6 +103,17 @@ import UserNotifications
     completionHandler([]) // we render our own in-app banner
   }
 
+  // User tapped a system notification (background / cold start). NSE already
+  // decrypted and stashed session / instance_id into userInfo.
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    forwardNotificationOpen(response.notification.request.content.userInfo)
+    completionHandler()
+  }
+
   override func application(
     _ application: UIApplication,
     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
@@ -101,6 +126,24 @@ import UserNotifications
   private func forwardEncryptedPayload(_ userInfo: [AnyHashable: Any]) {
     guard let e = userInfo["e"] as? String, let n = userInfo["n"] as? String else { return }
     pushChannel?.invokeMethod("onPush", arguments: ["e": e, "n": n])
+  }
+
+  private func forwardNotificationOpen(_ userInfo: [AnyHashable: Any]) {
+    var payload: [String: String] = [:]
+    if let session = userInfo["session"] as? String, !session.isEmpty {
+      payload["session"] = session
+    } else if let session = userInfo["session_id"] as? String, !session.isEmpty {
+      payload["session"] = session
+    }
+    if let instanceId = userInfo["instance_id"] as? String, !instanceId.isEmpty {
+      payload["instance_id"] = instanceId
+    }
+    guard !payload.isEmpty else { return }
+    if let channel = pushChannel {
+      channel.invokeMethod("onNotificationOpen", arguments: payload)
+    } else {
+      pendingNotificationOpen = payload
+    }
   }
 
   // Write the base64 AES key into the shared App Group container the NSE

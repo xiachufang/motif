@@ -11,6 +11,7 @@ import '../state/app_state.dart';
 import '../state/motif_client.dart';
 import 'screens/connection_screen.dart';
 import 'screens/session_list_screen.dart';
+import 'screens/session_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/motif_theme.dart';
 import 'widgets/adaptive_modal.dart';
@@ -65,11 +66,19 @@ class MotifApp extends StatelessWidget {
       },
       navigatorKey: motifNavigatorKey,
       navigatorObservers: canServe ? const [] : [motifRouteObserver],
-      builder: (context, child) =>
-          MotifToastHost(child: child ?? const SizedBox.shrink()),
-      // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
-      // terminal's own handler claims ⌘W first (close tab) — this only fires on
-      // the screens that don't, plus the session view's last-tab fallback.
+      builder: (context, child) {
+        final app = context.read<AppState>();
+        return MotifToastHost(
+          child: NotificationBannerHost(
+            app: app,
+            child: child ?? const SizedBox.shrink(),
+          ),
+        );
+      },
+      // ⌘W (⌃W off macOS) hides the window to the tray; ⌘Q terminates the
+      // complete macOS app. In the session view the terminal's own handler
+      // claims ⌘W first (close tab) — this only fires on the screens that don't,
+      // plus the session view's last-tab fallback.
       //
       // CallbackShortcuts is focus-based: its onKeyEvent only runs when the
       // primary focus is a descendant. The plain screens (session list, welcome,
@@ -78,14 +87,15 @@ class MotifApp extends StatelessWidget {
       // *ancestor* of CallbackShortcuts — so ⌘W never reached it. The autofocus
       // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
-        bindings: _closeWindowShortcuts(context),
+        bindings: _desktopWindowShortcuts(context),
         child: const Focus(autofocus: true, child: _HomeShell()),
       ),
     );
   }
 }
 
-/// Platform-appropriate "close window" binding: ⌘W on macOS, ⌃W elsewhere.
+/// Desktop lifecycle shortcuts: ⌘W hides on macOS (⌃W elsewhere), while ⌘Q
+/// terminates the complete macOS app.
 ///
 /// In the session view the terminal's own (global [HardwareKeyboard]) handler
 /// runs first and claims ⌘W to close the active tab — but Flutter still fires
@@ -94,7 +104,7 @@ class MotifApp extends StatelessWidget {
 /// [AppState.markCloseShortcutConsumed]; we read-and-clear it here and skip the
 /// hide. On the plain screens (session list, welcome, connection) the session
 /// handler never runs, the flag stays clear, and ⌘W hides the window.
-Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
+Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
   BuildContext context,
 ) {
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
@@ -103,6 +113,10 @@ Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
       if (context.read<AppState>().takeCloseShortcutConsumed()) return;
       unawaited(DesktopWindow.hide());
     },
+    if (isMac)
+      const SingleActivator(LogicalKeyboardKey.keyQ, meta: true): () {
+        unawaited(DesktopWindow.quit());
+      },
   };
 }
 
@@ -156,7 +170,9 @@ class _ClientHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasServer = context.select<AppState, bool>((a) => a.hasActiveServer);
-    return hasServer ? const _Root() : const WelcomeScreen();
+    return _PendingSessionOpenListener(
+      child: hasServer ? const _Root() : const WelcomeScreen(),
+    );
   }
 }
 
@@ -345,17 +361,123 @@ class _RootState extends State<_Root> {
       return;
     }
     try {
-      await app.connectServerAndRefresh(server.id, makeActive: false);
+      await app.ensureServerConnectedAndRefresh(server.id, makeActive: false);
     } catch (_) {
       // The client exposes connection failure state; startup should not block UI.
     }
   }
 
   @override
-  Widget build(BuildContext context) => NotificationBannerHost(
-    app: context.watch<AppState>(),
-    child: const SessionListScreen(),
-  );
+  Widget build(BuildContext context) => const SessionListScreen();
+}
+
+/// Watches [AppState.pendingSessionOpen] and pushes [SessionScreen] on the
+/// nearest navigator (the nested client navigator on desktop, the root one
+/// elsewhere). Stays mounted under the home route so taps from a live session
+/// still navigate.
+class _PendingSessionOpenListener extends StatefulWidget {
+  const _PendingSessionOpenListener({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PendingSessionOpenListener> createState() =>
+      _PendingSessionOpenListenerState();
+}
+
+class _PendingSessionOpenListenerState
+    extends State<_PendingSessionOpenListener> {
+  AppState? _app;
+  bool _opening = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = context.read<AppState>();
+    if (!identical(_app, app)) {
+      _app?.removeListener(_onAppChanged);
+      _app = app;
+      _app!.addListener(_onAppChanged);
+    }
+    _scheduleOpen();
+  }
+
+  @override
+  void dispose() {
+    _app?.removeListener(_onAppChanged);
+    super.dispose();
+  }
+
+  void _onAppChanged() => _scheduleOpen();
+
+  void _scheduleOpen() {
+    if (!mounted || _opening || _app?.pendingSessionOpen == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_openPending());
+    });
+  }
+
+  Future<void> _openPending() async {
+    final app = _app;
+    if (app == null || _opening) return;
+    final pending = app.takePendingSessionOpen();
+    if (pending == null) return;
+    _opening = true;
+    try {
+      final routeName = sessionRouteName(pending.serverId, pending.session);
+      if (_topRouteName() == routeName) return;
+
+      if (app.serverById(pending.serverId) == null) return;
+
+      if (app.servers.activeId != pending.serverId) {
+        await app.servers.setActive(pending.serverId);
+        if (!mounted) return;
+      }
+
+      final connected = await app.ensureServerConnectedAndRefresh(
+        pending.serverId,
+        makeActive: false,
+      );
+      if (!mounted) return;
+      if (!connected) {
+        showMotifToast(context, 'Could not connect to the notification server');
+        return;
+      }
+      app.clientForSession(pending.serverId, pending.session);
+      // The visible route may have changed while the connection was opening.
+      final topRouteName = _topRouteName();
+      if (topRouteName == routeName) return;
+
+      final nav = Navigator.of(context);
+      final route = MaterialPageRoute<void>(
+        settings: RouteSettings(name: routeName),
+        builder: (_) =>
+            SessionScreen(serverId: pending.serverId, session: pending.session),
+      );
+      if (topRouteName?.startsWith('session/') ?? false) {
+        unawaited(nav.pushReplacement<void, void>(route));
+      } else {
+        unawaited(nav.push<void>(route));
+      }
+    } finally {
+      _opening = false;
+      // A second tap may have arrived while a connection was opening. Drain
+      // the latest request now instead of waiting for an unrelated app event.
+      _scheduleOpen();
+    }
+  }
+
+  String? _topRouteName() {
+    String? name;
+    Navigator.of(context).popUntil((route) {
+      name ??= route.settings.name;
+      return true;
+    });
+    return name;
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Shared helper to open the connection/server manager as an adaptive

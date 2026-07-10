@@ -27,7 +27,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../log/log.dart';
 import '../models/motif_proto.dart';
-import 'pty_frame_codec.dart';
+import 'pty_frame_processor.dart';
 import 'proxy_client.dart';
 import 'shell_integration.dart';
 import 'ws_channel.dart';
@@ -55,7 +55,7 @@ class _PtyChannel {
   WebSocketChannel? socket;
   StreamSubscription<Object?>? sub;
   Future<void>? opening;
-  ShellState shell = ShellState();
+  Future<void> processing = Future<void>.value();
   int cursor = 0;
   bool hasCursor = false;
   bool awaitingMeta = true;
@@ -99,6 +99,8 @@ class RpcClient {
   final Set<String> _streamingPtys = {};
   Set<String> _desiredStreamingPtys = {};
   Future<void>? _ptyStreamSync;
+  int _ptyStreamGeneration = 0;
+  Future<PtyFrameProcessor>? _ptyProcessor;
 
   final StreamController<MotifEvent> _events =
       StreamController<MotifEvent>.broadcast();
@@ -135,17 +137,8 @@ class RpcClient {
   }
 
   Future<void> close() async {
-    await _eventsSub?.cancel();
-    _eventsSub = null;
-    await _eventsSocket?.sink.close(1000 /* going away */);
-    _eventsSocket = null;
-    for (final id in _ptys.keys.toList()) {
-      await _closePty(id, removeState: true);
-    }
-    _ptys.clear();
-    _activePtyId = null;
-    _streamingPtys.clear();
-    _desiredStreamingPtys = {};
+    await _closeSessionStreams();
+    await _resetPtyProcessor();
     _sessionId = null;
     if (!_events.isClosed) await _events.close();
     _http.close();
@@ -220,6 +213,14 @@ class RpcClient {
   }
 
   Future<Map<String, Object?>> _doAttach(Map<String, Object?> params) async {
+    // session.attach replaces an existing attachment server-side when the
+    // current X-Motif-Session is reused. Tear down the old local streams in
+    // parallel, but deliberately keep _sessionId so the attach is atomic and
+    // needs no preceding session.detach round trip.
+    if (_sessionId != null) {
+      await _closeSessionStreams();
+      await _resetPtyProcessor();
+    }
     final sw = Stopwatch()..start();
     final (body, sid) = await _rawCall('session.attach', params);
     final postMs = sw.elapsedMilliseconds;
@@ -239,17 +240,8 @@ class RpcClient {
   }
 
   Future<Map<String, Object?>> _doDetach() async {
-    for (final id in _ptys.keys.toList()) {
-      await _closePty(id, removeState: true);
-    }
-    _ptys.clear();
-    _activePtyId = null;
-    _streamingPtys.clear();
-    _desiredStreamingPtys = {};
-    await _eventsSub?.cancel();
-    _eventsSub = null;
-    await _eventsSocket?.sink.close(1000);
-    _eventsSocket = null;
+    await _closeSessionStreams();
+    await _resetPtyProcessor();
     final (body, _) = await _rawCall('session.detach', {});
     _sessionId = null;
     return body;
@@ -419,22 +411,25 @@ class RpcClient {
     final running = _ptyStreamSync;
     if (running != null) return running;
     late final Future<void> sync;
-    sync = _drainPtyStreamSync().whenComplete(() {
+    final generation = _ptyStreamGeneration;
+    sync = _drainPtyStreamSync(generation).whenComplete(() {
       if (identical(_ptyStreamSync, sync)) _ptyStreamSync = null;
     });
     _ptyStreamSync = sync;
     return _ptyStreamSync!;
   }
 
-  Future<void> _drainPtyStreamSync() async {
-    while (true) {
+  Future<void> _drainPtyStreamSync(int generation) async {
+    while (generation == _ptyStreamGeneration) {
       final wanted = Set<String>.from(_desiredStreamingPtys);
-      await _applyPtyStreamSet(wanted);
+      await _applyPtyStreamSet(wanted, generation);
+      if (generation != _ptyStreamGeneration) return;
       if (_sameStringSet(wanted, _desiredStreamingPtys)) return;
     }
   }
 
-  Future<void> _applyPtyStreamSet(Set<String> wanted) async {
+  Future<void> _applyPtyStreamSet(Set<String> wanted, int generation) async {
+    if (generation != _ptyStreamGeneration) return;
     final current = Set<String>.from(_streamingPtys);
     final toClose = current.difference(wanted);
 
@@ -442,12 +437,14 @@ class RpcClient {
       if (_activePtyId == ptyId) _activePtyId = null;
       _streamingPtys.remove(ptyId);
       await _closePty(ptyId, removeState: false);
+      if (generation != _ptyStreamGeneration) return;
     }
 
     for (final ptyId in wanted) {
       _streamingPtys.add(ptyId);
     }
 
+    if (generation != _ptyStreamGeneration) return;
     await Future.wait([for (final ptyId in wanted) _openPty(ptyId)]);
   }
 
@@ -468,10 +465,10 @@ class RpcClient {
   /// clears it through the normal parser path. Safe to call before the socket
   /// opens — the channel (and its [ShellState]) is created on demand and reused
   /// by [_openPty].
-  void primePtyRunning(String ptyId, String cmd) {
+  Future<void> primePtyRunning(String ptyId, String cmd) async {
     if (cmd.isEmpty) return;
-    final ch = _ptys[ptyId] ?? (_ptys[ptyId] = _PtyChannel());
-    ch.shell.primeRunning(cmd);
+    final processor = await _frameProcessor();
+    await processor.primeRunning(ptyId, cmd);
   }
 
   Future<void> _openPty(String ptyId) async {
@@ -608,30 +605,37 @@ class RpcClient {
     final Uint8List data;
     if (msg is String) {
       data = Uint8List.fromList(utf8.encode(msg));
+    } else if (msg is Uint8List) {
+      data = msg;
     } else if (msg is List<int>) {
       data = Uint8List.fromList(msg);
     } else {
       return;
     }
-    final decoded = _decodePtyPayload(ptyId, ch, data);
-    if (decoded == null) return;
-    ch.cursor += decoded.length;
-    _processPtyBytes(ptyId, decoded);
-  }
-
-  Uint8List? _decodePtyPayload(String ptyId, _PtyChannel ch, Uint8List data) {
-    try {
-      return decodePtyPayload(data, framedZlib: ch.framedZlib);
-    } catch (e, st) {
-      Log.w(
-        'pty $ptyId: framed decode failed',
-        name: 'motif.rpc',
-        error: e,
-        stackTrace: st,
-      );
-      unawaited(_recoverPtyAfterDecodeError(ptyId, ch));
-      return null;
-    }
+    final generation = ch.generation;
+    ch.processing = ch.processing.then((_) async {
+      if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
+      try {
+        final processor = await _frameProcessor();
+        final result = await processor.process(
+          ptyId,
+          data,
+          framedZlib: ch.framedZlib,
+        );
+        if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
+        ch.cursor += result.decodedLength;
+        _emitProcessedPtyFrame(ptyId, result);
+      } catch (e, st) {
+        if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
+        Log.w(
+          'pty $ptyId: framed decode failed',
+          name: 'motif.rpc',
+          error: e,
+          stackTrace: st,
+        );
+        await _recoverPtyAfterDecodeError(ptyId, ch);
+      }
+    });
   }
 
   Future<void> _recoverPtyAfterDecodeError(String ptyId, _PtyChannel ch) async {
@@ -657,6 +661,8 @@ class RpcClient {
   Future<void> _onPtyDone(String ptyId, WebSocketChannel socket) async {
     final ch = _ptys[ptyId];
     if (ch == null || ch.socket != socket) return;
+    await ch.processing;
+    if (_ptys[ptyId] != ch || ch.socket != socket) return;
     final closeCode = socket.closeCode;
     final cursorUnusable =
         closeCode == _kCursorTruncated || closeCode == _kCursorStale;
@@ -689,20 +695,14 @@ class RpcClient {
   /// Run a /pty byte chunk through the per-PTY shell parser, then synthesize
   /// `pty.output` + shell events. The wire protocol uses `data_b64`, but local
   /// synthesized events can keep raw bytes to avoid a hot-path base64 roundtrip.
-  void _processPtyBytes(String ptyId, Uint8List bytes) {
-    final ch = _ptys[ptyId];
-    if (ch == null) return;
-    final result = ch.shell.feed(bytes);
-    final blockId = ch.shell.activeBlockId;
-    final scope = ch.shell.activeScope;
-
+  void _emitProcessedPtyFrame(String ptyId, ProcessedPtyFrame result) {
     if (result.passthrough.isNotEmpty) {
       _emit(
         MotifEvent('pty.output', {
           'pty_id': ptyId,
           'data_bytes': result.passthrough,
-          'block_id': blockId,
-          'scope': scope.wire,
+          'block_id': result.blockId,
+          'scope': result.scope.wire,
           'seq': 0,
         }),
       );
@@ -794,6 +794,7 @@ class RpcClient {
     String ptyId, {
     WebSocketChannel? matching,
     required bool removeState,
+    bool removeProcessorState = true,
   }) async {
     final ch = _ptys[ptyId];
     if (ch == null) return;
@@ -805,14 +806,94 @@ class RpcClient {
     if (matching != null && ch.socket != matching) return;
     ch.generation++;
     ch.opening = null;
-    await ch.sub?.cancel();
+    final sub = ch.sub;
     ch.sub = null;
-    await ch.socket?.sink.close(1000);
+    final socket = ch.socket;
     ch.socket = null;
     if (removeState) {
       _ptys.remove(ptyId);
     } else {
       _ptys[ptyId] = ch;
+    }
+    await Future.wait<void>([
+      if (sub != null)
+        _settleStreamCleanup(sub.cancel(), 'pty $ptyId subscription'),
+      if (socket != null)
+        _settleStreamCleanup(socket.sink.close(1000), 'pty $ptyId socket'),
+    ]);
+    if (removeState && removeProcessorState) {
+      final processor = _ptyProcessor;
+      if (processor != null) {
+        unawaited(
+          processor.then((p) => p.removePty(ptyId)).catchError((Object _) {}),
+        );
+      }
+    }
+  }
+
+  bool _isCurrentPtySocket(
+    String ptyId,
+    _PtyChannel channel,
+    WebSocketChannel socket,
+    int generation,
+  ) =>
+      identical(_ptys[ptyId], channel) &&
+      identical(channel.socket, socket) &&
+      channel.generation == generation;
+
+  Future<PtyFrameProcessor> _frameProcessor() =>
+      _ptyProcessor ??= PtyFrameProcessor.spawn();
+
+  Future<void> _resetPtyProcessor() async {
+    final processor = _ptyProcessor;
+    _ptyProcessor = null;
+    if (processor == null) return;
+    try {
+      await (await processor).dispose();
+    } catch (_) {
+      // A failed/spawn-racing worker has no UI-visible state to preserve.
+    }
+  }
+
+  Future<void> _closeSessionStreams() async {
+    _ptyStreamGeneration++;
+    _desiredStreamingPtys = {};
+    _streamingPtys.clear();
+    _activePtyId = null;
+    _ptyStreamSync = null;
+
+    final eventSub = _eventsSub;
+    final eventSocket = _eventsSocket;
+    _eventsSub = null;
+    _eventsSocket = null;
+    final ptyIds = _ptys.keys.toList();
+
+    await Future.wait<void>([
+      if (eventSub != null)
+        _settleStreamCleanup(eventSub.cancel(), 'events subscription'),
+      if (eventSocket != null)
+        _settleStreamCleanup(eventSocket.sink.close(1000), 'events socket'),
+      for (final id in ptyIds)
+        _closePty(id, removeState: true, removeProcessorState: false),
+    ]);
+    _ptys.clear();
+  }
+
+  Future<void> _settleStreamCleanup(
+    Future<void> operation,
+    String description,
+  ) async {
+    try {
+      await operation;
+    } catch (e, st) {
+      // The local channel is already invalidated. A broken old socket must not
+      // prevent a replacement session from attaching on the live transport.
+      Log.w(
+        '$description cleanup failed',
+        name: 'motif.rpc',
+        error: e,
+        stackTrace: st,
+      );
     }
   }
 

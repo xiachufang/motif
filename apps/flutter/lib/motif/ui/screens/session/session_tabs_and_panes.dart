@@ -217,6 +217,7 @@ class _PaneStack extends StatelessWidget {
   final ViewInfo? activeView;
   final bool attaching;
   final bool mountPanes;
+  final bool workspaceActive;
   final List<ViewInfo> mountedViews;
   final MotifClient motif;
   final double fontSize;
@@ -228,6 +229,7 @@ class _PaneStack extends StatelessWidget {
     required this.activeView,
     required this.attaching,
     required this.mountPanes,
+    required this.workspaceActive,
     required this.mountedViews,
     required this.motif,
     required this.fontSize,
@@ -269,10 +271,10 @@ class _PaneStack extends StatelessWidget {
             child: Offstage(
               offstage: view.id != active.id,
               child: TickerMode(
-                enabled: view.id == active.id,
+                enabled: workspaceActive && view.id == active.id,
                 child: _PaneForView(
                   view: view,
-                  active: view.id == active.id,
+                  active: workspaceActive && view.id == active.id,
                   motif: motif,
                   fontSize: fontSize,
                   palette: palette,

@@ -34,6 +34,7 @@ import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
 import 'terminal_paste.dart';
 import 'terminal_scroll_driver.dart';
+import 'terminal_scrollbar.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_worker.dart';
 import '../ui/widgets/top_toast.dart';
@@ -89,7 +90,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   Simulation? _scrollSimulation;
   Duration? _scrollSimulationStart;
   final Set<LogicalKeyboardKey> _hostShortcutKeys = <LogicalKeyboardKey>{};
-  final Set<LogicalKeyboardKey> _textInputCancelKeys = <LogicalKeyboardKey>{};
   double _scrollSimulationLastPosition = 0;
   double _scrollVelocity = 0;
   Duration? _lastScrollUpdateTime;
@@ -101,6 +101,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   double _touchScrollDistance = 0;
   final TerminalScrollAccumulator _scrollAccumulator =
       TerminalScrollAccumulator();
+  final TerminalScrollbarVisibilityController _scrollbarVisibility =
+      TerminalScrollbarVisibilityController();
+  final Set<int> _scrollbarPointers = <int>{};
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
   final GlobalKey _terminalSurfaceKey = GlobalKey(
     debugLabel: 'Motif terminal surface',
@@ -111,9 +114,11 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   String? _composingText;
   _CursorSnapshot? _lastCursorSnapshot;
   bool _showSoftKeyboardOnFocus = false;
+  bool _revealBottomOnNextFocus = true;
 
   double _cellWidth = 0;
   double _cellHeight = 0;
+  double _viewportWidth = 0;
   double _viewportHeight = 0;
   int _cols = 80;
   int _rows = 24;
@@ -262,6 +267,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     widget.keyboardInset.removeListener(_syncKeyboardLift);
     _closeTextInput();
     _keyboardLiftOffset.dispose();
+    _scrollbarVisibility.dispose();
     _focusNode.dispose();
     unawaited(_worker?.dispose());
     super.dispose();
@@ -408,6 +414,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final viewportHeight = constraints.maxHeight;
+                  _viewportWidth = constraints.maxWidth;
                   if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
                     _viewportHeight = viewportHeight;
                     _scheduleKeyboardLiftSync();
@@ -421,25 +428,58 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                   }
                   _handleResize(constraints);
                   final colorScheme = Theme.of(context).colorScheme;
-                  return CustomPaint(
-                    painter: TerminalSnapshotPainter(
-                      snapshot: snapshot,
-                      cellWidth: _cellWidth,
-                      cellHeight: _cellHeight,
-                      padding: widget.padding,
-                      fontFamily: font.family,
-                      fontFamilyFallback: font.fallback,
-                      fontSize: widget.fontSize,
-                      showCursor: _focusNode.hasFocus,
-                      selection: _selection,
-                      selectionBackground: colorScheme.primary.withValues(
-                        alpha: 0.72,
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CustomPaint(
+                        painter: TerminalSnapshotPainter(
+                          snapshot: snapshot,
+                          cellWidth: _cellWidth,
+                          cellHeight: _cellHeight,
+                          padding: widget.padding,
+                          fontFamily: font.family,
+                          fontFamilyFallback: font.fallback,
+                          fontSize: widget.fontSize,
+                          showCursor: _focusNode.hasFocus,
+                          selection: _selection,
+                          selectionBackground: colorScheme.primary.withValues(
+                            alpha: 0.72,
+                          ),
+                          selectionForeground: colorScheme.onPrimary,
+                          renderCache: _terminalRenderCache,
+                          preeditText: _composingText,
+                        ),
+                        size: Size(constraints.maxWidth, constraints.maxHeight),
                       ),
-                      selectionForeground: colorScheme.onPrimary,
-                      renderCache: _terminalRenderCache,
-                      preeditText: _composingText,
-                    ),
-                    size: Size(constraints.maxWidth, constraints.maxHeight),
+                      if (snapshot.hasScrollback &&
+                          !snapshot.alternateScreenActive)
+                        Positioned(
+                          top: 3,
+                          right: 0,
+                          bottom: 3,
+                          width: TerminalScrollbarOverlay.hitWidth,
+                          child: ListenableBuilder(
+                            listenable: _scrollbarVisibility,
+                            builder: (context, _) => TerminalScrollbarOverlay(
+                              totalRows: snapshot.scrollTotalRows,
+                              visibleRows: snapshot.scrollViewportRows,
+                              viewportOffset: snapshot.viewportOffset,
+                              visible: _scrollbarVisibility.visible,
+                              thumbColor: colorScheme.onSurface.withValues(
+                                alpha: 0.58,
+                              ),
+                              trackColor: colorScheme.onSurface.withValues(
+                                alpha: 0.10,
+                              ),
+                              onScrollToOffset: _scrollToOffsetFromScrollbar,
+                              onHoverChanged: _onScrollbarHoverChanged,
+                              onActivity: _onScrollbarActivity,
+                              onDragStart: _onScrollbarDragStart,
+                              onDragEnd: _onScrollbarDragEnd,
+                            ),
+                          ),
+                        ),
+                    ],
                   );
                 },
               ),

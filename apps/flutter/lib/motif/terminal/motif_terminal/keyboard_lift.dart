@@ -146,6 +146,7 @@ class _CursorSnapshot {
   final bool inViewport;
   final int x;
   final int y;
+  final int widthCells;
   final GhosttyRenderStateCursorVisualStyle style;
 
   const _CursorSnapshot({
@@ -153,6 +154,7 @@ class _CursorSnapshot {
     required this.inViewport,
     required this.x,
     required this.y,
+    required this.widthCells,
     required this.style,
   });
 
@@ -164,10 +166,11 @@ class _CursorSnapshot {
           other.inViewport == inViewport &&
           other.x == x &&
           other.y == y &&
+          other.widthCells == widthCells &&
           other.style == style;
 
   @override
-  int get hashCode => Object.hash(visible, inViewport, x, y, style);
+  int get hashCode => Object.hash(visible, inViewport, x, y, widthCells, style);
 }
 
 class _KeyboardLiftTrace {

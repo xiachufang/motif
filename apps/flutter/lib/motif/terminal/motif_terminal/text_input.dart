@@ -3,17 +3,33 @@
 part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalTextInput on _MotifTerminalViewState {
-  void _requestFocus({required bool showSoftKeyboard}) {
+  void _requestFocus({
+    required bool showSoftKeyboard,
+    TerminalFocusIntent intent = TerminalFocusIntent.keyboardInput,
+  }) {
     if (!mounted || !widget.active || !_focusNode.canRequestFocus) return;
     _showSoftKeyboardOnFocus = showSoftKeyboard;
-    if (!_focusNode.hasFocus) _focusNode.requestFocus();
-    if (_usesTextInputClient && (!_usesSoftKeyboard || showSoftKeyboard)) {
-      _openTextInput(showKeyboard: showSoftKeyboard);
+    final alreadyFocused = _focusNode.hasFocus;
+    if (!alreadyFocused) {
+      // requestFocus may notify synchronously or on a later frame. Preserve the
+      // caller's intent for _onFocusChanged either way.
+      _revealBottomOnNextFocus = intent.revealBottom;
+      _focusNode.requestFocus();
+    }
+    if (alreadyFocused &&
+        _usesTextInputClient &&
+        (!_usesSoftKeyboard || showSoftKeyboard)) {
+      _openTextInput(
+        showKeyboard: showSoftKeyboard,
+        revealBottom: intent.revealBottom,
+      );
     }
   }
 
-  void _requestFocusWithoutKeyboard() {
-    _requestFocus(showSoftKeyboard: false);
+  void _requestFocusWithoutKeyboard({
+    TerminalFocusIntent intent = TerminalFocusIntent.keyboardInput,
+  }) {
+    _requestFocus(showSoftKeyboard: false, intent: intent);
   }
 
   void _requestFocusAndKeyboard() {
@@ -37,16 +53,20 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   }
 
   void _onFocusChanged() {
+    final revealBottom = _revealBottomOnNextFocus;
+    _revealBottomOnNextFocus = true;
     if (_focusNode.hasFocus &&
         _usesTextInputClient &&
         (!_usesSoftKeyboard || _showSoftKeyboardOnFocus)) {
-      _openTextInput(showKeyboard: _showSoftKeyboardOnFocus);
+      _openTextInput(
+        showKeyboard: _showSoftKeyboardOnFocus,
+        revealBottom: revealBottom,
+      );
     } else {
       _closeTextInput();
     }
     if (!_focusNode.hasFocus) {
       _hostShortcutKeys.clear();
-      _textInputCancelKeys.clear();
     }
     _syncKeyboardLift();
     if (mounted) setState(() {});
@@ -68,26 +88,22 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     return composing.isValid && !composing.isCollapsed;
   }
 
-  bool _cancelTextInputComposition() {
-    if (!_textInputConnectionIsActive || !_textInputHasComposing) return false;
-    _resetTextInputValue();
-    _scheduleImeRectSync();
-    return true;
-  }
-
-  void _openTextInput({required bool showKeyboard}) {
+  void _openTextInput({
+    required bool showKeyboard,
+    required bool revealBottom,
+  }) {
     if (!_usesTextInputClient || !widget.active || !_focusNode.hasFocus) return;
     // No soft keyboard while disconnected/reconnecting.
     if (!widget.motif.canInput) return;
     final existing = _textInputConnection;
     if (existing != null && existing.attached) {
-      _worker?.scrollToBottom();
+      if (revealBottom) _worker?.scrollToBottom();
       _syncImeRect();
       _scheduleImeRectSync();
       if (showKeyboard || !_usesSoftKeyboard) existing.show();
       return;
     }
-    _worker?.scrollToBottom();
+    if (revealBottom) _worker?.scrollToBottom();
     // Mobile gets a plain text keyboard so iOS exposes the language switch and
     // CJK IMEs are reachable; desktop keeps the shell-friendly config.
     final connection = TextInput.attach(
@@ -161,11 +177,12 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final cellWidth = _cellWidth <= 0 ? 1.0 : _cellWidth;
     final cellHeight = _cellHeight <= 0 ? 1.0 : _cellHeight;
     final cursor = _lastCursorSnapshot;
+    final cursorWidth = cellWidth * (cursor?.widthCells ?? 1);
     final cursorX = cursor != null && cursor.inViewport ? cursor.x : 0;
     final cursorY = cursor != null && cursor.inViewport
         ? cursor.y
         : (_rows - 1).clamp(0, 1000);
-    final maxLeft = (surfaceSize.width - cellWidth)
+    final maxLeft = (surfaceSize.width - cursorWidth)
         .clamp(0.0, double.infinity)
         .toDouble();
     final maxTop = (surfaceSize.height - cellHeight)
@@ -177,7 +194,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final top = (widget.padding + cursorY * cellHeight)
         .clamp(0.0, maxTop)
         .toDouble();
-    return Rect.fromLTWH(left, top, cellWidth, cellHeight);
+    return Rect.fromLTWH(left, top, cursorWidth, cellHeight);
   }
 
   void _writeSoftKeyboardText(String text) {

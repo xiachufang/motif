@@ -139,6 +139,8 @@ bool isTerminalHostShortcut({
     return _chromeTabIndexForShortcutKey(logicalKey) != null ||
         logicalKey == LogicalKeyboardKey.keyT ||
         logicalKey == LogicalKeyboardKey.keyW ||
+        (target == TargetPlatform.macOS &&
+            logicalKey == LogicalKeyboardKey.keyQ) ||
         logicalKey == LogicalKeyboardKey.pageUp ||
         logicalKey == LogicalKeyboardKey.pageDown;
   }
@@ -190,10 +192,6 @@ enum TerminalKeyRouteKind {
 
   /// Nothing to do; the key path returns `KeyEventResult.ignored`.
   ignore,
-
-  /// Cancel the active `TextInput` composition instead of sending Escape to the
-  /// terminal.
-  cancelTextInputComposition,
 }
 
 class TerminalKeyRoute {
@@ -211,9 +209,6 @@ class TerminalKeyRoute {
     TerminalKeyRouteKind.encodeViaGhostty,
   );
   static const ignore = TerminalKeyRoute._(TerminalKeyRouteKind.ignore);
-  static const cancelTextInputComposition = TerminalKeyRoute._(
-    TerminalKeyRouteKind.cancelTextInputComposition,
-  );
 
   factory TerminalKeyRoute.send(List<int> bytes) =>
       TerminalKeyRoute._(TerminalKeyRouteKind.sendBytes, bytes);
@@ -227,11 +222,12 @@ class TerminalKeyRoute {
 /// is whether a `TextInput` connection is currently live; when it is, it owns
 /// plain text and the plain newline (Enter), so the key path defers them.
 /// [textInputComposing] is whether that connection currently has an active
-/// composition; plain Escape cancels it before it can reach the terminal.
+/// composition. While active, the IME owns every key that reaches this router,
+/// including navigation, candidate selection, deletion, and control keys.
 /// [isPressOrRepeat] is false for key-up events.
 ///
-/// Branch order is significant and mirrors a real terminal: control combos →
-/// printable text → plain Enter → everything else (special keys) via ghostty.
+/// Branch order is significant: active composition ownership → control combos
+/// → printable text → plain Enter → everything else via ghostty.
 TerminalKeyRoute classifyTerminalKey({
   required LogicalKeyboardKey logicalKey,
   required String? resolvedText,
@@ -243,15 +239,16 @@ TerminalKeyRoute classifyTerminalKey({
   required bool textInputAttached,
   bool textInputComposing = false,
 }) {
-  if (isPressOrRepeat &&
-      textInputAttached &&
-      textInputComposing &&
-      logicalKey == LogicalKeyboardKey.escape &&
-      !shift &&
-      !control &&
-      !alt &&
-      !meta) {
-    return TerminalKeyRoute.cancelTextInputComposition;
+  // An active composition has exclusive ownership of keyboard input. Besides
+  // printable text, IMEs use Backspace/Delete, arrows, Home/End, PageUp/Down,
+  // Tab, Escape, Enter, and even modified/control keys to edit preedit text and
+  // navigate candidates. Sending any of those to ghostty at the same time can
+  // mutate the terminal contents behind the candidate window.
+  //
+  // Session-level shortcuts are filtered by the caller before this router, so
+  // they continue to work without weakening composition ownership here.
+  if (textInputAttached && textInputComposing) {
+    return TerminalKeyRoute.deferToTextInput;
   }
 
   // Ctrl[+Alt]+<key> → control code (e.g. Ctrl+A → 0x01). Never deferred.

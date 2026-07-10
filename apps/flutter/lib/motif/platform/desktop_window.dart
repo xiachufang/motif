@@ -6,6 +6,7 @@ library;
 abstract interface class DesktopWindowDelegate {
   Future<void> show();
   Future<void> hide();
+  Future<void> quit();
   Future<void> showAtLaunch();
   bool get usesCustomTitleBar;
   Future<void> startDrag();
@@ -21,6 +22,9 @@ class NoopDesktopWindowDelegate implements DesktopWindowDelegate {
 
   @override
   Future<void> hide() async {}
+
+  @override
+  Future<void> quit() async {}
 
   @override
   Future<void> showAtLaunch() async {}
@@ -48,6 +52,8 @@ abstract final class DesktopWindow {
   static Future<void> show() => _delegate.show();
 
   static Future<void> hide() => _delegate.hide();
+
+  static Future<void> quit() => _delegate.quit();
 
   static Future<void> showAtLaunch() => _delegate.showAtLaunch();
 

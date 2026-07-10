@@ -51,6 +51,15 @@ class _RecordingMotifClient extends MotifClient {
 class _SessionMenuMotifClient extends MotifClient {
   final List<String> attached = [];
   int detaches = 0;
+  final List<String> preparedSwitches = [];
+
+  _SessionMenuMotifClient() {
+    // Seed a terminal so SessionScreen's attach-if-needed path does not call
+    // createPty (which needs a live RpcClient and would toast + leave a timer).
+    ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
+    views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))];
+    activeViewId = 'v1';
+  }
 
   @override
   MotifConnState get state => const ConnAttached('test-session');
@@ -69,6 +78,11 @@ class _SessionMenuMotifClient extends MotifClient {
   @override
   Future<void> attach(String name) async {
     attached.add(name);
+  }
+
+  @override
+  void prepareSessionSwitch(String name) {
+    preparedSwitches.add(name);
   }
 }
 
@@ -129,12 +143,17 @@ class _ConnectedNotAttachedMotifClient extends _SessionMenuMotifClient {
 class _ShortcutMotifClient extends MotifClient {
   int createdPtys = 0;
   final List<String> closedViews = [];
+  final List<String> writtenPtyIds = [];
+  final List<List<int>> writtenPtyData = [];
 
   @override
   MotifConnState get state => const ConnAttached('test-session');
 
   @override
   bool get isLive => true;
+
+  @override
+  bool get canInput => true;
 
   @override
   Future<PtyInfo> createPty({
@@ -173,6 +192,12 @@ class _ShortcutMotifClient extends MotifClient {
     activeViewId = viewId;
     notifyListeners();
   }
+
+  @override
+  Future<void> writePty(String ptyId, List<int> data) async {
+    writtenPtyIds.add(ptyId);
+    writtenPtyData.add(List<int>.from(data));
+  }
 }
 
 class _SuspendedMotifClient extends _ShortcutMotifClient {
@@ -199,6 +224,7 @@ class _SuspendedMotifClient extends _ShortcutMotifClient {
 Future<AppState> _appStateWith(
   Map<String, MotifClient> clients, {
   ServerConnectionRuntime? serverConnectionRuntime,
+  MotifClient Function(MotifServer server)? workspaceClientFactory,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -209,6 +235,7 @@ Future<AppState> _appStateWith(
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
     clientFactory: (server) => clients[server.id] ?? MotifClient(),
+    workspaceClientFactory: workspaceClientFactory,
     serverConnectionRuntime: serverConnectionRuntime,
   );
   for (final entry in clients.entries) {
@@ -466,6 +493,7 @@ void main() {
     // IMEs. It keeps the full multiline keyboard; the English locale hint only
     // biases a fresh keyboard toward English without locking out switching.
     expect(inputField().keyboardType, TextInputType.multiline);
+    expect(inputField().textInputAction, TextInputAction.send);
     expect(inputField().hintLocales, terminalEnglishHintLocales);
 
     await tester.tap(find.byKey(const ValueKey('tab-v2')));
@@ -488,6 +516,111 @@ void main() {
     await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyT);
     expect(motif.activeViewId, 'new-view-1');
     expect(inputField().controller?.text, isEmpty);
+  });
+
+  testWidgets('send button writes content before enter', (tester) async {
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+    await tester.enterText(find.byType(TextField), 'echo hi');
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pump();
+
+    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
+    expect(motif.writtenPtyData, [
+      'echo hi'.codeUnits,
+      [0x0d],
+    ]);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      isEmpty,
+    );
+  });
+
+  testWidgets('bottom quick commands update when command store changes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+    final app = await _appState(motif: motif);
+    await app.commands.setGlobal([
+      QuickCommand.bytes('first', 'First', [1]),
+    ]);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('First'), findsOneWidget);
+    expect(find.byTooltip('Second'), findsNothing);
+
+    await app.commands.setGlobal([
+      QuickCommand.bytes('second', 'Second', [2]),
+    ]);
+    await tester.pump();
+
+    expect(find.byTooltip('First'), findsNothing);
+    expect(find.byTooltip('Second'), findsOneWidget);
+  });
+
+  testWidgets('quick command writes trailing newline as separate enter', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+    final app = await _appState(motif: motif);
+    await app.commands.setGlobal([QuickCommand.text('run', 'Run', 'ls\n')]);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Run'));
+    await tester.pump();
+
+    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
+    expect(motif.writtenPtyData, [
+      'ls'.codeUnits,
+      [0x0d],
+    ]);
   });
 
   testWidgets('multiline bottom input lifts terminal without resizing it', (
@@ -897,6 +1030,59 @@ void main() {
     expect(find.byKey(const ValueKey('close-tab-term-view')), findsNothing);
   });
 
+  testWidgets('cancel close prompt preserves a nested session route', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _RecordingMotifClient()
+      ..views = const [
+        ViewInfo(id: 'term-view', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'other-view', spec: OtherViewSpec('notes')),
+      ]
+      ..activeViewId = 'other-view'
+      ..runningCommand['pty-1'] = 'codex';
+    final app = await _appState(motif: motif);
+    final nestedNavigatorKey = GlobalKey<NavigatorState>();
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Navigator(
+            key: nestedNavigatorKey,
+            onGenerateRoute: (_) => MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('session list')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    nestedNavigatorKey.currentState!.push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const SessionScreen(serverId: 'server-1', session: 'test-session'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('close-tab-term-view')));
+    await tester.pumpAndSettle();
+    expect(find.text('Close running terminal?'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Close running terminal?'), findsNothing);
+    expect(find.byType(SessionScreen), findsOneWidget);
+    expect(motif.closedViews, isEmpty);
+  });
+
   testWidgets('Chrome-style tab shortcuts create close and switch tabs', (
     tester,
   ) async {
@@ -966,7 +1152,8 @@ void main() {
     await tester.tap(find.text('next-session'));
     await tester.pumpAndSettle();
 
-    expect(motif.detaches, 1);
+    expect(motif.detaches, 0);
+    expect(motif.preparedSwitches, ['next-session']);
     expect(motif.attached, ['next-session']);
     expect(routes.replacements, 1);
     expect(routes.lastReplacement, isA<PageRouteBuilder<void>>());
@@ -1054,6 +1241,13 @@ void main() {
     expect(find.text('Prod'), findsOneWidget);
     expect(find.text('prod-session'), findsOneWidget);
 
+    await app.servers.update(
+      app.serverById('server-2')!.copyWith(name: 'Production'),
+    );
+    await tester.pump();
+    expect(find.text('Prod'), findsNothing);
+    expect(find.text('Production'), findsOneWidget);
+
     await tester.tap(find.text('prod-session'));
     await tester.pumpAndSettle();
 
@@ -1063,6 +1257,52 @@ void main() {
       find.byKey(const ValueKey('sidebar-session-server-2-prod-session')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('cross-server switch navigates before old detach completes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final current = _BlockingDetachMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    final prod = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'prod-session')];
+    addTearDown(() {
+      if (!current.detachCompleter.isCompleted) {
+        current.detachCompleter.complete();
+      }
+    });
+    final app = await _appStateWith({'server-1': current, 'server-2': prod});
+    final routes = _RouteCounter();
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          navigatorObservers: [routes],
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('prod-session'));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(current.detaches, 1);
+    expect(current.detachCompleter.isCompleted, isFalse);
+    expect(routes.replacements, 1);
+    expect(prod.attached, ['prod-session']);
   });
 
   testWidgets('desktop keeps the previous server warm on cross-server switch', (
@@ -1106,6 +1346,75 @@ void main() {
     // background; the target server attaches normally.
     expect(current.detaches, 0);
     expect(current.isForeground, isFalse);
+    expect(prod.isForeground, isTrue);
     expect(prod.attached, ['prod-session']);
+    expect(app.connectedWorkspaceClients.toSet(), {current, prod});
   });
+
+  testWidgets(
+    'desktop keeps same-server sessions live and reuses them when switching back',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1024, 768);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final sessions = const [
+        SessionInfo(name: 'test-session'),
+        SessionInfo(name: 'other-session'),
+      ];
+      final current = _SessionMenuMotifClient()..sessions = sessions;
+      final other = _SessionMenuMotifClient()..sessions = sessions;
+      final app = await _appStateWith(
+        {'server-1': current},
+        serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+        workspaceClientFactory: (_) => other,
+      );
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: app,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.dark),
+            home: const SessionScreen(
+              serverId: 'server-1',
+              session: 'test-session',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
+      await tester.pumpAndSettle();
+      final originalTerminal = tester.state(
+        find.byKey(const ValueKey('terminal-pty-1')),
+      );
+
+      await tester.tap(find.text('other-session'));
+      await tester.pumpAndSettle();
+
+      expect(current.detaches, 0);
+      expect(current.isForeground, isFalse);
+      expect(other.attached, ['other-session']);
+      expect(app.connectedWorkspaceClients.toSet(), {current, other});
+
+      await tester.tap(find.text('test-session'));
+      await tester.pumpAndSettle();
+
+      expect(other.detaches, 0);
+      expect(other.isForeground, isFalse);
+      expect(current.isForeground, isTrue);
+      expect(current.attached, isEmpty);
+      expect(app.clientForSession('server-1', 'test-session'), same(current));
+      expect(
+        tester.state(find.byKey(const ValueKey('terminal-pty-1'))),
+        same(originalTerminal),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('close-session-button')));
+      await tester.pump();
+      expect(current.detaches, 1);
+      expect(other.detaches, 1);
+    },
+  );
 }

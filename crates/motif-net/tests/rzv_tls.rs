@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use axum::serve::Listener as _;
 use motif_net::{ListenConfig, RzvListenConfig};
-use motif_rendezvous::{Hub, HubConfig, CTRL_PAIRED, MAGIC, ROLE_CONNECT, VERSION};
+use motif_rendezvous::{
+    Hub, HubConfig, CTRL_PAIRED, CTRL_PING, CTRL_PONG, MAGIC, ROLE_CONNECT, VERSION,
+};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
@@ -64,9 +66,15 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
         hello.extend_from_slice(&token);
         s.write_all(&hello).await.unwrap();
         s.flush().await.unwrap();
-        let mut paired = [0u8; 1];
-        s.read_exact(&mut paired).await.unwrap();
-        assert_eq!(paired[0], CTRL_PAIRED);
+        loop {
+            let mut control = [0u8; 1];
+            s.read_exact(&mut control).await.unwrap();
+            match control[0] {
+                CTRL_PAIRED => break,
+                CTRL_PING => s.write_all(&[CTRL_PONG]).await.unwrap(),
+                other => panic!("unexpected pre-pair control byte {other:#04x}"),
+            }
+        }
 
         let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),

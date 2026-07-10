@@ -10,6 +10,18 @@ Uint8List _b(String s) => Uint8List.fromList(utf8.encode(s));
 String _osc(String body) => '\x1b]$body\x07';
 
 void main() {
+  test('large marker-free chunks pass through without quadratic copying', () {
+    final state = ShellState();
+    final input = Uint8List.fromList(
+      List<int>.generate(64 * 1024, (index) => 0x20 + (index % 64)),
+    );
+
+    final result = state.feed(input);
+
+    expect(result.passthrough, input);
+    expect(result.events, isEmpty);
+  });
+
   group('OscScanner passthrough', () {
     test('plain bytes pass through unchanged', () {
       final st = ShellState();

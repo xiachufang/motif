@@ -56,6 +56,13 @@ const RZV_CTRL_PING: u8 = 0x01;
 const RZV_CTRL_PONG: u8 = 0x02;
 const RZV_CTRL_PAIRED: u8 = 0x10;
 
+/// The relay sends a PING immediately after parking and every 15 seconds by
+/// default.  If none arrive for three normal keepalive periods, the socket is
+/// probably half-open (common after sleep or a network-interface change).
+/// Bound the wait here so the pump can drop it and enter its reconnect loop
+/// even when the kernel never reports EOF/reset on the old TCP path.
+const RZV_PING_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+
 #[cfg(feature = "tailscale")]
 struct TsBackend {
     /// Held to keep the tsnet node alive for the lifetime of the listener.
@@ -261,6 +268,15 @@ async fn park_accept(
     token: &[u8; 32],
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
 ) -> io::Result<Stream> {
+    park_accept_with_idle_timeout(url, token, tls, RZV_PING_IDLE_TIMEOUT).await
+}
+
+async fn park_accept_with_idle_timeout(
+    url: &str,
+    token: &[u8; 32],
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+    ping_idle_timeout: Duration,
+) -> io::Result<Stream> {
     let mut s = TcpStream::connect(url).await?;
 
     let mut hello = Vec::with_capacity(38);
@@ -275,7 +291,14 @@ async fn park_accept(
     // client's first application bytes (which only arrive after PAIRED).
     loop {
         let mut b = [0u8; 1];
-        s.read_exact(&mut b).await?;
+        tokio::time::timeout(ping_idle_timeout, s.read_exact(&mut b))
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("rzv: no relay control frame for {ping_idle_timeout:?} while parked"),
+                )
+            })??;
         match b[0] {
             RZV_CTRL_PAIRED => break,
             RZV_CTRL_PING => {
@@ -476,5 +499,36 @@ mod tests {
         let addrs = l.bound_addrs();
         assert_eq!(addrs.len(), 1);
         assert!(addrs[0].starts_with("tcp://127.0.0.1:"));
+    }
+
+    #[tokio::test]
+    async fn parked_rzv_connection_times_out_when_relay_goes_silent() {
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_addr = relay.local_addr().unwrap();
+        let relay_task = tokio::spawn(async move {
+            let (mut stream, _) = relay.accept().await.unwrap();
+            let mut hello = [0u8; 38];
+            stream.read_exact(&mut hello).await.unwrap();
+            assert_eq!(&hello[..4], &RZV_MAGIC);
+
+            // Keep the TCP socket open but send no PING. The motifd side must
+            // still detect this as dead instead of waiting on read_exact forever.
+            let mut byte = [0u8; 1];
+            assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
+        });
+
+        let result = park_accept_with_idle_timeout(
+            &relay_addr.to_string(),
+            &[7u8; 32],
+            None,
+            Duration::from_millis(50),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("silent relay should not leave a parked stream alive"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        relay_task.await.unwrap();
     }
 }

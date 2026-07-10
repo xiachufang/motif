@@ -1,6 +1,7 @@
 @Tags(['native'])
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -168,6 +169,71 @@ void main() {
       ts.dispose();
     },
   );
+
+  test('snapshot cursor spans both columns of a wide character', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(8, 2);
+    ts.feedBytes(Uint8List.fromList(utf8.encode('好')));
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.lines.first.cells.single.widthCells, 2);
+    expect(snapshot.cursorCellSpan, (col: 2, widthCells: 1));
+
+    // Move left onto the wide character's spacer tail. The visual cursor must
+    // move to the lead cell and cover the complete grapheme.
+    ts.feedBytes(Uint8List.fromList([0x1b, 0x5b, 0x44]));
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.cursorX, 1);
+    expect(snapshot.cursorCellSpan, (col: 0, widthCells: 2));
+
+    ts.dispose();
+  });
+
+  test('scrollbar metrics support absolute scrollback positioning', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(12, 3);
+    ts.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(12, (i) => 'line$i').join('\r\n')),
+      ),
+    );
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.hasScrollback, isTrue);
+    expect(snapshot.scrollViewportRows, 3);
+    expect(snapshot.scrollTotalRows, greaterThan(snapshot.scrollViewportRows));
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.scrollToOffset(0);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, 0);
+
+    ts.scrollToOffset(snapshot.maxViewportOffset);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.dispose();
+  });
 
   test('tracked selection keeps pointing at text after scrollback changes', () {
     final ts = TerminalState(onHostWrite: (_) {});

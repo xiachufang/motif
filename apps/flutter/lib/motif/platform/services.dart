@@ -217,6 +217,16 @@ abstract interface class PushService {
   /// wire fields; the caller decrypts with the per-device key. (Background/
   /// killed delivery is decrypted by the Notification Service Extension.)
   void onEncryptedPayload(void Function(String e, String n) handler);
+
+  /// User tapped a system notification (background / cold start). [session]
+  /// and optional [instanceId] come from the NSE-decrypted `userInfo`.
+  void onNotificationOpen(
+    void Function({required String? session, String? instanceId}) handler,
+  );
+
+  /// Drain a cold-start tap that arrived before Dart registered handlers.
+  /// Returns `null` when none is pending.
+  Future<({String? session, String? instanceId})?> takePendingNotificationOpen();
 }
 
 class NoopPushService implements PushService {
@@ -229,6 +239,13 @@ class NoopPushService implements PushService {
   Future<void> unregister() async {}
   @override
   void onEncryptedPayload(void Function(String e, String n) handler) {}
+  @override
+  void onNotificationOpen(
+    void Function({required String? session, String? instanceId}) handler,
+  ) {}
+  @override
+  Future<({String? session, String? instanceId})?>
+  takePendingNotificationOpen() async => null;
 }
 
 // ─────────────────────────── bundle of services ───────────────────────────

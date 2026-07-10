@@ -24,6 +24,7 @@ abstract final class _Keys {
   static const pushEnabled = 'motif.push.enabled';
   static const pushMuted = 'motif.push.mutedSessions';
   static const pushEncKey = 'motif.push.encKey';
+  static const pushInstanceServers = 'motif.push.instanceServers';
 }
 
 /// Push notification preferences + the per-device E2E key. The key is a random
@@ -34,11 +35,15 @@ class PushSettingsStore extends ChangeNotifier {
   final SharedPreferences _prefs;
   bool _enabled;
   Set<String> _muted;
+  Map<String, String> _instanceServers;
   late final String encKeyBase64;
 
   PushSettingsStore(this._prefs)
     : _enabled = _prefs.getBool(_Keys.pushEnabled) ?? true,
-      _muted = (_prefs.getStringList(_Keys.pushMuted) ?? const []).toSet() {
+      _muted = (_prefs.getStringList(_Keys.pushMuted) ?? const []).toSet(),
+      _instanceServers = _loadInstanceServers(
+        _prefs.getString(_Keys.pushInstanceServers),
+      ) {
     final existing = _prefs.getString(_Keys.pushEncKey);
     if (existing != null) {
       encKeyBase64 = existing;
@@ -60,6 +65,29 @@ class PushSettingsStore extends ChangeNotifier {
   Set<String> get mutedSessions => Set.unmodifiable(_muted);
   bool isMuted(String session) => _muted.contains(session);
 
+  /// The configured server last registered with this stable motifd instance.
+  /// Kept across launches so a cold-start notification can select the right
+  /// server before any clients have reconnected.
+  String? serverIdForInstance(String instanceId) =>
+      _instanceServers[instanceId];
+
+  Future<void> bindInstanceToServer(String instanceId, String serverId) async {
+    if (instanceId.isEmpty || serverId.isEmpty) return;
+    if (_instanceServers[instanceId] == serverId) return;
+    _instanceServers = {..._instanceServers, instanceId: serverId};
+    await _persistInstanceServers();
+  }
+
+  Future<void> retainInstanceServers(Set<String> serverIds) async {
+    final next = <String, String>{
+      for (final entry in _instanceServers.entries)
+        if (serverIds.contains(entry.value)) entry.key: entry.value,
+    };
+    if (mapEquals(next, _instanceServers)) return;
+    _instanceServers = next;
+    await _persistInstanceServers();
+  }
+
   Future<void> setEnabled(bool v) async {
     _enabled = v;
     await _prefs.setBool(_Keys.pushEnabled, v);
@@ -74,6 +102,21 @@ class PushSettingsStore extends ChangeNotifier {
     }
     await _prefs.setStringList(_Keys.pushMuted, _muted.toList());
     notifyListeners();
+  }
+
+  Future<void> _persistInstanceServers() => _prefs.setString(
+    _Keys.pushInstanceServers,
+    jsonEncodeMap(_instanceServers),
+  );
+
+  static Map<String, String> _loadInstanceServers(String? raw) {
+    if (raw == null) return {};
+    final decoded = jsonDecodeMap(raw);
+    if (decoded == null) return {};
+    return <String, String>{
+      for (final entry in decoded.entries)
+        if (entry.value is String) entry.key: entry.value as String,
+    };
   }
 }
 

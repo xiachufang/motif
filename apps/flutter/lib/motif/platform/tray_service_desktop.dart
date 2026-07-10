@@ -215,12 +215,13 @@ class TrayService {
     await DesktopWindow.show();
   }
 
-  void _quit() {
-    // Best-effort graceful stop before exiting, then terminate the process.
+  Future<void> _quit() async {
+    // Gracefully stop the embedded server, then terminate the whole app through
+    // the same desktop exit path used by the keyboard shortcut.
     final svc = _svc;
     if (svc != null && (svc.status.running || svc.status.starting)) {
-      svc.stop();
+      await svc.stop();
     }
-    exit(0);
+    await DesktopWindow.quit();
   }
 }

@@ -17,6 +17,8 @@ class ApnsPushService implements PushService {
   static const _ch = MethodChannel('motif/push');
   Future<String?>? _tokenRequest;
   String? _cachedToken;
+  void Function(String e, String n)? _encryptedHandler;
+  void Function({required String? session, String? instanceId})? _openHandler;
 
   @override
   bool get isSupported => Platform.isIOS || Platform.isMacOS;
@@ -76,16 +78,58 @@ class ApnsPushService implements PushService {
     } catch (_) {}
   }
 
-  @override
-  void onEncryptedPayload(void Function(String e, String n) handler) {
+  void _ensureChannelHandler() {
     _ch.setMethodCallHandler((call) async {
-      if (call.method == 'onPush') {
-        final args = (call.arguments as Map).cast<String, Object?>();
-        final e = args['e'] as String?;
-        final n = args['n'] as String?;
-        if (e != null && n != null) handler(e, n);
+      switch (call.method) {
+        case 'onPush':
+          final args = (call.arguments as Map).cast<String, Object?>();
+          final e = args['e'] as String?;
+          final n = args['n'] as String?;
+          if (e != null && n != null) _encryptedHandler?.call(e, n);
+        case 'onNotificationOpen':
+          final args = (call.arguments as Map).cast<String, Object?>();
+          _openHandler?.call(
+            session: args['session'] as String?,
+            instanceId: args['instance_id'] as String?,
+          );
       }
       return null;
     });
+  }
+
+  @override
+  void onEncryptedPayload(void Function(String e, String n) handler) {
+    _encryptedHandler = handler;
+    _ensureChannelHandler();
+  }
+
+  @override
+  void onNotificationOpen(
+    void Function({required String? session, String? instanceId}) handler,
+  ) {
+    _openHandler = handler;
+    _ensureChannelHandler();
+  }
+
+  @override
+  Future<({String? session, String? instanceId})?>
+  takePendingNotificationOpen() async {
+    if (!isSupported) return null;
+    try {
+      final raw = await _ch.invokeMethod<Object?>('takePendingNotificationOpen');
+      if (raw is! Map) return null;
+      final args = raw.cast<String, Object?>();
+      final session = args['session'] as String?;
+      final instanceId = args['instance_id'] as String?;
+      if ((session == null || session.isEmpty) &&
+          (instanceId == null || instanceId.isEmpty)) {
+        return null;
+      }
+      return (session: session, instanceId: instanceId);
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
   }
 }

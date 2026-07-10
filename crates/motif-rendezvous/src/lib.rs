@@ -47,6 +47,11 @@ pub const CTRL_PAIRED: u8 = 0x10;
 /// real pairing.
 pub const CTRL_HEALTH_OK: u8 = 0x20;
 
+/// A waiter that has not answered this many consecutive keepalive PINGs is
+/// treated as half-open. This bounds stale relay-side state after a peer sleeps
+/// or changes networks without the old TCP path delivering a FIN/RST.
+const MAX_UNANSWERED_PINGS: u64 = 3;
+
 pub const TOKEN_LEN: usize = 32;
 pub const HELLO_LEN: usize = 4 + 1 + 1 + TOKEN_LEN; // 38
 
@@ -305,19 +310,31 @@ async fn park_and_keepalive(
 
     let partner = loop {
         tokio::select! {
-            _ = tick.tick(), if ping_enabled => {
-                if wr.write_all(&[CTRL_PING]).await.is_err() {
-                    return; // peer gone
-                }
-                pings_sent += 1;
-            }
+            // Prefer already-queued PONG/PAIRED work over the timer when they
+            // become ready together, so scheduler jitter cannot manufacture a
+            // missed keepalive at the deadline.
+            biased;
+            p = &mut rx => match p {
+                Ok(partner) => break partner,
+                Err(_) => return, // reaper pruned us (TTL) or hub dropped
+            },
             r = rd.read(&mut buf) => match r {
                 Ok(0) | Err(_) => return, // peer closed while parked
                 Ok(n) => pongs_read += count_pongs(&buf[..n]),
             },
-            p = &mut rx => match p {
-                Ok(partner) => break partner,
-                Err(_) => return, // reaper pruned us (TTL) or hub dropped
+            _ = tick.tick(), if ping_enabled => {
+                let unanswered = pings_sent.saturating_sub(pongs_read);
+                if unanswered >= MAX_UNANSWERED_PINGS {
+                    tracing::debug!(
+                        unanswered,
+                        "rzv: parked waiter missed keepalives; closing half-open socket"
+                    );
+                    return;
+                }
+                if wr.write_all(&[CTRL_PING]).await.is_err() {
+                    return; // peer gone
+                }
+                pings_sent += 1;
             },
         }
     };
@@ -481,6 +498,28 @@ mod tests {
         // so a middlebox doesn't reap the idle connection.
         assert_eq!(read_byte(&mut acc).await, CTRL_PING);
         assert_eq!(hub.parked_tokens(), 1, "the waiter stays parked");
+    }
+
+    #[tokio::test]
+    async fn relay_closes_waiter_that_stops_answering_pings() {
+        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
+        let token = [11u8; TOKEN_LEN];
+
+        let mut acc = TcpStream::connect(addr).await.unwrap();
+        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
+
+        // Do not send any PONGs. The immediate PING plus two interval PINGs
+        // exhaust the allowance; at the next tick the relay must close rather
+        // than retain a zombie waiter indefinitely.
+        for _ in 0..MAX_UNANSWERED_PINGS {
+            assert_eq!(read_byte(&mut acc).await, CTRL_PING);
+        }
+        let mut byte = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_millis(200), acc.read(&mut byte))
+            .await
+            .expect("relay did not reap the unresponsive waiter")
+            .unwrap();
+        assert_eq!(n, 0, "relay should close after unanswered PINGs");
     }
 
     #[tokio::test]

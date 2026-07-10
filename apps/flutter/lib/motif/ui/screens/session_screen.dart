@@ -31,6 +31,7 @@ import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/listenable_select.dart';
 import '../widgets/quick_command_row.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
@@ -61,6 +62,13 @@ final bool kUseNativeTerminal =
     !kIsWeb &&
     const bool.fromEnvironment('MOTIF_NATIVE_TERMINAL', defaultValue: true);
 
+/// Route name used for session screens so notification taps can avoid
+/// stacking a duplicate of the already-visible session.
+String sessionRouteName(String serverId, String session) =>
+    'session/$serverId/$session';
+
+typedef _WorkspaceKey = ({String serverId, String session});
+
 /// The main terminal interface: tab bar of views + active pane + input bar.
 /// Mirrors SessionView. PTY panes use the libghostty-backed renderer.
 class SessionScreen extends StatefulWidget {
@@ -73,10 +81,92 @@ class SessionScreen extends StatefulWidget {
   });
 
   @override
-  State<SessionScreen> createState() => _SessionScreenState();
+  State<SessionScreen> createState() => _SessionScreenHostState();
 }
 
-class _SessionScreenState extends State<SessionScreen>
+/// Desktop workspace host. Every visited server/session pane stays mounted in
+/// this route, so its Ghostty worker, grid, scrollback and selection survive a
+/// sidebar switch. Mobile renders a single pane and keeps route navigation.
+class _SessionScreenHostState extends State<SessionScreen> {
+  late _WorkspaceKey _active = (
+    serverId: widget.serverId,
+    session: widget.session,
+  );
+  final List<_WorkspaceKey> _mounted = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _mounted.add(_active);
+  }
+
+  @override
+  void didUpdateWidget(covariant SessionScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final next = (serverId: widget.serverId, session: widget.session);
+    if (next == _active) return;
+    _selectWorkspace(next.serverId, next.session);
+  }
+
+  void _selectWorkspace(String serverId, String session) {
+    final next = (serverId: serverId, session: session);
+    if (next == _active) return;
+    context.read<AppState>().clientForSession(serverId, session);
+    setState(() {
+      if (!_mounted.contains(next)) _mounted.add(next);
+      _active = next;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keepWarm = context.read<AppState>().keepSessionWarmOnSwitchAway;
+    if (!keepWarm) {
+      return _SessionPane(serverId: widget.serverId, session: widget.session);
+    }
+    return Stack(
+      children: [
+        for (final workspace in _mounted)
+          Positioned.fill(
+            key: ValueKey(
+              'workspace-${workspace.serverId}/${workspace.session}',
+            ),
+            child: Offstage(
+              offstage: workspace != _active,
+              child: TickerMode(
+                enabled: workspace == _active,
+                child: _SessionPane(
+                  serverId: workspace.serverId,
+                  session: workspace.session,
+                  workspaceActive: workspace == _active,
+                  onWorkspaceSelected: _selectWorkspace,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SessionPane extends StatefulWidget {
+  final String serverId;
+  final String session;
+  final bool workspaceActive;
+  final void Function(String serverId, String session)? onWorkspaceSelected;
+
+  const _SessionPane({
+    required this.serverId,
+    required this.session,
+    this.workspaceActive = true,
+    this.onWorkspaceSelected,
+  });
+
+  @override
+  State<_SessionPane> createState() => _SessionScreenState();
+}
+
+class _SessionScreenState extends State<_SessionPane>
     with WidgetsBindingObserver {
   static const double _sidebarBreakpoint = 768;
   static const double _sidebarMinWidth = 96;
@@ -87,6 +177,7 @@ class _SessionScreenState extends State<SessionScreen>
   final Set<String> _mountedViewIds = <String>{};
   final Set<String> _appleInputDocumentIds = <String>{};
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
+  late final MotifClient _sessionClient;
   late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
@@ -97,6 +188,7 @@ class _SessionScreenState extends State<SessionScreen>
   bool _keyboardInsetSyncScheduled = false;
   bool _paneMountReady = false;
   bool _usesSidebarLayout = false;
+  bool _shortcutRegistered = false;
   bool _switchingSession = false;
   bool _attachingSession = false;
   bool _recording = false;
@@ -110,11 +202,17 @@ class _SessionScreenState extends State<SessionScreen>
   @override
   void initState() {
     super.initState();
+    _sessionClient = context.read<AppState>().clientForSession(
+      widget.serverId,
+      widget.session,
+    );
     _fallbackInput = _createInputState('fallback');
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
-    HardwareKeyboard.instance.addHandler(_handleShortcut);
-    _syncWindowTitle();
+    if (widget.workspaceActive) {
+      _registerShortcutHandler();
+      _syncWindowTitle();
+    }
     // Keep the screen awake while a terminal session is on screen — a PTY can
     // sit idle for minutes waiting on output and the user shouldn't have to
     // tap to keep watching it. Mobile only; desktops manage their own display
@@ -128,7 +226,7 @@ class _SessionScreenState extends State<SessionScreen>
   /// (RPC POST + /events WebSocket) happen behind a connecting overlay instead
   /// of blocking the page transition.
   void _attachIfNeeded() {
-    final motif = context.read<AppState>().clientForServer(widget.serverId);
+    final motif = _sessionClient;
     // While the transport is down the reconnect flow owns reattaching
     // (intendedSession); attaching here would just throw "not connected".
     if (!motif.isLive) return;
@@ -188,11 +286,30 @@ class _SessionScreenState extends State<SessionScreen>
   }
 
   @override
-  void didUpdateWidget(covariant SessionScreen oldWidget) {
+  void didUpdateWidget(covariant _SessionPane oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session != widget.session) {
+    if (oldWidget.workspaceActive != widget.workspaceActive) {
+      if (widget.workspaceActive) {
+        _registerShortcutHandler();
+        _syncWindowTitle();
+      } else {
+        _unregisterShortcutHandler();
+      }
+    } else if (widget.workspaceActive && oldWidget.session != widget.session) {
       _syncWindowTitle();
     }
+  }
+
+  void _registerShortcutHandler() {
+    if (_shortcutRegistered) return;
+    HardwareKeyboard.instance.addHandler(_handleShortcut);
+    _shortcutRegistered = true;
+  }
+
+  void _unregisterShortcutHandler() {
+    if (!_shortcutRegistered) return;
+    HardwareKeyboard.instance.removeHandler(_handleShortcut);
+    _shortcutRegistered = false;
   }
 
   @override
@@ -200,7 +317,7 @@ class _SessionScreenState extends State<SessionScreen>
     WidgetsBinding.instance.removeObserver(this);
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
-    HardwareKeyboard.instance.removeHandler(_handleShortcut);
+    _unregisterShortcutHandler();
     for (final id in _appleInputDocumentIds) {
       unawaited(AppleInputDocument.dispose(id).catchError((_) {}));
     }
@@ -238,18 +355,37 @@ class _SessionScreenState extends State<SessionScreen>
     if ((media.viewInsets.bottom - _keyboardInset.value).abs() >= 0.5) {
       _scheduleKeyboardInsetSync();
     }
-    final app = context.watch<AppState>();
-    final motif = app.clientForServer(widget.serverId);
+    final app = context.read<AppState>();
+    final motif = _sessionClient;
     final c = context.motif;
-    final fontSize = app.terminalSettings.settings.fontSize;
+    final fontSize = context.select<AppState, double>(
+      (a) => a.terminalSettings.settings.fontSize,
+    );
+    final overlayFromApp = context.select<AppState, String?>(
+      (a) => a.serverViewState(widget.serverId).terminalOverlay,
+    );
     final terminalPalette = terminalPaletteForBrightness(
       Theme.of(context).brightness,
     );
     final sidebar = app.sessionSidebar;
+    final overlayMessage =
+        overlayFromApp ?? (_attachingSession ? 'Connecting...' : null);
     return LayoutBuilder(
       builder: (context, constraints) {
         final usesSidebar = constraints.maxWidth >= _sidebarBreakpoint;
         _usesSidebarLayout = usesSidebar;
+        final showBottomBar = !usesSidebar || sidebar.showBottomBar;
+        final showSidebar = usesSidebar && sidebar.hasVisiblePanel;
+        final sidebarMaxWidth = math.max(
+          _sidebarMinWidth,
+          math.min(
+            constraints.maxWidth * _sidebarMaxWidthFraction,
+            constraints.maxWidth - _mainMinWidth,
+          ),
+        );
+        final sidebarWidth = sidebar.width
+            .clamp(_sidebarMinWidth, sidebarMaxWidth)
+            .toDouble();
         return Title(
           title: widget.session,
           color: c.accent,
@@ -257,7 +393,15 @@ class _SessionScreenState extends State<SessionScreen>
             resizeToAvoidBottomInset: false,
             appBar: AppBar(
               title: usesSidebar
-                  ? _TabBar(motif: motif, onNewPty: _newPty, inTitleBar: true)
+                  ? ListenableSelect(
+                      listenable: motif,
+                      selector: () => _tabBarSelectKey(motif),
+                      builder: (context, _, _) => _TabBar(
+                        motif: motif,
+                        onNewPty: _newPty,
+                        inTitleBar: true,
+                      ),
+                    )
                   : Text(widget.session),
               titleSpacing: usesSidebar ? 0 : null,
               toolbarHeight: usesSidebar ? 52 : null,
@@ -275,7 +419,9 @@ class _SessionScreenState extends State<SessionScreen>
                         ),
                         IconButton(
                           key: const ValueKey('sessions-sidebar-toggle'),
-                          icon: sidebar.showSessions ? const Icon(Icons.list_alt) : const Icon(Icons.list_alt_outlined),
+                          icon: sidebar.showSessions
+                              ? const Icon(Icons.list_alt)
+                              : const Icon(Icons.list_alt_outlined),
                           tooltip:
                               'Sessions (${_primaryShortcutLabel('L', shift: true)})',
                           style: _sidebarButtonStyle(
@@ -305,7 +451,9 @@ class _SessionScreenState extends State<SessionScreen>
               actions: [
                 IconButton(
                   key: const ValueKey('file-tree-sidebar-toggle'),
-                  icon: sidebar.showFileTree ? const Icon(Icons.folder) : const Icon(Icons.folder_outlined),
+                  icon: sidebar.showFileTree
+                      ? const Icon(Icons.folder)
+                      : const Icon(Icons.folder_outlined),
                   tooltip: 'Files (${_primaryShortcutLabel('E', shift: true)})',
                   style: _sidebarButtonStyle(
                     context,
@@ -316,7 +464,9 @@ class _SessionScreenState extends State<SessionScreen>
                 ),
                 IconButton(
                   key: const ValueKey('git-diff-sidebar-toggle'),
-                  icon: sidebar.showGitDiff ? const Icon(Icons.difference) : const Icon(Icons.difference_outlined),
+                  icon: sidebar.showGitDiff
+                      ? const Icon(Icons.difference)
+                      : const Icon(Icons.difference_outlined),
                   tooltip:
                       'Git diff (${_primaryShortcutLabel('G', shift: true)})',
                   style: _sidebarButtonStyle(
@@ -329,7 +479,9 @@ class _SessionScreenState extends State<SessionScreen>
                 if (usesSidebar)
                   IconButton(
                     key: const ValueKey('bottom-bar-toggle'),
-                    icon: sidebar.showBottomBar ? const Icon(Icons.keyboard_alt) : const Icon(Icons.keyboard_alt_outlined),
+                    icon: sidebar.showBottomBar
+                        ? const Icon(Icons.keyboard_alt)
+                        : const Icon(Icons.keyboard_alt_outlined),
                     tooltip: 'Bottom bar',
                     style: _sidebarButtonStyle(
                       context,
@@ -342,13 +494,17 @@ class _SessionScreenState extends State<SessionScreen>
                       });
                     },
                   ),
-                IconButton(
-                  key: const ValueKey('open-remote-port-button'),
-                  icon: const Icon(Icons.open_in_browser_outlined),
-                  tooltip: 'Remote ports',
-                  onPressed: motif.state is ConnAttached
-                      ? () => _showRemotePortMappings(motif)
-                      : null,
+                ListenableSelect(
+                  listenable: motif,
+                  selector: () => motif.state is ConnAttached,
+                  builder: (context, attached, _) => IconButton(
+                    key: const ValueKey('open-remote-port-button'),
+                    icon: const Icon(Icons.open_in_browser_outlined),
+                    tooltip: 'Remote ports',
+                    onPressed: attached
+                        ? () => _showRemotePortMappings(motif)
+                        : null,
+                  ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),
@@ -357,171 +513,182 @@ class _SessionScreenState extends State<SessionScreen>
                 ),
               ],
             ),
-            body: ListenableBuilder(
-              listenable: motif,
-              builder: (context, _) {
-                final connectionView = app.serverViewState(widget.serverId);
-                final overlayMessage =
-                    connectionView.terminalOverlay ??
-                    (_attachingSession ? 'Connecting...' : null);
-                final activeView = _switchingSession
-                    ? null
-                    : _activeView(motif);
-                _reconcileTabInputs(motif, activeView);
-                _syncAppleInputDocument(activeView?.id);
-                final inputState = _inputStateForView(activeView?.id);
-                final inputPtyId = _switchingSession
-                    ? null
-                    : _activePtyId(motif);
-                final mountedViews = _paneMountReady
-                    ? _mountedViews(motif, activeView)
-                    : const <ViewInfo>[];
-                final runningProgram = inputPtyId == null
-                    ? null
-                    : motif.runningCommand[inputPtyId];
-                final commandStore = context.read<AppState>().commands;
-                final showBottomBar = !usesSidebar || sidebar.showBottomBar;
-                final bottomBar = _MeasureSize(
-                  onChange: _setBottomBarContentSize,
-                  child: ColoredBox(
-                    color: c.background,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        QuickCommandRow(
-                          commands: commandStore.resolved(runningProgram),
-                          modifiers: _modifiers,
-                          onSendBytes: (b) => _sendBytes(b),
-                          onInsertText: _insertText,
-                          onChangeDirectory: () => _openChangeDirectory(motif),
-                          onEdit: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => QuickCommandEditor(
-                                setId: commandStore.effectiveSetId(
-                                  runningProgram,
-                                ),
-                              ),
+            body: _AnimatedSidebarLayout(
+              visible: showSidebar,
+              width: sidebarWidth,
+              sidebar: ListenableSelect(
+                listenable: motif,
+                selector: () => motif.activeCwd,
+                builder: (context, cwd, _) => _SessionSidebar(
+                  app: app,
+                  showSessions: sidebar.showSessions,
+                  showFileTree: sidebar.showFileTree,
+                  showDiff: sidebar.showGitDiff,
+                  currentServerId: widget.serverId,
+                  currentSession: widget.session,
+                  root: cwd ?? '~',
+                  cwd: cwd,
+                  motif: motif,
+                  onSessionSelected: (serverId, session) =>
+                      _switchSession(app, motif, serverId, session),
+                  onOpenPreview: _openPreview,
+                  onOpenDiff: _openDiff,
+                  splitFraction: sidebar.splitFraction,
+                  onSplitChanged: (fraction) {
+                    setState(() => sidebar.splitFraction = fraction);
+                  },
+                  firstSplitFraction: sidebar.firstSplitFraction,
+                  onFirstSplitChanged: (fraction) {
+                    setState(() => sidebar.firstSplitFraction = fraction);
+                  },
+                  secondSplitFraction: sidebar.secondSplitFraction,
+                  onSecondSplitChanged: (fraction) {
+                    setState(() => sidebar.secondSplitFraction = fraction);
+                  },
+                ),
+              ),
+              resizeHandle: _SidebarResizeHandle(
+                key: const ValueKey('sidebar-horizontal-resize-handle'),
+                axis: Axis.horizontal,
+                onDragDelta: (delta) {
+                  setState(() {
+                    sidebar.width = (sidebar.width + delta)
+                        .clamp(_sidebarMinWidth, sidebarMaxWidth)
+                        .toDouble();
+                  });
+                },
+              ),
+              mainContent: Stack(
+                children: [
+                  Column(
+                    children: [
+                      if (!usesSidebar)
+                        ListenableSelect(
+                          listenable: motif,
+                          selector: () => _tabBarSelectKey(motif),
+                          builder: (context, _, _) =>
+                              _TabBar(motif: motif, onNewPty: _newPty),
+                        ),
+                      Expanded(
+                        child: ClipRect(
+                          child: _BottomBarLiftedPane(
+                            enabled: showBottomBar,
+                            contentHeight: _bottomBarContentHeight,
+                            child: ListenableSelect(
+                              listenable: motif,
+                              selector: () => _paneSelectKey(motif),
+                              builder: (context, _, _) {
+                                final activeView = _switchingSession
+                                    ? null
+                                    : _activeView(motif);
+                                _reconcileTabInputs(motif, activeView);
+                                _syncAppleInputDocument(activeView?.id);
+                                final mountedViews = _paneMountReady
+                                    ? _mountedViews(motif, activeView)
+                                    : const <ViewInfo>[];
+                                return _PaneStack(
+                                  activeView: activeView,
+                                  attaching: _attachingSession,
+                                  mountPanes: _paneMountReady,
+                                  workspaceActive: widget.workspaceActive,
+                                  mountedViews: mountedViews,
+                                  motif: motif,
+                                  fontSize: fontSize,
+                                  palette: terminalPalette,
+                                  focusSerial: _terminalFocusSerial,
+                                  keyboardInset: _keyboardInset,
+                                );
+                              },
                             ),
                           ),
                         ),
-                        _InputBar(
-                          key: ValueKey(
-                            'bottom-input-${activeView?.id ?? 'fallback'}',
-                          ),
-                          controller: inputState.controller,
-                          focusNode: inputState.focusNode,
-                          groupId: inputState.groupId,
-                          onSend: _send,
-                          recording: _recording,
-                          micStarting: _micStarting,
-                          onMic: _toggleMic,
-                          onAttach: _attachPhoto,
-                        ),
-                      ],
-                    ),
+                      ),
+                      if (showBottomBar) const _BottomBarPlaceholder(),
+                    ],
                   ),
-                );
-                final mainContent = Stack(
-                  children: [
-                    Column(
-                      children: [
-                        if (!usesSidebar)
-                          _TabBar(motif: motif, onNewPty: _newPty),
-                        Expanded(
-                          child: ClipRect(
-                            child: _BottomBarLiftedPane(
-                              enabled: showBottomBar,
-                              contentHeight: _bottomBarContentHeight,
-                              child: _PaneStack(
-                                activeView: activeView,
-                                attaching: _attachingSession,
-                                mountPanes: _paneMountReady,
-                                mountedViews: mountedViews,
-                                motif: motif,
-                                fontSize: fontSize,
-                                palette: terminalPalette,
-                                focusSerial: _terminalFocusSerial,
-                                keyboardInset: _keyboardInset,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (showBottomBar) const _BottomBarPlaceholder(),
-                      ],
-                    ),
-                    if (showBottomBar)
-                      Positioned.fill(
-                        child: _KeyboardAnchoredBottomBar(
-                          keyboardInset: _keyboardInset,
-                          child: bottomBar,
+                  if (showBottomBar)
+                    Positioned.fill(
+                      child: _KeyboardAnchoredBottomBar(
+                        keyboardInset: _keyboardInset,
+                        child: ListenableSelect(
+                          listenable: motif,
+                          selector: () => _bottomBarSelectKey(motif),
+                          builder: (context, snap, _) {
+                            final commandStore = context
+                                .read<AppState>()
+                                .commands;
+                            final runningProgram = snap.runningProgram;
+                            final inputState = _inputStateForView(
+                              snap.activeViewId,
+                            );
+                            return ListenableBuilder(
+                              listenable: commandStore,
+                              builder: (context, _) {
+                                return _MeasureSize(
+                                  onChange: _setBottomBarContentSize,
+                                  child: ColoredBox(
+                                    color: c.background,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        QuickCommandRow(
+                                          commands: commandStore.resolved(
+                                            runningProgram,
+                                          ),
+                                          modifiers: _modifiers,
+                                          onSendBytes: (b) => _sendBytes(b),
+                                          onSendCommandBytes: (b) =>
+                                              _sendCommandBytes(b),
+                                          onInsertText: _insertText,
+                                          onChangeDirectory: () =>
+                                              _openChangeDirectory(motif),
+                                          onEdit: () =>
+                                              Navigator.of(context).push(
+                                                MaterialPageRoute<void>(
+                                                  builder: (_) =>
+                                                      QuickCommandEditor(
+                                                        setId: commandStore
+                                                            .effectiveSetId(
+                                                              runningProgram,
+                                                            ),
+                                                      ),
+                                                ),
+                                              ),
+                                        ),
+                                        _InputBar(
+                                          key: ValueKey(
+                                            'bottom-input-${snap.activeViewId ?? 'fallback'}',
+                                          ),
+                                          controller: inputState.controller,
+                                          focusNode: inputState.focusNode,
+                                          groupId: inputState.groupId,
+                                          onSend: _send,
+                                          recording: _recording,
+                                          micStarting: _micStarting,
+                                          onMic: _toggleMic,
+                                          onAttach: _attachPhoto,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
                         ),
                       ),
-                    if (overlayMessage != null)
-                      Positioned(
-                        top: MotifSpacing.sm,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: _ReconnectBanner(message: overlayMessage),
-                        ),
+                    ),
+                  if (overlayMessage != null)
+                    Positioned(
+                      top: MotifSpacing.sm,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: _ReconnectBanner(message: overlayMessage),
                       ),
-                  ],
-                );
-                final showSidebar = usesSidebar && sidebar.hasVisiblePanel;
-                final sidebarMaxWidth = math.max(
-                  _sidebarMinWidth,
-                  math.min(
-                    constraints.maxWidth * _sidebarMaxWidthFraction,
-                    constraints.maxWidth - _mainMinWidth,
-                  ),
-                );
-                final sidebarWidth = sidebar.width
-                    .clamp(_sidebarMinWidth, sidebarMaxWidth)
-                    .toDouble();
-                return _AnimatedSidebarLayout(
-                  visible: showSidebar,
-                  width: sidebarWidth,
-                  sidebar: _SessionSidebar(
-                    app: app,
-                    showSessions: sidebar.showSessions,
-                    showFileTree: sidebar.showFileTree,
-                    showDiff: sidebar.showGitDiff,
-                    currentServerId: widget.serverId,
-                    currentSession: widget.session,
-                    root: motif.activeCwd ?? '~',
-                    cwd: motif.activeCwd,
-                    motif: motif,
-                    onSessionSelected: (serverId, session) =>
-                        _switchSession(app, motif, serverId, session),
-                    onOpenPreview: _openPreview,
-                    onOpenDiff: _openDiff,
-                    splitFraction: sidebar.splitFraction,
-                    onSplitChanged: (fraction) {
-                      setState(() => sidebar.splitFraction = fraction);
-                    },
-                    firstSplitFraction: sidebar.firstSplitFraction,
-                    onFirstSplitChanged: (fraction) {
-                      setState(() => sidebar.firstSplitFraction = fraction);
-                    },
-                    secondSplitFraction: sidebar.secondSplitFraction,
-                    onSecondSplitChanged: (fraction) {
-                      setState(() => sidebar.secondSplitFraction = fraction);
-                    },
-                  ),
-                  resizeHandle: _SidebarResizeHandle(
-                    key: const ValueKey('sidebar-horizontal-resize-handle'),
-                    axis: Axis.horizontal,
-                    onDragDelta: (delta) {
-                      setState(() {
-                        sidebar.width = (sidebar.width + delta)
-                            .clamp(_sidebarMinWidth, sidebarMaxWidth)
-                            .toDouble();
-                      });
-                    },
-                  ),
-                  mainContent: mainContent,
-                );
-              },
+                    ),
+                ],
+              ),
             ),
           ),
         );

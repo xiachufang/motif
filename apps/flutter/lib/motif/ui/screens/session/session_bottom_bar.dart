@@ -74,6 +74,11 @@ class _InputBar extends StatelessWidget {
                       // globe key still switches, and per-tab memory restores
                       // each tab's last-used input source.
                       hintLocales: terminalEnglishHintLocales,
+                      // Keep the soft-keyboard action stable across focus / IME
+                      // switches. A multiline field otherwise defaults to
+                      // `newline`, so iOS/Android may replace Send with Return
+                      // when they recreate the input connection.
+                      textInputAction: TextInputAction.send,
                       autocorrect: false,
                       smartDashesType: SmartDashesType.disabled,
                       smartQuotesType: SmartQuotesType.disabled,

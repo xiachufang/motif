@@ -17,6 +17,12 @@ class QuickCommandRow extends StatelessWidget {
   /// Send raw bytes to the active PTY now.
   final void Function(Uint8List bytes) onSendBytes;
 
+  /// Send an immediate quick-command payload.
+  ///
+  /// This is separate from [onSendBytes] so callers can apply command-specific
+  /// behavior without changing raw key/paste byte handling.
+  final void Function(Uint8List bytes)? onSendCommandBytes;
+
   /// Insert text into the composer (for non-immediate commands).
   final void Function(String text) onInsertText;
 
@@ -31,6 +37,7 @@ class QuickCommandRow extends StatelessWidget {
     required this.commands,
     required this.modifiers,
     required this.onSendBytes,
+    this.onSendCommandBytes,
     required this.onInsertText,
     this.onChangeDirectory,
     this.onEdit,
@@ -255,7 +262,7 @@ class QuickCommandRow extends StatelessWidget {
             alt: modifiers.altActive || cmd.modifiers.alt,
             shift: modifiers.shiftActive || cmd.modifiers.shift,
           );
-          onSendBytes(out);
+          (onSendCommandBytes ?? onSendBytes)(out);
           modifiers.consumeArmed();
         } else {
           onInsertText(String.fromCharCodes(cmd.payload));

@@ -49,6 +49,10 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerKind = e.kind;
     _lastPointerPosition = e.localPosition;
+    if (_isScrollbarHotZone(e.localPosition)) {
+      _scrollbarPointers.add(e.pointer);
+      return;
+    }
     if (_canStartMouseSelection(e)) {
       _beginMouseSelection(e);
       return;
@@ -81,6 +85,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
+    if (_scrollbarPointers.remove(e.pointer)) return;
     if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
@@ -128,6 +133,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
+    if (_scrollbarPointers.remove(e.pointer)) return;
     if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
@@ -146,6 +152,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerMove(PointerMoveEvent e) {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
+    if (_scrollbarPointers.contains(e.pointer)) return;
     if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
       return;
@@ -224,7 +231,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _beginMouseSelection(PointerDownEvent e) {
-    _requestFocusWithoutKeyboard();
+    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
     _mouseSelectionPointer = e.pointer;
@@ -265,7 +272,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _terminalCellAt(details.localPosition),
     );
     if (wordSelection == null) return;
-    _requestFocusWithoutKeyboard();
+    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
     _stopScrollInertia(resetVelocity: true);
     final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;
@@ -449,16 +456,19 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   ({Offset start, Offset end})? _touchSelectionGlobalEndpoints() {
-    final selection = _selection?.normalized;
+    final snapshot = _snapshot;
+    final rawSelection = _selection;
     final terminalBox =
         _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
-    if (selection == null ||
+    if (snapshot == null ||
+        rawSelection == null ||
         terminalBox == null ||
         !terminalBox.hasSize ||
         _cellWidth <= 0 ||
         _cellHeight <= 0) {
       return null;
     }
+    final selection = snapshot.alignSelectionToCellBoundaries(rawSelection);
     if (_screenPointToViewport(selection.base) == null ||
         _screenPointToViewport(selection.extent) == null) {
       return null;
@@ -678,6 +688,13 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _scrollByPixels(double pixels) {
+    final snapshot = _snapshot;
+    if (snapshot != null &&
+        snapshot.hasScrollback &&
+        !snapshot.mouseTrackingActive &&
+        !snapshot.alternateScreenActive) {
+      _scrollbarVisibility.showTemporarily();
+    }
     final rows = _scrollAccumulator.applyPixelDelta(pixels, _cellHeight);
     if (rows == 0) return;
     if (_snapshot?.mouseTrackingActive ?? false) {
@@ -690,6 +707,45 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     } else {
       _worker?.scroll(rows);
     }
+  }
+
+  bool _isScrollbarHotZone(Offset position) {
+    final snapshot = _snapshot;
+    if (!_scrollbarVisibility.visible ||
+        snapshot == null ||
+        !snapshot.hasScrollback ||
+        snapshot.alternateScreenActive ||
+        _viewportWidth <= 0) {
+      return false;
+    }
+    return position.dx >= _viewportWidth - TerminalScrollbarOverlay.hitWidth &&
+        position.dx <= _viewportWidth &&
+        position.dy >= 0 &&
+        position.dy <= _viewportHeight;
+  }
+
+  void _onScrollbarHoverChanged(bool hovered) {
+    _scrollbarVisibility.setHovered(hovered);
+  }
+
+  void _onScrollbarActivity() {
+    _stopScrollInertia(resetVelocity: true);
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.showTemporarily();
+  }
+
+  void _onScrollbarDragStart() {
+    _stopScrollInertia(resetVelocity: true);
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.beginDrag();
+  }
+
+  void _onScrollbarDragEnd() {
+    _scrollbarVisibility.endDrag();
+  }
+
+  void _scrollToOffsetFromScrollbar(int offset) {
+    _worker?.scrollToOffset(offset);
   }
 
   /// Wheel events are encoded as presses of buttons four/five (xterm

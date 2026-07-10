@@ -34,7 +34,9 @@ void main() {
 
   group('MotifClient runtime', () {
     test('desktop keeps all live tab pty streams live', () async {
-      final runtime = DesktopMotifClientRuntime();
+      final runtime = DesktopMotifClientRuntime(
+        backgroundRestoreDelay: Duration.zero,
+      );
       final host = _RuntimeHost(
         liveTabPtyIds: {'pty-1', 'pty-2'},
         activePtyId: 'pty-1',
@@ -42,8 +44,10 @@ void main() {
 
       runtime.onSessionAttached(host);
       await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
 
       expect(host.syncedStreamSets, [
+        {'pty-1'},
         {'pty-1', 'pty-2'},
       ]);
 
@@ -51,6 +55,7 @@ void main() {
 
       expect(host.closedPtys, isEmpty);
       expect(host.syncedStreamSets, [
+        {'pty-1'},
         {'pty-1', 'pty-2'},
       ]);
     });
@@ -88,6 +93,24 @@ void main() {
       ];
 
       expect(motif.liveTabPtyIds, {'pty-1', 'pty-missing'});
+    });
+
+    test('prepareSessionSwitch clears stale panes without disconnecting', () {
+      final motif = MotifClient();
+      addTearDown(motif.dispose);
+      motif
+        ..intendedSession = 'old'
+        ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+        ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+        ..activeViewId = 'v1';
+
+      motif.prepareSessionSwitch('next');
+
+      expect(motif.intendedSession, 'next');
+      expect(motif.state, isA<ConnConnected>());
+      expect(motif.ptys, isEmpty);
+      expect(motif.views, isEmpty);
+      expect(motif.activeViewId, isNull);
     });
 
     test('closing a view immediately updates pty subscriptions', () async {

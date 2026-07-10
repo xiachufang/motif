@@ -52,11 +52,15 @@ class _SessionSidebar extends StatelessWidget {
     final panels = <Widget>[
       if (showSessions)
         panel(
-          _ConnectedSessionsPanel(
-            app: app,
-            currentServerId: currentServerId,
-            currentSession: currentSession,
-            onSessionSelected: onSessionSelected,
+          ListenableSelect(
+            listenable: app,
+            selector: () => _connectedSessionsSelectKey(app),
+            builder: (context, _, _) => _ConnectedSessionsPanel(
+              app: app,
+              currentServerId: currentServerId,
+              currentSession: currentSession,
+              onSessionSelected: onSessionSelected,
+            ),
           ),
         ),
       if (showFileTree)
