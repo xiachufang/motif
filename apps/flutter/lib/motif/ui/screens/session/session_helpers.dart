@@ -266,12 +266,16 @@ _tabBarSelectKey(MotifClient motif) {
 ({String servers, String sessions}) _connectedSessionsSelectKey(AppState app) {
   final groups = app.connectedServerClients;
   return (
-    servers: [
-      for (final g in groups) '${g.server.id}:${g.client.isLive}',
-    ].join(','),
-    sessions: [
+    servers: jsonEncode([
       for (final g in groups)
-        '${g.server.id}=${g.client.sessions.map((s) => s.name).join('|')}',
-    ].join(';'),
+        {'id': g.server.id, 'name': g.server.name, 'live': g.client.isLive},
+    ]),
+    sessions: jsonEncode([
+      for (final g in groups)
+        {
+          'server': g.server.id,
+          'sessions': [for (final s in g.client.sessions) s.name],
+        },
+    ]),
   );
 }

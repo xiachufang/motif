@@ -59,6 +59,7 @@ class AppState extends ChangeNotifier {
   final Map<String, MotifClient> _clientsByServer = {};
   final Map<String, ServerConnectionController> _controllersByServer = {};
   final Map<String, VoidCallback> _clientListeners = {};
+  final Map<String, Future<bool>> _serverConnectionTasks = {};
   StreamSubscription<TailscaleState>? _tailscaleSub;
   AppLifecycleListener? _lifecycleListener;
 
@@ -80,10 +81,7 @@ class AppState extends ChangeNotifier {
 
   /// Open [session] on [serverId] from a notification tap. Switches the
   /// desktop shell to the client pane when needed.
-  void requestOpenSession({
-    required String serverId,
-    required String session,
-  }) {
+  void requestOpenSession({required String serverId, required String session}) {
     final trimmed = session.trim();
     if (serverId.isEmpty || trimmed.isEmpty) return;
     if (_viewMode != AppViewMode.client) {
@@ -561,10 +559,7 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
     });
     platform.push.onNotificationOpen(({session, instanceId}) {
-      _openSessionFromNotification(
-        session: session,
-        instanceId: instanceId,
-      );
+      _openSessionFromNotification(session: session, instanceId: instanceId);
     });
   }
 
@@ -579,10 +574,9 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Resolve a system-notification tap into [requestOpenSession]. Prefers the
-  /// motifd [instanceId] → server mapping from push registration; falls back
-  /// to the active server when the instance is unknown (e.g. cold start before
-  /// reconnect).
+  /// Resolve a system-notification tap into [requestOpenSession]. Uses the live
+  /// or persisted motifd [instanceId] → server mapping; unattributed legacy
+  /// notifications fall back to the active server.
   void _openSessionFromNotification({
     required String? session,
     String? instanceId,
@@ -597,6 +591,16 @@ class AppState extends ChangeNotifier {
       if (client != null) {
         serverId = _serverIdForClient(client);
       }
+      final persisted = push.serverIdForInstance(instanceId);
+      if (serverId == null &&
+          persisted != null &&
+          serverById(persisted) != null) {
+        serverId = persisted;
+      }
+      // An attributed notification must not be sent to an arbitrary active
+      // server. On an upgraded install there may be no persisted mapping for
+      // an older notification yet; ignore it rather than open the wrong place.
+      if (serverId == null) return;
     }
     serverId ??= servers.activeId;
     if (serverId == null || serverId.isEmpty) return;
@@ -648,6 +652,9 @@ class AppState extends ChangeNotifier {
       }
       if (instanceId != null && instanceId.isNotEmpty) {
         _pushClientsByInstanceId[instanceId] = target;
+        if (serverId != null) {
+          await push.bindInstanceToServer(instanceId, serverId);
+        }
       }
     } catch (_) {
       // Push is best-effort; never block the session on it.
@@ -727,6 +734,44 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
+  /// Join an existing connection attempt for [serverId], or start one. This is
+  /// used by startup and notification deep links so they cannot race two
+  /// transports for the same client.
+  Future<bool> ensureServerConnectedAndRefresh(
+    String serverId, {
+    bool force = false,
+    bool makeActive = true,
+  }) {
+    if (!force && isServerLive(serverId)) {
+      return (() async {
+        await refreshServerSessions(serverId);
+        return isServerLive(serverId);
+      })();
+    }
+    if (!force) {
+      final existing = _serverConnectionTasks[serverId];
+      if (existing != null) return existing;
+    }
+
+    final raw = connectServerAndRefresh(
+      serverId,
+      force: force,
+      makeActive: makeActive,
+    );
+    late final Future<bool> task;
+    task = (() async {
+      try {
+        return await raw;
+      } finally {
+        if (identical(_serverConnectionTasks[serverId], task)) {
+          _serverConnectionTasks.remove(serverId);
+        }
+      }
+    })();
+    _serverConnectionTasks[serverId] = task;
+    return task;
+  }
+
   Future<void> disconnectServer(String serverId) async {
     if (existingClientForServer(serverId) == null) return;
     await _controllerForServer(serverId).disconnect();
@@ -773,6 +818,7 @@ class AppState extends ChangeNotifier {
 
   void _pruneClientsForDeletedServers() {
     final liveIds = {for (final server in servers.servers) server.id};
+    unawaited(push.retainInstanceServers(liveIds));
     for (final id in _clientsByServer.keys.toList()) {
       if (liveIds.contains(id)) continue;
       final client = _clientsByServer.remove(id);
@@ -786,6 +832,7 @@ class AppState extends ChangeNotifier {
       _pushLiveServerIds.remove(id);
       _pushDeviceTokensByServerId.remove(id);
       _pushRegistrationByServerId.remove(id);
+      _serverConnectionTasks.remove(id);
       if (listener != null) client.removeListener(listener);
       unawaited(client.disconnect());
       client.dispose();

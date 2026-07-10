@@ -36,6 +36,24 @@ void main() {
     expect(PushSettingsStore(prefs).enabled, isFalse);
   });
 
+  test('instance-to-server routing persists and prunes', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final store = PushSettingsStore(prefs);
+
+    await store.bindInstanceToServer('instance-1', 's1');
+    await store.bindInstanceToServer('instance-2', 's2');
+
+    final reloaded = PushSettingsStore(prefs);
+    expect(reloaded.serverIdForInstance('instance-1'), 's1');
+    expect(reloaded.serverIdForInstance('instance-2'), 's2');
+
+    await reloaded.retainInstanceServers({'s2'});
+    final pruned = PushSettingsStore(prefs);
+    expect(pruned.serverIdForInstance('instance-1'), isNull);
+    expect(pruned.serverIdForInstance('instance-2'), 's2');
+  });
+
   test('enabling push registers live clients immediately', () async {
     SharedPreferences.setMockInitialValues({
       'motif.servers.v1':
@@ -306,16 +324,51 @@ void main() {
     app.dispose();
   });
 
-  test('cold-start pending notification open is drained on AppState init', () async {
+  test(
+    'cold-start pending notification open is drained on AppState init',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'motif.servers.v1':
+            '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+        'activeServerID': 's1',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final platformPush = _FakePushService()
+        ..pendingOpen = (session: 'boot-session', instanceId: null);
+      final client = _PushMotifClient('instance-1');
+      final app = AppState(
+        servers: ServerStore(prefs),
+        terminalSettings: TerminalSettingsStore(prefs),
+        commands: QuickCommandStore(prefs),
+        push: PushSettingsStore(prefs),
+        platform: PlatformServices(
+          tailscale: NoopTailscaleService(),
+          speech: NoopSpeechService(),
+          push: platformPush,
+        ),
+        clientFactory: (_) => client,
+      );
+      app.clientForServer('s1');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(app.pendingSessionOpen?.serverId, 's1');
+      expect(app.pendingSessionOpen?.session, 'boot-session');
+      expect(platformPush.pendingOpen, isNull);
+      app.dispose();
+    },
+  );
+
+  test('cold-start notification uses persisted instance routing', () async {
     SharedPreferences.setMockInitialValues({
       'motif.servers.v1':
-          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"},'
+          '{"id":"s2","name":"Two","host":"127.0.0.1","port":7778,"token":"","kind":"direct"}]',
       'activeServerID': 's1',
     });
     final prefs = await SharedPreferences.getInstance();
+    await PushSettingsStore(prefs).bindInstanceToServer('instance-2', 's2');
     final platformPush = _FakePushService()
-      ..pendingOpen = (session: 'boot-session', instanceId: null);
-    final client = _PushMotifClient('instance-1');
+      ..pendingOpen = (session: 'nightly', instanceId: 'instance-2');
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -326,14 +379,41 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
     );
-    app.clientForServer('s1');
     await Future<void>.delayed(Duration.zero);
 
-    expect(app.pendingSessionOpen?.serverId, 's1');
-    expect(app.pendingSessionOpen?.session, 'boot-session');
-    expect(platformPush.pendingOpen, isNull);
+    expect(app.pendingSessionOpen?.serverId, 's2');
+    expect(app.pendingSessionOpen?.session, 'nightly');
+    app.dispose();
+  });
+
+  test('unknown attributed notification does not use the active server', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"},'
+          '{"id":"s2","name":"Two","host":"127.0.0.1","port":7778,"token":"","kind":"direct"}]',
+      'activeServerID': 's1',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final platformPush = _FakePushService();
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+    );
+
+    platformPush.emitNotificationOpen(
+      session: 'nightly',
+      instanceId: 'unknown-instance',
+    );
+
+    expect(app.pendingSessionOpen, isNull);
     app.dispose();
   });
 }

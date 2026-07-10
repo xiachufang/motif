@@ -355,7 +355,7 @@ class _RootState extends State<_Root> {
       return;
     }
     try {
-      await app.connectServerAndRefresh(server.id, makeActive: false);
+      await app.ensureServerConnectedAndRefresh(server.id, makeActive: false);
     } catch (_) {
       // The client exposes connection failure state; startup should not block UI.
     }
@@ -419,30 +419,54 @@ class _PendingSessionOpenListenerState
     _opening = true;
     try {
       final routeName = sessionRouteName(pending.serverId, pending.session);
-      final nav = Navigator.of(context);
-      String? topName;
-      nav.popUntil((route) {
-        topName ??= route.settings.name;
-        return true;
-      });
-      if (topName == routeName) return;
+      if (_topRouteName() == routeName) return;
+
+      if (app.serverById(pending.serverId) == null) return;
 
       if (app.servers.activeId != pending.serverId) {
         await app.servers.setActive(pending.serverId);
         if (!mounted) return;
       }
-      await nav.push<void>(
-        MaterialPageRoute<void>(
-          settings: RouteSettings(name: routeName),
-          builder: (_) => SessionScreen(
-            serverId: pending.serverId,
-            session: pending.session,
-          ),
-        ),
+
+      final connected = await app.ensureServerConnectedAndRefresh(
+        pending.serverId,
+        makeActive: false,
       );
+      if (!mounted) return;
+      if (!connected) {
+        showMotifToast(context, 'Could not connect to the notification server');
+        return;
+      }
+      // The visible route may have changed while the connection was opening.
+      final topRouteName = _topRouteName();
+      if (topRouteName == routeName) return;
+
+      final nav = Navigator.of(context);
+      final route = MaterialPageRoute<void>(
+        settings: RouteSettings(name: routeName),
+        builder: (_) =>
+            SessionScreen(serverId: pending.serverId, session: pending.session),
+      );
+      if (topRouteName?.startsWith('session/') ?? false) {
+        unawaited(nav.pushReplacement<void, void>(route));
+      } else {
+        unawaited(nav.push<void>(route));
+      }
     } finally {
       _opening = false;
+      // A second tap may have arrived while a connection was opening. Drain
+      // the latest request now instead of waiting for an unrelated app event.
+      _scheduleOpen();
     }
+  }
+
+  String? _topRouteName() {
+    String? name;
+    Navigator.of(context).popUntil((route) {
+      name ??= route.settings.name;
+      return true;
+    });
+    return name;
   }
 
   @override

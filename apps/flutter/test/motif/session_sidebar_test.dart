@@ -1105,6 +1105,13 @@ void main() {
     expect(find.text('Prod'), findsOneWidget);
     expect(find.text('prod-session'), findsOneWidget);
 
+    await app.servers.update(
+      app.serverById('server-2')!.copyWith(name: 'Production'),
+    );
+    await tester.pump();
+    expect(find.text('Prod'), findsNothing);
+    expect(find.text('Production'), findsOneWidget);
+
     await tester.tap(find.text('prod-session'));
     await tester.pumpAndSettle();
 
