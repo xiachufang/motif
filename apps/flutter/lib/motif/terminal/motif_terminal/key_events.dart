@@ -23,17 +23,14 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         _hostShortcutKeys.add(event.logicalKey);
         return KeyEventResult.ignored;
       }
-      if (_textInputCancelKeys.contains(event.logicalKey)) {
-        return KeyEventResult.handled;
-      }
     } else if (event is KeyUpEvent) {
-      if (_textInputCancelKeys.remove(event.logicalKey)) {
-        return KeyEventResult.handled;
-      }
       final wasHostShortcut = _hostShortcutKeys.remove(event.logicalKey);
       if (hostShortcut || wasHostShortcut) return KeyEventResult.ignored;
     }
+    // Editing shortcuts belong to the native text client while it is
+    // composing; otherwise they operate on the terminal as usual.
     if (event is KeyDownEvent &&
+        !_textInputHasComposing &&
         _handleClipboardShortcut(
           event.logicalKey,
           shift: shiftPressed,
@@ -72,9 +69,9 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
         : null;
 
     // One place decides who owns this key (see terminal_input.dart). The key
-    // path emits control codes / printable text, defers plain text + plain
-    // Enter to the IME when a connection owns text, and otherwise hands special
-    // keys to the ghostty encoder.
+    // path gives an active composition exclusive ownership, otherwise emits
+    // control codes / printable text, defers plain text + plain Enter to the
+    // attached text client, and hands special keys to the ghostty encoder.
     final route = classifyTerminalKey(
       logicalKey: event.logicalKey,
       resolvedText: text,
@@ -89,12 +86,6 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     switch (route.kind) {
       case TerminalKeyRouteKind.deferToTextInput:
       case TerminalKeyRouteKind.ignore:
-        return KeyEventResult.ignored;
-      case TerminalKeyRouteKind.cancelTextInputComposition:
-        if (_cancelTextInputComposition()) {
-          _textInputCancelKeys.add(event.logicalKey);
-          return KeyEventResult.handled;
-        }
         return KeyEventResult.ignored;
       case TerminalKeyRouteKind.sendBytes:
         _clearTerminalSelection();

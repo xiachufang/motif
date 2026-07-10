@@ -272,21 +272,84 @@ void main() {
       expect(r.kind, TerminalKeyRouteKind.encodeViaGhostty);
     });
 
-    test(
-      'plain Escape cancels active IME composition before terminal input',
-      () {
-        final r = _classify(
-          key: LogicalKeyboardKey.escape,
+    test('active IME composition owns editing and candidate keys', () {
+      for (final key in [
+        LogicalKeyboardKey.backspace,
+        LogicalKeyboardKey.delete,
+        LogicalKeyboardKey.arrowLeft,
+        LogicalKeyboardKey.arrowRight,
+        LogicalKeyboardKey.arrowUp,
+        LogicalKeyboardKey.arrowDown,
+        LogicalKeyboardKey.home,
+        LogicalKeyboardKey.end,
+        LogicalKeyboardKey.pageUp,
+        LogicalKeyboardKey.pageDown,
+        LogicalKeyboardKey.tab,
+        LogicalKeyboardKey.escape,
+        LogicalKeyboardKey.enter,
+        LogicalKeyboardKey.space,
+        LogicalKeyboardKey.digit1,
+      ]) {
+        final r = _classify(key: key, attached: true, composing: true);
+        expect(r.kind, TerminalKeyRouteKind.deferToTextInput, reason: '$key');
+      }
+    });
+
+    test('active IME composition owns modified and control keys', () {
+      for (final r in [
+        _classify(
+          key: LogicalKeyboardKey.keyH,
+          text: 'h',
+          control: true,
           attached: true,
           composing: true,
-        );
-        expect(r.kind, TerminalKeyRouteKind.cancelTextInputComposition);
-      },
-    );
+        ),
+        _classify(
+          key: LogicalKeyboardKey.arrowLeft,
+          alt: true,
+          attached: true,
+          composing: true,
+        ),
+        _classify(
+          key: LogicalKeyboardKey.space,
+          shift: true,
+          attached: true,
+          composing: true,
+        ),
+        _classify(
+          key: LogicalKeyboardKey.keyV,
+          text: 'v',
+          meta: true,
+          attached: true,
+          composing: true,
+        ),
+      ]) {
+        expect(r.kind, TerminalKeyRouteKind.deferToTextInput);
+      }
+    });
+
+    test('active IME composition owns key releases', () {
+      final r = _classify(
+        key: LogicalKeyboardKey.arrowDown,
+        pressOrRepeat: false,
+        attached: true,
+        composing: true,
+      );
+      expect(r.kind, TerminalKeyRouteKind.deferToTextInput);
+    });
 
     test('plain Escape reaches ghostty when the IME is not composing', () {
       final r = _classify(
         key: LogicalKeyboardKey.escape,
+        attached: true,
+        composing: false,
+      );
+      expect(r.kind, TerminalKeyRouteKind.encodeViaGhostty);
+    });
+
+    test('plain Backspace reaches ghostty when the IME is not composing', () {
+      final r = _classify(
+        key: LogicalKeyboardKey.backspace,
         attached: true,
         composing: false,
       );

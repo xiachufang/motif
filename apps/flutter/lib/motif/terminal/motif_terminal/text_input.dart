@@ -46,7 +46,6 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     }
     if (!_focusNode.hasFocus) {
       _hostShortcutKeys.clear();
-      _textInputCancelKeys.clear();
     }
     _syncKeyboardLift();
     if (mounted) setState(() {});
@@ -66,13 +65,6 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   bool get _textInputHasComposing {
     final composing = _textInputValue.composing;
     return composing.isValid && !composing.isCollapsed;
-  }
-
-  bool _cancelTextInputComposition() {
-    if (!_textInputConnectionIsActive || !_textInputHasComposing) return false;
-    _resetTextInputValue();
-    _scheduleImeRectSync();
-    return true;
   }
 
   void _openTextInput({required bool showKeyboard}) {
