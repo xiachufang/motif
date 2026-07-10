@@ -340,6 +340,7 @@ class TerminalSnapshotPainter extends CustomPainter {
             Rect.fromLTWH(cx, cy, cursorWidth, cellHeight),
             Paint()..color = cursorColor,
           );
+          _drawCursorCellText(canvas, cursorColor);
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR:
           canvas.drawRect(
@@ -354,9 +355,18 @@ class TerminalSnapshotPainter extends CustomPainter {
           );
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
+          final rect = Rect.fromLTWH(
+            cx,
+            cy,
+            cursorWidth,
+            cellHeight,
+          ).deflate(0.5);
           canvas.drawRect(
-            Rect.fromLTWH(cx, cy, cursorWidth, cellHeight),
-            Paint()..color = cursorColor,
+            rect,
+            Paint()
+              ..color = cursorColor
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1,
           );
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_MAX_VALUE:
@@ -365,6 +375,30 @@ class TerminalSnapshotPainter extends CustomPainter {
     }
 
     _drawPreedit(canvas);
+  }
+
+  void _drawCursorCellText(Canvas canvas, Color cursorColor) {
+    final cell = snapshot.cursorCell;
+    if (cell == null || cell.invisible || cell.text.isEmpty) return;
+    final preferred = Color(cell.backgroundArgb);
+    final x = padding + cell.col * cellWidth;
+    final y = padding + snapshot.cursorY * cellHeight;
+    final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(x, y, widthCells * cellWidth, cellHeight));
+    _drawTerminalText(
+      canvas,
+      cell.text,
+      x,
+      y,
+      _cursorTextColor(cursorColor, preferred),
+      fontFamily: fontFamily,
+      fontFamilyFallback: fontFamilyFallback,
+      fontSize: fontSize,
+      bold: cell.bold,
+      italic: cell.italic,
+    );
+    canvas.restore();
   }
 
   /// Draw the IME composition string on the cursor row. Mirrors ghostty's
@@ -844,4 +878,22 @@ void _drawTerminalText(
     ..layout(const ui.ParagraphConstraints(width: double.infinity));
 
   canvas.drawParagraph(paragraph, Offset(x, y));
+}
+
+Color _cursorTextColor(Color cursorColor, Color preferred) {
+  if (_contrastRatio(cursorColor, preferred) >= 3) return preferred;
+  const black = Color(0xff000000);
+  const white = Color(0xffffffff);
+  return _contrastRatio(cursorColor, black) >=
+          _contrastRatio(cursorColor, white)
+      ? black
+      : white;
+}
+
+double _contrastRatio(Color a, Color b) {
+  final aLuminance = a.computeLuminance();
+  final bLuminance = b.computeLuminance();
+  final lighter = aLuminance >= bLuminance ? aLuminance : bLuminance;
+  final darker = aLuminance >= bLuminance ? bLuminance : aLuminance;
+  return (lighter + 0.05) / (darker + 0.05);
 }

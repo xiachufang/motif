@@ -156,15 +156,21 @@ class TerminalSnapshot {
   /// In that case the visual cursor starts at the lead cell and spans both
   /// columns.
   ({int col, int widthCells}) get cursorCellSpan {
+    final cell = cursorCell;
+    if (cell == null) return (col: cursorX, widthCells: 1);
+    final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
+    return (col: cell.col, widthCells: widthCells);
+  }
+
+  /// The rendered cell under the cursor, including the lead cell when the
+  /// cursor is positioned on a wide character's spacer tail.
+  TerminalSnapshotCell? get cursorCell {
     if (!cursorInViewport || cursorY < 0 || cursorY >= lines.length) {
-      return (col: cursorX, widthCells: 1);
+      return null;
     }
     final row = lines[cursorY];
     final cellIndex = row.cellIndexForColumn(cursorX);
-    if (cellIndex == null) return (col: cursorX, widthCells: 1);
-    final cell = row.cells[cellIndex];
-    final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
-    return (col: cell.col, widthCells: widthCells);
+    return cellIndex == null ? null : row.cells[cellIndex];
   }
 
   TerminalCellPoint _alignSelectionPoint(
