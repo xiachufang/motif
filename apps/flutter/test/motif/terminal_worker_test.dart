@@ -9,7 +9,7 @@ import 'package:motif/motif/terminal/terminal_worker.dart';
 void main() {
   test('worker owns Ghostty state and emits snapshots', () async {
     final initialized = Completer<void>();
-    final snapshots = StreamController<TerminalSnapshot>();
+    final snapshots = StreamController<TerminalSnapshot>.broadcast();
     final hostWrites = <int>[];
 
     final worker = await TerminalWorkerClient.spawn(
@@ -42,6 +42,22 @@ void main() {
         .firstWhere((s) => s.visibleText.contains('hello'))
         .timeout(const Duration(seconds: 2));
     expect(snapshot.visibleText, contains('hello'));
+
+    worker.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(12, (i) => 'line$i').join('\r\n')),
+      ),
+    );
+    final scrollback = await snapshots.stream
+        .firstWhere((s) => s.hasScrollback && s.viewportOffset > 0)
+        .timeout(const Duration(seconds: 2));
+    expect(scrollback.viewportOffset, scrollback.maxViewportOffset);
+
+    worker.scrollToOffset(0);
+    final top = await snapshots.stream
+        .firstWhere((s) => s.hasScrollback && s.viewportOffset == 0)
+        .timeout(const Duration(seconds: 2));
+    expect(top.viewportOffset, 0);
 
     worker.writeBytes(Uint8List.fromList([0x61]));
     await Future<void>.delayed(const Duration(milliseconds: 20));

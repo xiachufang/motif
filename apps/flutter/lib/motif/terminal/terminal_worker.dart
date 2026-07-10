@@ -197,6 +197,10 @@ class TerminalWorkerClient {
     _send({'type': 'scrollToBottom'});
   }
 
+  void scrollToOffset(int offset) {
+    _send({'type': 'scrollToOffset', 'offset': offset});
+  }
+
   void beginSelection(TerminalCellPoint viewportPoint) {
     _send({
       'type': 'selectionBegin',
@@ -375,6 +379,9 @@ class _TerminalWorker {
         case 'scrollToBottom':
           state?.scrollToBottom();
           _scheduleSnapshot(force: true);
+        case 'scrollToOffset':
+          state?.scrollToOffset(command['offset'] as int);
+          _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'selectionBegin':
           if (state?.beginTrackedSelection(_pointFromCommand(command)) ==
               true) {

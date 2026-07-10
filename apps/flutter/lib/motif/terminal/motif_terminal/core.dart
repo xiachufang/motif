@@ -242,6 +242,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     final selectionChanged = _selection != snapshot.selection;
     _snapshot = snapshot;
     _selection = snapshot.selection;
+    _scrollbarVisibility.updateCanShow(
+      snapshot.hasScrollback && !snapshot.alternateScreenActive,
+    );
     final cursorSnapshot = _readCursorSnapshot();
     final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
     _lastCursorSnapshot = cursorSnapshot;

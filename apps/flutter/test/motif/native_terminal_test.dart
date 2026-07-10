@@ -197,6 +197,44 @@ void main() {
     ts.dispose();
   });
 
+  test('scrollbar metrics support absolute scrollback positioning', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(12, 3);
+    ts.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(12, (i) => 'line$i').join('\r\n')),
+      ),
+    );
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.hasScrollback, isTrue);
+    expect(snapshot.scrollViewportRows, 3);
+    expect(snapshot.scrollTotalRows, greaterThan(snapshot.scrollViewportRows));
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.scrollToOffset(0);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, 0);
+
+    ts.scrollToOffset(snapshot.maxViewportOffset);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.dispose();
+  });
+
   test('tracked selection keeps pointing at text after scrollback changes', () {
     final ts = TerminalState(onHostWrite: (_) {});
     ts.init(20, 3);

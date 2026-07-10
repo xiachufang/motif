@@ -464,17 +464,21 @@ class TerminalState {
     return val;
   }
 
-  int get viewportOffset {
+  ({int total, int offset, int length}) get scrollbarMetrics {
     final out = calloc<GhosttyTerminalScrollbar>();
     final result = ghostty_terminal_get(
       _terminal,
       GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_SCROLLBAR,
       out.cast(),
     );
-    final val = result == GhosttyResult.GHOSTTY_SUCCESS ? out.ref.offset : 0;
+    final metrics = result == GhosttyResult.GHOSTTY_SUCCESS
+        ? (total: out.ref.total, offset: out.ref.offset, length: out.ref.len)
+        : (total: rows, offset: 0, length: rows);
     calloc.free(out);
-    return val;
+    return metrics;
   }
+
+  int get viewportOffset => scrollbarMetrics.offset;
 
   bool beginTrackedSelection(TerminalCellPoint viewportPoint) {
     return setTrackedSelection(viewportPoint, viewportPoint);
@@ -902,6 +906,16 @@ class TerminalState {
     calloc.free(sv);
   }
 
+  void scrollToOffset(int offset) {
+    final metrics = scrollbarMetrics;
+    final maxOffset = metrics.total > metrics.length
+        ? metrics.total - metrics.length
+        : 0;
+    final target = offset.clamp(0, maxOffset).toInt();
+    final delta = target - metrics.offset;
+    if (delta != 0) scroll(delta);
+  }
+
   // Update mouse encoder size
   void setMouseEncoderSize(
     int screenWidth,
@@ -965,6 +979,7 @@ class TerminalState {
     final cursorColor = colors.cursor_has_value
         ? _rgbArgb(colors.cursor.r, colors.cursor.g, colors.cursor.b)
         : fgDefault;
+    final scrollbar = scrollbarMetrics;
 
     final lines = <TerminalSnapshotRow>[];
     populateRowIterator();
@@ -1022,7 +1037,9 @@ class TerminalState {
     final snapshot = TerminalSnapshot(
       cols: cols,
       rows: rows,
-      viewportOffset: viewportOffset,
+      viewportOffset: scrollbar.offset,
+      scrollTotalRows: scrollbar.total,
+      scrollViewportRows: scrollbar.length,
       backgroundArgb: bgColor,
       foregroundArgb: fgDefault,
       cursorArgb: cursorColor,

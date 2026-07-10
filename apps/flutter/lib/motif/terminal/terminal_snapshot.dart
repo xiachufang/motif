@@ -2,6 +2,8 @@ class TerminalSnapshot {
   final int cols;
   final int rows;
   final int viewportOffset;
+  final int scrollTotalRows;
+  final int scrollViewportRows;
   final int backgroundArgb;
   final int foregroundArgb;
   final int cursorArgb;
@@ -19,6 +21,8 @@ class TerminalSnapshot {
     required this.cols,
     required this.rows,
     this.viewportOffset = 0,
+    this.scrollTotalRows = 0,
+    this.scrollViewportRows = 0,
     required this.backgroundArgb,
     required this.foregroundArgb,
     required this.cursorArgb,
@@ -32,6 +36,14 @@ class TerminalSnapshot {
     this.selection,
     required this.lines,
   });
+
+  int get maxViewportOffset {
+    final maxOffset = scrollTotalRows - scrollViewportRows;
+    return maxOffset > 0 ? maxOffset : 0;
+  }
+
+  bool get hasScrollback =>
+      scrollViewportRows > 0 && scrollTotalRows > scrollViewportRows;
 
   String get visibleText {
     final rows = lines.map((line) => line.text.trimRight()).toList();
