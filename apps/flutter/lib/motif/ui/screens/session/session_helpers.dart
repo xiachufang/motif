@@ -155,16 +155,16 @@ Future<bool> _confirmCloseRunningTab(
 ) async {
   final ok = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
+    builder: (dialogContext) => AlertDialog(
       title: const Text('Close running terminal?'),
       content: Text('A command is still running:\n\n$command'),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context, false),
+          onPressed: () => Navigator.pop(dialogContext, false),
           child: const Text('Cancel'),
         ),
         TextButton(
-          onPressed: () => Navigator.pop(context, true),
+          onPressed: () => Navigator.pop(dialogContext, true),
           child: const Text('Close tab'),
         ),
       ],

@@ -1022,6 +1022,59 @@ void main() {
     expect(find.byKey(const ValueKey('close-tab-term-view')), findsNothing);
   });
 
+  testWidgets('cancel close prompt preserves a nested session route', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _RecordingMotifClient()
+      ..views = const [
+        ViewInfo(id: 'term-view', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'other-view', spec: OtherViewSpec('notes')),
+      ]
+      ..activeViewId = 'other-view'
+      ..runningCommand['pty-1'] = 'codex';
+    final app = await _appState(motif: motif);
+    final nestedNavigatorKey = GlobalKey<NavigatorState>();
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: Navigator(
+            key: nestedNavigatorKey,
+            onGenerateRoute: (_) => MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Text('session list')),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    nestedNavigatorKey.currentState!.push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const SessionScreen(serverId: 'server-1', session: 'test-session'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('close-tab-term-view')));
+    await tester.pumpAndSettle();
+    expect(find.text('Close running terminal?'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Close running terminal?'), findsNothing);
+    expect(find.byType(SessionScreen), findsOneWidget);
+    expect(motif.closedViews, isEmpty);
+  });
+
   testWidgets('Chrome-style tab shortcuts create close and switch tabs', (
     tester,
   ) async {
