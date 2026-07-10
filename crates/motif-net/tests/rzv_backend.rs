@@ -4,7 +4,9 @@
 
 use axum::serve::Listener as _;
 use motif_net::{ListenConfig, RzvListenConfig};
-use motif_rendezvous::{Hub, HubConfig, CTRL_PAIRED, MAGIC, ROLE_CONNECT, VERSION};
+use motif_rendezvous::{
+    Hub, HubConfig, CTRL_PAIRED, CTRL_PING, CTRL_PONG, MAGIC, ROLE_CONNECT, VERSION,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -46,9 +48,15 @@ async fn rzv_backend_pairs_and_pipes() {
     client.write_all(&hello).await.unwrap();
     client.flush().await.unwrap();
 
-    let mut paired = [0u8; 1];
-    client.read_exact(&mut paired).await.unwrap();
-    assert_eq!(paired[0], CTRL_PAIRED);
+    loop {
+        let mut control = [0u8; 1];
+        client.read_exact(&mut control).await.unwrap();
+        match control[0] {
+            CTRL_PAIRED => break,
+            CTRL_PING => client.write_all(&[CTRL_PONG]).await.unwrap(),
+            other => panic!("unexpected pre-pair control byte {other:#04x}"),
+        }
+    }
 
     // motif-net surfaces the paired stream.
     let (mut stream, _addr) = listener.accept().await;

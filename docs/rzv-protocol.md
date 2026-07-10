@@ -67,6 +67,13 @@ the waiter's path don't reap it before it pairs. Both `motifd`
 (`crates/motif-net/src/listener.rs`) and the Dart client
 (`apps/flutter/lib/motif/net/rzv/rzv_forwarder_io.dart`) already answer `PONG`.
 
+Liveness is bounded on both sides so a TCP connection that becomes half-open
+after sleep or a network-interface change cannot occupy a waiter slot forever:
+the relay closes a waiter after three consecutive unanswered PINGs, and
+`motifd` rebuilds a parked connection if it receives no relay control frame for
+45 seconds. With the default 15-second interval this recovers a dead waiter in
+about 45 seconds and then enters motifd's normal reconnect backoff.
+
 At pairing the relay stops pinging and **drains any `PONG` still owed** for
 PINGs it already sent before it starts copying bytes, so no stray `0x02` leaks
 into the transparent stream. (Only the parked socket carries this chatter; the
