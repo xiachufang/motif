@@ -1,6 +1,8 @@
 /// Desktop window show/hide for the regular desktop app shell.
 library;
 
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:nativeapi/nativeapi.dart';
@@ -91,6 +93,21 @@ class NativeDesktopWindowDelegate implements DesktopWindowDelegate {
     try {
       await _macChannel.invokeMethod('cleanupStaleTray');
     } catch (_) {}
+  }
+
+  /// Terminate the whole desktop app. macOS goes through NSApplication so its
+  /// normal termination lifecycle runs; the other desktop shells currently
+  /// use the same process exit path as the tray menu did historically.
+  @override
+  Future<void> quit() async {
+    if (!_isDesktop) return;
+    if (_isMac) {
+      try {
+        await _macChannel.invokeMethod('quit');
+      } catch (_) {}
+      return;
+    }
+    exit(0);
   }
 }
 

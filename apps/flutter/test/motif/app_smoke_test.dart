@@ -1,13 +1,14 @@
-import 'dart:typed_data';
-
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
+import 'package:motif/motif/platform/desktop_window.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
 import 'package:motif/motif/state/stores.dart';
 import 'package:motif/motif/ui/app.dart';
-import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,6 +27,15 @@ class _SmokeMotifClient extends MotifClient {
   }) async {
     _live = true;
     notifyListeners();
+  }
+}
+
+class _RecordingDesktopWindowDelegate extends NoopDesktopWindowDelegate {
+  int quitCalls = 0;
+
+  @override
+  Future<void> quit() async {
+    quitCalls++;
   }
 }
 
@@ -114,5 +124,39 @@ void main() {
 
     expect(find.text('Sessions'), findsOneWidget);
     expect(app.existingClientForServer('s1'), isNull);
+  });
+
+  testWidgets('command q quits the complete macOS app', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    final desktop = _RecordingDesktopWindowDelegate();
+    DesktopWindow.install(desktop);
+    try {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final app = AppState(
+        servers: ServerStore(prefs),
+        terminalSettings: TerminalSettingsStore(prefs),
+        commands: QuickCommandStore(prefs),
+        push: PushSettingsStore(prefs),
+        platform: PlatformServices.defaults(),
+      );
+      addTearDown(app.dispose);
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(value: app, child: const MotifApp()),
+      );
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+
+      expect(desktop.quitCalls, 1);
+    } finally {
+      DesktopWindow.install(const NoopDesktopWindowDelegate());
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 }

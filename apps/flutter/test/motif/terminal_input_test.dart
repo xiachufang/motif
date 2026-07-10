@@ -144,6 +144,7 @@ void main() {
     test('reserves chrome-style tab shortcuts on Apple platforms', () {
       expect(host(LogicalKeyboardKey.keyT, meta: true), isTrue);
       expect(host(LogicalKeyboardKey.keyW, meta: true), isTrue);
+      expect(host(LogicalKeyboardKey.keyQ, meta: true), isTrue);
       expect(host(LogicalKeyboardKey.digit1, meta: true), isTrue);
       expect(host(LogicalKeyboardKey.digit9, meta: true), isTrue);
       expect(host(LogicalKeyboardKey.pageUp, meta: true), isTrue);
@@ -173,6 +174,14 @@ void main() {
       expect(
         host(
           LogicalKeyboardKey.keyC,
+          control: true,
+          platform: TargetPlatform.windows,
+        ),
+        isFalse,
+      );
+      expect(
+        host(
+          LogicalKeyboardKey.keyQ,
           control: true,
           platform: TargetPlatform.windows,
         ),

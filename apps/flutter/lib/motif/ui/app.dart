@@ -75,9 +75,10 @@ class MotifApp extends StatelessWidget {
           ),
         );
       },
-      // ⌘W (⌃W off macOS) hides the window to the tray. In the session view the
-      // terminal's own handler claims ⌘W first (close tab) — this only fires on
-      // the screens that don't, plus the session view's last-tab fallback.
+      // ⌘W (⌃W off macOS) hides the window to the tray; ⌘Q terminates the
+      // complete macOS app. In the session view the terminal's own handler
+      // claims ⌘W first (close tab) — this only fires on the screens that don't,
+      // plus the session view's last-tab fallback.
       //
       // CallbackShortcuts is focus-based: its onKeyEvent only runs when the
       // primary focus is a descendant. The plain screens (session list, welcome,
@@ -86,14 +87,15 @@ class MotifApp extends StatelessWidget {
       // *ancestor* of CallbackShortcuts — so ⌘W never reached it. The autofocus
       // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
-        bindings: _closeWindowShortcuts(context),
+        bindings: _desktopWindowShortcuts(context),
         child: const Focus(autofocus: true, child: _HomeShell()),
       ),
     );
   }
 }
 
-/// Platform-appropriate "close window" binding: ⌘W on macOS, ⌃W elsewhere.
+/// Desktop lifecycle shortcuts: ⌘W hides on macOS (⌃W elsewhere), while ⌘Q
+/// terminates the complete macOS app.
 ///
 /// In the session view the terminal's own (global [HardwareKeyboard]) handler
 /// runs first and claims ⌘W to close the active tab — but Flutter still fires
@@ -102,7 +104,7 @@ class MotifApp extends StatelessWidget {
 /// [AppState.markCloseShortcutConsumed]; we read-and-clear it here and skip the
 /// hide. On the plain screens (session list, welcome, connection) the session
 /// handler never runs, the flag stays clear, and ⌘W hides the window.
-Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
+Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
   BuildContext context,
 ) {
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
@@ -111,6 +113,10 @@ Map<ShortcutActivator, VoidCallback> _closeWindowShortcuts(
       if (context.read<AppState>().takeCloseShortcutConsumed()) return;
       unawaited(DesktopWindow.hide());
     },
+    if (isMac)
+      const SingleActivator(LogicalKeyboardKey.keyQ, meta: true): () {
+        unawaited(DesktopWindow.quit());
+      },
   };
 }
 

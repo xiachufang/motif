@@ -139,6 +139,8 @@ bool isTerminalHostShortcut({
     return _chromeTabIndexForShortcutKey(logicalKey) != null ||
         logicalKey == LogicalKeyboardKey.keyT ||
         logicalKey == LogicalKeyboardKey.keyW ||
+        (target == TargetPlatform.macOS &&
+            logicalKey == LogicalKeyboardKey.keyQ) ||
         logicalKey == LogicalKeyboardKey.pageUp ||
         logicalKey == LogicalKeyboardKey.pageDown;
   }
