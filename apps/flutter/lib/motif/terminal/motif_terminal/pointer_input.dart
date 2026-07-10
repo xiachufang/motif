@@ -449,16 +449,19 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   ({Offset start, Offset end})? _touchSelectionGlobalEndpoints() {
-    final selection = _selection?.normalized;
+    final snapshot = _snapshot;
+    final rawSelection = _selection;
     final terminalBox =
         _terminalSurfaceKey.currentContext?.findRenderObject() as RenderBox?;
-    if (selection == null ||
+    if (snapshot == null ||
+        rawSelection == null ||
         terminalBox == null ||
         !terminalBox.hasSize ||
         _cellWidth <= 0 ||
         _cellHeight <= 0) {
       return null;
     }
+    final selection = snapshot.alignSelectionToCellBoundaries(rawSelection);
     if (_screenPointToViewport(selection.base) == null ||
         _screenPointToViewport(selection.extent) == null) {
       return null;

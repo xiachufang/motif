@@ -124,15 +124,62 @@ class TerminalSnapshot {
 
     final startRow = _clampInt(range.base.row, firstVisibleRow, lastVisibleRow);
     final endRow = _clampInt(range.extent.row, firstVisibleRow, lastVisibleRow);
+    return alignSelectionToCellBoundaries(
+      TerminalSelection(
+        base: TerminalCellPoint(
+          row: startRow,
+          col: startRow == range.base.row ? range.base.col : 0,
+        ),
+        extent: TerminalCellPoint(
+          row: endRow,
+          col: endRow == range.extent.row ? range.extent.col : cols - 1,
+        ),
+      ),
+    );
+  }
+
+  /// Expand selection endpoints that land on part of a wide cell so the
+  /// visual range always covers the complete grapheme.
+  TerminalSelection alignSelectionToCellBoundaries(
+    TerminalSelection selection,
+  ) {
+    final range = selection.normalized;
     return TerminalSelection(
-      base: TerminalCellPoint(
-        row: startRow,
-        col: startRow == range.base.row ? range.base.col : 0,
-      ),
-      extent: TerminalCellPoint(
-        row: endRow,
-        col: endRow == range.extent.row ? range.extent.col : cols - 1,
-      ),
+      base: _alignSelectionPoint(range.base, leadingEdge: true),
+      extent: _alignSelectionPoint(range.extent, leadingEdge: false),
+    );
+  }
+
+  /// The grid span occupied by the grapheme under the cursor.
+  ///
+  /// Ghostty may position the cursor on the spacer tail of a wide character.
+  /// In that case the visual cursor starts at the lead cell and spans both
+  /// columns.
+  ({int col, int widthCells}) get cursorCellSpan {
+    if (!cursorInViewport || cursorY < 0 || cursorY >= lines.length) {
+      return (col: cursorX, widthCells: 1);
+    }
+    final row = lines[cursorY];
+    final cellIndex = row.cellIndexForColumn(cursorX);
+    if (cellIndex == null) return (col: cursorX, widthCells: 1);
+    final cell = row.cells[cellIndex];
+    final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
+    return (col: cell.col, widthCells: widthCells);
+  }
+
+  TerminalCellPoint _alignSelectionPoint(
+    TerminalCellPoint point, {
+    required bool leadingEdge,
+  }) {
+    final viewportRow = point.row - viewportOffset;
+    if (viewportRow < 0 || viewportRow >= lines.length) return point;
+    final row = lines[viewportRow];
+    final cellIndex = row.cellIndexForColumn(point.col);
+    if (cellIndex == null) return point;
+    final cell = row.cells[cellIndex];
+    return TerminalCellPoint(
+      row: point.row,
+      col: leadingEdge ? cell.col : cell.endCol,
     );
   }
 }

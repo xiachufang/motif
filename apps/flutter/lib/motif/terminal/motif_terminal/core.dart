@@ -153,15 +153,18 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         inViewport: false,
         x: -1,
         y: -1,
+        widthCells: 1,
         style: GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK,
       );
     }
+    final cursorSpan = snapshot.cursorCellSpan;
     return _CursorSnapshot(
       visible: snapshot.cursorVisible,
       inViewport: snapshot.cursorInViewport,
-      x: snapshot.cursorX,
+      x: cursorSpan.col,
       y: snapshot.cursorY,
+      widthCells: cursorSpan.widthCells,
       style: GhosttyRenderStateCursorVisualStyle.fromValue(
         snapshot.cursorStyle,
       ),

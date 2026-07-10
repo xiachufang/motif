@@ -42,6 +42,57 @@ void main() {
     expect(snapshot.selectedText(selection), '好');
   });
 
+  test('selection endpoints expand to complete wide cells', () {
+    final snapshot = _snapshot([
+      _row([
+        _cell(0, 'a'),
+        _cell(1, '你', widthCells: 2),
+        _cell(3, '好', widthCells: 2),
+      ]),
+    ], cols: 6);
+
+    expect(
+      snapshot.alignSelectionToCellBoundaries(
+        const TerminalSelection(
+          base: TerminalCellPoint(row: 0, col: 2),
+          extent: TerminalCellPoint(row: 0, col: 3),
+        ),
+      ),
+      const TerminalSelection(
+        base: TerminalCellPoint(row: 0, col: 1),
+        extent: TerminalCellPoint(row: 0, col: 4),
+      ),
+    );
+  });
+
+  test('cursor span covers a wide cell from either half', () {
+    for (final cursorX in [1, 2]) {
+      final snapshot = _snapshot(
+        [
+          _row([_cell(1, '好', widthCells: 2)]),
+        ],
+        cols: 4,
+        cursorX: cursorX,
+      );
+
+      expect(snapshot.cursorCellSpan, (col: 1, widthCells: 2));
+    }
+  });
+
+  test('cursor span remains one cell on regular or empty cells', () {
+    final regular = _snapshot(
+      [
+        _row([_cell(1, 'a')]),
+      ],
+      cols: 4,
+      cursorX: 1,
+    );
+    final empty = _snapshot([_row(const [])], cols: 4, cursorX: 2);
+
+    expect(regular.cursorCellSpan, (col: 1, widthCells: 1));
+    expect(empty.cursorCellSpan, (col: 2, widthCells: 1));
+  });
+
   test('selectedText skips invisible cells while preserving later columns', () {
     final snapshot = _snapshot([
       _row([_cell(0, 'x', invisible: true), _cell(2, 'y')]),
@@ -127,6 +178,7 @@ void main() {
 TerminalSnapshot _snapshot(
   List<TerminalSnapshotRow> rows, {
   required int cols,
+  int? cursorX,
 }) {
   return TerminalSnapshot(
     cols: cols,
@@ -134,10 +186,10 @@ TerminalSnapshot _snapshot(
     backgroundArgb: 0xff000000,
     foregroundArgb: 0xffffffff,
     cursorArgb: 0xffffffff,
-    cursorVisible: false,
-    cursorInViewport: false,
-    cursorX: -1,
-    cursorY: -1,
+    cursorVisible: cursorX != null,
+    cursorInViewport: cursorX != null,
+    cursorX: cursorX ?? -1,
+    cursorY: cursorX == null ? -1 : 0,
     cursorStyle: 0,
     mouseTrackingActive: false,
     alternateScreenActive: false,

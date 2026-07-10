@@ -153,11 +153,12 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final cellWidth = _cellWidth <= 0 ? 1.0 : _cellWidth;
     final cellHeight = _cellHeight <= 0 ? 1.0 : _cellHeight;
     final cursor = _lastCursorSnapshot;
+    final cursorWidth = cellWidth * (cursor?.widthCells ?? 1);
     final cursorX = cursor != null && cursor.inViewport ? cursor.x : 0;
     final cursorY = cursor != null && cursor.inViewport
         ? cursor.y
         : (_rows - 1).clamp(0, 1000);
-    final maxLeft = (surfaceSize.width - cellWidth)
+    final maxLeft = (surfaceSize.width - cursorWidth)
         .clamp(0.0, double.infinity)
         .toDouble();
     final maxTop = (surfaceSize.height - cellHeight)
@@ -169,7 +170,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final top = (widget.padding + cursorY * cellHeight)
         .clamp(0.0, maxTop)
         .toDouble();
-    return Rect.fromLTWH(left, top, cellWidth, cellHeight);
+    return Rect.fromLTWH(left, top, cursorWidth, cellHeight);
   }
 
   void _writeSoftKeyboardText(String text) {

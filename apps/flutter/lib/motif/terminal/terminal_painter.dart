@@ -326,8 +326,10 @@ class TerminalSnapshotPainter extends CustomPainter {
         snapshot.cursorInViewport &&
         snapshot.cursorX >= 0 &&
         snapshot.cursorY >= 0) {
-      final cx = padding + snapshot.cursorX * cellWidth;
+      final cursorSpan = snapshot.cursorCellSpan;
+      final cx = padding + cursorSpan.col * cellWidth;
       final cy = padding + snapshot.cursorY * cellHeight;
+      final cursorWidth = cursorSpan.widthCells * cellWidth;
       final cursorColor = Color(snapshot.cursorArgb);
       switch (GhosttyRenderStateCursorVisualStyle.fromValue(
         snapshot.cursorStyle,
@@ -335,7 +337,7 @@ class TerminalSnapshotPainter extends CustomPainter {
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK:
           canvas.drawRect(
-            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
+            Rect.fromLTWH(cx, cy, cursorWidth, cellHeight),
             Paint()..color = cursorColor,
           );
         case GhosttyRenderStateCursorVisualStyle
@@ -347,13 +349,13 @@ class TerminalSnapshotPainter extends CustomPainter {
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
           canvas.drawRect(
-            Rect.fromLTWH(cx, cy + cellHeight - 2, cellWidth, 2),
+            Rect.fromLTWH(cx, cy + cellHeight - 2, cursorWidth, 2),
             Paint()..color = cursorColor,
           );
         case GhosttyRenderStateCursorVisualStyle
             .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
           canvas.drawRect(
-            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
+            Rect.fromLTWH(cx, cy, cursorWidth, cellHeight),
             Paint()..color = cursorColor,
           );
         case GhosttyRenderStateCursorVisualStyle
@@ -591,8 +593,9 @@ class TerminalSnapshotPainter extends CustomPainter {
   }
 
   void _drawSelection(Canvas canvas) {
-    final range = selection;
-    if (range == null || cellWidth <= 0 || cellHeight <= 0) return;
+    final rawRange = selection;
+    if (rawRange == null || cellWidth <= 0 || cellHeight <= 0) return;
+    final range = snapshot.alignSelectionToCellBoundaries(rawRange);
     final paint = Paint()..color = selectionBackground;
     for (var row = 0; row < snapshot.lines.length; row++) {
       final screenRow = snapshot.viewportOffset + row;
