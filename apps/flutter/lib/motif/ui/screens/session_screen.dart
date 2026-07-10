@@ -502,11 +502,13 @@ class _SessionScreenState extends State<SessionScreen>
                           listenable: motif,
                           selector: () => _bottomBarSelectKey(motif),
                           builder: (context, snap, _) {
-                            final commandStore =
-                                context.read<AppState>().commands;
+                            final commandStore = context
+                                .read<AppState>()
+                                .commands;
                             final runningProgram = snap.runningProgram;
-                            final inputState =
-                                _inputStateForView(snap.activeViewId);
+                            final inputState = _inputStateForView(
+                              snap.activeViewId,
+                            );
                             return ListenableBuilder(
                               listenable: commandStore,
                               builder: (context, _) {
@@ -523,6 +525,8 @@ class _SessionScreenState extends State<SessionScreen>
                                           ),
                                           modifiers: _modifiers,
                                           onSendBytes: (b) => _sendBytes(b),
+                                          onSendCommandBytes: (b) =>
+                                              _sendCommandBytes(b),
                                           onInsertText: _insertText,
                                           onChangeDirectory: () =>
                                               _openChangeDirectory(motif),

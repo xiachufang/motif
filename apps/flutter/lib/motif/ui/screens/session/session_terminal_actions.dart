@@ -206,6 +206,47 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     await _motif.writePty(ptyId, bytes);
   }
 
+  Future<bool> _sendCommandBytes(List<int> bytes) async {
+    if (!_motif.canInput) return false;
+    final ptyId = _activePtyId(_motif);
+    if (ptyId == null || bytes.isEmpty) return false;
+    _focusTerminal();
+    await _motif.activatePtyStream(ptyId);
+
+    final split = _splitTrailingCommandEnter(bytes);
+    if (split == null) {
+      await _motif.writePty(ptyId, bytes);
+      return true;
+    }
+
+    await _motif.writePty(ptyId, split.content);
+    await _motif.writePty(ptyId, split.enter);
+    return true;
+  }
+
+  ({List<int> content, List<int> enter})? _splitTrailingCommandEnter(
+    List<int> bytes,
+  ) {
+    var end = bytes.length;
+    if (end == 0) return null;
+
+    final last = bytes[end - 1];
+    if (last == 0x0a) {
+      end--;
+      if (end > 0 && bytes[end - 1] == 0x0d) end--;
+    } else if (last == 0x0d) {
+      end--;
+    } else {
+      return null;
+    }
+
+    if (end == 0) return null;
+    return (
+      content: List<int>.from(bytes.take(end)),
+      enter: _terminalBytes('', enter: true),
+    );
+  }
+
   void _insertText(String text) {
     final sel = _input.selection;
     final base = _input.text;
@@ -236,10 +277,9 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     final ptyId = _activePtyId(_motif);
     if (ptyId == null) return;
     final text = _input.text.replaceAll('\n', '');
-    _focusTerminal();
-    await _motif.activatePtyStream(ptyId);
-    await _motif.writePty(ptyId, _terminalBytes(text, enter: true));
-    _input.clear();
+    if (await _sendCommandBytes(_terminalBytes(text, enter: true))) {
+      _input.clear();
+    }
   }
 
   void _openChangeDirectory(MotifClient motif) {
@@ -249,7 +289,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       baseDir: motif.activeCwd ?? '~',
       onChoose: (path) {
         final cmd = "cd '$path'";
-        _sendBytes(_terminalBytes(cmd, enter: true));
+        _sendCommandBytes(_terminalBytes(cmd, enter: true));
       },
     );
   }

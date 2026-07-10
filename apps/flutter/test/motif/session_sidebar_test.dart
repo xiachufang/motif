@@ -137,12 +137,17 @@ class _ConnectedNotAttachedMotifClient extends _SessionMenuMotifClient {
 class _ShortcutMotifClient extends MotifClient {
   int createdPtys = 0;
   final List<String> closedViews = [];
+  final List<String> writtenPtyIds = [];
+  final List<List<int>> writtenPtyData = [];
 
   @override
   MotifConnState get state => const ConnAttached('test-session');
 
   @override
   bool get isLive => true;
+
+  @override
+  bool get canInput => true;
 
   @override
   Future<PtyInfo> createPty({
@@ -180,6 +185,12 @@ class _ShortcutMotifClient extends MotifClient {
     if (viewId == null) return;
     activeViewId = viewId;
     notifyListeners();
+  }
+
+  @override
+  Future<void> writePty(String ptyId, List<int> data) async {
+    writtenPtyIds.add(ptyId);
+    writtenPtyData.add(List<int>.from(data));
   }
 }
 
@@ -474,6 +485,7 @@ void main() {
     // IMEs. It keeps the full multiline keyboard; the English locale hint only
     // biases a fresh keyboard toward English without locking out switching.
     expect(inputField().keyboardType, TextInputType.multiline);
+    expect(inputField().textInputAction, TextInputAction.send);
     expect(inputField().hintLocales, terminalEnglishHintLocales);
 
     await tester.tap(find.byKey(const ValueKey('tab-v2')));
@@ -496,6 +508,29 @@ void main() {
     await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyT);
     expect(motif.activeViewId, 'new-view-1');
     expect(inputField().controller?.text, isEmpty);
+  });
+
+  testWidgets('send button writes content before enter', (tester) async {
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+    await tester.enterText(find.byType(TextField), 'echo hi');
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pump();
+
+    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
+    expect(motif.writtenPtyData, [
+      'echo hi'.codeUnits,
+      [0x0d],
+    ]);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      isEmpty,
+    );
   });
 
   testWidgets('bottom quick commands update when command store changes', (
@@ -539,6 +574,45 @@ void main() {
 
     expect(find.byTooltip('First'), findsNothing);
     expect(find.byTooltip('Second'), findsOneWidget);
+  });
+
+  testWidgets('quick command writes trailing newline as separate enter', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(700, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _ShortcutMotifClient()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+    final app = await _appState(motif: motif);
+    await app.commands.setGlobal([QuickCommand.text('run', 'Run', 'ls\n')]);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Run'));
+    await tester.pump();
+
+    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
+    expect(motif.writtenPtyData, [
+      'ls'.codeUnits,
+      [0x0d],
+    ]);
   });
 
   testWidgets('multiline bottom input lifts terminal without resizing it', (
