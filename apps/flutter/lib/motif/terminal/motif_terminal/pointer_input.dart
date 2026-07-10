@@ -224,7 +224,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _beginMouseSelection(PointerDownEvent e) {
-    _requestFocusWithoutKeyboard();
+    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
     _mouseSelectionPointer = e.pointer;
@@ -265,7 +265,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _terminalCellAt(details.localPosition),
     );
     if (wordSelection == null) return;
-    _requestFocusWithoutKeyboard();
+    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
     _stopScrollInertia(resetVelocity: true);
     final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;

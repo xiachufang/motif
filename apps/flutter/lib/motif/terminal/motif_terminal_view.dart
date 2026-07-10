@@ -110,6 +110,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   String? _composingText;
   _CursorSnapshot? _lastCursorSnapshot;
   bool _showSoftKeyboardOnFocus = false;
+  bool _revealBottomOnNextFocus = true;
 
   double _cellWidth = 0;
   double _cellHeight = 0;
