@@ -340,13 +340,15 @@ class _OscScanner {
 
   List<_ScanItem> feed(Uint8List data) {
     final items = <_ScanItem>[];
+    final passthrough = BytesBuilder(copy: false);
     for (final b in data) {
-      _step(b, items);
+      _step(b, items, passthrough);
     }
+    _flushPassthrough(items, passthrough);
     return items;
   }
 
-  void _step(int b, List<_ScanItem> items) {
+  void _step(int b, List<_ScanItem> items, BytesBuilder passthrough) {
     if (!_inOsc) {
       if (b == 0x1b) {
         _pending
@@ -354,16 +356,14 @@ class _OscScanner {
           ..add(b);
         _inOsc = true;
       } else {
-        _appendPassthrough(b, items);
+        passthrough.addByte(b);
       }
       return;
     }
     _pending.add(b);
     if (_pending.length == 2) {
       if (_pending[1] != 0x5d /* ']' */ ) {
-        for (final byte in _pending) {
-          _appendPassthrough(byte, items);
-        }
+        passthrough.add(_pending);
         _pending.clear();
         _inOsc = false;
       }
@@ -376,9 +376,7 @@ class _OscScanner {
         b == 0x5c;
     if (!isBel && !isSt) {
       if (_pending.length > 4096) {
-        for (final byte in _pending) {
-          _appendPassthrough(byte, items);
-        }
+        passthrough.add(_pending);
         _pending.clear();
         _inOsc = false;
       }
@@ -388,26 +386,18 @@ class _OscScanner {
     final body = _pending.sublist(2, bodyEnd);
     final marker = _parseOscBody(body);
     if (marker != null) {
+      _flushPassthrough(items, passthrough);
       items.add(_ScanMarker(marker));
     } else {
-      for (final byte in _pending) {
-        _appendPassthrough(byte, items);
-      }
+      passthrough.add(_pending);
     }
     _pending.clear();
     _inOsc = false;
   }
 
-  void _appendPassthrough(int b, List<_ScanItem> items) {
-    if (items.isNotEmpty && items.last is _ScanBytes) {
-      final last = items.last as _ScanBytes;
-      final merged = Uint8List(last.bytes.length + 1)
-        ..setRange(0, last.bytes.length, last.bytes)
-        ..[last.bytes.length] = b;
-      items[items.length - 1] = _ScanBytes(merged);
-    } else {
-      items.add(_ScanBytes(Uint8List.fromList([b])));
-    }
+  void _flushPassthrough(List<_ScanItem> items, BytesBuilder passthrough) {
+    if (passthrough.isEmpty) return;
+    items.add(_ScanBytes(passthrough.takeBytes()));
   }
 }
 

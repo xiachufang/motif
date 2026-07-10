@@ -443,6 +443,7 @@ class _PendingSessionOpenListenerState
         showMotifToast(context, 'Could not connect to the notification server');
         return;
       }
+      app.clientForSession(pending.serverId, pending.session);
       // The visible route may have changed while the connection was opening.
       final topRouteName = _topRouteName();
       if (topRouteName == routeName) return;

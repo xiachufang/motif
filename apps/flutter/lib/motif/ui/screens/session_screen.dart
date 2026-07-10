@@ -67,6 +67,8 @@ final bool kUseNativeTerminal =
 String sessionRouteName(String serverId, String session) =>
     'session/$serverId/$session';
 
+typedef _WorkspaceKey = ({String serverId, String session});
+
 /// The main terminal interface: tab bar of views + active pane + input bar.
 /// Mirrors SessionView. PTY panes use the libghostty-backed renderer.
 class SessionScreen extends StatefulWidget {
@@ -79,10 +81,92 @@ class SessionScreen extends StatefulWidget {
   });
 
   @override
-  State<SessionScreen> createState() => _SessionScreenState();
+  State<SessionScreen> createState() => _SessionScreenHostState();
 }
 
-class _SessionScreenState extends State<SessionScreen>
+/// Desktop workspace host. Every visited server/session pane stays mounted in
+/// this route, so its Ghostty worker, grid, scrollback and selection survive a
+/// sidebar switch. Mobile renders a single pane and keeps route navigation.
+class _SessionScreenHostState extends State<SessionScreen> {
+  late _WorkspaceKey _active = (
+    serverId: widget.serverId,
+    session: widget.session,
+  );
+  final List<_WorkspaceKey> _mounted = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _mounted.add(_active);
+  }
+
+  @override
+  void didUpdateWidget(covariant SessionScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final next = (serverId: widget.serverId, session: widget.session);
+    if (next == _active) return;
+    _selectWorkspace(next.serverId, next.session);
+  }
+
+  void _selectWorkspace(String serverId, String session) {
+    final next = (serverId: serverId, session: session);
+    if (next == _active) return;
+    context.read<AppState>().clientForSession(serverId, session);
+    setState(() {
+      if (!_mounted.contains(next)) _mounted.add(next);
+      _active = next;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final keepWarm = context.read<AppState>().keepSessionWarmOnSwitchAway;
+    if (!keepWarm) {
+      return _SessionPane(serverId: widget.serverId, session: widget.session);
+    }
+    return Stack(
+      children: [
+        for (final workspace in _mounted)
+          Positioned.fill(
+            key: ValueKey(
+              'workspace-${workspace.serverId}/${workspace.session}',
+            ),
+            child: Offstage(
+              offstage: workspace != _active,
+              child: TickerMode(
+                enabled: workspace == _active,
+                child: _SessionPane(
+                  serverId: workspace.serverId,
+                  session: workspace.session,
+                  workspaceActive: workspace == _active,
+                  onWorkspaceSelected: _selectWorkspace,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SessionPane extends StatefulWidget {
+  final String serverId;
+  final String session;
+  final bool workspaceActive;
+  final void Function(String serverId, String session)? onWorkspaceSelected;
+
+  const _SessionPane({
+    required this.serverId,
+    required this.session,
+    this.workspaceActive = true,
+    this.onWorkspaceSelected,
+  });
+
+  @override
+  State<_SessionPane> createState() => _SessionScreenState();
+}
+
+class _SessionScreenState extends State<_SessionPane>
     with WidgetsBindingObserver {
   static const double _sidebarBreakpoint = 768;
   static const double _sidebarMinWidth = 96;
@@ -93,6 +177,7 @@ class _SessionScreenState extends State<SessionScreen>
   final Set<String> _mountedViewIds = <String>{};
   final Set<String> _appleInputDocumentIds = <String>{};
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
+  late final MotifClient _sessionClient;
   late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
@@ -103,6 +188,7 @@ class _SessionScreenState extends State<SessionScreen>
   bool _keyboardInsetSyncScheduled = false;
   bool _paneMountReady = false;
   bool _usesSidebarLayout = false;
+  bool _shortcutRegistered = false;
   bool _switchingSession = false;
   bool _attachingSession = false;
   bool _recording = false;
@@ -116,11 +202,17 @@ class _SessionScreenState extends State<SessionScreen>
   @override
   void initState() {
     super.initState();
+    _sessionClient = context.read<AppState>().clientForSession(
+      widget.serverId,
+      widget.session,
+    );
     _fallbackInput = _createInputState('fallback');
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
-    HardwareKeyboard.instance.addHandler(_handleShortcut);
-    _syncWindowTitle();
+    if (widget.workspaceActive) {
+      _registerShortcutHandler();
+      _syncWindowTitle();
+    }
     // Keep the screen awake while a terminal session is on screen — a PTY can
     // sit idle for minutes waiting on output and the user shouldn't have to
     // tap to keep watching it. Mobile only; desktops manage their own display
@@ -134,7 +226,7 @@ class _SessionScreenState extends State<SessionScreen>
   /// (RPC POST + /events WebSocket) happen behind a connecting overlay instead
   /// of blocking the page transition.
   void _attachIfNeeded() {
-    final motif = context.read<AppState>().clientForServer(widget.serverId);
+    final motif = _sessionClient;
     // While the transport is down the reconnect flow owns reattaching
     // (intendedSession); attaching here would just throw "not connected".
     if (!motif.isLive) return;
@@ -194,11 +286,30 @@ class _SessionScreenState extends State<SessionScreen>
   }
 
   @override
-  void didUpdateWidget(covariant SessionScreen oldWidget) {
+  void didUpdateWidget(covariant _SessionPane oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session != widget.session) {
+    if (oldWidget.workspaceActive != widget.workspaceActive) {
+      if (widget.workspaceActive) {
+        _registerShortcutHandler();
+        _syncWindowTitle();
+      } else {
+        _unregisterShortcutHandler();
+      }
+    } else if (widget.workspaceActive && oldWidget.session != widget.session) {
       _syncWindowTitle();
     }
+  }
+
+  void _registerShortcutHandler() {
+    if (_shortcutRegistered) return;
+    HardwareKeyboard.instance.addHandler(_handleShortcut);
+    _shortcutRegistered = true;
+  }
+
+  void _unregisterShortcutHandler() {
+    if (!_shortcutRegistered) return;
+    HardwareKeyboard.instance.removeHandler(_handleShortcut);
+    _shortcutRegistered = false;
   }
 
   @override
@@ -206,7 +317,7 @@ class _SessionScreenState extends State<SessionScreen>
     WidgetsBinding.instance.removeObserver(this);
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
-    HardwareKeyboard.instance.removeHandler(_handleShortcut);
+    _unregisterShortcutHandler();
     for (final id in _appleInputDocumentIds) {
       unawaited(AppleInputDocument.dispose(id).catchError((_) {}));
     }
@@ -245,7 +356,7 @@ class _SessionScreenState extends State<SessionScreen>
       _scheduleKeyboardInsetSync();
     }
     final app = context.read<AppState>();
-    final motif = app.clientForServer(widget.serverId);
+    final motif = _sessionClient;
     final c = context.motif;
     final fontSize = context.select<AppState, double>(
       (a) => a.terminalSettings.settings.fontSize,
@@ -479,6 +590,7 @@ class _SessionScreenState extends State<SessionScreen>
                                   activeView: activeView,
                                   attaching: _attachingSession,
                                   mountPanes: _paneMountReady,
+                                  workspaceActive: widget.workspaceActive,
                                   mountedViews: mountedViews,
                                   motif: motif,
                                   fontSize: fontSize,

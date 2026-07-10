@@ -229,6 +229,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     // Navigate immediately; SessionScreen performs the attach itself and shows
     // a connecting overlay, so opening a session never blocks on the network.
     unawaited(app.servers.setActive(server.id));
+    app.clientForSession(server.id, name);
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         settings: RouteSettings(name: sessionRouteName(server.id, name)),

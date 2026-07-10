@@ -53,14 +53,40 @@ class MobileMotifClientRuntime implements MotifClientRuntime {
 }
 
 class DesktopMotifClientRuntime implements MotifClientRuntime {
-  const DesktopMotifClientRuntime();
+  const DesktopMotifClientRuntime({
+    this.backgroundRestoreDelay = const Duration(milliseconds: 32),
+  });
+
+  final Duration backgroundRestoreDelay;
+  static final Expando<int> _restoreGeneration = Expando<int>();
+  static int _nextRestoreGeneration = 1;
 
   @override
-  void onSessionAttached(MotifRuntimeClient client) => _syncLiveTabPtys(client);
+  void onSessionAttached(MotifRuntimeClient client) {
+    final generation = _nextRestoreGeneration++;
+    _restoreGeneration[client] = generation;
+    unawaited(
+      _restoreLiveTabPtys(client, generation).catchError((
+        Object e,
+        StackTrace st,
+      ) {
+        Log.w(
+          'desktop staged pty restore failed',
+          name: 'motif.runtime',
+          error: e,
+          stackTrace: st,
+        );
+      }),
+    );
+  }
 
   @override
-  void onPtySubscriptionsChanged(MotifRuntimeClient client) =>
-      _syncLiveTabPtys(client);
+  void onPtySubscriptionsChanged(MotifRuntimeClient client) {
+    // A view was opened/closed while a staged attach restore was in flight.
+    // Cancel that snapshot and converge immediately on the new authoritative set.
+    _restoreGeneration[client] = _nextRestoreGeneration++;
+    _syncLiveTabPtys(client);
+  }
 
   @override
   void onActiveViewChanged(MotifRuntimeClient client) {}
@@ -93,5 +119,39 @@ class DesktopMotifClientRuntime implements MotifClientRuntime {
         );
       }),
     );
+  }
+
+  Future<void> _restoreLiveTabPtys(
+    MotifRuntimeClient client,
+    int generation,
+  ) async {
+    final initial = client.liveTabPtyIds;
+    final active = client.activePtyId;
+    final restored = <String>{};
+    if (active != null && initial.contains(active)) {
+      restored.add(active);
+      Log.i(
+        'desktop restore active pty first pty=$active',
+        name: 'motif.runtime',
+      );
+      await client.syncPtyStreams(restored);
+    }
+
+    for (final ptyId in initial) {
+      if (restored.contains(ptyId)) continue;
+      await Future<void>.delayed(backgroundRestoreDelay);
+      if (_restoreGeneration[client] != generation) return;
+      final live = client.liveTabPtyIds;
+      if (!live.contains(ptyId)) continue;
+      restored
+        ..removeWhere((id) => !live.contains(id))
+        ..add(ptyId);
+      Log.i(
+        'desktop restore background pty=$ptyId restored=${restored.length} '
+        'total=${live.length}',
+        name: 'motif.runtime',
+      );
+      await client.syncPtyStreams(restored);
+    }
   }
 }

@@ -164,8 +164,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
     return base.codeUnits.last <= 0x20 ? '$base$text' : '$base $text';
   }
 
-  MotifClient get _motif =>
-      context.read<AppState>().clientForServer(widget.serverId);
+  MotifClient get _motif => _sessionClient;
 
   void _syncWindowTitle() {
     unawaited(MotifWindowTitle.set(widget.session).catchError((_) {}));

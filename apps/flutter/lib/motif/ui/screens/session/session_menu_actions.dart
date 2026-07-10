@@ -139,8 +139,8 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     // header") and surface a spurious "Close failed" toast.
     final clients = <MotifClient>{
       if (motif.state is ConnAttached) motif,
-      for (final group in app.connectedServerClients)
-        if (group.client.state is ConnAttached) group.client,
+      for (final client in app.connectedWorkspaceClients)
+        if (client.state is ConnAttached) client,
     };
     if (mounted) Navigator.of(context).pop();
     unawaited(
@@ -161,23 +161,56 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   ) async {
     if (serverId == widget.serverId && name == widget.session) return;
     try {
-      setState(() {
-        _switchingSession = true;
-        _mountedViewIds.clear();
-      });
-      final crossServer = serverId != widget.serverId;
-      if (crossServer && app.keepSessionWarmOnSwitchAway) {
-        // Leave this server attached to its session so switching back is
-        // instant (no cold VT replay). Drop it to background so it stops
-        // claiming primary / pushing the terminal palette while off-screen.
-        motif.setForeground(false);
-      } else {
-        await motif.detach();
+      final keepWarm = app.keepSessionWarmOnSwitchAway;
+      if (!keepWarm) {
+        setState(() {
+          _switchingSession = true;
+          _mountedViewIds.clear();
+        });
       }
-      await app.servers.setActive(serverId);
+      final crossServer = serverId != widget.serverId;
+      if (keepWarm) {
+        // Desktop treats every server/session pair as an independent live
+        // workspace. Park this client without touching its attachment and
+        // select (or create) the target workspace client before navigation.
+        motif.setForeground(false);
+        app.clientForSession(serverId, name);
+      } else if (!crossServer) {
+        // Keep the transport/session id and let the target screen issue an
+        // atomic replacement attach. motifd detaches the old session as part of
+        // session.attach, avoiding a serial detach round trip.
+        motif.prepareSessionSwitch(name);
+      } else {
+        // The target belongs to a different client, so its route/attach does not
+        // depend on this cleanup. Let old sockets close in the background.
+        unawaited(
+          motif.detach().catchError((Object e, StackTrace st) {
+            Log.w(
+              'background detach failed while switching sessions',
+              name: 'motif.ui',
+              error: e,
+              stackTrace: st,
+            );
+          }),
+        );
+      }
+      unawaited(
+        app.servers.setActive(serverId).catchError((Object e, StackTrace st) {
+          Log.w(
+            'persist active server failed during session switch',
+            name: 'motif.ui',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
       if (!mounted) return;
-      // Navigate right away; the replacement screen attaches to the target
-      // session itself behind its connecting overlay.
+      if (keepWarm && widget.onWorkspaceSelected != null) {
+        widget.onWorkspaceSelected!(serverId, name);
+        return;
+      }
+      // Navigate immediately; attach/restore runs behind the target screen's
+      // non-modal connecting banner, leaving the rest of the page responsive.
       Navigator.of(
         context,
       ).pushReplacement(_sessionSwitchRoute(serverId, name));
@@ -272,8 +305,6 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     bool selected,
   ) {
     if (!selected) return null;
-    return context.iconButtonStyle(
-      foregroundColor: c.accent,
-    );
+    return context.iconButtonStyle(foregroundColor: c.accent);
   }
 }

@@ -1,6 +1,7 @@
 /// Top-level app state, ported from `apps/ios/Motif/Settings/AppState.swift`.
 ///
-/// Owns the persisted stores and one live [MotifClient] per connected server.
+/// Owns the persisted stores and live [MotifClient] workspaces. Mobile keeps a
+/// single client per server; desktop can keep every server/session pair live.
 /// Exposed to the widget tree via `provider`.
 library;
 
@@ -12,6 +13,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../log/log.dart';
 import '../models/motif_proto.dart';
 import '../models/settings.dart';
 import '../net/rzv/pairing_payload.dart';
@@ -32,6 +34,8 @@ import 'transport_resolver.dart';
 /// Desktop top-level view selector: use the client (sessions/terminal) or
 /// administer this machine's embedded server.
 enum AppViewMode { client, server }
+
+typedef _SessionClientKey = ({String serverId, String session});
 
 /// Request to open a session from an in-app notification / push tap.
 class PendingSessionOpen {
@@ -54,11 +58,16 @@ class AppState extends ChangeNotifier {
   final String? startupActiveServerId;
   final SessionSidebarUiState sessionSidebar = SessionSidebarUiState();
   final MotifClient Function(MotifServer server) _clientFactory;
+  final MotifClient Function(MotifServer server) _workspaceClientFactory;
   final ServerConnectionRuntime _serverConnectionRuntime;
   late final TransportResolver _transportResolver;
   final Map<String, MotifClient> _clientsByServer = {};
   final Map<String, ServerConnectionController> _controllersByServer = {};
-  final Map<String, VoidCallback> _clientListeners = {};
+  final Map<String, String> _activeSessionByServer = {};
+  final Map<_SessionClientKey, MotifClient> _warmSessionClients = {};
+  final Map<_SessionClientKey, ServerConnectionController>
+  _warmSessionControllers = {};
+  final Map<MotifClient, VoidCallback> _clientListeners = {};
   final Map<String, Future<bool>> _serverConnectionTasks = {};
   StreamSubscription<TailscaleState>? _tailscaleSub;
   AppLifecycleListener? _lifecycleListener;
@@ -126,11 +135,16 @@ class AppState extends ChangeNotifier {
     required this.platform,
     this.embeddedServer,
     MotifClient Function(MotifServer server)? clientFactory,
+    MotifClient Function(MotifServer server)? workspaceClientFactory,
     MotifClientRuntime? clientRuntime,
     ServerConnectionRuntime? serverConnectionRuntime,
   }) : startupActiveServerId = servers.activeId,
        _clientFactory =
            clientFactory ?? ((_) => MotifClient(runtime: clientRuntime)),
+       _workspaceClientFactory =
+           workspaceClientFactory ??
+           clientFactory ??
+           ((_) => MotifClient(runtime: clientRuntime)),
        _serverConnectionRuntime =
            serverConnectionRuntime ?? const MobileServerConnectionRuntime() {
     _transportResolver = TransportResolver(platform);
@@ -248,17 +262,108 @@ class AppState extends ChangeNotifier {
     if (existing != null) return existing;
     final server = serverById(serverId);
     if (server == null) throw StateError('Unknown server: $serverId');
-    final client = _clientFactory(server);
-    _clientsByServer[serverId] = client;
-    _controllersByServer[serverId] = ServerConnectionController(
-      serverId: serverId,
+    return _installActiveClient(
+      server,
+      _clientFactory(server),
+      _transportResolver,
+    );
+  }
+
+  /// Return the client that owns [session] on [serverId].
+  ///
+  /// Desktop keeps one live client per server/session workspace. Selecting a
+  /// different workspace only parks the previous client in the warm pool; its
+  /// HTTP, events and PTY streams remain attached. Mobile continues to use one
+  /// client per server and lets the normal attach path replace its session.
+  MotifClient clientForSession(String serverId, String session) {
+    final active = clientForServer(serverId);
+    if (!keepSessionWarmOnSwitchAway) return active;
+
+    var currentSession = _activeSessionByServer[serverId];
+    currentSession ??= switch (active.state) {
+      ConnAttached(:final session) => session,
+      _ => active.intendedSession,
+    };
+    if (currentSession == null) {
+      _activeSessionByServer[serverId] = session;
+      active.prepareSessionReconnect(session);
+      _setForegroundWorkspace(active);
+      return active;
+    }
+    _activeSessionByServer[serverId] = currentSession;
+    if (currentSession == session) {
+      _setForegroundWorkspace(active);
+      return active;
+    }
+
+    final currentKey = (serverId: serverId, session: currentSession);
+    final activeController = _controllersByServer.remove(serverId)!;
+    _clientsByServer.remove(serverId);
+    _warmSessionClients[currentKey] = active;
+    _warmSessionControllers[currentKey] = activeController;
+    active.setForeground(false);
+
+    final targetKey = (serverId: serverId, session: session);
+    final target = _warmSessionClients.remove(targetKey);
+    final targetController = _warmSessionControllers.remove(targetKey);
+    final MotifClient next;
+    final ServerConnectionController controller;
+    if (target != null && targetController != null) {
+      next = target;
+      controller = targetController;
+      _clientsByServer[serverId] = next;
+      _controllersByServer[serverId] = controller;
+    } else {
+      final server = serverById(serverId);
+      if (server == null) throw StateError('Unknown server: $serverId');
+      // Each warm workspace owns its own resolver/forwarder. This prevents a
+      // reconnect on one rendezvous or SSH workspace from tearing down the
+      // transport used by another live workspace on the same server.
+      final resolver = TransportResolver(platform);
+      next = _installActiveClient(
+        server,
+        _workspaceClientFactory(server),
+        resolver,
+      );
+      controller = _controllersByServer[serverId]!;
+    }
+    _activeSessionByServer[serverId] = session;
+    next.prepareSessionReconnect(session);
+    _setForegroundWorkspace(next);
+    if (!next.isLive) {
+      unawaited(
+        Future<void>.microtask(controller.connect).catchError((
+          Object e,
+          StackTrace st,
+        ) {
+          Log.w(
+            'warm workspace connect failed server=$serverId session=$session',
+            name: 'motif.session',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
+    return next;
+  }
+
+  MotifClient _installActiveClient(
+    MotifServer server,
+    MotifClient client,
+    TransportResolver resolver,
+  ) {
+    _clientsByServer[server.id] = client;
+    final controller = ServerConnectionController(
+      serverId: server.id,
       client: client,
-      serverProvider: () => serverById(serverId),
-      resolver: _transportResolver,
+      serverProvider: () => serverById(server.id),
+      resolver: resolver,
       onChanged: _relayControllerChange,
       runtime: _serverConnectionRuntime,
     );
-    _wireClient(serverId, client);
+    _controllersByServer[server.id] = controller;
+    _wireClient(server.id, client, controller);
     _applyTerminalPaletteTo(client);
     return client;
   }
@@ -330,6 +435,12 @@ class AppState extends ChangeNotifier {
     }
     return groups;
   }
+
+  /// Every connected workspace, including desktop sessions parked in the
+  /// background. Used by explicit close/disconnect actions; ordinary switches
+  /// deliberately leave these clients alone.
+  Iterable<MotifClient> get connectedWorkspaceClients =>
+      _allClients().where((client) => client.isLive);
 
   void _relayStoreChange() {
     _pruneClientsForDeletedServers();
@@ -413,15 +524,27 @@ class AppState extends ChangeNotifier {
   }
 
   void _onTailscaleState(TailscaleState state) {
-    for (final controller in _controllersByServer.values) {
+    for (final controller in _allControllers()) {
       controller.handleTailscaleState(state);
     }
     notifyListeners();
   }
 
-  void _onClientStateChanged(String serverId, MotifClient client) {
+  void _onClientStateChanged(
+    String serverId,
+    MotifClient client,
+    ServerConnectionController controller,
+  ) {
     final wasLive = _pushLiveServerIds.contains(serverId);
-    _controllersByServer[serverId]?.handleClientStateChanged();
+    controller.handleClientStateChanged();
+    final state = client.state;
+    if (identical(_clientsByServer[serverId], client)) {
+      if (state is ConnAttached) {
+        _activeSessionByServer[serverId] = state.session;
+      } else if (state is ConnConnected && client.intendedSession == null) {
+        _activeSessionByServer.remove(serverId);
+      }
+    }
     if (client.isLive) {
       _pushLiveServerIds.add(serverId);
       if (push.enabled) {
@@ -430,7 +553,9 @@ class AppState extends ChangeNotifier {
         unawaited(_unregisterForPush(serverId, client));
       }
     } else {
-      _pushLiveServerIds.remove(serverId);
+      if (!_clientsForServer(serverId).any((candidate) => candidate.isLive)) {
+        _pushLiveServerIds.remove(serverId);
+      }
       _pushClientsByInstanceId.removeWhere(
         (_, value) => identical(value, client),
       );
@@ -438,14 +563,24 @@ class AppState extends ChangeNotifier {
   }
 
   void _onAppPaused() {
-    for (final controller in _controllersByServer.values) {
+    for (final controller in _allControllers()) {
       controller.handleAppPaused();
     }
   }
 
   void _onAppResumed() {
-    for (final controller in _controllersByServer.values) {
-      controller.handleAppResumed();
+    if (keepSessionWarmOnSwitchAway) {
+      // Only the visible desktop workspace may reclaim terminal primary/theme.
+      // Background workspaces stay connected but remain non-foreground.
+      final activeId = servers.activeId;
+      final activeController = activeId == null
+          ? null
+          : _controllersByServer[activeId];
+      activeController?.handleAppResumed();
+    } else {
+      for (final controller in _allControllers()) {
+        controller.handleAppResumed();
+      }
     }
     if (push.enabled) {
       _registerLiveClientsForPush();
@@ -476,6 +611,28 @@ class AppState extends ChangeNotifier {
   Iterable<MotifClient> _allClients() sync* {
     for (final client in _clientsByServer.values) {
       yield client;
+    }
+    for (final client in _warmSessionClients.values) {
+      yield client;
+    }
+  }
+
+  Iterable<MotifClient> _clientsForServer(String serverId) sync* {
+    final active = _clientsByServer[serverId];
+    if (active != null) yield active;
+    for (final entry in _warmSessionClients.entries) {
+      if (entry.key.serverId == serverId) yield entry.value;
+    }
+  }
+
+  Iterable<ServerConnectionController> _allControllers() sync* {
+    yield* _controllersByServer.values;
+    yield* _warmSessionControllers.values;
+  }
+
+  void _setForegroundWorkspace(MotifClient foreground) {
+    for (final client in _allClients()) {
+      client.setForeground(identical(client, foreground));
     }
   }
 
@@ -698,6 +855,9 @@ class AppState extends ChangeNotifier {
     for (final entry in _clientsByServer.entries) {
       if (identical(entry.value, client)) return entry.key;
     }
+    for (final entry in _warmSessionClients.entries) {
+      if (identical(entry.value, client)) return entry.key.serverId;
+    }
     return null;
   }
 
@@ -774,7 +934,17 @@ class AppState extends ChangeNotifier {
 
   Future<void> disconnectServer(String serverId) async {
     if (existingClientForServer(serverId) == null) return;
-    await _controllerForServer(serverId).disconnect();
+    final controllers = <ServerConnectionController>[];
+    final activeController = _controllersByServer[serverId];
+    if (activeController != null) controllers.add(activeController);
+    controllers.addAll(
+      _warmSessionControllers.entries
+          .where((entry) => entry.key.serverId == serverId)
+          .map((entry) => entry.value),
+    );
+    await Future.wait([
+      for (final controller in controllers) controller.disconnect(),
+    ]);
     notifyListeners();
   }
 
@@ -806,13 +976,17 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void _wireClient(String serverId, MotifClient client) {
+  void _wireClient(
+    String serverId,
+    MotifClient client,
+    ServerConnectionController controller,
+  ) {
     void listener() {
-      _onClientStateChanged(serverId, client);
+      _onClientStateChanged(serverId, client, controller);
       if (hasListeners) notifyListeners();
     }
 
-    _clientListeners[serverId] = listener;
+    _clientListeners[client] = listener;
     client.addListener(listener);
   }
 
@@ -822,10 +996,10 @@ class AppState extends ChangeNotifier {
     for (final id in _clientsByServer.keys.toList()) {
       if (liveIds.contains(id)) continue;
       final client = _clientsByServer.remove(id);
-      final listener = _clientListeners.remove(id);
       final controller = _controllersByServer.remove(id);
       controller?.dispose();
       if (client == null) continue;
+      final listener = _clientListeners.remove(client);
       _pushClientsByInstanceId.removeWhere(
         (_, value) => identical(value, client),
       );
@@ -837,6 +1011,21 @@ class AppState extends ChangeNotifier {
       unawaited(client.disconnect());
       client.dispose();
     }
+    for (final key in _warmSessionClients.keys.toList()) {
+      if (liveIds.contains(key.serverId)) continue;
+      final client = _warmSessionClients.remove(key);
+      final controller = _warmSessionControllers.remove(key);
+      controller?.dispose();
+      if (client == null) continue;
+      final listener = _clientListeners.remove(client);
+      _pushClientsByInstanceId.removeWhere(
+        (_, value) => identical(value, client),
+      );
+      if (listener != null) client.removeListener(listener);
+      unawaited(client.disconnect());
+      client.dispose();
+    }
+    _activeSessionByServer.removeWhere((id, _) => !liveIds.contains(id));
   }
 
   @override
@@ -849,14 +1038,14 @@ class AppState extends ChangeNotifier {
     terminalSettings.removeListener(_onTerminalSettingsChanged);
     unawaited(_tailscaleSub?.cancel());
     _lifecycleListener?.dispose();
-    for (final controller in _controllersByServer.values) {
+    for (final controller in _allControllers()) {
       controller.dispose();
     }
-    for (final entry in _clientsByServer.entries) {
-      final listener = _clientListeners[entry.key];
-      if (listener != null) entry.value.removeListener(listener);
+    for (final client in _allClients()) {
+      final listener = _clientListeners[client];
+      if (listener != null) client.removeListener(listener);
     }
-    for (final client in _clientsByServer.values) {
+    for (final client in _allClients()) {
       client.dispose();
     }
     super.dispose();

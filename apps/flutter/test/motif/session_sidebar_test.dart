@@ -51,6 +51,7 @@ class _RecordingMotifClient extends MotifClient {
 class _SessionMenuMotifClient extends MotifClient {
   final List<String> attached = [];
   int detaches = 0;
+  final List<String> preparedSwitches = [];
 
   _SessionMenuMotifClient() {
     // Seed a terminal so SessionScreen's attach-if-needed path does not call
@@ -77,6 +78,11 @@ class _SessionMenuMotifClient extends MotifClient {
   @override
   Future<void> attach(String name) async {
     attached.add(name);
+  }
+
+  @override
+  void prepareSessionSwitch(String name) {
+    preparedSwitches.add(name);
   }
 }
 
@@ -218,6 +224,7 @@ class _SuspendedMotifClient extends _ShortcutMotifClient {
 Future<AppState> _appStateWith(
   Map<String, MotifClient> clients, {
   ServerConnectionRuntime? serverConnectionRuntime,
+  MotifClient Function(MotifServer server)? workspaceClientFactory,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -228,6 +235,7 @@ Future<AppState> _appStateWith(
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
     clientFactory: (server) => clients[server.id] ?? MotifClient(),
+    workspaceClientFactory: workspaceClientFactory,
     serverConnectionRuntime: serverConnectionRuntime,
   );
   for (final entry in clients.entries) {
@@ -1144,7 +1152,8 @@ void main() {
     await tester.tap(find.text('next-session'));
     await tester.pumpAndSettle();
 
-    expect(motif.detaches, 1);
+    expect(motif.detaches, 0);
+    expect(motif.preparedSwitches, ['next-session']);
     expect(motif.attached, ['next-session']);
     expect(routes.replacements, 1);
     expect(routes.lastReplacement, isA<PageRouteBuilder<void>>());
@@ -1250,6 +1259,52 @@ void main() {
     );
   });
 
+  testWidgets('cross-server switch navigates before old detach completes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final current = _BlockingDetachMotifClient()
+      ..sessions = const [SessionInfo(name: 'test-session')];
+    final prod = _SessionMenuMotifClient()
+      ..sessions = const [SessionInfo(name: 'prod-session')];
+    addTearDown(() {
+      if (!current.detachCompleter.isCompleted) {
+        current.detachCompleter.complete();
+      }
+    });
+    final app = await _appStateWith({'server-1': current, 'server-2': prod});
+    final routes = _RouteCounter();
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          navigatorObservers: [routes],
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('prod-session'));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(current.detaches, 1);
+    expect(current.detachCompleter.isCompleted, isFalse);
+    expect(routes.replacements, 1);
+    expect(prod.attached, ['prod-session']);
+  });
+
   testWidgets('desktop keeps the previous server warm on cross-server switch', (
     tester,
   ) async {
@@ -1291,6 +1346,75 @@ void main() {
     // background; the target server attaches normally.
     expect(current.detaches, 0);
     expect(current.isForeground, isFalse);
+    expect(prod.isForeground, isTrue);
     expect(prod.attached, ['prod-session']);
+    expect(app.connectedWorkspaceClients.toSet(), {current, prod});
   });
+
+  testWidgets(
+    'desktop keeps same-server sessions live and reuses them when switching back',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1024, 768);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final sessions = const [
+        SessionInfo(name: 'test-session'),
+        SessionInfo(name: 'other-session'),
+      ];
+      final current = _SessionMenuMotifClient()..sessions = sessions;
+      final other = _SessionMenuMotifClient()..sessions = sessions;
+      final app = await _appStateWith(
+        {'server-1': current},
+        serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+        workspaceClientFactory: (_) => other,
+      );
+
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: app,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.dark),
+            home: const SessionScreen(
+              serverId: 'server-1',
+              session: 'test-session',
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
+      await tester.pumpAndSettle();
+      final originalTerminal = tester.state(
+        find.byKey(const ValueKey('terminal-pty-1')),
+      );
+
+      await tester.tap(find.text('other-session'));
+      await tester.pumpAndSettle();
+
+      expect(current.detaches, 0);
+      expect(current.isForeground, isFalse);
+      expect(other.attached, ['other-session']);
+      expect(app.connectedWorkspaceClients.toSet(), {current, other});
+
+      await tester.tap(find.text('test-session'));
+      await tester.pumpAndSettle();
+
+      expect(other.detaches, 0);
+      expect(other.isForeground, isFalse);
+      expect(current.isForeground, isTrue);
+      expect(current.attached, isEmpty);
+      expect(app.clientForSession('server-1', 'test-session'), same(current));
+      expect(
+        tester.state(find.byKey(const ValueKey('terminal-pty-1'))),
+        same(originalTerminal),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('close-session-button')));
+      await tester.pump();
+      expect(current.detaches, 1);
+      expect(other.detaches, 1);
+    },
+  );
 }

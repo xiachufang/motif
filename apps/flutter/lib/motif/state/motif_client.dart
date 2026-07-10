@@ -424,6 +424,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   Future<void> attach(String name) async {
     final rpc = _rpc;
     if (rpc == null) throw const RpcException('not connected');
+    await _stopRemotePortForwarders();
     final params = <String, Object?>{
       'name': name,
       'last_seq': ?resumeSeqs[name],
@@ -443,13 +444,15 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     // the client-side OSC parser can't discover a command that was already
     // running. Seed it from the server's authoritative state and prime the
     // per-PTY shell parser so the next live `command end` marker clears it.
+    final shellPrimes = <Future<void>>[];
     for (final p in ptys) {
       final rc = p.runningCommand;
       if (rc != null && rc.isNotEmpty) {
         runningCommand[p.id] = rc;
-        rpc.primePtyRunning(p.id, rc);
+        shellPrimes.add(rpc.primePtyRunning(p.id, rc));
       }
     }
+    await Future.wait(shellPrimes);
     views = result.views;
     _completePendingViewActivation();
     activeViewId = result.activeView;
@@ -470,6 +473,30 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     );
 
     _reclaimPrimary();
+  }
+
+  /// Prepare this live transport to replace its current same-server session.
+  ///
+  /// The following [attach] reuses the current X-Motif-Session; motifd atomically
+  /// detaches the old session and attaches the new one. Clearing UI state here
+  /// makes the replacement route interactive immediately without waiting for a
+  /// separate detach RPC or showing stale tabs from the previous session.
+  void prepareSessionSwitch(String name) {
+    intendedSession = name;
+    pendingLocalViewId = null;
+    connectionNotice = null;
+    lastSeq = 0;
+    sessionTheme = null;
+    resumeSeqs.remove(name);
+    _clearSessionState();
+    _setState(const ConnConnected());
+  }
+
+  /// Remember the workspace this client owns before its transport connects.
+  /// [connect] will attach it automatically after a successful ping. Unlike
+  /// [prepareSessionSwitch], this never clears or replaces a live attachment.
+  void prepareSessionReconnect(String name) {
+    intendedSession = name;
   }
 
   Future<void> detach() async {
