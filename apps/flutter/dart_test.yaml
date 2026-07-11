@@ -8,3 +8,5 @@ tags:
     description: Requires the native libghostty asset (Zig on PATH).
   tailscale:
     description: Requires a built libtailscale dylib/.so.
+  tailscale_live:
+    description: Requires a live authenticated Tailscale environment.
