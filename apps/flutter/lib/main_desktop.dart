@@ -10,21 +10,17 @@ import 'motif/platform/window_title_desktop.dart';
 import 'motif/state/embedded_server_service_desktop.dart';
 import 'motif/state/motif_runtime.dart';
 import 'motif/state/server_connection_runtime.dart';
-import 'motif/ui/app.dart';
 import 'motif/ui/screens/embedded_server_settings_sheet_desktop.dart'
     as desktop_server;
 
 Future<void> main() {
   installDesktopWindowDelegate();
   installDesktopWindowTitleDelegate();
-  installEmbeddedServerPageFactory(
-    () => const desktop_server.EmbeddedServerPage(),
-  );
-
   return runMotif(
     embeddedServerFactory: createDesktopEmbeddedServerService,
     clientRuntime: const DesktopMotifClientRuntime(),
     serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+    embeddedServerPageFactory: () => const desktop_server.EmbeddedServerPage(),
     afterFirstFrame: (appState) {
       if (desktop_tray.TrayService.isSupported &&
           (appState.embeddedServer?.available ?? false)) {

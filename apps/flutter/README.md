@@ -74,13 +74,12 @@ dart run ffigen --config ffigen.yaml
 
 ## Architecture
 
-- **`lib/motif/`** — the app: `models/`, `net/` (HTTP-RPC + WebSocket transport),
-  `state/` (connection + session state via `provider`), `ui/`, `terminal/`,
-  `platform/` (Tailscale, speech, push).
-- **`lib/src/`** — the shared libghostty renderer: `ghostty_bindings.g.dart`
-  (`@ffi.Native` bindings, ffigen `ffi-native` mode), `terminal_state.dart`
-  (network-only: feeds remote PTY bytes into the engine and relays key/mouse/
-  query output back over the WebSocket), `terminal_painter.dart`, `key_map.dart`.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the current component map and
+dependency rules. In short, `state/` coordinates bounded workspaces and
+connections, `net/` owns HTTP/WebSocket transport, `terminal/` owns the
+Ghostty-backed renderer behind a narrow PTY interface, and `platform/` supplies
+native capabilities. Sensitive server credentials are stored outside shared
+preferences through the platform secret store.
 
 ### Native build flow
 
@@ -149,6 +148,5 @@ attach, notification banner + settings, **Tailscale connect**, **E2E push**
 Service Extension for background), push settings + `device.*` RPC, session-list
 management.
 
-**Pending:** Linux/Windows app assembly (native libs cross-build from macOS;
-final `flutter build` needs those hosts); iOS push background end-to-end
-validation (needs a signed device build + the APNs relay).
+**Pending:** iOS push background end-to-end validation (needs a signed device
+build + the APNs relay).

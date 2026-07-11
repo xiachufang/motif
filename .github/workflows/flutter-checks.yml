@@ -1,0 +1,38 @@
+name: Flutter checks
+
+on:
+  pull_request:
+    paths:
+      - 'apps/flutter/**'
+      - '.github/workflows/flutter-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/flutter/**'
+      - '.github/workflows/flutter-checks.yml'
+
+concurrency:
+  group: flutter-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/flutter
+    env:
+      MOTIF_SKIP_NATIVE_ASSETS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.4'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-pub
+      - name: Pure Dart and widget tests
+        run: >-
+          flutter test --no-pub --concurrency=1 test/motif
+          --exclude-tags='native || tailscale || live || tailscale_live'

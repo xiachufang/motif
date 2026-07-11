@@ -1,5 +1,8 @@
 # Flutter Ghostty — Implementation Plan
 
+> Historical implementation plan. The shipped architecture has evolved; use
+> [ARCHITECTURE.md](ARCHITECTURE.md) as the current reference.
+
 A Flutter terminal emulator powered by **libghostty-vt** via `dart:ffi`.
 
 Reference implementation: [ghostling](https://github.com/ghostty-org/ghostling) (Raylib + libghostty-vt in C).

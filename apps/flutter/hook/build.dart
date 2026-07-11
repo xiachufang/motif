@@ -557,6 +557,11 @@ Future<void> main(List<String> args) async {
     if (!input.config.buildCodeAssets) {
       return;
     }
+    // Pure Dart/widget CI does not execute FFI-backed terminal tests. Avoid
+    // compiling Ghostty, Tailscale and motif-embed for that test lane.
+    if (_envFlagEnabled('MOTIF_SKIP_NATIVE_ASSETS')) {
+      return;
+    }
 
     final codeConfig = input.config.code;
     final targetOS = codeConfig.targetOS;

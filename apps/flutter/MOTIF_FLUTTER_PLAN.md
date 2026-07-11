@@ -1,5 +1,9 @@
 # Motif → Flutter Migration Plan
 
+> Historical migration plan. The migration is complete and several paths and
+> decisions below are obsolete; use [ARCHITECTURE.md](ARCHITECTURE.md) for the
+> current system.
+
 Migrate the Motif iOS app (`~/AllSunday/claude-proj/motif/apps/ios`, ~13.5k LOC SwiftUI) to
 a single Flutter codebase targeting **iOS, macOS, Web, Windows, Android, Linux**, at feature
 parity with the iOS implementation.

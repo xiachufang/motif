@@ -450,7 +450,10 @@ void main() {
     expect(find.text('Failed'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Retry Connection'));
-    await tester.pumpAndSettle();
+    // A failed controller deliberately keeps a reconnect timer scheduled, so
+    // pumpAndSettle can never become idle. Pump only the explicit retry work.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
 
     expect(failing.attempts, 2);
   });

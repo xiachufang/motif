@@ -24,6 +24,7 @@ Future<void> runMotif({
   EmbeddedServerFactory? embeddedServerFactory,
   MotifClientRuntime? clientRuntime,
   ServerConnectionRuntime? serverConnectionRuntime,
+  EmbeddedServerPageFactory? embeddedServerPageFactory,
   MotifStartupHook? afterFirstFrame,
 }) {
   return runZonedGuarded<Future<void>>(
@@ -75,7 +76,10 @@ Future<void> runMotif({
                     value: embedded,
                   ),
               ],
-              child: const MotifApp(),
+              child: MotifApp(
+                embeddedServerPageFactory:
+                    embeddedServerPageFactory ?? _emptyServerPage,
+              ),
             ),
           );
 
@@ -98,3 +102,5 @@ Future<void> runMotif({
       ) ??
       Future<void>.value();
 }
+
+Widget _emptyServerPage() => const SizedBox.shrink();

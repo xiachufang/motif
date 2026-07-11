@@ -28,18 +28,15 @@ typedef EmbeddedServerPageFactory = Widget Function();
 
 const double _desktopTitleBarHeight = 38;
 
-EmbeddedServerPageFactory _embeddedServerPageFactory = () =>
-    const SizedBox.shrink();
-
-/// Desktop entrypoints install the real embedded-server page. Shared web/mobile
-/// builds keep the default pure-Dart placeholder and never import the desktop
-/// settings screen.
-void installEmbeddedServerPageFactory(EmbeddedServerPageFactory factory) {
-  _embeddedServerPageFactory = factory;
-}
+Widget _emptyEmbeddedServerPage() => const SizedBox.shrink();
 
 class MotifApp extends StatelessWidget {
-  const MotifApp({super.key});
+  const MotifApp({
+    super.key,
+    this.embeddedServerPageFactory = _emptyEmbeddedServerPage,
+  });
+
+  final EmbeddedServerPageFactory embeddedServerPageFactory;
 
   @override
   Widget build(BuildContext context) {
@@ -88,7 +85,12 @@ class MotifApp extends StatelessWidget {
       // Focus anchors primary focus inside this subtree so the binding fires.
       home: CallbackShortcuts(
         bindings: _desktopWindowShortcuts(context),
-        child: const Focus(autofocus: true, child: _HomeShell()),
+        child: Focus(
+          autofocus: true,
+          child: _HomeShell(
+            embeddedServerPageFactory: embeddedServerPageFactory,
+          ),
+        ),
       ),
     );
   }
@@ -126,7 +128,9 @@ Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
 /// preserves state. On mobile / when no embedded server is available, the
 /// client is shown directly (unchanged behavior, no toolbar).
 class _HomeShell extends StatelessWidget {
-  const _HomeShell();
+  const _HomeShell({required this.embeddedServerPageFactory});
+
+  final EmbeddedServerPageFactory embeddedServerPageFactory;
 
   @override
   Widget build(BuildContext context) {
@@ -153,7 +157,7 @@ class _HomeShell extends StatelessWidget {
               // stays inside this pane (under the toolbar) instead of covering
               // the whole window.
               const _ClientNavigator(),
-              _embeddedServerPageFactory(),
+              embeddedServerPageFactory(),
             ],
           ),
         ),
