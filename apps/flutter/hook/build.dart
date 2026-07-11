@@ -557,9 +557,14 @@ Future<void> main(List<String> args) async {
     if (!input.config.buildCodeAssets) {
       return;
     }
-    // Pure Dart/widget CI does not execute FFI-backed terminal tests. Avoid
-    // compiling Ghostty, Tailscale and motif-embed for that test lane.
-    if (_envFlagEnabled('MOTIF_SKIP_NATIVE_ASSETS')) {
+    // The Flutter hook runner does not forward arbitrary shell environment
+    // variables. Pure Dart/widget CI creates this marker after `pub get` so
+    // the hook can skip Ghostty, Tailscale and motif-embed deterministically.
+    final skipNativeAssets = File.fromUri(
+      input.packageRoot.resolve('.dart_tool/motif_skip_native_assets'),
+    );
+    if (skipNativeAssets.existsSync()) {
+      output.dependencies.add(skipNativeAssets.uri);
       return;
     }
 
