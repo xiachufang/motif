@@ -14,11 +14,9 @@ import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../log/log.dart';
-import '../models/motif_proto.dart';
 import '../models/settings.dart';
 import '../net/rzv/pairing_payload.dart';
 import '../platform/web_launch.dart';
-import '../platform/push_crypto.dart';
 import '../platform/services.dart';
 import '../terminal/terminal_palette.dart';
 import 'connection_state.dart';
@@ -26,6 +24,7 @@ import 'embedded_server_service.dart';
 import 'embedded_web_server.dart';
 import 'motif_client.dart';
 import 'motif_runtime.dart';
+import 'push_coordinator.dart';
 import 'server_connection_controller.dart';
 import 'server_connection_runtime.dart';
 import 'stores.dart';
@@ -61,6 +60,7 @@ class AppState extends ChangeNotifier {
   final MotifClient Function(MotifServer server) _workspaceClientFactory;
   final ServerConnectionRuntime _serverConnectionRuntime;
   late final TransportResolver _transportResolver;
+  late final PushCoordinator _pushCoordinator;
   final Map<String, MotifClient> _clientsByServer = {};
   final Map<String, ServerConnectionController> _controllersByServer = {};
   final Map<String, String> _activeSessionByServer = {};
@@ -148,6 +148,16 @@ class AppState extends ChangeNotifier {
        _serverConnectionRuntime =
            serverConnectionRuntime ?? const MobileServerConnectionRuntime() {
     _transportResolver = TransportResolver(platform);
+    _pushCoordinator = PushCoordinator(
+      settings: push,
+      service: platform.push,
+      activeClient: () => activeClient,
+      activeServerId: () => servers.activeId,
+      primaryClients: () => _clientsByServer.entries,
+      serverIdForClient: _serverIdForClient,
+      serverExists: (id) => serverById(id) != null,
+      requestOpenSession: requestOpenSession,
+    );
     servers.addListener(_relayStoreChange);
     commands.addListener(_relayStoreChange);
     push.addListener(_onPushSettingsChanged);
@@ -168,10 +178,7 @@ class AppState extends ChangeNotifier {
       // best-effort.
     }
     _applyTerminalPalette();
-    // Wire push handlers immediately so a cold-start notification tap is not
-    // lost while waiting for the first live-client registration.
-    _wirePushHandler();
-    unawaited(_drainPendingNotificationOpen());
+    _pushCoordinator.start();
   }
 
   static Future<AppState> load({
@@ -369,14 +376,7 @@ class AppState extends ChangeNotifier {
 
       final listener = _clientListeners.remove(client);
       if (listener != null) client.removeListener(listener);
-      _pushClientsByInstanceId.removeWhere(
-        (_, value) => identical(value, client),
-      );
-      if (!_clientsForServer(
-        key.serverId,
-      ).any((candidate) => candidate.isLive)) {
-        _pushLiveServerIds.remove(key.serverId);
-      }
+      _pushCoordinator.removeClient(client);
       Log.i(
         'evict warm workspace server=${key.serverId} session=${key.session}',
         name: 'motif.session',
@@ -485,11 +485,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _onPushSettingsChanged() {
-    if (push.enabled) {
-      _registerLiveClientsForPush();
-    } else {
-      _disablePushForKnownServers();
-    }
+    _pushCoordinator.onSettingsChanged();
     notifyListeners();
   }
 
@@ -572,7 +568,6 @@ class AppState extends ChangeNotifier {
     MotifClient client,
     ServerConnectionController controller,
   ) {
-    final wasLive = _pushLiveServerIds.contains(serverId);
     // The client notifier carries both connection transitions and ordinary
     // session/view data updates. Project connection state without notifying
     // here; [_wireClient] emits one app notification after all related maps and
@@ -586,21 +581,13 @@ class AppState extends ChangeNotifier {
         _activeSessionByServer.remove(serverId);
       }
     }
-    if (client.isLive) {
-      _pushLiveServerIds.add(serverId);
-      if (push.enabled) {
-        if (!wasLive) unawaited(_registerForPush(serverId, client));
-      } else {
-        unawaited(_unregisterForPush(serverId, client));
-      }
-    } else {
-      if (!_clientsForServer(serverId).any((candidate) => candidate.isLive)) {
-        _pushLiveServerIds.remove(serverId);
-      }
-      _pushClientsByInstanceId.removeWhere(
-        (_, value) => identical(value, client),
-      );
-    }
+    _pushCoordinator.onClientChanged(
+      serverId,
+      client,
+      anyClientLiveForServer: _clientsForServer(
+        serverId,
+      ).any((candidate) => candidate.isLive),
+    );
   }
 
   void _onAppPaused() {
@@ -623,11 +610,7 @@ class AppState extends ChangeNotifier {
         controller.handleAppResumed();
       }
     }
-    if (push.enabled) {
-      _registerLiveClientsForPush();
-    } else {
-      _disablePushForKnownServers();
-    }
+    _pushCoordinator.onAppResumed();
   }
 
   @visibleForTesting
@@ -710,187 +693,8 @@ class AppState extends ChangeNotifier {
     };
   }
 
-  /// Register this device for E2E push (native APNs token + the per-device AES
-  /// key) once connected, if the user enabled notifications. Best-effort: a
-  /// missing token / unsupported platform is a no-op. No Firebase involved.
-  bool _pushHandlerWired = false;
-  final Map<String, MotifClient> _pushClientsByInstanceId = {};
-  final Set<String> _pushLiveServerIds = {};
-  final Map<String, String> _pushDeviceTokensByServerId = {};
-  final Map<String, Future<void>> _pushRegistrationByServerId = {};
-
-  void _wirePushHandler() {
-    if (_pushHandlerWired) return;
-    _pushHandlerWired = true;
-    platform.push.onEncryptedPayload((e, n) async {
-      final plain = await decryptPushPayload(
-        encKeyB64: push.encKeyBase64,
-        eB64: e,
-        nB64: n,
-      );
-      if (plain == null) return;
-      try {
-        final obj = jsonDecode(plain) as Map<String, Object?>;
-        final motif =
-            (obj['motif'] as Map?)?.cast<String, Object?>() ??
-            const <String, Object?>{};
-        final instanceId = motif['instance_id'] as String?;
-        final sessionId =
-            motif['session_id'] as String? ??
-            obj['session_id'] as String? ??
-            obj['session'] as String?;
-        final kind =
-            motif['kind'] as String? ?? (obj['kind'] as String?) ?? 'push';
-        if (push.isMuted(sessionId ?? '')) return;
-        final target = instanceId == null
-            ? activeClient
-            : _pushClientsByInstanceId[instanceId];
-        if (target == null) return;
-        target.showNotification(
-          MotifNotification(
-            title: (obj['title'] as String?) ?? 'Motif',
-            body: (obj['body'] as String?) ?? '',
-            sessionId: sessionId,
-            kind: kind,
-          ),
-        );
-      } catch (_) {}
-    });
-    platform.push.onNotificationOpen(({session, instanceId}) {
-      _openSessionFromNotification(session: session, instanceId: instanceId);
-    });
-  }
-
-  Future<void> _drainPendingNotificationOpen() async {
-    try {
-      final pending = await platform.push.takePendingNotificationOpen();
-      if (pending == null) return;
-      _openSessionFromNotification(
-        session: pending.session,
-        instanceId: pending.instanceId,
-      );
-    } catch (_) {}
-  }
-
-  /// Resolve a system-notification tap into [requestOpenSession]. Uses the live
-  /// or persisted motifd [instanceId] → server mapping; unattributed legacy
-  /// notifications fall back to the active server.
-  void _openSessionFromNotification({
-    required String? session,
-    String? instanceId,
-  }) {
-    final sessionId = session?.trim();
-    if (sessionId == null || sessionId.isEmpty) return;
-    if (push.isMuted(sessionId)) return;
-
-    String? serverId;
-    if (instanceId != null && instanceId.isNotEmpty) {
-      final client = _pushClientsByInstanceId[instanceId];
-      if (client != null) {
-        serverId = _serverIdForClient(client);
-      }
-      final persisted = push.serverIdForInstance(instanceId);
-      if (serverId == null &&
-          persisted != null &&
-          serverById(persisted) != null) {
-        serverId = persisted;
-      }
-      // An attributed notification must not be sent to an arbitrary active
-      // server. On an upgraded install there may be no persisted mapping for
-      // an older notification yet; ignore it rather than open the wrong place.
-      if (serverId == null) return;
-    }
-    serverId ??= servers.activeId;
-    if (serverId == null || serverId.isEmpty) return;
-    requestOpenSession(serverId: serverId, session: sessionId);
-  }
-
-  Future<void> registerForPush({MotifClient? client}) async {
-    final target = client ?? activeClient;
-    if (target == null) return;
-    final serverId = _serverIdForClient(target);
-    if (serverId != null) {
-      await _registerForPush(serverId, target);
-      return;
-    }
-    await _doRegisterForPush(null, target);
-  }
-
-  Future<void> _registerForPush(String serverId, MotifClient client) {
-    final existing = _pushRegistrationByServerId[serverId];
-    if (existing != null) return existing;
-    final task = _doRegisterForPush(serverId, client);
-    _pushRegistrationByServerId[serverId] = task;
-    task.whenComplete(() {
-      if (identical(_pushRegistrationByServerId[serverId], task)) {
-        _pushRegistrationByServerId.remove(serverId);
-      }
-    });
-    return task;
-  }
-
-  Future<void> _doRegisterForPush(String? serverId, MotifClient target) async {
-    if (!push.enabled || !target.isLive) return;
-    // Decrypt foreground push payloads in-app and route them by motifd
-    // instance_id. Background/killed delivery is decrypted by the iOS NSE.
-    _wirePushHandler();
-    try {
-      final reg = await platform.push.register(encKeyBase64: push.encKeyBase64);
-      if (reg == null) return;
-      final instanceId = await target.registerDevice(
-        deviceToken: reg.deviceToken,
-        platform: reg.platform,
-        encKeyBase64: reg.encKeyBase64,
-        environment: reg.environment,
-        appVersion: reg.appVersion,
-        mutedSessions: push.mutedSessions.toList(),
-      );
-      if (serverId != null) {
-        _pushDeviceTokensByServerId[serverId] = reg.deviceToken;
-      }
-      if (instanceId != null && instanceId.isNotEmpty) {
-        _pushClientsByInstanceId[instanceId] = target;
-        if (serverId != null) {
-          await push.bindInstanceToServer(instanceId, serverId);
-        }
-      }
-    } catch (_) {
-      // Push is best-effort; never block the session on it.
-    }
-  }
-
-  void _registerLiveClientsForPush() {
-    if (!push.enabled) return;
-    for (final entry in _clientsByServer.entries) {
-      final client = entry.value;
-      if (client.isLive) unawaited(_registerForPush(entry.key, client));
-    }
-  }
-
-  Future<void> _unregisterForPush(String serverId, MotifClient client) async {
-    final token = _pushDeviceTokensByServerId[serverId];
-    _pushClientsByInstanceId.removeWhere(
-      (_, value) => identical(value, client),
-    );
-    if (token == null || token.isEmpty || !client.isLive) return;
-    try {
-      await client.unregisterDevice(token);
-    } catch (_) {
-      // Push opt-out is best-effort; if the server is gone, the next live
-      // connection while disabled will retry with the last known token.
-      return;
-    }
-    _pushDeviceTokensByServerId.remove(serverId);
-  }
-
-  void _disablePushForKnownServers() {
-    for (final entry in _clientsByServer.entries) {
-      final client = entry.value;
-      if (client.isLive) unawaited(_unregisterForPush(entry.key, client));
-    }
-    _pushClientsByInstanceId.clear();
-    unawaited(platform.push.unregister());
-  }
+  Future<void> registerForPush({MotifClient? client}) =>
+      _pushCoordinator.registerForPush(client: client);
 
   String? _serverIdForClient(MotifClient client) {
     for (final entry in _clientsByServer.entries) {
@@ -1041,12 +845,8 @@ class AppState extends ChangeNotifier {
       controller?.dispose();
       if (client == null) continue;
       final listener = _clientListeners.remove(client);
-      _pushClientsByInstanceId.removeWhere(
-        (_, value) => identical(value, client),
-      );
-      _pushLiveServerIds.remove(id);
-      _pushDeviceTokensByServerId.remove(id);
-      _pushRegistrationByServerId.remove(id);
+      _pushCoordinator.removeClient(client);
+      _pushCoordinator.removeServer(id);
       _serverConnectionTasks.remove(id);
       if (listener != null) client.removeListener(listener);
       unawaited(client.disconnect());
@@ -1059,9 +859,7 @@ class AppState extends ChangeNotifier {
       controller?.dispose();
       if (client == null) continue;
       final listener = _clientListeners.remove(client);
-      _pushClientsByInstanceId.removeWhere(
-        (_, value) => identical(value, client),
-      );
+      _pushCoordinator.removeClient(client);
       if (listener != null) client.removeListener(listener);
       unawaited(client.disconnect());
       client.dispose();
@@ -1074,6 +872,7 @@ class AppState extends ChangeNotifier {
     servers.removeListener(_relayStoreChange);
     commands.removeListener(_relayStoreChange);
     push.removeListener(_onPushSettingsChanged);
+    _pushCoordinator.dispose();
     embeddedServer?.removeListener(_onEmbeddedServerChanged);
     embeddedServer?.dispose();
     terminalSettings.removeListener(_onTerminalSettingsChanged);
