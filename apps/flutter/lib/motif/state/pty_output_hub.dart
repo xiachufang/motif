@@ -8,10 +8,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../log/log.dart';
-
-/// A sink of decoded PTY output bytes for a single PTY surface (the terminal
-/// widget subscribes to it).
-typedef PtyByteSink = void Function(Uint8List bytes);
+import '../terminal/terminal_session.dart';
 
 class _PtyReplayDelivery {
   _PtyReplayDelivery(this.sink);

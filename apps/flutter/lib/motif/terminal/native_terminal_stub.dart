@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/widgets.dart';
 
-import '../state/motif_client.dart';
 import 'terminal_palette.dart';
+import 'terminal_session.dart';
 import 'wasm_terminal_web.dart';
 
 /// Web: use the libghostty-vt WebAssembly terminal (via the GhosttyVt JS
@@ -10,7 +10,7 @@ import 'wasm_terminal_web.dart';
 /// `dart:ffi` is never imported on web.
 Widget nativeTerminalView({
   Key? key,
-  required MotifClient motif,
+  required TerminalSession motif,
   required String ptyId,
   required double fontSize,
   required bool active,

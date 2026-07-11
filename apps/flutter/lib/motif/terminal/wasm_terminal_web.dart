@@ -13,13 +13,13 @@ import 'dart:js_interop';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../state/motif_client.dart';
 import '../ui/theme/motif_theme.dart';
 import 'terminal_error_view.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_fonts.dart';
 import 'terminal_input.dart';
 import 'terminal_palette.dart';
+import 'terminal_session.dart';
 import 'web_key_encoder.dart';
 
 @JS('GhosttyVt')
@@ -34,7 +34,7 @@ extension type _GhosttyVt(JSObject _) implements JSObject {
 }
 
 Widget buildWebTerminal({
-  required MotifClient motif,
+  required TerminalSession motif,
   required String ptyId,
   required double fontSize,
   required bool active,
@@ -59,7 +59,7 @@ Widget buildWebTerminal({
 }
 
 class _WasmTerminalView extends StatefulWidget {
-  final MotifClient motif;
+  final TerminalSession motif;
   final String ptyId;
   final double fontSize;
   final bool active;

@@ -3,7 +3,7 @@
 /// Mirrors `lib/src/terminal_view.dart` (the local-PTY demo) but runs the
 /// ghostty engine in *network mode*: bytes from the remote `/pty/<id>` stream
 /// are fed via [TerminalState.feedBytes], and the engine's encoded input is
-/// routed to [MotifClient.writePty]. Grid resizes additionally issue an RPC
+/// routed to [TerminalSession.writePty]. Grid resizes additionally issue an RPC
 /// `pty.resize`.
 ///
 /// Runtime requires the native libghostty asset (built with Zig). If the asset
@@ -26,7 +26,6 @@ import 'key_map.dart';
 import 'terminal_input.dart';
 import 'terminal_painter.dart';
 import '../log/log.dart';
-import '../state/motif_client.dart';
 import 'terminal_error_view.dart';
 import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
@@ -36,6 +35,7 @@ import 'terminal_paste.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_scrollbar.dart';
 import 'terminal_snapshot.dart';
+import 'terminal_session.dart';
 import 'terminal_worker.dart';
 import '../ui/widgets/top_toast.dart';
 
@@ -46,7 +46,7 @@ part 'motif_terminal/key_events.dart';
 part 'motif_terminal/pointer_input.dart';
 
 class MotifTerminalView extends StatefulWidget {
-  final MotifClient motif;
+  final TerminalSession motif;
   final String ptyId;
   final double fontSize;
   final String? fontFamily;

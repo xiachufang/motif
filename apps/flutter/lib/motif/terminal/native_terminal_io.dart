@@ -1,14 +1,14 @@
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/widgets.dart';
 
-import '../state/motif_client.dart';
 import 'motif_terminal_view.dart';
 import 'terminal_palette.dart';
+import 'terminal_session.dart';
 
 /// Native: the real libghostty-backed terminal surface.
 Widget nativeTerminalView({
   Key? key,
-  required MotifClient motif,
+  required TerminalSession motif,
   required String ptyId,
   required double fontSize,
   required bool active,

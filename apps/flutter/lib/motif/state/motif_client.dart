@@ -15,10 +15,11 @@ import '../models/settings.dart';
 import '../net/proxy_client.dart';
 import '../net/remote_port_forwarder.dart';
 import '../net/rpc_client.dart';
+import '../terminal/terminal_session.dart';
 import 'motif_runtime.dart';
 import 'pty_output_hub.dart';
 
-export 'pty_output_hub.dart' show PtyByteSink;
+export '../terminal/terminal_session.dart' show PtyByteSink, TerminalSession;
 
 const int _kSessionNotFound = -32007;
 
@@ -122,7 +123,8 @@ class _RemotePortMappingConfig {
   }
 }
 
-class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
+class MotifClient extends ChangeNotifier
+    implements MotifRuntimeClient, TerminalSession {
   MotifClient({MotifClientRuntime? runtime})
     : runtime = runtime ?? const MobileMotifClientRuntime() {
     _ptyOutput.describeActive = () =>
@@ -201,6 +203,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
 
   /// Whether terminal input may be sent. Only true when a session is
   /// attached; blocks input while disconnected or reconnecting.
+  @override
   bool get canInput => _state is ConnAttached;
 
   // ─────────────────────────── connect ───────────────────────────
@@ -576,12 +579,15 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   // ─────────────────────────── pty I/O ───────────────────────────
 
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
+  @override
   void registerPtySink(String ptyId, PtyByteSink sink) =>
       _ptyOutput.registerSink(ptyId, sink);
 
+  @override
   void unregisterPtySink(String ptyId, [PtyByteSink? sink]) =>
       _ptyOutput.unregisterSink(ptyId, sink);
 
+  @override
   Future<void> writePty(String ptyId, List<int> data) {
     // Drop writes while not attached so no input leaks out mid-reconnect.
     if (!canInput) return Future<void>.value();
@@ -612,6 +618,7 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     return info;
   }
 
+  @override
   Future<void> resizePty(String ptyId, int cols, int rows) =>
       _rpc?.call('pty.resize', {'pty_id': ptyId, 'cols': cols, 'rows': rows}) ??
       Future<void>.value();
@@ -632,9 +639,11 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   Future<void> waitForPtyReplay(String ptyId) =>
       _rpc?.waitForPtyReplay(ptyId) ?? Future<void>.value();
 
+  @override
   Future<void> activatePtyStream(String ptyId) =>
       runtime.onTerminalSurfaceReady(this, ptyId);
 
+  @override
   Future<void> deactivatePtyStream(String ptyId) =>
       runtime.onTerminalSurfaceDisposed(this, ptyId);
 
