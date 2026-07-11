@@ -33,10 +33,11 @@
 //! Every connection leads with a single WebSocket **Text** frame
 //! `{"since":<offset>}` — the absolute byte offset of the first data byte that
 //! follows (`since` for a warm delta, `total` for a snapshot). Framed-mode
-//! connections add `pty_frame` / `pty_compress` fields. All data frames are
-//! Binary, so the client tells them apart by frame type and adopts `offset` as
-//! its resume cursor. Both replay kinds decode to opaque PTY bytes the client
-//! feeds into its terminal identically.
+//! connections add `pty_frame` / `pty_compress` fields plus `replay_bytes`, the
+//! decoded byte count before the stream is live. All data frames are Binary,
+//! so the client tells them apart by frame type and adopts `offset` as its
+//! resume cursor. Both replay kinds decode to opaque PTY bytes the client feeds
+//! into its terminal identically.
 //!
 //! A live subscriber that lags past the broadcast capacity is closed with 4011;
 //! the client reconnects without `since=` and gets a fresh snapshot.
@@ -210,6 +211,7 @@ async fn handle_pty_socket(
             "since": start,
             "pty_frame": "v1",
             "pty_compress": "zlib",
+            "replay_bytes": replay.len(),
         })
         .to_string(),
     };

@@ -11,7 +11,6 @@
 library;
 
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
@@ -29,6 +28,7 @@ import 'terminal_painter.dart';
 import '../log/log.dart';
 import '../state/motif_client.dart';
 import 'terminal_error_view.dart';
+import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
@@ -77,6 +77,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     with SingleTickerProviderStateMixin, TextInputClient {
   static const double _keyboardCursorMargin = 16;
   static const Duration _terminalInitDelay = Duration(milliseconds: 32);
+  static const Duration _remoteByteCoalesceDelay = Duration(milliseconds: 8);
+  static const Duration _interactiveEchoWindow = Duration(milliseconds: 150);
   static const _softKeyboardSeed = '\u200b';
   static const _softKeyboardValue = TextEditingValue(
     text: _softKeyboardSeed,
@@ -86,6 +88,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   TerminalWorkerClient? _worker;
   Timer? _resizeTimer;
   Timer? _terminalInitTimer;
+  Timer? _remoteByteFlushTimer;
   Ticker? _scrollTicker;
   Simulation? _scrollSimulation;
   Duration? _scrollSimulationStart;
@@ -138,8 +141,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   double _bottomViewPadding = 0;
   _KeyboardLiftTrace? _lastKeyboardLiftTrace;
   DateTime? _lastKeyboardLiftLogAt;
-  final Queue<Uint8List> _remoteByteQueue = Queue<Uint8List>();
-  int _remoteByteQueueBytes = 0;
+  final TerminalByteBatcher _remoteByteBatcher = TerminalByteBatcher();
+  DateTime? _lastHostWriteAt;
   TerminalSnapshot? _snapshot;
   TerminalSelection? _selection;
   TerminalCellPoint? _mouseSelectionAnchor;
@@ -255,9 +258,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     widget.motif.unregisterPtySink(widget.ptyId, _onRemoteBytes);
     _resizeTimer?.cancel();
     _terminalInitTimer?.cancel();
+    _remoteByteFlushTimer?.cancel();
     _retryTimer?.cancel();
-    _remoteByteQueue.clear();
-    _remoteByteQueueBytes = 0;
+    _remoteByteBatcher.clear();
     _stopScrollInertia(resetVelocity: true);
     _scrollTicker?.dispose();
     _discardTerminalSelectionState();
@@ -422,11 +425,13 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                   }
                   final font = _fontSpec;
                   final snapshot = _snapshot;
-                  if (!_initialized || snapshot == null) {
+                  if (!_initialized) {
                     _scheduleTerminalInit(constraints);
+                  }
+                  if (snapshot == null) {
                     return ColoredBox(color: widget.palette.background);
                   }
-                  _handleResize(constraints);
+                  if (_initialized) _handleResize(constraints);
                   final colorScheme = Theme.of(context).colorScheme;
                   return Stack(
                     fit: StackFit.expand,

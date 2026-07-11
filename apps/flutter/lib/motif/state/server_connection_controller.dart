@@ -143,12 +143,24 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
     _appPaused = true;
     client.setForeground(false);
     _cancelReconnect();
+    Log.i(
+      'app paused server=$serverId clientState=${client.state.runtimeType} '
+      'controllerState=${_state.runtimeType} wants=$_wantsConnection '
+      'live=${client.isLive}',
+      name: 'motif.resume',
+    );
   }
 
   @override
   void handleMobileAppResumed() {
     _appPaused = false;
     client.setForeground(true);
+    Log.i(
+      'app resumed server=$serverId clientState=${client.state.runtimeType} '
+      'controllerState=${_state.runtimeType} wants=$_wantsConnection '
+      'live=${client.isLive} session=${client.intendedSession}',
+      name: 'motif.resume',
+    );
     if (!_wantsConnection) return;
     final server = serverProvider();
     if (server == null) return;
@@ -205,6 +217,13 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
   Future<void> _connect({required bool force, required bool reconnect}) async {
     final server = serverProvider();
     if (server == null) return;
+    final total = Stopwatch()..start();
+    var stage = Stopwatch()..start();
+    Log.i(
+      'connect begin server=$serverId kind=${server.kind.name} force=$force '
+      'reconnect=$reconnect session=${client.intendedSession}',
+      name: 'motif.resume',
+    );
 
     final session = client.intendedSession;
     _setState(
@@ -215,9 +234,20 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
 
     if (force || reconnect) {
       await resolver.stopForwarder(server.id);
+      Log.i(
+        'connect stage server=$serverId stage=stop-forwarder '
+        'took=${stage.elapsedMilliseconds}ms',
+        name: 'motif.resume',
+      );
+      stage = Stopwatch()..start();
     }
 
     final resolution = await resolver.resolve(server);
+    Log.i(
+      'connect stage server=$serverId stage=resolve '
+      'took=${stage.elapsedMilliseconds}ms result=${resolution.runtimeType}',
+      name: 'motif.resume',
+    );
     switch (resolution) {
       case TransportBlocked(:final blocker):
         if (client.isLive || client.hasTerminalSnapshot) {
@@ -228,6 +258,7 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
         }
         return;
       case TransportReady(:final target, :final proxy, :final certPin):
+        stage = Stopwatch()..start();
         try {
           await client.connect(
             target,
@@ -235,8 +266,20 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
             proxy: proxy,
             certPin: certPin,
           );
+          Log.i(
+            'connect stage server=$serverId stage=client-connect '
+            'took=${stage.elapsedMilliseconds}ms total=${total.elapsedMilliseconds}ms '
+            'clientState=${client.state.runtimeType}',
+            name: 'motif.resume',
+          );
           _maybeUpgradeToDirect(server);
         } catch (e) {
+          Log.w(
+            'connect failed server=$serverId stage=client-connect '
+            'took=${stage.elapsedMilliseconds}ms total=${total.elapsedMilliseconds}ms',
+            name: 'motif.resume',
+            error: e,
+          );
           _setState(ServerFailed('$e', session: session));
           _maybeScheduleReconnect();
         }
@@ -305,12 +348,22 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
 
   Future<void> _attemptReconnect() async {
     if (_appPaused || !_wantsConnection || _reconnecting) return;
+    final sw = Stopwatch()..start();
     _reconnecting = true;
     _reconnectAttempts++;
+    Log.i(
+      'resume reconnect begin server=$serverId attempt=$_reconnectAttempts',
+      name: 'motif.resume',
+    );
     try {
       await _connect(force: true, reconnect: true);
     } finally {
       _reconnecting = false;
+      Log.i(
+        'resume reconnect end server=$serverId attempt=$_reconnectAttempts '
+        'took=${sw.elapsedMilliseconds}ms state=${client.state.runtimeType}',
+        name: 'motif.resume',
+      );
     }
     if (_wantsConnection && client.state is ConnFailed) {
       _maybeScheduleReconnect();

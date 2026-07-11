@@ -212,10 +212,17 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     Uint8List? certPin,
   }) async {
     if (!force && (_state is ConnConnected || _state is ConnAttached)) return;
+    final total = Stopwatch()..start();
+    var stage = Stopwatch()..start();
 
     if (force && _rpc != null) {
       _carriedPtyCursors = _rpc!.ptyCursors();
       await _teardownRpc();
+      Log.i(
+        'reconnect stage=teardown took=${stage.elapsedMilliseconds}ms '
+        'session=$intendedSession cursors=${_carriedPtyCursors.length}',
+        name: 'motif.resume',
+      );
     }
 
     _setState(const ConnConnecting());
@@ -231,7 +238,13 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
       );
 
     try {
+      stage = Stopwatch()..start();
       final ping = await _pingWithRetry(rpc, server);
+      Log.i(
+        'reconnect stage=ping took=${stage.elapsedMilliseconds}ms '
+        'session=$intendedSession',
+        name: 'motif.resume',
+      );
       if (!ping.isMotifServer) {
         await rpc.close();
         _setState(ConnFailed('Not a motif server at ${server.endpoint}'));
@@ -256,7 +269,13 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
     if (intended != null) {
       _setState(ConnAttached(intended));
       try {
+        stage = Stopwatch()..start();
         await attach(intended);
+        Log.i(
+          'reconnect stage=attach took=${stage.elapsedMilliseconds}ms '
+          'total=${total.elapsedMilliseconds}ms session=$intended',
+          name: 'motif.resume',
+        );
         final pending = pendingLocalViewId;
         if (pending != null) {
           if (pending != activeViewId && views.any((v) => v.id == pending)) {
@@ -295,14 +314,28 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
       error is RpcException && error.code == _kSessionNotFound;
 
   Future<PingInfo> _pingWithRetry(RpcClient rpc, MotifServer server) async {
+    final sw = Stopwatch()..start();
     try {
       return await rpc.ping();
-    } catch (_) {
+    } catch (e) {
       final delay = server.kind == ServerKind.tailscale
           ? const Duration(milliseconds: 900)
           : const Duration(milliseconds: 350);
+      Log.w(
+        'ping first attempt failed after=${sw.elapsedMilliseconds}ms '
+        'kind=${server.kind.name} retryDelay=${delay.inMilliseconds}ms',
+        name: 'motif.resume',
+        error: e,
+      );
       await Future<void>.delayed(delay);
-      return rpc.ping();
+      final retry = Stopwatch()..start();
+      final result = await rpc.ping();
+      Log.i(
+        'ping retry succeeded took=${retry.elapsedMilliseconds}ms '
+        'total=${sw.elapsedMilliseconds}ms',
+        name: 'motif.resume',
+      );
+      return result;
     }
   }
 
@@ -594,6 +627,10 @@ class MotifClient extends ChangeNotifier implements MotifRuntimeClient {
   @override
   Future<void> syncPtyStreams(Set<String> ptyIds) =>
       _rpc?.syncPtyStreams(ptyIds) ?? Future<void>.value();
+
+  @override
+  Future<void> waitForPtyReplay(String ptyId) =>
+      _rpc?.waitForPtyReplay(ptyId) ?? Future<void>.value();
 
   Future<void> activatePtyStream(String ptyId) =>
       runtime.onTerminalSurfaceReady(this, ptyId);

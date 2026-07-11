@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import '../log/log.dart';
 import 'ghostty_bindings.g.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
@@ -84,6 +85,8 @@ class TerminalWorkerClient {
     required int paddingTop,
     required int foregroundArgb,
     required int backgroundArgb,
+    bool waitForFirstFeed = false,
+    Duration? initialSnapshotFallback,
   }) {
     _send({
       'type': 'init',
@@ -97,6 +100,8 @@ class TerminalWorkerClient {
       'paddingTop': paddingTop,
       'foregroundArgb': foregroundArgb,
       'backgroundArgb': backgroundArgb,
+      'waitForFirstFeed': waitForFirstFeed,
+      'initialSnapshotFallbackMs': initialSnapshotFallback?.inMilliseconds,
     });
   }
 
@@ -116,6 +121,7 @@ class TerminalWorkerClient {
     _send({
       'type': 'feed',
       'bytes': TransferableTypedData.fromList([bytes]),
+      'enqueuedAtUs': DateTime.now().microsecondsSinceEpoch,
     });
   }
 
@@ -291,6 +297,13 @@ class TerminalWorkerClient {
         }
       case 'error':
         _onError(message['error'] ?? 'terminal worker error');
+      case 'diagnostic':
+        final text = '${message['message']}';
+        if (message['info'] == true) {
+          Log.i(text, name: 'motif.terminal.worker');
+        } else {
+          Log.d(text, name: 'motif.terminal.worker');
+        }
     }
   }
 }
@@ -337,6 +350,11 @@ class _TerminalWorker {
   DateTime? remoteBurstStartedAt;
   int remoteBurstBytes = 0;
   int remoteBurstChunks = 0;
+  int diagnosticFeedChunks = 0;
+  int diagnosticFeedBytes = 0;
+  int diagnosticSnapshots = 0;
+  Timer? initialSnapshotTimer;
+  bool waitingForFirstFeed = false;
 
   void run() {
     commands.listen(_handleCommand);
@@ -351,13 +369,42 @@ class _TerminalWorker {
         case 'theme':
           foregroundArgb = command['foregroundArgb'] as int;
           backgroundArgb = command['backgroundArgb'] as int;
-          _scheduleSnapshot(force: true, delay: Duration.zero);
+          if (!waitingForFirstFeed) {
+            _scheduleSnapshot(force: true, delay: Duration.zero);
+          }
         case 'feed':
           final bytes = _materializeBytes(command['bytes']);
           if (bytes != null && bytes.isNotEmpty) {
+            final firstFeed = waitingForFirstFeed;
+            if (firstFeed) {
+              waitingForFirstFeed = false;
+              initialSnapshotTimer?.cancel();
+              initialSnapshotTimer = null;
+            }
+            final startedAtUs = DateTime.now().microsecondsSinceEpoch;
+            final enqueuedAtUs = command['enqueuedAtUs'] as int?;
+            final sw = Stopwatch()..start();
             _noteRemoteFeed(bytes.length);
             state?.feedBytes(bytes);
-            _scheduleSnapshot(force: true, delay: _feedFrameInterval);
+            diagnosticFeedChunks++;
+            diagnosticFeedBytes += bytes.length;
+            if (diagnosticFeedChunks <= 3 ||
+                diagnosticFeedChunks == 10 ||
+                diagnosticFeedChunks % 1000 == 0) {
+              events.send({
+                'type': 'diagnostic',
+                'info': diagnosticFeedChunks <= 10,
+                'message':
+                    'feed chunk=$diagnosticFeedChunks bytes=${bytes.length} '
+                    'totalBytes=$diagnosticFeedBytes '
+                    'queueLagUs=${enqueuedAtUs == null ? -1 : startedAtUs - enqueuedAtUs} '
+                    'processUs=${sw.elapsedMicroseconds}',
+              });
+            }
+            _scheduleSnapshot(
+              force: true,
+              delay: firstFeed ? Duration.zero : _feedFrameInterval,
+            );
           }
         case 'resize':
           _resize(command);
@@ -444,9 +491,21 @@ class _TerminalWorker {
     );
     terminal.init(command['cols'] as int, command['rows'] as int);
     state = terminal;
+    waitingForFirstFeed = command['waitForFirstFeed'] == true;
     _setMouseEncoderSize(command);
     events.send({'type': 'initialized'});
-    _scheduleSnapshot(force: true, delay: Duration.zero);
+    if (waitingForFirstFeed) {
+      final fallbackMs = command['initialSnapshotFallbackMs'] as int?;
+      if (fallbackMs != null) {
+        initialSnapshotTimer = Timer(Duration(milliseconds: fallbackMs), () {
+          initialSnapshotTimer = null;
+          waitingForFirstFeed = false;
+          _scheduleSnapshot(force: true, delay: Duration.zero);
+        });
+      }
+    } else {
+      _scheduleSnapshot(force: true, delay: Duration.zero);
+    }
   }
 
   void _resize(Map command) {
@@ -459,7 +518,9 @@ class _TerminalWorker {
       command['cellHeight'] as int,
     );
     _setMouseEncoderSize(command);
-    _scheduleSnapshot(force: true, delay: Duration.zero);
+    if (!waitingForFirstFeed) {
+      _scheduleSnapshot(force: true, delay: Duration.zero);
+    }
   }
 
   void _setMouseEncoderSize(Map command) {
@@ -579,6 +640,7 @@ class _TerminalWorker {
     cursorTimer = null;
     final terminal = state;
     if (terminal == null) return;
+    final sw = Stopwatch()..start();
     terminal.updateRenderState();
     final dirty =
         terminal.getDirty() !=
@@ -591,14 +653,23 @@ class _TerminalWorker {
       return;
     }
     forceSnapshot = false;
-    events.send({
-      'type': 'snapshot',
-      'snapshot': terminal.snapshot(
-        defaultForegroundArgb: foregroundArgb,
-        defaultBackgroundArgb: backgroundArgb,
-        selection: terminal.trackedSelection(),
-      ),
-    });
+    final snapshot = terminal.snapshot(
+      defaultForegroundArgb: foregroundArgb,
+      defaultBackgroundArgb: backgroundArgb,
+      selection: terminal.trackedSelection(),
+    );
+    diagnosticSnapshots++;
+    events.send({'type': 'snapshot', 'snapshot': snapshot});
+    if (diagnosticSnapshots <= 3 || diagnosticSnapshots % 100 == 0) {
+      events.send({
+        'type': 'diagnostic',
+        'info': diagnosticSnapshots <= 3,
+        'message':
+            'snapshot count=$diagnosticSnapshots rows=${snapshot.lines.length} '
+            'feedChunks=$diagnosticFeedChunks feedBytes=$diagnosticFeedBytes '
+            'buildUs=${sw.elapsedMicroseconds}',
+      });
+    }
     _scheduleCursorPoll();
   }
 
@@ -608,6 +679,8 @@ class _TerminalWorker {
   }
 
   void _disposeState() {
+    initialSnapshotTimer?.cancel();
+    initialSnapshotTimer = null;
     frameTimer?.cancel();
     frameTimer = null;
     cursorTimer?.cancel();
@@ -616,7 +689,11 @@ class _TerminalWorker {
     state = null;
     lastCursor = null;
     forceSnapshot = false;
+    waitingForFirstFeed = false;
     _resetRemoteBurst();
+    diagnosticFeedChunks = 0;
+    diagnosticFeedBytes = 0;
+    diagnosticSnapshots = 0;
   }
 }
 

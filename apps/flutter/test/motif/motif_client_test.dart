@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/state/motif_client.dart';
@@ -44,6 +46,12 @@ void main() {
 
       runtime.onSessionAttached(host);
       await Future<void>.delayed(Duration.zero);
+      expect(host.syncedStreamSets, [
+        {'pty-1'},
+      ]);
+
+      host.completeReplay('pty-1');
+      await Future<void>.delayed(Duration.zero);
       await Future<void>.delayed(Duration.zero);
 
       expect(host.syncedStreamSets, [
@@ -54,6 +62,27 @@ void main() {
       await runtime.onTerminalSurfaceDisposed(host, 'pty-1');
 
       expect(host.closedPtys, isEmpty);
+      expect(host.syncedStreamSets, [
+        {'pty-1'},
+        {'pty-1', 'pty-2'},
+      ]);
+    });
+
+    test('desktop falls back when replay completion is unavailable', () async {
+      final runtime = DesktopMotifClientRuntime(
+        backgroundRestoreDelay: Duration.zero,
+        activeReplayWaitTimeout: Duration.zero,
+      );
+      final host = _RuntimeHost(
+        liveTabPtyIds: {'pty-1', 'pty-2'},
+        activePtyId: 'pty-1',
+      );
+
+      runtime.onSessionAttached(host);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
       expect(host.syncedStreamSets, [
         {'pty-1'},
         {'pty-1', 'pty-2'},
@@ -150,6 +179,7 @@ class _RuntimeHost implements MotifRuntimeClient {
   final List<String> ensuredPtys = [];
   final List<String> closedPtys = [];
   final List<Set<String>> syncedStreamSets = [];
+  final Map<String, Completer<void>> replayCompleters = {};
 
   @override
   Future<void> ensurePtyStream(String ptyId) async {
@@ -164,6 +194,15 @@ class _RuntimeHost implements MotifRuntimeClient {
   @override
   Future<void> syncPtyStreams(Set<String> ptyIds) async {
     syncedStreamSets.add(Set<String>.from(ptyIds));
+  }
+
+  @override
+  Future<void> waitForPtyReplay(String ptyId) =>
+      replayCompleters.putIfAbsent(ptyId, Completer<void>.new).future;
+
+  void completeReplay(String ptyId) {
+    final completer = replayCompleters.putIfAbsent(ptyId, Completer<void>.new);
+    if (!completer.isCompleted) completer.complete();
   }
 }
 
