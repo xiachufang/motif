@@ -595,7 +595,7 @@ List<QuickCommandSet> defaultQuickCommandSets() => [
     id: 'set-codex',
     name: 'codex',
     matches: const ['codex'],
-    slash: const ['/new', '/clear', '/diff', '/compact'],
+    slash: const ['/new', '/clear', '/resume', '/diff', '/compact'],
   ),
 ];
 

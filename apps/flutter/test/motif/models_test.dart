@@ -145,6 +145,14 @@ void main() {
         expect(back.name, s.name);
         expect(back.commands.length, s.commands.length);
       }
+
+      for (final agent in ['claude', 'codex']) {
+        final set = sets.singleWhere((s) => s.name == agent);
+        expect(
+          set.commands.where((command) => command.label == '/resume'),
+          hasLength(1),
+        );
+      }
     });
 
     test('programKey extracts basename of first token', () {
