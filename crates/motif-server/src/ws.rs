@@ -189,9 +189,7 @@ pub fn encode_event(ev: &Event, codec: Codec) -> Message {
     match codec {
         Codec::Json => {
             // Wrap the typed Event in a JSON-RPC Notification envelope by
-            // round-tripping through serde_json::Value — the same path the
-            // legacy code took. Cheap and keeps the wire identical for
-            // older clients.
+            // round-tripping through serde_json::Value.
             let value = serde_json::to_value(ev).unwrap_or(serde_json::Value::Null);
             let (method, params) = match value {
                 serde_json::Value::Object(mut map) => {

@@ -16,7 +16,7 @@ pub const PING_SERVICE: &str = "motif-server";
 /// rendezvous-mode server also exposes a plaintext, non-loopback `--listen`
 /// port, it advertises that port plus its non-loopback NIC addresses here so a
 /// same-LAN client can probe and upgrade off the relay. Both are omitted from
-/// the wire when empty, so older peers are unaffected.
+/// the wire when empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingInfo {
     pub service: String,

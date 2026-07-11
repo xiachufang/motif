@@ -1,11 +1,8 @@
 //! `POST /rpc/<method>` — HTTP request/response transport for the
 //! existing JSON-RPC dispatch table.
 //!
-//! This is the future home of all RPC; `/ws` keeps working alongside it
-//! during migration. Each method route delegates to the same
-//! `dispatch_concurrent` / `dispatch_mut` functions used by the WS
-//! layer — only the framing changes (HTTP body in / JSON body out
-//! instead of WS frames). Concurrent dispatch goes onto
+//! Each method route delegates to the shared `dispatch_concurrent` /
+//! `dispatch_mut` functions. Concurrent dispatch goes onto
 //! `tokio::task::spawn_blocking` so slow fs / git handlers don't tie up
 //! axum worker threads.
 //!

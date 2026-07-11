@@ -14,19 +14,21 @@ void main() {
     expect(p.rzvDirectAddrs, ['192.168.1.9', '10.0.0.4']);
   });
 
-  test('defaults the rzv fields when absent (older servers)', () {
+  test('supports omitted optional rzv fields', () {
     final p = PingInfo.fromJson({'service': 'motif-server', 'version': '1'});
     expect(p.rzvDirectPort, isNull);
     expect(p.rzvDirectAddrs, isEmpty);
   });
 
-  test('tolerates non-string entries in the addrs array', () {
-    final p = PingInfo.fromJson({
-      'service': 'motif-server',
-      'version': '1',
-      'rzv_direct_port': 8000,
-      'rzv_direct_addrs': ['192.168.1.9', 42, null],
-    });
-    expect(p.rzvDirectAddrs, ['192.168.1.9']);
+  test('rejects malformed rzv address entries', () {
+    expect(
+      () => PingInfo.fromJson({
+        'service': 'motif-server',
+        'version': '1',
+        'rzv_direct_port': 8000,
+        'rzv_direct_addrs': ['192.168.1.9', 42, null],
+      }),
+      throwsA(isA<TypeError>()),
+    );
   });
 }

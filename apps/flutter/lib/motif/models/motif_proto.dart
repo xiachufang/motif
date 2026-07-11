@@ -89,8 +89,7 @@ class PingInfo {
     version: (j['version'] as String?) ?? '',
     rzvDirectPort: (j['rzv_direct_port'] as num?)?.toInt(),
     rzvDirectAddrs:
-        (j['rzv_direct_addrs'] as List?)?.whereType<String>().toList() ??
-        const [],
+        (j['rzv_direct_addrs'] as List?)?.cast<String>().toList() ?? const [],
   );
 
   /// True when the peer is a genuine motif-server (vs. some other HTTP service
@@ -114,7 +113,7 @@ class SessionInfo {
   String get id => name;
 
   factory SessionInfo.fromJson(Map<String, Object?> j) => SessionInfo(
-    name: (j['name'] as String?) ?? (j['id'] as String?) ?? '',
+    name: (j['name'] as String?) ?? '',
     workdir: _asString(j['workdir']),
     createdAt: _asInt(j['created_at']),
     clientCount: _asInt(j['client_count']),

@@ -8,8 +8,8 @@
 //!
 //! `Coordinator` owns the first two; callers drive the PTY streams
 //! themselves through [`Coordinator::open_pty`], which hands back a fresh
-//! [`PtyClient`]. There is no client-side synthesis of legacy
-//! `pty.output` / `pty.command_*` / `pty.cwd_changed` notifications —
+//! [`PtyClient`]. There is no client-side synthesis of
+//! `pty.output` / `pty.command_*` / `pty.cwd_changed` notifications;
 //! shell-integration parsing happens in the consumer (motif-tui /
 //! motif-cast).
 //!

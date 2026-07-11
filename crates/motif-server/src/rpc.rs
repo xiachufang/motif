@@ -63,8 +63,7 @@ pub fn dispatch_mut(manager: &Arc<SessionManager>, conn: &mut ConnState, req: Re
         "session.detach" => handle_detach(manager, conn, id),
         // The WS layer routes every other method to dispatch_concurrent;
         // a stray call here is a programming error, but reply with a
-        // plain method_not_found rather than panic — keeps the protocol
-        // tolerant of older callers.
+        // plain method_not_found rather than panic.
         other => Response::err(id, RpcError::method_not_found(other)),
     }
 }

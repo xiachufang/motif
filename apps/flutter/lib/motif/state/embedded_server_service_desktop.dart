@@ -21,10 +21,8 @@ const String _kConfigKey = 'motif.embedded.v1';
 bool get _isDesktop =>
     Platform.isMacOS || Platform.isLinux || Platform.isWindows;
 
-EmbeddedListenMode _listenModeFromWire(Object? v) => switch (v) {
-  'lan' => EmbeddedListenMode.lan,
-  _ => EmbeddedListenMode.loopback,
-};
+EmbeddedListenMode _listenModeFromWire(Object? v) =>
+    EmbeddedListenMode.values.byName(v as String);
 
 extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
   Map<String, Object?> toJson() => {
@@ -43,19 +41,19 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
 }
 
 EmbeddedServerConfig _configFromJson(Map<String, Object?> j) {
-  final ts = (j['tailscale'] as Map?)?.cast<String, Object?>() ?? const {};
-  final rzv = (j['rzv'] as Map?)?.cast<String, Object?>() ?? const {};
+  final ts = (j['tailscale'] as Map).cast<String, Object?>();
+  final rzv = (j['rzv'] as Map).cast<String, Object?>();
   return EmbeddedServerConfig(
     listenMode: _listenModeFromWire(j['listen_mode']),
-    port: (j['port'] as num?)?.toInt() ?? 7777,
-    tsEnabled: ts['enabled'] == true,
-    tsHostname: (ts['hostname'] as String?) ?? '',
-    tsAuthkey: (ts['authkey'] as String?) ?? '',
-    tsControlUrl: (ts['control_url'] as String?) ?? '',
-    rzvEnabled: rzv['enabled'] == true,
-    rzvRelay: (rzv['relay'] as String?) ?? '',
-    pushRelayUrl: (j['push_relay_url'] as String?) ?? kDefaultPushRelayAddress,
-    autostart: j['autostart'] == true,
+    port: (j['port'] as num).toInt(),
+    tsEnabled: ts['enabled'] as bool,
+    tsHostname: ts['hostname'] as String,
+    tsAuthkey: ts['authkey'] as String,
+    tsControlUrl: ts['control_url'] as String,
+    rzvEnabled: rzv['enabled'] as bool,
+    rzvRelay: rzv['relay'] as String,
+    pushRelayUrl: j['push_relay_url'] as String,
+    autostart: j['autostart'] as bool,
   );
 }
 

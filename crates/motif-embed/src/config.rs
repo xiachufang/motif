@@ -28,18 +28,15 @@ pub enum ListenMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TsConfig {
-    #[serde(default)]
     pub enabled: bool,
     /// Empty → tsnet uses the machine hostname.
-    #[serde(default)]
     pub hostname: String,
     /// Empty → interactive browser login (URL surfaced in the UI).
-    #[serde(default)]
     pub authkey: String,
     /// Empty → Tailscale SaaS (controlplane.tailscale.com). Set to a
     /// Headscale base URL (e.g. https://hs.example.com) to self-host control.
-    #[serde(default)]
     pub control_url: String,
 }
 
@@ -60,11 +57,10 @@ impl Default for TsConfig {
 /// persisted (same files the `motifd` CLI uses); the app shows the resulting
 /// `motif://pair` QR.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RzvConfig {
-    #[serde(default)]
     pub enabled: bool,
     /// Relay address (`host:port`) to dial. Empty disables rzv.
-    #[serde(default)]
     pub relay: String,
 }
 
@@ -76,22 +72,17 @@ pub struct BuiltServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MenuConfig {
-    #[serde(default)]
     pub listen_mode: ListenMode,
-    #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default)]
     pub tailscale: TsConfig,
-    #[serde(default)]
     pub rzv: RzvConfig,
     /// Push relay address or full URL. A bare host is expanded to
     /// `https://<host>/v1/push`; an empty string disables push.
-    #[serde(default = "default_push_relay_url")]
     pub push_relay_url: String,
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
-    #[serde(default)]
     pub autostart: bool,
 }
 
@@ -340,12 +331,17 @@ mod tests {
     #[test]
     fn config_parses_from_host_json() {
         // The Dart `EmbeddedServerConfig` shape must deserialize cleanly.
-        // A legacy `auth` key is tolerated (ignored) for forward-compat.
         let json = r#"{
             "listen_mode": "lan",
             "port": 9001,
-            "tailscale": { "enabled": true, "hostname": "my-dev" },
-            "auth": { "enabled": true, "token": "abc" },
+            "tailscale": {
+                "enabled": true,
+                "hostname": "my-dev",
+                "authkey": "",
+                "control_url": ""
+            },
+            "rzv": { "enabled": false, "relay": "" },
+            "push_relay_url": "motif-push-relay.slothease.com",
             "autostart": true
         }"#;
         let c: MenuConfig = serde_json::from_str(json).expect("parse host json");
@@ -358,14 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn missing_fields_default() {
-        // A bare object must fill in every field via serde defaults.
-        let c: MenuConfig = serde_json::from_str("{}").expect("parse empty");
-        assert_eq!(c.port, 7777);
-        assert_eq!(c.listen_mode, ListenMode::Loopback);
-        assert!(!c.tailscale.enabled);
-        assert!(!c.rzv.enabled);
-        assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
+    fn rejects_incomplete_or_unknown_config_fields() {
+        assert!(serde_json::from_str::<MenuConfig>("{}").is_err());
+        let json = serde_json::to_string(&MenuConfig::default()).unwrap();
+        let with_unknown = json.replacen('{', "{\"auth\":{},", 1);
+        assert!(serde_json::from_str::<MenuConfig>(&with_unknown).is_err());
     }
 
     #[test]
@@ -380,8 +373,11 @@ mod tests {
 
     #[test]
     fn rzv_config_parses_from_host_json() {
-        let json = r#"{"rzv":{"enabled":true,"relay":"relay.example:9999"}}"#;
-        let c: MenuConfig = serde_json::from_str(json).expect("parse rzv");
+        let mut config = MenuConfig::default();
+        config.rzv.enabled = true;
+        config.rzv.relay = "relay.example:9999".into();
+        let json = serde_json::to_string(&config).unwrap();
+        let c: MenuConfig = serde_json::from_str(&json).expect("parse rzv");
         assert!(c.rzv.enabled);
         assert_eq!(c.rzv.relay, "relay.example:9999");
     }

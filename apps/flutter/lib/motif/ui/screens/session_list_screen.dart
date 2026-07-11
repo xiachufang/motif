@@ -531,8 +531,8 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
               : const Icon(Icons.refresh),
           tooltip: 'Refresh ${widget.serverName} sessions',
           visualDensity: VisualDensity.compact,
-          // Use a style (not the legacy `color:` param). IconButton.color routes
-          // through styleFrom(foregroundColor:), which regenerates a
+          // IconButton.color routes through styleFrom(foregroundColor:), which
+          // regenerates a
           // non-transparent overlayColor that overrides the theme's transparent
           // one — re-adding the hover circle. iconButtonStyle() keeps the
           // theme's transparent overlay and just swaps the foreground.

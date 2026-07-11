@@ -314,8 +314,7 @@ class TransportResolver {
         target = server.copyWith(host: resolved);
       }
     } catch (_) {
-      // Preserve the previous behavior: MagicDNS resolution is helpful but not
-      // required for a connection attempt when the tailnet backend is up.
+      // MagicDNS resolution is optional when the tailnet backend is up.
     }
 
     return TransportReady(

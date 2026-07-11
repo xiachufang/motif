@@ -146,7 +146,6 @@ class AppState extends ChangeNotifier {
       settings: push,
       service: platform.push,
       activeClient: () => activeClient,
-      activeServerId: () => servers.activeId,
       primaryClients: () => _workspaces.primaryClientEntries,
       serverIdForClient: _serverIdForClient,
       serverExists: (id) => serverById(id) != null,

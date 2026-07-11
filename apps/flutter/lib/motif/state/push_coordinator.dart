@@ -17,7 +17,6 @@ class PushCoordinator {
     required this.settings,
     required this.service,
     required this.activeClient,
-    required this.activeServerId,
     required this.primaryClients,
     required this.serverIdForClient,
     required this.serverExists,
@@ -27,7 +26,6 @@ class PushCoordinator {
   final PushSettingsStore settings;
   final PushService service;
   final MotifClient? Function() activeClient;
-  final String? Function() activeServerId;
   final Iterable<MapEntry<String, MotifClient>> Function() primaryClients;
   final String? Function(MotifClient client) serverIdForClient;
   final bool Function(String serverId) serverExists;
@@ -154,21 +152,20 @@ class PushCoordinator {
     String? instanceId,
   }) {
     final sessionId = session?.trim();
-    if (sessionId == null || sessionId.isEmpty || settings.isMuted(sessionId)) {
+    if (sessionId == null ||
+        sessionId.isEmpty ||
+        instanceId == null ||
+        instanceId.isEmpty ||
+        settings.isMuted(sessionId)) {
       return;
     }
 
-    String? serverId;
-    if (instanceId != null && instanceId.isNotEmpty) {
-      final client = _clientsByInstanceId[instanceId];
-      if (client != null) serverId = serverIdForClient(client);
-      final persisted = settings.serverIdForInstance(instanceId);
-      if (serverId == null && persisted != null && serverExists(persisted)) {
-        serverId = persisted;
-      }
-      if (serverId == null) return;
+    final client = _clientsByInstanceId[instanceId];
+    var serverId = client == null ? null : serverIdForClient(client);
+    final persisted = settings.serverIdForInstance(instanceId);
+    if (serverId == null && persisted != null && serverExists(persisted)) {
+      serverId = persisted;
     }
-    serverId ??= activeServerId();
     if (serverId == null || serverId.isEmpty) return;
     requestOpenSession(serverId: serverId, session: sessionId);
   }

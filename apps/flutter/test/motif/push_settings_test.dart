@@ -295,7 +295,7 @@ void main() {
     app.dispose();
   });
 
-  test('system notification open falls back to active server', () async {
+  test('system notification open requires an instance id', () async {
     SharedPreferences.setMockInitialValues({
       'motif.servers.v1':
           '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
@@ -320,8 +320,7 @@ void main() {
 
     platformPush.emitNotificationOpen(session: 'nightly');
 
-    expect(app.pendingSessionOpen?.serverId, 's1');
-    expect(app.pendingSessionOpen?.session, 'nightly');
+    expect(app.pendingSessionOpen, isNull);
     app.dispose();
   });
 
@@ -332,10 +331,11 @@ void main() {
         'motif.servers.v1':
             '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
         'activeServerID': 's1',
+        'motif.push.instanceServers': '{"instance-1":"s1"}',
       });
       final prefs = await SharedPreferences.getInstance();
       final platformPush = _FakePushService()
-        ..pendingOpen = (session: 'boot-session', instanceId: null);
+        ..pendingOpen = (session: 'boot-session', instanceId: 'instance-1');
       final client = _PushMotifClient('instance-1');
       final app = AppState(
         servers: ServerStore(prefs),

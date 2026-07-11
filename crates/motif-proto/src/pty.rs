@@ -23,8 +23,7 @@ pub enum ShellKind {
 /// Cheap-to-compute prompt context emitted by the shell's precmd hook.
 /// All fields are optional; expensive ones (kube context, aws profile,
 /// `node --version`) are deliberately out of scope to avoid slowing the
-/// prompt. Add fields here as needed — the wire format treats them as
-/// optional, so old clients keep working.
+/// prompt. Add fields here as needed; absent context values stay off the wire.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
