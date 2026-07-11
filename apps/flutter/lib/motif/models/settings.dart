@@ -1,8 +1,7 @@
 /// App configuration models: servers, terminal appearance, and quick commands.
 ///
-/// Ported from `apps/ios/Motif/Settings/{MotifServer,TerminalSettings,
-/// QuickCommand}.swift`. JSON shapes match the iOS persisted formats where it
-/// is cheap to do so, but these are local app state (not server wire types).
+/// These are local app-state models, not server wire types. Server profile JSON
+/// contains only non-sensitive fields; credentials live in the secret store.
 library;
 
 import 'dart:convert';
@@ -28,12 +27,10 @@ enum SshAuthMethod {
   password,
   privateKey;
 
-  static SshAuthMethod fromWire(Object? v, {bool hasPrivateKey = false}) =>
-      switch (v) {
-        'privateKey' || 'private_key' || 'key' => SshAuthMethod.privateKey,
-        'password' => SshAuthMethod.password,
-        _ => hasPrivateKey ? SshAuthMethod.privateKey : SshAuthMethod.password,
-      };
+  static SshAuthMethod fromWire(Object? v) => switch (v) {
+    'privateKey' => SshAuthMethod.privateKey,
+    _ => SshAuthMethod.password,
+  };
 }
 
 class MotifServer {
@@ -150,10 +147,8 @@ class MotifServer {
     'host': host,
     'port': port,
     if (scheme != 'http') 'scheme': scheme,
-    'token': token,
     'kind': kind.name,
     if (relay.isNotEmpty) 'relay': relay,
-    if (psk.isNotEmpty) 'psk': psk,
     if (pubKey.isNotEmpty) 'pubKey': pubKey,
     if (directHosts.isNotEmpty) 'directHosts': directHosts,
     if (kind == ServerKind.ssh && sshHost.isNotEmpty) 'sshHost': sshHost,
@@ -162,12 +157,6 @@ class MotifServer {
       'sshUsername': sshUsername,
     if (kind == ServerKind.ssh && sshAuthMethod != SshAuthMethod.password)
       'sshAuthMethod': sshAuthMethod.name,
-    if (kind == ServerKind.ssh && sshPassword.isNotEmpty)
-      'sshPassword': sshPassword,
-    if (kind == ServerKind.ssh && sshPrivateKey.isNotEmpty)
-      'sshPrivateKey': sshPrivateKey,
-    if (kind == ServerKind.ssh && sshPrivateKeyPassphrase.isNotEmpty)
-      'sshPrivateKeyPassphrase': sshPrivateKeyPassphrase,
     if (kind == ServerKind.ssh && sshAutoInitialize)
       'sshAutoInitialize': sshAutoInitialize,
   };
@@ -175,42 +164,21 @@ class MotifServer {
   factory MotifServer.fromJson(Map<String, Object?> j) {
     final kind = ServerKind.fromWire(j['kind']);
     final relay = (j['relay'] as String?) ?? '';
-    final sshPrivateKey = (j['sshPrivateKey'] as String?) ?? '';
-    var host = (j['host'] as String?) ?? '';
-    var port = (j['port'] as num?)?.toInt() ?? 7777;
-    // Heal legacy rendezvous records: an earlier version stored the whole relay
-    // string (with its port) in `host`, leaving `endpoint` as `h:port:port`.
-    // Re-derive a clean host/port from the relay endpoint.
-    if (kind == ServerKind.rendezvous && host.contains(':')) {
-      final hp = splitHostPort(relay.isNotEmpty ? relay : host);
-      if (hp != null) {
-        host = hp.$1;
-        port = hp.$2;
-      }
-    }
     return MotifServer(
       id: (j['id'] as String?) ?? '',
       name: (j['name'] as String?) ?? '',
-      host: host,
-      port: port,
+      host: (j['host'] as String?) ?? '',
+      port: (j['port'] as num?)?.toInt() ?? 7777,
       scheme: _normalizeScheme(j['scheme'] as String?),
-      token: (j['token'] as String?) ?? '',
       kind: kind,
       relay: relay,
-      psk: (j['psk'] as String?) ?? '',
       pubKey: (j['pubKey'] as String?) ?? '',
       directHosts:
           (j['directHosts'] as List?)?.whereType<String>().toList() ?? const [],
       sshHost: (j['sshHost'] as String?) ?? '',
       sshPort: (j['sshPort'] as num?)?.toInt() ?? 22,
       sshUsername: (j['sshUsername'] as String?) ?? '',
-      sshAuthMethod: SshAuthMethod.fromWire(
-        j['sshAuthMethod'],
-        hasPrivateKey: sshPrivateKey.isNotEmpty,
-      ),
-      sshPassword: (j['sshPassword'] as String?) ?? '',
-      sshPrivateKey: sshPrivateKey,
-      sshPrivateKeyPassphrase: (j['sshPrivateKeyPassphrase'] as String?) ?? '',
+      sshAuthMethod: SshAuthMethod.fromWire(j['sshAuthMethod']),
       sshAutoInitialize: j['sshAutoInitialize'] == true,
     );
   }
@@ -487,13 +455,9 @@ class QuickCommand {
 }
 
 Uint8List _decodeQuickCommandPayload(Map<String, Object?> j) {
-  final encoded = (j['payload_b64'] ?? j['payload']) as String?;
+  final encoded = j['payload_b64'] as String?;
   if (encoded == null) return Uint8List(0);
-  try {
-    return base64Decode(encoded);
-  } catch (_) {
-    return Uint8List.fromList(utf8.encode(encoded));
-  }
+  return base64Decode(encoded);
 }
 
 class QuickCommandSet {

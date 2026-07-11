@@ -83,7 +83,7 @@ void main() {
       expect(decoded.single.endpoint, 'dev.ts.net:7777');
     });
 
-    test('MotifServer SSH fields round-trip through JSON', () {
+    test('MotifServer profile JSON excludes SSH credentials', () {
       const server = MotifServer(
         id: 'ssh-1',
         name: 'Bastion',
@@ -107,8 +107,8 @@ void main() {
       expect(decoded.single.sshEndpoint, 'bastion.example.com:2222');
       expect(decoded.single.sshUsername, 'fei');
       expect(decoded.single.sshAuthMethod, SshAuthMethod.privateKey);
-      expect(decoded.single.sshPrivateKey, contains('OPENSSH'));
-      expect(decoded.single.sshPrivateKeyPassphrase, 'phrase');
+      expect(decoded.single.sshPrivateKey, isEmpty);
+      expect(decoded.single.sshPrivateKeyPassphrase, isEmpty);
       expect(decoded.single.sshAutoInitialize, isTrue);
     });
 

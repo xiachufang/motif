@@ -41,34 +41,4 @@ void main() {
     expect(prefs.getString('motif.servers.v1'), isNot(contains(s.psk)));
     expect(secrets.values.keys, contains('motif.server.credentials.srv-1'));
   });
-
-  test('legacy plaintext credentials migrate atomically', () async {
-    const legacy = MotifServer(
-      id: 'ssh-1',
-      name: 'Bastion',
-      host: '127.0.0.1',
-      token: 'legacy-token',
-      kind: ServerKind.ssh,
-      sshHost: 'bastion.example.com',
-      sshUsername: 'fei',
-      sshPassword: 'legacy-password',
-    );
-    SharedPreferences.setMockInitialValues({
-      'motif.servers.v1': MotifServer.encodeList([legacy]),
-    });
-    final prefs = await SharedPreferences.getInstance();
-    final secrets = MemorySecretStore();
-
-    final store = await ServerStore.load(prefs, secrets: secrets);
-
-    expect(store.servers.single.token, 'legacy-token');
-    expect(store.servers.single.sshPassword, 'legacy-password');
-    final profileJson = prefs.getString('motif.servers.v1')!;
-    expect(profileJson, isNot(contains('legacy-token')));
-    expect(profileJson, isNot(contains('legacy-password')));
-    expect(
-      secrets.values['motif.server.credentials.ssh-1'],
-      allOf(contains('legacy-token'), contains('legacy-password')),
-    );
-  });
 }

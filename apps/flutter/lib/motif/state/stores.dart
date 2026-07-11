@@ -1,10 +1,7 @@
 /// Persisted app stores: servers, terminal settings, quick commands.
 ///
-/// Ported from the iOS `*Store` types. Backed by `shared_preferences` (works on
-/// all six target platforms). Server tokens and SSH credentials are sensitive;
-/// on a hardened build they should move to platform secure storage
-/// (Keychain/Keystore/DPAPI/libsecret) — tracked as a follow-up. For now
-/// servers persist as JSON.
+/// Non-sensitive settings are backed by `shared_preferences`; credentials and
+/// encryption keys are backed exclusively by the platform secret store.
 library;
 
 import 'dart:convert';
@@ -24,14 +21,16 @@ abstract final class _Keys {
   static const quickCommandSets = 'motif.quickCommands.sets.v1';
   static const pushEnabled = 'motif.push.enabled';
   static const pushMuted = 'motif.push.mutedSessions';
-  static const pushEncKey = 'motif.push.encKey';
   static const pushInstanceServers = 'motif.push.instanceServers';
+}
+
+abstract final class _SecretKeys {
+  static const pushEncKey = 'motif.push.encKey';
 }
 
 /// Push notification preferences + the per-device E2E key. The key is a random
 /// 256-bit secret the server encrypts payloads with (AES-256-GCM); generated
-/// once and persisted. (On a hardened build it should live in platform secure
-/// storage — Keychain/Keystore — rather than shared_preferences.)
+/// once and persisted in the platform secret store.
 class PushSettingsStore extends ChangeNotifier {
   final SharedPreferences _prefs;
   bool _enabled;
@@ -45,35 +44,22 @@ class PushSettingsStore extends ChangeNotifier {
       _instanceServers = _loadInstanceServers(
         _prefs.getString(_Keys.pushInstanceServers),
       ) {
-    final existing = encKeyOverride ?? _prefs.getString(_Keys.pushEncKey);
-    if (existing != null) {
-      encKeyBase64 = existing;
-    } else {
-      encKeyBase64 = _generateKey();
-      _prefs.setString(_Keys.pushEncKey, encKeyBase64);
-    }
+    encKeyBase64 = encKeyOverride ?? _generateKey();
   }
 
-  /// Production loader: migrate the E2E push key out of preferences and into
-  /// the platform secret store. The synchronous constructor remains useful for
-  /// isolated tests and capability-limited embedders.
+  /// Production loader. The synchronous constructor is retained for isolated
+  /// tests that do not exercise persistence.
   static Future<PushSettingsStore> load(
     SharedPreferences prefs,
     SecretStore secrets,
   ) async {
-    if (!secrets.isAvailable) return PushSettingsStore(prefs);
-    try {
-      var key = await secrets.read(_Keys.pushEncKey);
-      key ??= prefs.getString(_Keys.pushEncKey) ?? _generateKey();
-      await secrets.write(_Keys.pushEncKey, key);
-      await prefs.remove(_Keys.pushEncKey);
-      return PushSettingsStore(prefs, encKeyOverride: key);
-    } catch (_) {
-      // Do not lose an existing key when the OS credential service is
-      // temporarily unavailable. Leave the legacy value in place so the next
-      // launch can retry migration.
-      return PushSettingsStore(prefs);
+    if (!secrets.isAvailable) {
+      throw StateError('A platform secret store is required');
     }
+    final stored = await secrets.read(_SecretKeys.pushEncKey);
+    final key = stored ?? _generateKey();
+    if (stored == null) await secrets.write(_SecretKeys.pushEncKey, key);
+    return PushSettingsStore(prefs, encKeyOverride: key);
   }
 
   static String _generateKey() {
@@ -161,14 +147,13 @@ class ServerStore extends ChangeNotifier {
     }
   }
 
-  /// Load profiles, hydrate their credentials from secure storage, and migrate
-  /// legacy plaintext records in one pass.
+  /// Load profiles and hydrate their credentials from secure storage.
   static Future<ServerStore> load(
     SharedPreferences prefs, {
     required SecretStore secrets,
   }) async {
     final store = ServerStore(prefs, secrets: secrets);
-    await store._hydrateAndMigrateSecrets();
+    await store._hydrateSecrets();
     return store;
   }
 
@@ -182,8 +167,7 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _persist({bool notify = true}) async {
-    final profiles = [for (final server in _servers) _withoutSecrets(server)];
-    await _prefs.setString(_Keys.servers, MotifServer.encodeList(profiles));
+    await _prefs.setString(_Keys.servers, MotifServer.encodeList(_servers));
     final id = _activeId;
     if (id == null) {
       await _prefs.remove(_Keys.activeServer);
@@ -223,28 +207,19 @@ class ServerStore extends ChangeNotifier {
     await _persist();
   }
 
-  Future<void> _hydrateAndMigrateSecrets() async {
-    if (!secrets.isAvailable || _servers.isEmpty) return;
-    try {
-      final hydrated = <MotifServer>[];
-      for (final profile in _servers) {
-        final raw = await secrets.read(_serverSecretKey(profile.id));
-        final stored = raw == null ? null : jsonDecodeMap(raw);
-        if (stored != null) {
-          hydrated.add(_withSecrets(profile, stored));
-          continue;
-        }
-        // No secure record yet: this may be an upgrade from the legacy JSON
-        // format. Persist its credentials before scrubbing preferences.
-        await _writeSecrets(profile);
-        hydrated.add(profile);
-      }
-      _servers = hydrated;
-      await _persist(notify: false);
-    } catch (_) {
-      // Keep legacy credentials in memory and on disk if migration cannot be
-      // completed atomically. A future launch will retry without data loss.
+  Future<void> _hydrateSecrets() async {
+    if (!secrets.isAvailable) {
+      throw StateError('A platform secret store is required');
     }
+    _servers = await Future.wait([
+      for (final profile in _servers) _hydrateServer(profile),
+    ]);
+  }
+
+  Future<MotifServer> _hydrateServer(MotifServer profile) async {
+    final raw = await secrets.read(_serverSecretKey(profile.id));
+    final stored = raw == null ? null : jsonDecodeMap(raw);
+    return stored == null ? profile : _withSecrets(profile, stored);
   }
 
   Future<void> _writeSecrets(MotifServer server) async {
@@ -268,14 +243,6 @@ class ServerStore extends ChangeNotifier {
     if (server.sshPrivateKeyPassphrase.isNotEmpty)
       'sshPrivateKeyPassphrase': server.sshPrivateKeyPassphrase,
   };
-
-  static MotifServer _withoutSecrets(MotifServer server) => server.copyWith(
-    token: '',
-    psk: '',
-    sshPassword: '',
-    sshPrivateKey: '',
-    sshPrivateKeyPassphrase: '',
-  );
 
   static MotifServer _withSecrets(
     MotifServer profile,

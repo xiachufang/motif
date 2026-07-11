@@ -7,18 +7,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('push encryption key migrates out of preferences', () async {
-    SharedPreferences.setMockInitialValues({
-      'motif.push.encKey': 'legacy-push-key',
-    });
+  test('push encryption key is created in secure storage', () async {
+    SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final secrets = MemorySecretStore();
 
     final store = await PushSettingsStore.load(prefs, secrets);
 
-    expect(store.encKeyBase64, 'legacy-push-key');
+    expect(store.encKeyBase64, isNotEmpty);
     expect(prefs.containsKey('motif.push.encKey'), isFalse);
-    expect(secrets.values['motif.push.encKey'], 'legacy-push-key');
+    expect(secrets.values['motif.push.encKey'], store.encKeyBase64);
   });
 
   test('deleting a server deletes its secure credentials', () async {

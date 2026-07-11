@@ -218,9 +218,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       scheme: isDirect
           ? _schemeForDirectSave(existing, directHosts)
           : existing?.scheme ?? 'http',
-      // Auth is the psk-derived bearer from pairing now; preserve any legacy
-      // token on an existing record but no longer expose it for editing.
-      token: existing?.token ?? '',
+      token: '',
       kind: _kind,
       psk: isDirect ? _psk.text.trim() : '',
       pubKey: isDirect ? _pubKey.text.trim() : '',
