@@ -581,6 +581,29 @@ void main() {
     expect(transport.action, TransportAction.setup);
   });
 
+  test('session data updates emit one app notification', () async {
+    final tailscale = _FakeTailscale(TailscaleState.stopped);
+    addTearDown(tailscale.close);
+    final client = _RecordingMotifClient();
+    final app = await _appWith(tailscale: tailscale, client: client);
+    addTearDown(app.dispose);
+
+    app.clientForServer('tailnet');
+    var notifications = 0;
+    app.addListener(() => notifications++);
+
+    client.showNotification(
+      const MotifNotification(
+        title: 'Build complete',
+        body: 'Ready',
+        kind: 'test',
+      ),
+    );
+
+    expect(notifications, 1);
+    expect(app.connectionStateForServer('tailnet'), isA<ServerIdle>());
+  });
+
   test('Tailscale resumes a suspended attached terminal', () async {
     final tailscale = _FakeTailscale(
       const TailscaleState(TailscaleStatus.running),

@@ -64,14 +64,20 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
     _setState(const ServerIdle());
   }
 
-  void handleClientStateChanged() {
+  /// Project a real client connection transition into the server-level state.
+  ///
+  /// [MotifClient] also notifies for session/view data changes. Those updates
+  /// must not be mistaken for connection transitions, otherwise every event is
+  /// amplified into an extra app-wide notification.
+  bool handleClientStateChanged({bool notify = true}) {
     final previous = _lastClientState;
     final next = client.state;
+    if (identical(previous, next)) return false;
     _lastClientState = next;
 
     switch (next) {
       case ConnDisconnected():
-        if (!_wantsConnection) _setState(const ServerIdle());
+        if (!_wantsConnection) _setState(const ServerIdle(), notify: notify);
       case ConnConnecting():
         _setState(
           _reconnecting
@@ -80,16 +86,18 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
                   attempt: _reconnectAttempts,
                 )
               : const ServerConnecting(),
+          notify: notify,
         );
       case ConnConnected():
         _markConnected();
         final notice = client.connectionNotice;
         _setState(
           notice == null ? const ServerConnected() : ServerFailed(notice),
+          notify: notify,
         );
       case ConnAttached(:final session):
         _markConnected();
-        _setState(ServerAttached(session));
+        _setState(ServerAttached(session), notify: notify);
       case ConnSuspended(:final session, :final message):
         if (_state is! ServerSuspended) {
           final server = serverProvider();
@@ -101,15 +109,17 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
                 kind: server?.kind ?? ServerKind.direct,
               ),
             ),
+            notify: notify,
           );
         }
       case ConnFailed(:final message):
         final session = client.intendedSession;
-        _setState(ServerFailed(message, session: session));
+        _setState(ServerFailed(message, session: session), notify: notify);
         if (_wantsConnection && previous is! ConnFailed) {
           _maybeScheduleReconnect();
         }
     }
+    return true;
   }
 
   void handleTailscaleState(TailscaleState _) {
@@ -421,8 +431,8 @@ class ServerConnectionController implements ServerConnectionRuntimeHost {
     }
   }
 
-  void _setState(ServerConnectionState state) {
+  void _setState(ServerConnectionState state, {bool notify = true}) {
     _state = state;
-    onChanged();
+    if (notify) onChanged();
   }
 }

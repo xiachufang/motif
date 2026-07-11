@@ -536,7 +536,11 @@ class AppState extends ChangeNotifier {
     ServerConnectionController controller,
   ) {
     final wasLive = _pushLiveServerIds.contains(serverId);
-    controller.handleClientStateChanged();
+    // The client notifier carries both connection transitions and ordinary
+    // session/view data updates. Project connection state without notifying
+    // here; [_wireClient] emits one app notification after all related maps and
+    // push bookkeeping have converged.
+    controller.handleClientStateChanged(notify: false);
     final state = client.state;
     if (identical(_clientsByServer[serverId], client)) {
       if (state is ConnAttached) {
