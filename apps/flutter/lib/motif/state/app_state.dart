@@ -183,7 +183,11 @@ class AppState extends ChangeNotifier {
     ServerConnectionRuntime? serverConnectionRuntime,
   }) async {
     final prefs = await SharedPreferences.getInstance();
-    final servers = ServerStore(prefs);
+    final platformServices = platform ?? PlatformServices.defaults();
+    final servers = await ServerStore.load(
+      prefs,
+      secrets: platformServices.secrets,
+    );
     if (servers.servers.isEmpty) {
       final launch = currentWebLaunchLocation();
       final server = embeddedWebServerFromUri(
@@ -201,8 +205,8 @@ class AppState extends ChangeNotifier {
       servers: servers,
       terminalSettings: TerminalSettingsStore(prefs),
       commands: QuickCommandStore(prefs),
-      push: PushSettingsStore(prefs),
-      platform: platform ?? PlatformServices.defaults(),
+      push: await PushSettingsStore.load(prefs, platformServices.secrets),
+      platform: platformServices,
       embeddedServer: embeddedServerFactory == null
           ? null
           : await embeddedServerFactory(prefs),

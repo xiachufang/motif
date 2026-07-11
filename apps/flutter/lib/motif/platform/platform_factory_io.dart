@@ -3,6 +3,7 @@ import 'dart:io';
 import 'apns_push_service.dart';
 import 'doubao_asr/doubao_speech_service.dart';
 import 'services.dart';
+import 'secret_store.dart';
 import 'tailscale_native_service.dart';
 import 'tailscale_ffi.dart';
 
@@ -18,6 +19,7 @@ PlatformServices makePlatformServices() {
     push: (Platform.isIOS || Platform.isMacOS)
         ? ApnsPushService()
         : NoopPushService(),
+    secrets: FlutterSecureSecretStore(),
   );
 }
 

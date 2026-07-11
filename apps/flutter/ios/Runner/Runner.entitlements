@@ -4,4 +4,6 @@
   <key>aps-environment</key><string>development</string>
   <key>com.apple.security.application-groups</key>
   <array><string>group.io.allsunday.motif</string></array>
+  <key>keychain-access-groups</key>
+  <array><string>$(AppIdentifierPrefix)group.io.allsunday.motif</string></array>
 </dict></plist>

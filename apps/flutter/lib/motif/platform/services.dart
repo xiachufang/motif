@@ -13,6 +13,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../net/proxy_client.dart';
+import 'secret_store.dart';
 
 // ─────────────────────────── Tailscale ───────────────────────────
 
@@ -226,7 +227,8 @@ abstract interface class PushService {
 
   /// Drain a cold-start tap that arrived before Dart registered handlers.
   /// Returns `null` when none is pending.
-  Future<({String? session, String? instanceId})?> takePendingNotificationOpen();
+  Future<({String? session, String? instanceId})?>
+  takePendingNotificationOpen();
 }
 
 class NoopPushService implements PushService {
@@ -257,16 +259,19 @@ class PlatformServices {
   final TailscaleService tailscale;
   final SpeechService speech;
   final PushService push;
+  final SecretStore secrets;
 
   const PlatformServices({
     required this.tailscale,
     required this.speech,
     required this.push,
+    this.secrets = const NoopSecretStore(),
   });
 
   factory PlatformServices.defaults() => PlatformServices(
     tailscale: NoopTailscaleService(),
     speech: NoopSpeechService(),
     push: NoopPushService(),
+    secrets: const NoopSecretStore(),
   );
 }
