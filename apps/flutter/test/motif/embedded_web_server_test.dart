@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
+import 'package:motif/motif/platform/secret_store.dart';
+import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/embedded_web_server.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -33,6 +35,12 @@ void main() {
     SharedPreferences.setMockInitialValues({});
 
     final app = await AppState.load(
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: NoopPushService(),
+        secrets: MemorySecretStore(),
+      ),
       embeddedWebUri: Uri.parse('http://127.0.0.1:7777/?token=dev'),
       embeddedWebToken: 'dev',
     );
@@ -55,6 +63,12 @@ void main() {
     });
 
     final app = await AppState.load(
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: NoopPushService(),
+        secrets: MemorySecretStore(),
+      ),
       embeddedWebUri: Uri.parse('http://127.0.0.1:7777/?token=dev'),
       embeddedWebToken: 'dev',
     );
