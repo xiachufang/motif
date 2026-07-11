@@ -7,19 +7,6 @@ name: motifd-image
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'crates/**'
-      - 'apps/flutter/lib/**'
-      - 'apps/flutter/web/**'
-      - 'apps/flutter/hook/**'
-      - 'apps/flutter/pubspec.yaml'
-      - 'apps/flutter/pubspec.lock'
-      - 'deploy/motifd/**'
-      - '.github/workflows/motifd-image.yml'
-      - '.dockerignore'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
     tags: ['v*']
   workflow_dispatch: {}
 
