@@ -222,14 +222,28 @@ class TransportResolver {
     Uint8List? certPin,
   }) {
     if (addrs.isEmpty) return Future.value(null);
+    final sw = Stopwatch()..start();
+    Log.i(
+      'direct probe begin candidates=${addrs.length} port=$port tls=${certPin != null}',
+      name: 'motif.resume',
+    );
     final completer = Completer<String?>();
     var pending = addrs.length;
     for (final addr in addrs) {
       _probeDirect(addr, port, certPin: certPin).then((ok) {
         if (completer.isCompleted) return;
         if (ok) {
+          Log.i(
+            'direct probe hit address=$addr took=${sw.elapsedMilliseconds}ms',
+            name: 'motif.resume',
+          );
           completer.complete(addr);
         } else if (--pending == 0) {
+          Log.i(
+            'direct probe miss candidates=${addrs.length} '
+            'took=${sw.elapsedMilliseconds}ms',
+            name: 'motif.resume',
+          );
           completer.complete(null);
         }
       });

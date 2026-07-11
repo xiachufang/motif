@@ -10,11 +10,15 @@ void main() {
   test('worker owns Ghostty state and emits snapshots', () async {
     final initialized = Completer<void>();
     final snapshots = StreamController<TerminalSnapshot>.broadcast();
+    final emittedSnapshots = <TerminalSnapshot>[];
     final hostWrites = <int>[];
 
     final worker = await TerminalWorkerClient.spawn(
       onHostWrite: (bytes) => hostWrites.addAll(bytes),
-      onSnapshot: snapshots.add,
+      onSnapshot: (snapshot) {
+        emittedSnapshots.add(snapshot);
+        snapshots.add(snapshot);
+      },
       onInitialized: initialized.complete,
       onError: (error) => fail('worker error: $error'),
     );
@@ -34,13 +38,17 @@ void main() {
       paddingTop: 0,
       foregroundArgb: 0xffffffff,
       backgroundArgb: 0xff000000,
+      waitForFirstFeed: true,
     );
     await initialized.future.timeout(const Duration(seconds: 2));
 
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(emittedSnapshots, isEmpty);
+    final firstContent = snapshots.stream.firstWhere(
+      (s) => s.visibleText.contains('hello'),
+    );
     worker.feedBytes(Uint8List.fromList(utf8.encode('hello')));
-    final snapshot = await snapshots.stream
-        .firstWhere((s) => s.visibleText.contains('hello'))
-        .timeout(const Duration(seconds: 2));
+    final snapshot = await firstContent.timeout(const Duration(seconds: 2));
     expect(snapshot.visibleText, contains('hello'));
 
     worker.feedBytes(

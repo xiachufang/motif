@@ -61,12 +61,22 @@ class _PtyChannel {
   bool awaitingMeta = true;
   bool framedZlib = false;
   int generation = 0;
+  Stopwatch? openStopwatch;
+  bool firstOutputLogged = false;
+  int? replayBytesRemaining;
+  int? replayBytesTotal;
+  Completer<void>? replayComplete;
 }
 
 class _PtyMeta {
   final int since;
   final bool framedZlib;
-  const _PtyMeta({required this.since, required this.framedZlib});
+  final int? replayBytes;
+  const _PtyMeta({
+    required this.since,
+    required this.framedZlib,
+    required this.replayBytes,
+  });
 }
 
 class RpcClient {
@@ -311,7 +321,12 @@ class RpcClient {
       proxyPass: _proxy.password,
       certPin: _certPin,
     );
+    final sw = Stopwatch()..start();
     await socket.ready;
+    Log.i(
+      'ws ready events since=$since took=${sw.elapsedMilliseconds}ms',
+      name: 'motif.resume',
+    );
     _eventsSocket = socket;
     _eventsSub = socket.stream.listen(
       (msg) {
@@ -419,6 +434,11 @@ class RpcClient {
     return _ptyStreamSync!;
   }
 
+  Future<void> waitForPtyReplay(String ptyId) {
+    final pending = _ptys[ptyId]?.replayComplete;
+    return pending?.future ?? Future<void>.value();
+  }
+
   Future<void> _drainPtyStreamSync(int generation) async {
     while (generation == _ptyStreamGeneration) {
       final wanted = Set<String>.from(_desiredStreamingPtys);
@@ -491,6 +511,7 @@ class RpcClient {
     final ch = existing ?? _PtyChannel();
     _ptys[ptyId] = ch;
     final generation = ++ch.generation;
+    ch.replayComplete = Completer<void>();
     Log.i(
       'open pty=$ptyId gen=$generation hasCursor=${ch.hasCursor} '
       'cursor=${ch.cursor}',
@@ -515,6 +536,7 @@ class RpcClient {
     int generation,
     String sid,
   ) async {
+    final sw = Stopwatch()..start();
     final sinceQuery = ch.hasCursor ? '&since=${ch.cursor}' : '';
     final url =
         '$_wsScheme://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&pty_frame=v1&pty_compress=zlib&${_wsAuthQuery()}';
@@ -535,6 +557,7 @@ class RpcClient {
       await socket.ready;
     } catch (e, st) {
       if (!identical(_ptys[ptyId], ch) || ch.generation != generation) {
+        _completePtyReplay(ch);
         // Superseded by a newer open/close; the failure is expected but must
         // not be swallowed silently.
         Log.d(
@@ -548,6 +571,7 @@ class RpcClient {
       rethrow;
     }
     if (!identical(_ptys[ptyId], ch) || ch.generation != generation) {
+      _completePtyReplay(ch);
       unawaited(socket.sink.close(1000));
       Log.i(
         'ws open superseded pty=$ptyId gen=$generation currentGen=${ch.generation}',
@@ -571,7 +595,14 @@ class RpcClient {
     ch.socket = socket;
     ch.awaitingMeta = true;
     ch.framedZlib = false;
-    Log.i('ws ready pty=$ptyId gen=$generation', name: 'motif.rpc');
+    ch.openStopwatch = sw;
+    ch.firstOutputLogged = false;
+    ch.replayBytesRemaining = null;
+    ch.replayBytesTotal = null;
+    Log.i(
+      'ws ready pty=$ptyId gen=$generation took=${sw.elapsedMilliseconds}ms',
+      name: 'motif.resume',
+    );
     ch.sub = socket.stream.listen(
       (msg) => _onPtyMessage(ptyId, socket, msg),
       onDone: () => _onPtyDone(ptyId, socket),
@@ -592,10 +623,22 @@ class RpcClient {
           ch.cursor = meta.since;
           ch.hasCursor = true;
           ch.framedZlib = meta.framedZlib;
+          ch.replayBytesRemaining = meta.replayBytes;
+          ch.replayBytesTotal = meta.replayBytes;
           Log.i(
-            'ws meta pty=$ptyId since=${meta.since} framed=${meta.framedZlib}',
+            'ws meta pty=$ptyId since=${meta.since} framed=${meta.framedZlib} '
+            'replayBytes=${meta.replayBytes ?? "unknown"}',
             name: 'motif.rpc',
           );
+          if (meta.replayBytes == 0) {
+            Log.i(
+              'ws replay complete pty=$ptyId bytes=0 '
+              'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
+              name: 'motif.resume',
+            );
+            ch.replayBytesRemaining = null;
+            _completePtyReplay(ch);
+          }
         }
         return;
       }
@@ -613,6 +656,8 @@ class RpcClient {
       return;
     }
     final generation = ch.generation;
+    final isFirstOutput = !ch.firstOutputLogged;
+    ch.firstOutputLogged = true;
     ch.processing = ch.processing.then((_) async {
       if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
       try {
@@ -624,6 +669,28 @@ class RpcClient {
         );
         if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
         ch.cursor += result.decodedLength;
+        if (isFirstOutput) {
+          Log.i(
+            'ws first output pty=$ptyId bytes=${result.decodedLength} '
+            'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
+            name: 'motif.resume',
+          );
+        }
+        final replayRemaining = ch.replayBytesRemaining;
+        if (replayRemaining != null) {
+          final next = replayRemaining - result.decodedLength;
+          if (next <= 0) {
+            Log.i(
+              'ws replay complete pty=$ptyId bytes=${ch.replayBytesTotal} '
+              'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
+              name: 'motif.resume',
+            );
+            ch.replayBytesRemaining = null;
+            _completePtyReplay(ch);
+          } else {
+            ch.replayBytesRemaining = next;
+          }
+        }
         _emitProcessedPtyFrame(ptyId, result);
       } catch (e, st) {
         if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
@@ -804,6 +871,7 @@ class RpcClient {
       name: 'motif.rpc',
     );
     if (matching != null && ch.socket != matching) return;
+    _completePtyReplay(ch);
     ch.generation++;
     ch.opening = null;
     final sub = ch.sub;
@@ -904,10 +972,16 @@ class RpcClient {
         return _PtyMeta(
           since: (obj['since'] as num).toInt(),
           framedZlib: obj['pty_frame'] == 'v1' && obj['pty_compress'] == 'zlib',
+          replayBytes: (obj['replay_bytes'] as num?)?.toInt(),
         );
       }
     } catch (_) {}
     return null;
+  }
+
+  static void _completePtyReplay(_PtyChannel channel) {
+    final completer = channel.replayComplete;
+    if (completer != null && !completer.isCompleted) completer.complete();
   }
 
   static bool _sameStringSet(Set<String> a, Set<String> b) =>

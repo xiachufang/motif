@@ -4,6 +4,8 @@ part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalCore on _MotifTerminalViewState {
   void _onHostWrite(Uint8List bytes) {
+    _lastHostWriteAt = DateTime.now();
+    _flushRemoteBytesToWorker();
     widget.motif.writePty(widget.ptyId, bytes);
   }
 
@@ -16,8 +18,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       final message =
           'terminal bytes pty=${widget.ptyId} chunk=$_remoteChunks '
           'bytes=${bytes.length} totalBytes=$_remoteBytes '
-          'initialized=$_initialized queuedChunks=${_remoteByteQueue.length} '
-          'queuedBytes=$_remoteByteQueueBytes';
+          'initialized=$_initialized '
+          'queuedChunks=${_remoteByteBatcher.pendingChunks} '
+          'queuedBytes=${_remoteByteBatcher.pendingBytes}';
       if (logAtInfo) {
         Log.i(message, name: 'motif.terminal');
       } else {
@@ -25,24 +28,41 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       }
     }
     _enqueueRemoteBytes(bytes);
-    _flushRemoteBytesToWorker();
+    _scheduleRemoteBytesFlush(bytes.length);
   }
 
   void _enqueueRemoteBytes(Uint8List bytes) {
     if (bytes.isEmpty) return;
-    _remoteByteQueue.add(Uint8List.fromList(bytes));
-    _remoteByteQueueBytes += bytes.length;
+    _remoteByteBatcher.add(bytes);
   }
 
   void _flushRemoteBytesToWorker() {
+    _remoteByteFlushTimer?.cancel();
+    _remoteByteFlushTimer = null;
     final worker = _worker;
     if (!_initialized || _terminalError != null || worker == null) return;
-    while (_remoteByteQueue.isNotEmpty) {
-      final chunk = _remoteByteQueue.removeFirst();
-      _remoteByteQueueBytes -= chunk.length;
-      worker.feedBytes(chunk);
+    for (final batch in _remoteByteBatcher.drain()) {
+      worker.feedBytes(batch);
     }
-    if (_remoteByteQueueBytes < 0) _remoteByteQueueBytes = 0;
+  }
+
+  void _scheduleRemoteBytesFlush(int newestChunkBytes) {
+    if (!_initialized || _terminalError != null || _worker == null) return;
+    final lastWrite = _lastHostWriteAt;
+    final interactive =
+        lastWrite != null &&
+        DateTime.now().difference(lastWrite) <=
+            _MotifTerminalViewState._interactiveEchoWindow;
+    if (interactive ||
+        newestChunkBytes >= _remoteByteBatcher.maxBatchBytes ||
+        _remoteByteBatcher.pendingBytes >= _remoteByteBatcher.maxBatchBytes) {
+      _flushRemoteBytesToWorker();
+      return;
+    }
+    _remoteByteFlushTimer ??= Timer(
+      _MotifTerminalViewState._remoteByteCoalesceDelay,
+      _flushRemoteBytesToWorker,
+    );
   }
 
   void _measureCell() {
@@ -97,8 +117,8 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         '${constraints.maxHeight.toStringAsFixed(1)} '
         'cell=${_cellWidth.toStringAsFixed(1)}x'
         '${_cellHeight.toStringAsFixed(1)} '
-        'queuedChunks=${_remoteByteQueue.length} '
-        'queuedBytes=$_remoteByteQueueBytes',
+        'queuedChunks=${_remoteByteBatcher.pendingChunks} '
+        'queuedBytes=${_remoteByteBatcher.pendingBytes}',
         name: 'motif.terminal',
       );
       _workerStarting = true;
@@ -139,6 +159,10 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         paddingTop: widget.padding.toInt(),
         foregroundArgb: _colorToArgb(widget.palette.foreground),
         backgroundArgb: _colorToArgb(widget.palette.background),
+        waitForFirstFeed: true,
+        initialSnapshotFallback: _snapshot == null
+            ? const Duration(milliseconds: 100)
+            : null,
       );
     } catch (e, st) {
       if (_isCurrentWorker(generation)) _failTerminal(e, st);
@@ -323,9 +347,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (worker != null) unawaited(worker.dispose());
     _initialized = false;
     _workerStarting = false;
-    _snapshot = null;
     _discardTerminalSelectionState();
-    _terminalRenderCache.clear();
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
   }
@@ -384,8 +406,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _discardTerminalSelectionState();
     _terminalRenderCache.clear();
     _lastCursorSnapshot = null;
-    _remoteByteQueue.clear();
-    _remoteByteQueueBytes = 0;
+    _remoteByteFlushTimer?.cancel();
+    _remoteByteFlushTimer = null;
+    _remoteByteBatcher.clear();
     _terminalError = null;
     _terminalStack = null;
   }

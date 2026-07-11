@@ -8,6 +8,7 @@ abstract interface class MotifRuntimeClient {
   Future<void> ensurePtyStream(String ptyId);
   Future<void> closePtyStream(String ptyId);
   Future<void> syncPtyStreams(Set<String> ptyIds);
+  Future<void> waitForPtyReplay(String ptyId);
 }
 
 /// Platform runtime semantics for Motif's live session.
@@ -55,9 +56,11 @@ class MobileMotifClientRuntime implements MotifClientRuntime {
 class DesktopMotifClientRuntime implements MotifClientRuntime {
   const DesktopMotifClientRuntime({
     this.backgroundRestoreDelay = const Duration(milliseconds: 32),
+    this.activeReplayWaitTimeout = const Duration(milliseconds: 750),
   });
 
   final Duration backgroundRestoreDelay;
+  final Duration activeReplayWaitTimeout;
   static final Expando<int> _restoreGeneration = Expando<int>();
   static int _nextRestoreGeneration = 1;
 
@@ -135,6 +138,26 @@ class DesktopMotifClientRuntime implements MotifClientRuntime {
         name: 'motif.runtime',
       );
       await client.syncPtyStreams(restored);
+      Log.i(
+        'desktop wait active pty replay pty=$active '
+        'timeout=${activeReplayWaitTimeout.inMilliseconds}ms',
+        name: 'motif.runtime',
+      );
+      try {
+        await client.waitForPtyReplay(active).timeout(activeReplayWaitTimeout);
+        Log.i(
+          'desktop active pty replay complete pty=$active',
+          name: 'motif.runtime',
+        );
+      } on TimeoutException {
+        // Backward-compatible fallback for servers that do not advertise the
+        // replay byte count yet. Background tabs must eventually converge.
+        Log.i(
+          'desktop active pty replay wait timed out pty=$active',
+          name: 'motif.runtime',
+        );
+      }
+      if (_restoreGeneration[client] != generation) return;
     }
 
     for (final ptyId in initial) {
