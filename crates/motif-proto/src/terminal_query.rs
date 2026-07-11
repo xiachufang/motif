@@ -66,29 +66,15 @@ pub enum QueryKind {
     /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
     /// The host segment is ignored; path is URL-decoded.
     Osc7Cwd { path: std::path::PathBuf },
-    /// `ESC ] 7777 ;A ST` — prompt about to render. Legacy `133;A` is
-    /// accepted as compatibility input.
+    /// `ESC ] 7777 ;A ST` — prompt about to render.
     Osc133PromptStart,
     /// `ESC ] 7777 ;B ST` — prompt rendered, user input phase begins.
-    /// Legacy `133;B` is accepted as compatibility input.
     Osc133PromptEnd,
-    /// `ESC ] 7777 ;C ST` — command starting to execute. Legacy
-    /// `133;C[;cmdline_url=<percent>]` is also accepted; fish 4.x's native
-    /// marker carries the literal commandline
-    /// percent-encoded as `cmdline_url`; that's the *authoritative* cmd
-    /// text because fish writes this marker BEFORE firing the
-    /// `fish_preexec` event (see fish-shell `reader/reader.rs:858-862`),
-    /// which is when Motif's explicit command marker fires — too late to
-    /// be consumed by the same cycle's native `133;C` transition. State
-    /// machine prefers `cmdline_url` when present and falls back to pending
-    /// explicit command text otherwise. Percent-decoding mirrors fish's
-    /// `EscapeStringStyle::Url` (only `[A-Za-z0-9/.~_-]` left literal;
-    /// everything else is `%HH`).
+    /// `ESC ] 7777 ;C ST` — command starting to execute.
     Osc133CmdStart { cmdline_url: Option<String> },
     /// `ESC ] 7777 ;D [;<exit>] ST` — command finished, exit code is the
     /// `$?` shell observed on the *previous* command. `None` means the
-    /// shell sent the terminator without a code. Legacy `133;D` is accepted
-    /// as compatibility input.
+    /// shell sent the terminator without a code.
     Osc133CmdEnd { exit: Option<i32> },
     /// `ESC ] 7777 ;E ; <hex_command> ST` — explicit command text, matching
     /// VS Code's `E` role but using Motif's private OSC code and existing
@@ -506,66 +492,6 @@ impl QueryScanner {
             return parse_motif_private_osc(rest);
         }
 
-        // OSC 133 ; <sub>[;<params>...]
-        //
-        // Bare A/B/C/D and D;<exit> are the FinalTerm baseline. Real shells
-        // also emit subcommands with extra `key=value` parameters:
-        //   - fish 4.x:  133;A;click_events=1, 133;C;cmdline_url=<percent>
-        //   - iTerm2:    133;A;aid=<n>,        133;D;<exit>;err=<msg>
-        //
-        // We extract `cmdline_url` from `133;C` (fish writes the literal
-        // commandline there) and the exit code from `133;D`. Other params
-        // are recognized but discarded — the edge still MUST be parsed,
-        // otherwise the block state machine never advances past the first
-        // cycle and the prompt ends up empty.
-        if let Some(rest) = body.strip_prefix(b"133;") {
-            return match rest {
-                b"A" => Decision::Match(QueryKind::Osc133PromptStart),
-                b"B" => Decision::Match(QueryKind::Osc133PromptEnd),
-                b"C" => Decision::Match(QueryKind::Osc133CmdStart { cmdline_url: None }),
-                b"D" => Decision::Match(QueryKind::Osc133CmdEnd { exit: None }),
-                _ => {
-                    // Subcommand with parameter list: `<sub>;<rest>`.
-                    if rest.get(1) != Some(&b';') {
-                        // `133;<unknown>` (e.g. 133;E, 133;P) — surface
-                        // verbatim so future FinalTerm extensions aren't
-                        // silently swallowed.
-                        return Decision::Reject;
-                    }
-                    let after_sub = &rest[2..];
-                    match rest.first() {
-                        Some(b'A') => Decision::Match(QueryKind::Osc133PromptStart),
-                        Some(b'B') => Decision::Match(QueryKind::Osc133PromptEnd),
-                        Some(b'C') => {
-                            // Walk `;`-separated params for `cmdline_url=<percent>`.
-                            // First match wins; missing or undecodable values
-                            // fall back to None (state machine then uses pending
-                            // explicit command marker from our bootstrap).
-                            let cmdline_url = after_sub
-                                .split(|&b| b == b';')
-                                .find_map(|p| p.strip_prefix(b"cmdline_url="))
-                                .and_then(|v| String::from_utf8(percent_decode(v)).ok());
-                            Decision::Match(QueryKind::Osc133CmdStart { cmdline_url })
-                        }
-                        Some(b'D') => {
-                            // `D;<exit>[;<extras>]` — first field is the
-                            // exit code; everything after is ignored.
-                            let first_field: &[u8] = match after_sub.iter().position(|&b| b == b';')
-                            {
-                                Some(i) => &after_sub[..i],
-                                None => after_sub,
-                            };
-                            // Empty `D;` is malformed but treated as
-                            // "exit unknown" rather than rejecting.
-                            let exit = parse_exit_field(first_field);
-                            Decision::Match(QueryKind::Osc133CmdEnd { exit })
-                        }
-                        _ => Decision::Reject,
-                    }
-                }
-            };
-        }
-
         Decision::Reject
     }
 }
@@ -763,50 +689,16 @@ mod tests {
     // ── shell-integration markers ──
 
     #[test]
-    fn osc133_prompt_and_cmd_markers() {
-        for (bytes, kind) in [
-            (&b"\x1b]133;A\x07"[..], QueryKind::Osc133PromptStart),
-            (&b"\x1b]133;B\x07"[..], QueryKind::Osc133PromptEnd),
-            (
-                &b"\x1b]133;C\x07"[..],
-                QueryKind::Osc133CmdStart { cmdline_url: None },
-            ),
-            (
-                &b"\x1b]133;D\x07"[..],
-                QueryKind::Osc133CmdEnd { exit: None },
-            ),
-            (
-                &b"\x1b]133;D;0\x07"[..],
-                QueryKind::Osc133CmdEnd { exit: Some(0) },
-            ),
-            (
-                &b"\x1b]133;D;130\x1b\\"[..],
-                QueryKind::Osc133CmdEnd { exit: Some(130) },
-            ),
-            (
-                &b"\x1b]133;D;\x07"[..],
-                QueryKind::Osc133CmdEnd { exit: None },
-            ),
-        ] {
-            let r = scan_one(bytes);
-            assert!(
-                r.passthrough.is_empty(),
-                "leak in passthrough: {bytes:?} -> {:?}",
-                r.passthrough
-            );
-            assert_eq!(r.queries, vec![kind], "{:?}", bytes);
-        }
+    fn osc133_markers_are_not_protocol_input() {
+        let bytes = b"\x1b]133;A\x07";
+        let r = scan_one(bytes);
+        assert!(r.queries.is_empty());
+        assert_eq!(r.passthrough, bytes);
     }
 
     #[test]
-    fn osc133_parameterized_markers_match_their_subcommand() {
-        // Real shells append `;key=value` params to A/B/C/D. We don't
-        // consume the params yet but the edge must still resolve to the
-        // baseline subcommand — otherwise the block state machine stalls
-        // (e.g. fish 4.x's 133;A;click_events=1 redraw cycle would never
-        // recycle the block_id and 133;C;cmdline_url=… would never fire
-        // CommandStarted).
-        for (bytes, kind) in [
+    fn parameterized_osc133_markers_are_not_protocol_input() {
+        for (bytes, _) in [
             (
                 &b"\x1b]133;A;click_events=1\x07"[..],
                 QueryKind::Osc133PromptStart,
@@ -869,8 +761,8 @@ mod tests {
             ),
         ] {
             let r = scan_one(bytes);
-            assert!(r.passthrough.is_empty(), "leak: {:?}", bytes);
-            assert_eq!(r.queries, vec![kind], "{:?}", bytes);
+            assert!(r.queries.is_empty(), "{:?}", bytes);
+            assert_eq!(r.passthrough, bytes, "{:?}", bytes);
         }
     }
 
@@ -1030,17 +922,15 @@ mod tests {
     }
 
     #[test]
-    fn osc133_split_across_three_feeds() {
-        // Marker reassembly across read boundaries — same machinery used
-        // for capability queries already covers this; sanity-check.
+    fn unknown_osc133_split_across_feeds_is_passthrough() {
         let mut s = QueryScanner::new();
         let a = s.feed(b"output\x1b]");
         let b = s.feed(b"133;D;");
         let c = s.feed(b"42\x07more");
         assert_eq!(a.passthrough, b"output");
         assert!(b.passthrough.is_empty());
-        assert_eq!(c.passthrough, b"more");
-        assert_eq!(c.queries, vec![QueryKind::Osc133CmdEnd { exit: Some(42) }]);
+        assert_eq!(c.passthrough, b"\x1b]133;D;42\x07more");
+        assert!(c.queries.is_empty());
     }
 
     #[test]

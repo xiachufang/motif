@@ -9,6 +9,7 @@
 mod common;
 
 use std::io::Read;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -28,6 +29,10 @@ use tokio_tungstenite::tungstenite::Message;
 
 const TEST_FRAME_FLAG_COMPRESSED: u8 = 0x01;
 const TEST_FRAME_FLAG_RESERVED: u8 = !TEST_FRAME_FLAG_COMPRESSED;
+
+fn absolute(root: &Path, relative: &str) -> String {
+    root.join(relative).to_string_lossy().into_owned()
+}
 
 // ─────────────────────────── 1. session_lifecycle ───────────────────────────
 
@@ -131,11 +136,14 @@ async fn fs_operations_and_events() {
     let _: serde_json::Value = c.call("fs.watch", json!({})).await.unwrap();
 
     // mkdir sub/ — emits TreeChanged only (rpc.rs: no GitChanged for mkdir).
-    let _: serde_json::Value = c.call("fs.mkdir", json!({ "path": "sub" })).await.unwrap();
+    let _: serde_json::Value = c
+        .call("fs.mkdir", json!({ "path": absolute(dir.path(), "sub") }))
+        .await
+        .unwrap();
     let ev = c
         .expect_event(
             "tree.changed after mkdir",
-            |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub")),
+            |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("sub"))),
         )
         .await;
     let mkdir_seq = ev.seq();
@@ -147,7 +155,7 @@ async fn fs_operations_and_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "sub/a.txt".into(),
+                path: absolute(dir.path(), "sub/a.txt"),
                 content_b64: b64_encode(payload),
                 expected_sha256: None,
                 force: false,
@@ -158,7 +166,7 @@ async fn fs_operations_and_events() {
     let sha_v1 = written.sha256.clone();
     let tree_ev = c
         .expect_event("tree.changed after write", |e| {
-            matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub/a.txt"))
+            matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("sub/a.txt")))
         })
         .await;
     let git_ev = c
@@ -174,7 +182,7 @@ async fn fs_operations_and_events() {
         .call(
             "fs.stat",
             pfs::StatParams {
-                path: "sub/a.txt".into(),
+                path: absolute(dir.path(), "sub/a.txt"),
             },
         )
         .await
@@ -187,7 +195,7 @@ async fn fs_operations_and_events() {
         .call(
             "fs.read",
             pfs::ReadParams {
-                path: "sub/a.txt".into(),
+                path: absolute(dir.path(), "sub/a.txt"),
                 max_bytes: 1024,
             },
         )
@@ -204,7 +212,7 @@ async fn fs_operations_and_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "sub/a.txt".into(),
+                path: absolute(dir.path(), "sub/a.txt"),
                 content_b64: b64_encode(v2),
                 expected_sha256: Some(sha_v1.clone()),
                 force: false,
@@ -221,7 +229,7 @@ async fn fs_operations_and_events() {
         .call_raw(
             "fs.write",
             pfs::WriteParams {
-                path: "sub/a.txt".into(),
+                path: absolute(dir.path(), "sub/a.txt"),
                 content_b64: b64_encode(b"x"),
                 expected_sha256: Some("0".repeat(64)),
                 force: false,
@@ -237,13 +245,16 @@ async fn fs_operations_and_events() {
     let _: serde_json::Value = c
         .call(
             "fs.rename",
-            json!({ "from": "sub/a.txt", "to": "sub/b.txt" }),
+            json!({
+                "from": absolute(dir.path(), "sub/a.txt"),
+                "to": absolute(dir.path(), "sub/b.txt")
+            }),
         )
         .await
         .unwrap();
     c.expect_event("tree.changed after rename", |e| {
         matches!(e, Event::TreeChanged { paths, .. }
-            if paths.iter().any(|p| p == "sub/a.txt") && paths.iter().any(|p| p == "sub/b.txt"))
+            if paths.iter().any(|p| p.ends_with("sub/a.txt")) && paths.iter().any(|p| p.ends_with("sub/b.txt")))
     })
     .await;
     c.expect_event("git.changed after rename", |e| {
@@ -253,12 +264,15 @@ async fn fs_operations_and_events() {
 
     // remove sub/b.txt — emits TreeChanged + GitChanged.
     let _: serde_json::Value = c
-        .call("fs.remove", json!({ "path": "sub/b.txt" }))
+        .call(
+            "fs.remove",
+            json!({ "path": absolute(dir.path(), "sub/b.txt") }),
+        )
         .await
         .unwrap();
     c.expect_event(
         "tree.changed after remove",
-        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "sub/b.txt")),
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("sub/b.txt"))),
     )
     .await;
     c.expect_event("git.changed after remove", |e| {
@@ -271,7 +285,7 @@ async fn fs_operations_and_events() {
         .call(
             "fs.tree",
             pfs::TreeParams {
-                path: ".".into(),
+                path: dir.path().to_string_lossy().into_owned(),
                 depth: 2,
                 show_hidden: false,
             },
@@ -350,7 +364,7 @@ async fn git_operations() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "README.md".into(),
+                path: absolute(dir.path(), "README.md"),
                 content_b64: b64_encode(b"hello\nworld\n"),
                 expected_sha256: None,
                 force: false,
@@ -465,7 +479,7 @@ async fn view_operations_and_events() {
             "view.open",
             pview::OpenParams {
                 spec: pview::ViewSpec::Preview {
-                    path: "README.md".into(),
+                    path: absolute(dir.path(), "README.md"),
                 },
                 activate: true,
             },
@@ -702,7 +716,7 @@ async fn pty_lifecycle_and_mirror() {
 }
 
 #[tokio::test]
-async fn pty_ws_framed_output_is_opt_in_and_decodable() {
+async fn pty_ws_framed_output_is_required_and_decodable() {
     let server = TestServer::start().await;
     let dir = TempDir::new().unwrap();
     let client = TestClient::connect(&server, "pty-framed", dir.path())
@@ -724,14 +738,7 @@ async fn pty_ws_framed_output_is_opt_in_and_decodable() {
         .unwrap();
     let pty_id = created.info.id;
 
-    let mut legacy = client.open_pty_ws(&pty_id, None).await.unwrap();
-    let legacy_meta: serde_json::Value =
-        serde_json::from_str(&legacy.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
-    assert!(legacy_meta.get("since").and_then(|v| v.as_u64()).is_some());
-    assert!(legacy_meta.get("pty_frame").is_none());
-    drop(legacy);
-
-    let mut framed = client.open_pty_ws_framed(&pty_id, None).await.unwrap();
+    let mut framed = client.open_pty_ws(&pty_id, None).await.unwrap();
     let framed_meta: serde_json::Value =
         serde_json::from_str(&framed.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
     assert_eq!(
@@ -771,7 +778,7 @@ async fn pty_ws_framed_output_is_opt_in_and_decodable() {
         big.decoded.len()
     );
 
-    let mut replay = client.open_pty_ws_framed(&pty_id, None).await.unwrap();
+    let mut replay = client.open_pty_ws(&pty_id, None).await.unwrap();
     let _: serde_json::Value =
         serde_json::from_str(&replay.read_text(Duration::from_secs(2)).await.unwrap()).unwrap();
     let replayed = read_framed_until(&mut replay, b"BIG_FRAME_DONE", Duration::from_secs(5))
@@ -946,7 +953,7 @@ async fn multi_client_mirror() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "seed.txt".into(),
+                path: absolute(dir.path(), "seed.txt"),
                 content_b64: b64_encode(b"seed\n"),
                 expected_sha256: None,
                 force: false,
@@ -961,7 +968,7 @@ async fn multi_client_mirror() {
     ] {
         let ev = client
             .expect_event("tree.changed (seed.txt)", |e| {
-                matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "seed.txt"))
+                matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("seed.txt")))
             })
             .await;
         step(&format!("{label}: tree.changed (seed.txt)"), ev.seq(), last);
@@ -977,7 +984,7 @@ async fn multi_client_mirror() {
             "view.open",
             pview::OpenParams {
                 spec: pview::ViewSpec::Preview {
-                    path: "seed.txt".into(),
+                    path: absolute(dir.path(), "seed.txt"),
                 },
                 activate: false,
             },
@@ -1034,7 +1041,7 @@ async fn multi_client_mirror() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "hello.txt".into(),
+                path: absolute(dir.path(), "hello.txt"),
                 content_b64: b64_encode(b"hi\n"),
                 expected_sha256: None,
                 force: false,
@@ -1049,7 +1056,7 @@ async fn multi_client_mirror() {
     ] {
         let ev = client
             .expect_event("tree.changed (hello.txt)", |e| {
-                matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "hello.txt"))
+                matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("hello.txt")))
             })
             .await;
         step(&format!("{label}: tree.changed"), ev.seq(), last);
@@ -1188,7 +1195,7 @@ async fn event_replay_on_reattach() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "f.txt".into(),
+                path: absolute(dir.path(), "f.txt"),
                 content_b64: b64_encode(b"x\n"),
                 expected_sha256: None,
                 force: false,
@@ -1270,7 +1277,7 @@ async fn event_replay_on_reattach() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "g.txt".into(),
+                path: absolute(dir.path(), "g.txt"),
                 content_b64: b64_encode(b"y\n"),
                 expected_sha256: None,
                 force: false,
@@ -1280,7 +1287,7 @@ async fn event_replay_on_reattach() {
         .unwrap();
     d.expect_event(
         "tree.changed (g.txt)",
-        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "g.txt")),
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("g.txt"))),
     )
     .await;
     d.expect_event("git.changed (g.txt)", |e| {
@@ -1317,7 +1324,7 @@ async fn fs_watch_subscription_gates_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "before.txt".into(),
+                path: absolute(dir.path(), "before.txt"),
                 content_b64: b64_encode(b"hi\n"),
                 expected_sha256: None,
                 force: false,
@@ -1339,7 +1346,7 @@ async fn fs_watch_subscription_gates_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "during.txt".into(),
+                path: absolute(dir.path(), "during.txt"),
                 content_b64: b64_encode(b"yo\n"),
                 expected_sha256: None,
                 force: false,
@@ -1348,7 +1355,7 @@ async fn fs_watch_subscription_gates_events() {
         .await
         .unwrap();
     a.expect_event("tree.changed (during)", |e| {
-        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "during.txt"))
+        matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("during.txt")))
     })
     .await;
     a.expect_event("git.changed (during)", |e| {
@@ -1363,7 +1370,7 @@ async fn fs_watch_subscription_gates_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "after.txt".into(),
+                path: absolute(dir.path(), "after.txt"),
                 content_b64: b64_encode(b"bye\n"),
                 expected_sha256: None,
                 force: false,
@@ -1389,7 +1396,7 @@ async fn fs_watch_subscription_gates_events() {
         .call(
             "fs.write",
             pfs::WriteParams {
-                path: "split.txt".into(),
+                path: absolute(dir.path(), "split.txt"),
                 content_b64: b64_encode(b"split\n"),
                 expected_sha256: None,
                 force: false,
@@ -1399,7 +1406,7 @@ async fn fs_watch_subscription_gates_events() {
         .unwrap();
     a.expect_event(
         "A: tree.changed (split)",
-        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p == "split.txt")),
+        |e| matches!(e, Event::TreeChanged { paths, .. } if paths.iter().any(|p| p.ends_with("split.txt"))),
     )
     .await;
     let b_collected = b.drain_events().await;

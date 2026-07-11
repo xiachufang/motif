@@ -74,15 +74,15 @@ pub async fn connect_v2(
 }
 
 fn factory_for_url(url: &str) -> anyhow::Result<(StreamFactory, String)> {
-    // Accept ws[s] for back-compat; the HTTP transport only does TCP
-    // for now (plaintext between motif-tui and motifd is the v1 norm;
-    // TLS hangs off tailscale / ssh tunnel).
     let parsed = url::Url::parse(url).with_context(|| format!("invalid url: {url}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!("unsupported URL scheme: {}", parsed.scheme());
+    }
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow!("missing host in {url}"))?;
     let port = parsed.port().unwrap_or(match parsed.scheme() {
-        "https" | "wss" => 443,
+        "https" => 443,
         _ => 80,
     });
     let addr = format!("{host}:{port}");

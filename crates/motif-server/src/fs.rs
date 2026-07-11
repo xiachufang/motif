@@ -16,14 +16,18 @@ use crate::session::Session;
 /// we no longer enforce a workdir prefix — the file tree pane is allowed to
 /// follow the active PTY's cwd anywhere on disk (per design call: workdir is
 /// not a security boundary, this server already runs as the user).
-pub fn resolve(workdir: &Path, rel: &str) -> Result<PathBuf, RpcError> {
+pub fn resolve(_workdir: &Path, path: &str) -> Result<PathBuf, RpcError> {
     // A leading `~` / `~/…` expands against $HOME (so the dir picker can start
-    // at home, including before a session exists). Otherwise Path::join replaces
-    // with `rel` when it is absolute, so the fallthrough handles both the
-    // "path=/Users/x/foo" and the legacy "path=src/foo.go" shapes.
-    let candidate = match tilde_home(rel) {
+    // at home, including before a session exists). All other paths must be
+    // absolute.
+    let candidate = match tilde_home(path) {
         Some(home) => home,
-        None => workdir.join(rel),
+        None if Path::new(path).is_absolute() => PathBuf::from(path),
+        None => {
+            return Err(RpcError::invalid_params(format!(
+                "path must be absolute: {path}"
+            )))
+        }
     };
     let resolved = if candidate.exists() {
         candidate.canonicalize().unwrap_or(candidate)

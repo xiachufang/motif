@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
@@ -16,6 +17,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use bytes::Bytes;
+use flate2::read::ZlibDecoder;
 use futures_util::StreamExt;
 use http::HeaderValue;
 use http_body_util::{BodyExt, Full};
@@ -399,15 +401,6 @@ impl TestClient {
 
     /// Open a `/pty/<id>` WebSocket for this client's session.
     pub async fn open_pty_ws(&self, pty_id: &str, since: Option<u64>) -> Result<PtyWs> {
-        let mut q = format!("session={}", self.session_id);
-        if let Some(s) = since {
-            q.push_str(&format!("&since={s}"));
-        }
-        self.open_pty_ws_query(pty_id, q).await
-    }
-
-    /// Open a framed `/pty/<id>` WebSocket for this client's session.
-    pub async fn open_pty_ws_framed(&self, pty_id: &str, since: Option<u64>) -> Result<PtyWs> {
         let mut q = format!("session={}&pty_frame=v1&pty_compress=zlib", self.session_id);
         if let Some(s) = since {
             q.push_str(&format!("&since={s}"));
@@ -494,7 +487,18 @@ impl PtyWs {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             match timeout(remaining, self.ws.next()).await {
                 Ok(Some(Ok(Message::Binary(b)))) => {
-                    buf.extend_from_slice(&b);
+                    let (&flags, payload) = b
+                        .split_first()
+                        .ok_or_else(|| anyhow!("empty framed PTY payload"))?;
+                    if flags & 0xfe != 0 {
+                        bail!("reserved PTY frame flags: 0x{flags:02x}");
+                    }
+                    if flags & 0x01 == 0 {
+                        buf.extend_from_slice(payload);
+                    } else {
+                        let mut decoder = ZlibDecoder::new(payload);
+                        decoder.read_to_end(&mut buf)?;
+                    }
                     if find_subslice(&buf, needle).is_some() {
                         return Ok(buf);
                     }

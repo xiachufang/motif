@@ -42,12 +42,12 @@ void main() {
     test('full block cycle emits the expected events', () {
       final st = ShellState();
 
-      final r1 = st.feed(_b(_osc('133;A')));
+      final r1 = st.feed(_b(_osc('7777;A')));
       expect(r1.events.whereType<ShellBootstrapped>(), isNotEmpty);
       final promptStart = r1.events.whereType<ShellPromptStarted>().single;
       expect(st.activeScope, ShellOutputScope.prompt);
 
-      final r2 = st.feed(_b(_osc('133;B')));
+      final r2 = st.feed(_b(_osc('7777;B')));
       expect(
         r2.events.whereType<ShellPromptEnded>().single.blockId,
         promptStart.blockId,
@@ -61,12 +61,12 @@ void main() {
           .join();
       st.feed(_b(_osc('7777;E;$hex')));
 
-      final r3 = st.feed(_b(_osc('133;C')));
+      final r3 = st.feed(_b(_osc('7777;C')));
       final started = r3.events.whereType<ShellCommandStarted>().single;
       expect(started.text, 'ls -la');
       expect(st.activeScope, ShellOutputScope.output);
 
-      final r4 = st.feed(_b(_osc('133;D;0')));
+      final r4 = st.feed(_b(_osc('7777;D;0')));
       final finished = r4.events.whereType<ShellCommandFinished>().single;
       expect(finished.exitCode, 0);
       expect(finished.blockId, promptStart.blockId);
@@ -96,8 +96,8 @@ void main() {
 
   test('markers split across chunk boundaries still parse', () {
     final st = ShellState();
-    // Feed the OSC 133;A one byte at a time.
-    final seq = _b(_osc('133;A'));
+    // Feed the OSC 7777;A one byte at a time.
+    final seq = _b(_osc('7777;A'));
     var sawPrompt = false;
     for (final byte in seq) {
       final r = st.feed(Uint8List.fromList([byte]));
@@ -155,7 +155,7 @@ void main() {
     test('a new prompt also finalizes the primed command', () {
       final st = ShellState();
       st.primeRunning('sleep 60');
-      final r = st.feed(_b(_osc('133;A')));
+      final r = st.feed(_b(_osc('7777;A')));
       expect(r.events.whereType<ShellCommandFinished>(), isNotEmpty);
     });
   });

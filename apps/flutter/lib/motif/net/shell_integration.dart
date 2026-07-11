@@ -409,15 +409,7 @@ _OscMarker? _parseOscBody(List<int> body) {
     return null;
   }
   final semi = s.indexOf(';');
-  if (semi < 0) {
-    return switch (s) {
-      '133;A' => const _Osc133PromptStart(),
-      '133;B' => const _Osc133PromptEnd(),
-      '133;C' => const _Osc133CmdStart(null),
-      '133;D' => const _Osc133CmdEnd(null),
-      _ => null,
-    };
-  }
+  if (semi < 0) return null;
   final kind = s.substring(0, semi);
   final rest = s.substring(semi + 1);
   switch (kind) {
@@ -427,8 +419,6 @@ _OscMarker? _parseOscBody(List<int> body) {
         return _Osc7Cwd(Uri.decodeComponent(uri.path));
       }
       return _Osc7Cwd(rest);
-    case '133':
-      return _parse133(rest);
     case '7777':
       return _parse777(rest);
     case '7770':
@@ -437,27 +427,6 @@ _OscMarker? _parseOscBody(List<int> body) {
     case '7771':
       final ctx = _parseContextHex(rest);
       return ctx == null ? null : _Osc7771Context(ctx);
-    default:
-      return null;
-  }
-}
-
-_OscMarker? _parse133(String rest) {
-  final parts = rest.split(';');
-  final first = parts.isEmpty ? '' : parts.first;
-  switch (first) {
-    case 'A':
-      return const _Osc133PromptStart();
-    case 'B':
-      return const _Osc133PromptEnd();
-    case 'C':
-      final cmdlineUrl = parts.length >= 2
-          ? _parse133CmdlineUrl(parts.sublist(1).join(';'))
-          : null;
-      return _Osc133CmdStart(cmdlineUrl);
-    case 'D':
-      final firstField = parts.length >= 2 ? parts[1].trim() : '';
-      return _Osc133CmdEnd(int.tryParse(firstField));
     default:
       return null;
   }
@@ -494,20 +463,6 @@ _OscMarker? _parse777(String rest) {
     default:
       return null;
   }
-}
-
-String? _parse133CmdlineUrl(String tail) {
-  for (final piece in tail.split(';')) {
-    if (piece.startsWith('cmdline_url=')) {
-      final raw = piece.substring('cmdline_url='.length);
-      try {
-        return Uri.decodeComponent(raw);
-      } catch (_) {
-        return raw;
-      }
-    }
-  }
-  return null;
 }
 
 String _parseCwd(String raw) {
