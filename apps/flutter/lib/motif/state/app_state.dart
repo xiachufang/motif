@@ -29,12 +29,11 @@ import 'server_connection_controller.dart';
 import 'server_connection_runtime.dart';
 import 'stores.dart';
 import 'transport_resolver.dart';
+import 'workspace_registry.dart';
 
 /// Desktop top-level view selector: use the client (sessions/terminal) or
 /// administer this machine's embedded server.
 enum AppViewMode { client, server }
-
-typedef _SessionClientKey = ({String serverId, String session});
 
 /// Request to open a session from an in-app notification / push tap.
 class PendingSessionOpen {
@@ -61,12 +60,7 @@ class AppState extends ChangeNotifier {
   final ServerConnectionRuntime _serverConnectionRuntime;
   late final TransportResolver _transportResolver;
   late final PushCoordinator _pushCoordinator;
-  final Map<String, MotifClient> _clientsByServer = {};
-  final Map<String, ServerConnectionController> _controllersByServer = {};
-  final Map<String, String> _activeSessionByServer = {};
-  final Map<_SessionClientKey, MotifClient> _warmSessionClients = {};
-  final Map<_SessionClientKey, ServerConnectionController>
-  _warmSessionControllers = {};
+  final WorkspaceRegistry _workspaces = WorkspaceRegistry();
   final Map<MotifClient, VoidCallback> _clientListeners = {};
   final Map<String, Future<bool>> _serverConnectionTasks = {};
   StreamSubscription<TailscaleState>? _tailscaleSub;
@@ -153,7 +147,7 @@ class AppState extends ChangeNotifier {
       service: platform.push,
       activeClient: () => activeClient,
       activeServerId: () => servers.activeId,
-      primaryClients: () => _clientsByServer.entries,
+      primaryClients: () => _workspaces.primaryClientEntries,
       serverIdForClient: _serverIdForClient,
       serverExists: (id) => serverById(id) != null,
       requestOpenSession: requestOpenSession,
@@ -269,10 +263,10 @@ class AppState extends ChangeNotifier {
   }
 
   MotifClient? existingClientForServer(String serverId) =>
-      _clientsByServer[serverId];
+      _workspaces.clientForServer(serverId);
 
   MotifClient clientForServer(String serverId) {
-    final existing = _clientsByServer[serverId];
+    final existing = _workspaces.clientForServer(serverId);
     if (existing != null) return existing;
     final server = serverById(serverId);
     if (server == null) throw StateError('Unknown server: $serverId');
@@ -293,40 +287,36 @@ class AppState extends ChangeNotifier {
     final active = clientForServer(serverId);
     if (!keepSessionWarmOnSwitchAway) return active;
 
-    var currentSession = _activeSessionByServer[serverId];
+    var currentSession = _workspaces.activeSessionForServer(serverId);
     currentSession ??= switch (active.state) {
       ConnAttached(:final session) => session,
       _ => active.intendedSession,
     };
     if (currentSession == null) {
-      _activeSessionByServer[serverId] = session;
+      _workspaces.setActiveSession(serverId, session);
       active.prepareSessionReconnect(session);
       _setForegroundWorkspace(active);
       return active;
     }
-    _activeSessionByServer[serverId] = currentSession;
+    _workspaces.setActiveSession(serverId, currentSession);
     if (currentSession == session) {
       _setForegroundWorkspace(active);
       return active;
     }
 
     final currentKey = (serverId: serverId, session: currentSession);
-    final activeController = _controllersByServer.remove(serverId)!;
-    _clientsByServer.remove(serverId);
-    _warmSessionClients[currentKey] = active;
-    _warmSessionControllers[currentKey] = activeController;
+    _workspaces.parkActive(currentKey);
     active.setForeground(false);
 
     final targetKey = (serverId: serverId, session: session);
-    final target = _warmSessionClients.remove(targetKey);
-    final targetController = _warmSessionControllers.remove(targetKey);
+    final targetSlot = _workspaces.activateWarm(targetKey);
+    final target = targetSlot?.client;
+    final targetController = targetSlot?.controller;
     final MotifClient next;
     final ServerConnectionController controller;
     if (target != null && targetController != null) {
       next = target;
       controller = targetController;
-      _clientsByServer[serverId] = next;
-      _controllersByServer[serverId] = controller;
     } else {
       final server = serverById(serverId);
       if (server == null) throw StateError('Unknown server: $serverId');
@@ -339,9 +329,9 @@ class AppState extends ChangeNotifier {
         _workspaceClientFactory(server),
         resolver,
       );
-      controller = _controllersByServer[serverId]!;
+      controller = _workspaces.controllerForServer(serverId)!;
     }
-    _activeSessionByServer[serverId] = session;
+    _workspaces.setActiveSession(serverId, session);
     next.prepareSessionReconnect(session);
     _setForegroundWorkspace(next);
     _pruneWarmWorkspaces();
@@ -364,15 +354,13 @@ class AppState extends ChangeNotifier {
   }
 
   /// Keep the desktop workspace cache bounded. The active workspace lives in
-  /// [_clientsByServer], so the warm pool may retain at most `limit - 1` items.
+  /// the registry's active slot, so the warm pool retains at most `limit - 1`.
   void _pruneWarmWorkspaces() {
     final warmLimit = (maxRetainedWorkspaces - 1).clamp(0, 1 << 20);
-    while (_warmSessionClients.length > warmLimit) {
-      final key = _warmSessionClients.keys.first;
-      final client = _warmSessionClients.remove(key);
-      final controller = _warmSessionControllers.remove(key);
-      controller?.dispose();
-      if (client == null) continue;
+    for (final evicted in _workspaces.evictWarmBeyond(warmLimit)) {
+      final key = evicted.$1;
+      final client = evicted.$2.client;
+      evicted.$2.controller.dispose();
 
       final listener = _clientListeners.remove(client);
       if (listener != null) client.removeListener(listener);
@@ -390,7 +378,6 @@ class AppState extends ChangeNotifier {
     MotifClient client,
     TransportResolver resolver,
   ) {
-    _clientsByServer[server.id] = client;
     final controller = ServerConnectionController(
       serverId: server.id,
       client: client,
@@ -399,7 +386,10 @@ class AppState extends ChangeNotifier {
       onChanged: _relayControllerChange,
       runtime: _serverConnectionRuntime,
     );
-    _controllersByServer[server.id] = controller;
+    _workspaces.installActive(
+      server.id,
+      WorkspaceSlot(client: client, controller: controller),
+    );
     _wireClient(server.id, client, controller);
     _applyTerminalPaletteTo(client);
     return client;
@@ -407,7 +397,7 @@ class AppState extends ChangeNotifier {
 
   ServerConnectionController _controllerForServer(String serverId) {
     clientForServer(serverId);
-    return _controllersByServer[serverId]!;
+    return _workspaces.controllerForServer(serverId)!;
   }
 
   bool isServerLive(String serverId) =>
@@ -417,7 +407,7 @@ class AppState extends ChangeNotifier {
       existingClientForServer(serverId)?.state ?? const ConnDisconnected();
 
   ServerConnectionState connectionStateForServer(String serverId) {
-    final controller = _controllersByServer[serverId];
+    final controller = _workspaces.controllerForServer(serverId);
     if (controller != null) return controller.state;
     final server = serverById(serverId);
     if (server == null) return const ServerIdle();
@@ -456,7 +446,7 @@ class AppState extends ChangeNotifier {
   List<({MotifServer server, MotifClient client})> get connectedServerClients {
     final groups = <({MotifServer server, MotifClient client})>[];
     for (final server in servers.servers) {
-      final client = _clientsByServer[server.id];
+      final client = _workspaces.clientForServer(server.id);
       if (client != null && client.isLive) {
         groups.add((server: server, client: client));
       }
@@ -467,7 +457,7 @@ class AppState extends ChangeNotifier {
   List<({MotifServer server, MotifClient client})> get knownServerClients {
     final groups = <({MotifServer server, MotifClient client})>[];
     for (final server in servers.servers) {
-      final client = _clientsByServer[server.id];
+      final client = _workspaces.clientForServer(server.id);
       if (client != null) groups.add((server: server, client: client));
     }
     return groups;
@@ -574,11 +564,11 @@ class AppState extends ChangeNotifier {
     // push bookkeeping have converged.
     controller.handleClientStateChanged(notify: false);
     final state = client.state;
-    if (identical(_clientsByServer[serverId], client)) {
+    if (identical(_workspaces.clientForServer(serverId), client)) {
       if (state is ConnAttached) {
-        _activeSessionByServer[serverId] = state.session;
+        _workspaces.setActiveSession(serverId, state.session);
       } else if (state is ConnConnected && client.intendedSession == null) {
-        _activeSessionByServer.remove(serverId);
+        _workspaces.setActiveSession(serverId, null);
       }
     }
     _pushCoordinator.onClientChanged(
@@ -603,7 +593,7 @@ class AppState extends ChangeNotifier {
       final activeId = servers.activeId;
       final activeController = activeId == null
           ? null
-          : _controllersByServer[activeId];
+          : _workspaces.controllerForServer(activeId);
       activeController?.handleAppResumed();
     } else {
       for (final controller in _allControllers()) {
@@ -632,27 +622,13 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Iterable<MotifClient> _allClients() sync* {
-    for (final client in _clientsByServer.values) {
-      yield client;
-    }
-    for (final client in _warmSessionClients.values) {
-      yield client;
-    }
-  }
+  Iterable<MotifClient> _allClients() => _workspaces.clients;
 
-  Iterable<MotifClient> _clientsForServer(String serverId) sync* {
-    final active = _clientsByServer[serverId];
-    if (active != null) yield active;
-    for (final entry in _warmSessionClients.entries) {
-      if (entry.key.serverId == serverId) yield entry.value;
-    }
-  }
+  Iterable<MotifClient> _clientsForServer(String serverId) =>
+      _workspaces.clientsForServer(serverId);
 
-  Iterable<ServerConnectionController> _allControllers() sync* {
-    yield* _controllersByServer.values;
-    yield* _warmSessionControllers.values;
-  }
+  Iterable<ServerConnectionController> _allControllers() =>
+      _workspaces.controllers;
 
   void _setForegroundWorkspace(MotifClient foreground) {
     for (final client in _allClients()) {
@@ -696,15 +672,8 @@ class AppState extends ChangeNotifier {
   Future<void> registerForPush({MotifClient? client}) =>
       _pushCoordinator.registerForPush(client: client);
 
-  String? _serverIdForClient(MotifClient client) {
-    for (final entry in _clientsByServer.entries) {
-      if (identical(entry.value, client)) return entry.key;
-    }
-    for (final entry in _warmSessionClients.entries) {
-      if (identical(entry.value, client)) return entry.key.serverId;
-    }
-    return null;
-  }
+  String? _serverIdForClient(MotifClient client) =>
+      _workspaces.serverIdForClient(client);
 
   /// Connect (or reconnect) to the active server through the per-server
   /// connection controller.
@@ -779,14 +748,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> disconnectServer(String serverId) async {
     if (existingClientForServer(serverId) == null) return;
-    final controllers = <ServerConnectionController>[];
-    final activeController = _controllersByServer[serverId];
-    if (activeController != null) controllers.add(activeController);
-    controllers.addAll(
-      _warmSessionControllers.entries
-          .where((entry) => entry.key.serverId == serverId)
-          .map((entry) => entry.value),
-    );
+    final controllers = _workspaces.controllersForServer(serverId).toList();
     await Future.wait([
       for (final controller in controllers) controller.disconnect(),
     ]);
@@ -817,7 +779,7 @@ class AppState extends ChangeNotifier {
     } catch (e, st) {
       // Session refresh is best-effort; keep the list usable on transient RPC
       // failures, but hand stale transports to the reconnect controller.
-      _controllersByServer[serverId]?.handleRefreshFailed(e, st);
+      _workspaces.controllerForServer(serverId)?.handleRefreshFailed(e, st);
     }
   }
 
@@ -838,12 +800,10 @@ class AppState extends ChangeNotifier {
   void _pruneClientsForDeletedServers() {
     final liveIds = {for (final server in servers.servers) server.id};
     unawaited(push.retainInstanceServers(liveIds));
-    for (final id in _clientsByServer.keys.toList()) {
-      if (liveIds.contains(id)) continue;
-      final client = _clientsByServer.remove(id);
-      final controller = _controllersByServer.remove(id);
-      controller?.dispose();
-      if (client == null) continue;
+    for (final removed in _workspaces.removeDeletedServers(liveIds)) {
+      final id = removed.$1;
+      final client = removed.$2.client;
+      removed.$2.controller.dispose();
       final listener = _clientListeners.remove(client);
       _pushCoordinator.removeClient(client);
       _pushCoordinator.removeServer(id);
@@ -852,19 +812,6 @@ class AppState extends ChangeNotifier {
       unawaited(client.disconnect());
       client.dispose();
     }
-    for (final key in _warmSessionClients.keys.toList()) {
-      if (liveIds.contains(key.serverId)) continue;
-      final client = _warmSessionClients.remove(key);
-      final controller = _warmSessionControllers.remove(key);
-      controller?.dispose();
-      if (client == null) continue;
-      final listener = _clientListeners.remove(client);
-      _pushCoordinator.removeClient(client);
-      if (listener != null) client.removeListener(listener);
-      unawaited(client.disconnect());
-      client.dispose();
-    }
-    _activeSessionByServer.removeWhere((id, _) => !liveIds.contains(id));
   }
 
   @override
