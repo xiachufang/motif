@@ -47,9 +47,8 @@ class RpcException implements Exception {
   String toString() => code == null ? 'rpc: $message' : 'rpc $code: $message';
 }
 
-/// PTY close codes signalling our resume cursor is unusable.
+/// PTY close code signalling our resume cursor is unusable.
 const _kCursorTruncated = 4011;
-const _kCursorStale = 4012;
 
 class _PtyChannel {
   WebSocketChannel? socket;
@@ -59,7 +58,6 @@ class _PtyChannel {
   int cursor = 0;
   bool hasCursor = false;
   bool awaitingMeta = true;
-  bool framedZlib = false;
   int generation = 0;
   Stopwatch? openStopwatch;
   bool firstOutputLogged = false;
@@ -70,13 +68,8 @@ class _PtyChannel {
 
 class _PtyMeta {
   final int since;
-  final bool framedZlib;
-  final int? replayBytes;
-  const _PtyMeta({
-    required this.since,
-    required this.framedZlib,
-    required this.replayBytes,
-  });
+  final int replayBytes;
+  const _PtyMeta({required this.since, required this.replayBytes});
 }
 
 class RpcClient {
@@ -594,7 +587,6 @@ class RpcClient {
     }
     ch.socket = socket;
     ch.awaitingMeta = true;
-    ch.framedZlib = false;
     ch.openStopwatch = sw;
     ch.firstOutputLogged = false;
     ch.replayBytesRemaining = null;
@@ -617,32 +609,30 @@ class RpcClient {
 
     if (ch.awaitingMeta) {
       ch.awaitingMeta = false;
-      if (msg is String) {
-        final meta = _parsePtyMeta(msg);
-        if (meta != null) {
-          ch.cursor = meta.since;
-          ch.hasCursor = true;
-          ch.framedZlib = meta.framedZlib;
-          ch.replayBytesRemaining = meta.replayBytes;
-          ch.replayBytesTotal = meta.replayBytes;
-          Log.i(
-            'ws meta pty=$ptyId since=${meta.since} framed=${meta.framedZlib} '
-            'replayBytes=${meta.replayBytes ?? "unknown"}',
-            name: 'motif.rpc',
-          );
-          if (meta.replayBytes == 0) {
-            Log.i(
-              'ws replay complete pty=$ptyId bytes=0 '
-              'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
-              name: 'motif.resume',
-            );
-            ch.replayBytesRemaining = null;
-            _completePtyReplay(ch);
-          }
-        }
+      final meta = msg is String ? _parsePtyMeta(msg) : null;
+      if (meta == null) {
+        unawaited(socket.sink.close(1002, 'invalid PTY metadata'));
         return;
       }
-      // No meta frame — treat as data.
+      ch.cursor = meta.since;
+      ch.hasCursor = true;
+      ch.replayBytesRemaining = meta.replayBytes;
+      ch.replayBytesTotal = meta.replayBytes;
+      Log.i(
+        'ws meta pty=$ptyId since=${meta.since} '
+        'replayBytes=${meta.replayBytes}',
+        name: 'motif.rpc',
+      );
+      if (meta.replayBytes == 0) {
+        Log.i(
+          'ws replay complete pty=$ptyId bytes=0 '
+          'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
+          name: 'motif.resume',
+        );
+        ch.replayBytesRemaining = null;
+        _completePtyReplay(ch);
+      }
+      return;
     }
 
     final Uint8List data;
@@ -662,11 +652,7 @@ class RpcClient {
       if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
       try {
         final processor = await _frameProcessor();
-        final result = await processor.process(
-          ptyId,
-          data,
-          framedZlib: ch.framedZlib,
-        );
+        final result = await processor.process(ptyId, data);
         if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
         ch.cursor += result.decodedLength;
         if (isFirstOutput) {
@@ -708,8 +694,7 @@ class RpcClient {
   Future<void> _recoverPtyAfterDecodeError(String ptyId, _PtyChannel ch) async {
     ch
       ..cursor = 0
-      ..hasCursor = false
-      ..framedZlib = false;
+      ..hasCursor = false;
     final socket = ch.socket;
     await _closePty(ptyId, matching: socket, removeState: false);
     if (!_streamingPtys.contains(ptyId) || _ptys[ptyId] == null) return;
@@ -731,8 +716,7 @@ class RpcClient {
     await ch.processing;
     if (_ptys[ptyId] != ch || ch.socket != socket) return;
     final closeCode = socket.closeCode;
-    final cursorUnusable =
-        closeCode == _kCursorTruncated || closeCode == _kCursorStale;
+    final cursorUnusable = closeCode == _kCursorTruncated;
     Log.i(
       'ws done pty=$ptyId closeCode=$closeCode cursor=${ch.cursor} '
       'cursorUnusable=$cursorUnusable streaming=${_streamingPtys.contains(ptyId)}',
@@ -968,11 +952,14 @@ class RpcClient {
   static _PtyMeta? _parsePtyMeta(String s) {
     try {
       final obj = jsonDecode(s);
-      if (obj is Map && obj['since'] is num) {
+      if (obj is Map &&
+          obj['since'] is num &&
+          obj['pty_frame'] == 'v1' &&
+          obj['pty_compress'] == 'zlib' &&
+          obj['replay_bytes'] is num) {
         return _PtyMeta(
           since: (obj['since'] as num).toInt(),
-          framedZlib: obj['pty_frame'] == 'v1' && obj['pty_compress'] == 'zlib',
-          replayBytes: (obj['replay_bytes'] as num?)?.toInt(),
+          replayBytes: (obj['replay_bytes'] as num).toInt(),
         );
       }
     } catch (_) {}

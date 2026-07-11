@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/platform/push_crypto.dart';
+import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app_state.dart';
 import 'package:motif/motif/state/motif_client.dart';
@@ -13,10 +14,10 @@ void main() {
   test('generates a persistent 256-bit AES key', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
-    final s1 = PushSettingsStore(prefs);
+    final secrets = MemorySecretStore();
+    final s1 = await PushSettingsStore.load(prefs, secrets);
     expect(base64Decode(s1.encKeyBase64).length, 32);
-    // Same prefs → same key (persisted, not regenerated).
-    final s2 = PushSettingsStore(prefs);
+    final s2 = await PushSettingsStore.load(prefs, secrets);
     expect(s2.encKeyBase64, s1.encKeyBase64);
   });
 

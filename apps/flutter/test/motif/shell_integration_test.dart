@@ -54,12 +54,12 @@ void main() {
       );
       expect(st.activeScope, ShellOutputScope.command);
 
-      // Stash explicit command text via OSC 777;E (hex of "ls -la").
+      // Stash explicit command text via OSC 7777;E (hex of "ls -la").
       final hex = utf8
           .encode('ls -la')
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
-      st.feed(_b(_osc('777;E;$hex')));
+      st.feed(_b(_osc('7777;E;$hex')));
 
       final r3 = st.feed(_b(_osc('133;C')));
       final started = r3.events.whereType<ShellCommandStarted>().single;
@@ -80,14 +80,14 @@ void main() {
       expect(ev.cwd, '/Users/me/dev');
     });
 
-    test('OSC 777;P;Context decodes a context map', () {
+    test('OSC 7777;P;Context decodes a context map', () {
       final st = ShellState();
       final json = jsonEncode({'branch': 'main', 'venv': 'env'});
       final hex = utf8
           .encode(json)
           .map((b) => b.toRadixString(16).padLeft(2, '0'))
           .join();
-      final r = st.feed(_b(_osc('777;P;Context=$hex')));
+      final r = st.feed(_b(_osc('7777;P;Context=$hex')));
       final ev = r.events.whereType<ShellContextEvent>().single;
       expect(ev.ctx['branch'], 'main');
       expect(ev.ctx['venv'], 'env');
@@ -107,9 +107,6 @@ void main() {
   });
 
   group('native 7777 markers (current shell protocol)', () {
-    // The shell emits OSC 7777 (assets/shell/bash.sh); the scanner must parse
-    // it, not just the legacy 777. Regression guard for the 777→7777 migration
-    // (commit b4209b1) that left the Dart scanner behind.
     String hex(String s) =>
         utf8.encode(s).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 

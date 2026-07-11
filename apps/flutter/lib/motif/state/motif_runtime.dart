@@ -56,11 +56,9 @@ class MobileMotifClientRuntime implements MotifClientRuntime {
 class DesktopMotifClientRuntime implements MotifClientRuntime {
   const DesktopMotifClientRuntime({
     this.backgroundRestoreDelay = const Duration(milliseconds: 32),
-    this.activeReplayWaitTimeout = const Duration(milliseconds: 750),
   });
 
   final Duration backgroundRestoreDelay;
-  final Duration activeReplayWaitTimeout;
   static final Expando<int> _restoreGeneration = Expando<int>();
   static int _nextRestoreGeneration = 1;
 
@@ -139,24 +137,14 @@ class DesktopMotifClientRuntime implements MotifClientRuntime {
       );
       await client.syncPtyStreams(restored);
       Log.i(
-        'desktop wait active pty replay pty=$active '
-        'timeout=${activeReplayWaitTimeout.inMilliseconds}ms',
+        'desktop wait active pty replay pty=$active',
         name: 'motif.runtime',
       );
-      try {
-        await client.waitForPtyReplay(active).timeout(activeReplayWaitTimeout);
-        Log.i(
-          'desktop active pty replay complete pty=$active',
-          name: 'motif.runtime',
-        );
-      } on TimeoutException {
-        // Backward-compatible fallback for servers that do not advertise the
-        // replay byte count yet. Background tabs must eventually converge.
-        Log.i(
-          'desktop active pty replay wait timed out pty=$active',
-          name: 'motif.runtime',
-        );
-      }
+      await client.waitForPtyReplay(active);
+      Log.i(
+        'desktop active pty replay complete pty=$active',
+        name: 'motif.runtime',
+      );
       if (_restoreGeneration[client] != generation) return;
     }
 

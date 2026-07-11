@@ -117,20 +117,12 @@ class PushCoordinator {
       if (plain == null) return;
       try {
         final obj = jsonDecode(plain) as Map<String, Object?>;
-        final motif =
-            (obj['motif'] as Map?)?.cast<String, Object?>() ??
-            const <String, Object?>{};
-        final instanceId = motif['instance_id'] as String?;
-        final sessionId =
-            motif['session_id'] as String? ??
-            obj['session_id'] as String? ??
-            obj['session'] as String?;
-        final kind =
-            motif['kind'] as String? ?? (obj['kind'] as String?) ?? 'push';
+        final motif = (obj['motif'] as Map).cast<String, Object?>();
+        final instanceId = motif['instance_id'] as String;
+        final sessionId = motif['session_id'] as String?;
+        final kind = motif['kind'] as String;
         if (settings.isMuted(sessionId ?? '')) return;
-        final target = instanceId == null
-            ? activeClient()
-            : _clientsByInstanceId[instanceId];
+        final target = _clientsByInstanceId[instanceId];
         target?.showNotification(
           MotifNotification(
             title: (obj['title'] as String?) ?? 'Motif',

@@ -429,13 +429,7 @@ _OscMarker? _parseOscBody(List<int> body) {
       return _Osc7Cwd(rest);
     case '133':
       return _parse133(rest);
-    // Motif private shell-integration OSC. Commit b4209b1 moved the shell from
-    // OSC 777 to 7777 (777 collides with rxvt-unicode's extension namespace).
-    // Both share the same A/B/C/D/E/P sub-grammar; 777 is kept for back-compat
-    // with older servers. Without the 7777 case, native markers from a current
-    // server fall through unparsed and command/cwd tracking silently breaks.
     case '7777':
-    case '777':
       return _parse777(rest);
     case '7770':
       final text = _decodeHex(rest);

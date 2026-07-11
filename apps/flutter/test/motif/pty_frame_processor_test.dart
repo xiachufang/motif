@@ -17,7 +17,7 @@ void main() {
 
     var callerYielded = false;
     scheduleMicrotask(() => callerYielded = true);
-    final result = await processor.process('pty-1', payload, framedZlib: true);
+    final result = await processor.process('pty-1', payload);
 
     expect(callerYielded, isTrue);
     expect(utf8.decode(result.passthrough), 'beforeafter');
@@ -34,8 +34,7 @@ void main() {
 
     final result = await processor.process(
       'pty-1',
-      Uint8List.fromList(utf8.encode('\x1b]133;D;0\x07')),
-      framedZlib: false,
+      Uint8List.fromList([0, ...utf8.encode('\x1b]133;D;0\x07')]),
     );
 
     final finished = result.events.whereType<ShellCommandFinished>().single;

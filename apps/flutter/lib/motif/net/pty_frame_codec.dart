@@ -13,8 +13,7 @@ class PtyFrameDecodeException implements Exception {
   String toString() => 'pty frame decode: $message';
 }
 
-Uint8List decodePtyPayload(Uint8List payload, {required bool framedZlib}) {
-  if (!framedZlib) return payload;
+Uint8List decodePtyPayload(Uint8List payload) {
   if (payload.isEmpty) {
     throw const PtyFrameDecodeException('empty framed payload');
   }

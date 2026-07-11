@@ -68,27 +68,6 @@ void main() {
       ]);
     });
 
-    test('desktop falls back when replay completion is unavailable', () async {
-      final runtime = DesktopMotifClientRuntime(
-        backgroundRestoreDelay: Duration.zero,
-        activeReplayWaitTimeout: Duration.zero,
-      );
-      final host = _RuntimeHost(
-        liveTabPtyIds: {'pty-1', 'pty-2'},
-        activePtyId: 'pty-1',
-      );
-
-      runtime.onSessionAttached(host);
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
-      await Future<void>.delayed(Duration.zero);
-
-      expect(host.syncedStreamSets, [
-        {'pty-1'},
-        {'pty-1', 'pty-2'},
-      ]);
-    });
-
     test('mobile leaves pty streams to terminal surface lifecycle', () async {
       final runtime = MobileMotifClientRuntime();
       final host = _RuntimeHost(

@@ -74,16 +74,11 @@ class PtyFrameProcessor {
     return result;
   }
 
-  Future<ProcessedPtyFrame> process(
-    String ptyId,
-    Uint8List payload, {
-    required bool framedZlib,
-  }) async {
+  Future<ProcessedPtyFrame> process(String ptyId, Uint8List payload) async {
     final response = await _request({
       'type': 'process',
       'ptyId': ptyId,
       'payload': TransferableTypedData.fromList([payload]),
-      'framedZlib': framedZlib,
     });
     final transferred = response['passthrough'];
     if (transferred is! TransferableTypedData) {
@@ -154,10 +149,7 @@ void _ptyFrameProcessorMain(SendPort events) {
             throw StateError('invalid process command');
           }
           final payload = transferred.materialize().asUint8List();
-          final decoded = decodePtyPayload(
-            payload,
-            framedZlib: command['framedZlib'] == true,
-          );
+          final decoded = decodePtyPayload(payload);
           final shell = shells.putIfAbsent(ptyId, ShellState.new);
           final result = shell.feed(decoded);
           events.send({

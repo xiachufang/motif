@@ -10,12 +10,8 @@ class PtyFrameProcessor {
 
   static Future<PtyFrameProcessor> spawn() async => PtyFrameProcessor();
 
-  Future<ProcessedPtyFrame> process(
-    String ptyId,
-    Uint8List payload, {
-    required bool framedZlib,
-  }) async {
-    final decoded = decodePtyPayload(payload, framedZlib: framedZlib);
+  Future<ProcessedPtyFrame> process(String ptyId, Uint8List payload) async {
+    final decoded = decodePtyPayload(payload);
     final shell = _shells.putIfAbsent(ptyId, ShellState.new);
     final result = shell.feed(decoded);
     return ProcessedPtyFrame(
