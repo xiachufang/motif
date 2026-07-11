@@ -51,6 +51,7 @@ class _RecordingMotifClient extends MotifClient {
 class _SessionMenuMotifClient extends MotifClient {
   final List<String> attached = [];
   int detaches = 0;
+  int disconnects = 0;
   final List<String> preparedSwitches = [];
 
   _SessionMenuMotifClient() {
@@ -73,6 +74,11 @@ class _SessionMenuMotifClient extends MotifClient {
   @override
   Future<void> detach() async {
     detaches++;
+  }
+
+  @override
+  Future<void> disconnect() async {
+    disconnects++;
   }
 
   @override
@@ -1417,4 +1423,34 @@ void main() {
       expect(other.detaches, 1);
     },
   );
+
+  test('desktop evicts the oldest warm workspace beyond its limit', () async {
+    final sessions = [
+      const SessionInfo(name: 'test-session'),
+      for (var i = 2; i <= 5; i++) SessionInfo(name: 'session-$i'),
+    ];
+    final current = _SessionMenuMotifClient()..sessions = sessions;
+    final created = <_SessionMenuMotifClient>[];
+    final app = await _appStateWith(
+      {'server-1': current},
+      serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+      workspaceClientFactory: (_) {
+        final client = _SessionMenuMotifClient()..sessions = sessions;
+        created.add(client);
+        return client;
+      },
+    );
+    addTearDown(app.dispose);
+
+    app.clientForSession('server-1', 'test-session');
+    for (var i = 2; i <= 5; i++) {
+      app.clientForSession('server-1', 'session-$i');
+    }
+    await Future<void>.delayed(Duration.zero);
+
+    expect(app.maxRetainedWorkspaces, 4);
+    expect(app.connectedWorkspaceClients, hasLength(4));
+    expect(current.disconnects, 1);
+    expect(created.take(3).every((client) => client.disconnects == 0), isTrue);
+  });
 }

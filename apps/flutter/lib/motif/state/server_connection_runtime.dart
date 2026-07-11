@@ -7,6 +7,10 @@ abstract interface class ServerConnectionRuntime {
   /// than detaching. Desktop keeps background workspaces warm for instant
   /// switch-back; mobile detaches to avoid streaming invisible sessions.
   bool get keepSessionWarmOnSwitchAway;
+
+  /// Maximum number of fully retained server/session workspaces. This bounds
+  /// live transports, PTY replay buffers, terminal workers, and mounted panes.
+  int get maxRetainedWorkspaces;
 }
 
 abstract interface class ServerConnectionRuntimeHost {
@@ -30,6 +34,9 @@ class MobileServerConnectionRuntime implements ServerConnectionRuntime {
 
   @override
   bool get keepSessionWarmOnSwitchAway => false;
+
+  @override
+  int get maxRetainedWorkspaces => 1;
 }
 
 class DesktopServerConnectionRuntime implements ServerConnectionRuntime {
@@ -48,4 +55,7 @@ class DesktopServerConnectionRuntime implements ServerConnectionRuntime {
 
   @override
   bool get keepSessionWarmOnSwitchAway => true;
+
+  @override
+  int get maxRetainedWorkspaces => 4;
 }

@@ -111,9 +111,16 @@ class _SessionScreenHostState extends State<SessionScreen> {
   void _selectWorkspace(String serverId, String session) {
     final next = (serverId: serverId, session: session);
     if (next == _active) return;
-    context.read<AppState>().clientForSession(serverId, session);
+    final app = context.read<AppState>();
+    app.clientForSession(serverId, session);
     setState(() {
-      if (!_mounted.contains(next)) _mounted.add(next);
+      // Refresh recency when revisiting a pane, then evict the oldest mounted
+      // pane in lockstep with AppState's bounded warm-workspace cache.
+      _mounted.remove(next);
+      _mounted.add(next);
+      while (_mounted.length > app.maxRetainedWorkspaces) {
+        _mounted.removeAt(0);
+      }
       _active = next;
     });
   }

@@ -246,6 +246,9 @@ class AppState extends ChangeNotifier {
   bool get keepSessionWarmOnSwitchAway =>
       _serverConnectionRuntime.keepSessionWarmOnSwitchAway;
 
+  int get maxRetainedWorkspaces =>
+      _serverConnectionRuntime.maxRetainedWorkspaces;
+
   MotifClient get motif {
     final client = activeClient;
     if (client == null) {
@@ -330,6 +333,7 @@ class AppState extends ChangeNotifier {
     _activeSessionByServer[serverId] = session;
     next.prepareSessionReconnect(session);
     _setForegroundWorkspace(next);
+    _pruneWarmWorkspaces();
     if (!next.isLive) {
       unawaited(
         Future<void>.microtask(controller.connect).catchError((
@@ -346,6 +350,35 @@ class AppState extends ChangeNotifier {
       );
     }
     return next;
+  }
+
+  /// Keep the desktop workspace cache bounded. The active workspace lives in
+  /// [_clientsByServer], so the warm pool may retain at most `limit - 1` items.
+  void _pruneWarmWorkspaces() {
+    final warmLimit = (maxRetainedWorkspaces - 1).clamp(0, 1 << 20);
+    while (_warmSessionClients.length > warmLimit) {
+      final key = _warmSessionClients.keys.first;
+      final client = _warmSessionClients.remove(key);
+      final controller = _warmSessionControllers.remove(key);
+      controller?.dispose();
+      if (client == null) continue;
+
+      final listener = _clientListeners.remove(client);
+      if (listener != null) client.removeListener(listener);
+      _pushClientsByInstanceId.removeWhere(
+        (_, value) => identical(value, client),
+      );
+      if (!_clientsForServer(
+        key.serverId,
+      ).any((candidate) => candidate.isLive)) {
+        _pushLiveServerIds.remove(key.serverId);
+      }
+      Log.i(
+        'evict warm workspace server=${key.serverId} session=${key.session}',
+        name: 'motif.session',
+      );
+      unawaited(client.disconnect().whenComplete(client.dispose));
+    }
   }
 
   MotifClient _installActiveClient(
