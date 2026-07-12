@@ -37,4 +37,26 @@ void main() {
     expect(secrets.values, isEmpty);
     expect(store.servers, isEmpty);
   });
+
+  test(
+    'plaintext preferences secret store persists and deletes values',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final secrets = PlaintextPreferencesSecretStore(
+        preferences: Future.value(prefs),
+      );
+
+      await secrets.write('server-token', 'plaintext-secret');
+
+      expect(await secrets.read('server-token'), 'plaintext-secret');
+      expect(
+        prefs.getString('motif.insecureSecret.server-token'),
+        'plaintext-secret',
+      );
+
+      await secrets.delete('server-token');
+      expect(await secrets.read('server-token'), isNull);
+    },
+  );
 }
