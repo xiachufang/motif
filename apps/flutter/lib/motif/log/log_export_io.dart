@@ -67,8 +67,10 @@ Future<List<File>> _logSources(Directory dir, LogConfig config) async {
 
 Future<Directory> _exportDirectory() async {
   final candidates = <Future<Directory?> Function()>[
-    if (Platform.isMacOS || Platform.isLinux || Platform.isWindows)
-      getDownloadsDirectory,
+    // path_provider currently exposes Downloads only on macOS. On other
+    // desktop targets it throws UnsupportedError, so use the reliable temp
+    // fallback directly.
+    if (Platform.isMacOS) getDownloadsDirectory,
     if (Platform.isAndroid || Platform.isIOS)
       () async => getApplicationDocumentsDirectory(),
     () async => getTemporaryDirectory(),
