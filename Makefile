@@ -259,7 +259,6 @@ release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the F
 	@rm -rf "$(RELEASE_DIR)/macos/flutter"
 	@mkdir -p "$(RELEASE_DIR)/macos/flutter"
 	@cp -R "$(FLUTTER_MACOS_APP)" "$(RELEASE_DIR)/macos/flutter/Motif.app"
-	@bash "$(FLUTTER_DIR)/scripts/strip_macos_x64.sh" "$(RELEASE_DIR)/macos/flutter/Motif.app" --resign --entitlements "$(FLUTTER_DIR)/macos/Runner/Release.entitlements"
 	@cd "$(RELEASE_DIR)/macos/flutter" && ditto -c -k --keepParent Motif.app "../../Motif-flutter-macos-$(ARTIFACT_SUFFIX)-$(HOST_TAG).zip"
 	@echo "Flutter macOS app: $(RELEASE_DIR)/macos/flutter/Motif.app"
 

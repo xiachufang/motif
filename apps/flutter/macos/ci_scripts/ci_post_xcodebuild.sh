@@ -1,34 +1,20 @@
 #!/bin/sh
 
 # Xcode Cloud post-build hook: package the archived Motif.app as a .dmg and
-# publish it to a GitHub Release. No notarization (see note below).
+# publish it to a GitHub Release.
 #
 # Runs AFTER `xcodebuild archive`. We pull the app straight out of the
 # .xcarchive (CI_ARCHIVE_PATH) — the workflow's Distribution Preparation is set
-# to None, so there is no separately-exported "Developer ID" app. Since this
-# build is ad-hoc signed and unnotarized anyway, the archived app is identical
-# to what an export would produce. Unlike the Run Script build phase, this hook
-# HAS network access.
+# to None, so there is no separately-exported app. The app is copied without
+# modifying its Mach-O files or replacing the signature produced by Xcode
+# Cloud. Unlike the Run Script build phase, this hook HAS network access.
 #
-# We do NOT notarize. The team has no Developer ID Application certificate, so
-# Xcode Cloud's "Developer ID" export is actually ad-hoc signed (TeamIdentifier
-# not set, CodeDirectory flags=0x2) — which notarization rejects ("not signed
-# with a valid Developer ID certificate", "no secure timestamp", "hardened
-# runtime not enabled"). Ad-hoc is fine for side-loaded distribution on Apple
-# Silicon as long as the user clears the quarantine flag once after download:
-#     xattr -dr com.apple.quarantine /Applications/Motif.app
-# then it launches normally. The staged app is stripped to arm64-only after
-# copying it out of the archive, then ad-hoc re-signed before it goes into the
-# DMG. The archived app itself is left untouched.
-#
-# To switch to real notarized distribution later: the Account Holder creates a
-# Developer ID Application certificate, enable ENABLE_HARDENED_RUNTIME in the
-# Runner target, then notarize+staple the .dmg here with `xcrun notarytool`.
+# This script does not notarize the app or DMG. Configure notarization in the
+# Xcode Cloud distribution workflow or add `xcrun notarytool` here when needed.
 #
 # Division of labour (see ci_post_clone.sh sibling for the build-time half):
 #   - `xcodebuild archive` produces the .xcarchive; Xcode Cloud exposes its path
-#     via CI_ARCHIVE_PATH. We read Motif.app from inside it. We cannot re-sign
-#     here: the script environment has zero valid codesign identities.
+#     via CI_ARCHIVE_PATH. We preserve the archived Motif.app unchanged.
 #   - We package the .dmg and upload the GitHub Release.
 #
 # Required workflow Secret environment variable (set in Xcode Cloud, masked):
@@ -40,8 +26,6 @@ set -e
 
 APP_NAME="Motif"
 REPO="xiachufang/motif"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # --- Guard: tag-only -------------------------------------------------------
 if [ -z "$CI_TAG" ]; then
@@ -73,11 +57,7 @@ rm -rf "$WORK" && mkdir -p "$WORK"
 DMG="$WORK/$APP_NAME-$CI_TAG.dmg"
 STAGE="$WORK/dmg"
 mkdir -p "$STAGE"
-STAGED_APP="$STAGE/$APP_NAME.app"
-cp -R "$APP_PATH" "$STAGED_APP"
-bash "$PROJECT_DIR/scripts/strip_macos_x64.sh" "$STAGED_APP" \
-  --resign \
-  --entitlements "$PROJECT_DIR/macos/Runner/Release.entitlements"
+cp -R "$APP_PATH" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" \
   -ov -format UDZO "$DMG"
@@ -94,7 +74,7 @@ cat > "$NOTES" <<EOF
    \`\`\`
    之后正常双击打开即可。
 
-> 该构建为 ad-hoc 签名、未公证，上述步骤仅首次需要。
+> 该构建尚未公证，上述步骤仅首次需要。
 EOF
 
 # --- Publish to GitHub Release ---------------------------------------------
