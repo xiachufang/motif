@@ -11,6 +11,7 @@ import 'state/app_state.dart';
 import 'state/embedded_server_service.dart';
 import 'state/motif_runtime.dart';
 import 'state/server_connection_runtime.dart';
+import 'update/desktop_update_service.dart';
 import 'ui/app.dart';
 
 typedef MotifStartupHook = FutureOr<void> Function(AppState appState);
@@ -25,6 +26,7 @@ Future<void> runMotif({
   MotifClientRuntime? clientRuntime,
   ServerConnectionRuntime? serverConnectionRuntime,
   EmbeddedServerPageFactory? embeddedServerPageFactory,
+  DesktopUpdateService? desktopUpdateService,
   MotifStartupHook? afterFirstFrame,
 }) {
   return runZonedGuarded<Future<void>>(
@@ -74,6 +76,10 @@ Future<void> runMotif({
                 if (embedded != null)
                   ChangeNotifierProvider<EmbeddedServerService>.value(
                     value: embedded,
+                  ),
+                if (desktopUpdateService != null)
+                  Provider<DesktopUpdateService>.value(
+                    value: desktopUpdateService,
                   ),
               ],
               child: MotifApp(
