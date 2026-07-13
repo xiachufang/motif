@@ -4,21 +4,27 @@ import 'dart:typed_data';
 /// Preserves PTY byte order while coalescing small network frames into fewer
 /// isolate/FFI calls. Chunks at least [maxBatchBytes] pass through unchanged.
 class TerminalByteBatcher {
-  TerminalByteBatcher({this.maxBatchBytes = 32 * 1024})
-    : assert(maxBatchBytes > 0);
+  TerminalByteBatcher({
+    this.maxBatchBytes = 32 * 1024,
+    this.maxPendingBytes = 4 * 1024 * 1024,
+  }) : assert(maxBatchBytes > 0),
+       assert(maxPendingBytes >= maxBatchBytes);
 
   final int maxBatchBytes;
+  final int maxPendingBytes;
   final Queue<Uint8List> _chunks = Queue<Uint8List>();
 
   int pendingBytes = 0;
   int get pendingChunks => _chunks.length;
   bool get isEmpty => _chunks.isEmpty;
 
-  void add(Uint8List bytes) {
-    if (bytes.isEmpty) return;
+  bool add(Uint8List bytes) {
+    if (bytes.isEmpty) return true;
+    if (pendingBytes + bytes.length > maxPendingBytes) return false;
     final owned = Uint8List.fromList(bytes);
     _chunks.addLast(owned);
     pendingBytes += owned.length;
+    return true;
   }
 
   List<Uint8List> drain() {

@@ -59,7 +59,8 @@ use tokio::sync::mpsc;
 use crate::pty::Pty;
 use crate::session::Session;
 use crate::ws::{
-    self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR, TIMING_TARGET,
+    self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, OUTBOUND_FRAME_CAPACITY,
+    PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
 /// 4011 — a live subscriber fell too far behind and the broadcast channel
@@ -159,7 +160,7 @@ async fn handle_pty_socket(
     // the grid.
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
+    let (out_tx, mut out_rx) = mpsc::channel::<OutMsg>(OUTBOUND_FRAME_CAPACITY);
 
     // ─ Replay ─
     // The PTY's emulator thread decides what to send before live: a raw byte
@@ -266,11 +267,11 @@ async fn handle_pty_socket(
             let idle = now.duration_since(*hb_last.lock().unwrap());
             if idle > IDLE_TIMEOUT_DUR {
                 tracing::warn!(client_id = %hb_client, pty_id = %hb_pty, idle_secs = idle.as_secs(), "pty idle timeout");
-                let _ = hb_out_tx.send(ws::out_close());
+                let _ = hb_out_tx.send(ws::out_close()).await;
                 return;
             }
             if now >= next_ping {
-                if hb_out_tx.send(ws::out_ping()).is_err() {
+                if hb_out_tx.send(ws::out_ping()).await.is_err() {
                     return;
                 }
                 next_ping = now + PING_INTERVAL_DUR;
@@ -291,12 +292,14 @@ async fn handle_pty_socket(
                         bytes.len() >= LIVE_COMPRESS_THRESHOLD_BYTES,
                     );
                     let size = frame.len();
-                    let send = out_tx_fwd.send(OutMsg {
-                        msg: Message::Binary(frame.into()),
-                        enqueued_at: Instant::now(),
-                        tag: "pty.output".into(),
-                        size,
-                    });
+                    let send = out_tx_fwd
+                        .send(OutMsg {
+                            msg: Message::Binary(frame.into()),
+                            enqueued_at: Instant::now(),
+                            tag: "pty.output".into(),
+                            size,
+                        })
+                        .await;
                     if send.is_err() {
                         break;
                     }
@@ -310,15 +313,17 @@ async fn handle_pty_socket(
                         client_id = %fwd_client, pty_id = %fwd_pty_id,
                         skipped = n, "pty subscriber lagged; closing 4011",
                     );
-                    let _ = out_tx_fwd.send(OutMsg {
-                        msg: Message::Close(Some(CloseFrame {
-                            code: CLOSE_HISTORY_TRUNCATED,
-                            reason: "subscriber lagged".into(),
-                        })),
-                        enqueued_at: Instant::now(),
-                        tag: "close".into(),
-                        size: 0,
-                    });
+                    let _ = out_tx_fwd
+                        .send(OutMsg {
+                            msg: Message::Close(Some(CloseFrame {
+                                code: CLOSE_HISTORY_TRUNCATED,
+                                reason: "subscriber lagged".into(),
+                            })),
+                            enqueued_at: Instant::now(),
+                            tag: "close".into(),
+                            size: 0,
+                        })
+                        .await;
                     break;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

@@ -12,4 +12,5 @@ abstract interface class TerminalSession {
   Future<void> resizePty(String ptyId, int cols, int rows);
   Future<void> activatePtyStream(String ptyId);
   Future<void> deactivatePtyStream(String ptyId);
+  Future<void> resyncPtyStream(String ptyId, {required String reason});
 }

@@ -112,6 +112,43 @@ void main() {
       },
     );
 
+    test('caps live output queued behind a slow replay', () async {
+      final smallHub = PtyOutputHub(
+        replayCapacityBytes: 8,
+        replayBytesPerTick: 1,
+        replayInterval: const Duration(milliseconds: 50),
+        maxReplayBacklogBytes: 10,
+      );
+      addTearDown(smallHub.dispose);
+
+      smallHub.handleOutput(
+        'pty-1',
+        Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]),
+      );
+      final received = <int>[];
+      final overflows = <int>[];
+      smallHub.onReplayOverflow = (_, pendingBytes) {
+        overflows.add(pendingBytes);
+      };
+      smallHub.registerSink('pty-1', received.addAll);
+
+      // The 8-byte replay plus these 3 live bytes exceeds the 10-byte cap.
+      // The partial delivery is abandoned and the owner is asked to obtain a
+      // self-contained snapshot instead of silently dropping bytes.
+      smallHub.handleOutput('pty-1', Uint8List.fromList([9, 10, 11]));
+
+      expect(overflows, [11]);
+      expect(smallHub.replayBacklogBytesFor('pty-1'), 0);
+      expect(smallHub.replayBytesFor('pty-1'), 0);
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+      expect(received, isEmpty);
+
+      // Output arriving after the overflow is live again while the owner
+      // performs its cold reconnect.
+      smallHub.handleOutput('pty-1', Uint8List.fromList([12]));
+      expect(received, [12]);
+    });
+
     test('clearPty drops replay for that pty only', () async {
       hub.handleOutput('a', Uint8List.fromList([1]));
       hub.handleOutput('b', Uint8List.fromList([2]));

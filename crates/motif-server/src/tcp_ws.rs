@@ -21,7 +21,8 @@ use tokio::sync::mpsc;
 
 use crate::session::Session;
 use crate::ws::{
-    self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR, TIMING_TARGET,
+    self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, OUTBOUND_FRAME_CAPACITY,
+    PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
 const TCP_READ_CHUNK_BYTES: usize = 32 * 1024;
@@ -122,7 +123,7 @@ async fn handle_tcp_socket(
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (mut tcp_rx, mut tcp_tx) = tcp.into_split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
+    let (out_tx, mut out_rx) = mpsc::channel::<OutMsg>(OUTBOUND_FRAME_CAPACITY);
 
     let writer_client_id = client_id.clone();
     let writer_target = target.clone();
@@ -169,11 +170,11 @@ async fn handle_tcp_socket(
                     idle_secs = idle.as_secs(),
                     "tcp ws idle timeout"
                 );
-                let _ = hb_out_tx.send(ws::out_close());
+                let _ = hb_out_tx.send(ws::out_close()).await;
                 return;
             }
             if now >= next_ping {
-                if hb_out_tx.send(ws::out_ping()).is_err() {
+                if hb_out_tx.send(ws::out_ping()).await.is_err() {
                     return;
                 }
                 next_ping = now + PING_INTERVAL_DUR;
@@ -201,6 +202,7 @@ async fn handle_tcp_socket(
                         tag: "tcp.output".into(),
                         size: n,
                     })
+                    .await
                     .is_err()
                 {
                     break;

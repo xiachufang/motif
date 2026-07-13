@@ -39,4 +39,16 @@ void main() {
     expect(batcher.isEmpty, isTrue);
     expect(batcher.pendingBytes, 0);
   });
+
+  test('rejects input beyond the pending byte cap without retaining it', () {
+    final batcher = TerminalByteBatcher(maxBatchBytes: 4, maxPendingBytes: 8);
+
+    expect(batcher.add(Uint8List.fromList([1, 2, 3, 4, 5, 6])), isTrue);
+    expect(batcher.add(Uint8List.fromList([7, 8, 9])), isFalse);
+    expect(batcher.pendingBytes, 6);
+    expect(batcher.pendingChunks, 1);
+    expect(batcher.drain(), [
+      [1, 2, 3, 4, 5, 6],
+    ]);
+  });
 }

@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 use crate::session::Session;
 use crate::wire::Codec;
 use crate::ws::{
-    self, encode_event, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR,
-    TIMING_TARGET,
+    self, encode_event, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR,
+    OUTBOUND_FRAME_CAPACITY, PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -112,7 +112,7 @@ async fn handle_events_socket(
     );
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<OutMsg>();
+    let (out_tx, mut out_rx) = mpsc::channel::<OutMsg>(OUTBOUND_FRAME_CAPACITY);
 
     // Writer task: drains out_tx, logs per-frame timing on the same
     // timing target the HTTP path uses.
@@ -156,11 +156,11 @@ async fn handle_events_socket(
             let idle = now.duration_since(*hb_last.lock().unwrap());
             if idle > IDLE_TIMEOUT_DUR {
                 tracing::warn!(client_id = %hb_client, idle_secs = idle.as_secs(), "events idle timeout");
-                let _ = hb_out_tx.send(ws::out_close());
+                let _ = hb_out_tx.send(ws::out_close()).await;
                 return;
             }
             if now >= next_ping {
-                if hb_out_tx.send(ws::out_ping()).is_err() {
+                if hb_out_tx.send(ws::out_ping()).await.is_err() {
                     return;
                 }
                 next_ping = now + PING_INTERVAL_DUR;
@@ -183,7 +183,7 @@ async fn handle_events_socket(
             if should_drop(&sub_session, ev.as_ref(), &sub_client) {
                 continue;
             }
-            if !send_event(&sub_out_tx, ev, codec) {
+            if !send_event(&sub_out_tx, ev, codec).await {
                 return;
             }
         }
@@ -196,7 +196,7 @@ async fn handle_events_socket(
                     if should_drop(&sub_session, ev.as_ref(), &sub_client) {
                         continue;
                     }
-                    if !send_event(&sub_out_tx, ev, codec) {
+                    if !send_event(&sub_out_tx, ev, codec).await {
                         break;
                     }
                 }
@@ -263,7 +263,7 @@ fn should_drop(session: &Session, ev: &Event, client_id: &str) -> bool {
     false
 }
 
-fn send_event(out_tx: &mpsc::UnboundedSender<OutMsg>, ev: Arc<Event>, codec: Codec) -> bool {
+async fn send_event(out_tx: &mpsc::Sender<OutMsg>, ev: Arc<Event>, codec: Codec) -> bool {
     let event = std::sync::Arc::try_unwrap(ev).unwrap_or_else(|a| (*a).clone());
     let tag = ws::event_tag(&event);
     let msg = encode_event(&event, codec);
@@ -275,6 +275,7 @@ fn send_event(out_tx: &mpsc::UnboundedSender<OutMsg>, ev: Arc<Event>, codec: Cod
             tag: tag.into(),
             size,
         })
+        .await
         .is_ok()
 }
 

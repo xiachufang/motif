@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -12,6 +13,29 @@ typedef TerminalWorkerSnapshotCallback =
     void Function(TerminalSnapshot snapshot);
 typedef TerminalWorkerErrorCallback = void Function(Object error);
 
+class TerminalWorkerBacklogOverflow implements Exception {
+  const TerminalWorkerBacklogOverflow({
+    required this.pendingBytes,
+    required this.limitBytes,
+  });
+
+  final int pendingBytes;
+  final int limitBytes;
+
+  @override
+  String toString() =>
+      'terminal worker backlog overflow: $pendingBytes > $limitBytes bytes';
+}
+
+class _QueuedWorkerCommand {
+  const _QueuedWorkerCommand.message(this.message) : feedBytes = null;
+
+  const _QueuedWorkerCommand.feed(this.message, this.feedBytes);
+
+  final Map<String, Object?> message;
+  final Uint8List? feedBytes;
+}
+
 class TerminalWorkerClient {
   TerminalWorkerClient._(
     this._isolate,
@@ -22,6 +46,8 @@ class TerminalWorkerClient {
     this._onSnapshot,
     this._onInitialized,
     this._onError,
+    this._maxPendingFeedBytes,
+    this._maxPendingCommandCount,
   ) {
     _eventsSub = _eventStream.listen(_handleEvent);
   }
@@ -34,8 +60,15 @@ class TerminalWorkerClient {
   final TerminalWorkerSnapshotCallback _onSnapshot;
   final void Function() _onInitialized;
   final TerminalWorkerErrorCallback _onError;
+  final int _maxPendingFeedBytes;
+  final int _maxPendingCommandCount;
   late final StreamSubscription<Object?> _eventsSub;
   bool _disposed = false;
+  bool _commandInFlight = false;
+  bool _backlogFailed = false;
+  int _pendingFeedBytes = 0;
+  final Queue<_QueuedWorkerCommand> _commandQueue =
+      Queue<_QueuedWorkerCommand>();
   int _nextCopyRequestId = 1;
   final Map<int, Completer<String?>> _copySelectionRequests =
       <int, Completer<String?>>{};
@@ -45,7 +78,11 @@ class TerminalWorkerClient {
     required TerminalWorkerSnapshotCallback onSnapshot,
     required void Function() onInitialized,
     required TerminalWorkerErrorCallback onError,
+    int maxPendingFeedBytes = 4 * 1024 * 1024,
+    int maxPendingCommandCount = 1024,
   }) async {
+    assert(maxPendingFeedBytes > 0);
+    assert(maxPendingCommandCount > 0);
     final events = ReceivePort();
     final eventStream = events.asBroadcastStream();
     final ready = Completer<SendPort>();
@@ -71,6 +108,8 @@ class TerminalWorkerClient {
       onSnapshot,
       onInitialized,
       onError,
+      maxPendingFeedBytes,
+      maxPendingCommandCount,
     );
   }
 
@@ -117,12 +156,25 @@ class TerminalWorkerClient {
   }
 
   void feedBytes(Uint8List bytes) {
-    if (bytes.isEmpty) return;
-    _send({
-      'type': 'feed',
-      'bytes': TransferableTypedData.fromList([bytes]),
-      'enqueuedAtUs': DateTime.now().microsecondsSinceEpoch,
-    });
+    if (_disposed || _backlogFailed || bytes.isEmpty) return;
+    final nextPending = _pendingFeedBytes + bytes.length;
+    if (nextPending > _maxPendingFeedBytes) {
+      _failBacklog(
+        TerminalWorkerBacklogOverflow(
+          pendingBytes: nextPending,
+          limitBytes: _maxPendingFeedBytes,
+        ),
+      );
+      return;
+    }
+    final owned = Uint8List.fromList(bytes);
+    _pendingFeedBytes = nextPending;
+    _enqueue(
+      _QueuedWorkerCommand.feed({
+        'type': 'feed',
+        'enqueuedAtUs': DateTime.now().microsecondsSinceEpoch,
+      }, owned),
+    );
   }
 
   void resize({
@@ -260,11 +312,12 @@ class TerminalWorkerClient {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _commandQueue.clear();
+    _pendingFeedBytes = 0;
     for (final completer in _copySelectionRequests.values) {
       if (!completer.isCompleted) completer.complete(null);
     }
     _copySelectionRequests.clear();
-    _send({'type': 'dispose'});
     await _eventsSub.cancel();
     _events.close();
     _isolate.kill(priority: Isolate.immediate);
@@ -272,7 +325,47 @@ class TerminalWorkerClient {
 
   void _send(Map<String, Object?> message) {
     if (_disposed) return;
-    _commands.send(message);
+    _enqueue(_QueuedWorkerCommand.message(message));
+  }
+
+  void _enqueue(_QueuedWorkerCommand command) {
+    if (_disposed || _backlogFailed) return;
+    if (_commandQueue.length >= _maxPendingCommandCount) {
+      _failBacklog(
+        TerminalWorkerBacklogOverflow(
+          pendingBytes: _pendingFeedBytes,
+          limitBytes: _maxPendingFeedBytes,
+        ),
+      );
+      return;
+    }
+    _commandQueue.addLast(command);
+    _drainCommands();
+  }
+
+  void _drainCommands() {
+    if (_disposed ||
+        _backlogFailed ||
+        _commandInFlight ||
+        _commandQueue.isEmpty) {
+      return;
+    }
+    final command = _commandQueue.removeFirst();
+    final feedBytes = command.feedBytes;
+    _commandInFlight = true;
+    _commands.send({
+      ...command.message,
+      if (feedBytes != null)
+        'bytes': TransferableTypedData.fromList([feedBytes]),
+    });
+  }
+
+  void _failBacklog(TerminalWorkerBacklogOverflow error) {
+    if (_disposed || _backlogFailed) return;
+    _backlogFailed = true;
+    _commandQueue.clear();
+    _pendingFeedBytes = 0;
+    _onError(error);
   }
 
   void _handleEvent(Object? message) {
@@ -288,6 +381,14 @@ class TerminalWorkerClient {
       case 'snapshot':
         final snapshot = message['snapshot'];
         if (snapshot is TerminalSnapshot) _onSnapshot(snapshot);
+      case 'commandProcessed':
+        final byteCount = message['feedBytes'];
+        if (byteCount is int) {
+          final remaining = _pendingFeedBytes - byteCount;
+          _pendingFeedBytes = remaining > 0 ? remaining : 0;
+        }
+        _commandInFlight = false;
+        _drainCommands();
       case 'selectionText':
         final id = message['id'];
         final completer = id is int ? _copySelectionRequests.remove(id) : null;
@@ -362,6 +463,7 @@ class _TerminalWorker {
 
   void _handleCommand(Object? command) {
     if (command is! Map) return;
+    var processedFeedBytes = 0;
     try {
       switch (command['type']) {
         case 'init':
@@ -375,6 +477,7 @@ class _TerminalWorker {
         case 'feed':
           final bytes = _materializeBytes(command['bytes']);
           if (bytes != null && bytes.isNotEmpty) {
+            processedFeedBytes = bytes.length;
             final firstFeed = waitingForFirstFeed;
             if (firstFeed) {
               waitingForFirstFeed = false;
@@ -474,6 +577,10 @@ class _TerminalWorker {
         case 'dispose':
           _dispose();
       }
+      events.send({
+        'type': 'commandProcessed',
+        'feedBytes': processedFeedBytes,
+      });
     } catch (error) {
       events.send({'type': 'error', 'error': error.toString()});
     }

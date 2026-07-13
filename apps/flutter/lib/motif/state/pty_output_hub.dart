@@ -18,7 +18,14 @@ class _PtyReplayDelivery {
   final List<Uint8List> chunks = <Uint8List>[];
   int index = 0;
   int offset = 0;
+  int pendingBytes = 0;
   Timer? timer;
+
+  void add(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    chunks.add(bytes);
+    pendingBytes += bytes.length;
+  }
 
   void cancel() {
     timer?.cancel();
@@ -121,11 +128,18 @@ class PtyOutputHub {
     int replayCapacityBytes = maxReplayBytesPerPty,
     int replayBytesPerTick = replayDeliverMaxBytesPerTick,
     Duration replayInterval = replayDeliverInterval,
+    int? maxReplayBacklogBytes,
   }) : assert(replayCapacityBytes > 0),
        assert(replayBytesPerTick > 0),
+       assert(
+         (maxReplayBacklogBytes ?? replayCapacityBytes * 2) >=
+             replayCapacityBytes,
+       ),
        _replayCapacityBytes = replayCapacityBytes,
        _replayBytesPerTick = replayBytesPerTick,
-       _deliveryInterval = replayInterval;
+       _deliveryInterval = replayInterval,
+       _maxReplayBacklogBytes =
+           maxReplayBacklogBytes ?? replayCapacityBytes * 2;
 
   static const int maxReplayBytesPerPty = 2 * 1024 * 1024;
   static const int replayDeliverMaxBytesPerTick = 64 * 1024;
@@ -134,6 +148,7 @@ class PtyOutputHub {
   final int _replayCapacityBytes;
   final int _replayBytesPerTick;
   final Duration _deliveryInterval;
+  final int _maxReplayBacklogBytes;
 
   final Map<String, PtyByteSink> _sinks = {};
   final Map<String, _ReplayByteRing> _replay = {};
@@ -144,9 +159,17 @@ class PtyOutputHub {
   /// Optional context for diagnostic logs (active view / active PTY).
   String? Function()? describeActive;
 
+  /// Called after an in-flight replay backlog hits its hard byte cap. The
+  /// owner should cold-reconnect this PTY so the server replaces the skipped
+  /// stream with a self-contained VT snapshot.
+  void Function(String ptyId, int pendingBytes)? onReplayOverflow;
+
   bool hasSink(String ptyId) => _sinks.containsKey(ptyId);
 
   int replayBytesFor(String ptyId) => _replay[ptyId]?.length ?? 0;
+
+  int replayBacklogBytesFor(String ptyId) =>
+      _deliveries[ptyId]?.pendingBytes ?? 0;
 
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
   void registerSink(String ptyId, PtyByteSink sink) {
@@ -185,7 +208,19 @@ class PtyOutputHub {
     _noteOutput(ptyId, bytes.length);
     final delivery = _deliveries[ptyId];
     if (delivery != null && _sinks[ptyId] == delivery.sink) {
-      delivery.chunks.add(bytes);
+      final nextPending = delivery.pendingBytes + bytes.length;
+      if (nextPending > _maxReplayBacklogBytes) {
+        _deliveries.remove(ptyId)?.cancel();
+        _replay.remove(ptyId);
+        Log.w(
+          'replay backlog overflow pty=$ptyId pending=$nextPending '
+          'limit=$_maxReplayBacklogBytes; requesting cold resync',
+          name: 'motif.pty',
+        );
+        onReplayOverflow?.call(ptyId, nextPending);
+        return;
+      }
+      delivery.add(bytes);
       _scheduleReplayDelivery(ptyId, delivery);
     } else {
       _sinks[ptyId]?.call(bytes);
@@ -225,7 +260,10 @@ class PtyOutputHub {
     PtyByteSink sink,
     List<Uint8List> replay,
   ) {
-    final delivery = _PtyReplayDelivery(sink)..chunks.addAll(replay);
+    final delivery = _PtyReplayDelivery(sink);
+    for (final bytes in replay) {
+      delivery.add(bytes);
+    }
     _deliveries[ptyId] = delivery;
     Log.i(
       'replay sink pty=$ptyId chunks=${replay.length} '
@@ -258,8 +296,13 @@ class PtyOutputHub {
         final end = start + take;
         delivery.sink(Uint8List.sublistView(chunk, start, end));
         delivered += take;
+        delivery.pendingBytes -= take;
         delivery.offset = end;
         if (delivery.offset >= chunk.length) {
+          // Release evicted ring segments/live frames as soon as their bytes
+          // have reached the sink instead of retaining the whole replay until
+          // its final timer tick.
+          delivery.chunks[delivery.index] = Uint8List(0);
           delivery.index++;
           delivery.offset = 0;
         }

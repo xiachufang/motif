@@ -10,6 +10,24 @@ import 'package:motif/motif/terminal/terminal_snapshot.dart';
 import 'package:motif/motif/terminal/terminal_worker.dart';
 
 void main() {
+  test('worker client caps queued PTY bytes', () async {
+    final overflow = Completer<Object>();
+    final worker = await TerminalWorkerClient.spawn(
+      onHostWrite: (_) {},
+      onSnapshot: (_) {},
+      onInitialized: () {},
+      onError: overflow.complete,
+      maxPendingFeedBytes: 4,
+    );
+    addTearDown(worker.dispose);
+
+    worker.feedBytes(Uint8List.fromList([1, 2, 3, 4, 5]));
+
+    final error = await overflow.future.timeout(const Duration(seconds: 2));
+    expect(error, isA<TerminalWorkerBacklogOverflow>());
+    expect('$error', contains('5 > 4 bytes'));
+  });
+
   test('worker owns Ghostty state and emits snapshots', () async {
     final initialized = Completer<void>();
     final snapshots = StreamController<TerminalSnapshot>.broadcast();
@@ -53,6 +71,14 @@ void main() {
     worker.feedBytes(Uint8List.fromList(utf8.encode('hello')));
     final snapshot = await firstContent.timeout(const Duration(seconds: 2));
     expect(snapshot.visibleText, contains('hello'));
+
+    final orderedBurst = snapshots.stream.firstWhere(
+      (s) => s.visibleText.contains('helloABC'),
+    );
+    worker.feedBytes(Uint8List.fromList(utf8.encode('A')));
+    worker.feedBytes(Uint8List.fromList(utf8.encode('B')));
+    worker.feedBytes(Uint8List.fromList(utf8.encode('C')));
+    await orderedBurst.timeout(const Duration(seconds: 2));
 
     worker.feedBytes(
       Uint8List.fromList(

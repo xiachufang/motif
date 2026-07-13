@@ -129,6 +129,22 @@ class MotifClient extends ChangeNotifier
     : runtime = runtime ?? const MobileMotifClientRuntime() {
     _ptyOutput.describeActive = () =>
         'activeView=$activeViewId activePty=${_activePtyId()}';
+    _ptyOutput.onReplayOverflow = (ptyId, pendingBytes) {
+      final rpc = _rpc;
+      if (rpc == null) return;
+      unawaited(
+        rpc
+            .resyncPty(ptyId, reason: 'replay backlog $pendingBytes bytes')
+            .catchError((Object error, StackTrace stackTrace) {
+              Log.w(
+                'pty replay overflow resync failed pty=$ptyId',
+                name: 'motif.pty',
+                error: error,
+                stackTrace: stackTrace,
+              );
+            }),
+      );
+    };
   }
 
   final MotifClientRuntime runtime;
@@ -766,6 +782,12 @@ class MotifClient extends ChangeNotifier
   @override
   Future<void> deactivatePtyStream(String ptyId) =>
       runtime.onTerminalSurfaceDisposed(this, ptyId);
+
+  @override
+  Future<void> resyncPtyStream(String ptyId, {required String reason}) async {
+    _ptyOutput.clearPty(ptyId);
+    await _rpc?.resyncPty(ptyId, reason: reason);
+  }
 
   /// Wait for an in-progress session attachment before issuing terminal work.
   ///

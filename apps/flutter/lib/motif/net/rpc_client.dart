@@ -54,6 +54,7 @@ class _PtyChannel {
   WebSocketChannel? socket;
   StreamSubscription<Object?>? sub;
   Future<void>? opening;
+  Future<void>? resyncing;
   Future<void> processing = Future<void>.value();
   int cursor = 0;
   bool hasCursor = false;
@@ -658,47 +659,116 @@ class RpcClient {
     final generation = ch.generation;
     final isFirstOutput = !ch.firstOutputLogged;
     ch.firstOutputLogged = true;
-    ch.processing = ch.processing.then((_) async {
+    // A StreamSubscription is the only backpressure lever exposed by
+    // web_socket_channel. Pause it before starting isolate decode so at most
+    // one owned WebSocket payload per PTY is retained in this Future chain.
+    // Without this, a fast producer can enqueue an arbitrary number of frames
+    // while the shell parser/terminal worker is behind.
+    final subscription = ch.sub;
+    subscription?.pause();
+    ch.processing =
+        _processPtyFrame(
+          ptyId,
+          ch,
+          socket,
+          generation,
+          data,
+          isFirstOutput,
+        ).whenComplete(() {
+          if (_isCurrentPtySocket(ptyId, ch, socket, generation) &&
+              identical(ch.sub, subscription)) {
+            subscription?.resume();
+          }
+        });
+  }
+
+  Future<void> _processPtyFrame(
+    String ptyId,
+    _PtyChannel ch,
+    WebSocketChannel socket,
+    int generation,
+    Uint8List data,
+    bool isFirstOutput,
+  ) async {
+    if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
+    try {
+      final processor = await _frameProcessor();
+      final result = await processor.process(ptyId, data);
       if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
-      try {
-        final processor = await _frameProcessor();
-        final result = await processor.process(ptyId, data);
-        if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
-        ch.cursor += result.decodedLength;
-        if (isFirstOutput) {
+      ch.cursor += result.decodedLength;
+      if (isFirstOutput) {
+        Log.i(
+          'ws first output pty=$ptyId bytes=${result.decodedLength} '
+          'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
+          name: 'motif.resume',
+        );
+      }
+      final replayRemaining = ch.replayBytesRemaining;
+      if (replayRemaining != null) {
+        final next = replayRemaining - result.decodedLength;
+        if (next <= 0) {
           Log.i(
-            'ws first output pty=$ptyId bytes=${result.decodedLength} '
+            'ws replay complete pty=$ptyId bytes=${ch.replayBytesTotal} '
             'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
             name: 'motif.resume',
           );
+          ch.replayBytesRemaining = null;
+          _completePtyReplay(ch);
+        } else {
+          ch.replayBytesRemaining = next;
         }
-        final replayRemaining = ch.replayBytesRemaining;
-        if (replayRemaining != null) {
-          final next = replayRemaining - result.decodedLength;
-          if (next <= 0) {
-            Log.i(
-              'ws replay complete pty=$ptyId bytes=${ch.replayBytesTotal} '
-              'took=${ch.openStopwatch?.elapsedMilliseconds ?? -1}ms',
-              name: 'motif.resume',
-            );
-            ch.replayBytesRemaining = null;
-            _completePtyReplay(ch);
-          } else {
-            ch.replayBytesRemaining = next;
-          }
-        }
-        _emitProcessedPtyFrame(ptyId, result);
-      } catch (e, st) {
-        if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
-        Log.w(
-          'pty $ptyId: framed decode failed',
-          name: 'motif.rpc',
-          error: e,
-          stackTrace: st,
-        );
-        await _recoverPtyAfterDecodeError(ptyId, ch);
       }
+      _emitProcessedPtyFrame(ptyId, result);
+    } catch (e, st) {
+      if (!_isCurrentPtySocket(ptyId, ch, socket, generation)) return;
+      Log.w(
+        'pty $ptyId: framed decode failed',
+        name: 'motif.rpc',
+        error: e,
+        stackTrace: st,
+      );
+      await _recoverPtyAfterDecodeError(ptyId, ch);
+    }
+  }
+
+  /// Discard a potentially inconsistent client cursor and reconnect cold. The
+  /// server responds with a self-contained VT snapshot (including a scrollback
+  /// clear prelude), so callers can recover from a bounded client queue
+  /// overflow without silently dropping terminal bytes.
+  Future<void> resyncPty(String ptyId, {String reason = 'client backlog'}) {
+    final ch = _ptys[ptyId];
+    if (ch == null || !_streamingPtys.contains(ptyId)) {
+      return Future<void>.value();
+    }
+    final running = ch.resyncing;
+    if (running != null) return running;
+
+    late final Future<void> resync;
+    resync = _resyncPty(ptyId, ch, reason).whenComplete(() {
+      if (identical(ch.resyncing, resync)) ch.resyncing = null;
     });
+    ch.resyncing = resync;
+    return resync;
+  }
+
+  Future<void> _resyncPty(String ptyId, _PtyChannel ch, String reason) async {
+    Log.w('resync pty=$ptyId reason=$reason', name: 'motif.rpc');
+    ch
+      ..cursor = 0
+      ..hasCursor = false;
+    await _closePty(ptyId, removeState: false, removeProcessorState: false);
+    final processor = _ptyProcessor;
+    if (processor != null) {
+      try {
+        await (await processor).removePty(ptyId);
+      } catch (_) {
+        // Reopening with a clean VT snapshot is still useful if parser cleanup
+        // raced with processor disposal.
+      }
+    }
+    if (_streamingPtys.contains(ptyId) && _ptys[ptyId] != null) {
+      await _openPty(ptyId);
+    }
   }
 
   Future<void> _recoverPtyAfterDecodeError(String ptyId, _PtyChannel ch) async {

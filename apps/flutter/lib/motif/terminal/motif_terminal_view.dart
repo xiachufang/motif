@@ -130,6 +130,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   int? _pendingResizeRows;
   bool _initialized = false;
   bool _workerStarting = false;
+  bool _workerNeedsColdResync = false;
   int _workerGeneration = 0;
   int _streamGeneration = 0;
   Object? _terminalError;

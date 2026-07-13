@@ -27,13 +27,24 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         Log.d(message, name: 'motif.terminal');
       }
     }
+    // While a failed worker is being rebuilt, PtyOutputHub's bounded ring is
+    // the owner of recent output. Do not create a second unbounded staging
+    // queue in the terminal State.
+    if (_terminalError != null) return;
     _enqueueRemoteBytes(bytes);
     _scheduleRemoteBytesFlush(bytes.length);
   }
 
   void _enqueueRemoteBytes(Uint8List bytes) {
     if (bytes.isEmpty) return;
-    _remoteByteBatcher.add(bytes);
+    if (_remoteByteBatcher.add(bytes)) return;
+    final error = TerminalWorkerBacklogOverflow(
+      pendingBytes: _remoteByteBatcher.pendingBytes + bytes.length,
+      limitBytes: _remoteByteBatcher.maxPendingBytes,
+    );
+    _workerNeedsColdResync = true;
+    _remoteByteBatcher.clear();
+    _failTerminal(error, StackTrace.current);
   }
 
   void _flushRemoteBytesToWorker() {
@@ -253,7 +264,13 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _initialized = true;
     _terminalRetryAttempt = 0;
-    _flushRemoteBytesToWorker();
+    if (_workerNeedsColdResync) {
+      _workerNeedsColdResync = false;
+      _remoteByteBatcher.clear();
+      unawaited(_coldResyncAfterWorkerStart(generation));
+    } else {
+      _flushRemoteBytesToWorker();
+    }
     _scheduleResizeAndMaybeOpen();
     _syncKeyboardLift();
     if (mounted) setState(() {});
@@ -295,7 +312,24 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
 
   void _onWorkerError(int generation, Object error) {
     if (!_isCurrentWorker(generation)) return;
+    if (error is TerminalWorkerBacklogOverflow) {
+      _workerNeedsColdResync = true;
+      _remoteByteBatcher.clear();
+    }
     _failTerminal(error, StackTrace.current);
+  }
+
+  Future<void> _coldResyncAfterWorkerStart(int generation) async {
+    try {
+      await widget.motif.resyncPtyStream(
+        widget.ptyId,
+        reason: 'terminal worker backlog overflow',
+      );
+    } catch (error, stackTrace) {
+      if (_isCurrentWorker(generation)) {
+        _failTerminal(error, stackTrace);
+      }
+    }
   }
 
   Future<void> _flushResizeAndMaybeOpen(int generation) async {
@@ -402,6 +436,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (worker != null) unawaited(worker.dispose());
     _initialized = false;
     _workerStarting = false;
+    _workerNeedsColdResync = false;
     _snapshot = null;
     _discardTerminalSelectionState();
     _terminalRenderCache.clear();

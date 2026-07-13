@@ -118,6 +118,11 @@ pub const HEARTBEAT_TICK_DUR: Duration = HEARTBEAT_TICK;
 /// hangs" style symptoms.
 pub const TIMING_TARGET: &str = "motif::rpc::timing";
 
+/// Maximum number of fully encoded WebSocket frames waiting behind a slow
+/// peer. PTY output and TCP forwarding can be produced much faster than a
+/// relayed/mobile socket can write, so this queue must never be unbounded.
+pub const OUTBOUND_FRAME_CAPACITY: usize = 64;
+
 /// One outbound frame queued for the WS writer task. Every send site
 /// builds one of these instead of pushing a raw `Message`, so the writer
 /// can log how long the frame waited in `out_tx` (queue depth proxy) and
