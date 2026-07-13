@@ -1,4 +1,5 @@
 import Cocoa
+import ApplicationServices
 import FlutterMacOS
 import ObjectiveC.runtime
 
@@ -65,6 +66,13 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+
+    let permissionsChannel = FlutterMethodChannel(
+      name: "motif/macos_permissions",
+      binaryMessenger: flutterViewController.engine.binaryMessenger)
+    permissionsChannel.setMethodCallHandler { call, result in
+      MacosPermissionsController.handle(call, result: result)
     }
 
     MotifImeDocumentCoordinator.shared.installFlutterTextInputContextHook()
@@ -182,6 +190,150 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     hideWindow()
     return false
+  }
+}
+
+enum MacosPermissionKind: String, CaseIterable {
+  case fullDiskAccess
+  case screenRecording
+  case accessibility
+  case automation
+}
+
+enum MacosPermissionState: String {
+  case granted
+  case notGranted
+  case managedExternally
+  case unavailable
+}
+
+enum MacosPermissionsController {
+  static func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "getStatuses":
+      result(statuses())
+    case "request":
+      guard let permission = permission(from: call.arguments) else {
+        result(FlutterError(
+          code: "bad_args",
+          message: "request requires a valid permission",
+          details: nil))
+        return
+      }
+      result(request(permission).rawValue)
+    case "openSystemSettings":
+      guard let permission = permission(from: call.arguments) else {
+        result(FlutterError(
+          code: "bad_args",
+          message: "openSystemSettings requires a valid permission",
+          details: nil))
+        return
+      }
+      if openSystemSettings(for: permission) {
+        result(nil)
+      } else {
+        result(FlutterError(
+          code: "open_settings_failed",
+          message: "Could not open macOS Privacy & Security settings",
+          details: nil))
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  static func permission(from arguments: Any?) -> MacosPermissionKind? {
+    guard let arguments = arguments as? [String: Any],
+          let raw = arguments["permission"] as? String else {
+      return nil
+    }
+    return MacosPermissionKind(rawValue: raw)
+  }
+
+  static func statuses() -> [String: String] {
+    [
+      MacosPermissionKind.fullDiskAccess.rawValue:
+        MacosPermissionState.managedExternally.rawValue,
+      MacosPermissionKind.screenRecording.rawValue:
+        state(for: .screenRecording).rawValue,
+      MacosPermissionKind.accessibility.rawValue:
+        state(for: .accessibility).rawValue,
+      MacosPermissionKind.automation.rawValue:
+        MacosPermissionState.managedExternally.rawValue,
+    ]
+  }
+
+  static func state(for permission: MacosPermissionKind) -> MacosPermissionState {
+    switch permission {
+    case .fullDiskAccess:
+      return .managedExternally
+    case .screenRecording:
+      return CGPreflightScreenCaptureAccess() ? .granted : .notGranted
+    case .accessibility:
+      return AXIsProcessTrusted() ? .granted : .notGranted
+    case .automation:
+      return .managedExternally
+    }
+  }
+
+  static func request(_ permission: MacosPermissionKind) -> MacosPermissionState {
+    switch permission {
+    case .fullDiskAccess, .automation:
+      _ = openSystemSettings(for: permission)
+      return .managedExternally
+    case .screenRecording:
+      let granted = CGRequestScreenCaptureAccess()
+      if !granted {
+        _ = openSystemSettings(for: permission)
+      }
+      return granted ? .granted : .notGranted
+    case .accessibility:
+      let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+      let granted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+      if !granted {
+        _ = openSystemSettings(for: permission)
+      }
+      return granted ? .granted : .notGranted
+    }
+  }
+
+  static func openSystemSettings(for permission: MacosPermissionKind) -> Bool {
+    let modern = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+      OperatingSystemVersion(majorVersion: 13, minorVersion: 0, patchVersion: 0))
+    if let specific = settingsURL(for: permission, modern: modern),
+       NSWorkspace.shared.open(specific) {
+      return true
+    }
+    guard let fallback = privacySettingsURL(modern: modern) else { return false }
+    return NSWorkspace.shared.open(fallback)
+  }
+
+  static func settingsURL(
+    for permission: MacosPermissionKind,
+    modern: Bool
+  ) -> URL? {
+    let anchor: String
+    switch permission {
+    case .fullDiskAccess:
+      anchor = "Privacy_AllFiles"
+    case .screenRecording:
+      anchor = "Privacy_ScreenCapture"
+    case .accessibility:
+      anchor = "Privacy_Accessibility"
+    case .automation:
+      anchor = "Privacy_Automation"
+    }
+    let pane = modern
+      ? "com.apple.settings.PrivacySecurity.extension"
+      : "com.apple.preference.security"
+    return URL(string: "x-apple.systempreferences:\(pane)?\(anchor)")
+  }
+
+  static func privacySettingsURL(modern: Bool) -> URL? {
+    let pane = modern
+      ? "com.apple.settings.PrivacySecurity.extension"
+      : "com.apple.preference.security"
+    return URL(string: "x-apple.systempreferences:\(pane)?Privacy")
   }
 }
 

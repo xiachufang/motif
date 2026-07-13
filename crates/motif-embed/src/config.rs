@@ -102,7 +102,7 @@ impl Default for MenuConfig {
             tailscale: TsConfig::default(),
             rzv: RzvConfig::default(),
             push_relay_url: default_push_relay_url(),
-            autostart: false,
+            autostart: true,
         }
     }
 }
@@ -277,6 +277,7 @@ mod tests {
     #[test]
     fn loopback_tokenless_ok() {
         let c = MenuConfig::default(); // loopback, auth off
+        assert!(c.autostart, "embedded server should autostart by default");
         let sc = c
             .to_server_config(&tsnet())
             .expect("loopback should map")

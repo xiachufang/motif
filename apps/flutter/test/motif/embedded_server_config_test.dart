@@ -3,6 +3,12 @@ import 'package:motif/motif/state/embedded_server_service.dart';
 import 'package:motif/motif/state/embedded_server_service_desktop.dart';
 
 void main() {
+  test('starts the embedded server on launch by default', () {
+    const config = EmbeddedServerConfig();
+
+    expect(config.autostart, isTrue);
+  });
+
   test('loads legacy config with a missing push relay field', () {
     final config = embeddedServerConfigFromJson({
       'listen_mode': 'lan',
@@ -45,5 +51,11 @@ void main() {
     expect(config.rzvRelay, defaults.rzvRelay);
     expect(config.pushRelayUrl, defaults.pushRelayUrl);
     expect(config.autostart, defaults.autostart);
+  });
+
+  test('preserves an explicitly disabled autostart setting', () {
+    final config = embeddedServerConfigFromJson({'autostart': false});
+
+    expect(config.autostart, isFalse);
   });
 }

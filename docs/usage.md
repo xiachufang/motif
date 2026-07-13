@@ -200,7 +200,7 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 1. 打开 Motif 桌面 App。
 2. 切到顶部的 **Server** 页，或从系统托盘打开 **Open Server**。
 3. 在 **Server** 区域点 **Start**。
-4. 可选：打开 **Start server on launch**，让 App 启动后自动 serve。
+4. **Start server on launch** 默认开启，App 启动后会自动 serve；如不需要可手动关闭。
 
 关闭桌面窗口不会自动停止 server；桌面 App 会留在托盘。选择 Quit Motif 时会尽量
 先停止 embedded server。

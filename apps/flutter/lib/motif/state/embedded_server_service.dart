@@ -48,7 +48,7 @@ class EmbeddedServerConfig {
     this.rzvEnabled = false,
     this.rzvRelay = '',
     this.pushRelayUrl = kDefaultPushRelayAddress,
-    this.autostart = false,
+    this.autostart = true,
   });
 
   EmbeddedServerConfig copyWith({
