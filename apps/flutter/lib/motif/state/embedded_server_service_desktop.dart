@@ -21,8 +21,24 @@ const String _kConfigKey = 'motif.embedded.v1';
 bool get _isDesktop =>
     Platform.isMacOS || Platform.isLinux || Platform.isWindows;
 
-EmbeddedListenMode _listenModeFromWire(Object? v) =>
-    EmbeddedListenMode.values.byName(v as String);
+EmbeddedListenMode _listenModeFromWire(Object? value) => switch (value) {
+  'lan' => EmbeddedListenMode.lan,
+  _ => EmbeddedListenMode.loopback,
+};
+
+Map<String, Object?> _jsonObject(Object? value) {
+  if (value is! Map) return const {};
+  return <String, Object?>{
+    for (final entry in value.entries)
+      if (entry.key is String) entry.key as String: entry.value,
+  };
+}
+
+String _jsonString(Object? value, String fallback) =>
+    value is String ? value : fallback;
+
+bool _jsonBool(Object? value, bool fallback) =>
+    value is bool ? value : fallback;
 
 extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
   Map<String, Object?> toJson() => {
@@ -40,20 +56,25 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
   };
 }
 
-EmbeddedServerConfig _configFromJson(Map<String, Object?> j) {
-  final ts = (j['tailscale'] as Map).cast<String, Object?>();
-  final rzv = (j['rzv'] as Map).cast<String, Object?>();
+/// Decode persisted settings defensively. Config key `motif.embedded.v1` has
+/// gained fields over time, so older installs must keep working and expose the
+/// missing values in Settings instead of aborting before Flutter's first frame.
+EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> j) {
+  const defaults = EmbeddedServerConfig();
+  final ts = _jsonObject(j['tailscale']);
+  final rzv = _jsonObject(j['rzv']);
+  final port = j['port'];
   return EmbeddedServerConfig(
     listenMode: _listenModeFromWire(j['listen_mode']),
-    port: (j['port'] as num).toInt(),
-    tsEnabled: ts['enabled'] as bool,
-    tsHostname: ts['hostname'] as String,
-    tsAuthkey: ts['authkey'] as String,
-    tsControlUrl: ts['control_url'] as String,
-    rzvEnabled: rzv['enabled'] as bool,
-    rzvRelay: rzv['relay'] as String,
-    pushRelayUrl: j['push_relay_url'] as String,
-    autostart: j['autostart'] as bool,
+    port: port is num ? port.toInt() : defaults.port,
+    tsEnabled: _jsonBool(ts['enabled'], defaults.tsEnabled),
+    tsHostname: _jsonString(ts['hostname'], defaults.tsHostname),
+    tsAuthkey: _jsonString(ts['authkey'], defaults.tsAuthkey),
+    tsControlUrl: _jsonString(ts['control_url'], defaults.tsControlUrl),
+    rzvEnabled: _jsonBool(rzv['enabled'], defaults.rzvEnabled),
+    rzvRelay: _jsonString(rzv['relay'], defaults.rzvRelay),
+    pushRelayUrl: _jsonString(j['push_relay_url'], defaults.pushRelayUrl),
+    autostart: _jsonBool(j['autostart'], defaults.autostart),
   );
 }
 
@@ -89,7 +110,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     final raw = _prefs.getString(_kConfigKey);
     if (raw != null) {
       final map = jsonDecodeMap(raw);
-      if (map != null) _config = _configFromJson(map);
+      if (map != null) _config = embeddedServerConfigFromJson(map);
     }
   }
 
