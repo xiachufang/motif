@@ -39,6 +39,79 @@ void main() {
       expect(received, [10, 20, 30]);
     });
 
+    test(
+      'replay ring retains the exact byte tail across segment wraps',
+      () async {
+        final smallHub = PtyOutputHub(
+          replayCapacityBytes: 8,
+          replayBytesPerTick: 4,
+          replayInterval: Duration.zero,
+        );
+        addTearDown(smallHub.dispose);
+
+        smallHub.handleOutput('pty-1', Uint8List.fromList([0, 1, 2]));
+        smallHub.handleOutput('pty-1', Uint8List.fromList([3, 4, 5, 6]));
+        smallHub.handleOutput('pty-1', Uint8List.fromList([7, 8, 9]));
+
+        expect(smallHub.replayBytesFor('pty-1'), 8);
+        final received = <int>[];
+        smallHub.registerSink('pty-1', received.addAll);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+
+        expect(received, [2, 3, 4, 5, 6, 7, 8, 9]);
+      },
+    );
+
+    test('a write larger than the ring retains only its tail', () async {
+      final smallHub = PtyOutputHub(
+        replayCapacityBytes: 8,
+        replayBytesPerTick: 4,
+        replayInterval: Duration.zero,
+      );
+      addTearDown(smallHub.dispose);
+
+      smallHub.handleOutput(
+        'pty-1',
+        Uint8List.fromList(List<int>.generate(12, (index) => index)),
+      );
+
+      final received = <int>[];
+      smallHub.registerSink('pty-1', received.addAll);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(smallHub.replayBytesFor('pty-1'), 8);
+      expect(received, [4, 5, 6, 7, 8, 9, 10, 11]);
+    });
+
+    test(
+      'live output stays ordered when the ring wraps during replay',
+      () async {
+        final smallHub = PtyOutputHub(
+          replayCapacityBytes: 8,
+          replayBytesPerTick: 2,
+          replayInterval: const Duration(milliseconds: 5),
+        );
+        addTearDown(smallHub.dispose);
+
+        smallHub.handleOutput(
+          'pty-1',
+          Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]),
+        );
+        final received = <int>[];
+        smallHub.registerSink('pty-1', received.addAll);
+        // This replaces the live ring completely. The already-started replay
+        // must keep its views of the evicted segments alive, then append the
+        // new live bytes behind them in stream order.
+        smallHub.handleOutput(
+          'pty-1',
+          Uint8List.fromList([9, 10, 11, 12, 13, 14, 15, 16]),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+
+        expect(received, List<int>.generate(16, (index) => index + 1));
+      },
+    );
+
     test('clearPty drops replay for that pty only', () async {
       hub.handleOutput('a', Uint8List.fromList([1]));
       hub.handleOutput('b', Uint8List.fromList([2]));

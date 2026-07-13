@@ -46,16 +46,20 @@ pub const EVENT_TIMEOUT: Duration = Duration::from_secs(3);
 pub struct TestServer {
     pub addr: SocketAddr,
     pub token: String,
+    pub manager: Arc<motif_server::session::manager::SessionManager>,
+    pub conns: Arc<motif_server::conn_registry::ConnRegistry>,
     shutdown: JoinHandle<()>,
 }
 
 impl TestServer {
     pub async fn start() -> Self {
         let token = format!("test-{}", ulid::Ulid::new());
+        let manager = motif_server::session::manager::SessionManager::new();
+        let conns = motif_server::conn_registry::ConnRegistry::new();
         let state = motif_server::ws::AppState {
-            manager: motif_server::session::manager::SessionManager::new(),
+            manager: Arc::clone(&manager),
             auth: Arc::new(motif_server::auth::TokenStore::required(token.clone())),
-            conns: motif_server::conn_registry::ConnRegistry::new(),
+            conns: Arc::clone(&conns),
             devices: motif_server::relay::DeviceState {
                 store: motif_server::devices::DeviceStore::new(),
                 relay: None,
@@ -90,6 +94,8 @@ impl TestServer {
         Self {
             addr,
             token,
+            manager,
+            conns,
             shutdown,
         }
     }
@@ -399,6 +405,21 @@ impl TestClient {
         out
     }
 
+    /// Wait until the server has closed this client's `/events` WebSocket.
+    pub async fn wait_events_closed(&self, timeout_total: Duration) -> bool {
+        let Some(task) = self.events_task.as_ref() else {
+            return true;
+        };
+        let deadline = tokio::time::Instant::now() + timeout_total;
+        while tokio::time::Instant::now() < deadline {
+            if task.is_finished() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        task.is_finished()
+    }
+
     /// Open a `/pty/<id>` WebSocket for this client's session.
     pub async fn open_pty_ws(&self, pty_id: &str, since: Option<u64>) -> Result<PtyWs> {
         let mut q = format!("session={}&pty_frame=v1&pty_compress=zlib", self.session_id);
@@ -534,6 +555,20 @@ impl PtyWs {
             .send(Message::Binary(Bytes::copy_from_slice(data)))
             .await?;
         Ok(())
+    }
+
+    /// Drain any queued replay/output frames until the WebSocket closes.
+    pub async fn wait_closed(&mut self, timeout_total: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout_total;
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match timeout(remaining, self.ws.next()).await {
+                Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Ok(Some(Err(_))) => return true,
+                Ok(Some(Ok(_))) => continue,
+                Err(_) => return false,
+            }
+        }
+        false
     }
 }
 

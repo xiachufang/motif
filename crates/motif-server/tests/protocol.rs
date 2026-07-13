@@ -122,6 +122,120 @@ async fn session_lifecycle() {
     assert_eq!(listed.sessions[0].name, "B");
 }
 
+#[tokio::test]
+async fn session_destroy_closes_connections_kills_ptys_and_invalidates_attach_ids() {
+    let server = TestServer::start().await;
+    let dir = TempDir::new().unwrap();
+    let owner = TestClient::connect(&server, "destroy-live", dir.path())
+        .await
+        .unwrap();
+    let observer = TestClient::connect(&server, "destroy-live", dir.path())
+        .await
+        .unwrap();
+    let owner_sid = owner.session_id.clone();
+    let observer_sid = observer.session_id.clone();
+    let session = server.manager.get("destroy-live").unwrap();
+
+    let created: ppty::PtyCreateResult = owner
+        .call(
+            "pty.create",
+            ppty::PtyCreateParams {
+                cmd: Some("sleep 30".into()),
+                cwd: None,
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let pty = session.pty_pool.get(&created.info.id).unwrap();
+    let mut pty_ws = owner.open_pty_ws(&created.info.id, None).await.unwrap();
+    // Ensure the upgrade completed and the handler subscribed to shutdown.
+    pty_ws.read_text(Duration::from_secs(2)).await.unwrap();
+
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_port = tcp_listener.local_addr().unwrap().port();
+    let tcp_peer = tokio::spawn(async move {
+        let (mut socket, _) = tcp_listener.accept().await.unwrap();
+        let mut byte = [0u8; 1];
+        let _ = socket.read(&mut byte).await;
+    });
+    let tcp_url = format!(
+        "ws://{}/tcp?session={}&host=127.0.0.1&port={tcp_port}",
+        owner.addr, owner.session_id
+    );
+    let mut tcp_req = tcp_url.into_client_request().unwrap();
+    tcp_req.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {}", owner.token)).unwrap(),
+    );
+    let (mut tcp_ws, _) = tokio_tungstenite::connect_async(tcp_req).await.unwrap();
+    // Let the server finish its loopback dial before triggering shutdown.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    server
+        .call::<_, ses::DestroyResult>(
+            "session.destroy",
+            ses::DestroyParams {
+                name: "destroy-live".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(session.is_destroyed());
+    assert!(server.manager.get("destroy-live").is_none());
+    assert!(server.conns.get(&owner_sid).is_none());
+    assert!(server.conns.get(&observer_sid).is_none());
+    assert!(owner.wait_events_closed(Duration::from_secs(2)).await);
+    assert!(observer.wait_events_closed(Duration::from_secs(2)).await);
+    assert!(pty_ws.wait_closed(Duration::from_secs(2)).await);
+    let tcp_closed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match tcp_ws.next().await {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(tcp_closed);
+    tcp_peer.await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while pty.is_alive() || session.pty_pool.count() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("destroyed PTY did not exit");
+
+    // Reusing the name must not let an old X-Motif-Session bind to the new
+    // Session. The old ID was removed from ConnRegistry during destroy.
+    server
+        .call::<_, ses::CreateResult>(
+            "session.create",
+            ses::CreateParams {
+                name: "destroy-live".into(),
+                workdir: dir.path().to_path_buf(),
+            },
+        )
+        .await
+        .unwrap();
+    let (status, body) = owner
+        .call_raw("pty.list", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(status, http::StatusCode::CONFLICT);
+    let error: motif_proto::error::RpcError = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        error.code,
+        motif_proto::error::ErrorCode::NotAttached as i32
+    );
+}
+
 // ─────────────────────────── 2. fs_operations_and_events ───────────────────────────
 
 #[tokio::test]

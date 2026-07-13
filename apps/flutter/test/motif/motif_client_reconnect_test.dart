@@ -104,4 +104,69 @@ void main() {
     expect(motif.views, isNotEmpty);
     expect(motif.activeViewId, 'view-1');
   });
+
+  test(
+    'destroying owned session releases it but keeps server connected',
+    () async {
+      var destroyed = false;
+      var detached = false;
+      RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+        if (request.method == 'GET' && request.url.path == '/ping') {
+          return http.Response(
+            jsonEncode({'service': 'motif-server', 'version': 'test'}),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/rpc/session.detach') {
+          detached = true;
+          return http.Response('{}', 200);
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/rpc/session.destroy') {
+          destroyed = true;
+          return http.Response('{}', 200);
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/rpc/session.list') {
+          return http.Response(
+            jsonEncode({
+              'sessions': destroyed
+                  ? <Object?>[]
+                  : [
+                      {'name': 'dev'},
+                    ],
+            }),
+            200,
+          );
+        }
+        return http.Response('', 404);
+      });
+
+      final motif = MotifClient();
+      await motif.connect(_server, force: true);
+      await Future<void>.delayed(Duration.zero);
+      motif
+        ..prepareSessionReconnect('dev')
+        ..lastSeq = 42
+        ..resumeSeqs['dev'] = 42
+        ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+        ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
+        ..activeViewId = 'view-1';
+
+      await motif.destroySession('dev');
+
+      expect(detached, isTrue);
+      expect(destroyed, isTrue);
+      expect(motif.isLive, isTrue);
+      expect(motif.state, isA<ConnConnected>());
+      expect(motif.intendedSession, isNull);
+      expect(motif.resumeSeqs, isNot(contains('dev')));
+      expect(motif.sessions, isEmpty);
+      expect(motif.ptys, isEmpty);
+      expect(motif.views, isEmpty);
+      expect(motif.activeViewId, isNull);
+      expect(motif.lastSeq, 0);
+    },
+  );
 }

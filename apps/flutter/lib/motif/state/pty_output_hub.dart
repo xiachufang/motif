@@ -4,6 +4,7 @@
 library;
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -25,16 +26,117 @@ class _PtyReplayDelivery {
   }
 }
 
+/// A lazily allocated, bounded byte ring backed by fixed-size segments.
+///
+/// PTY output commonly arrives as hundreds of tiny terminal-redraw frames. A
+/// `List<Uint8List>` makes evicting the oldest frame O(frame count) and retains
+/// one Dart object per frame; a busy 2 MB replay window can therefore grow to
+/// tens of thousands of entries. This ring copies incoming bytes into at most
+/// `capacity / segmentBytes + 1` segments and trims from the head in O(1).
+///
+/// [snapshotChunks] returns views whose covered bytes are immutable: appends
+/// only write after a segment's current `end`, and evicted segments are never
+/// reused. An in-flight replay can consequently retain the views safely while
+/// the live ring continues advancing, without copying the whole replay window.
+class _ReplayByteRing {
+  _ReplayByteRing({required this.capacity, required this.segmentBytes})
+    : assert(capacity > 0),
+      assert(segmentBytes > 0);
+
+  final int capacity;
+  final int segmentBytes;
+  final ListQueue<_ReplaySegment> _segments = ListQueue<_ReplaySegment>();
+
+  int length = 0;
+  bool get isEmpty => length == 0;
+
+  void add(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+
+    var offset = 0;
+    if (bytes.length >= capacity) {
+      // Earlier buffered bytes cannot survive this write. Skip its prefix too,
+      // so we allocate/copy exactly the retained tail rather than temporarily
+      // materializing an oversized ring.
+      clear();
+      offset = bytes.length - capacity;
+    }
+
+    while (offset < bytes.length) {
+      var tail = _segments.isEmpty ? null : _segments.last;
+      if (tail == null || tail.remaining == 0) {
+        tail = _ReplaySegment(segmentBytes);
+        _segments.addLast(tail);
+      }
+      final available = bytes.length - offset;
+      final take = available < tail.remaining ? available : tail.remaining;
+      tail.bytes.setRange(tail.end, tail.end + take, bytes, offset);
+      tail.end += take;
+      length += take;
+      offset += take;
+    }
+
+    _trimToCapacity();
+  }
+
+  List<Uint8List> snapshotChunks() => <Uint8List>[
+    for (final segment in _segments)
+      if (segment.length > 0)
+        Uint8List.sublistView(segment.bytes, segment.start, segment.end),
+  ];
+
+  void clear() {
+    _segments.clear();
+    length = 0;
+  }
+
+  void _trimToCapacity() {
+    var excess = length - capacity;
+    while (excess > 0) {
+      final head = _segments.first;
+      final drop = excess < head.length ? excess : head.length;
+      head.start += drop;
+      length -= drop;
+      excess -= drop;
+      if (head.length == 0) _segments.removeFirst();
+    }
+  }
+}
+
+class _ReplaySegment {
+  _ReplaySegment(int size) : bytes = Uint8List(size);
+
+  final Uint8List bytes;
+  int start = 0;
+  int end = 0;
+
+  int get length => end - start;
+  int get remaining => bytes.length - end;
+}
+
 /// Owns per-PTY byte sinks and a capped replay ring so late-mounted terminal
 /// surfaces can catch up without going through [ChangeNotifier].
 class PtyOutputHub {
+  PtyOutputHub({
+    int replayCapacityBytes = maxReplayBytesPerPty,
+    int replayBytesPerTick = replayDeliverMaxBytesPerTick,
+    Duration replayInterval = replayDeliverInterval,
+  }) : assert(replayCapacityBytes > 0),
+       assert(replayBytesPerTick > 0),
+       _replayCapacityBytes = replayCapacityBytes,
+       _replayBytesPerTick = replayBytesPerTick,
+       _deliveryInterval = replayInterval;
+
   static const int maxReplayBytesPerPty = 2 * 1024 * 1024;
   static const int replayDeliverMaxBytesPerTick = 64 * 1024;
   static const Duration replayDeliverInterval = Duration(milliseconds: 16);
 
+  final int _replayCapacityBytes;
+  final int _replayBytesPerTick;
+  final Duration _deliveryInterval;
+
   final Map<String, PtyByteSink> _sinks = {};
-  final Map<String, List<Uint8List>> _replay = {};
-  final Map<String, int> _replayBytes = {};
+  final Map<String, _ReplayByteRing> _replay = {};
   final Map<String, _PtyReplayDelivery> _deliveries = {};
   final Map<String, int> _outputChunks = {};
   final Map<String, int> _outputBytes = {};
@@ -44,19 +146,20 @@ class PtyOutputHub {
 
   bool hasSink(String ptyId) => _sinks.containsKey(ptyId);
 
-  int replayBytesFor(String ptyId) => _replayBytes[ptyId] ?? 0;
+  int replayBytesFor(String ptyId) => _replay[ptyId]?.length ?? 0;
 
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
   void registerSink(String ptyId, PtyByteSink sink) {
     final replacing = _sinks.containsKey(ptyId);
     _deliveries.remove(ptyId)?.cancel();
     _sinks[ptyId] = sink;
-    final replay = _replay[ptyId];
+    final ring = _replay[ptyId];
+    final replay = ring?.snapshotChunks();
     final active = describeActive?.call() ?? '';
     Log.i(
       'register sink pty=$ptyId replacing=$replacing '
       'replayChunks=${replay?.length ?? 0} '
-      'replayBytes=${_replayBytes[ptyId] ?? 0}'
+      'replayBytes=${ring?.length ?? 0}'
       '${active.isEmpty ? '' : ' $active'}',
       name: 'motif.pty',
     );
@@ -103,7 +206,6 @@ class PtyOutputHub {
   void clearPty(String ptyId) {
     _deliveries.remove(ptyId)?.cancel();
     _replay.remove(ptyId);
-    _replayBytes.remove(ptyId);
   }
 
   /// Drop all sinks, replay, and deliveries (session clear / disconnect).
@@ -114,7 +216,6 @@ class PtyOutputHub {
     }
     _deliveries.clear();
     _replay.clear();
-    _replayBytes.clear();
   }
 
   void dispose() => clearAll();
@@ -128,7 +229,7 @@ class PtyOutputHub {
     _deliveries[ptyId] = delivery;
     Log.i(
       'replay sink pty=$ptyId chunks=${replay.length} '
-      'bytes=${_replayBytes[ptyId] ?? 0}',
+      'bytes=${_replay[ptyId]?.length ?? 0}',
       name: 'motif.pty',
     );
     _scheduleReplayDelivery(ptyId, delivery);
@@ -143,7 +244,7 @@ class PtyOutputHub {
       }
       var delivered = 0;
       while (delivery.index < delivery.chunks.length &&
-          delivered < replayDeliverMaxBytesPerTick) {
+          delivered < _replayBytesPerTick) {
         final chunk = delivery.chunks[delivery.index];
         final remaining = chunk.length - delivery.offset;
         if (remaining <= 0) {
@@ -151,7 +252,7 @@ class PtyOutputHub {
           delivery.offset = 0;
           continue;
         }
-        final budget = replayDeliverMaxBytesPerTick - delivered;
+        final budget = _replayBytesPerTick - delivered;
         final take = remaining <= budget ? remaining : budget;
         final start = delivery.offset;
         final end = start + take;
@@ -164,24 +265,28 @@ class PtyOutputHub {
         }
       }
       if (delivery.index < delivery.chunks.length) {
-        delivery.timer = Timer(replayDeliverInterval, deliverBatch);
+        delivery.timer = Timer(_deliveryInterval, deliverBatch);
       } else if (_deliveries[ptyId] == delivery) {
         _deliveries.remove(ptyId);
       }
     }
 
-    delivery.timer = Timer(replayDeliverInterval, deliverBatch);
+    delivery.timer = Timer(_deliveryInterval, deliverBatch);
   }
 
   void _rememberBytes(String ptyId, Uint8List bytes) {
     if (bytes.isEmpty) return;
-    final chunks = _replay.putIfAbsent(ptyId, () => <Uint8List>[]);
-    chunks.add(Uint8List.fromList(bytes));
-    var total = (_replayBytes[ptyId] ?? 0) + bytes.length;
-    while (total > maxReplayBytesPerPty && chunks.isNotEmpty) {
-      total -= chunks.removeAt(0).length;
-    }
-    _replayBytes[ptyId] = total;
+    final segmentBytes = _replayBytesPerTick < _replayCapacityBytes
+        ? _replayBytesPerTick
+        : _replayCapacityBytes;
+    final ring = _replay.putIfAbsent(
+      ptyId,
+      () => _ReplayByteRing(
+        capacity: _replayCapacityBytes,
+        segmentBytes: segmentBytes,
+      ),
+    );
+    ring.add(bytes);
   }
 
   void _noteOutput(String ptyId, int byteCount) {
@@ -196,7 +301,7 @@ class PtyOutputHub {
       final message =
           'output pty=$ptyId chunk=$chunks bytes=$byteCount totalBytes=$bytes '
           'hasSink=${_sinks.containsKey(ptyId)} '
-          'replayBytes=${_replayBytes[ptyId] ?? 0}'
+          'replayBytes=${_replay[ptyId]?.length ?? 0}'
           '${active.isEmpty ? '' : ' $active'}';
       if (logAtInfo) {
         Log.i(message, name: 'motif.pty');

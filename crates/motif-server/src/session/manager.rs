@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
 use super::Session;
@@ -38,12 +39,14 @@ impl SessionManager {
         // inside session workdir "/tmp/foo", and the file-tree-follows-PTY
         // logic on the client thinks every cwd update escapes the workdir.
         let workdir = workdir.canonicalize().unwrap_or(workdir);
-        if self.sessions.contains_key(&name) {
-            return Err(ManagerError::AlreadyExists(name));
+        match self.sessions.entry(name.clone()) {
+            Entry::Occupied(_) => Err(ManagerError::AlreadyExists(name)),
+            Entry::Vacant(entry) => {
+                let session = Session::new(name, workdir);
+                entry.insert(Arc::clone(&session));
+                Ok(session)
+            }
         }
-        let s = Session::new(name.clone(), workdir);
-        self.sessions.insert(name, s.clone());
-        Ok(s)
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Session>> {
@@ -51,10 +54,13 @@ impl SessionManager {
     }
 
     pub fn destroy(&self, name: &str) -> Result<(), ManagerError> {
-        self.sessions
+        let session = self
+            .sessions
             .remove(name)
-            .map(|_| ())
-            .ok_or_else(|| ManagerError::NotFound(name.to_string()))
+            .map(|(_, session)| session)
+            .ok_or_else(|| ManagerError::NotFound(name.to_string()))?;
+        session.shutdown();
+        Ok(())
     }
 
     pub fn list(&self) -> Vec<Arc<Session>> {

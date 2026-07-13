@@ -147,6 +147,16 @@ class RpcClient {
     _http.close();
   }
 
+  /// Drop only the current motif Session binding while keeping the HTTP
+  /// transport and event controller reusable. `session.destroy` uses this as
+  /// its fallback when the remote detach has already raced with another
+  /// client's destroy.
+  Future<void> releaseSession() async {
+    await _closeSessionStreams();
+    await _resetPtyProcessor();
+    _sessionId = null;
+  }
+
   // ─────────────────────────── HTTP RPC ───────────────────────────
 
   /// GET /ping — unauthenticated identity probe.

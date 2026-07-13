@@ -303,6 +303,11 @@ class AppState extends ChangeNotifier {
       return active;
     }
 
+    // The session list belongs to the server, not to an individual desktop
+    // workspace client. Preserve the active client's latest server snapshot
+    // while swapping clients so the sidebar does not collapse to only the
+    // newly selected session until that client's next refresh.
+    final sessionSnapshot = [...active.sessions];
     final currentKey = (serverId: serverId, session: currentSession);
     _workspaces.parkActive(currentKey);
     active.setForeground(false);
@@ -330,6 +335,7 @@ class AppState extends ChangeNotifier {
       );
       controller = _workspaces.controllerForServer(serverId)!;
     }
+    next.sessions = sessionSnapshot;
     _workspaces.setActiveSession(serverId, session);
     next.prepareSessionReconnect(session);
     _setForegroundWorkspace(next);

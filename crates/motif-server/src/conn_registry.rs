@@ -87,6 +87,20 @@ impl ConnRegistry {
         self.conns.remove(id).map(|(_, v)| v)
     }
 
+    /// Invalidate every HTTP/WS connection attached to `session_name`.
+    /// Called after `session.destroy` so old session IDs cannot be reused for
+    /// RPCs or upgrades (especially after a same-name Session is recreated).
+    pub fn remove_attached(&self, session_name: &str) -> usize {
+        let ids: Vec<SessionId> = self.conns.iter().map(|entry| entry.key().clone()).collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                self.conns.remove_if(&id, |_, entry| {
+                    entry.state.lock().attached.as_deref() == Some(session_name)
+                })
+            })
+            .count()
+    }
+
     /// Sweep stale entries. Cheap (one pass over a DashMap that's small
     /// in practice — N is in single digits per machine). Caller should
     /// invoke from `mint` and any hot path that can tolerate the work;
@@ -109,8 +123,13 @@ impl ConnRegistry {
             .collect();
         for (id, entry) in stale {
             let snap = entry.state.lock().snapshot();
-            if let Some(name) = snap.attached {
-                if let Some(s) = manager.get(&name) {
+            if let (Some(name), Some(session_id)) =
+                (snap.attached.as_ref(), snap.attached_session_id.as_ref())
+            {
+                if let Some(s) = manager
+                    .get(name)
+                    .filter(|session| &session.id == session_id && !session.is_destroyed())
+                {
                     s.detach_client(&snap.client_id);
                 }
             }
@@ -177,9 +196,10 @@ mod tests {
         let client_id = {
             let mut state = entry.state.lock();
             state.attached = Some("ghost".to_string());
+            state.attached_session_id = Some(session.id.clone());
             state.client_id.clone()
         };
-        session.attach_client(client_id.clone());
+        assert!(session.attach_client(client_id.clone()).is_some());
         assert_eq!(session.info().client_count, 1);
 
         // Rewind so this conn looks stale.
@@ -192,5 +212,18 @@ mod tests {
             0,
             "session.clients still has phantom client_id after gc"
         );
+    }
+
+    #[test]
+    fn remove_attached_invalidates_only_matching_session() {
+        let r = ConnRegistry::new();
+        let (alpha_id, alpha) = r.mint();
+        let (beta_id, beta) = r.mint();
+        alpha.state.lock().attached = Some("alpha".to_string());
+        beta.state.lock().attached = Some("beta".to_string());
+
+        assert_eq!(r.remove_attached("alpha"), 1);
+        assert!(r.get(&alpha_id).is_none());
+        assert!(r.get(&beta_id).is_some());
     }
 }

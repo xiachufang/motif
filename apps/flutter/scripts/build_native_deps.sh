@@ -11,6 +11,21 @@ FRAMEWORKS_DEST=""
 MACOS_MIN_VERSION="10.15"
 IOS_SDK="iphoneos"
 IOS_MIN_VERSION="17.0"
+# `zig build` defaults to Debug. That is unusably slow for a terminal engine:
+# a Codex synchronized-redraw stream that ReleaseFast parses in milliseconds
+# can pin a core continuously in Debug. Native assets are bundled into the app
+# even for Flutter debug/profile runs, so default the engine itself to the same
+# optimized mode used by Cargo release builds. Keep an environment override for
+# targeted native debugging.
+GHOSTTY_OPTIMIZE="${GHOSTTY_OPTIMIZE:-ReleaseFast}"
+
+case "$GHOSTTY_OPTIMIZE" in
+  Debug|ReleaseSafe|ReleaseSmall|ReleaseFast) ;;
+  *)
+    echo "error: invalid GHOSTTY_OPTIMIZE '$GHOSTTY_OPTIMIZE' (expected Debug|ReleaseSafe|ReleaseSmall|ReleaseFast)" >&2
+    exit 2
+    ;;
+esac
 
 if [[ -n "${ZIG:-}" && -x "$ZIG" ]]; then
   export PATH="$(dirname "$ZIG"):$PATH"
@@ -37,6 +52,10 @@ Defaults:
 
 The optional positional argument is kept for backward compatibility and maps to
 --frameworks-dest.
+
+Environment:
+  GHOSTTY_OPTIMIZE             Zig optimization mode for libghostty-vt
+                               (default: ReleaseFast; Debug is diagnostic only)
 EOF
 }
 
@@ -234,7 +253,7 @@ if [[ "$TARGET_OS" == "android" ]]; then
     export ANDROID_NDK_HOME
   fi
   echo "[native] Building libghostty-vt.so for $ztriple (NDK=${ANDROID_NDK_HOME:-<unset>})"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" )
+  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
   so_src="$(ls -t "$PROJECT_DIR/ghostty/zig-out/lib"/libghostty-vt.so.*.*.* 2>/dev/null | head -n1)"
   if [[ -z "$so_src" || ! -f "$so_src" ]]; then
     echo "error: missing libghostty-vt.so for $ztriple" >&2; exit 1
@@ -253,7 +272,7 @@ if [[ "$TARGET_OS" == "windows" ]]; then
   ztriple="$zarch-windows-gnu"
 
   echo "[native] Building ghostty-vt.dll for $ztriple"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" )
+  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
   dll_src="$PROJECT_DIR/ghostty/zig-out/bin/ghostty-vt.dll"
   if [[ ! -f "$dll_src" ]]; then
     echo "error: missing ghostty-vt.dll for $ztriple" >&2; exit 1
@@ -275,7 +294,7 @@ if [[ "$TARGET_OS" == "linux" ]]; then
   ztriple="$zarch-linux-gnu"
 
   echo "[native] Building libghostty-vt.so for $ztriple"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" )
+  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
   so_src="$(ls -t "$PROJECT_DIR/ghostty/zig-out/lib"/libghostty-vt.so.*.*.* 2>/dev/null | head -n1)"
   if [[ -z "$so_src" || ! -f "$so_src" ]]; then
     echo "error: missing libghostty-vt.so for $ztriple" >&2; exit 1
@@ -312,11 +331,11 @@ if [[ "$TARGET_OS" == "ios" ]]; then
   #   - x86_64 simulator: build the archive directly (no xcframework slice).
   if [[ "$TARGET_ARCH" == "x64" ]]; then
     echo "[native] Building libghostty-vt archive for x86_64-ios-simulator"
-    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget=x86_64-ios-simulator )
+    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget=x86_64-ios-simulator -Doptimize="$GHOSTTY_OPTIMIZE" )
     slice_lib="$PROJECT_DIR/ghostty/zig-out/lib/libghostty-vt.a"
   else
     echo "[native] Building libghostty-vt xcframework via zig (for arm64 iOS slice)"
-    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Demit-xcframework=true )
+    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize="$GHOSTTY_OPTIMIZE" )
     xcf="$PROJECT_DIR/ghostty/zig-out/lib/ghostty-vt.xcframework"
     slice_dir="$(if [[ "$IOS_SDK" == "iphonesimulator" ]]; then echo "$xcf/ios-arm64-simulator"; else echo "$xcf/ios-arm64"; fi)"
     slice_lib="$(ls "$slice_dir"/libghostty-vt*.a 2>/dev/null | head -n1)"
@@ -355,10 +374,10 @@ if [[ -z "$macos_sdk_path" || ! -d "$macos_sdk_path" ]]; then
   exit 1
 fi
 
-echo "[native] Building libghostty-vt via zig (target=$ghostty_target)"
+echo "[native] Building libghostty-vt via zig (target=$ghostty_target, optimize=$GHOSTTY_OPTIMIZE)"
 (
   cd "$PROJECT_DIR/ghostty"
-  zig build -Demit-lib-vt=true -Dtarget="$ghostty_target"
+  zig build -Demit-lib-vt=true -Dtarget="$ghostty_target" -Doptimize="$GHOSTTY_OPTIMIZE"
 )
 
 ghostty_lib_dir="$PROJECT_DIR/ghostty/zig-out/lib"

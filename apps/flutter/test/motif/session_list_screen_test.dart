@@ -11,6 +11,7 @@ import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
 import 'package:motif/motif/ui/screens/session_name_generator.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:motif/motif/ui/widgets/top_toast.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -33,6 +34,34 @@ class _CreatingMotifClient extends MotifClient {
     sessions = [...sessions, session];
     notifyListeners();
     return session;
+  }
+}
+
+class _DestroyingMotifClient extends _CreatingMotifClient {
+  _DestroyingMotifClient({this.fail = false});
+
+  final bool fail;
+  final List<String> destroyed = [];
+
+  @override
+  Future<void> destroySession(String name) async {
+    destroyed.add(name);
+    final index = sessions.indexWhere((session) => session.name == name);
+    final removed = index < 0 ? null : sessions[index];
+    if (removed != null) {
+      sessions = [...sessions]..removeAt(index);
+      notifyListeners();
+    }
+
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    if (!fail) return;
+
+    if (removed != null) {
+      final restored = [...sessions]..insert(index, removed);
+      sessions = restored;
+      notifyListeners();
+    }
+    throw StateError('server rejected destroy');
   }
 }
 
@@ -97,7 +126,7 @@ Future<void> _pumpSessionList(WidgetTester tester, MotifClient motif) async {
       value: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
-        home: const SessionListScreen(),
+        home: const MotifToastHost(child: SessionListScreen()),
       ),
     ),
   );
@@ -155,6 +184,64 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(motif.created, [(generated, '~')]);
+  });
+
+  testWidgets('swipe destroy alert cancel keeps the session', (tester) async {
+    final motif = _DestroyingMotifClient()
+      ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
+
+    await _pumpSessionList(tester, motif);
+    await tester.drag(find.text('dev'), const Offset(-600, 0));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Destroy "dev"?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('dev'), findsOneWidget);
+    expect(motif.destroyed, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('swipe destroy confirms and removes the session', (tester) async {
+    final motif = _DestroyingMotifClient()
+      ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
+
+    await _pumpSessionList(tester, motif);
+    await tester.drag(find.text('dev'), const Offset(-600, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Destroy'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 20));
+    await tester.pumpAndSettle();
+
+    expect(motif.destroyed, ['dev']);
+    expect(find.text('dev'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('swipe destroy failure restores the session and reports it', (
+    tester,
+  ) async {
+    final motif = _DestroyingMotifClient(fail: true)
+      ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
+
+    await _pumpSessionList(tester, motif);
+    await tester.drag(find.text('dev'), const Offset(-600, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Destroy'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 20));
+    await tester.pump();
+    await tester.pump();
+
+    expect(motif.destroyed, ['dev']);
+    expect(find.text('dev'), findsOneWidget);
+    expect(find.textContaining('Destroy failed:'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // Let the toast's auto-dismiss timer complete before test teardown.
+    await tester.pump(const Duration(seconds: 3));
   });
 
   testWidgets('groups sessions by connected server', (tester) async {

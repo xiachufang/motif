@@ -4,6 +4,7 @@ pub mod manager;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,7 +15,7 @@ use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, watch, Notify};
 
 use crate::pty::PtyPool;
 
@@ -66,6 +67,13 @@ pub struct Session {
     publish: Mutex<PublishState>,
     clients: Mutex<Vec<ClientInfo>>,
     tx: broadcast::Sender<Arc<Event>>,
+
+    /// One-way lifecycle latch. `SessionManager::destroy` sets this exactly
+    /// once, then every events/PTY/TCP WebSocket observes `shutdown_tx` and
+    /// exits. The atomic also lets late upgrades and attach races reject a
+    /// Session whose `Arc` was obtained just before it left the manager map.
+    destroyed: AtomicBool,
+    shutdown_tx: watch::Sender<bool>,
 
     pub pty_pool: Arc<PtyPool>,
 
@@ -125,6 +133,7 @@ pub struct Session {
 impl Session {
     pub fn new(name: impl Into<String>, workdir: PathBuf) -> Arc<Self> {
         let (tx, _) = broadcast::channel::<Arc<Event>>(BROADCAST_CAPACITY);
+        let (shutdown_tx, _) = watch::channel(false);
         let s = Arc::new(Self {
             id: ulid::Ulid::new().to_string(),
             name: name.into(),
@@ -136,6 +145,8 @@ impl Session {
             }),
             clients: Mutex::new(Vec::new()),
             tx,
+            destroyed: AtomicBool::new(false),
+            shutdown_tx,
             pty_pool: PtyPool::new(),
             views: Mutex::new(Vec::new()),
             active_view: Mutex::new(None),
@@ -286,6 +297,37 @@ impl Session {
         self.tx.subscribe()
     }
 
+    pub fn is_destroyed(&self) -> bool {
+        self.destroyed.load(Ordering::Acquire)
+    }
+
+    pub fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
+    }
+
+    /// Permanently stop this Session and every resource scoped to it.
+    /// Idempotent so manager removal and final `Drop` can both call it safely.
+    pub fn shutdown(&self) {
+        if self.destroyed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        // Wake socket handlers first so they stop accepting input while PTYs
+        // are being terminated. `send_replace` retains the true value even if
+        // no receiver exists yet, covering an upgrade that raced with destroy.
+        self.shutdown_tx.send_replace(true);
+
+        self.pty_pool.shutdown();
+        self.clients.lock().clear();
+        self.fs_subscribers.lock().clear();
+        let fswatcher = { self.fswatcher.lock().take() };
+        drop(fswatcher);
+        self.coalesce.lock().clear();
+        if let Some(task) = self.coalesce_task.lock().take() {
+            task.abort();
+        }
+    }
+
     /// Return all buffered events with seq strictly greater than `after`.
     /// `after = 0` means "give me everything in the ring" (used by
     /// freshly-attaching clients to hydrate PTY scrollback). If the client
@@ -301,9 +343,12 @@ impl Session {
             .collect()
     }
 
-    pub fn attach_client(&self, client_id: ClientId) -> AttachOutcome {
+    pub fn attach_client(&self, client_id: ClientId) -> Option<AttachOutcome> {
         let now = now_ms();
         let mut cs = self.clients.lock();
+        if self.is_destroyed() {
+            return None;
+        }
         let existing = cs.clone();
         cs.push(ClientInfo {
             id: client_id.clone(),
@@ -317,7 +362,7 @@ impl Session {
             seq,
         });
 
-        AttachOutcome { existing, last_seq }
+        Some(AttachOutcome { existing, last_seq })
     }
 
     pub fn detach_client(&self, client_id: &ClientId) -> bool {
@@ -686,9 +731,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if let Some(h) = self.coalesce_task.lock().take() {
-            h.abort();
-        }
+        self.shutdown();
     }
 }
 
@@ -860,7 +903,7 @@ mod tests {
         let s = Session::new("test-detach", PathBuf::from("/tmp"));
         let client = "client-1".to_string();
 
-        s.attach_client(client.clone());
+        assert!(s.attach_client(client.clone()).is_some());
         assert_eq!(s.info().client_count, 1);
 
         assert!(s.detach_client(&client));
@@ -870,5 +913,20 @@ mod tests {
         assert!(!s.detach_client(&client));
         assert_eq!(s.info().client_count, 0);
         assert_eq!(s.last_seq(), seq_after_first_detach);
+    }
+
+    #[test]
+    fn shutdown_is_latched_and_rejects_new_clients() {
+        let s = Session::new("test-shutdown", PathBuf::from("/tmp"));
+        assert!(s.attach_client("client-1".to_string()).is_some());
+        let mut shutdown = s.subscribe_shutdown();
+
+        s.shutdown();
+        s.shutdown(); // idempotent
+
+        assert!(s.is_destroyed());
+        assert!(*shutdown.borrow_and_update());
+        assert_eq!(s.info().client_count, 0);
+        assert!(s.attach_client("client-2".to_string()).is_none());
     }
 }

@@ -10,12 +10,17 @@ use motif_proto::{event::Event, fs as pfs, git as pgit, pty as ppty, session as 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::conn_registry::ConnRegistry;
 use crate::session::manager::{ManagerError, SessionManager};
 use crate::session::Session;
 
 pub struct ConnState {
     pub client_id: motif_proto::common::ClientId,
     pub attached: Option<String>,
+    /// Unique identity of `attached`. Names can be reused after destroy; this
+    /// prevents a stale connection from silently binding to a new same-name
+    /// Session before its registry entry is reaped.
+    pub attached_session_id: Option<motif_proto::common::SessionId>,
     /// After a successful session.attach, set to the client's last known seq
     /// (or 0 for fresh connects). The ws layer drains this and replays
     /// buffered events to bootstrap the new client's view of the session.
@@ -27,6 +32,7 @@ impl ConnState {
         Self {
             client_id: ulid::Ulid::new().to_string(),
             attached: None,
+            attached_session_id: None,
             pending_replay_since: None,
         }
     }
@@ -39,6 +45,7 @@ impl ConnState {
         ConnSnapshot {
             client_id: self.client_id.clone(),
             attached: self.attached.clone(),
+            attached_session_id: self.attached_session_id.clone(),
         }
     }
 }
@@ -51,6 +58,7 @@ impl ConnState {
 pub struct ConnSnapshot {
     pub client_id: motif_proto::common::ClientId,
     pub attached: Option<String>,
+    pub attached_session_id: Option<motif_proto::common::SessionId>,
 }
 
 /// Serial dispatcher for the small set of methods that mutate
@@ -79,6 +87,7 @@ pub fn is_mutating_method(method: &str) -> bool {
 /// to keep heavy fs/git handlers off the runtime workers.
 pub fn dispatch_concurrent(
     manager: &Arc<SessionManager>,
+    conns: &ConnRegistry,
     conn: &ConnSnapshot,
     devices: &crate::relay::DeviceState,
     req: Request,
@@ -88,7 +97,7 @@ pub fn dispatch_concurrent(
         // session.*
         "session.list" => handle_list(manager, id, req.params),
         "session.create" => handle_create(manager, id, req.params),
-        "session.destroy" => handle_destroy(manager, id, req.params),
+        "session.destroy" => handle_destroy(manager, conns, id, req.params),
 
         // device.* (push-notification registration; global, no attach needed)
         "device.register" => handle_device_register(devices, id, req.params),
@@ -363,12 +372,28 @@ fn handle_attach(
         );
     };
     if let Some(old_name) = conn.attached.take() {
+        conn.attached_session_id = None;
         if let Some(old) = mgr.get(&old_name) {
             old.detach_client(&conn.client_id);
         }
     }
-    let outcome = s.attach_client(conn.client_id.clone());
+    // Record the target while holding ConnEntry.state's mutex (the HTTP attach
+    // path holds it across dispatch_mut). A concurrent destroy's
+    // remove_attached then blocks until this finishes and cannot miss an attach
+    // that committed between its Session shutdown and registry sweep.
     conn.attached = Some(p.name.clone());
+    conn.attached_session_id = Some(s.id.clone());
+    let Some(outcome) = s.attach_client(conn.client_id.clone()) else {
+        conn.attached = None;
+        conn.attached_session_id = None;
+        return Response::err(
+            id,
+            RpcError::new(
+                ErrorCode::SessionNotFound,
+                format!("session '{}' not found", p.name),
+            ),
+        );
+    };
     // Stash the client-supplied cursor (default 0 = "give me everything")
     // for the ws layer to drain after this response goes out.
     conn.pending_replay_since = Some(p.last_seq.unwrap_or(0));
@@ -402,19 +427,31 @@ fn handle_detach(mgr: &Arc<SessionManager>, conn: &mut ConnState, id: Id) -> Res
     let Some(name) = conn.attached.take() else {
         return Response::err(id, RpcError::new(ErrorCode::NotAttached, "not attached"));
     };
-    if let Some(s) = mgr.get(&name) {
+    let attached_session_id = conn.attached_session_id.take();
+    if let Some(s) = mgr
+        .get(&name)
+        .filter(|session| attached_session_id.as_deref() == Some(session.id.as_str()))
+    {
         s.detach_client(&conn.client_id);
     }
     Response::ok(id, ses::DetachResult::default())
 }
 
-fn handle_destroy(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
+fn handle_destroy(
+    mgr: &Arc<SessionManager>,
+    conns: &ConnRegistry,
+    id: Id,
+    params: Value,
+) -> Response {
     let p: ses::DestroyParams = match parse(params) {
         Ok(p) => p,
         Err(e) => return Response::err(id, e),
     };
     match mgr.destroy(&p.name) {
-        Ok(()) => Response::ok(id, ses::DestroyResult::default()),
+        Ok(()) => {
+            conns.remove_attached(&p.name);
+            Response::ok(id, ses::DestroyResult::default())
+        }
         Err(ManagerError::NotFound(n)) => Response::err(
             id,
             RpcError::new(
@@ -680,7 +717,9 @@ pub(crate) fn current_session(
     conn: &ConnSnapshot,
 ) -> Option<Arc<Session>> {
     let name = conn.attached.as_ref()?;
+    let session_id = conn.attached_session_id.as_ref()?;
     mgr.get(name)
+        .filter(|session| &session.id == session_id && !session.is_destroyed())
 }
 
 fn attached<P, R, F>(
@@ -763,10 +802,8 @@ fn home_dir() -> std::path::PathBuf {
 }
 
 pub fn on_disconnect(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) {
-    if let Some(name) = &conn.attached {
-        if let Some(s) = mgr.get(name) {
-            s.detach_client(&conn.client_id);
-        }
+    if let Some(s) = current_session(mgr, conn) {
+        s.detach_client(&conn.client_id);
     }
 }
 

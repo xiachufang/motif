@@ -195,6 +195,7 @@ async fn fs_write_binary(
         None => rpc::ConnSnapshot {
             client_id: String::new(),
             attached: None,
+            attached_session_id: None,
         },
     };
 
@@ -269,13 +270,15 @@ async fn dispatch_concurrent_http(
         None => rpc::ConnSnapshot {
             client_id: String::new(),
             attached: None,
+            attached_session_id: None,
         },
     };
 
     let manager = Arc::clone(&state.manager);
+    let conns = Arc::clone(&state.conns);
     let devices = state.devices.clone();
     let resp = tokio::task::spawn_blocking(move || {
-        rpc::dispatch_concurrent(&manager, &snap, &devices, req)
+        rpc::dispatch_concurrent(&manager, &conns, &snap, &devices, req)
     })
     .await
     .unwrap_or_else(|e| {

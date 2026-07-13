@@ -1370,7 +1370,10 @@ void main() {
         SessionInfo(name: 'other-session'),
       ];
       final current = _SessionMenuMotifClient()..sessions = sessions;
-      final other = _SessionMenuMotifClient()..sessions = sessions;
+      // A newly created desktop workspace has no session.list snapshot of its
+      // own yet. Switching must carry over the server-level list so the prior
+      // session remains available for switching back.
+      final other = _SessionMenuMotifClient();
       final app = await _appStateWith(
         {'server-1': current},
         serverConnectionRuntime: const DesktopServerConnectionRuntime(),
@@ -1403,6 +1406,7 @@ void main() {
       expect(current.isForeground, isFalse);
       expect(other.attached, ['other-session']);
       expect(app.connectedWorkspaceClients.toSet(), {current, other});
+      expect(find.text('test-session'), findsOneWidget);
 
       await tester.tap(find.text('test-session'));
       await tester.pumpAndSettle();

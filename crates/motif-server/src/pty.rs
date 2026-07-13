@@ -21,6 +21,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver as MpscReceiver, SyncSender};
 use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -405,6 +406,11 @@ fn apply_size(
 pub struct PtyPool {
     next_id: parking_lot::Mutex<u64>,
     ptys: DashMap<PtyId, Arc<Pty>>,
+    /// Serializes PTY creation against Session shutdown. Without this lock a
+    /// destroy could snapshot/kill the pool while a concurrent `pty.create`
+    /// inserts a new child immediately afterward.
+    lifecycle: parking_lot::Mutex<()>,
+    closed: AtomicBool,
     /// Back-pointer to owning Session so the reader threads can publish events.
     /// Set after Session::new completes; weak to avoid cycles.
     session: parking_lot::Mutex<Option<Weak<Session>>>,
@@ -415,6 +421,8 @@ impl PtyPool {
         Arc::new(Self {
             next_id: parking_lot::Mutex::new(0),
             ptys: DashMap::new(),
+            lifecycle: parking_lot::Mutex::new(()),
+            closed: AtomicBool::new(false),
             session: parking_lot::Mutex::new(None),
         })
     }
@@ -446,6 +454,10 @@ impl PtyPool {
         owner_client: ClientId,
         default_cwd: &Path,
     ) -> Result<Arc<Pty>, PtyError> {
+        let _lifecycle = self.lifecycle.lock();
+        if self.closed.load(Ordering::Acquire) {
+            return Err(PtyError::ShuttingDown);
+        }
         if self.ptys.len() >= MAX_PTYS {
             return Err(PtyError::LimitReached);
         }
@@ -599,6 +611,19 @@ impl PtyPool {
         let p = self.ptys.get(id).ok_or(PtyError::NotFound)?.clone();
         p.kill();
         Ok(())
+    }
+
+    /// Stop accepting new PTYs and terminate every child currently owned by
+    /// this pool. Reader threads remove their entries after observing EOF.
+    pub fn shutdown(&self) {
+        let _lifecycle = self.lifecycle.lock();
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let ptys: Vec<Arc<Pty>> = self.ptys.iter().map(|entry| entry.clone()).collect();
+        for pty in ptys {
+            pty.kill();
+        }
     }
 
     /// Drop a Pty entry from the pool. Called by the reader thread once the
@@ -1112,6 +1137,8 @@ pub enum PtyError {
     LimitReached,
     #[error("pty not found")]
     NotFound,
+    #[error("session is shutting down")]
+    ShuttingDown,
     #[error("pty open failed: {0}")]
     OpenFailed(String),
     #[error("pty spawn failed: {0}")]

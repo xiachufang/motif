@@ -15,6 +15,7 @@ import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/motif_status_badge.dart';
 import '../widgets/tailscale_section.dart';
+import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
@@ -317,7 +318,7 @@ class _SessionRow extends StatelessWidget {
         child: const Icon(Icons.delete, color: Colors.white),
       ),
       confirmDismiss: (_) => _confirmDestroy(context, session.name),
-      onDismissed: (_) => unawaited(motif.destroySession(session.name)),
+      onDismissed: (_) => unawaited(_destroySession(context)),
       child: InkWell(
         onTap: onAttach,
         child: Padding(
@@ -402,24 +403,40 @@ class _SessionRow extends StatelessWidget {
   Future<bool> _confirmDestroy(BuildContext context, String name) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text('Destroy "$name"?'),
         content: const Text(
           'This kills the session and its terminals on the server.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(dialogContext, false),
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
             child: const Text('Destroy'),
           ),
         ],
       ),
     );
     return ok ?? false;
+  }
+
+  Future<void> _destroySession(BuildContext context) async {
+    // This row is removed synchronously by MotifClient's optimistic update, so
+    // retain the root Overlay's stable context for reporting an async failure.
+    final toastContext = Overlay.of(context, rootOverlay: true).context;
+    try {
+      await motif.destroySession(session.name);
+    } catch (e) {
+      if (toastContext.mounted) {
+        showMotifToast(toastContext, 'Destroy failed: $e');
+      }
+    }
   }
 }
 

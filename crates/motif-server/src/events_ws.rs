@@ -75,14 +75,14 @@ pub async fn events_upgrade(
     // client_id. Without an attachment there's nothing to subscribe to
     // — reject upfront rather than upgrade and immediately close.
     let snap = entry.state.lock().snapshot();
-    let Some(attached_name) = snap.attached.clone() else {
+    if snap.attached.is_none() {
         return (
             StatusCode::CONFLICT,
             "session not attached (call session.attach first)",
         )
             .into_response();
-    };
-    let Some(motif_session) = state.manager.get(&attached_name) else {
+    }
+    let Some(motif_session) = crate::rpc::current_session(&state.manager, &snap) else {
         return (StatusCode::NOT_FOUND, "attached motif session vanished").into_response();
     };
     let client_id = snap.client_id;
@@ -208,9 +208,24 @@ async fn handle_events_socket(
         }
     });
 
-    // Read loop: we don't expect inbound frames, but a peer close /
-    // any frame counts as proof-of-life for the heartbeat watermark.
-    while let Some(item) = ws_rx.next().await {
+    // Read loop: session.destroy wins alongside peer close / socket error.
+    // A watch receiver retains the shutdown latch, so an upgrade that raced
+    // with destroy also exits immediately instead of pinning the old Session.
+    let mut shutdown = session.subscribe_shutdown();
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        let item = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            item = ws_rx.next() => item,
+        };
+        let Some(item) = item else { break };
         match item {
             Ok(_) => *last_recv.lock().unwrap() = Instant::now(),
             Err(e) => {

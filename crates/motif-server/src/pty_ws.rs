@@ -108,10 +108,10 @@ pub async fn pty_upgrade(
         return (StatusCode::CONFLICT, "unknown or expired session_id").into_response();
     };
     let snap = entry.state.lock().snapshot();
-    let Some(attached_name) = snap.attached.clone() else {
+    if snap.attached.is_none() {
         return (StatusCode::CONFLICT, "session not attached").into_response();
-    };
-    let Some(session) = state.manager.get(&attached_name) else {
+    }
+    let Some(session) = crate::rpc::current_session(&state.manager, &snap) else {
         return (StatusCode::NOT_FOUND, "attached motif session vanished").into_response();
     };
     let Some(pty) = session.pty_pool.get(&pty_id) else {
@@ -334,7 +334,21 @@ async fn handle_pty_socket(
     // once this client already owns primary, so calling it per input frame is
     // free in the steady state and only resizes + broadcasts on an actual
     // handover.
-    while let Some(item) = ws_rx.next().await {
+    let mut shutdown = session.subscribe_shutdown();
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        let item = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            item = ws_rx.next() => item,
+        };
+        let Some(item) = item else { break };
         let msg = match item {
             Ok(m) => m,
             Err(e) => {

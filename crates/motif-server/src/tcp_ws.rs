@@ -19,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
+use crate::session::Session;
 use crate::ws::{
     self, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, PING_INTERVAL_DUR, TIMING_TARGET,
 };
@@ -59,6 +60,9 @@ pub async fn tcp_upgrade(
     if snap.attached.is_none() {
         return (StatusCode::CONFLICT, "session not attached").into_response();
     }
+    let Some(session) = crate::rpc::current_session(&state.manager, &snap) else {
+        return (StatusCode::NOT_FOUND, "attached motif session vanished").into_response();
+    };
 
     let host = q.host.unwrap_or_else(|| "127.0.0.1".to_string());
     if !is_allowed_remote_host(&host) {
@@ -85,7 +89,7 @@ pub async fn tcp_upgrade(
         "tcp ws upgrade requested",
     );
 
-    ws.on_upgrade(move |socket| handle_tcp_socket(socket, client_id, host, port, peer))
+    ws.on_upgrade(move |socket| handle_tcp_socket(socket, session, client_id, host, port, peer))
 }
 
 fn is_allowed_remote_host(host: &str) -> bool {
@@ -94,6 +98,7 @@ fn is_allowed_remote_host(host: &str) -> bool {
 
 async fn handle_tcp_socket(
     socket: WebSocket,
+    session: Arc<Session>,
     client_id: ClientId,
     host: String,
     port: u16,
@@ -204,7 +209,21 @@ async fn handle_tcp_socket(
         }
     });
 
-    while let Some(item) = ws_rx.next().await {
+    let mut shutdown = session.subscribe_shutdown();
+    loop {
+        if *shutdown.borrow() {
+            break;
+        }
+        let item = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            item = ws_rx.next() => item,
+        };
+        let Some(item) = item else { break };
         let msg = match item {
             Ok(m) => m,
             Err(e) => {

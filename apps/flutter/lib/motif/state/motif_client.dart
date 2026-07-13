@@ -451,10 +451,113 @@ class MotifClient extends ChangeNotifier
   }
 
   Future<void> destroySession(String name) async {
-    await _rpc?.call('session.destroy', {'name': name});
-    if (intendedSession == name) intendedSession = null;
-    pendingLocalViewId = null;
-    await refreshSessions();
+    final rpc = _rpc;
+    if (rpc == null) throw const RpcException('not connected');
+
+    final destroysCurrentSession = switch (_state) {
+      ConnAttached(:final session) => session == name,
+      _ => intendedSession == name,
+    };
+
+    // Dismissible requires its backing item to leave the widget tree as soon
+    // as onDismissed fires. Remove it before the first await; otherwise a slow
+    // RPC leaves an already-dismissed row in the list and Flutter asserts on
+    // the next rebuild. Restore just this entry if the server rejects the
+    // destroy, preserving any unrelated session updates that arrived while the
+    // request was in flight.
+    final removedIndex = sessions.indexWhere((session) => session.name == name);
+    final removed = removedIndex < 0 ? null : sessions[removedIndex];
+    if (removed != null) {
+      sessions = [...sessions]..removeAt(removedIndex);
+      notifyListeners();
+    }
+
+    var releasedCurrentSession = false;
+    try {
+      if (destroysCurrentSession) {
+        await _stopRemotePortForwarders();
+        try {
+          // Detach first so this client's ConnRegistry entry and client_count
+          // are cleaned up before the global destroy closes every other
+          // attachment. RpcClient keeps its base HTTP transport alive.
+          await rpc.call('session.detach');
+        } catch (e, st) {
+          // The entry may already have vanished due to another client's
+          // concurrent destroy. Local streams still must be released before
+          // issuing our idempotent-looking destroy request without a stale ID.
+          Log.w(
+            'detach before session destroy failed session=$name',
+            name: 'motif.session',
+            error: e,
+            stackTrace: st,
+          );
+          await rpc.releaseSession();
+        }
+        releasedCurrentSession = true;
+        _clearSessionState();
+        lastSeq = 0;
+        sessionTheme = null;
+        connectionNotice = null;
+        _setState(const ConnConnected());
+      }
+      await rpc.call('session.destroy', {'name': name});
+    } catch (error) {
+      // Another client may have won the destroy race after our list snapshot.
+      // The requested end state is already true, so treat SessionNotFound as a
+      // successful, idempotent destroy instead of resurrecting a stale row.
+      if (_isSessionNotFound(error)) {
+        Log.i('session already destroyed session=$name', name: 'motif.session');
+      } else {
+        if (removed != null &&
+            !sessions.any((session) => session.name == name)) {
+          final restored = [...sessions];
+          restored.insert(
+            removedIndex.clamp(0, restored.length).toInt(),
+            removed,
+          );
+          sessions = restored;
+          notifyListeners();
+        }
+        // We released the Session streams before destroy to avoid racing the
+        // server-initiated socket close. If destroy was rejected, restore the
+        // attachment best-effort while preserving the original RPC error for the
+        // caller and its rollback toast.
+        if (releasedCurrentSession && identical(_rpc, rpc)) {
+          try {
+            await attach(name);
+          } catch (e, st) {
+            Log.w(
+              'reattach after failed session destroy failed session=$name',
+              name: 'motif.session',
+              error: e,
+              stackTrace: st,
+            );
+          }
+        }
+        rethrow;
+      }
+    }
+
+    if (intendedSession == name) {
+      intendedSession = null;
+      pendingLocalViewId = null;
+    }
+    resumeSeqs.remove(name);
+    if (destroysCurrentSession) notifyListeners();
+
+    // The optimistic list is already correct. Refresh only to reconcile other
+    // sessions; a refresh failure must not resurrect a session the server has
+    // successfully destroyed or turn the completed action into a UI error.
+    try {
+      await refreshSessions();
+    } catch (e, st) {
+      Log.w(
+        'session list refresh after destroy failed session=$name',
+        name: 'motif.session',
+        error: e,
+        stackTrace: st,
+      );
+    }
   }
 
   Future<void> attach(String name) async {
