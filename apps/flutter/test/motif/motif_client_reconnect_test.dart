@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -103,6 +105,98 @@ void main() {
     expect(motif.ptys, isNotEmpty);
     expect(motif.views, isNotEmpty);
     expect(motif.activeViewId, 'view-1');
+  });
+
+  test('terminal resize waits for reattach before sending RPC', () async {
+    final attachStarted = Completer<void>();
+    final releaseAttach = Completer<void>();
+    final resizeSessionHeaders = <String?>[];
+    final eventSockets = <WebSocket>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      for (final socket in eventSockets) {
+        await socket.close();
+      }
+      await server.close(force: true);
+    });
+    server.listen((request) async {
+      if (request.method == 'GET' && request.uri.path == '/ping') {
+        request.response.write(
+          jsonEncode({'service': 'motif-server', 'version': 'test'}),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'POST' &&
+          request.uri.path == '/rpc/session.attach') {
+        if (!attachStarted.isCompleted) attachStarted.complete();
+        await releaseAttach.future;
+        request.response.headers.set('X-Motif-Session', 'sid-1');
+        request.response.write(
+          jsonEncode({
+            'session': {'name': 'dev'},
+            'ptys': [
+              {'id': 'pty-1', 'cols': 80, 'rows': 24},
+            ],
+            'views': [
+              {
+                'id': 'view-1',
+                'spec': {'kind': 'pty', 'pty_id': 'pty-1'},
+              },
+            ],
+            'active_view': 'view-1',
+            'last_seq': 0,
+          }),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' && request.uri.path == '/events') {
+        eventSockets.add(await WebSocketTransformer.upgrade(request));
+        return;
+      }
+      if (request.method == 'POST' && request.uri.path == '/rpc/pty.resize') {
+        resizeSessionHeaders.add(request.headers.value('X-Motif-Session'));
+        request.response.write('{}');
+        await request.response.close();
+        return;
+      }
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+    });
+
+    final motif = MotifClient()
+      ..intendedSession = 'dev'
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'view-1';
+    addTearDown(motif.disconnect);
+    final localServer = MotifServer(
+      id: 'local-test',
+      name: 'Local test',
+      host: InternetAddress.loopbackIPv4.address,
+      port: server.port,
+    );
+
+    final connecting = motif.connect(localServer, force: true);
+    await attachStarted.future;
+    expect(motif.state, isA<ConnConnecting>());
+    expect(motif.canInput, isFalse);
+
+    var resizeCompleted = false;
+    final resizing = motif
+        .resizePty('pty-1', 120, 40)
+        .whenComplete(() => resizeCompleted = true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(resizeCompleted, isFalse);
+    expect(resizeSessionHeaders, isEmpty);
+
+    releaseAttach.complete();
+    await Future.wait([connecting, resizing]);
+
+    expect(motif.state, isA<ConnAttached>());
+    expect(motif.canInput, isTrue);
+    expect(resizeSessionHeaders, ['sid-1']);
   });
 
   test(

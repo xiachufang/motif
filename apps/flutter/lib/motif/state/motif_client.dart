@@ -138,6 +138,7 @@ class MotifClient extends ChangeNotifier
   MotifConnState get state => _state;
 
   RpcClient? _rpc;
+  Future<void>? _attachInFlight;
   StreamSubscription<MotifEvent>? _eventSub;
   final List<RemotePortMapping> _remotePortMappings = [];
 
@@ -204,7 +205,7 @@ class MotifClient extends ChangeNotifier
   /// Whether terminal input may be sent. Only true when a session is
   /// attached; blocks input while disconnected or reconnecting.
   @override
-  bool get canInput => _state is ConnAttached;
+  bool get canInput => _state is ConnAttached && _rpc?.sessionId != null;
 
   // ─────────────────────────── connect ───────────────────────────
 
@@ -270,7 +271,6 @@ class MotifClient extends ChangeNotifier
 
     final intended = intendedSession;
     if (intended != null) {
-      _setState(ConnAttached(intended));
       try {
         stage = Stopwatch()..start();
         await attach(intended);
@@ -560,7 +560,16 @@ class MotifClient extends ChangeNotifier
     }
   }
 
-  Future<void> attach(String name) async {
+  Future<void> attach(String name) {
+    late final Future<void> tracked;
+    tracked = _attach(name).whenComplete(() {
+      if (identical(_attachInFlight, tracked)) _attachInFlight = null;
+    });
+    _attachInFlight = tracked;
+    return tracked;
+  }
+
+  Future<void> _attach(String name) async {
     final rpc = _rpc;
     if (rpc == null) throw const RpcException('not connected');
     await _stopRemotePortForwarders();
@@ -722,21 +731,29 @@ class MotifClient extends ChangeNotifier
   }
 
   @override
-  Future<void> resizePty(String ptyId, int cols, int rows) =>
-      _rpc?.call('pty.resize', {'pty_id': ptyId, 'cols': cols, 'rows': rows}) ??
-      Future<void>.value();
+  Future<void> resizePty(String ptyId, int cols, int rows) async {
+    final rpc = await _waitForAttachedRpc();
+    if (rpc == null) return;
+    await rpc.call('pty.resize', {'pty_id': ptyId, 'cols': cols, 'rows': rows});
+  }
 
   @override
-  Future<void> ensurePtyStream(String ptyId) =>
-      _rpc?.activatePty(ptyId) ?? Future<void>.value();
+  Future<void> ensurePtyStream(String ptyId) async {
+    final rpc = await _waitForAttachedRpc();
+    if (rpc == null) return;
+    await rpc.activatePty(ptyId);
+  }
 
   @override
   Future<void> closePtyStream(String ptyId) =>
       _rpc?.deactivatePty(ptyId) ?? Future<void>.value();
 
   @override
-  Future<void> syncPtyStreams(Set<String> ptyIds) =>
-      _rpc?.syncPtyStreams(ptyIds) ?? Future<void>.value();
+  Future<void> syncPtyStreams(Set<String> ptyIds) async {
+    final rpc = await _waitForAttachedRpc();
+    if (rpc == null) return;
+    await rpc.syncPtyStreams(ptyIds);
+  }
 
   @override
   Future<void> waitForPtyReplay(String ptyId) =>
@@ -749,6 +766,34 @@ class MotifClient extends ChangeNotifier
   @override
   Future<void> deactivatePtyStream(String ptyId) =>
       runtime.onTerminalSurfaceDisposed(this, ptyId);
+
+  /// Wait for an in-progress session attachment before issuing terminal work.
+  ///
+  /// Terminal surfaces remain mounted while the transport reconnects, so their
+  /// resize/stream callbacks can race with `session.attach`. Returning null on
+  /// attach failure turns that stale surface work into a no-op; the reconnect
+  /// owner remains responsible for exposing the real connection failure.
+  Future<RpcClient?> _waitForAttachedRpc() async {
+    final expectedSession = intendedSession;
+    final pending = _attachInFlight;
+    if (pending != null) {
+      try {
+        await pending;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final rpc = _rpc;
+    final state = _state;
+    if (rpc == null || rpc.sessionId == null || state is! ConnAttached) {
+      return null;
+    }
+    if (expectedSession != null && state.session != expectedSession) {
+      return null;
+    }
+    return rpc;
+  }
 
   Future<void> killPty(String ptyId) =>
       _rpc?.call('pty.kill', {'pty_id': ptyId}) ?? Future<void>.value();

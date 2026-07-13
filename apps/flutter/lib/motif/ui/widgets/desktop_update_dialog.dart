@@ -18,54 +18,73 @@ Future<void> showDesktopUpdateDialog(
     context,
     builder: (dialogContext) => AdaptiveModal(
       title: 'Update available',
+      showCloseButton: false,
       content: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Align(
+            child: Container(
+              width: MotifControlSize.xl,
+              height: MotifControlSize.xl,
+              decoration: BoxDecoration(
+                color: dialogContext.motif.accentFill(),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.system_update_alt_rounded,
+                size: MotifIconSize.lg,
+                color: dialogContext.motif.accent,
+              ),
+            ),
+          ),
+          const SizedBox(height: MotifSpacing.lg),
           Text(
-            'Motif ${update.version} is ready to download.',
-            style: MotifType.body.copyWith(
+            'Motif ${update.version} is ready',
+            textAlign: TextAlign.center,
+            style: MotifType.headline.copyWith(
               color: dialogContext.motif.textPrimary,
             ),
           ),
-          const SizedBox(height: MotifSpacing.sm),
+          const SizedBox(height: MotifSpacing.xs),
           Text(
-            'Open the release page to download and install the latest version.',
+            'Download it from the release page, then install it when you\'re ready.',
+            textAlign: TextAlign.center,
             style: MotifType.subhead.copyWith(
               color: dialogContext.motif.textSecondary,
             ),
           ),
+          const SizedBox(height: MotifSpacing.xl),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              unawaited(openExternalUrl(update.releaseUrl.toString()));
+            },
+            icon: const Icon(Icons.open_in_new_rounded),
+            label: const Text('Download update'),
+          ),
+          const SizedBox(height: MotifSpacing.sm),
+          OutlinedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Remind me later'),
+          ),
           if (onSkipVersion != null) ...[
-            const SizedBox(height: MotifSpacing.md),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () async {
-                  await onSkipVersion();
-                  if (dialogContext.mounted) {
-                    Navigator.of(dialogContext).pop();
-                  }
-                },
-                icon: const Icon(Icons.notifications_off_outlined),
-                label: const Text('Skip this version'),
+            const SizedBox(height: MotifSpacing.xs),
+            TextButton(
+              onPressed: () async {
+                await onSkipVersion();
+                if (dialogContext.mounted) {
+                  Navigator.of(dialogContext).pop();
+                }
+              },
+              style: TextButton.styleFrom(
+                foregroundColor: dialogContext.motif.textTertiary,
               ),
+              child: const Text('Skip this version'),
             ),
           ],
         ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(),
-          child: const Text('Later'),
-        ),
-        FilledButton(
-          onPressed: () {
-            Navigator.of(dialogContext).pop();
-            unawaited(openExternalUrl(update.releaseUrl.toString()));
-          },
-          child: const Text('Open download page'),
-        ),
-      ],
     ),
   );
 }
