@@ -30,12 +30,9 @@ class FlutterSecureSecretStore implements SecretStore {
   Future<void> delete(String key) => _storage.delete(key: key);
 }
 
-/// Temporary plaintext fallback for platforms that cannot use their secure
-/// store. Values are namespaced but are NOT encrypted at rest.
-///
-/// macOS uses this until releases are signed with Developer ID Application;
-/// switch the macOS factory back to [FlutterSecureSecretStore] once that
-/// certificate is available.
+/// Legacy plaintext store used only to migrate credentials written by builds
+/// that could not use macOS Keychain. Values are namespaced but are NOT
+/// encrypted at rest, so this must never be selected as the primary store.
 class PlaintextPreferencesSecretStore implements SecretStore {
   PlaintextPreferencesSecretStore({Future<SharedPreferences>? preferences})
     : _preferences = preferences ?? SharedPreferences.getInstance();
@@ -62,6 +59,43 @@ class PlaintextPreferencesSecretStore implements SecretStore {
   Future<void> delete(String key) async {
     final preferences = await _preferences;
     await preferences.remove('$_prefix$key');
+  }
+}
+
+/// Reads from [primary], falling back to [legacy] once and moving any value it
+/// finds into [primary]. Successful writes and deletes also clear [legacy].
+class MigratingSecretStore implements SecretStore {
+  const MigratingSecretStore({required this.primary, required this.legacy});
+
+  final SecretStore primary;
+  final SecretStore legacy;
+
+  @override
+  bool get isAvailable => primary.isAvailable;
+
+  @override
+  Future<String?> read(String key) async {
+    final value = await primary.read(key);
+    if (value != null) return value;
+
+    final legacyValue = await legacy.read(key);
+    if (legacyValue == null) return null;
+
+    await primary.write(key, legacyValue);
+    await legacy.delete(key);
+    return legacyValue;
+  }
+
+  @override
+  Future<void> write(String key, String value) async {
+    await primary.write(key, value);
+    await legacy.delete(key);
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    await primary.delete(key);
+    await legacy.delete(key);
   }
 }
 

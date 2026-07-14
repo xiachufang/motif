@@ -19,11 +19,14 @@ PlatformServices makePlatformServices() {
     push: (Platform.isIOS || Platform.isMacOS)
         ? ApnsPushService()
         : NoopPushService(),
-    // Temporary: unsigned/ad-hoc macOS builds cannot carry the restricted
-    // keychain-access-groups entitlement. This stores credentials in plaintext
-    // preferences until Developer ID Application signing is available.
+    // Signed macOS releases can use Keychain again. Migrate credentials written
+    // by the temporary plaintext fallback on first access, then erase them from
+    // preferences.
     secrets: Platform.isMacOS
-        ? PlaintextPreferencesSecretStore()
+        ? MigratingSecretStore(
+            primary: FlutterSecureSecretStore(),
+            legacy: PlaintextPreferencesSecretStore(),
+          )
         : FlutterSecureSecretStore(),
   );
 }

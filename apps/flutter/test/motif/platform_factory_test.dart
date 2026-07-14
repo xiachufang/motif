@@ -4,6 +4,7 @@ library;
 import 'dart:io';
 
 import 'package:motif/motif/platform/platform_factory.dart';
+import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/tailscale_native_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -20,6 +21,12 @@ void main() {
         (path) => File(path).existsSync(),
       );
       final p = makePlatformServices();
+      expect(
+        p.secrets,
+        Platform.isMacOS
+            ? isA<MigratingSecretStore>()
+            : isA<FlutterSecureSecretStore>(),
+      );
       if (present) {
         expect(
           p.tailscale,

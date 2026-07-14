@@ -59,4 +59,36 @@ void main() {
       expect(await secrets.read('server-token'), isNull);
     },
   );
+
+  test(
+    'migrating secret store moves legacy values into secure storage',
+    () async {
+      final primary = MemorySecretStore();
+      final legacy = MemorySecretStore();
+      final secrets = MigratingSecretStore(primary: primary, legacy: legacy);
+      await legacy.write('server-token', 'legacy-secret');
+
+      expect(await secrets.read('server-token'), 'legacy-secret');
+      expect(primary.values['server-token'], 'legacy-secret');
+      expect(legacy.values['server-token'], isNull);
+    },
+  );
+
+  test(
+    'migrating secret store clears legacy values on write and delete',
+    () async {
+      final primary = MemorySecretStore();
+      final legacy = MemorySecretStore();
+      final secrets = MigratingSecretStore(primary: primary, legacy: legacy);
+      await legacy.write('server-token', 'stale-secret');
+
+      await secrets.write('server-token', 'new-secret');
+      expect(primary.values['server-token'], 'new-secret');
+      expect(legacy.values['server-token'], isNull);
+
+      await secrets.delete('server-token');
+      expect(primary.values['server-token'], isNull);
+      expect(legacy.values['server-token'], isNull);
+    },
+  );
 }
