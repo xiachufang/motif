@@ -3,7 +3,7 @@
 仓库已经包含独立的 `release-macos-signed` GitHub Actions 工作流。它不会修改
 Xcode Cloud 的现有流程，会单独构建 arm64 macOS App、执行 Developer ID
 签名、提交 Apple 公证、staple 公证票据，并将带有 `-notarized.dmg` 后缀的产物
-上传到 GitHub Release。
+上传为 Actions Artifact。`v*` Tag 构建还会把产物上传到 GitHub Release。
 
 ## 当前状态
 
@@ -20,33 +20,35 @@ Apple `notarytool` 验证：
 - Key ID：`WGG99B6XWC`
 - Access：`Developer`
 
-以下 Developer ID 签名凭据尚未配置：
+以下 Developer ID 签名凭据也已配置：
 
 - `MACOS_DEVELOPER_ID_P12_BASE64`
 - `MACOS_DEVELOPER_ID_P12_PASSWORD`
 
-没有这两个 Secret，工作流会在签名凭据检查阶段停止。Notary API Key 只能认证
-公证请求，不能代替 Developer ID 代码签名证书。
+五个 Secret 已全部就绪。Notary API Key 只能认证公证请求，不能代替
+Developer ID 代码签名证书。
 
-## 下一步：由 Account Holder 创建证书
+## 以后重新签发证书
 
 Apple 只允许开发者团队的 Account Holder 创建 `Developer ID Application`
 证书。Admin、App Manager 和普通 Developer 都不能创建。
 
-本机已经生成 GitHub Release 专用的私钥和 CSR，文件位于仓库之外：
+当前 GitHub Release 专用的签名材料位于仓库之外：
 
 ```text
 /Users/feichao/Library/Application Support/Motif/github-release-signing/Motif-GitHub-Release.key
-/Users/feichao/Library/Application Support/Motif/github-release-signing/Motif-GitHub-Release.csr
+/Users/feichao/Library/Application Support/Motif/github-release-signing/Motif-GitHub-Release.pem
+/Users/feichao/Library/Application Support/Motif/github-release-signing/Motif-GitHub-Release.p12
 ```
 
-私钥不能上传、共享或提交到 Git。Account Holder 只需要使用 `.csr` 文件：
+私钥和 P12 不能上传、共享或提交到 Git。如果以后需要重新签发：
 
-1. 使用 Account Holder 登录 [Apple Developer Certificates](https://developer.apple.com/account/resources/certificates/add)。
-2. 在 Software 分类中选择 `Developer ID Application`，不要选择
+1. 在安全目录中生成新的私钥和 CSR。
+2. 使用 Account Holder 登录 [Apple Developer Certificates](https://developer.apple.com/account/resources/certificates/add)。
+3. 在 Software 分类中选择 `Developer ID Application`，不要选择
    `Apple Development`、`Apple Distribution` 或 `Developer ID Installer`。
-3. 上传 `Motif-GitHub-Release.csr`。
-4. 下载 Apple 生成的 `.cer` 文件，并将它保存到这台 Mac。
+4. 上传新 CSR 并下载 Apple 生成的 `.cer` 文件。
+5. 验证证书与新私钥匹配后，再生成 P12 并更新 GitHub Secrets。
 
 ## 生成 P12 并配置 GitHub Secrets
 
@@ -86,8 +88,9 @@ gh secret set MACOS_DEVELOPER_ID_P12_PASSWORD --repo xiachufang/motif
 
 所有五个 Secrets 配置完成后：
 
-1. 将包含工作流的分支推送到 GitHub，并合并到默认分支。
-2. 在 GitHub Actions 页面手动运行 `release-macos-signed`。
+1. 推送包含工作流的分支；每次分支 push 都会运行
+   `release-macos-signed`，但不会发布 GitHub Release。
+2. 也可以在 GitHub Actions 页面手动运行 `release-macos-signed`。
 3. 确认 `Sign app with Hardened Runtime`、`Notarize and staple DMG` 和
    `Upload workflow artifact` 全部成功。
 4. 下载 Actions Artifact，在另一台 Mac 上直接打开并运行，确认 Gatekeeper

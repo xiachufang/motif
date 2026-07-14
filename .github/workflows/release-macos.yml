@@ -5,6 +5,7 @@ name: release-macos-signed
 # ticket. The distinct asset suffix avoids racing Xcode Cloud's Motif-v*.dmg.
 on:
   push:
+    branches: ['**']
     tags: ['v*']
   workflow_dispatch: {}
 
@@ -199,7 +200,9 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Motif-${{ github.ref_name }}-notarized
+          # run_id / run_attempt are safe for branch names containing `/` and
+          # keep repeated validation runs distinct.
+          name: Motif-macos-${{ github.run_id }}-${{ github.run_attempt }}-notarized
           path: ${{ env.DMG_PATH }}
           if-no-files-found: error
 
