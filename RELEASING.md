@@ -59,7 +59,8 @@ the Actions tab to shake out build issues before committing to a tag
 platform — same commands the CI runs, output in `dist/release/`:
 
 ```sh
-make release-flutter-macos      # or release-flutter-linux / -windows
+make release-flutter-macos      # signed + notarized; local Keychain or five CI credential env vars
+make release-flutter-linux      # or release-flutter-windows
 make release-motifd-macos       # or release-motifd-linux
 make release-manifest
 ```

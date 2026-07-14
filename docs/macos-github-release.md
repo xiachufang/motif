@@ -5,6 +5,20 @@ Xcode Cloud 的现有流程，会单独构建 arm64 macOS App、执行 Developer
 签名、提交 Apple 公证、staple 公证票据，并将带有 `-notarized.dmg` 后缀的产物
 上传为 Actions Artifact。`v*` Tag 构建还会把产物上传到 GitHub Release。
 
+完整发布逻辑以仓库根目录的 `Makefile` 为准。GitHub Actions 只安装工具链、把
+五个 Secret 映射为同名环境变量并执行：
+
+```bash
+make release-flutter-macos
+```
+
+该目标负责原生依赖预编译、Xcode Archive、临时 Keychain、Developer ID 签名、
+DMG 签名、公证、staple 和 Gatekeeper 校验。CI 会把 P12 和 App Store Connect
+API Key 都导入同一个临时 Keychain，公证统一通过 `motif-notary` Keychain
+profile 执行；无论成功或失败都会删除解码后的证书、API Key、临时 Keychain 和
+Archive。最终产物写入
+`dist/release/Motif-v<version>-notarized.dmg`。
+
 ## 当前状态
 
 以下公证凭据已配置到 `xiachufang/motif` 的 Repository Secrets，并且已经使用
@@ -27,6 +41,36 @@ Apple `notarytool` 验证：
 
 五个 Secret 已全部就绪。Notary API Key 只能认证公证请求，不能代替
 Developer ID 代码签名证书。
+
+## 本地 Keychain 配置
+
+本机已经把同一套 App Store Connect 凭据保存为 `motif-notary` profile。只要
+Developer ID Application identity 也已安装到登录 Keychain，本地无需导出任何
+Secret，直接运行：
+
+```bash
+make release-flutter-macos
+```
+
+可以单独验证 profile：
+
+```bash
+xcrun notarytool history --keychain-profile motif-notary
+```
+
+如果以后需要重建 profile，可从仓库外的 asc secrets 文件导入：
+
+```bash
+source ~/.asc/motif_notary_secrets.env
+tmp_key="$(mktemp -t motif-notary-key).p8"
+trap 'rm -f "$tmp_key"' EXIT
+printf '%s' "$ASC_KEY_P8_BASE64" | openssl base64 -d -A -out "$tmp_key"
+chmod 600 "$tmp_key"
+xcrun notarytool store-credentials motif-notary \
+  --key "$tmp_key" \
+  --key-id "$ASC_KEY_ID" \
+  --issuer "$ASC_ISSUER_ID"
+```
 
 ## 以后重新签发证书
 
@@ -91,7 +135,7 @@ gh secret set MACOS_DEVELOPER_ID_P12_PASSWORD --repo xiachufang/motif
 1. 推送包含工作流的分支；每次分支 push 都会运行
    `release-macos-signed`，但不会发布 GitHub Release。
 2. 也可以在 GitHub Actions 页面手动运行 `release-macos-signed`。
-3. 确认 `Sign app with Hardened Runtime`、`Notarize and staple DMG` 和
+3. 确认 `Build signed and notarized macOS release` 和
    `Upload workflow artifact` 全部成功。
 4. 下载 Actions Artifact，在另一台 Mac 上直接打开并运行，确认 Gatekeeper
    不显示未识别开发者警告。
