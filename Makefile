@@ -68,6 +68,7 @@ MACOS_RELEASE_LABEL ?= $(if $(filter tag,$(GITHUB_REF_TYPE)),$(GITHUB_REF_NAME),
 MACOS_DMG ?= $(RELEASE_DIR)/Motif-$(MACOS_RELEASE_LABEL)-notarized.dmg
 MACOS_SIGNING_KEYCHAIN ?= $(MACOS_WORK_DIR)/motif-signing.keychain-db
 MACOS_SIGNING_IDENTITY_FILE ?= $(MACOS_WORK_DIR)/signing-identity
+MACOS_KEYCHAIN_LIST_FILE ?= $(MACOS_WORK_DIR)/user-keychains
 MACOS_NOTARY_KEYCHAIN_PROFILE ?= motif-notary
 
 require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host (current: $(HOST_OS))."; exit 1; }
@@ -359,6 +360,9 @@ import-macos-signing-certificate: archive-flutter-macos-release
 		security create-keychain -p "$$keychain_password" "$(MACOS_SIGNING_KEYCHAIN)"; \
 		security set-keychain-settings -lut 21600 "$(MACOS_SIGNING_KEYCHAIN)"; \
 		security unlock-keychain -p "$$keychain_password" "$(MACOS_SIGNING_KEYCHAIN)"; \
+		security list-keychains -d user > "$(MACOS_KEYCHAIN_LIST_FILE)"; \
+		{ printf '"%s"\n' "$(MACOS_SIGNING_KEYCHAIN)"; cat "$(MACOS_KEYCHAIN_LIST_FILE)"; } \
+			| xargs security list-keychains -d user -s; \
 		security import "$$certificate" -k "$(MACOS_SIGNING_KEYCHAIN)" \
 			-P "$$MACOS_DEVELOPER_ID_P12_PASSWORD" \
 			-T /usr/bin/codesign -T /usr/bin/security; \
@@ -426,6 +430,7 @@ notarize-flutter-macos-dmg: package-flutter-macos-dmg
 	echo "Signed and notarized Flutter macOS DMG: $(MACOS_DMG)"
 
 clean-macos-signing: ## Remove temporary macOS certificates, keychain, and archive.
+	@if [ -f "$(MACOS_KEYCHAIN_LIST_FILE)" ]; then xargs security list-keychains -d user -s < "$(MACOS_KEYCHAIN_LIST_FILE)" || true; fi
 	@if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then security delete-keychain "$(MACOS_SIGNING_KEYCHAIN)" || true; fi
 	@rm -rf "$(MACOS_WORK_DIR)"
 
