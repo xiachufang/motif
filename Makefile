@@ -54,19 +54,40 @@ MOTIFD_RELEASE_PACKAGE := motif-server
 MOTIFD_RELEASE_BIN := motifd
 MOTIFD_LINUX_TARGET := x86_64-unknown-linux-gnu
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
-FLUTTER_MACOS_APP := $(FLUTTER_DIR)/build/macos/Build/Products/Release/Motif.app
+
+# Signed macOS release settings. Local builds use login-Keychain credentials;
+# CI imports its five secret values into a temporary keychain. Temporary
+# credentials and archives stay under MACOS_WORK_DIR and are always removed.
+MACOS_ARCH ?= arm64
+MACOS_WORK_DIR ?= $(if $(RUNNER_TEMP),$(RUNNER_TEMP)/motif-macos-release,$(RELEASE_DIR)/.macos-release)
+MACOS_WORK_DIR := $(abspath $(MACOS_WORK_DIR))
+MACOS_ARCHIVE_PATH ?= $(MACOS_WORK_DIR)/Motif.xcarchive
+MACOS_APP_PATH ?= $(MACOS_ARCHIVE_PATH)/Products/Applications/Motif.app
+MACOS_ENTITLEMENTS ?= $(FLUTTER_DIR)/macos/Runner/Release.entitlements
+MACOS_RELEASE_LABEL ?= $(if $(filter tag,$(GITHUB_REF_TYPE)),$(GITHUB_REF_NAME),v$(VERSION))
+MACOS_DMG ?= $(RELEASE_DIR)/Motif-$(MACOS_RELEASE_LABEL)-notarized.dmg
+MACOS_SIGNING_KEYCHAIN ?= $(MACOS_WORK_DIR)/motif-signing.keychain-db
+MACOS_SIGNING_IDENTITY_FILE ?= $(MACOS_WORK_DIR)/signing-identity
+MACOS_KEYCHAIN_LIST_FILE ?= $(MACOS_WORK_DIR)/user-keychains
+MACOS_NOTARY_KEYCHAIN_PROFILE ?= motif-notary
 
 require_host = @[ "$(HOST_OS)" = "$(1)" ] || { echo "$@ must run on a $(1) host (current: $(HOST_OS))."; exit 1; }
+macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set -- --keychain "$(MACOS_SIGNING_KEYCHAIN)"; fi
 
 .PHONY: help graph version check-tools check-cargo check-flutter check-zig \
 	check-macos-tools check-ios-tools check-android-release-signing \
-	check-ios-release-signing deps deps-rust deps-flutter deps-web deps-android \
+	check-ios-release-signing check-macos-release-credentials \
+	deps deps-rust deps-flutter deps-web deps-android \
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
 	release-rust-macos release-rust-linux release-rust-windows \
 	release-motifd-macos release-motifd-linux \
 	release-flutter-macos release-flutter-linux \
 	release-flutter-windows release-flutter-android release-flutter-ios \
+	prepare-flutter-macos-release configure-flutter-macos-release \
+	archive-flutter-macos-release import-macos-signing-certificate \
+	sign-flutter-macos-release package-flutter-macos-dmg \
+	notarize-flutter-macos-dmg clean-macos-signing \
 	release-manifest verify-release release-tag clean-release
 
 help: ## Show available release targets.
@@ -145,9 +166,34 @@ check-macos-tools: ## Check macOS app packaging tools.
 	@[ "$(UNAME_S)" = "Darwin" ] || { echo "This target must run on macOS."; exit 1; }
 	@command -v xcodebuild >/dev/null || { echo "Missing xcodebuild. Install Xcode command line tools."; exit 1; }
 	@command -v codesign >/dev/null || { echo "Missing codesign."; exit 1; }
+	@command -v security >/dev/null || { echo "Missing security."; exit 1; }
+	@command -v openssl >/dev/null || { echo "Missing openssl."; exit 1; }
+	@command -v file >/dev/null || { echo "Missing file."; exit 1; }
+	@command -v uuidgen >/dev/null || { echo "Missing uuidgen."; exit 1; }
 	@command -v ditto >/dev/null || { echo "Missing ditto."; exit 1; }
-	@command -v sips >/dev/null || { echo "Missing sips."; exit 1; }
-	@command -v iconutil >/dev/null || { echo "Missing iconutil."; exit 1; }
+	@command -v hdiutil >/dev/null || { echo "Missing hdiutil."; exit 1; }
+	@command -v xcrun >/dev/null || { echo "Missing xcrun."; exit 1; }
+	@command -v spctl >/dev/null || { echo "Missing spctl."; exit 1; }
+
+check-macos-release-credentials: ## Check Developer ID and Apple notarization credentials.
+	@set -eu -o pipefail; \
+	require_env() { \
+		for name in "$$@"; do \
+			if [ -z "$${!name:-}" ]; then echo "Missing required environment variable: $$name" >&2; exit 1; fi; \
+		done; \
+	}; \
+	if [ -n "$${MACOS_DEVELOPER_ID_P12_BASE64:-}" ] || [ -n "$${MACOS_DEVELOPER_ID_P12_PASSWORD:-}" ]; then \
+		require_env MACOS_DEVELOPER_ID_P12_BASE64 MACOS_DEVELOPER_ID_P12_PASSWORD; \
+	elif ! security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'; then \
+		echo "Missing Developer ID identity: provide the MACOS_DEVELOPER_ID_P12_* variables or install it in Keychain." >&2; \
+		exit 1; \
+	fi; \
+	if [ -n "$${APPLE_API_KEY_ID:-}" ] || [ -n "$${APPLE_API_ISSUER_ID:-}" ] || [ -n "$${APPLE_API_PRIVATE_KEY_BASE64:-}" ]; then \
+		require_env APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY_BASE64; \
+	elif ! xcrun notarytool history --keychain-profile "$(MACOS_NOTARY_KEYCHAIN_PROFILE)" >/dev/null 2>&1; then \
+		echo "Missing notarytool Keychain profile '$(MACOS_NOTARY_KEYCHAIN_PROFILE)' and no APPLE_API_* credentials were provided." >&2; \
+		exit 1; \
+	fi
 
 check-ios-tools: check-macos-tools ## Check iOS release build tools.
 	@command -v pod >/dev/null || { echo "Missing CocoaPods. Run: brew install cocoapods"; exit 1; }
@@ -253,14 +299,140 @@ release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build
 	@tar -czf "$(RELEASE_DIR)/motifd-$(ARTIFACT_SUFFIX)-linux-x86_64.tar.gz" -C "$(RELEASE_DIR)/motifd/linux-x86_64" "$(MOTIFD_RELEASE_BIN)"
 	@echo "motifd binary: $(RELEASE_DIR)/motifd/linux-x86_64/$(MOTIFD_RELEASE_BIN)"
 
-release-flutter-macos: check-macos-tools deps-flutter ## Build and archive the Flutter macOS app.
+release-flutter-macos: check-macos-tools check-zig check-macos-release-credentials ## Build, Developer ID sign, notarize, and staple the Flutter macOS DMG.
 	$(call require_host,macos)
-	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build macos -t lib/main_desktop.dart --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
-	@rm -rf "$(RELEASE_DIR)/macos/flutter"
-	@mkdir -p "$(RELEASE_DIR)/macos/flutter"
-	@cp -R "$(FLUTTER_MACOS_APP)" "$(RELEASE_DIR)/macos/flutter/Motif.app"
-	@cd "$(RELEASE_DIR)/macos/flutter" && ditto -c -k --keepParent Motif.app "../../Motif-flutter-macos-$(ARTIFACT_SUFFIX)-$(HOST_TAG).zip"
-	@echo "Flutter macOS app: $(RELEASE_DIR)/macos/flutter/Motif.app"
+	@set -eu -o pipefail; \
+	cleanup() { make --no-print-directory clean-macos-signing; }; \
+	trap cleanup EXIT; \
+	cleanup; \
+	rm -f "$(MACOS_DMG)"; \
+	status=0; \
+	make --no-print-directory notarize-flutter-macos-dmg || status=$$?; \
+	if [ "$$status" -ne 0 ]; then rm -f "$(MACOS_DMG)"; fi; \
+	exit "$$status"
+
+# Prebuild native dependencies outside Xcode's sandbox. The subsequent archive
+# build can then run without downloading Rust, Go, or Zig dependencies.
+prepare-flutter-macos-release: deps-flutter
+	@cd "$(FLUTTER_DIR)/ghostty" && zig build -Demit-lib-vt=true --fetch
+	@cd "$(FLUTTER_DIR)" && bash scripts/build_motif_embed.sh --target macos-$(MACOS_ARCH)
+	@cd "$(FLUTTER_DIR)" && bash scripts/build_tailscale.sh --target macos-$(MACOS_ARCH)
+
+configure-flutter-macos-release: prepare-flutter-macos-release
+	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build macos \
+		-t lib/main_desktop.dart \
+		--config-only \
+		--release \
+		--build-name "$(VERSION)" \
+		--build-number "$(BUILD_NUMBER)" \
+		--no-pub
+
+# Archive without a distribution identity. Explicit bottom-up signing below
+# prevents Xcode from silently selecting an Apple Development certificate.
+archive-flutter-macos-release: configure-flutter-macos-release
+	@rm -rf "$(MACOS_ARCHIVE_PATH)"
+	@mkdir -p "$(MACOS_WORK_DIR)"
+	@xcodebuild \
+		-quiet \
+		-project "$(FLUTTER_DIR)/macos/Runner.xcodeproj" \
+		-scheme Runner \
+		-configuration Release \
+		-destination 'generic/platform=macOS' \
+		-archivePath "$(MACOS_ARCHIVE_PATH)" \
+		ARCHS="$(MACOS_ARCH)" \
+		ONLY_ACTIVE_ARCH=NO \
+		CODE_SIGN_IDENTITY=- \
+		CODE_SIGN_STYLE=Manual \
+		CODE_SIGNING_ALLOWED=NO \
+		CODE_SIGNING_REQUIRED=NO \
+		DEVELOPMENT_TEAM= \
+		archive
+	@test -d "$(MACOS_APP_PATH)" || { echo "Archived app not found: $(MACOS_APP_PATH)" >&2; exit 1; }
+
+import-macos-signing-certificate: archive-flutter-macos-release
+	@set -eu -o pipefail; \
+	if [ -n "$${MACOS_DEVELOPER_ID_P12_BASE64:-}" ]; then \
+		certificate="$(MACOS_WORK_DIR)/developer-id.p12"; \
+		password_file="$(MACOS_WORK_DIR)/keychain-password"; \
+		printf '%s' "$$MACOS_DEVELOPER_ID_P12_BASE64" | openssl base64 -d -A -out "$$certificate"; \
+		uuidgen > "$$password_file"; \
+		keychain_password="$$(cat "$$password_file")"; \
+		security create-keychain -p "$$keychain_password" "$(MACOS_SIGNING_KEYCHAIN)"; \
+		security set-keychain-settings -lut 21600 "$(MACOS_SIGNING_KEYCHAIN)"; \
+		security unlock-keychain -p "$$keychain_password" "$(MACOS_SIGNING_KEYCHAIN)"; \
+		security list-keychains -d user > "$(MACOS_KEYCHAIN_LIST_FILE)"; \
+		{ printf '"%s"\n' "$(MACOS_SIGNING_KEYCHAIN)"; cat "$(MACOS_KEYCHAIN_LIST_FILE)"; } \
+			| xargs security list-keychains -d user -s; \
+		security import "$$certificate" -k "$(MACOS_SIGNING_KEYCHAIN)" \
+			-P "$$MACOS_DEVELOPER_ID_P12_PASSWORD" \
+			-T /usr/bin/codesign -T /usr/bin/security; \
+		security set-key-partition-list -S apple-tool:,apple: -s \
+			-k "$$keychain_password" "$(MACOS_SIGNING_KEYCHAIN)"; \
+		identity="$$(security find-identity -v -p codesigning "$(MACOS_SIGNING_KEYCHAIN)" \
+			| awk '/Developer ID Application/ { print $$2; exit }')"; \
+	else \
+		identity="$$(security find-identity -v -p codesigning \
+			| awk '/Developer ID Application/ { print $$2; exit }')"; \
+	fi; \
+	if [ -z "$$identity" ]; then \
+		echo "No valid Developer ID Application identity was found." >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' "$$identity" > "$(MACOS_SIGNING_IDENTITY_FILE)"
+
+sign-flutter-macos-release: import-macos-signing-certificate
+	@set -eu -o pipefail; \
+	identity="$$(cat "$(MACOS_SIGNING_IDENTITY_FILE)")"; \
+	sign() { \
+		target="$$1"; entitlements="$${2:-}"; \
+		$(macos_keychain_args); \
+		if [ -n "$$entitlements" ]; then set -- "$$@" --entitlements "$$entitlements"; fi; \
+		codesign --force --sign "$$identity" "$$@" --options runtime --timestamp "$$target"; \
+	}; \
+	while IFS= read -r -d '' file_path; do \
+		if file -b "$$file_path" | grep -q 'Mach-O'; then sign "$$file_path" || exit 1; fi; \
+	done < <(find "$(MACOS_APP_PATH)/Contents" -type f ! -path '*/Contents/MacOS/*' -print0); \
+	while IFS= read -r -d '' bundle; do sign "$$bundle" || exit 1; done \
+		< <(find "$(MACOS_APP_PATH)/Contents" -depth -type d \
+		\( -name '*.framework' -o -name '*.app' -o -name '*.appex' -o -name '*.xpc' \) -print0); \
+	sign "$(MACOS_APP_PATH)" "$(MACOS_ENTITLEMENTS)"; \
+	codesign --verify --deep --strict --verbose=2 "$(MACOS_APP_PATH)"; \
+	codesign --display --verbose=4 "$(MACOS_APP_PATH)"
+
+package-flutter-macos-dmg: sign-flutter-macos-release
+	@set -eu -o pipefail; \
+	staging="$(MACOS_WORK_DIR)/dmg"; \
+	identity="$$(cat "$(MACOS_SIGNING_IDENTITY_FILE)")"; \
+	rm -rf "$$staging" "$(MACOS_DMG)"; \
+	mkdir -p "$$staging" "$(RELEASE_DIR)"; \
+	ditto "$(MACOS_APP_PATH)" "$$staging/Motif.app"; \
+	ln -s /Applications "$$staging/Applications"; \
+	hdiutil create -volname Motif -srcfolder "$$staging" -ov -format UDZO "$(MACOS_DMG)"; \
+	$(macos_keychain_args); \
+	codesign --force --sign "$$identity" "$$@" --timestamp "$(MACOS_DMG)"; \
+	codesign --verify --strict --verbose=2 "$(MACOS_DMG)"
+
+notarize-flutter-macos-dmg: package-flutter-macos-dmg
+	@set -eu -o pipefail; \
+	if [ -n "$${APPLE_API_PRIVATE_KEY_BASE64:-}" ]; then \
+		api_key="$(MACOS_WORK_DIR)/AuthKey_$${APPLE_API_KEY_ID}.p8"; \
+		printf '%s' "$$APPLE_API_PRIVATE_KEY_BASE64" | openssl base64 -d -A -out "$$api_key"; \
+		chmod 600 "$$api_key"; \
+		$(macos_keychain_args); \
+		xcrun notarytool store-credentials "$(MACOS_NOTARY_KEYCHAIN_PROFILE)" \
+			--key "$$api_key" --key-id "$$APPLE_API_KEY_ID" --issuer "$$APPLE_API_ISSUER_ID" "$$@"; \
+	fi; \
+	$(macos_keychain_args); \
+	xcrun notarytool submit "$(MACOS_DMG)" --keychain-profile "$(MACOS_NOTARY_KEYCHAIN_PROFILE)" "$$@" --wait; \
+	xcrun stapler staple "$(MACOS_DMG)"; \
+	xcrun stapler validate "$(MACOS_DMG)"; \
+	spctl --assess --type open --context context:primary-signature --verbose=2 "$(MACOS_DMG)"; \
+	echo "Signed and notarized Flutter macOS DMG: $(MACOS_DMG)"
+
+clean-macos-signing: ## Remove temporary macOS certificates, keychain, and archive.
+	@if [ -f "$(MACOS_KEYCHAIN_LIST_FILE)" ]; then xargs security list-keychains -d user -s < "$(MACOS_KEYCHAIN_LIST_FILE)" || true; fi
+	@if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then security delete-keychain "$(MACOS_SIGNING_KEYCHAIN)" || true; fi
+	@rm -rf "$(MACOS_WORK_DIR)"
 
 release-flutter-linux: deps-flutter ## Build and archive the Flutter Linux app on a Linux host.
 	$(call require_host,linux)
