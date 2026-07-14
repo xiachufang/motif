@@ -14,6 +14,8 @@ import 'package:flutter_test/flutter_test.dart';
 ///
 /// Does not call start()/up() (that needs a tailnet + auth key).
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test(
     'macOS/host picks the real TailscaleNativeService when the lib is built',
     () {

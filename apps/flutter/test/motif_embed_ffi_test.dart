@@ -47,12 +47,20 @@ void main() {
   });
 
   test('start → running → stop on loopback', () async {
-    // A high, likely-free port; loopback + no auth needs no token.
-    const config = {
+    final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = probe.port;
+    await probe.close();
+    final config = {
       'listen_mode': 'loopback',
-      'port': 47731,
-      'tailscale': {'enabled': false},
-      'auth': {'enabled': false},
+      'port': port,
+      'tailscale': {
+        'enabled': false,
+        'hostname': '',
+        'authkey': '',
+        'control_url': '',
+      },
+      'rzv': {'enabled': false, 'relay': ''},
+      'push_relay_url': '',
       'autostart': false,
     };
     expect(lib.start(jsonEncode(config)), 0);
@@ -66,7 +74,7 @@ void main() {
     }
     expect(status['running'], true, reason: 'server should come up');
     final bound = (status['bound_addrs'] as List).cast<String>();
-    expect(bound.any((a) => a.contains('47731')), true);
+    expect(bound.any((a) => a.endsWith(':$port')), true);
 
     expect(lib.stop(), 0);
     final after = jsonDecode(lib.statusJson()) as Map<String, Object?>;

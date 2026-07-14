@@ -11,6 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 /// service when the dylib is discoverable (built to build/native/tailscale/ or
 /// /tmp), and a no-op otherwise.
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test(
     'makePlatformServices uses TailscaleNativeService when the dylib exists',
     () {
