@@ -5,7 +5,6 @@ name: release-macos-signed
 # staple the ticket. The distinct suffix avoids racing Xcode Cloud's asset.
 on:
   push:
-    branches: ['**']
     tags: ['v*']
   workflow_dispatch: {}
 
