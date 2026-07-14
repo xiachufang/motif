@@ -129,9 +129,11 @@ pub async fn pty_upgrade(
     // current ring atomically and hand back the resolved start offset in a
     // leading Text meta frame. See `handle_pty_socket`.
     let since = q.since;
+    let lease = entry.acquire_lease();
 
-    ws.on_upgrade(move |socket| {
-        handle_pty_socket(socket, session, pty, client_id, pty_id, since, peer)
+    ws.on_upgrade(move |socket| async move {
+        handle_pty_socket(socket, session, pty, client_id, pty_id, since, peer).await;
+        drop(lease);
     })
 }
 

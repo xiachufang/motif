@@ -88,9 +88,11 @@ pub async fn events_upgrade(
     let client_id = snap.client_id;
     let since = q.since.unwrap_or(0);
     let codec = q.codec();
+    let lease = entry.acquire_lease();
 
-    ws.on_upgrade(move |socket| {
-        handle_events_socket(socket, motif_session, client_id, since, codec, peer)
+    ws.on_upgrade(move |socket| async move {
+        handle_events_socket(socket, motif_session, client_id, since, codec, peer).await;
+        drop(lease);
     })
 }
 

@@ -89,8 +89,12 @@ pub async fn tcp_upgrade(
         port,
         "tcp ws upgrade requested",
     );
+    let lease = entry.acquire_lease();
 
-    ws.on_upgrade(move |socket| handle_tcp_socket(socket, session, client_id, host, port, peer))
+    ws.on_upgrade(move |socket| async move {
+        handle_tcp_socket(socket, session, client_id, host, port, peer).await;
+        drop(lease);
+    })
 }
 
 fn is_allowed_remote_host(host: &str) -> bool {

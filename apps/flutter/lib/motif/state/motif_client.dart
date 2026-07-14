@@ -22,6 +22,7 @@ import 'pty_output_hub.dart';
 export '../terminal/terminal_session.dart' show PtyByteSink, TerminalSession;
 
 const int _kSessionNotFound = -32007;
+const int _kNotAttached = -32009;
 
 /// High-level connection state.
 sealed class MotifConnState {
@@ -155,6 +156,7 @@ class MotifClient extends ChangeNotifier
 
   RpcClient? _rpc;
   Future<void>? _attachInFlight;
+  Future<void>? _attachmentRecovery;
   StreamSubscription<MotifEvent>? _eventSub;
   final List<RemotePortMapping> _remotePortMappings = [];
 
@@ -331,6 +333,9 @@ class MotifClient extends ChangeNotifier
 
   bool _isSessionNotFound(Object error) =>
       error is RpcException && error.code == _kSessionNotFound;
+
+  bool _isNotAttached(Object error) =>
+      error is RpcException && error.code == _kNotAttached;
 
   Future<PingInfo> _pingWithRetry(RpcClient rpc, MotifServer server) async {
     final sw = Stopwatch()..start();
@@ -747,29 +752,26 @@ class MotifClient extends ChangeNotifier
   }
 
   @override
-  Future<void> resizePty(String ptyId, int cols, int rows) async {
-    final rpc = await _waitForAttachedRpc();
-    if (rpc == null) return;
-    await rpc.call('pty.resize', {'pty_id': ptyId, 'cols': cols, 'rows': rows});
-  }
+  Future<void> resizePty(String ptyId, int cols, int rows) =>
+      _runAttachedTerminalRpc((rpc) async {
+        await rpc.call('pty.resize', {
+          'pty_id': ptyId,
+          'cols': cols,
+          'rows': rows,
+        });
+      });
 
   @override
-  Future<void> ensurePtyStream(String ptyId) async {
-    final rpc = await _waitForAttachedRpc();
-    if (rpc == null) return;
-    await rpc.activatePty(ptyId);
-  }
+  Future<void> ensurePtyStream(String ptyId) =>
+      _runAttachedTerminalRpc((rpc) => rpc.activatePty(ptyId));
 
   @override
   Future<void> closePtyStream(String ptyId) =>
       _rpc?.deactivatePty(ptyId) ?? Future<void>.value();
 
   @override
-  Future<void> syncPtyStreams(Set<String> ptyIds) async {
-    final rpc = await _waitForAttachedRpc();
-    if (rpc == null) return;
-    await rpc.syncPtyStreams(ptyIds);
-  }
+  Future<void> syncPtyStreams(Set<String> ptyIds) =>
+      _runAttachedTerminalRpc((rpc) => rpc.syncPtyStreams(ptyIds));
 
   @override
   Future<void> waitForPtyReplay(String ptyId) =>
@@ -815,6 +817,88 @@ class MotifClient extends ChangeNotifier
       return null;
     }
     return rpc;
+  }
+
+  /// Run terminal work against the current attachment. An expired registry
+  /// entry is recoverable without rebuilding the transport: re-attach once,
+  /// coalesce concurrent terminal failures onto that attempt, then retry the
+  /// original operation with the freshly minted session id.
+  Future<void> _runAttachedTerminalRpc(
+    Future<void> Function(RpcClient rpc) operation,
+  ) async {
+    final rpc = await _waitForAttachedRpc();
+    if (rpc == null) return;
+    final attemptedSessionId = rpc.sessionId!;
+    try {
+      await operation(rpc);
+      return;
+    } catch (error, stackTrace) {
+      if (!_isNotAttached(error)) rethrow;
+      Log.w(
+        'session attachment expired; reattaching terminal transport',
+        name: 'motif.session',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final recovered = await _recoverExpiredAttachment(rpc, attemptedSessionId);
+    if (recovered == null) return;
+    await operation(recovered);
+  }
+
+  Future<RpcClient?> _recoverExpiredAttachment(
+    RpcClient failedRpc,
+    String expiredSessionId,
+  ) async {
+    // A concurrent request may report the old id after another terminal RPC
+    // has already completed recovery. In that case, reuse the new attachment.
+    if (failedRpc.sessionId != expiredSessionId) {
+      return _waitForAttachedRpc();
+    }
+    final existing = _attachmentRecovery;
+    if (existing != null) {
+      await existing;
+      return _waitForAttachedRpc();
+    }
+
+    late final Future<void> recovery;
+    recovery = _reattachExpiredAttachment(failedRpc, expiredSessionId)
+        .whenComplete(() {
+          if (identical(_attachmentRecovery, recovery)) {
+            _attachmentRecovery = null;
+          }
+        });
+    _attachmentRecovery = recovery;
+    await recovery;
+    return _waitForAttachedRpc();
+  }
+
+  Future<void> _reattachExpiredAttachment(
+    RpcClient failedRpc,
+    String expiredSessionId,
+  ) async {
+    if (!identical(_rpc, failedRpc) ||
+        failedRpc.sessionId != expiredSessionId) {
+      return;
+    }
+    final currentState = _state;
+    if (currentState is! ConnAttached) return;
+    final session = intendedSession ?? currentState.session;
+
+    // The server no longer recognizes this id. Clear it locally so attach
+    // always mints a fresh registry entry instead of echoing the stale header.
+    await failedRpc.releaseSession();
+    if (!identical(_rpc, failedRpc)) return;
+    _setState(const ConnConnecting());
+    try {
+      await attach(session);
+    } catch (error) {
+      if (identical(_rpc, failedRpc)) {
+        _setState(ConnFailed('reattach failed: $error'));
+      }
+      rethrow;
+    }
   }
 
   Future<void> killPty(String ptyId) =>

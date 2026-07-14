@@ -199,6 +199,108 @@ void main() {
     expect(resizeSessionHeaders, ['sid-1']);
   });
 
+  test('terminal resize reattaches once when session id expired', () async {
+    var attachCount = 0;
+    var expiredResizeCount = 0;
+    final freshResizeSeen = Completer<void>();
+    final attachSessionHeaders = <String?>[];
+    final resizeSessionHeaders = <String?>[];
+    final eventSockets = <WebSocket>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      for (final socket in eventSockets) {
+        await socket.close();
+      }
+      await server.close(force: true);
+    });
+    server.listen((request) async {
+      if (request.method == 'GET' && request.uri.path == '/ping') {
+        request.response.write(
+          jsonEncode({'service': 'motif-server', 'version': 'test'}),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'POST' &&
+          request.uri.path == '/rpc/session.attach') {
+        attachSessionHeaders.add(request.headers.value('X-Motif-Session'));
+        attachCount++;
+        request.response.headers.set('X-Motif-Session', 'sid-$attachCount');
+        request.response.write(
+          jsonEncode({
+            'session': {'name': 'dev'},
+            'ptys': [
+              {'id': 'pty-1', 'cols': 80, 'rows': 24},
+            ],
+            'views': [
+              {
+                'id': 'view-1',
+                'spec': {'kind': 'pty', 'pty_id': 'pty-1'},
+              },
+            ],
+            'active_view': 'view-1',
+            'last_seq': 0,
+          }),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' && request.uri.path == '/events') {
+        eventSockets.add(await WebSocketTransformer.upgrade(request));
+        return;
+      }
+      if (request.method == 'POST' && request.uri.path == '/rpc/pty.resize') {
+        final sid = request.headers.value('X-Motif-Session');
+        resizeSessionHeaders.add(sid);
+        if (sid == 'sid-1') {
+          expiredResizeCount++;
+          if (expiredResizeCount == 2) {
+            // Let the second stale response arrive after the first request has
+            // installed sid-2. It must reuse that recovery, not start a third
+            // attach and invalidate the fresh id.
+            await freshResizeSeen.future;
+          }
+          request.response.statusCode = HttpStatus.conflict;
+          request.response.write(
+            jsonEncode({
+              'code': -32009,
+              'message': 'must session.attach first',
+            }),
+          );
+        } else {
+          if (!freshResizeSeen.isCompleted) freshResizeSeen.complete();
+          request.response.write('{}');
+        }
+        await request.response.close();
+        return;
+      }
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+    });
+
+    final motif = MotifClient()..intendedSession = 'dev';
+    addTearDown(motif.disconnect);
+    final localServer = MotifServer(
+      id: 'local-test',
+      name: 'Local test',
+      host: InternetAddress.loopbackIPv4.address,
+      port: server.port,
+    );
+
+    await motif.connect(localServer, force: true);
+    await Future.wait([
+      motif.resizePty('pty-1', 120, 40),
+      motif.resizePty('pty-1', 121, 41),
+    ]);
+
+    expect(attachCount, 2);
+    expect(attachSessionHeaders, [null, null]);
+    expect(resizeSessionHeaders.where((sid) => sid == 'sid-1'), hasLength(2));
+    expect(resizeSessionHeaders.where((sid) => sid == 'sid-2'), hasLength(2));
+    expect(motif.state, isA<ConnAttached>());
+    expect(motif.canInput, isTrue);
+  });
+
   test(
     'destroying owned session releases it but keeps server connected',
     () async {

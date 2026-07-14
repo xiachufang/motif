@@ -263,7 +263,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (!_isCurrentWorker(generation)) return;
     _workerStarting = false;
     _initialized = true;
-    _terminalRetryAttempt = 0;
     if (_workerNeedsColdResync) {
       _workerNeedsColdResync = false;
       _remoteByteBatcher.clear();

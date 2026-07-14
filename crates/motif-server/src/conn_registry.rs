@@ -10,6 +10,7 @@
 //! any single connection — survives transient disconnects, gets reaped
 //! on detach or idle timeout.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,10 @@ pub struct ConnEntry {
     /// because the field is updated on every HTTP RPC and we don't need
     /// atomic semantics — coarser than a single instant is fine.
     last_seen: Mutex<Instant>,
+    /// Long-lived WebSocket streams currently using this entry. HTTP traffic
+    /// is allowed to go idle while `/events`, `/pty`, or `/tcp` remains live;
+    /// such an entry must not be mistaken for an abandoned client by GC.
+    active_leases: AtomicUsize,
 }
 
 impl ConnEntry {
@@ -41,6 +46,7 @@ impl ConnEntry {
         Self {
             state: Mutex::new(state),
             last_seen: Mutex::new(Instant::now()),
+            active_leases: AtomicUsize::new(0),
         }
     }
 
@@ -50,6 +56,30 @@ impl ConnEntry {
 
     fn idle_for(&self) -> Duration {
         self.last_seen.lock().elapsed()
+    }
+
+    /// Keep this registry entry alive for the lifetime of a WebSocket stream.
+    pub fn acquire_lease(self: &Arc<Self>) -> ConnLease {
+        self.active_leases.fetch_add(1, Ordering::AcqRel);
+        ConnLease {
+            entry: Arc::clone(self),
+        }
+    }
+
+    fn is_gc_stale(&self) -> bool {
+        self.active_leases.load(Ordering::Acquire) == 0 && self.idle_for() > SESSION_IDLE_TTL
+    }
+}
+
+/// RAII guard held by an upgraded WebSocket for as long as it is active.
+pub struct ConnLease {
+    entry: Arc<ConnEntry>,
+}
+
+impl Drop for ConnLease {
+    fn drop(&mut self) {
+        let previous = self.entry.active_leases.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "connection lease count underflow");
     }
 }
 
@@ -77,8 +107,11 @@ impl ConnRegistry {
     /// is kept fresh by ordinary RPC traffic without needing a separate
     /// keepalive call.
     pub fn get(&self, id: &str) -> Option<Arc<ConnEntry>> {
-        let entry = self.conns.get(id)?.clone();
-        entry.touch();
+        // Touch while the DashMap guard is still held so GC cannot remove the
+        // entry between lookup and the liveness update.
+        let stored = self.conns.get(id)?;
+        stored.touch();
+        let entry = Arc::clone(stored.value());
         Some(entry)
     }
 
@@ -115,13 +148,13 @@ impl ConnRegistry {
     /// branch still owns its own detach call, so this only catches the
     /// "attached but never opened events" leak.
     pub fn gc(&self, manager: &SessionManager) {
-        let stale: Vec<(SessionId, Arc<ConnEntry>)> = self
-            .conns
-            .iter()
-            .filter(|kv| kv.value().idle_for() > SESSION_IDLE_TTL)
-            .map(|kv| (kv.key().clone(), Arc::clone(kv.value())))
-            .collect();
-        for (id, entry) in stale {
+        let candidates: Vec<SessionId> = self.conns.iter().map(|kv| kv.key().clone()).collect();
+        for id in candidates {
+            // Recheck under DashMap's shard lock. A stream lease or ordinary
+            // RPC may have refreshed the entry after the candidate snapshot.
+            let Some((_, entry)) = self.conns.remove_if(&id, |_, entry| entry.is_gc_stale()) else {
+                continue;
+            };
             let snap = entry.state.lock().snapshot();
             if let (Some(name), Some(session_id)) =
                 (snap.attached.as_ref(), snap.attached_session_id.as_ref())
@@ -133,7 +166,6 @@ impl ConnRegistry {
                     s.detach_client(&snap.client_id);
                 }
             }
-            self.conns.remove(&id);
         }
     }
 
@@ -212,6 +244,23 @@ mod tests {
             0,
             "session.clients still has phantom client_id after gc"
         );
+    }
+
+    #[test]
+    fn gc_keeps_leased_entry_until_stream_closes() {
+        let r = ConnRegistry::new();
+        let mgr = SessionManager::new();
+        let (id, entry) = r.mint();
+        *entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
+
+        let lease = entry.acquire_lease();
+        r.gc(&mgr);
+        assert!(r.get(&id).is_some(), "active stream entry was reaped");
+
+        drop(lease);
+        *entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
+        r.gc(&mgr);
+        assert!(r.get(&id).is_none(), "closed stream entry was not reaped");
     }
 
     #[test]
