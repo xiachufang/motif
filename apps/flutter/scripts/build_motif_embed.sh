@@ -71,10 +71,10 @@ if [[ "$os" == "macos" ]]; then
 
   command -v pkg-config >/dev/null || { echo "error: pkg-config not on PATH (brew install pkg-config)" >&2; exit 127; }
 
-  # Xcode Cloud may run an arm64 Rust toolchain while Homebrew's Zig/Go are
-  # installed from /usr/local and auto-detect x86_64. Build libghostty-vt with
-  # our explicit target and make Cargo pick it up through pkg-config instead of
-  # libghostty-vt-sys' auto-detected vendored build.
+  # Mixed-prefix macOS environments can run an arm64 Rust toolchain while
+  # Zig/Go auto-detect x86_64. Build libghostty-vt with our explicit target and
+  # make Cargo pick it up through pkg-config instead of libghostty-vt-sys'
+  # auto-detected vendored build.
   ghostty_dir="${MOTIF_GHOSTTY_VT_DIR:-$PROJECT_DIR/build/native/ghostty-vt/macos/$arch}"
   if [[ ! -f "$ghostty_dir/libghostty-vt.dylib" ]]; then
     bash "$PROJECT_DIR/scripts/build_native_deps.sh" \

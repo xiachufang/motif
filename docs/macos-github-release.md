@@ -1,9 +1,10 @@
 # macOS GitHub Release 配置
 
-仓库已经包含独立的 `release-macos-signed` GitHub Actions 工作流。它不会修改
-Xcode Cloud 的现有流程，会单独构建 arm64 macOS App、执行 Developer ID
-签名、提交 Apple 公证、staple 公证票据，并将带有 `-notarized.dmg` 后缀的产物
-上传为 Actions Artifact。`v*` Tag 构建还会把产物上传到 GitHub Release。
+仓库使用 `release-macos-signed` GitHub Actions 工作流构建 arm64 macOS App、
+执行 Developer ID 签名、提交 Apple 公证、staple 公证票据，并将带有
+`-notarized.dmg` 后缀的产物上传为 Actions Artifact。`v*` Tag 构建还会把产物
+上传到 GitHub Release。macOS 不再使用 Xcode Cloud；Xcode Cloud 仅保留 iOS
+构建。
 
 完整发布逻辑以仓库根目录的 `Makefile` 为准。GitHub Actions 只安装工具链、把
 五个 Secret 映射为同名环境变量并执行：
@@ -132,14 +133,13 @@ gh secret set MACOS_DEVELOPER_ID_P12_PASSWORD --repo xiachufang/motif
 
 所有五个 Secrets 配置完成后：
 
-1. 推送包含工作流的分支；每次分支 push 都会运行
-   `release-macos-signed`，但不会发布 GitHub Release。
-2. 也可以在 GitHub Actions 页面手动运行 `release-macos-signed`。
-3. 确认 `Build signed and notarized macOS release` 和
+1. 在 GitHub Actions 页面手动运行 `release-macos-signed`；手动运行只上传
+   Actions Artifact，不发布 GitHub Release。
+2. 确认 `Build signed and notarized macOS release` 和
    `Upload workflow artifact` 全部成功。
-4. 下载 Actions Artifact，在另一台 Mac 上直接打开并运行，确认 Gatekeeper
+3. 下载 Actions Artifact，在另一台 Mac 上直接打开并运行，确认 Gatekeeper
    不显示未识别开发者警告。
-5. 推送下一个 `v*` Tag。Tag 构建会把
+4. 推送下一个 `v*` Tag。Tag 构建会把
    `Motif-vX.Y.Z-notarized.dmg` 上传到对应 GitHub Release。
 
 可以在下载后额外检查产物：
@@ -153,5 +153,5 @@ xcrun stapler validate Motif-vX.Y.Z-notarized.dmg
 
 ## 与 Xcode Cloud 的关系
 
-Xcode Cloud 仍按原来的脚本运行，并继续上传原有名称的 DMG。GitHub Actions 使用
-`-notarized.dmg` 后缀，避免两条流水线对同名 Release Asset 产生覆盖或竞态。
+macOS 发布完全由 GitHub Actions 负责，仓库不再包含 macOS Xcode Cloud 脚本。
+Xcode Cloud 仅用于 iOS 构建。

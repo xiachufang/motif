@@ -1,10 +1,10 @@
 name: release-desktop
 
-# Build the Linux and Windows desktop apps (macOS/iOS are handled by Xcode
-# Cloud) and upload them to the GitHub Release for the pushed git tag. The
-# macOS .dmg published by Xcode Cloud's ci_post_xcodebuild.sh keys off the same
-# tag, so all platforms merge into one Release: whichever side runs first
-# creates it, the other appends its assets.
+# Build the Linux and Windows desktop apps and upload them to the GitHub Release
+# for the pushed git tag. macOS is handled by release-macos-signed, while iOS is
+# handled by Xcode Cloud. The desktop release workflows use the same tag, so all
+# platforms merge into one Release: whichever job runs first creates it, and the
+# others append their assets.
 #
 # The repo's Makefile already orchestrates the builds. We use the
 # release-flutter-{linux,windows} targets (the desktop app), NOT release-{linux,
@@ -90,8 +90,8 @@ jobs:
           make release-manifest
 
       # Upload to the tag's Release (create-or-update; merges with the macOS
-      # .dmg from Xcode Cloud). No body/notes set, so neither side clobbers the
-      # other's release description.
+      # .dmg from release-macos-signed). No body/notes set, so the workflows do
+      # not clobber each other's release description.
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2

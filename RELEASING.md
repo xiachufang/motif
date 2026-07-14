@@ -10,14 +10,13 @@ version: 1.0.1+2
 ```
 
 The `Makefile` reads this and feeds it into every build (`--build-name` /
-`--build-number`, artifact names, the manifest). iOS/macOS get the same version
-through Xcode Cloud, which runs `flutter build --config-only` so the app's
-`CFBundleShortVersionString` / `CFBundleVersion` also come from pubspec. The git
-**tag** decides the GitHub Release / `.dmg` title. These must agree:
-`release-tag` derives the tag from pubspec so they can't drift, and the tag is
-re-asserted against pubspec on every tagged push — by `version-check` for the
-GitHub Actions builds, and by the `ci_post_clone.sh` guard for the Xcode Cloud
-iOS/macOS builds.
+`--build-number`, artifact names, the manifest). The iOS Xcode Cloud build runs
+`flutter build --config-only`, so its `CFBundleShortVersionString` /
+`CFBundleVersion` also come from pubspec. The git **tag** decides the GitHub
+Release / `.dmg` title. These must agree: `release-tag` derives the tag from
+pubspec so they can't drift, and the tag is re-asserted against pubspec on every
+tagged push — by `version-check` for the GitHub Actions builds, and by the
+`ci_post_clone.sh` guard for the Xcode Cloud iOS build.
 
 ## Steps
 
@@ -40,16 +39,18 @@ make release-tag BUMP=major      # 1.3.2 -> 2.0.0
 
    Pushing the tag triggers:
    - `release-desktop` → Linux + Windows desktop apps
+   - `release-macos-signed` → signed + notarized macOS `.dmg`
    - `release-motifd` → Linux + macOS `motifd` binaries
    - `review-image` / `motifd-image` / `rendezvous-image` / `push-relay-image` → Docker images
-   - **Xcode Cloud** (separate from GitHub Actions) → macOS `.dmg` + iOS
+   - **Xcode Cloud** (separate from GitHub Actions) → iOS
 
    All assets land on the **same** GitHub Release named after the tag; whichever
    job finishes first creates it, the rest append.
 
 **After pushing**, verify: watch the Actions tab go green, then check the new
 Release has the desktop `.tar.gz`s, the `motifd` `.tar.gz`s, `MANIFEST.txt`, and
-the Xcode Cloud `.dmg`.
+the signed and notarized macOS `.dmg`. Verify the iOS build separately in Xcode
+Cloud / App Store Connect.
 
 ## Dry run before tagging
 

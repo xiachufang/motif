@@ -1,8 +1,7 @@
 name: release-macos-signed
 
-# Independent of Xcode Cloud: build an arm64 app, sign every code object with
-# Developer ID Application + Hardened Runtime, sign and notarize the DMG, and
-# staple the ticket. The distinct suffix avoids racing Xcode Cloud's asset.
+# Build an arm64 app, sign every code object with Developer ID Application +
+# Hardened Runtime, sign and notarize the DMG, and staple the ticket.
 on:
   push:
     tags: ['v*']
