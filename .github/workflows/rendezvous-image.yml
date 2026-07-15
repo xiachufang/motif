@@ -43,6 +43,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Protocol tests
+        run: cargo test -p motif-rendezvous -p motif-net
+
       # Tags: on a git tag → :<tag> + :latest; on main → :latest; always a
       # :sha-<short> for traceability.
       - id: meta
@@ -68,20 +71,43 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Boot the relay and assert it actually pairs: an `accept` and a `connect`
-      # with the same token both get PAIRED (0x10), then bytes pipe through.
-      - name: Smoke test
+      # Boot the production entrypoint. External HTTPS termination belongs to
+      # the deployer's reverse proxy; this catches image/config regressions.
+      - name: WebSocket image smoke test
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
-          docker run -d --name rzv-smoke -p 127.0.0.1:8765:8765 "$TAG"
+          mkdir -p .tmp-rzv
+          printf '%s\n' 'ci-rendezvous-secret' > .tmp-rzv/jwt.key
+          cat > .tmp-rzv/auth.json <<'JSON'
+          {
+            "jwt": {
+              "algorithm": "HS256",
+              "issuer": "ci",
+              "audience": "ci-rzv",
+              "verification_key": "/run/secrets/jwt.key"
+            },
+            "users": {
+              "ci-user": {
+                "client_to_server_bytes_per_sec": 1048576,
+                "server_to_client_bytes_per_sec": 1048576,
+                "burst_bytes": 65536
+              }
+            }
+          }
+          JSON
+          chmod 755 .tmp-rzv
+          chmod 644 .tmp-rzv/*
+          docker run -d --name rzv-smoke -p 127.0.0.1:8765:8765 \
+            -v "$PWD/.tmp-rzv:/run/secrets:ro" "$TAG"
           for i in $(seq 1 20); do
-            docker ps --filter name=rzv-smoke --format '{{.Status}}' | grep -q Up && break
+            curl --silent --fail \
+              http://localhost:8765/health | grep -q '^ok$' && break
             sleep 0.5
           done
-          docker ps --filter name=rzv-smoke --format '{{.Status}}' | grep -q Up \
-            || { echo "container exited"; docker logs rzv-smoke; exit 1; }
-          python3 deploy/rendezvous/smoke.py 127.0.0.1 8765
+          curl --silent --fail \
+            http://localhost:8765/health | grep -q '^ok$' \
+            || { docker logs rzv-smoke; exit 1; }
           docker rm -f rzv-smoke
 
       # Re-run the build (gha-cached → near-instant) and push now it passed.

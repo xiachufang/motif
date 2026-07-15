@@ -1,30 +1,21 @@
-//! End-to-end TLS over the rzv pipe: motifd terminates a real rustls handshake
-//! on the accept side, and a pinning client reaches it through the relay. The
-//! relay only ever sees ciphertext.
+//! End-to-end TLS carried inside the authenticated rendezvous WebSockets.
+
+mod common;
 
 use std::sync::Arc;
 
 use axum::serve::Listener as _;
 use motif_net::{ListenConfig, RzvListenConfig};
-use motif_rendezvous::{
-    Hub, HubConfig, CTRL_PAIRED, CTRL_PING, CTRL_PONG, MAGIC, ROLE_CONNECT, VERSION,
-};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 #[tokio::test]
 async fn rzv_tls_pins_and_pipes_through_relay() {
-    // Real relay.
-    let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let relay_addr = relay.local_addr().unwrap();
-    tokio::spawn(Hub::new(HubConfig::default()).run(relay));
-
-    // motifd-side identity: a self-signed cert + a rustls server config.
+    let relay = common::start_relay().await;
     let cert = rcgen::generate_simple_self_signed(vec!["motif-rzv".to_string()]).unwrap();
     let cert_der = cert.cert.der().as_ref().to_vec();
     let mut pin = [0u8; 32];
@@ -42,40 +33,21 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
     .unwrap();
 
     let token = [42u8; 32];
+    let mut rzv = RzvListenConfig::new(format!("ws://{}", relay.addr), token, relay.jwt);
+    rzv.tls = Some(Arc::new(server_config));
     let mut listener = motif_net::Listener::bind(&ListenConfig {
         tcp: None,
         tcp_tls: None,
         tailscale: None,
-        rendezvous: Some(RzvListenConfig {
-            url: relay_addr.to_string(),
-            token,
-            pool: 2,
-            tls: Some(Arc::new(server_config)),
-        }),
+        rendezvous: Some(rzv),
     })
     .await
     .unwrap();
 
-    // Pinning client: dial relay, pair, then TLS-handshake to motifd.
+    let relay_addr = relay.addr;
     let client = tokio::spawn(async move {
-        let mut s = TcpStream::connect(relay_addr).await.unwrap();
-        let mut hello = Vec::new();
-        hello.extend_from_slice(&MAGIC);
-        hello.push(VERSION);
-        hello.push(ROLE_CONNECT);
-        hello.extend_from_slice(&token);
-        s.write_all(&hello).await.unwrap();
-        s.flush().await.unwrap();
-        loop {
-            let mut control = [0u8; 1];
-            s.read_exact(&mut control).await.unwrap();
-            match control[0] {
-                CTRL_PAIRED => break,
-                CTRL_PING => s.write_all(&[CTRL_PONG]).await.unwrap(),
-                other => panic!("unexpected pre-pair control byte {other:#04x}"),
-            }
-        }
-
+        let ws = common::connect_client(relay_addr, &token).await;
+        let stream = common::websocket_byte_stream(ws);
         let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
         ))
@@ -84,10 +56,9 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(PinVerifier { expected: pin }))
         .with_no_client_auth();
-
         let connector = TlsConnector::from(Arc::new(cfg));
         let server_name = ServerName::try_from("motif-rzv").unwrap();
-        let mut tls = connector.connect(server_name, s).await.unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
         tls.write_all(b"hi").await.unwrap();
         tls.flush().await.unwrap();
         let mut buf = [0u8; 5];
@@ -95,19 +66,15 @@ async fn rzv_tls_pins_and_pipes_through_relay() {
         buf
     });
 
-    // Server side: the accepted Stream is already TLS-terminated.
     let (mut stream, _addr) = listener.accept().await;
     let mut got = [0u8; 2];
     stream.read_exact(&mut got).await.unwrap();
     assert_eq!(&got, b"hi");
     stream.write_all(b"hi-ok").await.unwrap();
     stream.flush().await.unwrap();
-
     assert_eq!(&client.await.unwrap(), b"hi-ok");
 }
 
-/// Accepts exactly the cert whose DER hashes to `expected` — the pin the client
-/// would carry in the pairing QR.
 #[derive(Debug)]
 struct PinVerifier {
     expected: [u8; 32],

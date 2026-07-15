@@ -1,13 +1,11 @@
 /// Wire protocol for the motif rendezvous (rzv) relay — the shared contract
 /// between this Flutter client and the Rust `motif-rendezvous` server.
 ///
-/// Both `motifd` (role [roleAccept]) and the client (role [roleConnect]) dial
-/// OUT to the relay and send a fixed-length [buildHello] frame carrying a role
-/// and a 32-byte token. The relay pairs an `accept` with a `connect` that
-/// present the same token, sends [ctrlPaired] to both, then becomes a
-/// transparent byte pipe. Control bytes ([ctrlPing]/[ctrlPong]/[ctrlPaired])
-/// are valid only in the pre-pairing window; after [ctrlPaired] every byte is
-/// opaque application data (TLS / WebSocket).
+/// `motifd` and the client connect to role-specific WSS endpoints and send a
+/// fixed-length [buildHello] binary message carrying a 32-byte token. The
+/// relay pairs matching endpoints, sends [ctrlPaired] as a binary message, then
+/// forwards binary messages containing the opaque client↔motifd TLS stream.
+/// Keepalive uses native WebSocket PING/PONG control frames.
 ///
 /// Keep this in lockstep with `docs/rzv-protocol.md` and the Rust side.
 library;
@@ -22,19 +20,13 @@ class RzvProtocol {
 
   /// 4-byte magic: ASCII "MRZV".
   static const List<int> magic = [0x4D, 0x52, 0x5A, 0x56];
-  static const int version = 1;
-
-  /// HELLO roles.
-  static const int roleAccept = 0; // server (motifd) parks, waiting
-  static const int roleConnect = 1; // client dials in
+  static const int version = 2;
 
   /// Pre-pairing control bytes (relay <-> a parked side).
-  static const int ctrlPing = 0x01; // relay -> waiter, keepalive
-  static const int ctrlPong = 0x02; // waiter -> relay, keepalive ack
   static const int ctrlPaired = 0x10; // relay -> both, once; then transparent
 
   static const int tokenLength = 32;
-  static const int helloLength = 4 + 1 + 1 + tokenLength; // 38
+  static const int helloLength = 4 + 1 + tokenLength; // 37
 
   static const String _tokenInfo = 'motif-rzv-token-v1';
   static const String _bearerInfo = 'motif-auth-bearer-v1';
@@ -60,27 +52,22 @@ class RzvProtocol {
     return Uint8List.fromList(Hmac(sha256, prk).convert(ctr).bytes);
   }
 
-  /// Build the fixed-length HELLO frame for [role] carrying [token].
-  static Uint8List buildHello(int role, List<int> token) {
+  /// Build the fixed-length binary HELLO message carrying [token].
+  static Uint8List buildHello(List<int> token) {
     if (token.length != tokenLength) {
       throw ArgumentError(
         'rzv token must be $tokenLength bytes, got ${token.length}',
       );
     }
-    if (role != roleAccept && role != roleConnect) {
-      throw ArgumentError('invalid rzv role $role');
-    }
     final b = BytesBuilder(copy: false)
       ..add(magic)
       ..addByte(version)
-      ..addByte(role)
       ..add(token);
     return b.toBytes();
   }
 
-  /// Parse a HELLO frame (relay side / tests). Returns the role and a view of
-  /// the 32-byte token, or throws [FormatException] on a malformed frame.
-  static ({int role, Uint8List token}) parseHello(Uint8List frame) {
+  /// Parse a HELLO message (relay side / tests).
+  static Uint8List parseHello(Uint8List frame) {
     if (frame.length != helloLength) {
       throw FormatException('rzv HELLO: bad length ${frame.length}');
     }
@@ -92,8 +79,6 @@ class RzvProtocol {
     if (frame[4] != version) {
       throw FormatException('rzv HELLO: unsupported version ${frame[4]}');
     }
-    final role = frame[5];
-    final token = Uint8List.sublistView(frame, 6, 6 + tokenLength);
-    return (role: role, token: token);
+    return Uint8List.sublistView(frame, 5, 5 + tokenLength);
   }
 }

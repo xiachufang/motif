@@ -1,8 +1,14 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/state/embedded_server_service.dart';
 import 'package:motif/motif/state/embedded_server_service_desktop.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('starts the embedded server on launch by default', () {
     const config = EmbeddedServerConfig();
 
@@ -57,5 +63,75 @@ void main() {
     final config = embeddedServerConfigFromJson({'autostart': false});
 
     expect(config.autostart, isFalse);
+  });
+
+  test('persisted embedded config excludes the relay JWT', () {
+    const config = EmbeddedServerConfig(
+      rzvEnabled: true,
+      rzvRelay: 'wss://relay.example.com',
+      rzvJwt: 'header.payload.signature',
+    );
+
+    final persistedRzv = config.toPersistedJson()['rzv'] as Map;
+    final runtimeRzv = config.toRuntimeJson()['rzv'] as Map;
+
+    expect(persistedRzv.containsKey('jwt'), isFalse);
+    expect(runtimeRzv['jwt'], 'header.payload.signature');
+  });
+
+  test('migrates a legacy plaintext relay JWT into secure storage', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.embedded.v1': jsonEncode({
+        'listen_mode': 'loopback',
+        'port': 7777,
+        'tailscale': {
+          'enabled': false,
+          'hostname': '',
+          'authkey': '',
+          'control_url': '',
+        },
+        'rzv': {
+          'enabled': true,
+          'relay': 'wss://relay.example.com',
+          'jwt': 'legacy.jwt.value',
+        },
+        'autostart': false,
+      }),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final secrets = MemorySecretStore();
+
+    final service = await DesktopEmbeddedServerService.create(prefs, secrets);
+    addTearDown(service.dispose);
+
+    expect(service.config.rzvJwt, 'legacy.jwt.value');
+    expect(secrets.values[kEmbeddedRzvJwtSecretKey], 'legacy.jwt.value');
+    final persisted =
+        jsonDecode(prefs.getString('motif.embedded.v1')!)
+            as Map<String, dynamic>;
+    expect((persisted['rzv'] as Map).containsKey('jwt'), isFalse);
+  });
+
+  test('writes and deletes the relay JWT only in secure storage', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.embedded.v1': jsonEncode({'autostart': false}),
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final secrets = MemorySecretStore();
+    final service = await DesktopEmbeddedServerService.create(prefs, secrets);
+    addTearDown(service.dispose);
+
+    await service.updateConfig(
+      service.config.copyWith(rzvJwt: 'new.jwt.value'),
+    );
+    expect(secrets.values[kEmbeddedRzvJwtSecretKey], 'new.jwt.value');
+    expect(
+      (jsonDecode(prefs.getString('motif.embedded.v1')!)['rzv'] as Map)
+          .containsKey('jwt'),
+      isFalse,
+    );
+
+    await service.updateConfig(service.config.copyWith(rzvJwt: ''));
+    expect(secrets.values[kEmbeddedRzvJwtSecretKey], isNull);
   });
 }

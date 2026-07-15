@@ -90,11 +90,15 @@ struct Args {
     #[arg(long)]
     advertise_host: Option<String>,
 
-    /// Rendezvous relay address (`host:port`) to park `accept` waiters at, so
-    /// clients can reach this motifd through the relay without direct
-    /// connectivity. The relay only ever sees ciphertext (end-to-end TLS).
-    #[arg(long)]
+    /// Rendezvous relay address (`host:port` or `wss://...`) to park WSS
+    /// `accept` waiters at. Requires an owner JWT for relay-side per-user
+    /// bandwidth limits. The WSS payload remains end-to-end TLS ciphertext.
+    #[arg(long, requires = "rzv_jwt_file")]
     rzv_relay: Option<String>,
+
+    /// File containing the owner JWT sent in the rendezvous WSS Upgrade.
+    #[arg(long, requires = "rzv_relay")]
+    rzv_jwt_file: Option<PathBuf>,
 
     /// How many idle `accept` waiters to keep parked at the relay (default 2).
     #[arg(long, requires = "rzv_relay")]
@@ -203,12 +207,26 @@ async fn run() -> anyhow::Result<()> {
     };
     let pin = identity.as_ref().map(|id| id.cert_sha256);
 
+    let rzv_jwt = match args.rzv_jwt_file.as_deref() {
+        Some(path) => {
+            let jwt = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("read --rzv-jwt-file {}: {e}", path.display()))?;
+            let jwt = jwt.trim().to_string();
+            if jwt.is_empty() {
+                anyhow::bail!("--rzv-jwt-file {} is empty", path.display());
+            }
+            Some(jwt)
+        }
+        None => None,
+    };
+
     let rendezvous = match &args.rzv_relay {
         Some(url) => {
             let psk = psk.expect("rzv ⇒ pairing ⇒ psk present");
             let mut c = motif_server::RzvListenConfig::new(
                 url.clone(),
                 motif_server::rzv::derive_token(&psk),
+                rzv_jwt.clone().expect("clap requires --rzv-jwt-file"),
             );
             if let Some(pool) = args.rzv_pool {
                 c.pool = pool;

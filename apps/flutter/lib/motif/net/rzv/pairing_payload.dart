@@ -142,12 +142,12 @@ class MotifPairingPayload {
     if (isRendezvous) {
       // Store a clean host/port (the relay endpoint) for display; the rzv
       // transport ignores them and dials `relay`.
-      final hp = MotifServer.splitHostPort(relay!);
+      final hp = MotifServer.splitRelayEndpoint(relay!);
       return MotifServer(
         id: id,
         name: (name == null || name!.isEmpty) ? relay! : name!,
-        host: hp?.$1 ?? relay!,
-        port: hp?.$2 ?? 7777,
+        host: hp?.host ?? relay!,
+        port: hp?.port ?? 7777,
         kind: ServerKind.rendezvous,
         relay: relay!,
         psk: _encodeKey(psk),

@@ -49,6 +49,7 @@ class _EmbeddedServerSettingsSheetState
   late final TextEditingController _tsAuthkey;
   late final TextEditingController _tsControlUrl;
   late final TextEditingController _rzvRelay;
+  late final TextEditingController _rzvJwt;
   late final TextEditingController _pushRelayUrl;
 
   // Derived UI state for the two Tailscale axes (see the enum docs above).
@@ -72,6 +73,7 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
     _tsControlUrl = TextEditingController(text: c.tsControlUrl);
     _rzvRelay = TextEditingController(text: c.rzvRelay);
+    _rzvJwt = TextEditingController(text: c.rzvJwt);
     _pushRelayUrl = TextEditingController(text: c.pushRelayUrl);
     _tsControl = c.tsControlUrl.trim().isEmpty
         ? _TsControl.official
@@ -86,6 +88,7 @@ class _EmbeddedServerSettingsSheetState
     _tsAuthkey.dispose();
     _tsControlUrl.dispose();
     _rzvRelay.dispose();
+    _rzvJwt.dispose();
     _pushRelayUrl.dispose();
     _restartPromptTimer?.cancel();
     super.dispose();
@@ -119,6 +122,7 @@ class _EmbeddedServerSettingsSheetState
         previous.tsControlUrl != next.tsControlUrl ||
         previous.rzvEnabled != next.rzvEnabled ||
         previous.rzvRelay != next.rzvRelay ||
+        previous.rzvJwt != next.rzvJwt ||
         previous.pushRelayUrl != next.pushRelayUrl;
   }
 
@@ -758,11 +762,11 @@ class _EmbeddedServerSettingsSheetState
                 _save(cfg.copyWith(rzvEnabled: v), restartRequired: true),
           ),
         ),
-        if (cfg.rzvEnabled)
+        if (cfg.rzvEnabled) ...[
           _field(
             _rzvRelay,
             'Relay address',
-            'host:port of your rendezvous relay',
+            'host:port of your WSS rendezvous relay',
             onChanged: () => _save(
               cfg.copyWith(rzvRelay: _rzvRelay.text.trim()),
               restartRequired: true,
@@ -770,6 +774,19 @@ class _EmbeddedServerSettingsSheetState
             ),
             onFocusLost: _showPendingRestartPrompt,
           ),
+          _field(
+            _rzvJwt,
+            'Relay owner JWT',
+            'Stored in the system credential vault',
+            obscure: true,
+            onChanged: () => _save(
+              cfg.copyWith(rzvJwt: _rzvJwt.text.trim()),
+              restartRequired: true,
+              restartOnBlur: true,
+            ),
+            onFocusLost: _showPendingRestartPrompt,
+          ),
+        ],
       ],
     );
   }

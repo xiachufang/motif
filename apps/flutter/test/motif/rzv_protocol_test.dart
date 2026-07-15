@@ -9,26 +9,17 @@ void main() {
     final token = Uint8List.fromList(List.generate(32, (i) => i + 1));
 
     test('buildHello has fixed layout and round-trips', () {
-      final frame = RzvProtocol.buildHello(RzvProtocol.roleConnect, token);
+      final frame = RzvProtocol.buildHello(token);
       expect(frame.length, RzvProtocol.helloLength);
       expect(frame.sublist(0, 4), RzvProtocol.magic);
       expect(frame[4], RzvProtocol.version);
-      expect(frame[5], RzvProtocol.roleConnect);
 
       final parsed = RzvProtocol.parseHello(frame);
-      expect(parsed.role, RzvProtocol.roleConnect);
-      expect(parsed.token, token);
+      expect(parsed, token);
     });
 
     test('rejects wrong token length', () {
-      expect(
-        () => RzvProtocol.buildHello(RzvProtocol.roleAccept, [1, 2, 3]),
-        throwsArgumentError,
-      );
-    });
-
-    test('rejects invalid role', () {
-      expect(() => RzvProtocol.buildHello(9, token), throwsArgumentError);
+      expect(() => RzvProtocol.buildHello([1, 2, 3]), throwsArgumentError);
     });
 
     test('parseHello rejects bad magic / length / version', () {
@@ -40,7 +31,7 @@ void main() {
         () => RzvProtocol.parseHello(Uint8List(10)),
         throwsFormatException, // wrong length
       );
-      final bad = RzvProtocol.buildHello(RzvProtocol.roleAccept, token);
+      final bad = RzvProtocol.buildHello(token);
       bad[4] = 99; // version
       expect(() => RzvProtocol.parseHello(bad), throwsFormatException);
     });

@@ -1,71 +1,243 @@
-//! Rendezvous relay core.
+//! Authenticated WebSocket rendezvous relay core.
 //!
-//! Both `motifd` (role [`ROLE_ACCEPT`]) and the client (role [`ROLE_CONNECT`])
-//! dial out to the relay and send a fixed [`HELLO_LEN`]-byte HELLO frame
-//! carrying a role and a 32-byte token. The relay pairs an `accept` with a
-//! `connect` bearing the same token, writes [`CTRL_PAIRED`] to both, then
-//! `copy_bidirectional`s them — a dumb pipe that only ever sees ciphertext.
-//!
-//! See `docs/rzv-protocol.md` for the shared wire contract; the Dart client
-//! side lives in `apps/flutter/lib/motif/net/rzv/`.
-//!
-//! Security posture mirrors `motif-push-relay`: this process does not terminate
-//! TLS — listen on loopback / a trusted segment and front it with a
-//! TLS-terminating proxy. The token is a capability to *meet*, not auth;
-//! confidentiality/authenticity belong to the layer above (P2: TLS pinned to
-//! motifd's identity key).
+//! An external HTTPS reverse proxy terminates WSS and forwards WebSocket
+//! requests here. `motifd` connects to `/v2/accept` and authenticates its owner
+//! with a JWT in the Upgrade request. Native clients connect to `/v2/connect`
+//! without an account credential. Both sides send the
+//! same opaque rendezvous token in their first binary message; the relay pairs
+//! them, signals `PAIRED`, and forwards binary frames containing the existing
+//! client↔motifd end-to-end TLS stream.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use bytes::Bytes;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use parking_lot::Mutex;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use serde::Deserialize;
 
-/// 4-byte magic: ASCII "MRZV".
+/// First WebSocket binary message: `MRZV`, version, token.
 pub const MAGIC: [u8; 4] = *b"MRZV";
-pub const VERSION: u8 = 1;
-
-pub const ROLE_ACCEPT: u8 = 0;
-pub const ROLE_CONNECT: u8 = 1;
-/// A liveness probe. The relay replies with [`CTRL_HEALTH_OK`] and closes —
-/// it is never parked or paired, so it leaves no state behind.
-pub const ROLE_HEALTH: u8 = 2;
-
-/// Relay → a parked waiter: a keepalive so middleboxes (NAT, L7 proxies, load
-/// balancers) on the waiter's path don't reap the idle connection before it is
-/// paired. The waiter answers with [`CTRL_PONG`]; both motifd and the Dart
-/// client already do.
-pub const CTRL_PING: u8 = 0x01;
-/// Waiter → relay: the keepalive reply. The relay drains these before splicing.
-pub const CTRL_PONG: u8 = 0x02;
-/// Sent to both sides at pairing; after it the stream is transparent.
-pub const CTRL_PAIRED: u8 = 0x10;
-/// Reply to a [`ROLE_HEALTH`] HELLO: the relay's event loop and HELLO parser
-/// are alive. Distinct from [`CTRL_PAIRED`] so a probe can't be mistaken for a
-/// real pairing.
-pub const CTRL_HEALTH_OK: u8 = 0x20;
-
-/// A waiter that has not answered this many consecutive keepalive PINGs is
-/// treated as half-open. This bounds stale relay-side state after a peer sleeps
-/// or changes networks without the old TCP path delivering a FIN/RST.
-const MAX_UNANSWERED_PINGS: u64 = 3;
-
+pub const VERSION: u8 = 2;
 pub const TOKEN_LEN: usize = 32;
-pub const HELLO_LEN: usize = 4 + 1 + 1 + TOKEN_LEN; // 38
+pub const HELLO_LEN: usize = MAGIC.len() + 1 + TOKEN_LEN;
+pub const CTRL_PAIRED: u8 = 0x10;
+
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+const FORWARD_CHUNK_BYTES: usize = 16 * 1024;
 
 pub type Token = [u8; TOKEN_LEN];
 
-/// How long a HELLO is allowed to take before we drop the connection.
-const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateConfig {
+    pub client_to_server_bytes_per_sec: u64,
+    pub server_to_client_bytes_per_sec: u64,
+    pub burst_bytes: u64,
+}
 
-/// A parked waiter. The parking task owns the actual `TcpStream` (it keepalives
-/// it while waiting); to pair, the opposite-role handler hands *its* stream over
-/// this channel, and the parking task splices the two. `tx.is_closed()` becomes
-/// true the moment the parking task gives up, so the reaper can prune it.
+impl RateConfig {
+    fn validate(&self, subject: &str) -> anyhow::Result<()> {
+        if self.client_to_server_bytes_per_sec == 0
+            || self.server_to_client_bytes_per_sec == 0
+            || self.burst_bytes == 0
+        {
+            anyhow::bail!("rate for {subject} must use positive byte rates and burst_bytes");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JwtFileConfig {
+    algorithm: String,
+    issuer: String,
+    audience: String,
+    verification_key: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthFileConfig {
+    jwt: JwtFileConfig,
+    users: HashMap<String, RateConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Claims {
+    sub: String,
+}
+
+#[derive(Clone)]
+pub struct AuthenticatedUser {
+    pub subject: Arc<str>,
+    limiter: Arc<UserLimiter>,
+}
+
+/// JWT verifier plus the authoritative local user→rate table.
+pub struct Authenticator {
+    decoding_key: DecodingKey,
+    validation: Validation,
+    users: HashMap<String, AuthenticatedUser>,
+}
+
+impl Authenticator {
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let raw =
+            std::fs::read(path).with_context(|| format!("read auth config {}", path.display()))?;
+        let mut cfg: AuthFileConfig = serde_json::from_slice(&raw)
+            .with_context(|| format!("parse auth config {}", path.display()))?;
+        if cfg.users.is_empty() {
+            anyhow::bail!("auth config must contain at least one user");
+        }
+
+        if cfg.jwt.verification_key.is_relative() {
+            let base = path.parent().unwrap_or_else(|| Path::new("."));
+            cfg.jwt.verification_key = base.join(&cfg.jwt.verification_key);
+        }
+        let key = std::fs::read(&cfg.jwt.verification_key).with_context(|| {
+            format!(
+                "read JWT verification key {}",
+                cfg.jwt.verification_key.display()
+            )
+        })?;
+        let algorithm = parse_algorithm(&cfg.jwt.algorithm)?;
+        let decoding_key = decoding_key(algorithm, &key)?;
+        Self::new(
+            algorithm,
+            decoding_key,
+            &cfg.jwt.issuer,
+            &cfg.jwt.audience,
+            cfg.users,
+        )
+    }
+
+    fn new(
+        algorithm: Algorithm,
+        decoding_key: DecodingKey,
+        issuer: &str,
+        audience: &str,
+        rates: HashMap<String, RateConfig>,
+    ) -> anyhow::Result<Self> {
+        let mut users = HashMap::with_capacity(rates.len());
+        for (subject, rate) in rates {
+            if subject.trim().is_empty() {
+                anyhow::bail!("auth config contains an empty user subject");
+            }
+            rate.validate(&subject)?;
+            users.insert(
+                subject.clone(),
+                AuthenticatedUser {
+                    subject: Arc::from(subject),
+                    limiter: Arc::new(UserLimiter::new(rate)),
+                },
+            );
+        }
+
+        let mut validation = Validation::new(algorithm);
+        validation.set_issuer(&[issuer]);
+        validation.set_audience(&[audience]);
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        validation.leeway = 30;
+
+        Ok(Self {
+            decoding_key,
+            validation,
+            users,
+        })
+    }
+
+    fn authenticate(&self, headers: &HeaderMap) -> anyhow::Result<AuthenticatedUser> {
+        let value = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| anyhow::anyhow!("missing Authorization header"))?;
+        let token = value
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| anyhow::anyhow!("Authorization must use Bearer"))?;
+        let data = decode::<Claims>(token, &self.decoding_key, &self.validation)
+            .context("JWT rejected")?;
+        self.users
+            .get(&data.claims.sub)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("JWT subject is not configured"))
+    }
+}
+
+fn parse_algorithm(value: &str) -> anyhow::Result<Algorithm> {
+    match value {
+        "HS256" => Ok(Algorithm::HS256),
+        "RS256" => Ok(Algorithm::RS256),
+        "ES256" => Ok(Algorithm::ES256),
+        "EdDSA" => Ok(Algorithm::EdDSA),
+        other => anyhow::bail!("unsupported JWT algorithm {other}"),
+    }
+}
+
+fn decoding_key(algorithm: Algorithm, key: &[u8]) -> anyhow::Result<DecodingKey> {
+    match algorithm {
+        Algorithm::HS256 => Ok(DecodingKey::from_secret(trim_ascii(key))),
+        Algorithm::RS256 => DecodingKey::from_rsa_pem(key).context("parse RSA public key"),
+        Algorithm::ES256 => DecodingKey::from_ec_pem(key).context("parse EC public key"),
+        Algorithm::EdDSA => DecodingKey::from_ed_pem(key).context("parse Ed25519 public key"),
+        _ => unreachable!("algorithm allowlist handled above"),
+    }
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(0);
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
+}
+
+pub struct HubConfig {
+    pub park_ttl: Duration,
+    pub keepalive: Duration,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            park_ttl: Duration::from_secs(3600),
+            keepalive: Duration::from_secs(15),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Role {
+    Accept,
+    Connect,
+}
+
+struct Peer {
+    socket: WebSocket,
+    role: Role,
+    user: Option<AuthenticatedUser>,
+}
+
 struct Waiter {
-    tx: tokio::sync::oneshot::Sender<TcpStream>,
+    tx: tokio::sync::oneshot::Sender<Peer>,
     since: Instant,
 }
 
@@ -81,127 +253,97 @@ impl Waiters {
     }
 }
 
-pub struct HubConfig {
-    /// Drop a parked (unpaired) connection after it has waited this long. With
-    /// keepalive on, healthy parks self-maintain, so this is a long backstop.
-    pub park_ttl: Duration,
-    /// How often to PING a parked waiter (plus one PING the instant it parks).
-    /// `Duration::ZERO` disables keepalive.
-    pub keepalive: Duration,
-}
-
-impl Default for HubConfig {
-    fn default() -> Self {
-        Self {
-            park_ttl: Duration::from_secs(3600),
-            keepalive: Duration::from_secs(15),
-        }
-    }
-}
-
-/// The relay's shared pairing state.
 pub struct Hub {
     inner: Mutex<HashMap<Token, Waiters>>,
     park_ttl: Duration,
     keepalive: Duration,
+    auth: Authenticator,
 }
 
 impl Hub {
-    pub fn new(cfg: HubConfig) -> Arc<Self> {
+    pub fn new(cfg: HubConfig, auth: Authenticator) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(HashMap::new()),
             park_ttl: cfg.park_ttl,
             keepalive: cfg.keepalive,
+            auth,
         })
     }
 
-    /// Accept connections forever, pairing them by token. Also spawns the
-    /// TTL reaper. Returns only if the listener errors irrecoverably (it
-    /// currently retries all accept errors, so this never returns in practice).
-    pub async fn run(self: Arc<Self>, listener: TcpListener) {
-        let reaper = Arc::clone(&self);
-        tokio::spawn(async move { reaper.reap_loop().await });
+    /// Axum router served as HTTP/WebSocket behind the deployment's HTTPS
+    /// reverse proxy. Also exposed directly for in-process protocol tests.
+    pub fn router(self: &Arc<Self>) -> Router {
+        Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/v2/accept", get(accept_upgrade))
+            .route("/v2/connect", get(connect_upgrade))
+            .with_state(Arc::clone(self))
+    }
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, peer)) => {
-                    let hub = Arc::clone(&self);
-                    tokio::spawn(async move {
-                        if let Err(e) = hub.handle(stream).await {
-                            tracing::debug!(%peer, error = %e, "rzv: connection ended");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "rzv: accept failed; retrying");
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
+    pub fn spawn_reaper(self: &Arc<Self>) {
+        let hub = Arc::clone(self);
+        tokio::spawn(async move { hub.reap_loop().await });
+    }
+
+    async fn handle(
+        self: Arc<Self>,
+        socket: WebSocket,
+        role: Role,
+        user: Option<AuthenticatedUser>,
+    ) {
+        match read_hello(socket, role, user).await {
+            Ok((token, peer)) => {
+                self.pair_or_park(token, peer).await;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, ?role, "rzv websocket ended before pairing");
             }
         }
     }
 
-    async fn handle(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
-        let mut stream = stream;
-        let (role, token) = read_hello(&mut stream).await?;
-
-        // A health probe is answered inline and dropped — never parked/paired.
-        if role == ROLE_HEALTH {
-            stream.write_all(&[CTRL_HEALTH_OK]).await?;
-            stream.flush().await?;
-            return Ok(());
-        }
-
-        // Either pair with an opposite-role waiter that's already parked, or
-        // park ourselves. We hand our stream to the parked task (which owns the
-        // splice) rather than taking its stream, because that task is busy
-        // keepaliving its connection and can't relinquish it mid-`select!`.
-        //
-        // `rx` is `Some` only when we parked: drive the keepalive loop with it.
+    async fn pair_or_park(self: &Arc<Self>, token: Token, peer: Peer) {
+        let role = peer.role;
         let rx = {
             let mut map = self.inner.lock();
-            let w = map.entry(token).or_default();
-            let opposite = if role == ROLE_ACCEPT {
-                &mut w.connects
-            } else {
-                &mut w.accepts
+            let waiters = map.entry(token).or_default();
+            let opposite = match role {
+                Role::Accept => &mut waiters.connects,
+                Role::Connect => &mut waiters.accepts,
             };
-            // Hand off to the first *live* parked waiter; a `send` that errors
-            // means that task already gave up, so skip it and try the next.
-            let mut handed = Some(stream);
+
+            let mut handed = Some(peer);
             while let Some(waiter) = opposite.pop_front() {
-                match waiter.tx.send(handed.take().expect("stream present")) {
-                    Ok(()) => break,                          // paired — parked task splices
-                    Err(returned) => handed = Some(returned), // dead waiter; retry
+                match waiter.tx.send(handed.take().expect("peer present")) {
+                    Ok(()) => break,
+                    Err(returned) => handed = Some(returned),
                 }
             }
+
             match handed {
                 None => {
-                    if w.is_empty() {
+                    if waiters.is_empty() {
                         map.remove(&token);
                     }
-                    None // paired
+                    None
                 }
-                Some(s) => {
-                    // No live partner: park ourselves and keepalive until paired.
+                Some(peer) => {
                     let (tx, rx) = tokio::sync::oneshot::channel();
-                    let q = if role == ROLE_ACCEPT {
-                        &mut w.accepts
-                    } else {
-                        &mut w.connects
+                    let queue = match role {
+                        Role::Accept => &mut waiters.accepts,
+                        Role::Connect => &mut waiters.connects,
                     };
-                    q.push_back(Waiter {
+                    queue.push_back(Waiter {
                         tx,
                         since: Instant::now(),
                     });
-                    Some((s, rx))
+                    Some((peer, rx))
                 }
             }
         };
 
-        if let Some((stream, rx)) = rx {
-            park_and_keepalive(stream, rx, self.keepalive).await;
+        if let Some((peer, rx)) = rx {
+            park(peer, rx, self.keepalive).await;
         }
-        Ok(())
     }
 
     async fn reap_loop(self: Arc<Self>) {
@@ -211,394 +353,372 @@ impl Hub {
             let now = Instant::now();
             let ttl = self.park_ttl;
             let mut map = self.inner.lock();
-            map.retain(|_tok, w| {
-                // Drop waiters whose task has exited (`tx` closed) or that have
-                // outlived the TTL backstop. Dropping a live `tx` here makes its
-                // parking task's `rx` resolve to `Err`, so it closes its socket.
-                let keep = |p: &Waiter| !p.tx.is_closed() && now.duration_since(p.since) < ttl;
-                w.accepts.retain(keep);
-                w.connects.retain(keep);
-                !w.is_empty()
+            map.retain(|_, waiters| {
+                let keep = |w: &Waiter| !w.tx.is_closed() && now.duration_since(w.since) < ttl;
+                waiters.accepts.retain(keep);
+                waiters.connects.retain(keep);
+                !waiters.is_empty()
             });
         }
     }
 
-    /// Number of tokens with at least one parked connection. Test/diagnostic.
     pub fn parked_tokens(&self) -> usize {
         self.inner.lock().len()
     }
 }
 
-/// Read and validate the fixed HELLO frame; return the role and token.
-async fn read_hello(stream: &mut TcpStream) -> anyhow::Result<(u8, Token)> {
-    let mut buf = [0u8; HELLO_LEN];
-    tokio::time::timeout(HELLO_TIMEOUT, stream.read_exact(&mut buf))
-        .await
-        .map_err(|_| anyhow::anyhow!("HELLO timed out"))??;
-    if buf[0..4] != MAGIC {
-        anyhow::bail!("bad magic");
-    }
-    if buf[4] != VERSION {
-        anyhow::bail!("unsupported version {}", buf[4]);
-    }
-    let role = buf[5];
-    if role != ROLE_ACCEPT && role != ROLE_CONNECT && role != ROLE_HEALTH {
-        anyhow::bail!("bad role {role}");
-    }
-    let mut token = [0u8; TOKEN_LEN];
-    token.copy_from_slice(&buf[6..6 + TOKEN_LEN]);
-    Ok((role, token))
-}
-
-/// Client side of the health protocol: dial the relay, send a [`ROLE_HEALTH`]
-/// HELLO, and confirm it replies [`CTRL_HEALTH_OK`]. Proves the listener is up
-/// *and* the HELLO parser / response path run — more than a bare TCP connect,
-/// and it parks no state. Used by the `healthcheck` subcommand and the image's
-/// `HEALTHCHECK`. `timeout` bounds the whole exchange.
-pub async fn health_check(addr: &str, timeout: Duration) -> anyhow::Result<()> {
-    tokio::time::timeout(timeout, async {
-        let mut stream = TcpStream::connect(addr).await?;
-        let mut frame = [0u8; HELLO_LEN];
-        frame[0..4].copy_from_slice(&MAGIC);
-        frame[4] = VERSION;
-        frame[5] = ROLE_HEALTH;
-        // token bytes stay zero — unused for a health probe.
-        stream.write_all(&frame).await?;
-        stream.flush().await?;
-        let mut b = [0u8; 1];
-        stream.read_exact(&mut b).await?;
-        if b[0] != CTRL_HEALTH_OK {
-            anyhow::bail!("unexpected health reply {:#04x}", b[0]);
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("health probe timed out after {timeout:?}"))?
-}
-
-/// Own a parked connection until it pairs. While waiting, PING it periodically
-/// (and once immediately) so middleboxes keep the idle connection alive, and
-/// drain the waiter's PONG replies. When the opposite-role handler hands us its
-/// stream over `rx`, drain any in-flight PONG, then splice the two — so no stray
-/// `0x02` leaks into the now-transparent stream.
-async fn park_and_keepalive(
-    stream: TcpStream,
-    mut rx: tokio::sync::oneshot::Receiver<TcpStream>,
-    keepalive: Duration,
-) {
-    let ping_enabled = !keepalive.is_zero();
-    let (mut rd, mut wr) = stream.into_split();
-    let mut buf = [0u8; 64];
-    let mut pings_sent: u64 = 0;
-    let mut pongs_read: u64 = 0;
-
-    // Speak first: a single PING right away satisfies proxies that reset a
-    // connection whose server stays silent for the first few seconds.
-    if ping_enabled {
-        if wr.write_all(&[CTRL_PING]).await.is_err() {
-            return;
-        }
-        pings_sent += 1;
-    }
-
-    let mut tick = tokio::time::interval(if ping_enabled {
-        keepalive
-    } else {
-        Duration::from_secs(3600)
-    });
-    tick.tick().await; // the first tick fires immediately — already pinged above
-
-    let partner = loop {
-        tokio::select! {
-            // Prefer already-queued PONG/PAIRED work over the timer when they
-            // become ready together, so scheduler jitter cannot manufacture a
-            // missed keepalive at the deadline.
-            biased;
-            p = &mut rx => match p {
-                Ok(partner) => break partner,
-                Err(_) => return, // reaper pruned us (TTL) or hub dropped
-            },
-            r = rd.read(&mut buf) => match r {
-                Ok(0) | Err(_) => return, // peer closed while parked
-                Ok(n) => pongs_read += count_pongs(&buf[..n]),
-            },
-            _ = tick.tick(), if ping_enabled => {
-                let unanswered = pings_sent.saturating_sub(pongs_read);
-                if unanswered >= MAX_UNANSWERED_PINGS {
-                    tracing::debug!(
-                        unanswered,
-                        "rzv: parked waiter missed keepalives; closing half-open socket"
-                    );
-                    return;
-                }
-                if wr.write_all(&[CTRL_PING]).await.is_err() {
-                    return; // peer gone
-                }
-                pings_sent += 1;
-            },
+async fn accept_upgrade(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let user = match hub.auth.authenticate(&headers) {
+        Ok(user) => user,
+        Err(e) => {
+            tracing::warn!(error = %e, "rzv accept JWT rejected");
+            return (StatusCode::UNAUTHORIZED, "invalid rendezvous JWT").into_response();
         }
     };
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Accept, Some(user)))
+}
 
-    // Consume PONGs still owed for PINGs we sent, so copy_bidirectional doesn't
-    // forward a leftover 0x02 to the partner. Bounded so a silent peer can't
-    // wedge the splice.
-    if ping_enabled && pongs_read < pings_sent {
-        let drain = async {
-            while pongs_read < pings_sent {
-                match rd.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => pongs_read += count_pongs(&buf[..n]),
-                }
+async fn connect_upgrade(State(hub): State<Arc<Hub>>, ws: WebSocketUpgrade) -> Response {
+    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES)
+        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Connect, None))
+}
+
+async fn read_hello(
+    mut socket: WebSocket,
+    role: Role,
+    user: Option<AuthenticatedUser>,
+) -> anyhow::Result<(Token, Peer)> {
+    let token = tokio::time::timeout(HELLO_TIMEOUT, async {
+        loop {
+            match socket.recv().await {
+                Some(Ok(Message::Binary(frame))) => return parse_hello(&frame),
+                Some(Ok(Message::Ping(payload))) => socket.send(Message::Pong(payload)).await?,
+                Some(Ok(Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | None => anyhow::bail!("websocket closed"),
+                Some(Ok(Message::Text(_))) => anyhow::bail!("HELLO must be binary"),
+                Some(Err(e)) => return Err(e.into()),
             }
-        };
-        let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
-    }
-
-    // The halves come from the same stream, so reunite never errors.
-    if let Ok(stream) = rd.reunite(wr) {
-        splice(stream, partner).await;
-    }
-}
-
-fn count_pongs(bytes: &[u8]) -> u64 {
-    bytes.iter().filter(|&&b| b == CTRL_PONG).count() as u64
-}
-
-/// Signal both sides, then pipe bytes until either closes.
-async fn splice(mut a: TcpStream, mut b: TcpStream) {
-    if let Err(e) = async {
-        a.write_all(&[CTRL_PAIRED]).await?;
-        b.write_all(&[CTRL_PAIRED]).await?;
-        a.flush().await?;
-        b.flush().await?;
-        Ok::<_, std::io::Error>(())
-    }
+        }
+    })
     .await
+    .map_err(|_| anyhow::anyhow!("HELLO timed out"))??;
+    Ok((token, Peer { socket, role, user }))
+}
+
+pub fn build_hello(token: &Token) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(HELLO_LEN);
+    frame.extend_from_slice(&MAGIC);
+    frame.push(VERSION);
+    frame.extend_from_slice(token);
+    frame
+}
+
+pub fn parse_hello(frame: &[u8]) -> anyhow::Result<Token> {
+    if frame.len() != HELLO_LEN {
+        anyhow::bail!("HELLO must be {HELLO_LEN} bytes, got {}", frame.len());
+    }
+    if frame[..MAGIC.len()] != MAGIC {
+        anyhow::bail!("bad HELLO magic");
+    }
+    if frame[MAGIC.len()] != VERSION {
+        anyhow::bail!("unsupported HELLO version {}", frame[MAGIC.len()]);
+    }
+    let mut token = [0u8; TOKEN_LEN];
+    token.copy_from_slice(&frame[MAGIC.len() + 1..]);
+    Ok(token)
+}
+
+async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keepalive: Duration) {
+    let mut tick = tokio::time::interval(if keepalive.is_zero() {
+        Duration::from_secs(3600)
+    } else {
+        keepalive
+    });
+    tick.tick().await;
+
+    loop {
+        tokio::select! {
+            partner = &mut rx => {
+                if let Ok(partner) = partner {
+                    splice(peer, partner, keepalive).await;
+                }
+                return;
+            }
+            msg = peer.socket.recv() => match msg {
+                Some(Ok(Message::Ping(payload))) => {
+                    if peer.socket.send(Message::Pong(payload)).await.is_err() { return; }
+                }
+                Some(Ok(Message::Pong(_))) => {}
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(Message::Binary(_))) | Some(Ok(Message::Text(_))) => {
+                    let _ = peer.socket.send(Message::Close(None)).await;
+                    return;
+                }
+            },
+            _ = tick.tick(), if !keepalive.is_zero() => {
+                if peer.socket.send(Message::Ping(Bytes::new())).await.is_err() { return; }
+            }
+        }
+    }
+}
+
+async fn splice(a: Peer, b: Peer, keepalive: Duration) {
+    let (mut accept, mut connect) = match (a.role, b.role) {
+        (Role::Accept, Role::Connect) => (a, b),
+        (Role::Connect, Role::Accept) => (b, a),
+        _ => return,
+    };
+    let Some(user) = accept.user.take() else {
+        tracing::warn!("rzv paired accept without authenticated user");
+        return;
+    };
+
+    if accept
+        .socket
+        .send(Message::Binary(Bytes::from_static(&[CTRL_PAIRED])))
+        .await
+        .is_err()
+        || connect
+            .socket
+            .send(Message::Binary(Bytes::from_static(&[CTRL_PAIRED])))
+            .await
+            .is_err()
     {
-        tracing::debug!(error = %e, "rzv: failed to signal PAIRED");
         return;
     }
-    match tokio::io::copy_bidirectional(&mut a, &mut b).await {
-        Ok((a2b, b2a)) => tracing::debug!(a2b, b2a, "rzv: splice closed"),
-        Err(e) => tracing::debug!(error = %e, "rzv: splice ended"),
+
+    let accept_socket = accept.socket;
+    let connect_socket = connect.socket;
+    let (accept_tx, accept_rx) = accept_socket.split();
+    let (connect_tx, connect_rx) = connect_socket.split();
+
+    let c2s = pump(
+        connect_rx,
+        accept_tx,
+        Arc::clone(&user.limiter.client_to_server),
+        keepalive,
+    );
+    let s2c = pump(
+        accept_rx,
+        connect_tx,
+        Arc::clone(&user.limiter.server_to_client),
+        keepalive,
+    );
+    let (c2s, s2c) = tokio::join!(c2s, s2c);
+    tracing::debug!(
+        subject = %user.subject,
+        client_to_server = c2s.unwrap_or_default(),
+        server_to_client = s2c.unwrap_or_default(),
+        "rzv websocket splice closed"
+    );
+}
+
+async fn pump(
+    mut input: SplitStream<WebSocket>,
+    mut output: SplitSink<WebSocket, Message>,
+    limiter: Arc<TokenBucket>,
+    keepalive: Duration,
+) -> anyhow::Result<u64> {
+    let mut total = 0u64;
+    let mut tick = tokio::time::interval(if keepalive.is_zero() {
+        Duration::from_secs(3600)
+    } else {
+        keepalive
+    });
+    tick.tick().await;
+
+    loop {
+        tokio::select! {
+            msg = input.next() => match msg {
+                Some(Ok(Message::Binary(payload))) => {
+                    let mut offset = 0;
+                    while offset < payload.len() {
+                        let n = limiter.max_chunk(payload.len() - offset);
+                        limiter.consume(n).await;
+                        output
+                            .send(Message::Binary(payload.slice(offset..offset + n)))
+                            .await?;
+                        offset += n;
+                        total += n as u64;
+                    }
+                }
+                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
+                    // tungstenite queues the required PONG on the shared socket;
+                    // the next sink flush (including our periodic PING) sends it.
+                }
+                Some(Ok(Message::Close(frame))) => {
+                    let _ = output.send(Message::Close(frame)).await;
+                    return Ok(total);
+                }
+                Some(Ok(Message::Text(_))) => anyhow::bail!("text frame after pairing"),
+                Some(Err(e)) => return Err(e.into()),
+                None => return Ok(total),
+            },
+            _ = tick.tick(), if !keepalive.is_zero() => {
+                output.send(Message::Ping(Bytes::new())).await?;
+            }
+        }
     }
+}
+
+struct UserLimiter {
+    client_to_server: Arc<TokenBucket>,
+    server_to_client: Arc<TokenBucket>,
+}
+
+impl UserLimiter {
+    fn new(cfg: RateConfig) -> Self {
+        Self {
+            client_to_server: Arc::new(TokenBucket::new(
+                cfg.client_to_server_bytes_per_sec,
+                cfg.burst_bytes,
+            )),
+            server_to_client: Arc::new(TokenBucket::new(
+                cfg.server_to_client_bytes_per_sec,
+                cfg.burst_bytes,
+            )),
+        }
+    }
+}
+
+struct BucketState {
+    tokens: f64,
+    updated: tokio::time::Instant,
+}
+
+struct TokenBucket {
+    rate: f64,
+    capacity: f64,
+    state: tokio::sync::Mutex<BucketState>,
+}
+
+impl TokenBucket {
+    fn new(bytes_per_sec: u64, burst_bytes: u64) -> Self {
+        Self {
+            rate: bytes_per_sec as f64,
+            capacity: burst_bytes as f64,
+            state: tokio::sync::Mutex::new(BucketState {
+                tokens: burst_bytes as f64,
+                updated: tokio::time::Instant::now(),
+            }),
+        }
+    }
+
+    fn max_chunk(&self, remaining: usize) -> usize {
+        remaining
+            .min(FORWARD_CHUNK_BYTES)
+            .min(self.capacity as usize)
+            .max(1)
+    }
+
+    async fn consume(&self, bytes: usize) {
+        let need = bytes as f64;
+        loop {
+            let wait = {
+                let mut state = self.state.lock().await;
+                let now = tokio::time::Instant::now();
+                let elapsed = now.duration_since(state.updated).as_secs_f64();
+                state.tokens = (state.tokens + elapsed * self.rate).min(self.capacity);
+                state.updated = now;
+                if state.tokens >= need {
+                    state.tokens -= need;
+                    return;
+                }
+                Duration::from_secs_f64((need - state.tokens) / self.rate)
+            };
+            tokio::time::sleep(wait).await;
+        }
+    }
+}
+
+/// Lightweight liveness check used by the container. The runtime probe verifies
+/// the internal HTTP/WebSocket listener is accepting connections.
+pub async fn health_check(addr: &str, timeout: Duration) -> anyhow::Result<()> {
+    tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("health probe timed out after {timeout:?}"))??;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde::Serialize;
 
-    async fn spawn_hub(keepalive: Duration) -> (std::net::SocketAddr, Arc<Hub>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        // Long TTL so the (30s-tick) reaper never fires mid-test.
-        let hub = Hub::new(HubConfig {
-            park_ttl: Duration::from_secs(30),
-            keepalive,
-        });
-        let handle = Arc::clone(&hub);
-        tokio::spawn(hub.run(listener));
-        (addr, handle)
-    }
-
-    /// Most tests don't care about keepalive; default it off so a parked waiter
-    /// emits no PING noise.
-    async fn start_hub() -> std::net::SocketAddr {
-        spawn_hub(Duration::ZERO).await.0
-    }
-
-    fn hello(role: u8, token: &Token) -> Vec<u8> {
-        let mut v = Vec::with_capacity(HELLO_LEN);
-        v.extend_from_slice(&MAGIC);
-        v.push(VERSION);
-        v.push(role);
-        v.extend_from_slice(token);
-        v
-    }
-
-    async fn read_byte(s: &mut TcpStream) -> u8 {
-        let mut b = [0u8; 1];
-        s.read_exact(&mut b).await.unwrap();
-        b[0]
-    }
-
-    #[tokio::test]
-    async fn pairs_and_pipes_both_directions() {
-        let addr = start_hub().await;
+    #[test]
+    fn hello_roundtrip() {
         let token = [7u8; TOKEN_LEN];
-
-        let mut acc = TcpStream::connect(addr).await.unwrap();
-        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
-
-        let mut con = TcpStream::connect(addr).await.unwrap();
-        con.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
-
-        // Both observe PAIRED.
-        assert_eq!(read_byte(&mut acc).await, CTRL_PAIRED);
-        assert_eq!(read_byte(&mut con).await, CTRL_PAIRED);
-
-        // connect -> accept
-        con.write_all(b"ping").await.unwrap();
-        let mut buf = [0u8; 4];
-        acc.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"ping");
-
-        // accept -> connect
-        acc.write_all(b"pong").await.unwrap();
-        con.read_exact(&mut buf).await.unwrap();
-        assert_eq!(&buf, b"pong");
+        assert_eq!(parse_hello(&build_hello(&token)).unwrap(), token);
+        assert!(parse_hello(&build_hello(&token)[..HELLO_LEN - 1]).is_err());
     }
 
-    #[tokio::test]
-    async fn does_not_pair_same_role_or_mismatched_token() {
-        let addr = start_hub().await;
-
-        // Two connects with the same token must NOT pair with each other.
-        let token = [1u8; TOKEN_LEN];
-        let mut c1 = TcpStream::connect(addr).await.unwrap();
-        c1.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
-        let mut c2 = TcpStream::connect(addr).await.unwrap();
-        c2.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
-
-        // Neither should see PAIRED within a short window.
-        let got = tokio::time::timeout(Duration::from_millis(150), read_byte(&mut c1)).await;
-        assert!(got.is_err(), "two connects must not pair");
-
-        // An accept with a DIFFERENT token must not grab them either.
-        let mut acc = TcpStream::connect(addr).await.unwrap();
-        acc.write_all(&hello(ROLE_ACCEPT, &[2u8; TOKEN_LEN]))
-            .await
-            .unwrap();
-        let got = tokio::time::timeout(Duration::from_millis(150), read_byte(&mut acc)).await;
-        assert!(got.is_err(), "mismatched token must not pair");
+    #[derive(Serialize)]
+    struct TestClaims<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        exp: usize,
     }
 
-    #[tokio::test]
-    async fn health_probe_replies_and_parks_nothing() {
-        let (addr, hub) = spawn_hub(Duration::ZERO).await;
-
-        // The high-level helper succeeds against a live relay.
-        health_check(&addr.to_string(), Duration::from_secs(2))
-            .await
-            .unwrap();
-
-        // And it left no parked state behind.
-        assert_eq!(hub.parked_tokens(), 0, "health probe must not park");
-    }
-
-    #[tokio::test]
-    async fn relay_pings_a_lone_park() {
-        let (addr, hub) = spawn_hub(Duration::from_millis(40)).await;
-        let token = [9u8; TOKEN_LEN];
-
-        let mut acc = TcpStream::connect(addr).await.unwrap();
-        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
-
-        // The relay speaks first: a parked, partnerless waiter still gets a PING
-        // so a middlebox doesn't reap the idle connection.
-        assert_eq!(read_byte(&mut acc).await, CTRL_PING);
-        assert_eq!(hub.parked_tokens(), 1, "the waiter stays parked");
-    }
-
-    #[tokio::test]
-    async fn relay_closes_waiter_that_stops_answering_pings() {
-        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
-        let token = [11u8; TOKEN_LEN];
-
-        let mut acc = TcpStream::connect(addr).await.unwrap();
-        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
-
-        // Do not send any PONGs. The immediate PING plus two interval PINGs
-        // exhaust the allowance; at the next tick the relay must close rather
-        // than retain a zombie waiter indefinitely.
-        for _ in 0..MAX_UNANSWERED_PINGS {
-            assert_eq!(read_byte(&mut acc).await, CTRL_PING);
-        }
-        let mut byte = [0u8; 1];
-        let n = tokio::time::timeout(Duration::from_millis(200), acc.read(&mut byte))
-            .await
-            .expect("relay did not reap the unresponsive waiter")
-            .unwrap();
-        assert_eq!(n, 0, "relay should close after unanswered PINGs");
-    }
-
-    #[tokio::test]
-    async fn keepalive_park_pairs_without_leaking_pong() {
-        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
-        let token = [5u8; TOKEN_LEN];
-
-        // Emulate motifd: park an accept and answer PINGs with PONGs in real
-        // time. Once paired, verify the client's bytes arrive EXACTLY — a leaked
-        // PONG would corrupt the now-transparent stream.
-        let mut acc = TcpStream::connect(addr).await.unwrap();
-        acc.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
-        let acc_task = tokio::spawn(async move {
-            loop {
-                match read_byte(&mut acc).await {
-                    CTRL_PAIRED => break,
-                    CTRL_PING => acc.write_all(&[CTRL_PONG]).await.unwrap(),
-                    b => panic!("acc: unexpected pre-pair byte {b:#04x}"),
-                }
-            }
-            let mut buf = [0u8; 5];
-            acc.read_exact(&mut buf).await.unwrap();
-            assert_eq!(&buf, b"hello", "client->server payload corrupted");
-            acc.write_all(b"world").await.unwrap();
-        });
-
-        // Let the relay PING the park several times first.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Client dials in and pairs. It never parked, so its first byte is PAIRED.
-        let mut con = TcpStream::connect(addr).await.unwrap();
-        con.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
-        assert_eq!(read_byte(&mut con).await, CTRL_PAIRED);
-        con.write_all(b"hello").await.unwrap();
-        let mut buf = [0u8; 5];
-        con.read_exact(&mut buf).await.unwrap();
-        assert_eq!(
-            &buf, b"world",
-            "server->client payload corrupted (leaked PONG?)"
+    #[test]
+    fn jwt_maps_to_configured_user() {
+        let rates = HashMap::from([(
+            "user-1".to_string(),
+            RateConfig {
+                client_to_server_bytes_per_sec: 100,
+                server_to_client_bytes_per_sec: 200,
+                burst_bytes: 10,
+            },
+        )]);
+        let auth = Authenticator::new(
+            Algorithm::HS256,
+            DecodingKey::from_secret(b"test secret"),
+            "issuer",
+            "relay",
+            rates,
+        )
+        .unwrap();
+        let jwt = encode(
+            &Header::new(Algorithm::HS256),
+            &TestClaims {
+                iss: "issuer",
+                aud: "relay",
+                sub: "user-1",
+                exp: 4_102_444_800,
+            },
+            &EncodingKey::from_secret(b"test secret"),
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {jwt}").parse().unwrap(),
         );
-
-        acc_task.await.unwrap();
+        let first = auth.authenticate(&headers).unwrap();
+        let second = auth.authenticate(&headers).unwrap();
+        assert_eq!(&*first.subject, "user-1");
+        assert!(Arc::ptr_eq(&first.limiter, &second.limiter));
     }
 
-    #[tokio::test]
-    async fn dead_park_is_skipped_when_pairing() {
-        let (addr, _hub) = spawn_hub(Duration::from_millis(20)).await;
-        let token = [3u8; TOKEN_LEN];
-
-        // Park an accept, confirm it's live (got a PING), then drop it so its
-        // park task exits and its hand-off channel closes.
-        {
-            let mut dead = TcpStream::connect(addr).await.unwrap();
-            dead.write_all(&hello(ROLE_ACCEPT, &token)).await.unwrap();
-            assert_eq!(read_byte(&mut dead).await, CTRL_PING);
-        }
-        tokio::time::sleep(Duration::from_millis(40)).await; // let the task notice EOF
-
-        // A connect must skip the dead waiter and park itself (getting a PING),
-        // not pair with — or hang on — the corpse.
-        let mut con = TcpStream::connect(addr).await.unwrap();
-        con.write_all(&hello(ROLE_CONNECT, &token)).await.unwrap();
-        assert_eq!(
-            read_byte(&mut con).await,
-            CTRL_PING,
-            "connect should skip the dead accept and park (be pinged), not pair"
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_bad_magic() {
-        let addr = start_hub().await;
-        let mut s = TcpStream::connect(addr).await.unwrap();
-        let mut frame = hello(ROLE_CONNECT, &[0u8; TOKEN_LEN]);
-        frame[0] = b'X';
-        s.write_all(&frame).await.unwrap();
-        // The relay drops the connection; reading yields EOF (0 bytes).
-        let mut b = [0u8; 1];
-        let n = s.read(&mut b).await.unwrap();
-        assert_eq!(n, 0, "bad-magic connection should be closed");
+    #[tokio::test(start_paused = true)]
+    async fn token_bucket_waits_after_burst() {
+        let bucket = Arc::new(TokenBucket::new(100, 10));
+        bucket.consume(10).await;
+        let pending = {
+            let bucket = Arc::clone(&bucket);
+            tokio::spawn(async move { bucket.consume(10).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        tokio::time::advance(Duration::from_millis(100)).await;
+        pending.await.unwrap();
     }
 }

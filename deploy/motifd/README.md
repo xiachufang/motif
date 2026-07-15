@@ -86,10 +86,12 @@ Rendezvous:
 | Variable | Maps to |
 | --- | --- |
 | `MOTIFD_RZV_RELAY` | `--rzv-relay` |
+| `MOTIFD_RZV_JWT_FILE` | `--rzv-jwt-file` |
 | `MOTIFD_RZV_POOL` | `--rzv-pool` |
 
-The pairing secret is `MOTIFD_PSK` / `MOTIFD_PSK_FILE` (shared by the relay and
-direct paths). Rendezvous end-to-end TLS is always on.
+The owner JWT file is required for the WSS Upgrade and relay-side per-user
+bandwidth limit. The pairing secret is `MOTIFD_PSK` / `MOTIFD_PSK_FILE`
+(shared by the relay and direct paths). Rendezvous end-to-end TLS is always on.
 
 If arguments are passed to the container, they replace the entrypoint's
 generated `motifd` command. For example:

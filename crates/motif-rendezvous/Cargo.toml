@@ -4,7 +4,7 @@ version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
-description = "Motif rendezvous relay — pairs a motifd `accept` with a client `connect` by token, then pipes bytes. Sees only ciphertext."
+description = "Motif rendezvous relay — JWT-authenticated WebSocket pairing with per-user bandwidth limits."
 
 [[bin]]
 name = "motif-rendezvous"
@@ -21,6 +21,12 @@ anyhow             = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 parking_lot        = { workspace = true }
+axum               = { workspace = true }
+futures-util       = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+bytes              = { workspace = true }
+jsonwebtoken       = "9"
 
 [dev-dependencies]
 tokio              = { workspace = true, features = ["full", "test-util"] }

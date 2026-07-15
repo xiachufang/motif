@@ -209,7 +209,7 @@ class AppState extends ChangeNotifier {
       platform: platformServices,
       embeddedServer: embeddedServerFactory == null
           ? null
-          : await embeddedServerFactory(prefs),
+          : await embeddedServerFactory(prefs, platformServices.secrets),
       clientRuntime: clientRuntime,
       serverConnectionRuntime: serverConnectionRuntime,
     );

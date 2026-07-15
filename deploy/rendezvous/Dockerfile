@@ -1,15 +1,13 @@
 # syntax=docker/dockerfile:1
 #
-# Standalone motif rendezvous relay. The relay is a token-paired TCP byte pipe:
-# motifd parks an `accept` waiter and a client `connect`s; matching tokens get
-# spliced together. With motifd's default end-to-end TLS it only ever sees
-# ciphertext, so the plaintext port can be exposed directly on a public host.
+# Standalone authenticated WebSocket rendezvous relay. An external HTTPS proxy
+# terminates WSS; the JWT/rate configuration is mounted read-only.
 #
 # Pure Rust — no Zig/Go/ghostty/tailscale — so this is a small, fast build.
 #
 # Build:  docker build -f deploy/rendezvous/Dockerfile -t motif-rendezvous .
 #         (build context must be the repo root — it's a workspace member)
-# Run:    docker run -d --restart=unless-stopped -p 8765:8765 motif-rendezvous
+# Run:    docker run -d -p 8765:8765 -v /etc/motif-rzv:/run/secrets:ro motif-rendezvous
 
 ############################  builder  ############################
 FROM rust:1-bookworm AS builder
@@ -28,8 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 ############################  runtime  ############################
 FROM debian:bookworm-slim
-# A glibc-dynamic binary; bookworm-slim matches the builder's libc. No extra
-# packages — the relay makes no outbound TLS and reads no files.
+# A glibc-dynamic binary; bookworm-slim matches the builder's libc.
 COPY --from=builder /usr/local/bin/motif-rendezvous /usr/local/bin/
 
 # Unprivileged; the default port (8765) is > 1024 so no capabilities needed.
@@ -37,11 +34,10 @@ USER 10001:10001
 EXPOSE 8765
 
 # Liveness via the binary's own probe — no nc/curl/python in the slim runtime.
-# It sends a health HELLO and checks the reply, so `healthy` means the relay is
-# actually pairing-capable, not just that the port is bound. If you override the
-# listen port, override --addr here too.
+# The protocol pairing path is covered by Rust integration tests; the runtime
+# healthcheck verifies that the internal WebSocket listener remains bound.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=3s --retries=3 \
     CMD ["motif-rendezvous", "healthcheck", "--addr", "127.0.0.1:8765"]
 
 ENTRYPOINT ["motif-rendezvous"]
-CMD ["--listen", "0.0.0.0:8765"]
+CMD ["--listen", "0.0.0.0:8765", "--auth-config", "/run/secrets/auth.json"]

@@ -1337,17 +1337,25 @@ name = "motif-net"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
+ "http",
+ "jsonwebtoken",
  "motif-rendezvous",
  "motif-tailscale",
  "pin-project-lite",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
  "tracing",
  "url",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1391,8 +1399,14 @@ name = "motif-rendezvous"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "bytes",
  "clap",
+ "futures-util",
+ "jsonwebtoken",
  "parking_lot",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
