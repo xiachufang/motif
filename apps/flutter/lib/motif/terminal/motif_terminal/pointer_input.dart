@@ -262,28 +262,20 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         overlay.size.width - x,
         overlay.size.height - y,
       ),
+      menuPadding: const EdgeInsets.symmetric(vertical: MotifSpacing.xs),
+      constraints: const BoxConstraints(minWidth: 112, maxWidth: 160),
       items: [
-        PopupMenuItem<_TerminalContextMenuAction>(
-          value: _TerminalContextMenuAction.copy,
+        _terminalContextMenuItem(
+          action: _TerminalContextMenuAction.copy,
           enabled: _selection != null,
-          child: const Row(
-            children: [
-              Icon(Icons.copy_outlined),
-              SizedBox(width: 12),
-              Text('Copy'),
-            ],
-          ),
+          icon: Icons.copy_outlined,
+          label: 'Copy',
         ),
-        PopupMenuItem<_TerminalContextMenuAction>(
-          value: _TerminalContextMenuAction.paste,
+        _terminalContextMenuItem(
+          action: _TerminalContextMenuAction.paste,
           enabled: widget.motif.canInput,
-          child: const Row(
-            children: [
-              Icon(Icons.content_paste),
-              SizedBox(width: 12),
-              Text('Paste'),
-            ],
-          ),
+          icon: Icons.content_paste,
+          label: 'Paste',
         ),
       ],
     );
@@ -294,6 +286,28 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       case _TerminalContextMenuAction.paste:
         await _pasteFromClipboard();
     }
+  }
+
+  PopupMenuItem<_TerminalContextMenuAction> _terminalContextMenuItem({
+    required _TerminalContextMenuAction action,
+    required bool enabled,
+    required IconData icon,
+    required String label,
+  }) {
+    return PopupMenuItem<_TerminalContextMenuAction>(
+      value: action,
+      enabled: enabled,
+      height: MotifControlSize.sm,
+      padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: MotifIconSize.sm),
+          const SizedBox(width: MotifSpacing.sm),
+          Text(label, style: MotifType.subhead),
+        ],
+      ),
+    );
   }
 
   void _beginMouseSelection(PointerDownEvent e) {

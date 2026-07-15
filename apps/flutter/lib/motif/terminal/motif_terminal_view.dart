@@ -38,6 +38,7 @@ import 'terminal_scrollbar.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_session.dart';
 import 'terminal_worker.dart';
+import '../ui/theme/motif_theme.dart';
 import '../ui/widgets/top_toast.dart';
 
 part 'motif_terminal/text_input.dart';
