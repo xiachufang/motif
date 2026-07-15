@@ -14,6 +14,15 @@ enum TerminalFocusIntent {
   final bool revealBottom;
 }
 
+/// Whether a completed terminal tap should enter keyboard-input focus.
+///
+/// A tap that starts while text is selected belongs to the selection UI. It
+/// must not reveal the live cursor and move the viewport away from the selected
+/// rows, even when that tap clears the selection.
+bool terminalTapRequestsFocus({required bool selectionActive}) {
+  return !selectionActive;
+}
+
 /// Whether changing the active terminal tab should claim keyboard focus by
 /// default.
 ///

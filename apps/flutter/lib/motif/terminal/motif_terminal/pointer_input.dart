@@ -49,8 +49,15 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerKind = e.kind;
     _lastPointerPosition = e.localPosition;
+    _tapStartedWithSelection =
+        (e.buttons & kPrimaryButton) != 0 && _selection != null;
     if (_isScrollbarHotZone(e.localPosition)) {
       _scrollbarPointers.add(e.pointer);
+      return;
+    }
+    if (terminalContextMenuShouldOpen(buttons: e.buttons)) {
+      _terminalContextMenuPointer = e.pointer;
+      unawaited(_showDesktopTerminalContextMenu(e.position));
       return;
     }
     if (_canStartMouseSelection(e)) {
@@ -86,6 +93,10 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
     if (_scrollbarPointers.remove(e.pointer)) return;
+    if (e.pointer == _terminalContextMenuPointer) {
+      _terminalContextMenuPointer = null;
+      return;
+    }
     if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
@@ -134,6 +145,10 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerCancel(PointerCancelEvent e) {
     if (_scrollbarPointers.remove(e.pointer)) return;
+    if (e.pointer == _terminalContextMenuPointer) {
+      _terminalContextMenuPointer = null;
+      return;
+    }
     if (_isMouseSelectionPointer(e.pointer)) {
       _finishMouseSelection();
       return;
@@ -153,6 +168,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
     if (_scrollbarPointers.contains(e.pointer)) return;
+    if (e.pointer == _terminalContextMenuPointer) return;
     if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
       return;
@@ -230,8 +246,60 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
   }
 
+  Future<void> _showDesktopTerminalContextMenu(Offset globalPosition) async {
+    if (!mounted) return;
+    final overlay =
+        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
+    if (overlay == null || !overlay.hasSize) return;
+    final localPosition = overlay.globalToLocal(globalPosition);
+    final x = localPosition.dx.clamp(0.0, overlay.size.width).toDouble();
+    final y = localPosition.dy.clamp(0.0, overlay.size.height).toDouble();
+    final action = await showMenu<_TerminalContextMenuAction>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        x,
+        y,
+        overlay.size.width - x,
+        overlay.size.height - y,
+      ),
+      items: [
+        PopupMenuItem<_TerminalContextMenuAction>(
+          value: _TerminalContextMenuAction.copy,
+          enabled: _selection != null,
+          child: const Row(
+            children: [
+              Icon(Icons.copy_outlined),
+              SizedBox(width: 12),
+              Text('Copy'),
+            ],
+          ),
+        ),
+        PopupMenuItem<_TerminalContextMenuAction>(
+          value: _TerminalContextMenuAction.paste,
+          enabled: widget.motif.canInput,
+          child: const Row(
+            children: [
+              Icon(Icons.content_paste),
+              SizedBox(width: 12),
+              Text('Paste'),
+            ],
+          ),
+        ),
+      ],
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case _TerminalContextMenuAction.copy:
+        await _copySelectedText();
+      case _TerminalContextMenuAction.paste:
+        await _pasteFromClipboard();
+    }
+  }
+
   void _beginMouseSelection(PointerDownEvent e) {
-    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
+    if (terminalTapRequestsFocus(selectionActive: _selection != null)) {
+      _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
+    }
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
     _mouseSelectionPointer = e.pointer;
@@ -881,3 +949,5 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 }
 
 enum _TouchSelectionHandle { start, end }
+
+enum _TerminalContextMenuAction { copy, paste }

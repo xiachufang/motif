@@ -32,6 +32,7 @@ import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
 import 'terminal_paste.dart';
+import 'terminal_pointer_policy.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_scrollbar.dart';
 import 'terminal_snapshot.dart';
@@ -107,6 +108,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
   final Set<int> _scrollbarPointers = <int>{};
+  int? _terminalContextMenuPointer;
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
   final GlobalKey _terminalSurfaceKey = GlobalKey(
     debugLabel: 'Motif terminal surface',
@@ -152,6 +154,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   bool _mouseSelectionStarted = false;
   bool _touchSelectionActive = false;
   bool _touchSelectionGestureActive = false;
+  bool _tapStartedWithSelection = false;
   _TouchSelectionHandle? _touchSelectionDragHandle;
   OverlayEntry? _touchSelectionHandlesEntry;
   OverlayEntry? _touchSelectionMenuEntry;
@@ -393,7 +396,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           onKeyEvent: _onKeyEvent,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: _toggleFocus,
+            onTap: _onTerminalTap,
+            onTapCancel: _onTerminalTapCancel,
             onLongPressStart: useTouchSelectionGestures
                 ? _onTerminalLongPressStart
                 : null,

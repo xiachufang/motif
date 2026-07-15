@@ -11,6 +11,14 @@ void main() {
     expect(TerminalFocusIntent.keyboardInput.revealBottom, isTrue);
   });
 
+  test('tap does not request input focus when selection was active', () {
+    expect(terminalTapRequestsFocus(selectionActive: true), isFalse);
+  });
+
+  test('tap requests input focus when there is no selection', () {
+    expect(terminalTapRequestsFocus(selectionActive: false), isTrue);
+  });
+
   test('tab switch autofocus is disabled on mobile platforms', () {
     expect(
       terminalAutofocusesOnTabSwitchByDefault(platform: TargetPlatform.iOS),

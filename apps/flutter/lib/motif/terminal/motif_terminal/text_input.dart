@@ -3,6 +3,17 @@
 part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalTextInput on _MotifTerminalViewState {
+  void _onTerminalTap() {
+    final selectionWasActive = _tapStartedWithSelection;
+    _tapStartedWithSelection = false;
+    if (!terminalTapRequestsFocus(selectionActive: selectionWasActive)) return;
+    _toggleFocus();
+  }
+
+  void _onTerminalTapCancel() {
+    _tapStartedWithSelection = false;
+  }
+
   void _requestFocus({
     required bool showSoftKeyboard,
     TerminalFocusIntent intent = TerminalFocusIntent.keyboardInput,
