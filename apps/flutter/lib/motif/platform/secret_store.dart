@@ -14,6 +14,15 @@ class FlutterSecureSecretStore implements SecretStore {
   FlutterSecureSecretStore({FlutterSecureStorage? storage})
     : _storage = storage ?? const FlutterSecureStorage();
 
+  /// Uses the standard per-user macOS Keychain. The data-protection Keychain
+  /// selected by flutter_secure_storage's default macOS options requires
+  /// restricted entitlements that are unavailable to our provisioning-free
+  /// Developer ID distribution.
+  FlutterSecureSecretStore.macos()
+    : _storage = const FlutterSecureStorage(
+        mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+      );
+
   final FlutterSecureStorage _storage;
 
   @override

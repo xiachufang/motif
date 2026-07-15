@@ -77,6 +77,7 @@ macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set --
 .PHONY: help graph version check-tools check-cargo check-flutter check-zig \
 	check-macos-tools check-ios-tools check-android-release-signing \
 	check-ios-release-signing check-macos-release-credentials \
+	check-macos-release-entitlements \
 	deps deps-rust deps-flutter deps-web deps-android \
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
@@ -86,7 +87,8 @@ macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set --
 	release-flutter-windows release-flutter-android release-flutter-ios \
 	prepare-flutter-macos-release configure-flutter-macos-release \
 	archive-flutter-macos-release import-macos-signing-certificate \
-	sign-flutter-macos-release package-flutter-macos-dmg \
+	sign-flutter-macos-release verify-flutter-macos-launch \
+	package-flutter-macos-dmg \
 	notarize-flutter-macos-dmg clean-macos-signing \
 	release-manifest verify-release release-tag clean-release
 
@@ -399,7 +401,33 @@ sign-flutter-macos-release: import-macos-signing-certificate
 	codesign --verify --deep --strict --verbose=2 "$(MACOS_APP_PATH)"; \
 	codesign --display --verbose=4 "$(MACOS_APP_PATH)"
 
-package-flutter-macos-dmg: sign-flutter-macos-release
+verify-flutter-macos-launch: sign-flutter-macos-release
+	@set -eu -o pipefail; \
+	executable="$(MACOS_APP_PATH)/Contents/MacOS/Motif"; \
+	launch_log="$(MACOS_WORK_DIR)/launch-smoke-test.log"; \
+	MOTIF_MACOS_RELEASE_PROBE=1 "$$executable" >"$$launch_log" 2>&1 & pid=$$!; \
+	attempt=0; \
+	while [ "$$attempt" -lt 80 ]; do \
+		if ! kill -0 "$$pid" 2>/dev/null; then \
+			status=0; wait "$$pid" || status=$$?; \
+			if [ "$$status" -ne 0 ] || ! grep -q 'Motif macOS release probe passed.' "$$launch_log"; then \
+				echo "Signed macOS app failed its Keychain launch probe (status $$status)." >&2; \
+				sed -n '1,200p' "$$launch_log" >&2; \
+				exit 1; \
+			fi; \
+			echo "Signed macOS app Keychain launch probe passed."; \
+			exit 0; \
+		fi; \
+		attempt=$$((attempt + 1)); \
+		sleep 0.25; \
+	done; \
+	kill "$$pid" 2>/dev/null || true; \
+	wait "$$pid" 2>/dev/null || true; \
+	echo "Signed macOS app Keychain launch probe timed out." >&2; \
+	sed -n '1,200p' "$$launch_log" >&2; \
+	exit 1
+
+package-flutter-macos-dmg: verify-flutter-macos-launch
 	@set -eu -o pipefail; \
 	staging="$(MACOS_WORK_DIR)/dmg"; \
 	identity="$$(cat "$(MACOS_SIGNING_IDENTITY_FILE)")"; \
@@ -470,7 +498,13 @@ release-flutter-ios: check-ios-release-signing deps-ios ## Build and copy the si
 		cp "$$ipa" "$(RELEASE_DIR)/ios/Motif-$(ARTIFACT_SUFFIX).ipa"
 	@echo "iOS IPA: $(RELEASE_DIR)/ios/Motif-$(ARTIFACT_SUFFIX).ipa"
 
-verify-release: deps-flutter check-cargo check-zig ## Run release-focused checks.
+check-macos-release-entitlements: ## Reject restricted entitlements unsupported by Developer ID distribution.
+	@if grep -q '<key>keychain-access-groups</key>' "$(MACOS_ENTITLEMENTS)"; then \
+		echo "$(MACOS_ENTITLEMENTS) contains keychain-access-groups, which requires an embedded provisioning profile and prevents this Developer ID app from launching." >&2; \
+		exit 1; \
+	fi
+
+verify-release: deps-flutter check-cargo check-zig check-macos-release-entitlements ## Run release-focused checks.
 	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" analyze
 	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" test
 	@$(CARGO) test $(CARGO_LOCKED) -p motif-server
