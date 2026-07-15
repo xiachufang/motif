@@ -1,17 +1,8 @@
-/// Loopback forwarder for the rendezvous (rzv) connect side.
+/// Loopback forwarder for the rendezvous WSS connect side.
 ///
-/// Makes a relay-reached `motifd` look like a plain local server to the rest of
-/// the client. [start] binds `127.0.0.1:<ephemeral>`; for every inbound local
-/// connection it dials the relay, runs the [RzvProtocol] handshake
-/// (`HELLO(connect)` → wait for `PAIRED`, answering `PING` with `PONG`), then
-/// splices bytes both ways. The existing WebSocket/HTTP transport connects to
-/// `http://127.0.0.1:<port>` exactly as it would to a direct server, so
-/// `RpcClient` stays transport-agnostic — mirroring how the tailscale path
-/// exposes a loopback proxy.
-///
-/// One local connection ⇒ one relay pairing (per-connection rendezvous). The
-/// matching `motifd` keeps a pool of parked `accept`s and re-parks after each
-/// pairing; see `docs/rzv-protocol.md`.
+/// Each local byte-stream connection gets one outer WebSocket. Binary messages
+/// carry the existing end-to-end TLS stream; native WebSocket PING/PONG keeps
+/// the relay path alive.
 library;
 
 import 'dart:async';
@@ -26,6 +17,7 @@ class RzvForwarder {
     required this.relayHost,
     required this.relayPort,
     required Uint8List token,
+    this.relayScheme = 'wss',
     this.pairTimeout = const Duration(seconds: 30),
     this.dialTimeout = const Duration(seconds: 10),
   }) : token = Uint8List.fromList(token),
@@ -36,6 +28,7 @@ class RzvForwarder {
 
   final String relayHost;
   final int relayPort;
+  final String relayScheme;
   final Uint8List token;
   final Duration pairTimeout;
   final Duration dialTimeout;
@@ -43,7 +36,6 @@ class RzvForwarder {
   ServerSocket? _server;
   final Set<_Conn> _conns = {};
 
-  /// The loopback port the forwarder is listening on. Throws if not started.
   int get port {
     final s = _server;
     if (s == null) throw StateError('RzvForwarder not started');
@@ -52,7 +44,6 @@ class RzvForwarder {
 
   bool get isRunning => _server != null;
 
-  /// Bind the loopback listener and begin accepting. Returns the bound port.
   Future<int> start() async {
     if (_server != null) return _server!.port;
     final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -63,13 +54,13 @@ class RzvForwarder {
           Log.w('rzv forwarder accept error: $e', name: 'motif.rzv'),
     );
     Log.i(
-      'rzv forwarder 127.0.0.1:${s.port} -> $relayHost:$relayPort',
+      'rzv forwarder 127.0.0.1:${s.port} -> '
+      '$relayScheme://$relayHost:$relayPort/v2/connect',
       name: 'motif.rzv',
     );
     return s.port;
   }
 
-  /// Stop accepting and tear down every in-flight pairing.
   Future<void> stop() async {
     final s = _server;
     _server = null;
@@ -81,21 +72,26 @@ class RzvForwarder {
   }
 
   Future<void> _onLocal(Socket local) async {
-    Socket relay;
+    final uri = Uri(
+      scheme: relayScheme,
+      host: relayHost,
+      port: relayPort,
+      path: '/v2/connect',
+    );
+    WebSocket relay;
     try {
-      relay = await Socket.connect(relayHost, relayPort, timeout: dialTimeout);
+      relay = await WebSocket.connect(uri.toString()).timeout(dialTimeout);
+      relay.pingInterval = const Duration(seconds: 15);
     } catch (e) {
-      Log.w('rzv: dial relay failed: $e', name: 'motif.rzv');
+      Log.w('rzv: WSS dial failed: $e', name: 'motif.rzv');
       local.destroy();
       return;
     }
 
     final conn = _Conn(local, relay);
     _conns.add(conn);
-
     try {
-      relay.add(RzvProtocol.buildHello(RzvProtocol.roleConnect, token));
-      await relay.flush();
+      relay.add(RzvProtocol.buildHello(token));
     } catch (e) {
       Log.w('rzv: write HELLO failed: $e', name: 'motif.rzv');
       conn.destroy();
@@ -110,11 +106,6 @@ class RzvForwarder {
         _conns.remove(conn);
       }
     });
-
-    // Buffer anything the local side writes (the HTTP/WS upgrade request can
-    // arrive the instant it connects to loopback) until the relay reports
-    // PAIRED, then flush it through. Writing before PAIRED would feed bytes to
-    // the relay while it's still in control-byte mode.
     final pending = BytesBuilder(copy: false);
 
     local.listen(
@@ -125,55 +116,46 @@ class RzvForwarder {
           pending.add(chunk);
         }
       },
-      onError: (Object e) {
+      onError: (Object _) {
+        pairTimer.cancel();
         conn.destroy();
         _conns.remove(conn);
       },
       onDone: () {
-        // If we never paired, tear down; once paired the relay onDone will.
-        if (!conn.paired) {
-          pairTimer.cancel();
-          conn.destroy();
-          _conns.remove(conn);
-        } else {
-          conn.closeRelayWrite();
-        }
+        pairTimer.cancel();
+        conn.closeRelay();
+        _conns.remove(conn);
       },
       cancelOnError: true,
     );
 
     relay.listen(
-      (chunk) {
-        if (conn.paired) {
-          conn.writeLocal(chunk);
+      (message) {
+        if (message is! List<int>) {
+          conn.destroy();
           return;
         }
-        // Pre-pairing: consume control bytes one at a time until PAIRED.
-        for (var i = 0; i < chunk.length; i++) {
-          final b = chunk[i];
-          if (b == RzvProtocol.ctrlPaired) {
+        if (!conn.paired) {
+          if (message.length == 1 && message[0] == RzvProtocol.ctrlPaired) {
             conn.paired = true;
             pairTimer.cancel();
             if (pending.isNotEmpty) conn.writeRelay(pending.takeBytes());
-            final rest = Uint8List.sublistView(chunk, i + 1);
-            if (rest.isNotEmpty) conn.writeLocal(rest);
-            return;
-          } else if (b == RzvProtocol.ctrlPing) {
-            conn.writeRelay(Uint8List.fromList(const [RzvProtocol.ctrlPong]));
+          } else {
+            Log.w('rzv: unexpected frame before PAIRED', name: 'motif.rzv');
+            conn.destroy();
           }
-          // Other pre-pairing bytes are ignored defensively.
+          return;
         }
+        conn.writeLocal(message);
       },
-      onError: (Object e) {
+      onError: (Object _) {
         pairTimer.cancel();
         conn.destroy();
         _conns.remove(conn);
       },
       onDone: () {
         pairTimer.cancel();
-        if (conn.paired) {
-          conn.closeLocalWrite();
-        } else {
+        if (!conn.paired) {
           Log.w('rzv: relay closed before PAIRED', name: 'motif.rzv');
         }
         conn.destroy();
@@ -184,13 +166,11 @@ class RzvForwarder {
   }
 }
 
-/// A live local↔relay pairing. Centralises writes so a closed peer can't crash
-/// the splice (writing to a destroyed `Socket` throws).
 class _Conn {
   _Conn(this.local, this.relay);
 
   final Socket local;
-  final Socket relay;
+  final WebSocket relay;
   bool paired = false;
   bool _dead = false;
 
@@ -212,16 +192,9 @@ class _Conn {
     }
   }
 
-  void closeLocalWrite() {
-    try {
-      local.destroy();
-    } catch (_) {}
-  }
-
-  void closeRelayWrite() {
-    try {
-      relay.destroy();
-    } catch (_) {}
+  void closeRelay() {
+    if (_dead) return;
+    unawaited(relay.close());
   }
 
   void destroy() {
@@ -230,8 +203,6 @@ class _Conn {
     try {
       local.destroy();
     } catch (_) {}
-    try {
-      relay.destroy();
-    } catch (_) {}
+    unawaited(relay.close());
   }
 }

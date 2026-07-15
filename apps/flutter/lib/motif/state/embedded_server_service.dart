@@ -7,6 +7,8 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../platform/secret_store.dart';
+
 /// Stable id of the auto-managed loopback server entry.
 const String kEmbeddedServerId = 'embedded-local';
 
@@ -15,10 +17,14 @@ const String kEmbeddedServerId = 'embedded-local';
 const String kDefaultPushRelayAddress = 'motif-push-relay.slothease.com';
 
 typedef EmbeddedServerFactory =
-    Future<EmbeddedServerService> Function(SharedPreferences prefs);
+    Future<EmbeddedServerService> Function(
+      SharedPreferences prefs,
+      SecretStore secrets,
+    );
 
 Future<EmbeddedServerService> createNoopEmbeddedServerService(
   SharedPreferences prefs,
+  SecretStore secrets,
 ) async => NoopEmbeddedServerService();
 
 /// How the embedded server should listen. Mirrors the Rust `ListenMode`
@@ -35,6 +41,10 @@ class EmbeddedServerConfig {
   final String tsControlUrl;
   final bool rzvEnabled;
   final String rzvRelay;
+
+  /// Loaded from the platform credential store on desktop. This value is
+  /// passed to the embedded Rust server but never serialized to preferences.
+  final String rzvJwt;
   final String pushRelayUrl;
   final bool autostart;
 
@@ -47,6 +57,7 @@ class EmbeddedServerConfig {
     this.tsControlUrl = '',
     this.rzvEnabled = false,
     this.rzvRelay = '',
+    this.rzvJwt = '',
     this.pushRelayUrl = kDefaultPushRelayAddress,
     this.autostart = true,
   });
@@ -60,6 +71,7 @@ class EmbeddedServerConfig {
     String? tsControlUrl,
     bool? rzvEnabled,
     String? rzvRelay,
+    String? rzvJwt,
     String? pushRelayUrl,
     bool? autostart,
   }) => EmbeddedServerConfig(
@@ -71,6 +83,7 @@ class EmbeddedServerConfig {
     tsAuthkey: tsAuthkey ?? this.tsAuthkey,
     rzvEnabled: rzvEnabled ?? this.rzvEnabled,
     rzvRelay: rzvRelay ?? this.rzvRelay,
+    rzvJwt: rzvJwt ?? this.rzvJwt,
     pushRelayUrl: pushRelayUrl ?? this.pushRelayUrl,
     autostart: autostart ?? this.autostart,
   );

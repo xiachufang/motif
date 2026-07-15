@@ -143,20 +143,20 @@ const translations = {
     "rzv.kicker": "Rendezvous relay",
     "rzv.title": "Deploy rzv once, then pair through it when direct routes are hard.",
     "rzv.lead":
-      "Run the relay on any reachable host. motifd and clients both dial out, the relay matches them by token, and Motif's TLS/psk layer stays end-to-end.",
+      "Run the relay behind an HTTPS/WSS reverse proxy. motifd authenticates with JWT, the relay limits bandwidth by owner, and Motif's inner TLS/psk layer stays end-to-end.",
     "rzv.deploy.title": "Run the relay",
     "rzv.deploy.copy":
-      "Expose one TCP port on a small VPS or internal host. The relay holds only in-flight pairing state.",
+      "Keep its WebSocket port private, expose it through your HTTPS proxy, and mount the JWT/rate configuration.",
     "rzv.motifd.title": "Point motifd at it",
     "rzv.motifd.copy":
-      "For relay-only Docker deployments, disable the direct listener and set MOTIFD_RZV_RELAY. For source builds, pass --rzv-relay.",
+      "For relay-only deployments, configure MOTIFD_RZV_RELAY plus MOTIFD_RZV_JWT_FILE; binaries use --rzv-relay plus --rzv-jwt-file.",
     "rzv.motifd.docker": "Docker:",
     "rzv.motifd.binary": "Binary:",
     "rzv.pair.title": "Pair and verify",
     "rzv.pair.copy":
       "Copy the motif://pair URI from motifd logs, then scan or paste it in Motif. The same link carries the relay address, psk, and cert pin.",
     "rzv.notes.title": "Operational notes",
-    "rzv.note1": "The relay forwards ciphertext only; it cannot read terminal, file, or git traffic.",
+    "rzv.note1": "The relay sees JWT/pairing metadata, but application traffic remains inner-TLS ciphertext.",
     "rzv.note2": "Persist /data on motifd so the psk and cert pin survive restarts.",
     "rzv.note3": "One relay can serve many independent motifd servers and clients.",
     "rzv.docs": "Full relay docs",
@@ -391,20 +391,20 @@ const translations = {
     "rzv.kicker": "Rendezvous relay",
     "rzv.title": "部署一次 rzv relay，直连困难时就通过它配对。",
     "rzv.lead":
-      "把 relay 跑在任意可访问的主机上。motifd 和客户端都主动拨出，relay 只按 token 撮合连接，Motif 的 TLS/psk 层仍保持端到端。",
+      "把 relay 放在 HTTPS/WSS 反向代理后。motifd 用 JWT 鉴权，relay 按 owner 限速，Motif 内层 TLS/psk 仍保持端到端。",
     "rzv.deploy.title": "运行 relay",
     "rzv.deploy.copy":
-      "在一台小 VPS 或内网主机上暴露一个 TCP 端口即可。relay 只保存正在等待配对的临时状态。",
+      "保持 WebSocket 端口私有，通过 HTTPS 代理暴露，并挂载 JWT/限速配置。",
     "rzv.motifd.title": "让 motifd 连接它",
     "rzv.motifd.copy":
-      "Docker 的 relay-only 部署可以关闭直连 listener，并设置 MOTIFD_RZV_RELAY；源码/二进制部署直接传 --rzv-relay。",
+      "relay-only 部署需同时设置 MOTIFD_RZV_RELAY 和 MOTIFD_RZV_JWT_FILE；二进制使用对应的 --rzv-relay 与 --rzv-jwt-file。",
     "rzv.motifd.docker": "Docker：",
     "rzv.motifd.binary": "二进制：",
     "rzv.pair.title": "配对并验证",
     "rzv.pair.copy":
       "从 motifd 日志复制 motif://pair URI，在 Motif 里扫码或粘贴。这个链接同时包含 relay 地址、psk 和证书 pin。",
     "rzv.notes.title": "运维要点",
-    "rzv.note1": "relay 只转发密文，无法读取终端、文件或 Git 流量。",
+    "rzv.note1": "relay 能看到 JWT/配对元数据，但应用流量仍是内层 TLS 密文。",
     "rzv.note2": "给 motifd 持久化 /data，让 psk 和证书 pin 跨重启保持稳定。",
     "rzv.note3": "一台 relay 可以服务多组独立的 motifd 和客户端。",
     "rzv.docs": "完整 relay 文档",

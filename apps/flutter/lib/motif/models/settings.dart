@@ -198,6 +198,26 @@ class MotifServer {
     return (host, port);
   }
 
+  /// Parse a relay endpoint. Bare `host:port` implies WSS; explicit `ws://`
+  /// is useful for local testing and `wss://` may omit the standard port.
+  static ({String scheme, String host, int port})? splitRelayEndpoint(
+    String value,
+  ) {
+    final s = value.trim();
+    if (s.contains('://')) {
+      final uri = Uri.tryParse(s);
+      if (uri == null ||
+          (uri.scheme != 'ws' && uri.scheme != 'wss') ||
+          uri.host.isEmpty) {
+        return null;
+      }
+      final port = uri.hasPort ? uri.port : (uri.scheme == 'wss' ? 443 : 80);
+      return (scheme: uri.scheme, host: uri.host, port: port);
+    }
+    final hp = splitHostPort(s);
+    return hp == null ? null : (scheme: 'wss', host: hp.$1, port: hp.$2);
+  }
+
   static String encodeList(List<MotifServer> servers) =>
       jsonEncode(servers.map((s) => s.toJson()).toList());
 

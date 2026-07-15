@@ -429,7 +429,7 @@
           <div class="section-heading compact">
             <p class="section-kicker" data-i18n="rzv.kicker">Rendezvous relay</p>
             <h2 id="rzv-title" data-i18n="rzv.title">Deploy rzv once, then pair through it when direct routes are hard.</h2>
-            <p data-i18n="rzv.lead">Run the relay on any reachable host. motifd and clients both dial out, the relay matches them by token, and Motif's TLS/psk layer stays end-to-end.</p>
+            <p data-i18n="rzv.lead">Run the relay behind an HTTPS/WSS reverse proxy. motifd authenticates with JWT, the relay limits bandwidth by owner, and Motif's inner TLS/psk layer stays end-to-end.</p>
           </div>
           <div class="rzv-layout">
             <div class="rzv-cards">
@@ -438,9 +438,10 @@
                   <span class="rzv-step" aria-hidden="true">1</span>
                   <h3 data-i18n="rzv.deploy.title">Run the relay</h3>
                 </div>
-                <p data-i18n="rzv.deploy.copy">Expose one TCP port on a small VPS or internal host. The relay holds only in-flight pairing state.</p>
+                <p data-i18n="rzv.deploy.copy">Keep its WebSocket port private, expose it through your HTTPS proxy, and mount the JWT/rate configuration.</p>
                 <pre><code>docker run -d --name motif-rzv --restart=unless-stopped \
-  -p 8765:8765 \
+  -p 127.0.0.1:8765:8765 \
+  -v /etc/motif-rzv:/run/secrets:ro \
   ghcr.io/xiachufang/motif-rendezvous:latest</code></pre>
               </article>
               <article class="rzv-card">
@@ -448,16 +449,19 @@
                   <span class="rzv-step" aria-hidden="true">2</span>
                   <h3 data-i18n="rzv.motifd.title">Point motifd at it</h3>
                 </div>
-                <p data-i18n="rzv.motifd.copy">For relay-only Docker deployments, disable the direct listener and set MOTIFD_RZV_RELAY. For source builds, pass --rzv-relay.</p>
+                <p data-i18n="rzv.motifd.copy">For relay-only deployments, configure the relay endpoint and owner JWT file together.</p>
                 <p class="code-label" data-i18n="rzv.motifd.docker">Docker:</p>
                 <pre><code>docker run -d --name motifd --restart=unless-stopped \
   -v motifd-data:/data \
   -v "$PWD:/work" \
+  -v /etc/motif/rzv-owner.jwt:/run/secrets/rzv-owner.jwt:ro \
   -e MOTIFD_LISTEN=off \
-  -e MOTIFD_RZV_RELAY=relay.example.com:8765 \
+  -e MOTIFD_RZV_RELAY=wss://relay.example.com \
+  -e MOTIFD_RZV_JWT_FILE=/run/secrets/rzv-owner.jwt \
   ghcr.io/xiachufang/motifd:latest</code></pre>
                 <p class="code-label" data-i18n="rzv.motifd.binary">Binary:</p>
-                <pre><code>motifd --rzv-relay relay.example.com:8765</code></pre>
+                <pre><code>motifd --rzv-relay wss://relay.example.com \
+  --rzv-jwt-file /etc/motif/rzv-owner.jwt</code></pre>
               </article>
               <article class="rzv-card">
                 <div class="rzv-card-heading">
@@ -472,7 +476,7 @@ docker inspect --format '{{.State.Health.Status}}' motif-rzv</code></pre>
             <aside class="rzv-notes" aria-label="Rendezvous relay notes">
               <h3 data-i18n="rzv.notes.title">Operational notes</h3>
               <ul>
-                <li data-i18n="rzv.note1">The relay forwards ciphertext only; it cannot read terminal, file, or git traffic.</li>
+                <li data-i18n="rzv.note1">The relay sees JWT/pairing metadata, but application traffic remains inner-TLS ciphertext.</li>
                 <li data-i18n="rzv.note2">Persist /data on motifd so the psk and cert pin survive restarts.</li>
                 <li data-i18n="rzv.note3">One relay can serve many independent motifd servers and clients.</li>
               </ul>

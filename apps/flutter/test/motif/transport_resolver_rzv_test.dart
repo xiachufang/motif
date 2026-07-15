@@ -35,7 +35,7 @@ void main() {
         name: 'studio',
         host: 'studio',
         kind: ServerKind.rendezvous,
-        relay: '127.0.0.1:${relay.port}',
+        relay: 'ws://127.0.0.1:${relay.port}',
         psk: pskB64,
       );
 
@@ -56,7 +56,7 @@ void main() {
       expect(await echo.timeout(const Duration(seconds: 5)), payload);
       expect(relay.hellos, hasLength(1));
       expect(
-        RzvProtocol.parseHello(relay.hellos.single).token,
+        RzvProtocol.parseHello(relay.hellos.single),
         RzvProtocol.deriveToken(pskBytes),
         reason:
             'wire token is HKDF-derived from the pairing secret, not the raw psk',
@@ -77,7 +77,7 @@ void main() {
         name: 'studio',
         host: 'studio',
         kind: ServerKind.rendezvous,
-        relay: '127.0.0.1:${relay.port}',
+        relay: 'ws://127.0.0.1:${relay.port}',
         psk: pskB64,
       );
       final a = await resolver.resolve(s) as TransportReady;
@@ -100,7 +100,7 @@ void main() {
         name: 'studio',
         host: 'studio',
         kind: ServerKind.rendezvous,
-        relay: '127.0.0.1:${relay.port}',
+        relay: 'ws://127.0.0.1:${relay.port}',
         psk: pskB64,
         pubKey: pin,
       );
@@ -137,7 +137,7 @@ void main() {
         name: 'y',
         host: 'y',
         kind: ServerKind.rendezvous,
-        relay: '127.0.0.1:${relay.port}',
+        relay: 'ws://127.0.0.1:${relay.port}',
         psk: 'too-short',
       );
       final badPskResult = await resolver.resolve(badPsk);
@@ -166,7 +166,7 @@ void main() {
       name: 'studio',
       host: 'studio',
       kind: ServerKind.rendezvous,
-      relay: '127.0.0.1:$relayPort',
+      relay: 'ws://127.0.0.1:$relayPort',
       psk: pskB64,
       pubKey: pinB64,
     );
@@ -381,50 +381,49 @@ Future<Uint8List> _collect(Socket sock, int n) {
   return c.future;
 }
 
-/// Minimal in-process relay + echo peer: reads HELLO, sends PAIRED, echoes.
+/// Minimal in-process WebSocket relay + echo peer.
 class _FakeRelay {
   _FakeRelay(this._server);
-  final ServerSocket _server;
+  final HttpServer _server;
   final List<Uint8List> hellos = [];
-  final List<Socket> _socks = [];
+  final List<WebSocket> _sockets = [];
 
   int get port => _server.port;
 
   static Future<_FakeRelay> start() async {
-    final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final relay = _FakeRelay(s);
-    s.listen(relay._onConn);
+    s.listen(relay._onRequest);
     return relay;
   }
 
-  void _onConn(Socket sock) {
-    _socks.add(sock);
-    final buf = <int>[];
+  Future<void> _onRequest(HttpRequest request) async {
+    if (request.uri.path != '/v2/connect' ||
+        !WebSocketTransformer.isUpgradeRequest(request)) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+    final socket = await WebSocketTransformer.upgrade(request);
+    _sockets.add(socket);
     var paired = false;
-    sock.listen((chunk) {
+    socket.listen((message) {
+      if (message is! List<int>) return;
       if (paired) {
-        sock.add(chunk);
+        socket.add(message);
         return;
       }
-      buf.addAll(chunk);
-      if (buf.length >= RzvProtocol.helloLength) {
-        hellos.add(Uint8List.fromList(buf.sublist(0, RzvProtocol.helloLength)));
-        buf.removeRange(0, RzvProtocol.helloLength);
-        sock.add(const [RzvProtocol.ctrlPaired]);
-        paired = true;
-        if (buf.isNotEmpty) {
-          sock.add(Uint8List.fromList(buf));
-          buf.clear();
-        }
-      }
+      hellos.add(Uint8List.fromList(message));
+      socket.add(const [RzvProtocol.ctrlPaired]);
+      paired = true;
     }, onError: (_) {});
   }
 
   Future<void> stop() async {
-    for (final s in _socks) {
-      s.destroy();
+    for (final socket in _sockets) {
+      await socket.close();
     }
-    await _server.close();
+    await _server.close(force: true);
   }
 }
 

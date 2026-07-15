@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../platform/secret_store.dart';
 import '../platform/motif_embed_ffi.dart';
 import 'embedded_server_service.dart';
 // jsonDecodeMap / jsonEncodeMap live here (the ServerStore type is no longer
@@ -17,6 +18,7 @@ import 'embedded_server_service.dart';
 import 'stores.dart';
 
 const String _kConfigKey = 'motif.embedded.v1';
+const String kEmbeddedRzvJwtSecretKey = 'motif.embedded.rzv.jwt';
 
 bool get _isDesktop =>
     Platform.isMacOS || Platform.isLinux || Platform.isWindows;
@@ -41,7 +43,8 @@ bool _jsonBool(Object? value, bool fallback) =>
     value is bool ? value : fallback;
 
 extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
-  Map<String, Object?> toJson() => {
+  /// Non-secret settings safe to persist in SharedPreferences.
+  Map<String, Object?> toPersistedJson() => {
     'listen_mode': listenMode.name,
     'port': port,
     'tailscale': {
@@ -54,6 +57,13 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
     'push_relay_url': pushRelayUrl,
     'autostart': autostart,
   };
+
+  /// Full in-memory configuration passed directly to the embedded Rust server.
+  Map<String, Object?> toRuntimeJson() {
+    final json = toPersistedJson();
+    json['rzv'] = {'enabled': rzvEnabled, 'relay': rzvRelay, 'jwt': rzvJwt};
+    return json;
+  }
 }
 
 /// Decode persisted settings defensively. Config key `motif.embedded.v1` has
@@ -73,6 +83,7 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> j) {
     tsControlUrl: _jsonString(ts['control_url'], defaults.tsControlUrl),
     rzvEnabled: _jsonBool(rzv['enabled'], defaults.rzvEnabled),
     rzvRelay: _jsonString(rzv['relay'], defaults.rzvRelay),
+    rzvJwt: _jsonString(rzv['jwt'], defaults.rzvJwt),
     pushRelayUrl: _jsonString(j['push_relay_url'], defaults.pushRelayUrl),
     autostart: _jsonBool(j['autostart'], defaults.autostart),
   );
@@ -96,17 +107,20 @@ EmbeddedServerStatus _statusFromJson(Map<String, Object?> j) {
 
 Future<EmbeddedServerService> createDesktopEmbeddedServerService(
   SharedPreferences prefs,
-) => DesktopEmbeddedServerService.create(prefs);
+  SecretStore secrets,
+) => DesktopEmbeddedServerService.create(prefs, secrets);
 
 class DesktopEmbeddedServerService extends EmbeddedServerService {
   final SharedPreferences _prefs;
+  final SecretStore _secrets;
   final LibMotifEmbed? _lib;
 
   EmbeddedServerConfig _config = const EmbeddedServerConfig();
   EmbeddedServerStatus _status = const EmbeddedServerStatus();
   Timer? _poll;
+  Future<void> _configUpdates = Future<void>.value();
 
-  DesktopEmbeddedServerService._(this._prefs, this._lib) {
+  DesktopEmbeddedServerService._(this._prefs, this._secrets, this._lib) {
     final raw = _prefs.getString(_kConfigKey);
     if (raw != null) {
       final map = jsonDecodeMap(raw);
@@ -120,6 +134,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   /// connectable target is the host's (AppState's) job, by observing status.
   static Future<DesktopEmbeddedServerService> create(
     SharedPreferences prefs,
+    SecretStore secrets,
   ) async {
     LibMotifEmbed? lib;
     if (_isDesktop) {
@@ -133,7 +148,8 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
         }
       }
     }
-    final svc = DesktopEmbeddedServerService._(prefs, lib);
+    final svc = DesktopEmbeddedServerService._(prefs, secrets, lib);
+    await svc._loadRzvJwtAndMigrate();
     if (svc.available && svc._config.autostart) {
       unawaited(svc.start());
     }
@@ -154,10 +170,66 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   @override
   EmbeddedRunState get phase => _status.phase;
 
+  Future<void> _loadRzvJwtAndMigrate() async {
+    final legacyJwt = _config.rzvJwt.trim();
+    if (!_secrets.isAvailable) {
+      if (legacyJwt.isNotEmpty) {
+        throw StateError(
+          'Secure storage is required to migrate the relay JWT.',
+        );
+      }
+      // Rewrite even without a JWT so an empty legacy `rzv.jwt` field is
+      // removed from the ordinary preferences document.
+      await _persistNonSecretConfig();
+      return;
+    }
+
+    final storedJwt = (await _secrets.read(kEmbeddedRzvJwtSecretKey))?.trim();
+    final jwt = storedJwt == null || storedJwt.isEmpty ? legacyJwt : storedJwt;
+    if ((storedJwt == null || storedJwt.isEmpty) && legacyJwt.isNotEmpty) {
+      // Write first and only then erase the plaintext copy, so a Keychain /
+      // credential-manager failure never loses the existing credential.
+      await _secrets.write(kEmbeddedRzvJwtSecretKey, legacyJwt);
+    }
+    _config = _config.copyWith(rzvJwt: jwt);
+    await _persistNonSecretConfig();
+  }
+
+  Future<void> _persistNonSecretConfig() async {
+    await _prefs.setString(
+      _kConfigKey,
+      jsonEncodeMap(_config.toPersistedJson()),
+    );
+  }
+
   @override
-  Future<void> updateConfig(EmbeddedServerConfig next) async {
-    _config = next;
-    await _prefs.setString(_kConfigKey, jsonEncodeMap(next.toJson()));
+  Future<void> updateConfig(EmbeddedServerConfig next) {
+    final operation = _configUpdates.then((_) => _applyConfig(next));
+    // Keep later edits ordered even if one write fails, while still returning
+    // the original error to the caller that initiated the failed update.
+    _configUpdates = operation.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return operation;
+  }
+
+  Future<void> _applyConfig(EmbeddedServerConfig next) async {
+    final jwt = next.rzvJwt.trim();
+    if (jwt != _config.rzvJwt) {
+      if (!_secrets.isAvailable && jwt.isNotEmpty) {
+        throw StateError('Secure storage is required for the relay JWT.');
+      }
+      if (_secrets.isAvailable) {
+        if (jwt.isEmpty) {
+          await _secrets.delete(kEmbeddedRzvJwtSecretKey);
+        } else {
+          await _secrets.write(kEmbeddedRzvJwtSecretKey, jwt);
+        }
+      }
+    }
+    _config = next.copyWith(rzvJwt: jwt);
+    await _persistNonSecretConfig();
     notifyListeners();
   }
 
@@ -171,7 +243,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   Future<void> start() async {
     final lib = _lib;
     if (lib == null) return;
-    lib.start(jsonEncode(_config.toJson()));
+    lib.start(jsonEncode(_config.toRuntimeJson()));
     _startPolling();
     await _refresh();
   }

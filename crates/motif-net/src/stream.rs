@@ -12,6 +12,11 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 
+/// Type-erased async stream used by the WSS rendezvous adapter after its
+/// WebSocket framing has been converted back into a byte stream.
+pub trait AsyncIo: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncIo for T {}
+
 // pin_project_lite doesn't allow `#[cfg]` on enum variants, so we define
 // two enum shapes — same name, same public surface — gated by feature.
 //
@@ -25,6 +30,7 @@ pin_project! {
     pub enum Stream {
         Tcp { #[pin] inner: TcpStream },
         Tls { inner: Box<TlsStream<TcpStream>> },
+        Rendezvous { inner: Box<dyn AsyncIo> },
     }
 }
 
@@ -36,6 +42,7 @@ pin_project! {
         Tcp { #[pin] inner: TcpStream },
         Tailscale { #[pin] inner: motif_tailscale::TsStream },
         Tls { inner: Box<TlsStream<TcpStream>> },
+        Rendezvous { inner: Box<dyn AsyncIo> },
     }
 }
 
@@ -51,6 +58,9 @@ impl Stream {
     pub fn from_tls(s: TlsStream<TcpStream>) -> Self {
         Stream::Tls { inner: Box::new(s) }
     }
+    pub fn from_rendezvous(s: impl AsyncIo + 'static) -> Self {
+        Stream::Rendezvous { inner: Box::new(s) }
+    }
 }
 
 impl AsyncRead for Stream {
@@ -64,6 +74,7 @@ impl AsyncRead for Stream {
             #[cfg(feature = "tailscale")]
             StreamProj::Tailscale { inner } => inner.poll_read(cx, buf),
             StreamProj::Tls { inner } => Pin::new(&mut **inner).poll_read(cx, buf),
+            StreamProj::Rendezvous { inner } => Pin::new(&mut **inner).poll_read(cx, buf),
         }
     }
 }
@@ -79,6 +90,7 @@ impl AsyncWrite for Stream {
             #[cfg(feature = "tailscale")]
             StreamProj::Tailscale { inner } => inner.poll_write(cx, buf),
             StreamProj::Tls { inner } => Pin::new(&mut **inner).poll_write(cx, buf),
+            StreamProj::Rendezvous { inner } => Pin::new(&mut **inner).poll_write(cx, buf),
         }
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -87,6 +99,7 @@ impl AsyncWrite for Stream {
             #[cfg(feature = "tailscale")]
             StreamProj::Tailscale { inner } => inner.poll_flush(cx),
             StreamProj::Tls { inner } => Pin::new(&mut **inner).poll_flush(cx),
+            StreamProj::Rendezvous { inner } => Pin::new(&mut **inner).poll_flush(cx),
         }
     }
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -95,6 +108,7 @@ impl AsyncWrite for Stream {
             #[cfg(feature = "tailscale")]
             StreamProj::Tailscale { inner } => inner.poll_shutdown(cx),
             StreamProj::Tls { inner } => Pin::new(&mut **inner).poll_shutdown(cx),
+            StreamProj::Rendezvous { inner } => Pin::new(&mut **inner).poll_shutdown(cx),
         }
     }
 }

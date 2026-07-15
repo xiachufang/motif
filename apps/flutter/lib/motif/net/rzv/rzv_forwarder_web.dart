@@ -1,6 +1,6 @@
-/// Web stub for [RzvForwarder]. The rendezvous transport relies on raw TCP
-/// sockets (`dart:io`), unavailable in the browser, so every operation that
-/// would touch the network throws `UnsupportedError`. The API mirrors
+/// Web stub for [RzvForwarder]. WSS still needs a local loopback server to
+/// expose its byte stream to the existing client stack; browsers cannot create
+/// one. Every operation that would touch the network throws. The API mirrors
 /// `rzv_forwarder_io.dart` so the transport resolver compiles on web.
 library;
 
@@ -11,12 +11,14 @@ class RzvForwarder {
     required this.relayHost,
     required this.relayPort,
     required Uint8List token,
+    this.relayScheme = 'wss',
     this.pairTimeout = const Duration(seconds: 30),
     this.dialTimeout = const Duration(seconds: 10),
   }) : token = Uint8List.fromList(token);
 
   final String relayHost;
   final int relayPort;
+  final String relayScheme;
   final Uint8List token;
   final Duration pairTimeout;
   final Duration dialTimeout;

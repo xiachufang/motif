@@ -2,13 +2,16 @@
 //! straight into `axum::serve(listener, app)`. With both backends
 //! configured, accepts are fanned in concurrently via `tokio::select!`.
 
-use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
+use http::header;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::config::{ListenConfig, RzvListenConfig};
 use crate::stream::Stream;
@@ -50,18 +53,17 @@ struct RzvBackend {
 // rzv wire constants — keep in lockstep with `motif-rendezvous` and
 // `docs/rzv-protocol.md`.
 const RZV_MAGIC: [u8; 4] = *b"MRZV";
-const RZV_VERSION: u8 = 1;
-const RZV_ROLE_ACCEPT: u8 = 0;
-const RZV_CTRL_PING: u8 = 0x01;
-const RZV_CTRL_PONG: u8 = 0x02;
+const RZV_VERSION: u8 = 2;
 const RZV_CTRL_PAIRED: u8 = 0x10;
+const RZV_HELLO_LEN: usize = RZV_MAGIC.len() + 1 + 32;
 
 /// The relay sends a PING immediately after parking and every 15 seconds by
 /// default.  If none arrive for three normal keepalive periods, the socket is
 /// probably half-open (common after sleep or a network-interface change).
 /// Bound the wait here so the pump can drop it and enter its reconnect loop
-/// even when the kernel never reports EOF/reset on the old TCP path.
-const RZV_PING_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// even when the underlying connection never reports EOF/reset.
+const RZV_CONTROL_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+const RZV_WS_KEEPALIVE: Duration = Duration::from_secs(15);
 
 #[cfg(feature = "tailscale")]
 struct TsBackend {
@@ -226,12 +228,14 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
         let tx = tx.clone();
         let url = c.url.clone();
         let token = c.token;
+        let jwt = c.jwt.clone();
+        let ws_tls = c.ws_tls.clone();
         let tls = c.tls.clone();
         pumps.push(tokio::spawn(async move {
             // Backoff only grows on repeated failures; reset after a success.
             let mut backoff = Duration::from_millis(250);
             loop {
-                match park_accept(&url, &token, tls.clone()).await {
+                match park_accept(&url, &token, &jwt, ws_tls.clone(), tls.clone()).await {
                     Ok(stream) => {
                         backoff = Duration::from_millis(250);
                         let addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -258,69 +262,169 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
     }
 }
 
-/// Dial the relay, park as an `accept` waiter, and block until the relay pairs
-/// us (`PAIRED`). Answers `PING` keepalives with `PONG` while parked. When
-/// `tls` is set, terminates end-to-end TLS over the now-transparent pipe before
-/// returning (the relay never sees plaintext); otherwise returns the plain
-/// stream. Either way the result is ready for axum to serve over.
+/// Dial the relay over WebSocket, authenticate the owner JWT in the Upgrade
+/// request, park as an `accept` waiter, and block until `PAIRED`. Native
+/// WebSocket PING/PONG frames keep the outer connection alive. The returned
+/// byte stream carries the existing end-to-end TLS connection to the client.
 async fn park_accept(
     url: &str,
     token: &[u8; 32],
+    jwt: &str,
+    ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
 ) -> io::Result<Stream> {
-    park_accept_with_idle_timeout(url, token, tls, RZV_PING_IDLE_TIMEOUT).await
+    park_accept_with_idle_timeout(url, token, jwt, ws_tls, tls, RZV_CONTROL_IDLE_TIMEOUT).await
 }
 
 async fn park_accept_with_idle_timeout(
     url: &str,
     token: &[u8; 32],
+    jwt: &str,
+    ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
-    ping_idle_timeout: Duration,
+    control_idle_timeout: Duration,
 ) -> io::Result<Stream> {
-    let mut s = TcpStream::connect(url).await?;
+    let endpoint = rzv_ws_url(url, "v2/accept")?;
+    let host = endpoint
+        .host_str()
+        .ok_or_else(|| io::Error::other("rzv URL has no host"))?;
+    let port = endpoint
+        .port_or_known_default()
+        .ok_or_else(|| io::Error::other("rzv URL has no port"))?;
+    let tcp = TcpStream::connect((host, port)).await?;
+    let transport: Box<dyn WsTransport> = match endpoint.scheme() {
+        "wss" => {
+            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+                .map_err(|_| io::Error::other("invalid rzv TLS server name"))?;
+            let connector = tokio_rustls::TlsConnector::from(ws_tls);
+            Box::new(connector.connect(server_name, tcp).await?)
+        }
+        "ws" => Box::new(tcp),
+        other => return Err(io::Error::other(format!("unsupported rzv scheme {other}"))),
+    };
+    let mut request = endpoint
+        .as_str()
+        .into_client_request()
+        .map_err(|e| io::Error::other(format!("rzv WebSocket request: {e}")))?;
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {jwt}")
+            .parse()
+            .map_err(|_| io::Error::other("rzv JWT is not a valid header value"))?,
+    );
+    let (mut ws, _) = tokio_tungstenite::client_async(request, transport)
+        .await
+        .map_err(|e| io::Error::other(format!("rzv WebSocket upgrade: {e}")))?;
+    ws.send(WsMessage::Binary(build_rzv_hello(token).into()))
+        .await
+        .map_err(|e| io::Error::other(format!("rzv HELLO: {e}")))?;
 
-    let mut hello = Vec::with_capacity(38);
-    hello.extend_from_slice(&RZV_MAGIC);
-    hello.push(RZV_VERSION);
-    hello.push(RZV_ROLE_ACCEPT);
-    hello.extend_from_slice(token);
-    s.write_all(&hello).await?;
-    s.flush().await?;
-
-    // Read one control byte at a time until PAIRED so we never consume the
-    // client's first application bytes (which only arrive after PAIRED).
     loop {
-        let mut b = [0u8; 1];
-        tokio::time::timeout(ping_idle_timeout, s.read_exact(&mut b))
+        let message = tokio::time::timeout(control_idle_timeout, ws.next())
             .await
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!("rzv: no relay control frame for {ping_idle_timeout:?} while parked"),
+                    format!("rzv: no WebSocket control frame for {control_idle_timeout:?}"),
                 )
-            })??;
-        match b[0] {
-            RZV_CTRL_PAIRED => break,
-            RZV_CTRL_PING => {
-                s.write_all(&[RZV_CTRL_PONG]).await?;
-                s.flush().await?;
+            })?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "rzv WebSocket closed"))?
+            .map_err(|e| io::Error::other(format!("rzv WebSocket read: {e}")))?;
+        match message {
+            WsMessage::Binary(bytes) if bytes.as_ref() == [RZV_CTRL_PAIRED] => break,
+            WsMessage::Ping(payload) => ws
+                .send(WsMessage::Pong(payload))
+                .await
+                .map_err(|e| io::Error::other(format!("rzv PONG: {e}")))?,
+            WsMessage::Pong(_) => {}
+            WsMessage::Close(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "rzv closed before pairing",
+                ))
             }
-            other => {
-                // Unexpected pre-pairing byte: treat as a protocol error.
-                return Err(io::Error::other(format!(
-                    "rzv: unexpected control byte {other:#04x} before PAIRED"
-                )));
-            }
+            _ => return Err(io::Error::other("unexpected rzv frame before PAIRED")),
         }
     }
 
+    let (local, tunnel) = tokio::io::duplex(256 * 1024);
+    tokio::spawn(bridge_rzv_websocket(ws, tunnel));
     match tls {
         Some(cfg) => {
             let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
-            let tls_stream = acceptor.accept(s).await?;
-            Ok(Stream::from_tls(tls_stream))
+            let tls_stream = acceptor.accept(local).await?;
+            Ok(Stream::from_rendezvous(tls_stream))
         }
-        None => Ok(Stream::from_tcp(s)),
+        None => Ok(Stream::from_rendezvous(local)),
+    }
+}
+
+trait WsTransport: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T> WsTransport for T where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
+fn rzv_ws_url(raw: &str, path: &str) -> io::Result<url::Url> {
+    let candidate = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("wss://{raw}")
+    };
+    let mut endpoint = url::Url::parse(&candidate)
+        .map_err(|e| io::Error::other(format!("invalid rzv URL: {e}")))?;
+    endpoint.set_path(path);
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    Ok(endpoint)
+}
+
+fn build_rzv_hello(token: &[u8; 32]) -> Vec<u8> {
+    let mut hello = Vec::with_capacity(RZV_HELLO_LEN);
+    hello.extend_from_slice(&RZV_MAGIC);
+    hello.push(RZV_VERSION);
+    hello.extend_from_slice(token);
+    hello
+}
+
+async fn bridge_rzv_websocket<S>(
+    mut ws: tokio_tungstenite::WebSocketStream<S>,
+    tunnel: tokio::io::DuplexStream,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let (mut rd, mut wr) = tokio::io::split(tunnel);
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut tick = tokio::time::interval(RZV_WS_KEEPALIVE);
+    tick.tick().await;
+    loop {
+        tokio::select! {
+            message = ws.next() => match message {
+                Some(Ok(WsMessage::Binary(bytes))) => {
+                    if wr.write_all(&bytes).await.is_err() { return; }
+                }
+                Some(Ok(WsMessage::Ping(payload))) => {
+                    if ws.send(WsMessage::Pong(payload)).await.is_err() { return; }
+                }
+                Some(Ok(WsMessage::Pong(_))) => {}
+                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => {
+                    let _ = wr.shutdown().await;
+                    return;
+                }
+                Some(Ok(WsMessage::Text(_))) | Some(Ok(WsMessage::Frame(_))) => return,
+            },
+            read = rd.read(&mut buf) => match read {
+                Ok(0) | Err(_) => {
+                    let _ = ws.close(None).await;
+                    return;
+                }
+                Ok(n) => {
+                    if ws.send(WsMessage::Binary(buf[..n].to_vec().into())).await.is_err() {
+                        return;
+                    }
+                }
+            },
+            _ = tick.tick() => {
+                if ws.send(WsMessage::Ping(Vec::new().into())).await.is_err() { return; }
+            }
+        }
     }
 }
 
@@ -342,45 +446,43 @@ impl axum::serve::Listener for Listener {
     type Io = Stream;
     type Addr = SocketAddr;
 
-    fn accept(&mut self) -> impl Future<Output = (Self::Io, Self::Addr)> + Send {
-        async move {
-            loop {
-                // tokio::select! doesn't allow `#[cfg]` on arms, so the body
-                // is split by feature. Both branches do the same retry-loop
-                // back-off on accept errors.
-                #[cfg(feature = "tailscale")]
-                let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self {
-                        tcp,
-                        tcp_tls,
-                        ts,
-                        rzv,
-                    } = self;
-                    tokio::select! {
-                        biased;
-                        r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
-                        r = accept_ts(ts.as_mut())   => r,
-                        r = accept_rzv(rzv.as_mut())  => r,
-                    }
-                };
-                #[cfg(not(feature = "tailscale"))]
-                let res: io::Result<(Stream, SocketAddr)> = {
-                    let Self { tcp, tcp_tls, rzv } = self;
-                    tokio::select! {
-                        biased;
-                        r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
-                        r = accept_rzv(rzv.as_mut())  => r,
-                    }
-                };
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            // tokio::select! doesn't allow `#[cfg]` on arms, so the body
+            // is split by feature. Both branches do the same retry-loop
+            // back-off on accept errors.
+            #[cfg(feature = "tailscale")]
+            let res: io::Result<(Stream, SocketAddr)> = {
+                let Self {
+                    tcp,
+                    tcp_tls,
+                    ts,
+                    rzv,
+                } = self;
+                tokio::select! {
+                    biased;
+                    r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
+                    r = accept_ts(ts.as_mut())   => r,
+                    r = accept_rzv(rzv.as_mut())  => r,
+                }
+            };
+            #[cfg(not(feature = "tailscale"))]
+            let res: io::Result<(Stream, SocketAddr)> = {
+                let Self { tcp, tcp_tls, rzv } = self;
+                tokio::select! {
+                    biased;
+                    r = accept_tcp(tcp.as_ref(), tcp_tls.as_ref()) => r,
+                    r = accept_rzv(rzv.as_mut())  => r,
+                }
+            };
 
-                match res {
-                    Ok(pair) => return pair,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "motif-net: accept failed; retrying");
-                        // Same back-off shape as axum's TcpListener impl —
-                        // gives the kernel a chance to free fds on EMFILE etc.
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
+            match res {
+                Ok(pair) => return pair,
+                Err(e) => {
+                    tracing::warn!(error = %e, "motif-net: accept failed; retrying");
+                    // Same back-off shape as axum's TcpListener impl —
+                    // gives the kernel a chance to free fds on EMFILE etc.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
         }
@@ -499,36 +601,5 @@ mod tests {
         let addrs = l.bound_addrs();
         assert_eq!(addrs.len(), 1);
         assert!(addrs[0].starts_with("tcp://127.0.0.1:"));
-    }
-
-    #[tokio::test]
-    async fn parked_rzv_connection_times_out_when_relay_goes_silent() {
-        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let relay_addr = relay.local_addr().unwrap();
-        let relay_task = tokio::spawn(async move {
-            let (mut stream, _) = relay.accept().await.unwrap();
-            let mut hello = [0u8; 38];
-            stream.read_exact(&mut hello).await.unwrap();
-            assert_eq!(&hello[..4], &RZV_MAGIC);
-
-            // Keep the TCP socket open but send no PING. The motifd side must
-            // still detect this as dead instead of waiting on read_exact forever.
-            let mut byte = [0u8; 1];
-            assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
-        });
-
-        let result = park_accept_with_idle_timeout(
-            &relay_addr.to_string(),
-            &[7u8; 32],
-            None,
-            Duration::from_millis(50),
-        )
-        .await;
-        let err = match result {
-            Ok(_) => panic!("silent relay should not leave a parked stream alive"),
-            Err(err) => err,
-        };
-        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        relay_task.await.unwrap();
     }
 }

@@ -62,6 +62,9 @@ pub struct RzvConfig {
     pub enabled: bool,
     /// Relay address (`host:port`) to dial. Empty disables rzv.
     pub relay: String,
+    /// Owner JWT sent in the relay WSS Upgrade request.
+    #[serde(default)]
+    pub jwt: String,
 }
 
 /// The `ServerConfig` plus the `motif://pair` link to surface in the host UI
@@ -119,6 +122,9 @@ impl MenuConfig {
         };
 
         let rzv_on = self.rzv.enabled && !self.rzv.relay.trim().is_empty();
+        if rzv_on && self.rzv.jwt.trim().is_empty() {
+            return Err("Relay pairing requires an owner JWT.".into());
+        }
         // A LAN listener is a network surface: encrypt it (self-signed TLS,
         // client pins the cert) and authenticate with a psk-derived bearer, same
         // as the `motifd` CLI. Loopback stays plaintext (local host app only).
@@ -162,6 +168,7 @@ impl MenuConfig {
                 let mut c = motif_server::RzvListenConfig::new(
                     relay.clone(),
                     motif_server::rzv::derive_token(&psk),
+                    self.rzv.jwt.trim().to_string(),
                 );
                 c.tls = Some(identity.server_config.clone());
                 rendezvous = Some(c);
@@ -377,10 +384,12 @@ mod tests {
         let mut config = MenuConfig::default();
         config.rzv.enabled = true;
         config.rzv.relay = "relay.example:9999".into();
+        config.rzv.jwt = "test.jwt.value".into();
         let json = serde_json::to_string(&config).unwrap();
         let c: MenuConfig = serde_json::from_str(&json).expect("parse rzv");
         assert!(c.rzv.enabled);
         assert_eq!(c.rzv.relay, "relay.example:9999");
+        assert_eq!(c.rzv.jwt, "test.jwt.value");
     }
 
     #[test]

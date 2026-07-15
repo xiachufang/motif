@@ -389,14 +389,14 @@ class TransportResolver {
   /// the relay, then connect to it as if it were a plain local server. The
   /// rest of the stack (RpcClient/WebSocket) is unaware of the rendezvous hop.
   Future<TransportResolution> _resolveRendezvous(MotifServer server) async {
-    final relay = MotifServer.splitHostPort(server.relay);
+    final relay = MotifServer.splitRelayEndpoint(server.relay);
     if (relay == null) {
       return TransportBlocked(
         ConnectionBlocker.fromTransport(
           TransportViewState.rendezvous(
             server,
             validationMessage:
-                'Rendezvous server has no valid relay address (expected host:port)',
+                'Rendezvous server has no valid WSS relay address',
           ),
         ),
       );
@@ -475,13 +475,16 @@ class TransportResolver {
     // endpoint changed (e.g. the server was re-paired with a new QR).
     var fwd = _rzvForwarders[server.id];
     if (fwd != null &&
-        (fwd.relayHost != relay.$1 || fwd.relayPort != relay.$2)) {
+        (fwd.relayHost != relay.host ||
+            fwd.relayPort != relay.port ||
+            fwd.relayScheme != relay.scheme)) {
       await stopForwarder(server.id);
       fwd = null;
     }
     fwd ??= _rzvForwarders[server.id] = RzvForwarder(
-      relayHost: relay.$1,
-      relayPort: relay.$2,
+      relayHost: relay.host,
+      relayPort: relay.port,
+      relayScheme: relay.scheme,
       token: token,
     );
 
@@ -581,9 +584,9 @@ class TransportResolver {
   }
 
   static String? _validateRendezvous(MotifServer server) {
-    final relay = MotifServer.splitHostPort(server.relay);
+    final relay = MotifServer.splitRelayEndpoint(server.relay);
     if (relay == null) {
-      return 'Rendezvous server has no valid relay address (expected host:port)';
+      return 'Rendezvous server has no valid WSS relay address';
     }
     try {
       _rzvToken(server.psk);

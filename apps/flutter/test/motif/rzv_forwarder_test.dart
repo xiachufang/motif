@@ -24,6 +24,7 @@ void main() {
       fwd = RzvForwarder(
         relayHost: '127.0.0.1',
         relayPort: relay.port,
+        relayScheme: 'ws',
         token: token,
       );
       await fwd.start();
@@ -36,11 +37,10 @@ void main() {
 
       expect(await echo, payload, reason: 'relay should echo through the pipe');
 
-      // The forwarder presented a well-formed connect-role HELLO with our token.
+      // The forwarder presented a well-formed binary HELLO with our token.
       expect(relay.hellos, hasLength(1));
       final parsed = RzvProtocol.parseHello(relay.hellos.single);
-      expect(parsed.role, RzvProtocol.roleConnect);
-      expect(parsed.token, token);
+      expect(parsed, token);
 
       await client.close();
     },
@@ -48,12 +48,16 @@ void main() {
   );
 
   test(
-    'answers PING with PONG before pairing',
+    'stays parked through native WebSocket PING/PONG',
     () async {
-      relay = await _FakeRelay.start(sendPing: true);
+      relay = await _FakeRelay.start(
+        pairDelay: const Duration(milliseconds: 150),
+        pingInterval: const Duration(milliseconds: 50),
+      );
       fwd = RzvForwarder(
         relayHost: '127.0.0.1',
         relayPort: relay.port,
+        relayScheme: 'ws',
         token: token,
       );
       await fwd.start();
@@ -65,7 +69,6 @@ void main() {
       await client.flush();
 
       expect(await echo, payload);
-      expect(relay.pongSeen, isTrue, reason: 'forwarder must answer PING');
 
       await client.close();
     },
@@ -79,6 +82,7 @@ void main() {
       fwd = RzvForwarder(
         relayHost: '127.0.0.1',
         relayPort: relay.port,
+        relayScheme: 'ws',
         token: token,
         pairTimeout: const Duration(milliseconds: 300),
       );
@@ -128,81 +132,69 @@ Future<Uint8List> _collect(Socket sock, int n) {
   return c.future;
 }
 
-/// In-process stand-in for the rzv relay + motifd echo peer. Reads the
-/// forwarder's HELLO, optionally exchanges PING/PONG, sends PAIRED, then echoes
-/// everything (acting as the paired motifd). Self-contained; [stop] tears it
-/// down so no listener leaks past the test.
+/// In-process WebSocket relay + motifd echo peer.
 class _FakeRelay {
-  _FakeRelay(this._server, {this.sendPing = false, this.silent = false});
+  _FakeRelay(
+    this._server, {
+    this.silent = false,
+    this.pairDelay = Duration.zero,
+    this.pingInterval,
+  });
 
-  final ServerSocket _server;
-  final bool sendPing;
+  final HttpServer _server;
   final bool silent;
+  final Duration pairDelay;
+  final Duration? pingInterval;
   final List<Uint8List> hellos = [];
-  bool pongSeen = false;
-  final List<Socket> _socks = [];
+  final List<WebSocket> _sockets = [];
 
   int get port => _server.port;
 
   static Future<_FakeRelay> start({
-    bool sendPing = false,
     bool silent = false,
+    Duration pairDelay = Duration.zero,
+    Duration? pingInterval,
   }) async {
-    final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final relay = _FakeRelay(s, sendPing: sendPing, silent: silent);
-    s.listen(relay._onConn);
+    final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final relay = _FakeRelay(
+      s,
+      silent: silent,
+      pairDelay: pairDelay,
+      pingInterval: pingInterval,
+    );
+    s.listen(relay._onRequest);
     return relay;
   }
 
-  void _onConn(Socket sock) {
-    _socks.add(sock);
-    final buf = <int>[];
-    var state = 0; // 0=await hello, 1=await pong, 2=echo
-    sock.listen(
-      (chunk) {
-        buf.addAll(chunk);
-        while (true) {
-          if (state == 0) {
-            if (buf.length < RzvProtocol.helloLength) break;
-            hellos.add(
-              Uint8List.fromList(buf.sublist(0, RzvProtocol.helloLength)),
-            );
-            buf.removeRange(0, RzvProtocol.helloLength);
-            if (silent) {
-              state = 3; // park forever, never pair
-              break;
-            }
-            if (sendPing) {
-              sock.add(const [RzvProtocol.ctrlPing]);
-              state = 1;
-            } else {
-              sock.add(const [RzvProtocol.ctrlPaired]);
-              state = 2;
-            }
-          } else if (state == 1) {
-            if (buf.isEmpty) break;
-            final b = buf.removeAt(0);
-            pongSeen = b == RzvProtocol.ctrlPong;
-            sock.add(const [RzvProtocol.ctrlPaired]);
-            state = 2;
-          } else if (state == 2) {
-            if (buf.isEmpty) break;
-            sock.add(Uint8List.fromList(buf));
-            buf.clear();
-          } else {
-            break; // state 3: silent
-          }
-        }
-      },
-      onError: (_) {},
-      onDone: () {},
-    );
+  Future<void> _onRequest(HttpRequest request) async {
+    if (request.uri.path != '/v2/connect' ||
+        !WebSocketTransformer.isUpgradeRequest(request)) {
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+      return;
+    }
+    final socket = await WebSocketTransformer.upgrade(request);
+    _sockets.add(socket);
+    socket.pingInterval = pingInterval;
+    var paired = false;
+    socket.listen((message) async {
+      if (message is! List<int>) return;
+      if (!paired) {
+        hellos.add(Uint8List.fromList(message));
+        if (silent) return;
+        if (pairDelay > Duration.zero) await Future<void>.delayed(pairDelay);
+        socket.add(const [RzvProtocol.ctrlPaired]);
+        paired = true;
+      } else {
+        socket.add(message);
+      }
+    }, onError: (_) {});
   }
 
   Future<void> stop() async {
-    for (final s in _socks) {
-      s.destroy();
+    for (final socket in _sockets) {
+      await socket.close();
     }
-    await _server.close();
+    await _server.close(force: true);
   }
 }

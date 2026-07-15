@@ -50,11 +50,17 @@ pub struct TailscaleListenConfig {
 /// See `docs/rzv-protocol.md`.
 #[derive(Clone)]
 pub struct RzvListenConfig {
-    /// Relay address (`host:port`) to dial. The relay sees only the (possibly
-    /// TLS-encrypted) byte pipe; it never terminates TLS itself.
+    /// Relay address (`host:port`) or full `wss://` URL. Bare endpoints are
+    /// expanded to `wss://<endpoint>/v2/accept`.
     pub url: String,
     /// The 32-byte rendezvous token (derived one-way from the pairing secret).
     pub token: [u8; 32],
+    /// Owner JWT sent only in the WSS Upgrade request to `/v2/accept`.
+    pub jwt: String,
+    /// Public-root configuration for the outer WSS connection. Tests and
+    /// private deployments may replace this with a config containing a custom
+    /// CA; production defaults to the Web PKI roots.
+    pub ws_tls: Arc<rustls::ClientConfig>,
     /// How many idle `accept` waiters to keep parked. ≥1; defaults to 2 via
     /// [`RzvListenConfig::new`].
     pub pool: usize,
@@ -65,10 +71,18 @@ pub struct RzvListenConfig {
 }
 
 impl RzvListenConfig {
-    pub fn new(url: impl Into<String>, token: [u8; 32]) -> Self {
+    pub fn new(url: impl Into<String>, token: [u8; 32], jwt: impl Into<String>) -> Self {
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         Self {
             url: url.into(),
             token,
+            jwt: jwt.into(),
+            ws_tls: Arc::new(
+                rustls::ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            ),
             pool: 2,
             tls: None,
         }
@@ -81,6 +95,7 @@ impl std::fmt::Debug for RzvListenConfig {
         f.debug_struct("RzvListenConfig")
             .field("url", &self.url)
             .field("token", &"<redacted>")
+            .field("jwt", &"<redacted>")
             .field("pool", &self.pool)
             .field("tls", &self.tls.is_some())
             .finish()

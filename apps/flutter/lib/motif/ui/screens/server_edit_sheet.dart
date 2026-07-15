@@ -278,7 +278,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   bool get _rendezvousValid =>
       _name.text.trim().isNotEmpty &&
-      MotifServer.splitHostPort(_relay.text.trim()) != null &&
+      MotifServer.splitRelayEndpoint(_relay.text.trim()) != null &&
       _pairingFieldsValid(pskRequired: true);
 
   String? _keyFieldError(String value, {bool required = false}) {
@@ -295,8 +295,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   String? _relayError() {
     final relay = _relay.text.trim();
     if (relay.isEmpty) return 'Required';
-    return MotifServer.splitHostPort(relay) == null
-        ? 'Expected host:port'
+    return MotifServer.splitRelayEndpoint(relay) == null
+        ? 'Expected host:port or wss:// URL'
         : null;
   }
 
@@ -476,11 +476,11 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     setState(() => _saving = true);
     final name = _name.text.trim();
     final relay = _relay.text.trim();
-    final hp = MotifServer.splitHostPort(relay)!;
+    final hp = MotifServer.splitRelayEndpoint(relay)!;
     final updated = existing.copyWith(
       name: name.isEmpty ? existing.name : name,
-      host: hp.$1,
-      port: hp.$2,
+      host: hp.host,
+      port: hp.port,
       relay: relay,
       psk: _psk.text.trim(),
       pubKey: _pubKey.text.trim(),

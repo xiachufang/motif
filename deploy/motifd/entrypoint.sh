@@ -44,6 +44,7 @@ fi
 
 if [[ -n "${MOTIFD_RZV_RELAY:-}" ]]; then
     args+=(--rzv-relay "$MOTIFD_RZV_RELAY")
+    [[ -n "${MOTIFD_RZV_JWT_FILE:-}" ]] && args+=(--rzv-jwt-file "$MOTIFD_RZV_JWT_FILE")
     [[ -n "${MOTIFD_RZV_POOL:-}" ]] && args+=(--rzv-pool "$MOTIFD_RZV_POOL")
 fi
 
