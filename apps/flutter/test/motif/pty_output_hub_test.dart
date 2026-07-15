@@ -27,6 +27,17 @@ void main() {
       expect(received.single, Uint8List.fromList([1, 2, 3]));
     });
 
+    test('reports PTYs with mounted terminal sinks', () {
+      void sink(Uint8List _) {}
+
+      hub.registerSink('pty-1', sink);
+      hub.registerSink('pty-2', sink);
+      expect(hub.sinkPtyIds, {'pty-1', 'pty-2'});
+
+      hub.unregisterSink('pty-1', sink);
+      expect(hub.sinkPtyIds, {'pty-2'});
+    });
+
     test('replays buffered bytes to a late subscriber', () async {
       hub.handleOutput('pty-1', Uint8List.fromList([10, 20]));
       hub.handleOutput('pty-1', Uint8List.fromList([30]));

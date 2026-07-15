@@ -107,6 +107,88 @@ void main() {
     expect(motif.activeViewId, 'view-1');
   });
 
+  test('mobile reattach restores a mounted terminal PTY stream', () async {
+    final ptyOpened = Completer<void>();
+    final sockets = <WebSocket>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final motif = MotifClient()..intendedSession = 'dev';
+    addTearDown(() async {
+      await motif.disconnect();
+      for (final socket in sockets) {
+        await socket.close();
+      }
+      await server.close(force: true);
+    });
+
+    server.listen((request) async {
+      if (request.method == 'GET' && request.uri.path == '/ping') {
+        request.response.write(
+          jsonEncode({'service': 'motif-server', 'version': 'test'}),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'POST' &&
+          request.uri.path == '/rpc/session.attach') {
+        request.response.headers.set('X-Motif-Session', 'sid-1');
+        request.response.write(
+          jsonEncode({
+            'session': {'name': 'dev'},
+            'ptys': [
+              {'id': 'pty-1', 'cols': 80, 'rows': 24},
+            ],
+            'views': [
+              {
+                'id': 'view-1',
+                'spec': {'kind': 'pty', 'pty_id': 'pty-1'},
+              },
+            ],
+            'active_view': 'view-1',
+            'last_seq': 0,
+          }),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' && request.uri.path == '/events') {
+        sockets.add(await WebSocketTransformer.upgrade(request));
+        return;
+      }
+      if (request.method == 'GET' && request.uri.path == '/pty/pty-1') {
+        final socket = await WebSocketTransformer.upgrade(request);
+        sockets.add(socket);
+        socket.add(
+          jsonEncode({
+            'since': 0,
+            'pty_frame': 'v1',
+            'pty_compress': 'zlib',
+            'replay_bytes': 0,
+          }),
+        );
+        if (!ptyOpened.isCompleted) ptyOpened.complete();
+        return;
+      }
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+    });
+
+    // This sink represents the terminal surface that stayed mounted while the
+    // old transport was reconnecting.
+    motif.registerPtySink('pty-1', (_) {});
+    final localServer = MotifServer(
+      id: 'local-test',
+      name: 'Local test',
+      host: InternetAddress.loopbackIPv4.address,
+      port: server.port,
+    );
+
+    await motif.connect(localServer, force: true);
+    await ptyOpened.future.timeout(const Duration(seconds: 2));
+
+    expect(motif.state, isA<ConnAttached>());
+    expect(motif.terminalSurfacePtyIds, {'pty-1'});
+  });
+
   test('terminal resize waits for reattach before sending RPC', () async {
     final attachStarted = Completer<void>();
     final releaseAttach = Completer<void>();

@@ -5,6 +5,7 @@ import '../log/log.dart';
 abstract interface class MotifRuntimeClient {
   String? get activePtyId;
   Set<String> get liveTabPtyIds;
+  Set<String> get terminalSurfacePtyIds;
   Future<void> ensurePtyStream(String ptyId);
   Future<void> closePtyStream(String ptyId);
   Future<void> syncPtyStreams(Set<String> ptyIds);
@@ -31,7 +32,26 @@ class MobileMotifClientRuntime implements MotifClientRuntime {
   const MobileMotifClientRuntime();
 
   @override
-  void onSessionAttached(MotifRuntimeClient client) {}
+  void onSessionAttached(MotifRuntimeClient client) {
+    // Mobile normally opens PTY streams when a terminal surface mounts. During
+    // reconnect that surface stays mounted, so its ready callback does not run
+    // again. Restore exactly the streams that still have live surface sinks.
+    final mountedLivePtys = client.terminalSurfacePtyIds.intersection(
+      client.liveTabPtyIds,
+    );
+    for (final ptyId in mountedLivePtys) {
+      unawaited(
+        client.ensurePtyStream(ptyId).catchError((Object e, StackTrace st) {
+          Log.w(
+            'mobile mounted pty restore failed pty=$ptyId',
+            name: 'motif.runtime',
+            error: e,
+            stackTrace: st,
+          );
+        }),
+      );
+    }
+  }
 
   @override
   void onPtySubscriptionsChanged(MotifRuntimeClient client) {}

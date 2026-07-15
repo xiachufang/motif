@@ -166,6 +166,9 @@ class PtyOutputHub {
 
   bool hasSink(String ptyId) => _sinks.containsKey(ptyId);
 
+  /// PTYs whose terminal surfaces are currently mounted and listening.
+  Set<String> get sinkPtyIds => Set<String>.unmodifiable(_sinks.keys);
+
   int replayBytesFor(String ptyId) => _replay[ptyId]?.length ?? 0;
 
   int replayBacklogBytesFor(String ptyId) =>

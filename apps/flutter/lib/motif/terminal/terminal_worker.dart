@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import '../log/log.dart';
 import 'ghostty_bindings.g.dart';
+import 'terminal_frame_pacing.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
 
@@ -419,38 +420,20 @@ void _terminalWorkerMain(SendPort events) {
 class _TerminalWorker {
   _TerminalWorker(this.events, this.commands);
 
-  static const Duration _remoteOutputFrameInterval = Duration(milliseconds: 50);
-  static const Duration _busyRemoteOutputFrameInterval = Duration(
-    milliseconds: 66,
-  );
-  static const Duration _sustainedRemoteOutputFrameInterval = Duration(
-    milliseconds: 80,
-  );
   static const Duration _interactiveFrameInterval = Duration(milliseconds: 16);
-  static const Duration _localEchoWindow = Duration(milliseconds: 150);
-  static const Duration _remoteBurstResetGap = Duration(milliseconds: 250);
-  static const Duration _busyOutputWindow = Duration(milliseconds: 500);
-  static const Duration _sustainedOutputWindow = Duration(milliseconds: 1200);
-  static const int _busyOutputMinBytes = 4 * 1024;
-  static const int _busyOutputMinChunks = 12;
-  static const int _sustainedOutputMinBytes = 16 * 1024;
-  static const int _sustainedOutputMinChunks = 30;
   static const Duration _cursorPollInterval = Duration(milliseconds: 500);
 
   final SendPort events;
   final ReceivePort commands;
   TerminalState? state;
   Timer? frameTimer;
+  DateTime? frameDueAt;
   Timer? cursorTimer;
   bool forceSnapshot = false;
   int foregroundArgb = 0xffffffff;
   int backgroundArgb = 0xff000000;
   _WorkerCursorSnapshot? lastCursor;
-  DateTime? lastLocalInputAt;
-  DateTime? lastRemoteFeedAt;
-  DateTime? remoteBurstStartedAt;
-  int remoteBurstBytes = 0;
-  int remoteBurstChunks = 0;
+  final TerminalFramePacing framePacing = TerminalFramePacing();
   int diagnosticFeedChunks = 0;
   int diagnosticFeedBytes = 0;
   int diagnosticSnapshots = 0;
@@ -487,7 +470,6 @@ class _TerminalWorker {
             final startedAtUs = DateTime.now().microsecondsSinceEpoch;
             final enqueuedAtUs = command['enqueuedAtUs'] as int?;
             final sw = Stopwatch()..start();
-            _noteRemoteFeed(bytes.length);
             state?.feedBytes(bytes);
             diagnosticFeedChunks++;
             diagnosticFeedBytes += bytes.length;
@@ -524,12 +506,15 @@ class _TerminalWorker {
         case 'focus':
           state?.encodeFocusAndWrite(command['gained'] == true);
         case 'scroll':
+          framePacing.noteInteraction();
           state?.scroll(command['rows'] as int);
           _scheduleSnapshot(force: true);
         case 'scrollToBottom':
+          framePacing.noteInteraction();
           state?.scrollToBottom();
           _scheduleSnapshot(force: true);
         case 'scrollToOffset':
+          framePacing.noteInteraction();
           state?.scrollToOffset(command['offset'] as int);
           _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'selectionBegin':
@@ -679,51 +664,11 @@ class _TerminalWorker {
   }
 
   Duration get _feedFrameInterval {
-    final now = DateTime.now();
-    final inputAt = lastLocalInputAt;
-    if (inputAt != null && now.difference(inputAt) <= _localEchoWindow) {
-      return _interactiveFrameInterval;
-    }
-
-    final burstStarted = remoteBurstStartedAt;
-    if (burstStarted == null) return _remoteOutputFrameInterval;
-    final burstElapsed = now.difference(burstStarted);
-    if (burstElapsed >= _sustainedOutputWindow &&
-        (remoteBurstChunks >= _sustainedOutputMinChunks ||
-            remoteBurstBytes >= _sustainedOutputMinBytes)) {
-      return _sustainedRemoteOutputFrameInterval;
-    }
-    if (burstElapsed >= _busyOutputWindow &&
-        (remoteBurstChunks >= _busyOutputMinChunks ||
-            remoteBurstBytes >= _busyOutputMinBytes)) {
-      return _busyRemoteOutputFrameInterval;
-    }
-    return _remoteOutputFrameInterval;
-  }
-
-  void _noteRemoteFeed(int byteCount) {
-    final now = DateTime.now();
-    final previousFeed = lastRemoteFeedAt;
-    if (previousFeed == null ||
-        now.difference(previousFeed) > _remoteBurstResetGap) {
-      remoteBurstStartedAt = now;
-      remoteBurstBytes = 0;
-      remoteBurstChunks = 0;
-    }
-    lastRemoteFeedAt = now;
-    remoteBurstBytes += byteCount;
-    remoteBurstChunks++;
+    return framePacing.intervalForOutput();
   }
 
   void _markLocalInput() {
-    lastLocalInputAt = DateTime.now();
-  }
-
-  void _resetRemoteBurst() {
-    lastRemoteFeedAt = null;
-    remoteBurstStartedAt = null;
-    remoteBurstBytes = 0;
-    remoteBurstChunks = 0;
+    framePacing.noteInteraction();
   }
 
   void _scheduleSnapshot({
@@ -731,9 +676,20 @@ class _TerminalWorker {
     Duration delay = _interactiveFrameInterval,
   }) {
     forceSnapshot = forceSnapshot || force;
-    if (state == null || frameTimer != null) return;
+    if (state == null) return;
+    final dueAt = DateTime.now().add(delay);
+    final existingDueAt = frameDueAt;
+    if (frameTimer != null &&
+        existingDueAt != null &&
+        !dueAt.isBefore(existingDueAt)) {
+      return;
+    }
+    // Interaction (scrolling, selection, resize) must be able to bring an
+    // already scheduled output frame forward instead of waiting behind it.
+    frameTimer?.cancel();
     cursorTimer?.cancel();
     cursorTimer = null;
+    frameDueAt = dueAt;
     frameTimer = Timer(delay, _pumpFrame);
   }
 
@@ -744,6 +700,7 @@ class _TerminalWorker {
 
   void _pumpFrame() {
     frameTimer = null;
+    frameDueAt = null;
     cursorTimer = null;
     final terminal = state;
     if (terminal == null) return;
@@ -765,6 +722,7 @@ class _TerminalWorker {
       defaultBackgroundArgb: backgroundArgb,
       selection: terminal.trackedSelection(),
     );
+    framePacing.observeViewportOffset(snapshot.viewportOffset);
     diagnosticSnapshots++;
     events.send({'type': 'snapshot', 'snapshot': snapshot});
     if (diagnosticSnapshots <= 3 || diagnosticSnapshots % 100 == 0) {
@@ -790,14 +748,15 @@ class _TerminalWorker {
     initialSnapshotTimer = null;
     frameTimer?.cancel();
     frameTimer = null;
+    frameDueAt = null;
     cursorTimer?.cancel();
     cursorTimer = null;
     state?.dispose();
     state = null;
     lastCursor = null;
+    framePacing.reset();
     forceSnapshot = false;
     waitingForFirstFeed = false;
-    _resetRemoteBurst();
     diagnosticFeedChunks = 0;
     diagnosticFeedBytes = 0;
     diagnosticSnapshots = 0;

@@ -699,6 +699,9 @@ class MotifClient extends ChangeNotifier
     return ids;
   }
 
+  @override
+  Set<String> get terminalSurfacePtyIds => _ptyOutput.sinkPtyIds;
+
   String? _ptyIdForViewId(String? viewId) {
     if (viewId == null) return null;
     for (final v in views) {

@@ -277,6 +277,23 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
 
   void _onWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
     if (!_isCurrentWorker(generation)) return;
+    // Isolate messages are not synchronized to Flutter's vsync. Keep the most
+    // recent snapshot and apply it once at the start of the next UI frame so a
+    // burst cannot cause several redundant rebuilds before one paint.
+    _pendingFrameSnapshot = (generation: generation, snapshot: snapshot);
+    if (_snapshotFrameScheduled) return;
+    _snapshotFrameScheduled = true;
+    SchedulerBinding.instance.scheduleFrameCallback((_) {
+      _snapshotFrameScheduled = false;
+      final pending = _pendingFrameSnapshot;
+      _pendingFrameSnapshot = null;
+      if (pending == null) return;
+      _applyWorkerSnapshot(pending.generation, pending.snapshot);
+    });
+  }
+
+  void _applyWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
+    if (!_isCurrentWorker(generation)) return;
     final viewportChanged =
         _snapshot?.viewportOffset != snapshot.viewportOffset;
     final selectionChanged = _selection != snapshot.selection;
@@ -437,6 +454,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _workerNeedsColdResync = false;
     _snapshot = null;
+    _pendingFrameSnapshot = null;
     _discardTerminalSelectionState();
     _terminalRenderCache.clear();
     _lastCursorSnapshot = null;

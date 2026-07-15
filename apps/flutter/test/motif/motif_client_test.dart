@@ -86,6 +86,20 @@ void main() {
       expect(host.closedPtys, ['pty-1']);
     });
 
+    test('mobile restores mounted terminal stream after reattach', () async {
+      final runtime = MobileMotifClientRuntime();
+      final host = _RuntimeHost(
+        liveTabPtyIds: {'pty-1', 'pty-2'},
+        activePtyId: 'pty-1',
+        terminalSurfacePtyIds: {'pty-1', 'stale-pty'},
+      );
+
+      runtime.onSessionAttached(host);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(host.ensuredPtys, ['pty-1']);
+    });
+
     test('liveTabPtyIds follows terminal tabs and alive state', () {
       final motif = MotifClient();
       addTearDown(motif.dispose);
@@ -147,13 +161,20 @@ void main() {
 ViewInfo _view(String id) => ViewInfo(id: id, spec: PtyViewSpec('pty-$id'));
 
 class _RuntimeHost implements MotifRuntimeClient {
-  _RuntimeHost({required this.liveTabPtyIds, required this.activePtyId});
+  _RuntimeHost({
+    required this.liveTabPtyIds,
+    required this.activePtyId,
+    this.terminalSurfacePtyIds = const {},
+  });
 
   @override
   final Set<String> liveTabPtyIds;
 
   @override
   final String? activePtyId;
+
+  @override
+  final Set<String> terminalSurfacePtyIds;
 
   final List<String> ensuredPtys = [];
   final List<String> closedPtys = [];
