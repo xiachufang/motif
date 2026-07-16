@@ -520,7 +520,7 @@ void main() {
         name: 'Rendezvous',
         host: '127.0.0.1',
         kind: ServerKind.rendezvous,
-        relay: 'relay.example.com',
+        relay: 'https://not-a-websocket-relay.example',
       );
 
       final view = resolver.transportViewState(server);
