@@ -38,6 +38,16 @@ pub struct Listener {
     rzv: Option<RzvBackend>,
 }
 
+/// Live connectivity of the rendezvous accept pool. A configured relay starts
+/// in the neutral `connected = false, error = None` state while its pumps are
+/// dialing. Once at least one authenticated WebSocket is parked it becomes
+/// connected; an error is published only after every pump has failed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RzvStatus {
+    pub connected: bool,
+    pub error: Option<String>,
+}
+
 /// Rendezvous-relay accept backend. See `docs/rzv-protocol.md`. Each pump task
 /// keeps one `accept` connection parked at the relay; when the relay pairs it
 /// with a client, the now-transparent stream is pushed into `rx` and the pump
@@ -46,8 +56,16 @@ struct RzvBackend {
     rx: tokio::sync::mpsc::Receiver<io::Result<(Stream, SocketAddr)>>,
     /// Relay address, for `bound_addrs()`.
     url: String,
+    status: tokio::sync::watch::Receiver<RzvStatus>,
     /// Held to keep the pump tasks alive for the listener's lifetime.
     _pumps: Vec<tokio::task::JoinHandle<()>>,
+    /// Aggregates the individual pump states into [`RzvStatus`].
+    _status_task: tokio::task::JoinHandle<()>,
+}
+
+enum RzvPumpEvent {
+    Connected(usize),
+    Failed(usize, String),
 }
 
 // rzv wire constants — keep in lockstep with `motif-rendezvous` and
@@ -148,6 +166,13 @@ impl Listener {
         out
     }
 
+    /// Subscribe to rendezvous connectivity changes, if that backend is
+    /// configured. The receiver is cheap to clone and stays valid after the
+    /// listener is moved into axum's serve task.
+    pub fn rendezvous_status(&self) -> Option<tokio::sync::watch::Receiver<RzvStatus>> {
+        self.rzv.as_ref().map(|b| b.status.clone())
+    }
+
     /// The embedded tsnet node, if the tailscale backend is active. Lets an
     /// embedding host (e.g. the menu-bar app) read live tailscale status
     /// (`backend_status`, `list_peers`, `auth_url`) after `bind()` — the
@@ -223,9 +248,42 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
     // streams, the pumps stop re-parking rather than piling up.
     let (tx, rx) = tokio::sync::mpsc::channel::<io::Result<(Stream, SocketAddr)>>(8);
     let pool = c.pool.max(1);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<RzvPumpEvent>();
+    let (status_tx, status) = tokio::sync::watch::channel(RzvStatus::default());
+    let status_task = tokio::spawn(async move {
+        let mut connected = vec![false; pool];
+        let mut seen = vec![false; pool];
+        let mut errors = vec![None::<String>; pool];
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                RzvPumpEvent::Connected(index) => {
+                    connected[index] = true;
+                    seen[index] = true;
+                    errors[index] = None;
+                }
+                RzvPumpEvent::Failed(index, error) => {
+                    connected[index] = false;
+                    seen[index] = true;
+                    errors[index] = Some(error);
+                }
+            }
+            let any_connected = connected.iter().any(|value| *value);
+            // Avoid a false alarm while the rest of the pool is still making
+            // its first connection attempt. Once any pump is healthy, a
+            // sibling reconnect is harmless and should not reach the UI.
+            let error = (!any_connected && seen.iter().all(|value| *value))
+                .then(|| errors.iter().rev().find_map(Clone::clone))
+                .flatten();
+            status_tx.send_replace(RzvStatus {
+                connected: any_connected,
+                error,
+            });
+        }
+    });
     let mut pumps = Vec::with_capacity(pool);
-    for _ in 0..pool {
+    for index in 0..pool {
         let tx = tx.clone();
+        let event_tx = event_tx.clone();
         let url = c.url.clone();
         let token = c.token;
         let jwt = c.jwt.clone();
@@ -235,7 +293,12 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
             // Backoff only grows on repeated failures; reset after a success.
             let mut backoff = Duration::from_millis(250);
             loop {
-                match park_accept(&url, &token, &jwt, ws_tls.clone(), tls.clone()).await {
+                let connected_tx = event_tx.clone();
+                match park_accept(&url, &token, &jwt, ws_tls.clone(), tls.clone(), move || {
+                    let _ = connected_tx.send(RzvPumpEvent::Connected(index));
+                })
+                .await
+                {
                     Ok(stream) => {
                         backoff = Duration::from_millis(250);
                         let addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -247,6 +310,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
                         // Loop immediately to park a fresh waiter.
                     }
                     Err(e) => {
+                        let _ = event_tx.send(RzvPumpEvent::Failed(index, e.to_string()));
                         tracing::warn!(relay = %url, error = %e, "rzv pump: park failed; retrying");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(15));
@@ -258,7 +322,9 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
     RzvBackend {
         rx,
         url: c.url.clone(),
+        status,
         _pumps: pumps,
+        _status_task: status_task,
     }
 }
 
@@ -272,8 +338,18 @@ async fn park_accept(
     jwt: &str,
     ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+    on_connected: impl FnOnce(),
 ) -> io::Result<Stream> {
-    park_accept_with_idle_timeout(url, token, jwt, ws_tls, tls, RZV_CONTROL_IDLE_TIMEOUT).await
+    park_accept_with_idle_timeout(
+        url,
+        token,
+        jwt,
+        ws_tls,
+        tls,
+        RZV_CONTROL_IDLE_TIMEOUT,
+        on_connected,
+    )
+    .await
 }
 
 async fn park_accept_with_idle_timeout(
@@ -283,6 +359,7 @@ async fn park_accept_with_idle_timeout(
     ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     control_idle_timeout: Duration,
+    on_connected: impl FnOnce(),
 ) -> io::Result<Stream> {
     let endpoint = rzv_ws_url(url, "v2/accept")?;
     let host = endpoint
@@ -318,6 +395,10 @@ async fn park_accept_with_idle_timeout(
     ws.send(WsMessage::Binary(build_rzv_hello(token).into()))
         .await
         .map_err(|e| io::Error::other(format!("rzv HELLO: {e}")))?;
+    // A successful Upgrade proves that the relay was reachable and accepted
+    // the owner JWT. Publishing here gives the embedding UI a prompt answer
+    // without waiting for a client to pair with this parked socket.
+    on_connected();
 
     loop {
         let message = tokio::time::timeout(control_idle_timeout, ws.next())

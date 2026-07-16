@@ -149,6 +149,15 @@ fn hkdf_expand_label(psk: &[u8; 32], info: &[u8]) -> [u8; 32] {
 /// cert pin to verify motifd against (`pk` = SHA-256 of the cert DER).
 pub fn pair_uri(relay: &str, psk: &[u8; 32], pin: Option<&[u8; 32]>, name: Option<&str>) -> String {
     let psk_b64 = URL_SAFE_NO_PAD.encode(psk);
+    // motif-net treats a bare relay address as WSS. Put that canonical form in
+    // the QR as well so older clients that require an explicit scheme still
+    // connect to the same WSS:443 endpoint.
+    let relay = relay.trim();
+    let relay = if relay.contains("://") {
+        relay.to_string()
+    } else {
+        format!("wss://{relay}")
+    };
     let mut uri = format!("motif://pair?v=1&rzv={relay}&psk={psk_b64}");
     if let Some(pin) = pin {
         uri.push_str(&format!("&pk={}", URL_SAFE_NO_PAD.encode(pin)));
@@ -311,13 +320,17 @@ mod tests {
     fn pair_uri_round_trips_shape() {
         let psk: [u8; 32] = [7u8; 32];
         let uri = pair_uri("relay.example:9999", &psk, None, Some("studio"));
-        assert!(uri.starts_with("motif://pair?v=1&rzv=relay.example:9999&psk="));
+        assert!(uri.starts_with("motif://pair?v=1&rzv=wss://relay.example:9999&psk="));
         assert!(uri.contains("&name=studio"));
         assert!(!uri.contains("&pk="));
 
         let pin: [u8; 32] = [9u8; 32];
         let uri = pair_uri("r:1", &psk, Some(&pin), None);
+        assert!(uri.contains("&rzv=wss://r:1"));
         assert!(uri.contains("&pk="));
         assert!(!uri.contains("&name="));
+
+        let uri = pair_uri("ws://127.0.0.1:8765", &psk, None, None);
+        assert!(uri.contains("&rzv=ws://127.0.0.1:8765"));
     }
 }

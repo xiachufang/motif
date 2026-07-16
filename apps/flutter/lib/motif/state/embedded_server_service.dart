@@ -100,6 +100,10 @@ class EmbeddedServerStatus {
   final String? tailscaleState;
   final String? authUrl;
   final String? pairingUri;
+
+  /// Relay-only connectivity/authentication failure. The embedded server can
+  /// still be running locally while the relay retries in the background.
+  final String? relayError;
   final String? error;
 
   const EmbeddedServerStatus({
@@ -110,6 +114,7 @@ class EmbeddedServerStatus {
     this.tailscaleState,
     this.authUrl,
     this.pairingUri,
+    this.relayError,
     this.error,
   });
 
@@ -134,6 +139,23 @@ class EmbeddedServerStatus {
     }
     return null;
   }
+}
+
+/// Short, actionable copy for the relay row. Keep the low-level WebSocket/TLS
+/// error in logs; settings should tell the user what to fix.
+String embeddedRelayErrorMessage(String error) {
+  final lower = error.toLowerCase();
+  final authenticationFailed =
+      lower.contains('jwt') ||
+      lower.contains('401') ||
+      lower.contains('403') ||
+      lower.contains('unauthorized') ||
+      lower.contains('forbidden') ||
+      lower.contains('authentication');
+  if (authenticationFailed) {
+    return 'JWT verification failed — check the Relay owner JWT.';
+  }
+  return 'Unable to connect to the relay — check its address and your network.';
 }
 
 @immutable

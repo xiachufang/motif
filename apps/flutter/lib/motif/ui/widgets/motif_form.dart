@@ -53,7 +53,9 @@ class MotifSection extends StatelessWidget {
                   Expanded(
                     child: Text(
                       title!.toUpperCase(),
-                      style: MotifType.overline.copyWith(color: c.textSecondary),
+                      style: MotifType.overline.copyWith(
+                        color: c.textSecondary,
+                      ),
                     ),
                   )
                 else
@@ -94,6 +96,7 @@ class MotifSectionRow extends StatelessWidget {
   final double leadingWidth;
   final String title;
   final String? subtitle;
+  final Color? subtitleColor;
   final Widget? trailing;
   final VoidCallback? onTap;
   final Color? titleColor;
@@ -108,6 +111,7 @@ class MotifSectionRow extends StatelessWidget {
     this.leadingWidth = 28,
     required this.title,
     this.subtitle,
+    this.subtitleColor,
     this.trailing,
     this.onTap,
     this.titleColor,
@@ -156,7 +160,9 @@ class MotifSectionRow extends StatelessWidget {
                       subtitle!,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: MotifType.subhead.copyWith(color: c.textSecondary),
+                      style: MotifType.subhead.copyWith(
+                        color: subtitleColor ?? c.textSecondary,
+                      ),
                     ),
                   ],
                 ],

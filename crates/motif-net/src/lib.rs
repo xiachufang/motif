@@ -21,7 +21,7 @@ pub mod stream;
 
 pub use config::{DialTarget, ListenConfig, RzvListenConfig, TailscaleListenConfig};
 pub use dialer::{dial, NetError};
-pub use listener::{Listener, PeerAddr};
+pub use listener::{Listener, PeerAddr, RzvStatus};
 pub use stream::Stream;
 
 #[cfg(feature = "tailscale")]

@@ -85,6 +85,11 @@ class MotifPairingPayload {
 
     if (relay != null && relay.isNotEmpty) {
       // rzv form.
+      if (MotifServer.splitRelayEndpoint(relay) == null) {
+        throw const FormatException(
+          'pairing URI rzv is not a valid WSS relay address',
+        );
+      }
       return MotifPairingPayload(
         version: version,
         relay: relay,
@@ -147,7 +152,7 @@ class MotifPairingPayload {
         id: id,
         name: (name == null || name!.isEmpty) ? relay! : name!,
         host: hp?.host ?? relay!,
-        port: hp?.port ?? 7777,
+        port: hp?.port ?? 443,
         kind: ServerKind.rendezvous,
         relay: relay!,
         psk: _encodeKey(psk),

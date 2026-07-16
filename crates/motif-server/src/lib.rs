@@ -317,6 +317,7 @@ pub fn init_tracing_gui(filter: &str, log_dir: &Path, ring: LogRing) -> anyhow::
 /// only detaches; the spawned serve task keeps running.)
 pub struct RunningServer {
     bound: Vec<String>,
+    rzv_status: Option<tokio::sync::watch::Receiver<motif_net::RzvStatus>>,
     manager: Arc<session::manager::SessionManager>,
     devices: relay::DeviceState,
     #[cfg(feature = "tailscale")]
@@ -332,6 +333,15 @@ impl RunningServer {
     /// Human-readable bound endpoints (`tcp://…`, `tailscale://*:port`).
     pub fn bound_addrs(&self) -> &[String] {
         &self.bound
+    }
+
+    /// Latest rendezvous connectivity snapshot, when a relay backend is
+    /// configured. This remains independent from the local server lifecycle:
+    /// motifd can keep serving LAN/loopback clients while the relay retries.
+    pub fn rendezvous_status(&self) -> Option<motif_net::RzvStatus> {
+        self.rzv_status
+            .as_ref()
+            .map(|status| status.borrow().clone())
     }
 
     /// Snapshot of the current sessions (name, workdir, client_count, …),
@@ -402,6 +412,7 @@ impl RunningServer {
         const GRACE: Duration = Duration::from_secs(3);
         let RunningServer {
             bound: _bound,
+            rzv_status: _rzv_status,
             manager: _manager,
             devices: _devices,
             #[cfg(feature = "tailscale")]
@@ -508,6 +519,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         .await
         .with_context(|| "failed to bind listener")?;
     let bound = listener.bound_addrs();
+    let rzv_status = listener.rendezvous_status();
     for addr in &bound {
         tracing::info!(%addr, "motifd listening");
     }
@@ -560,6 +572,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
 
     Ok(RunningServer {
         bound,
+        rzv_status,
         manager,
         devices: device_state,
         #[cfg(feature = "tailscale")]
