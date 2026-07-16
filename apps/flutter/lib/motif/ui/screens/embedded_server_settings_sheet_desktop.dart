@@ -61,6 +61,7 @@ class _EmbeddedServerSettingsSheetState
   bool _restartPromptDeferred = false;
   bool _restartPromptPendingOnBlur = false;
   _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
+  int _pushRelayHealthCheckId = 0;
 
   EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
 
@@ -727,6 +728,7 @@ class _EmbeddedServerSettingsSheetState
     MotifColors c,
   ) {
     final pairingUri = status.pairingUri;
+    final relayError = _relayErrorText(cfg, status);
     return MotifSection(
       title: 'Pairing',
       footer:
@@ -747,11 +749,17 @@ class _EmbeddedServerSettingsSheetState
             titleWeight: FontWeight.w400,
           ),
         MotifSectionRow(
-          leading: Icon(Icons.cloud_outlined, color: c.accent),
+          leading: Icon(
+            Icons.cloud_outlined,
+            color: relayError == null ? c.accent : c.danger,
+          ),
           title: 'Pair over a relay',
-          subtitle: cfg.rzvEnabled
-              ? 'Reach it without direct connectivity'
-              : 'Off — pair directly on the LAN',
+          subtitle:
+              relayError ??
+              (cfg.rzvEnabled
+                  ? 'Reach it without direct connectivity'
+                  : 'Off — pair directly on the LAN'),
+          subtitleColor: relayError == null ? null : c.danger,
           onTap: () => _save(
             cfg.copyWith(rzvEnabled: !cfg.rzvEnabled),
             restartRequired: true,
@@ -789,6 +797,24 @@ class _EmbeddedServerSettingsSheetState
         ],
       ],
     );
+  }
+
+  String? _relayErrorText(
+    EmbeddedServerConfig cfg,
+    EmbeddedServerStatus status,
+  ) {
+    if (!cfg.rzvEnabled) return null;
+    final relayError = status.relayError;
+    if (relayError != null && relayError.trim().isNotEmpty) {
+      return embeddedRelayErrorMessage(relayError);
+    }
+    // Missing/invalid JWT is rejected before the local server reaches Running,
+    // so it arrives through the lifecycle error rather than relay_error.
+    final startError = status.error;
+    if (startError == null || startError.trim().isEmpty) return null;
+    final lower = startError.toLowerCase();
+    if (!lower.contains('relay') && !lower.contains('jwt')) return null;
+    return embeddedRelayErrorMessage(startError);
   }
 
   Widget _pairingQr(String uri, MotifColors c) {
@@ -847,18 +873,20 @@ class _EmbeddedServerSettingsSheetState
           'Push relay',
           kDefaultPushRelayAddress,
           keyboard: TextInputType.url,
-          suffix: _pushRelayHealthButton(c),
+          suffix: _pushRelayActions(cfg, c),
           onChanged: () {
-            if (_pushRelayHealth != _PushRelayHealth.idle) {
-              setState(() => _pushRelayHealth = _PushRelayHealth.idle);
-            }
+            _pushRelayHealthCheckId += 1;
+            setState(() => _pushRelayHealth = _PushRelayHealth.idle);
             _save(
               cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()),
               restartRequired: true,
               restartOnBlur: true,
             );
           },
-          onFocusLost: _showPendingRestartPrompt,
+          onFocusLost: () {
+            _showPendingRestartPrompt();
+            unawaited(_checkPushRelayHealth());
+          },
         ),
         MotifSectionRow(
           leading: Icon(Icons.notifications_active_outlined, color: c.accent),
@@ -868,6 +896,27 @@ class _EmbeddedServerSettingsSheetState
               : 'Start the server to inspect registered tokens',
           onTap: status.running ? () => unawaited(_showPushTokens()) : null,
           showChevron: status.running,
+        ),
+      ],
+    );
+  }
+
+  Widget _pushRelayActions(EmbeddedServerConfig cfg, MotifColors c) {
+    final isDefault = _pushRelayUrl.text.trim() == kDefaultPushRelayAddress;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _pushRelayHealthButton(c),
+        TextButton(
+          onPressed: isDefault ? null : () => unawaited(_resetPushRelay(cfg)),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: const Size(0, 28),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            overlayColor: Colors.transparent,
+          ),
+          child: const Text('Reset'),
         ),
       ],
     );
@@ -940,20 +989,41 @@ class _EmbeddedServerSettingsSheetState
 
   Future<void> _checkPushRelayHealth() async {
     final address = _pushRelayUrl.text.trim();
+    final checkId = ++_pushRelayHealthCheckId;
     if (address.isEmpty) {
-      setState(() => _pushRelayHealth = _PushRelayHealth.failed);
+      if (_pushRelayHealth != _PushRelayHealth.idle) {
+        setState(() => _pushRelayHealth = _PushRelayHealth.idle);
+      }
       return;
     }
     setState(() => _pushRelayHealth = _PushRelayHealth.checking);
     final checker =
         widget.pushRelayHealthChecker ?? _defaultPushRelayHealthCheck;
     final ok = await checker(address);
-    if (!mounted) return;
+    if (!mounted || checkId != _pushRelayHealthCheckId) return;
     setState(
       () => _pushRelayHealth = ok
           ? _PushRelayHealth.healthy
           : _PushRelayHealth.failed,
     );
+  }
+
+  Future<void> _resetPushRelay(EmbeddedServerConfig cfg) async {
+    _pushRelayHealthCheckId += 1;
+    _pushRelayUrl.text = kDefaultPushRelayAddress;
+    if (_pushRelayHealth != _PushRelayHealth.idle) {
+      setState(() => _pushRelayHealth = _PushRelayHealth.idle);
+    } else {
+      // The controller was changed programmatically, so rebuild the suffix to
+      // disable Reset even when the health state was already idle.
+      setState(() {});
+    }
+    await _save(
+      cfg.copyWith(pushRelayUrl: kDefaultPushRelayAddress),
+      restartRequired: true,
+    );
+    if (!mounted) return;
+    unawaited(_checkPushRelayHealth());
   }
 
   Widget _field(
@@ -1496,8 +1566,21 @@ Future<void> showEmbeddedServerSettingsSheet(BuildContext context) {
 /// Full-page form of the embedded-server settings, for the desktop shell's
 /// "Server" view. Same content as the sheet, given room to breathe (and a
 /// bigger pairing QR).
-class EmbeddedServerPage extends StatelessWidget {
+class EmbeddedServerPage extends StatefulWidget {
   const EmbeddedServerPage({super.key});
+
+  @override
+  State<EmbeddedServerPage> createState() => _EmbeddedServerPageState();
+}
+
+class _EmbeddedServerPageState extends State<EmbeddedServerPage> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1505,14 +1588,27 @@ class EmbeddedServerPage extends StatelessWidget {
       backgroundColor: context.motif.background,
       body: SafeArea(
         top: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(
-            MotifSpacing.lg,
-            MotifSpacing.lg,
-            MotifSpacing.lg,
-            MotifSpacing.xl,
+        child: NotificationListener<ScrollStartNotification>(
+          onNotification: (_) {
+            // A focused TextField can call showOnScreen again when the
+            // two-second server-status poll rebuilds the form, yanking the
+            // page back to that field. Scrolling means the user is leaving the
+            // editor, so release focus before the next status snapshot.
+            FocusManager.instance.primaryFocus?.unfocus();
+            return false;
+          },
+          child: ListView(
+            controller: _scrollController,
+            primary: false,
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(
+              MotifSpacing.lg,
+              MotifSpacing.lg,
+              MotifSpacing.lg,
+              MotifSpacing.xl,
+            ),
+            children: const [EmbeddedServerSettingsSheet()],
           ),
-          child: const EmbeddedServerSettingsSheet(),
         ),
       ),
     );

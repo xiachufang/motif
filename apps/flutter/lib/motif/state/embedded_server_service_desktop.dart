@@ -101,6 +101,7 @@ EmbeddedServerStatus _statusFromJson(Map<String, Object?> j) {
     tailscaleState: ts?['backend_state'] as String?,
     authUrl: j['auth_url'] as String?,
     pairingUri: j['pairing_uri'] as String?,
+    relayError: j['relay_error'] as String?,
     error: j['error'] as String?,
   );
 }

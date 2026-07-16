@@ -38,6 +38,42 @@ void main() {
       expect(back.name, isNull);
     });
 
+    test('bare relay hostname defaults consistently to WSS port 443', () {
+      final payload = MotifPairingPayload(
+        relay: 'motif-relay.slothease.com',
+        psk: psk,
+      );
+      final back = MotifPairingPayload.parse(payload.toUri());
+      final server = back.toServer(id: 'bare-relay');
+
+      expect(server.relay, 'motif-relay.slothease.com');
+      expect(server.host, 'motif-relay.slothease.com');
+      expect(server.port, 443);
+      expect(server.endpoint, 'motif-relay.slothease.com:443');
+      expect(MotifServer.splitRelayEndpoint(server.relay), (
+        scheme: 'wss',
+        host: 'motif-relay.slothease.com',
+        port: 443,
+      ));
+    });
+
+    test('parses motifd canonical WSS relay query', () {
+      final uri =
+          'motif://pair?v=1&rzv=wss://motif-relay.slothease.com'
+          '&psk=${base64Like(psk)}';
+      final payload = MotifPairingPayload.parse(uri);
+      final server = payload.toServer(id: 'canonical-relay');
+
+      expect(payload.relay, 'wss://motif-relay.slothease.com');
+      expect(server.host, 'motif-relay.slothease.com');
+      expect(server.port, 443);
+    });
+
+    test('rejects an invalid relay address while parsing', () {
+      final uri = MotifPairingPayload(relay: 'https://', psk: psk).toUri();
+      expect(() => MotifPairingPayload.parse(uri), throwsFormatException);
+    });
+
     test('encodes keys as base64url without padding', () {
       final encoded = MotifPairingPayload(relay: 'h:1', psk: psk).toUri();
       // The psk *value* must carry no '=' padding (the URI itself has '=' as

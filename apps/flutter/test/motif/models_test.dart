@@ -65,6 +65,51 @@ void main() {
   });
 
   group('settings models', () {
+    test('relay endpoints use matching WebSocket defaults', () {
+      expect(MotifServer.splitRelayEndpoint('relay.example.com'), (
+        scheme: 'wss',
+        host: 'relay.example.com',
+        port: 443,
+      ));
+      expect(MotifServer.splitRelayEndpoint('relay.example.com:9443'), (
+        scheme: 'wss',
+        host: 'relay.example.com',
+        port: 9443,
+      ));
+      expect(MotifServer.splitRelayEndpoint('wss://relay.example.com'), (
+        scheme: 'wss',
+        host: 'relay.example.com',
+        port: 443,
+      ));
+      expect(MotifServer.splitRelayEndpoint('ws://127.0.0.1'), (
+        scheme: 'ws',
+        host: '127.0.0.1',
+        port: 80,
+      ));
+      expect(
+        MotifServer.splitRelayEndpoint('https://relay.example.com'),
+        isNull,
+      );
+    });
+
+    test(
+      'migrates an old bare-host rendezvous profile away from port 7777',
+      () {
+        final server = MotifServer.fromJson({
+          'id': 'old-rzv',
+          'name': 'Old relay',
+          'host': 'motif-relay.slothease.com',
+          'port': 7777,
+          'kind': 'rendezvous',
+          'relay': 'motif-relay.slothease.com',
+        });
+
+        expect(server.host, 'motif-relay.slothease.com');
+        expect(server.port, 443);
+        expect(server.endpoint, 'motif-relay.slothease.com:443');
+      },
+    );
+
     test('MotifServer list round-trips through JSON', () {
       final servers = [
         const MotifServer(

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/state/embedded_server_service.dart';
@@ -40,6 +41,58 @@ void main() {
     expect(find.text(kDefaultPushRelayAddress), findsWidgets);
     expect(find.text('Health'), findsOneWidget);
     expect(errors, isEmpty);
+  });
+
+  testWidgets('server page keeps its scroll position across status polls', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      status: const EmbeddedServerStatus(
+        running: true,
+        boundAddrs: ['tcp://0.0.0.0:7777', 'rzv://wss://relay.example.com'],
+        sessionCount: 1,
+        pairingUri: 'motif://pair?v=1&host=127.0.0.1&port=7777&psk=abc',
+      ),
+    );
+    await _pumpPage(tester, service);
+
+    final portField = find.byWidgetPredicate(
+      (widget) => widget is TextField && widget.decoration?.labelText == 'Port',
+    );
+    await tester.tap(portField);
+    final portFocus = tester
+        .widget<EditableText>(
+          find.descendant(of: portField, matching: find.byType(EditableText)),
+        )
+        .focusNode;
+    expect(portFocus.hasFocus, isTrue);
+
+    final list = find.byType(ListView);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(list),
+        scrollDelta: const Offset(0, 700),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(portFocus.hasFocus, isFalse);
+    final controller = tester.widget<ListView>(list).controller!;
+    final beforePoll = controller.offset;
+    expect(beforePoll, greaterThan(0));
+
+    service.setStatus(
+      const EmbeddedServerStatus(
+        running: true,
+        boundAddrs: ['tcp://0.0.0.0:7777', 'rzv://wss://relay.example.com'],
+        sessionCount: 2,
+        pairingUri: 'motif://pair?v=1&host=127.0.0.1&port=7777&psk=abc',
+      ),
+    );
+    await tester.pump();
+
+    expect(controller.offset, closeTo(beforePoll, 0.1));
   });
 
   testWidgets('prompts to restart immediately for option changes', (
@@ -100,7 +153,15 @@ void main() {
       config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
       status: const EmbeddedServerStatus(running: true),
     );
-    await _pumpSettings(tester, service);
+    var checkedAddress = '';
+    await _pumpSettings(
+      tester,
+      service,
+      pushRelayHealthChecker: (address) async {
+        checkedAddress = address;
+        return true;
+      },
+    );
 
     final relayField = find.byWidgetPredicate(
       (widget) =>
@@ -111,12 +172,85 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
 
     expect(service.config.pushRelayUrl, 'relay.example.com');
+    expect(checkedAddress, isEmpty);
     expect(find.text('Restart server?'), findsNothing);
 
     FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
 
     expect(find.text('Restart server?'), findsOneWidget);
+    expect(checkedAddress, 'relay.example.com');
+    expect(find.text('OK'), findsOneWidget);
+  });
+
+  testWidgets('resets the push relay and checks its health', (tester) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(pushRelayUrl: 'relay.example.com'),
+      status: const EmbeddedServerStatus(),
+    );
+    var checkedAddress = '';
+    await _pumpSettings(
+      tester,
+      service,
+      pushRelayHealthChecker: (address) async {
+        checkedAddress = address;
+        return true;
+      },
+    );
+
+    await tester.tap(find.text('Reset'));
+    await tester.pumpAndSettle();
+
+    expect(service.config.pushRelayUrl, kDefaultPushRelayAddress);
+    expect(checkedAddress, kDefaultPushRelayAddress);
+    expect(find.text('OK'), findsOneWidget);
+    final relayField = tester.widget<TextField>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == 'Push relay',
+      ),
+    );
+    expect(relayField.controller?.text, kDefaultPushRelayAddress);
+  });
+
+  testWidgets('shows JWT verification failure in the relay row', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(rzvEnabled: true),
+      status: const EmbeddedServerStatus(
+        running: true,
+        relayError: 'rzv WebSocket upgrade: HTTP error: 401 Unauthorized',
+      ),
+    );
+    await _pumpSettings(tester, service);
+
+    expect(find.text('Pair over a relay'), findsOneWidget);
+    expect(
+      find.text('JWT verification failed — check the Relay owner JWT.'),
+      findsOneWidget,
+    );
+    expect(find.text('Reach it without direct connectivity'), findsNothing);
+  });
+
+  testWidgets('shows connection failure in the relay row', (tester) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(rzvEnabled: true),
+      status: const EmbeddedServerStatus(
+        running: true,
+        relayError: 'Connection refused (os error 61)',
+      ),
+    );
+    await _pumpSettings(tester, service);
+
+    expect(find.text('Pair over a relay'), findsOneWidget);
+    expect(
+      find.text(
+        'Unable to connect to the relay — check its address and your network.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Reach it without direct connectivity'), findsNothing);
   });
 
   testWidgets('checks push relay health from the field action', (tester) async {
@@ -241,6 +375,27 @@ Future<void> _pumpSettings(
   );
 }
 
+Future<void> _pumpPage(
+  WidgetTester tester,
+  EmbeddedServerService service,
+) async {
+  tester.view.physicalSize = const Size(900, 600);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+
+  await tester.pumpWidget(
+    ChangeNotifierProvider<EmbeddedServerService>.value(
+      value: service,
+      child: MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: const EmbeddedServerPage(),
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
 Future<List<FlutterErrorDetails>> _captureFlutterErrors(
   WidgetTester tester,
   Future<void> Function() run,
@@ -315,6 +470,11 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   @override
   Future<void> updateConfig(EmbeddedServerConfig next) async {
     _config = next;
+    notifyListeners();
+  }
+
+  void setStatus(EmbeddedServerStatus next) {
+    _status = next;
     notifyListeners();
   }
 }

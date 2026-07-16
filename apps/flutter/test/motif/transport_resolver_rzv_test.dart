@@ -122,7 +122,7 @@ void main() {
         name: 'x',
         host: 'x',
         kind: ServerKind.rendezvous,
-        relay: 'no-port',
+        relay: 'https://not-a-websocket-relay.example',
         psk: pskB64,
       );
       final badRelayResult = await resolver.resolve(badRelay);

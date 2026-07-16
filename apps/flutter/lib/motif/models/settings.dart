@@ -164,11 +164,17 @@ class MotifServer {
   factory MotifServer.fromJson(Map<String, Object?> j) {
     final kind = ServerKind.fromWire(j['kind']);
     final relay = (j['relay'] as String?) ?? '';
+    // Repair profiles created by older clients, which stored a bare relay
+    // hostname with the generic motifd port 7777. Rendezvous transport uses
+    // `relay`, so derive its display host/port from the same WSS parser too.
+    final relayEndpoint = kind == ServerKind.rendezvous
+        ? splitRelayEndpoint(relay)
+        : null;
     return MotifServer(
       id: (j['id'] as String?) ?? '',
       name: (j['name'] as String?) ?? '',
-      host: (j['host'] as String?) ?? '',
-      port: (j['port'] as num?)?.toInt() ?? 7777,
+      host: relayEndpoint?.host ?? (j['host'] as String?) ?? '',
+      port: relayEndpoint?.port ?? (j['port'] as num?)?.toInt() ?? 7777,
       scheme: _normalizeScheme(j['scheme'] as String?),
       kind: kind,
       relay: relay,
@@ -199,23 +205,22 @@ class MotifServer {
   }
 
   /// Parse a relay endpoint. Bare `host:port` implies WSS; explicit `ws://`
-  /// is useful for local testing and `wss://` may omit the standard port.
+  /// is useful for local testing and `wss://` may omit the standard port. A
+  /// bare hostname also implies WSS on port 443, matching motifd's parser.
   static ({String scheme, String host, int port})? splitRelayEndpoint(
     String value,
   ) {
     final s = value.trim();
-    if (s.contains('://')) {
-      final uri = Uri.tryParse(s);
-      if (uri == null ||
-          (uri.scheme != 'ws' && uri.scheme != 'wss') ||
-          uri.host.isEmpty) {
-        return null;
-      }
-      final port = uri.hasPort ? uri.port : (uri.scheme == 'wss' ? 443 : 80);
-      return (scheme: uri.scheme, host: uri.host, port: port);
+    if (s.isEmpty) return null;
+    final candidate = s.contains('://') ? s : 'wss://$s';
+    final uri = Uri.tryParse(candidate);
+    if (uri == null ||
+        (uri.scheme != 'ws' && uri.scheme != 'wss') ||
+        uri.host.isEmpty) {
+      return null;
     }
-    final hp = splitHostPort(s);
-    return hp == null ? null : (scheme: 'wss', host: hp.$1, port: hp.$2);
+    final port = uri.hasPort ? uri.port : (uri.scheme == 'wss' ? 443 : 80);
+    return (scheme: uri.scheme, host: uri.host, port: port);
   }
 
   static String encodeList(List<MotifServer> servers) =>

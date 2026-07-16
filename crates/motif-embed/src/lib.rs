@@ -103,6 +103,9 @@ struct StatusDto {
     /// `motif://pair` link when the rendezvous backend is configured — the host
     /// renders it as a QR for phone pairing.
     pairing_uri: Option<String>,
+    /// The relay backend failed to authenticate or connect. The local server
+    /// may still be running while its relay pumps retry in the background.
+    relay_error: Option<String>,
     /// Last start failure, if any.
     error: Option<String>,
 }
@@ -254,6 +257,9 @@ async fn do_status() -> StatusDto {
             };
             #[cfg(not(feature = "tailscale"))]
             let (tailscale, auth_url): (Option<TsStatusDto>, Option<String>) = (None, None);
+            let relay_error = r
+                .rendezvous_status()
+                .and_then(|status| (!status.connected).then_some(status.error).flatten());
 
             StatusDto {
                 running: true,
@@ -264,6 +270,7 @@ async fn do_status() -> StatusDto {
                 tailscale,
                 auth_url,
                 pairing_uri: st.pairing_uri.lock().await.clone(),
+                relay_error,
                 error: None,
             }
         }
