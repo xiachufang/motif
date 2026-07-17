@@ -84,6 +84,10 @@ pub struct MenuConfig {
     /// Push relay address or full URL. A bare host is expanded to
     /// `https://<host>/v1/push`; an empty string disables push.
     pub push_relay_url: String,
+    /// Default PTY command. Empty keeps motifd's platform default; the Windows
+    /// host uses `wsl.exe` for its opt-in WSL mode.
+    #[serde(default)]
+    pub shell: String,
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
     pub autostart: bool,
@@ -105,6 +109,7 @@ impl Default for MenuConfig {
             tailscale: TsConfig::default(),
             rzv: RzvConfig::default(),
             push_relay_url: default_push_relay_url(),
+            shell: String::new(),
             autostart: true,
         }
     }
@@ -115,6 +120,11 @@ impl MenuConfig {
     /// applying the same guards the settings UI hints at. Returns a user-facing
     /// error string when the combination can't safely start.
     pub fn to_server_config(&self, tsnet_dir: &Path) -> Result<BuiltServerConfig, String> {
+        #[cfg(not(feature = "tailscale"))]
+        if self.tailscale.enabled {
+            return Err("Embedded Tailscale is unavailable in this build.".into());
+        }
+
         let listen = match self.listen_mode {
             ListenMode::Loopback => Some(SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))),
             ListenMode::Lan => Some(SocketAddr::from((Ipv4Addr::UNSPECIFIED, self.port))),
@@ -243,6 +253,10 @@ impl MenuConfig {
                 rzv_direct,
                 token,
                 push_relay_url: normalize_push_relay_url(&self.push_relay_url),
+                shell: {
+                    let value = self.shell.trim();
+                    (!value.is_empty()).then(|| value.to_string())
+                },
             },
             pairing_uri,
         })
@@ -328,12 +342,17 @@ mod tests {
         assert!(c.to_server_config(&tsnet()).is_err());
 
         c.tailscale.enabled = true;
-        let sc = c
-            .to_server_config(&tsnet())
-            .expect("off+tailscale should map")
-            .server;
-        assert!(sc.listen.is_none());
-        assert!(sc.tailscale.is_some());
+        #[cfg(feature = "tailscale")]
+        {
+            let sc = c
+                .to_server_config(&tsnet())
+                .expect("off+tailscale should map")
+                .server;
+            assert!(sc.listen.is_none());
+            assert!(sc.tailscale.is_some());
+        }
+        #[cfg(not(feature = "tailscale"))]
+        assert!(c.to_server_config(&tsnet()).is_err());
     }
 
     #[test]
@@ -401,6 +420,18 @@ mod tests {
             built.server.push_relay_url.as_deref(),
             Some("https://motif-push-relay.slothease.com/v1/push")
         );
+    }
+
+    #[test]
+    fn shell_override_maps_to_server_without_process_environment() {
+        let mut config = c_default();
+        config.shell = "  wsl.exe  ".into();
+        let built = config.to_server_config(&tsnet()).expect("config maps");
+        assert_eq!(built.server.shell.as_deref(), Some("wsl.exe"));
+
+        config.shell.clear();
+        let built = config.to_server_config(&tsnet()).expect("config maps");
+        assert!(built.server.shell.is_none());
     }
 
     #[test]

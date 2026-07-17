@@ -201,9 +201,16 @@ Future<void> _runMotifEmbedBuild(
   if (!buildScript.existsSync()) {
     throw StateError('Missing build script: ${buildScript.path}');
   }
-  final args = ['bash', buildScript.path, '--target', target];
+  final windows = Platform.isWindows;
+  final executable = windows ? _bashExecutable() : '/usr/bin/env';
+  final scriptPath = windows
+      ? buildScript.path.replaceAll(r'\', '/')
+      : buildScript.path;
+  final args = windows
+      ? [scriptPath, '--target', target]
+      : ['bash', scriptPath, '--target', target];
   final process = await Process.start(
-    '/usr/bin/env',
+    executable,
     args,
     workingDirectory: packageRoot,
     environment: environment,
@@ -213,7 +220,7 @@ Future<void> _runMotifEmbedBuild(
   final exitCode = await process.exitCode;
   if (exitCode != 0) {
     throw ProcessException(
-      '/usr/bin/env',
+      executable,
       args,
       'motif-embed native build failed for $target',
       exitCode,
@@ -444,17 +451,23 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
       linkMode: DynamicLoadingBundled(),
     ),
   );
-  // Windows currently bundles only the terminal engine (ghostty-vt) — no
-  // libtailscale and no in-process motif-embed yet:
-  //   - libtailscale: upstream's C wrapper (tailscale.c) is POSIX-only
-  //     (<sys/socket.h>, <unistd.h>) with no winsock fallback.
-  //   - motif-embed: standalone native motifd supports Windows, but wiring its
-  //     lifecycle into the Flutter app is a separate packaging step. Keep the
-  //     Windows client remote/standalone-server-only until that lands.
-  // The app degrades gracefully when these are absent: _findLibtailscale()
-  // returns null → NoopTailscaleService, and EmbeddedServerService.available
-  // is false → the embedded-server UI hides. The Windows client is a pure
-  // remote client (connects to a remote motifd).
+  // libtailscale remains unavailable on Windows: upstream's C wrapper
+  // (tailscale.c) is POSIX-only (<sys/socket.h>, <unistd.h>) with no winsock
+  // fallback. motif-embed itself uses motif-server's Windows-native ConPTY
+  // path and links against the ghostty-vt.dll emitted above.
+  await _addOrBuildBundledMotifEmbedDynamic(
+    input,
+    output,
+    relativeCandidates: [
+      'build/native/motif/windows/$arch/motif_embed.dll',
+      'windows/vendor/motif_embed.dll',
+    ],
+    buildTarget: 'windows-$arch',
+  );
+  // Windows therefore bundles the terminal engine and embedded motifd, but no
+  // libtailscale.
+  // The client-side Tailscale service still degrades to NoopTailscaleService;
+  // direct TCP/TLS and rendezvous pairing remain available to motif-embed.
 }
 
 /// iOS native build: wrap libghostty-vt's iOS archive slice into a bundled

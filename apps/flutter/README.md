@@ -106,6 +106,10 @@ Requires **Zig 0.15.2** on `PATH` for the libghostty native asset.
 | Linux | `flutter build linux -t lib/main_desktop.dart` (on a Linux host) | libghostty `.so` (cross-builds from macOS) | app assembly needs a Linux host/CI |
 | Windows | `flutter build windows -t lib/main_desktop.dart` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
 
+Desktop Windows builds also bundle `motif_embed.dll`; the Server page starts
+the native motifd in-process and can select PowerShell or an experimental
+`wsl.exe` shell. See [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md).
+
 ### Terminal renderer
 
 The real **libghostty** engine drives the terminal on every platform: native

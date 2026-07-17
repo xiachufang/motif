@@ -1,8 +1,9 @@
 /// Exercises the Dart↔Rust FFI ABI of the embedded-server library against the
-/// host-built dylib: confirms the symbol names/signatures match and that a real
-/// start→status→stop cycle works over loopback. Skipped automatically when the
-/// dylib hasn't been built (`scripts/build_motif_embed.sh --target macos-<arch>`).
-@TestOn('mac-os')
+/// host-built dynamic library: confirms the symbol names/signatures match and
+/// that a real start→status→stop cycle works over loopback. Skipped
+/// automatically when the library hasn't been built
+/// (`scripts/build_motif_embed.sh --target <host>`).
+@TestOn('vm')
 library;
 
 import 'dart:convert';
@@ -11,16 +12,21 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/motif_embed_ffi.dart';
 
-String? _dylibPath() {
+String? _libraryPath() {
+  final (os, file) = Platform.isWindows
+      ? ('windows', 'motif_embed.dll')
+      : Platform.isLinux
+      ? ('linux', 'libmotif_embed.so')
+      : ('macos', 'libmotif_embed.dylib');
   for (final arch in ['arm64', 'x64']) {
-    final p = 'build/native/motif/macos/$arch/libmotif_embed.dylib';
+    final p = 'build/native/motif/$os/$arch/$file';
     if (File(p).existsSync()) return p;
   }
   return null;
 }
 
 void main() {
-  final path = _dylibPath();
+  final path = _libraryPath();
   if (path == null) {
     // No host dylib — nothing to test. Run build_motif_embed.sh to enable.
     return;

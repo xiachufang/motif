@@ -427,7 +427,18 @@ impl RunningServer {
 pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     cfg.validate()?;
 
-    let manager = session::manager::SessionManager::new();
+    let configured_shell = cfg
+        .shell
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            std::env::var("MOTIFD_SHELL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+    let manager = session::manager::SessionManager::with_default_shell(configured_shell);
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
         None => {

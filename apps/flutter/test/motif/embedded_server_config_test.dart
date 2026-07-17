@@ -79,6 +79,17 @@ void main() {
     expect(runtimeRzv['jwt'], 'header.payload.signature');
   });
 
+  test('persists the embedded default shell and passes it to Rust', () {
+    const config = EmbeddedServerConfig(shell: 'wsl.exe');
+
+    expect(config.toPersistedJson()['shell'], 'wsl.exe');
+    expect(config.toRuntimeJson()['shell'], 'wsl.exe');
+    expect(
+      embeddedServerConfigFromJson(config.toPersistedJson()).shell,
+      'wsl.exe',
+    );
+  });
+
   test('migrates a legacy plaintext relay JWT into secure storage', () async {
     SharedPreferences.setMockInitialValues({
       'motif.embedded.v1': jsonEncode({

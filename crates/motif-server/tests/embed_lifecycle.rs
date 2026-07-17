@@ -16,6 +16,7 @@ fn loopback_cfg() -> ServerConfig {
         rzv_direct: None,
         token: None,
         push_relay_url: None,
+        shell: None,
     }
 }
 

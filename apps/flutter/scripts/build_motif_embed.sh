@@ -53,6 +53,23 @@ esac
 arch="${TARGET##*-}"
 OUT="${OUT:-$PROJECT_DIR/build/native/motif/$os/$arch/$out_name}"
 
+# The Windows App does not expose embedded Tailscale. Build motif-embed without
+# its default tailscale-bundled feature so the DLL rejects that configuration
+# explicitly and remains independent of Go.
+if [[ "$os" == "windows" ]]; then
+  cargo_features+=(--no-default-features)
+
+  # motif-server links libghostty-vt through libghostty-rs, while Flutter's
+  # renderer DLL is built from apps/flutter/ghostty. Force the Rust build to
+  # the same checkout so motif_embed.dll and the DLL bundled by the native
+  # assets hook agree on the C ABI and struct layouts.
+  ghostty_source="$PROJECT_DIR/ghostty"
+  if command -v cygpath >/dev/null 2>&1; then
+    ghostty_source="$(cygpath -w "$ghostty_source")"
+  fi
+  export GHOSTTY_SOURCE_DIR="${MOTIF_GHOSTTY_SOURCE_DIR:-$ghostty_source}"
+fi
+
 # On macOS, point the dylib's install name at @rpath so it resolves once the
 # native-asset bundler copies it into the app's Frameworks (mirrors how the
 # libtailscale dylib is wrapped).
@@ -144,5 +161,19 @@ if [[ "$os" == "macos" ]]; then
   ln -sf libghostty-vt.dylib "$(dirname "$OUT")/libghostty-vt.0.dylib"
 fi
 
+# Keep the Windows runtime dependency next to the manually-built DLL so the
+# cross-platform Dart FFI smoke test can open it directly. The Flutter hook also
+# emits ghostty-vt.dll as its own native asset; this copy is for manual tests.
+if [[ "$os" == "windows" ]]; then
+  ghostty_dll=""
+  while IFS= read -r -d '' candidate; do
+    if [[ -z "$ghostty_dll" || "$candidate" -nt "$ghostty_dll" ]]; then
+      ghostty_dll="$candidate"
+    fi
+  done < <(find "$REPO_ROOT/target/$triple/release/build" -type f -path '*/out/ghostty-install/bin/ghostty-vt.dll' -print0)
+  [[ -n "$ghostty_dll" ]] || { echo "error: motif_embed.dll dependency ghostty-vt.dll was not built" >&2; exit 1; }
+  cp -f "$ghostty_dll" "$(dirname "$OUT")/ghostty-vt.dll"
+fi
+
 echo ">>> built:"
-ls -la "$OUT"
+ls -la "$(dirname "$OUT")"

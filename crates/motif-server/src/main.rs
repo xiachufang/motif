@@ -305,6 +305,7 @@ async fn run() -> anyhow::Result<()> {
         rzv_direct,
         token,
         push_relay_url: args.push_relay_url,
+        shell: None,
     };
     motif_server::serve(cfg).await
 }

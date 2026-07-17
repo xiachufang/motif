@@ -131,7 +131,11 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(name: impl Into<String>, workdir: PathBuf) -> Arc<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        workdir: PathBuf,
+        default_shell: Option<Arc<str>>,
+    ) -> Arc<Self> {
         let (tx, _) = broadcast::channel::<Arc<Event>>(BROADCAST_CAPACITY);
         let (shutdown_tx, _) = watch::channel(false);
         let s = Arc::new(Self {
@@ -147,7 +151,7 @@ impl Session {
             tx,
             destroyed: AtomicBool::new(false),
             shutdown_tx,
-            pty_pool: PtyPool::new(),
+            pty_pool: PtyPool::new(default_shell),
             views: Mutex::new(Vec::new()),
             active_view: Mutex::new(None),
             fswatcher: Mutex::new(None),
@@ -806,7 +810,7 @@ mod tests {
     /// either skip events or replay duplicates depending on the cutoff.
     #[test]
     fn publish_event_keeps_ring_monotonic_under_contention() {
-        let s = Session::new("test", PathBuf::from("/tmp"));
+        let s = Session::new("test", PathBuf::from("/tmp"), None);
         const THREADS: usize = 8;
         const PER_THREAD: usize = 500;
 
@@ -851,8 +855,8 @@ mod tests {
 
     #[test]
     fn remote_ports_are_session_scoped() {
-        let a = Session::new("a", PathBuf::from("/tmp"));
-        let b = Session::new("b", PathBuf::from("/tmp"));
+        let a = Session::new("a", PathBuf::from("/tmp"), None);
+        let b = Session::new("b", PathBuf::from("/tmp"), None);
 
         let first = a.add_remote_port("127.0.0.1".into(), 3000, "http".into());
         let second = a.add_remote_port("localhost".into(), 8443, "https".into());
@@ -877,7 +881,7 @@ mod tests {
     /// not before the window closes.
     #[tokio::test]
     async fn coalesces_view_active_burst_to_latest() {
-        let s = Session::new("test-coalesce", PathBuf::from("/tmp"));
+        let s = Session::new("test-coalesce", PathBuf::from("/tmp"), None);
         for id in ["a", "b", "a", "c"] {
             s.activate_view(Some(id.to_string()));
         }
@@ -900,7 +904,7 @@ mod tests {
 
     #[test]
     fn detach_client_is_idempotent() {
-        let s = Session::new("test-detach", PathBuf::from("/tmp"));
+        let s = Session::new("test-detach", PathBuf::from("/tmp"), None);
         let client = "client-1".to_string();
 
         assert!(s.attach_client(client.clone()).is_some());
@@ -917,7 +921,7 @@ mod tests {
 
     #[test]
     fn shutdown_is_latched_and_rejects_new_clients() {
-        let s = Session::new("test-shutdown", PathBuf::from("/tmp"));
+        let s = Session::new("test-shutdown", PathBuf::from("/tmp"), None);
         assert!(s.attach_client("client-1".to_string()).is_some());
         let mut shutdown = s.subscribe_shutdown();
 

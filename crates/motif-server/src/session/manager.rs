@@ -10,9 +10,9 @@ use dashmap::DashMap;
 
 use super::Session;
 
-#[derive(Default)]
 pub struct SessionManager {
     sessions: DashMap<String, Arc<Session>>,
+    default_shell: Option<Arc<str>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -27,7 +27,14 @@ pub enum ManagerError {
 
 impl SessionManager {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+        Self::with_default_shell(None)
+    }
+
+    pub fn with_default_shell(default_shell: Option<String>) -> Arc<Self> {
+        Arc::new(Self {
+            sessions: DashMap::new(),
+            default_shell: default_shell.map(Arc::<str>::from),
+        })
     }
 
     pub fn create(&self, name: String, workdir: PathBuf) -> Result<Arc<Session>, ManagerError> {
@@ -44,7 +51,7 @@ impl SessionManager {
         match self.sessions.entry(name.clone()) {
             Entry::Occupied(_) => Err(ManagerError::AlreadyExists(name)),
             Entry::Vacant(entry) => {
-                let session = Session::new(name, workdir);
+                let session = Session::new(name, workdir, self.default_shell.clone());
                 entry.insert(Arc::clone(&session));
                 Ok(session)
             }

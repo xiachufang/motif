@@ -6,9 +6,12 @@ on:
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/motif-net/**'
+      - 'crates/motif-embed/**'
       - 'crates/motif-proto/**'
       - 'crates/motif-server/**'
       - 'crates/motif-tailscale/**'
+      - 'apps/flutter/hook/build.dart'
+      - 'apps/flutter/scripts/build_motif_embed.sh'
       - '.github/workflows/motifd-windows-checks.yml'
   push:
     branches: [main]
@@ -16,9 +19,12 @@ on:
       - 'Cargo.lock'
       - 'Cargo.toml'
       - 'crates/motif-net/**'
+      - 'crates/motif-embed/**'
       - 'crates/motif-proto/**'
       - 'crates/motif-server/**'
       - 'crates/motif-tailscale/**'
+      - 'apps/flutter/hook/build.dart'
+      - 'apps/flutter/scripts/build_motif_embed.sh'
       - '.github/workflows/motifd-windows-checks.yml'
 
 concurrency:
@@ -44,7 +50,7 @@ jobs:
         shell: powershell
         run: ./crates/motif-server/tests/validate-powershell-bootstrap.ps1
       - name: Build native Windows tests
-        run: cargo test -p motif-proto -p motif-server --no-default-features --no-run
+        run: cargo test -p motif-proto -p motif-server -p motif-embed --no-default-features --no-run
       - name: Test native Windows motifd
         shell: pwsh
         run: |
@@ -52,6 +58,6 @@ jobs:
             Select-Object -First 1
           if (-not $dll) { throw 'ghostty-vt.dll was not built' }
           $env:PATH = "$($dll.Directory.FullName);$env:PATH"
-          cargo test -p motif-proto -p motif-server --no-default-features
+          cargo test -p motif-proto -p motif-server -p motif-embed --no-default-features
       - name: Check default-feature Tailscale stub
-        run: cargo check -p motif-server
+        run: cargo check -p motif-server -p motif-embed

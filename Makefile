@@ -493,6 +493,8 @@ release-flutter-windows: deps-flutter ## Build and archive the Flutter Windows a
 	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build windows -t lib/main_desktop.dart --release --build-name "$(VERSION)" --build-number "$(BUILD_NUMBER)" --no-pub
 	@bundle="$$(find "$(FLUTTER_DIR)/build/windows" -path '*/runner/Release' -type d -print -quit)"; \
 		test -n "$$bundle" || { echo "Flutter Windows bundle not found."; exit 1; }; \
+		test -n "$$(find "$$bundle" -type f -name 'motif_embed.dll' -print -quit)" || { echo "motif_embed.dll missing from Flutter Windows bundle."; exit 1; }; \
+		test -n "$$(find "$$bundle" -type f -name 'ghostty-vt.dll' -print -quit)" || { echo "ghostty-vt.dll missing from Flutter Windows bundle."; exit 1; }; \
 		rm -rf "$(RELEASE_DIR)/flutter/windows-$(UNAME_M)/Motif"; \
 		mkdir -p "$(RELEASE_DIR)/flutter/windows-$(UNAME_M)/Motif"; \
 		cp -R "$$bundle/." "$(RELEASE_DIR)/flutter/windows-$(UNAME_M)/Motif/"; \

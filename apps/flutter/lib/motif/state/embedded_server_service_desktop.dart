@@ -55,6 +55,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
     },
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
     'push_relay_url': pushRelayUrl,
+    'shell': shell,
     'autostart': autostart,
   };
 
@@ -85,6 +86,7 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> j) {
     rzvRelay: _jsonString(rzv['relay'], defaults.rzvRelay),
     rzvJwt: _jsonString(rzv['jwt'], defaults.rzvJwt),
     pushRelayUrl: _jsonString(j['push_relay_url'], defaults.pushRelayUrl),
+    shell: _jsonString(j['shell'], defaults.shell),
     autostart: _jsonBool(j['autostart'], defaults.autostart),
   );
 }
@@ -139,14 +141,21 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   ) async {
     LibMotifEmbed? lib;
     if (_isDesktop) {
-      lib = LibMotifEmbed.tryOpenDefault();
-      if (lib != null) {
+      final candidate = LibMotifEmbed.tryOpenDefault();
+      if (candidate != null) {
+        String logDir;
         try {
           final support = await getApplicationSupportDirectory();
-          lib.init('${support.path}/motif/logs');
+          logDir = '${support.path}/motif/logs';
         } catch (_) {
-          // Logging init is best-effort; the server still runs without it.
+          logDir = '${Directory.systemTemp.path}/motif/logs';
         }
+        // init creates the Rust runtime and process-global server state in
+        // addition to configuring logs. Do not advertise the capability when
+        // that mandatory initialization failed.
+        try {
+          if (candidate.init(logDir) == 0) lib = candidate;
+        } catch (_) {}
       }
     }
     final svc = DesktopEmbeddedServerService._(prefs, secrets, lib);
