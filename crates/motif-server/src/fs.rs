@@ -20,7 +20,7 @@ pub fn resolve(_workdir: &Path, path: &str) -> Result<PathBuf, RpcError> {
     // A leading `~` / `~/…` expands against $HOME (so the dir picker can start
     // at home, including before a session exists). All other paths must be
     // absolute.
-    let candidate = match tilde_home(path) {
+    let candidate = match crate::paths::expand_tilde(Path::new(path)) {
         Some(home) => home,
         None if Path::new(path).is_absolute() => PathBuf::from(path),
         None => {
@@ -41,16 +41,6 @@ pub fn resolve(_workdir: &Path, path: &str) -> Result<PathBuf, RpcError> {
         }
     };
     Ok(resolved)
-}
-
-/// Expand a leading `~` / `~/…` against `$HOME`. `None` when `rel` isn't a tilde
-/// path (or `$HOME` is unset). `~user` is intentionally unsupported.
-fn tilde_home(rel: &str) -> Option<PathBuf> {
-    if rel == "~" {
-        return std::env::var_os("HOME").map(PathBuf::from);
-    }
-    let rest = rel.strip_prefix("~/")?;
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest))
 }
 
 /// List a directory under `base_dir`. `base_dir` is the attached session's
@@ -76,16 +66,16 @@ pub fn tree(base_dir: &Path, p: &TreeParams) -> Result<TreeResult, RpcError> {
             Err(_) => continue,
         };
         let name = ent.file_name().to_string_lossy().to_string();
-        if !p.show_hidden && name.starts_with('.') {
-            continue;
-        }
         let meta = match ent.metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };
+        if !p.show_hidden && is_hidden(&name, &meta) {
+            continue;
+        }
         let kind = if meta.is_dir() {
             FileType::Dir
-        } else if meta.file_type().is_symlink() {
+        } else if ent.file_type().is_symlink() {
             FileType::Symlink
         } else {
             FileType::File
@@ -102,6 +92,23 @@ pub fn tree(base_dir: &Path, p: &TreeParams) -> Result<TreeResult, RpcError> {
         path: p.path.clone(),
         entries,
     })
+}
+
+fn is_hidden(name: &str, metadata: &std::fs::Metadata) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
 }
 
 pub fn stat(s: &Session, p: &StatParams) -> Result<StatResult, RpcError> {

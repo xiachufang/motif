@@ -21,11 +21,25 @@ struct ShellAssets;
 /// first whitespace-separated token so `/usr/local/bin/zsh -l` resolves
 /// the same as `zsh`.
 pub fn detect(cmd: &str) -> ShellKind {
-    let first = cmd.split_whitespace().next().unwrap_or("");
-    match Path::new(first).file_name().and_then(|s| s.to_str()) {
-        Some("bash") => ShellKind::Bash,
-        Some("zsh") => ShellKind::Zsh,
-        Some("fish") => ShellKind::Fish,
+    let unquoted = cmd
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(cmd);
+    let first = if Path::new(unquoted).is_file() {
+        unquoted
+    } else {
+        cmd.split_whitespace().next().unwrap_or("")
+    };
+    let name = Path::new(first)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "bash" => ShellKind::Bash,
+        "zsh" => ShellKind::Zsh,
+        "fish" => ShellKind::Fish,
+        "pwsh" | "pwsh.exe" | "powershell" | "powershell.exe" => ShellKind::PowerShell,
         _ => ShellKind::Unknown,
     }
 }
@@ -48,6 +62,11 @@ pub struct Bootstrap {
     /// the Notification/Stop hooks are provisioned without touching the user's
     /// `~/.claude/settings.json`.
     settings_path: PathBuf,
+    /// Executable hook command stored in Claude/Codex's ephemeral settings.
+    /// Unix can execute the script directly; Windows must explicitly invoke
+    /// PowerShell so execution-policy and file-association differences do not
+    /// affect delivery.
+    notify_command: String,
 }
 
 impl Bootstrap {
@@ -84,6 +103,10 @@ impl Bootstrap {
                 write_asset(dir.path(), "fish.fish")?;
                 dir.path().join("fish.fish")
             }
+            ShellKind::PowerShell => {
+                write_asset(dir.path(), "powershell.ps1")?;
+                dir.path().join("powershell.ps1")
+            }
             ShellKind::Unknown => unreachable!("guarded above"),
         };
         let user_zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
@@ -91,16 +114,22 @@ impl Bootstrap {
         // Materialize the Claude Code notify hook + a settings file that wires
         // it. The settings file references the notify script by absolute path,
         // so it's generated per-PTY rather than embedded.
-        write_asset_executable(dir.path(), "motif-notify.sh")?;
-        let notify = dir.path().join("motif-notify.sh");
+        let notify = if matches!(kind, ShellKind::PowerShell) {
+            write_asset(dir.path(), "motif-notify.ps1")?;
+            dir.path().join("motif-notify.ps1")
+        } else {
+            write_asset_executable(dir.path(), "motif-notify.sh")?;
+            dir.path().join("motif-notify.sh")
+        };
+        let notify_command = notify_command(kind, &notify);
         let settings_path = dir.path().join("settings.json");
         let settings = serde_json::json!({
             "hooks": {
                 "Notification": [
-                    { "hooks": [ { "type": "command", "command": notify.to_string_lossy() } ] }
+                    { "hooks": [ { "type": "command", "command": &notify_command } ] }
                 ],
                 "Stop": [
-                    { "hooks": [ { "type": "command", "command": notify.to_string_lossy() } ] }
+                    { "hooks": [ { "type": "command", "command": &notify_command } ] }
                 ]
             }
         });
@@ -113,6 +142,7 @@ impl Bootstrap {
             entry,
             user_zdotdir,
             settings_path,
+            notify_command,
         })
     }
 
@@ -131,10 +161,7 @@ impl Bootstrap {
         // stdin, POSTs to the hook socket). The `codex` wrapper injects it via
         // `-c hooks.Stop=...` so nothing is written to the user's ~/.codex.
         // Same guard convention as above (gated on MOTIF_HOOK_SOCK).
-        cb.env(
-            "MOTIF_CODEX_NOTIFY",
-            self.dir.path().join("motif-notify.sh").as_os_str(),
-        );
+        cb.env("MOTIF_CODEX_NOTIFY", &self.notify_command);
 
         match self.kind {
             ShellKind::Bash => {
@@ -152,6 +179,17 @@ impl Bootstrap {
                 cb.arg("--init-command");
                 cb.arg(format!("source {}", self.entry.display()));
             }
+            ShellKind::PowerShell => {
+                let entry = self.entry.to_string_lossy().replace('\'', "''");
+                cb.args([
+                    "-NoLogo",
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &format!(". '{entry}'"),
+                ]);
+            }
             ShellKind::Unknown => {} // unreachable — Bootstrap was None above
         }
     }
@@ -162,7 +200,17 @@ fn shell_kind_str(k: ShellKind) -> &'static str {
         ShellKind::Bash => "bash",
         ShellKind::Zsh => "zsh",
         ShellKind::Fish => "fish",
+        ShellKind::PowerShell => "powershell",
         ShellKind::Unknown => "unknown",
+    }
+}
+
+fn notify_command(kind: ShellKind, path: &Path) -> String {
+    if matches!(kind, ShellKind::PowerShell) {
+        let escaped = path.to_string_lossy().replace('"', "\\\"");
+        format!("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{escaped}\"")
+    } else {
+        path.to_string_lossy().into_owned()
     }
 }
 
@@ -204,14 +252,10 @@ fn write_asset_executable(dir: &Path, name: &str) -> Option<()> {
 }
 
 /// Pick a host directory under which to put each PTY's per-spawn tmpdir.
-/// Prefers `$XDG_RUNTIME_DIR/motif/` (user-owned tmpfs on Linux); falls
-/// back to `$TMPDIR`, then `/tmp`. The actual tmpdir name has a random
-/// suffix from `tempfile::Builder`.
+/// Prefers `$XDG_RUNTIME_DIR/motif/` on Unix and otherwise uses the platform
+/// temporary directory. The actual name has a random suffix.
 fn make_runtime_tmpdir() -> Option<tempfile::TempDir> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|x| Path::new(&x).join("motif"))
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let base = crate::paths::runtime_dir("motif");
     std::fs::create_dir_all(&base).ok()?;
     tempfile::Builder::new()
         .prefix("motif-shell-")
@@ -228,6 +272,8 @@ mod tests {
         assert!(matches!(detect("/bin/bash"), ShellKind::Bash));
         assert!(matches!(detect("/usr/local/bin/zsh -l"), ShellKind::Zsh));
         assert!(matches!(detect("fish"), ShellKind::Fish));
+        assert!(matches!(detect("pwsh.exe"), ShellKind::PowerShell));
+        assert!(matches!(detect("PowerShell.EXE"), ShellKind::PowerShell));
         assert!(matches!(
             detect("/opt/homebrew/bin/fish --foo"),
             ShellKind::Fish
@@ -245,7 +291,9 @@ mod tests {
             "bash-preexec.sh",
             "zsh.zsh",
             "fish.fish",
+            "powershell.ps1",
             "motif-notify.sh",
+            "motif-notify.ps1",
         ] {
             assert!(
                 ShellAssets::get(name).is_some(),
@@ -358,6 +406,31 @@ fi
                 "{ev} hook command should point at the notify script, got {cmd:?}"
             );
         }
+    }
+
+    #[test]
+    fn powershell_prepare_uses_ps1_bootstrap_and_hook_runner() {
+        let Some(bs) = Bootstrap::prepare(ShellKind::PowerShell, "ps-1") else {
+            return;
+        };
+        assert!(bs.entry.ends_with("powershell.ps1"));
+        assert!(bs.dir.path().join("motif-notify.ps1").exists());
+        assert!(bs.notify_command.starts_with("powershell.exe "));
+        assert!(bs.notify_command.contains("motif-notify.ps1"));
+
+        let mut command = CommandBuilder::new("powershell.exe");
+        bs.apply_to(&mut command);
+        let argv: Vec<_> = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(argv.iter().any(|arg| arg == "-NoExit"));
+        assert!(argv.iter().any(|arg| arg.contains("powershell.ps1")));
+        assert_eq!(
+            command.get_env("MOTIF_SHELL").and_then(|v| v.to_str()),
+            Some("powershell")
+        );
     }
 
     #[test]

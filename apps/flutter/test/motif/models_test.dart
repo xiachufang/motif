@@ -60,6 +60,7 @@ void main() {
 
     test('ShellKind wire mapping', () {
       expect(ShellKind.fromWire('zsh'), ShellKind.zsh);
+      expect(ShellKind.fromWire('powershell'), ShellKind.powershell);
       expect(ShellKind.fromWire('weird'), ShellKind.unknown);
     });
   });

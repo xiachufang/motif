@@ -11,6 +11,7 @@ pub mod fswatch;
 pub mod git;
 pub mod hook_ingress;
 pub mod http_rpc;
+mod paths;
 pub mod pty;
 pub mod pty_ws;
 pub mod relay;
@@ -21,6 +22,8 @@ pub mod session;
 pub mod shell;
 pub mod tcp_ws;
 pub mod wake_detector;
+#[cfg(windows)]
+mod windows_job;
 pub mod wire;
 pub mod ws;
 
@@ -71,41 +74,17 @@ pub fn default_tailscale_hostname() -> String {
     }
 }
 
-/// Default tsnet state dir (`$XDG_DATA_HOME/motifd/tsnet`, else
-/// `~/.local/share/motifd/tsnet`); `None` if neither env var is set. Shared
-/// with the menu-bar app so the embedded node reuses `motifd`'s identity.
+/// Default tsnet state dir (`$XDG_DATA_HOME/motifd/tsnet`,
+/// `~/.local/share/motifd/tsnet` on Unix, or local app data on Windows).
+/// Shared with embedding hosts so the embedded node reuses `motifd`'s identity.
 pub fn default_tailscale_state_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
-        let mut p = PathBuf::from(dir);
-        p.push("motifd");
-        p.push("tsnet");
-        return Some(p);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut p = PathBuf::from(home);
-        p.push(".local");
-        p.push("share");
-        p.push("motifd");
-        p.push("tsnet");
-        return Some(p);
-    }
-    None
+    Some(paths::data_dir()?.join("motifd").join("tsnet"))
 }
 
 /// Default path for the persisted rzv pairing secret. Always returns a path
 /// (falls back to the current directory when no data/home dir is known).
 pub fn default_rzv_psk_path() -> PathBuf {
-    let mut base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let mut p = PathBuf::from(h);
-                p.push(".local");
-                p.push("share");
-                p
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from("."));
+    let mut base = paths::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.push("motifd");
     base.push("rzv_psk");
     base
@@ -325,7 +304,7 @@ pub struct RunningServer {
     shutdown: CancellationToken,
     serve_task: JoinHandle<anyhow::Result<()>>,
     wake_task: JoinHandle<()>,
-    /// Hook-ingress unix-socket task, present only when push is enabled.
+    /// Platform-local hook-ingress task, present only when push is enabled.
     hook_task: Option<JoinHandle<()>>,
 }
 
@@ -530,22 +509,18 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
 
     let shutdown = CancellationToken::new();
 
-    // Hook ingress: a local unix socket that receives Claude Code hook
-    // notifications from the shell-injected `motif-notify.sh`. Only spawned
-    // when push is enabled. The socket path is exported to the process env so
-    // child PTYs (which inherit motifd's env on Unix) see it as MOTIF_HOOK_SOCK.
+    // Hook ingress receives coding-agent notifications from shell integration.
+    // Unix exports a UDS path; Windows exports a loopback URL + capability
+    // token. Only future child PTYs inherit these process environment values.
+    hook_ingress::clear_environment();
     let hook_task = if device_state.relay.is_some() {
-        let sock_path = hook_ingress::default_hook_socket_path();
-        std::env::set_var("MOTIF_HOOK_SOCK", &sock_path);
-        match hook_ingress::spawn(
-            sock_path,
-            device_state.clone(),
-            manager.clone(),
-            shutdown.clone(),
-        ) {
-            Ok(h) => Some(h),
+        match hook_ingress::spawn(device_state.clone(), manager.clone(), shutdown.clone()) {
+            Ok(ingress) => {
+                ingress.install_environment();
+                Some(ingress.into_task())
+            }
             Err(e) => {
-                tracing::warn!("failed to bind hook ingress socket: {e}; push disabled");
+                tracing::warn!("failed to bind hook ingress: {e}; push disabled");
                 None
             }
         }

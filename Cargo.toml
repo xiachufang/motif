@@ -114,6 +114,7 @@ notify-debouncer-full = "0.7"
 # M8 (Web) + M9 (Shell integration)
 rust-embed         = "8"
 tempfile           = "3"
+windows-sys         = "0.61"
 
 [profile.release]
 lto           = "thin"

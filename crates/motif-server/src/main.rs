@@ -20,7 +20,7 @@ struct Args {
 
     /// Enable embedded Tailscale listener. Hostname auto-defaults to
     /// `motifd-<system-hostname>`; state dir defaults to
-    /// $XDG_DATA_HOME/motifd/tsnet (~/.local/share/motifd/tsnet on Linux/macOS).
+    /// Platform data dir (XDG/~/.local/share on Unix, LocalAppData on Windows).
     /// First start without --tailscale-authkey will print a login URL on
     /// stderr — open it once in a browser to authorize this node.
     /// The whole `--tailscale*` family exists only when built with the
@@ -35,7 +35,7 @@ struct Args {
     tailscale_hostname: Option<String>,
 
     /// Override the persistent state dir. Default:
-    /// $XDG_DATA_HOME/motifd/tsnet (or ~/.local/share/motifd/tsnet).
+    /// Platform data dir under motifd/tsnet.
     #[cfg(feature = "tailscale")]
     #[arg(long, requires = "tailscale")]
     tailscale_state_dir: Option<PathBuf>,
@@ -157,9 +157,7 @@ async fn run() -> anyhow::Result<()> {
         let state_dir = match args.tailscale_state_dir {
             Some(p) => p,
             None => motif_server::default_tailscale_state_dir().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "cannot determine state dir; pass --tailscale-state-dir or set HOME / XDG_DATA_HOME"
-                )
+                anyhow::anyhow!("cannot determine state dir; pass --tailscale-state-dir")
             })?,
         };
         Some(motif_server::TailscaleListenConfig {

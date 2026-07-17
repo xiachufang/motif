@@ -1,6 +1,6 @@
 name: release-motifd
 
-# Build standalone Linux/macOS motifd binaries and upload them to the GitHub
+# Build standalone Linux/macOS/Windows motifd binaries and upload them to the GitHub
 # Release for the pushed tag. The production container workflow remains
 # separate: this one is for users who want the raw daemon binary outside Docker.
 
@@ -39,6 +39,10 @@ jobs:
             target: release-motifd-macos
             artifact: motifd-macos-arm64
             verify_run: true
+          - os: windows-latest
+            target: release-motifd-windows
+            artifact: motifd-windows-x86_64
+            verify_run: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +66,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake make pkg-config
 
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make -y
+
       - name: Build motifd artifact
         shell: bash
         run: make ${{ matrix.target }}
@@ -71,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bin="$(find dist/release/motifd -type f -name 'motifd' -print -quit)"
+          bin="$(find dist/release/motifd -type f \( -name 'motifd' -o -name 'motifd.exe' \) -print -quit)"
           test -n "$bin"
           "$bin" --version
 

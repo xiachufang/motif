@@ -414,11 +414,7 @@ _OscMarker? _parseOscBody(List<int> body) {
   final rest = s.substring(semi + 1);
   switch (kind) {
     case '7':
-      final uri = Uri.tryParse(rest);
-      if (uri != null && uri.path.isNotEmpty) {
-        return _Osc7Cwd(Uri.decodeComponent(uri.path));
-      }
-      return _Osc7Cwd(rest);
+      return _Osc7Cwd(_parseCwd(rest));
     case '7777':
       return _parse777(rest);
     case '7770':
@@ -466,9 +462,25 @@ _OscMarker? _parse777(String rest) {
 }
 
 String _parseCwd(String raw) {
+  if (raw.startsWith(r'\\')) {
+    try {
+      return Uri.decodeComponent(raw);
+    } catch (_) {
+      return raw;
+    }
+  }
   final uri = Uri.tryParse(raw);
   if (uri != null && uri.path.isNotEmpty) {
-    return Uri.decodeComponent(uri.path);
+    var path = Uri.decodeComponent(uri.path);
+    if (uri.scheme == 'file') {
+      // RFC 8089 drive-letter URLs have a URI-only leading slash. Normalize
+      // regardless of the client OS: an iPhone may be attached to motifd on
+      // Windows and must send `C:/...`, not `/C:/...`, back through fs.* RPCs.
+      if (RegExp(r'^/[A-Za-z]:/').hasMatch(path)) {
+        path = path.substring(1);
+      }
+    }
+    return path;
   }
   try {
     return Uri.decodeComponent(raw);

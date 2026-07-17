@@ -82,7 +82,7 @@ macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set --
 	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
 	release-rust-macos release-rust-linux release-rust-windows \
-	release-motifd-macos release-motifd-linux \
+	release-motifd-macos release-motifd-linux release-motifd-windows \
 	release-flutter-macos release-flutter-linux \
 	release-flutter-windows release-flutter-android release-flutter-ios \
 	prepare-flutter-macos-release configure-flutter-macos-release \
@@ -279,6 +279,9 @@ release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build
 	@rm -rf "$(RELEASE_DIR)/rust/windows-$(UNAME_M)"
 	@mkdir -p "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin"
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin).exe" "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin/$(bin).exe";)
+	@ghostty_dll="$$(find target/release/build -type f -path '*/out/ghostty-install/bin/ghostty-vt.dll' -print -quit)"; \
+		test -n "$$ghostty_dll"; \
+		install -m 0755 "$$ghostty_dll" "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin/ghostty-vt.dll"
 	@tar -czf "$(RELEASE_DIR)/motif-rust-$(ARTIFACT_SUFFIX)-windows-$(UNAME_M).tar.gz" -C "$(RELEASE_DIR)/rust/windows-$(UNAME_M)" bin
 	@echo "Rust binaries: $(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin"
 
@@ -300,6 +303,18 @@ release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build
 	@install -m 0755 "target/$(MOTIFD_LINUX_TARGET)/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/linux-x86_64/$(MOTIFD_RELEASE_BIN)"
 	@tar -czf "$(RELEASE_DIR)/motifd-$(ARTIFACT_SUFFIX)-linux-x86_64.tar.gz" -C "$(RELEASE_DIR)/motifd/linux-x86_64" "$(MOTIFD_RELEASE_BIN)"
 	@echo "motifd binary: $(RELEASE_DIR)/motifd/linux-x86_64/$(MOTIFD_RELEASE_BIN)"
+
+release-motifd-windows: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for Windows.
+	$(call require_host,windows)
+	@$(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@rm -rf "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)"
+	@mkdir -p "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)"
+	@install -m 0755 "target/release/$(MOTIFD_RELEASE_BIN).exe" "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)/$(MOTIFD_RELEASE_BIN).exe"
+	@ghostty_dll="$$(find target/release/build -type f -path '*/out/ghostty-install/bin/ghostty-vt.dll' -print -quit)"; \
+		test -n "$$ghostty_dll"; \
+		install -m 0755 "$$ghostty_dll" "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)/ghostty-vt.dll"
+	@tar -czf "$(RELEASE_DIR)/motifd-$(ARTIFACT_SUFFIX)-windows-$(RELEASE_ARCH).tar.gz" -C "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)" "$(MOTIFD_RELEASE_BIN).exe" ghostty-vt.dll
+	@echo "motifd binary: $(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)/$(MOTIFD_RELEASE_BIN).exe"
 
 release-flutter-macos: check-macos-tools check-zig check-macos-release-credentials ## Build, Developer ID sign, notarize, and staple the Flutter macOS DMG.
 	$(call require_host,macos)

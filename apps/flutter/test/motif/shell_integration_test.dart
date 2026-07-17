@@ -129,6 +129,24 @@ void main() {
       final r = st.feed(_b(_osc('7777;P;Cwd=file:///home/me/proj')));
       expect(r.events.whereType<ShellCwdChanged>().single.cwd, '/home/me/proj');
     });
+
+    test('Windows drive and UNC cwd URLs normalize for fs RPCs', () {
+      final drive = ShellState().feed(
+        _b(_osc('7777;P;Cwd=file:///C:/Users/Alice/My%20Repo')),
+      );
+      expect(
+        drive.events.whereType<ShellCwdChanged>().single.cwd,
+        'C:/Users/Alice/My Repo',
+      );
+
+      final unc = ShellState().feed(
+        _b(_osc(r'7777;P;Cwd=\\server\share\repo')),
+      );
+      expect(
+        unc.events.whereType<ShellCwdChanged>().single.cwd,
+        r'\\server\share\repo',
+      );
+    });
   });
 
   group('primeRunning (cold attach restore)', () {

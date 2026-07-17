@@ -34,6 +34,30 @@ fn absolute(root: &Path, relative: &str) -> String {
     root.join(relative).to_string_lossy().into_owned()
 }
 
+fn interactive_test_shell() -> String {
+    if cfg!(windows) {
+        "powershell.exe".into()
+    } else {
+        "/bin/sh".into()
+    }
+}
+
+fn long_running_test_command() -> String {
+    if cfg!(windows) {
+        "Start-Sleep -Seconds 30".into()
+    } else {
+        "sleep 30".into()
+    }
+}
+
+fn shell_line(unix: &str, windows: &str) -> Vec<u8> {
+    if cfg!(windows) {
+        format!("{windows}\r\n").into_bytes()
+    } else {
+        format!("{unix}\n").into_bytes()
+    }
+}
+
 // ─────────────────────────── 1. session_lifecycle ───────────────────────────
 
 #[tokio::test]
@@ -140,7 +164,7 @@ async fn session_destroy_closes_connections_kills_ptys_and_invalidates_attach_id
         .call(
             "pty.create",
             ppty::PtyCreateParams {
-                cmd: Some("sleep 30".into()),
+                cmd: Some(long_running_test_command()),
                 cwd: None,
                 env: vec![],
                 cols: 80,
@@ -712,13 +736,13 @@ async fn pty_lifecycle_and_mirror() {
     let _ = b.drain_events().await;
     let _ = c.drain_events().await;
 
-    // A creates a PTY. cmd=/bin/sh keeps the test independent of the user's
-    // login shell. env is left empty — the server fills in TERM/etc.
+    // A creates a PTY with an explicit platform shell so the test stays
+    // independent of the user's login-shell preference.
     let created: ppty::PtyCreateResult = a
         .call(
             "pty.create",
             ppty::PtyCreateParams {
-                cmd: Some("/bin/sh".into()),
+                cmd: Some(interactive_test_shell()),
                 cwd: None,
                 env: vec![],
                 cols: 80,
@@ -767,8 +791,8 @@ async fn pty_lifecycle_and_mirror() {
     // PTY input — A sends `echo motif-marker\n` over its /pty WS; all three
     // clients see the echoed output. Picking a deliberately unique token so we
     // don't false-positive on the shell's prompt.
-    let cmd = b"echo motif-marker\n";
-    a_ws.write(cmd).await.unwrap();
+    let cmd = shell_line("echo motif-marker", "Write-Output 'motif-marker'");
+    a_ws.write(&cmd).await.unwrap();
     // sh takes a moment to start + echo + run.
     let wait = Duration::from_secs(5);
     let needle = b"motif-marker";
@@ -841,7 +865,7 @@ async fn pty_ws_framed_output_is_required_and_decodable() {
         .call(
             "pty.create",
             ppty::PtyCreateParams {
-                cmd: Some("/bin/sh".into()),
+                cmd: Some(interactive_test_shell()),
                 cwd: None,
                 env: vec![],
                 cols: 80,
@@ -864,11 +888,14 @@ async fn pty_ws_framed_output_is_required_and_decodable() {
         Some("zlib")
     );
 
-    framed.write(b"stty -echo\n").await.unwrap();
-    framed
-        .write(b"printf 'SMALL_FRAME_MARKER\\n'\n")
-        .await
-        .unwrap();
+    if !cfg!(windows) {
+        framed.write(b"stty -echo\n").await.unwrap();
+    }
+    let small_command = shell_line(
+        "printf 'SMALL_FRAME_MARKER\\n'",
+        "Write-Output 'SMALL_FRAME_MARKER'",
+    );
+    framed.write(&small_command).await.unwrap();
     let small = read_framed_until(&mut framed, b"SMALL_FRAME_MARKER", Duration::from_secs(5))
         .await
         .unwrap();
@@ -877,10 +904,11 @@ async fn pty_ws_framed_output_is_required_and_decodable() {
         "expected decoded bytes from framed small output"
     );
 
-    framed
-        .write(b"yes COMPRESSIBLE | head -c 16384; printf '\\nBIG_FRAME_'; printf 'DONE\\n'\n")
-        .await
-        .unwrap();
+    let big_command = shell_line(
+        "yes COMPRESSIBLE | head -c 16384; printf '\\nBIG_FRAME_'; printf 'DONE\\n'",
+        "[Console]::Out.Write(('COMPRESSIBLE' * 2048) + \"`nBIG_FRAME_DONE`n\")",
+    );
+    framed.write(&big_command).await.unwrap();
     let big = read_framed_until(&mut framed, b"BIG_FRAME_DONE", Duration::from_secs(5))
         .await
         .unwrap();
@@ -1016,7 +1044,7 @@ async fn multi_client_mirror() {
         .call(
             "pty.create",
             ppty::PtyCreateParams {
-                cmd: Some("/bin/sh".into()),
+                cmd: Some(interactive_test_shell()),
                 cwd: None,
                 env: vec![],
                 cols: 80,
@@ -1296,7 +1324,7 @@ async fn event_replay_on_reattach() {
         .call(
             "pty.create",
             ppty::PtyCreateParams {
-                cmd: Some("/bin/sh".into()),
+                cmd: Some(interactive_test_shell()),
                 cwd: None,
                 env: vec![],
                 cols: 80,

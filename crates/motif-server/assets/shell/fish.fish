@@ -159,10 +159,12 @@ __motif_install_prompt_wrappers
 # settings file, transparently pass it to `claude` so Notification/Stop
 # hooks fire — without touching the user's ~/.claude/settings.json.
 # `command claude` skips this function, so there's no recursion.
-if set -q MOTIF_HOOK_SOCK; and set -q MOTIF_CLAUDE_SETTINGS
+if set -q MOTIF_HOOK_SOCK; or set -q MOTIF_HOOK_URL
+  if set -q MOTIF_CLAUDE_SETTINGS
     function claude --wraps claude
         command claude --settings $MOTIF_CLAUDE_SETTINGS $argv
     end
+  end
 end
 
 # ── Motif: provision Codex CLI notify hook (push only) ───────────────
@@ -170,8 +172,10 @@ end
 # layer) pointing at the shared notify script — without touching the user's
 # ~/.codex/config.toml. Codex's own "Hooks need review" UI handles trust.
 # `command codex` skips this function, so there's no recursion.
-if set -q MOTIF_HOOK_SOCK; and set -q MOTIF_CODEX_NOTIFY
+if set -q MOTIF_HOOK_SOCK; or set -q MOTIF_HOOK_URL
+  if set -q MOTIF_CODEX_NOTIFY
     function codex --wraps codex
         command codex -c "hooks.Stop=[{hooks=[{type=\"command\",command=\"$MOTIF_CODEX_NOTIFY\"}]}]" $argv
     end
+  end
 end

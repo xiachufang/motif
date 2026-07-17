@@ -17,6 +17,7 @@ pub enum ShellKind {
     Bash,
     Zsh,
     Fish,
+    PowerShell,
     Unknown,
 }
 

@@ -783,7 +783,7 @@ where
 {
     let base = current_session(mgr, conn)
         .map(|s| s.workdir.clone())
-        .unwrap_or_else(home_dir);
+        .unwrap_or_else(crate::paths::home_or_current_dir);
     let p: P = match parse(params) {
         Ok(p) => p,
         Err(e) => return Response::err(id, e),
@@ -792,13 +792,6 @@ where
         Ok(r) => Response::ok(id, r),
         Err(e) => Response::err(id, e),
     }
-}
-
-/// `$HOME`, or `/` if unset — the browse base when no session is attached.
-fn home_dir() -> std::path::PathBuf {
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }
 
 pub fn on_disconnect(mgr: &Arc<SessionManager>, conn: &ConnSnapshot) {

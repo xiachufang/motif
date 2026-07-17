@@ -92,7 +92,7 @@ add-zsh-hook preexec __motif_preexec
 # settings file, transparently pass it to `claude` so Notification/Stop
 # hooks fire — without touching the user's ~/.claude/settings.json.
 # `command claude` skips this function, so there's no recursion.
-if [[ -n "$MOTIF_HOOK_SOCK" && -n "$MOTIF_CLAUDE_SETTINGS" ]]; then
+if [[ -n "${MOTIF_HOOK_SOCK:-}${MOTIF_HOOK_URL:-}" && -n "$MOTIF_CLAUDE_SETTINGS" ]]; then
     claude() { command claude --settings "$MOTIF_CLAUDE_SETTINGS" "$@"; }
 fi
 
@@ -101,7 +101,7 @@ fi
 # layer) pointing at the shared notify script — without touching the user's
 # ~/.codex/config.toml. Codex's own "Hooks need review" UI handles trust.
 # `command codex` skips this function, so there's no recursion.
-if [[ -n "$MOTIF_HOOK_SOCK" && -n "$MOTIF_CODEX_NOTIFY" ]]; then
+if [[ -n "${MOTIF_HOOK_SOCK:-}${MOTIF_HOOK_URL:-}" && -n "$MOTIF_CODEX_NOTIFY" ]]; then
     codex() {
         command codex -c "hooks.Stop=[{hooks=[{type=\"command\",command=\"$MOTIF_CODEX_NOTIFY\"}]}]" "$@"
     }

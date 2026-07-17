@@ -17,12 +17,14 @@ enum ShellKind {
   bash,
   zsh,
   fish,
+  powershell,
   unknown;
 
   static ShellKind fromWire(Object? v) => switch (v) {
     'bash' => ShellKind.bash,
     'zsh' => ShellKind.zsh,
     'fish' => ShellKind.fish,
+    'powershell' => ShellKind.powershell,
     _ => ShellKind.unknown,
   };
 

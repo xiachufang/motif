@@ -48,6 +48,8 @@ builds the [ghostty](https://github.com/ghostty-org/ghostty) VT engine from sour
 via **Zig 0.15.2** (pinned by ghostty; 0.16 is rejected). Put a matching `zig` on
 `PATH`:
 - Linux: install Zig 0.15.x (official tarball works).
+- Windows: use a native MSVC developer environment with Rust, Git Bash, and
+  Zig 0.15.x on `PATH`. Native terminal sessions use Windows ConPTY.
 - macOS 26 (Tahoe): the official 0.15.x tarball can't link libSystem — use
   `brew install zig@0.15` and build with
   `PATH="/opt/homebrew/opt/zig@0.15/bin:$PATH" SDKROOT="$(xcrun --show-sdk-path)" cargo build`.
@@ -80,6 +82,7 @@ make release-flutter-web
 make release-macos       # Rust + Flutter macOS artifacts
 make release-linux       # Rust + Flutter Linux artifacts
 make release-windows     # Rust + Flutter Windows artifacts
+make release-motifd-windows # Standalone motifd.exe (on a Windows host)
 ```
 
 Artifacts are written to `dist/release/`. Platform-specific targets are meant for
@@ -124,6 +127,19 @@ for image tags, configuration, and GHCR details.
 # Browser — open http://localhost:7777; the embedded Flutter Web client
 # auto-configures itself to the motifd origin on first launch.
 ```
+
+On native Windows, run `motifd.exe --listen 127.0.0.1:7777` from PowerShell.
+Keep the packaged `ghostty-vt.dll` beside `motifd.exe`.
+New PTYs prefer PowerShell 7 (`pwsh.exe`) and fall back to Windows PowerShell;
+set `MOTIFD_SHELL` to override the executable. Direct TCP/TLS and rendezvous
+pairing work natively. Embedded Tailscale currently degrades to an unavailable
+stub on Windows, so use the system Tailscale client or rendezvous instead.
+
+motifd injects its PowerShell bootstrap into every PTY automatically, following
+the [Windows Terminal shell-integration lifecycle](https://learn.microsoft.com/en-us/windows/terminal/tutorials/shell-integration)
+for prompt boundaries and exit-status tracking. The remote Motif app performs
+the terminal parsing itself, so users do not need to edit `$PROFILE` or enable
+`autoMarkPrompts` in Windows Terminal.
 
 For deployments behind a TLS terminator or on a tailnet, see
 [`docs/tailscale.md`](docs/tailscale.md) and the `motifd --help` flags.

@@ -444,13 +444,13 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
       linkMode: DynamicLoadingBundled(),
     ),
   );
-  // Windows bundles only the terminal engine (ghostty-vt) — no libtailscale
-  // and no embedded motifd:
+  // Windows currently bundles only the terminal engine (ghostty-vt) — no
+  // libtailscale and no in-process motif-embed yet:
   //   - libtailscale: upstream's C wrapper (tailscale.c) is POSIX-only
   //     (<sys/socket.h>, <unistd.h>) with no winsock fallback.
-  //   - motif-embed (in-process motifd): motif-server is Unix-centric (a
-  //     Unix-domain hook-ingress socket, fs-permission calls), so it isn't
-  //     built for Windows.
+  //   - motif-embed: standalone native motifd supports Windows, but wiring its
+  //     lifecycle into the Flutter app is a separate packaging step. Keep the
+  //     Windows client remote/standalone-server-only until that lands.
   // The app degrades gracefully when these are absent: _findLibtailscale()
   // returns null → NoopTailscaleService, and EmbeddedServerService.available
   // is false → the embedded-server UI hides. The Windows client is a pure

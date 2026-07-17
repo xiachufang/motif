@@ -226,7 +226,7 @@ fn list_untracked(workdir: &Path, path_filter: Option<&str>) -> Result<Vec<Strin
 }
 
 /// Build a unified-diff patch chunk for one untracked file by diffing it
-/// against /dev/null. `--no-index` makes git treat the two args as raw
+/// against the platform null device. `--no-index` makes git treat the args as raw
 /// paths rather than refs; exit code 1 means "differences found" (the
 /// expected case here, not an error). We omit `--binary` so binary files
 /// produce a small "Binary files differ" note instead of a base85 blob.
@@ -235,7 +235,7 @@ fn diff_untracked_file(workdir: &Path, rel: &str) -> Option<String> {
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(workdir)
-        .args(["diff", "--no-index", "--no-color", "--", "/dev/null", rel])
+        .args(["diff", "--no-index", "--no-color", "--", null_device(), rel])
         .output()
         .ok()?;
     let code = out.status.code().unwrap_or(-1);
@@ -243,6 +243,14 @@ fn diff_untracked_file(workdir: &Path, rel: &str) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn null_device() -> &'static str {
+    if cfg!(windows) {
+        "NUL"
+    } else {
+        "/dev/null"
+    }
 }
 
 pub fn diff_summary(workdir: &Path, p: &DiffParams) -> Result<DiffSummaryResult, RpcError> {

@@ -1,6 +1,8 @@
 //! `SessionManager` — keyed by user-provided session name.
 
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::mapref::entry::Entry;
@@ -29,7 +31,7 @@ impl SessionManager {
     }
 
     pub fn create(&self, name: String, workdir: PathBuf) -> Result<Arc<Session>, ManagerError> {
-        let workdir = expand_home(&workdir).unwrap_or(workdir);
+        let workdir = crate::paths::expand_tilde(&workdir).unwrap_or(workdir);
         if !workdir.is_dir() {
             return Err(ManagerError::BadWorkdir(workdir));
         }
@@ -68,46 +70,29 @@ impl SessionManager {
     }
 }
 
-/// Expand a leading `~` or `~/` against `$HOME`. Anything else is left alone.
-/// `~user` (other-user expansion) is intentionally not supported — that's
-/// a pure cosmetic feature and the security boundaries differ.
-fn expand_home(p: &Path) -> Option<PathBuf> {
-    let s = p.to_str()?;
-    if s == "~" {
-        return std::env::var_os("HOME").map(PathBuf::from);
-    }
-    if let Some(rest) = s.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")?;
-        let mut pb = PathBuf::from(home);
-        pb.push(rest);
-        return Some(pb);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn expands_tilde_alone() {
-        let home = std::env::var("HOME").unwrap();
-        assert_eq!(expand_home(Path::new("~")).unwrap(), PathBuf::from(home));
+        let home = crate::paths::home_dir().unwrap();
+        assert_eq!(crate::paths::expand_tilde(Path::new("~")).unwrap(), home);
     }
     #[test]
     fn expands_tilde_slash_subpath() {
-        let home = std::env::var("HOME").unwrap();
+        let home = crate::paths::home_dir().unwrap();
         assert_eq!(
-            expand_home(Path::new("~/code/foo")).unwrap(),
-            PathBuf::from(format!("{home}/code/foo")),
+            crate::paths::expand_tilde(Path::new("~/code/foo")).unwrap(),
+            home.join("code").join("foo"),
         );
     }
     #[test]
     fn leaves_absolute_alone() {
-        assert!(expand_home(Path::new("/tmp/x")).is_none());
+        assert!(crate::paths::expand_tilde(Path::new("/tmp/x")).is_none());
     }
     #[test]
     fn leaves_relative_alone() {
-        assert!(expand_home(Path::new("foo/bar")).is_none());
+        assert!(crate::paths::expand_tilde(Path::new("foo/bar")).is_none());
     }
 }

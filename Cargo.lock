@@ -1423,6 +1423,7 @@ dependencies = [
  "bytes",
  "clap",
  "dashmap",
+ "dirs",
  "flate2",
  "futures-util",
  "getrandom 0.2.17",
@@ -1462,6 +1463,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

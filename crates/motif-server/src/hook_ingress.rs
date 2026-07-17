@@ -1,4 +1,4 @@
-//! Local unix-socket listener that receives coding-agent hook notifications.
+//! Local listener that receives coding-agent hook notifications.
 //!
 //! Both Claude Code and Codex CLI are wired here: a `Notification`/`Stop` hook
 //! (provisioned with zero user config by the shell bootstrap — see
@@ -6,16 +6,16 @@
 //! `motif-notify.sh`, which POSTs the hook's stdin JSON to this socket. Both
 //! agents use the same stdin-JSON contract (`hook_event_name`,
 //! `last_assistant_message`, …), so this ingress is agent-agnostic. We
-//! deliberately use a unix socket rather than the main axum router: it's
-//! auth-gated by filesystem
-//! permissions (0600, local-only) instead of the bearer token, so no secret
-//! has to be exposed in the PTY environment.
+//! Unix uses a 0600 Unix-domain socket. Windows uses an ephemeral loopback TCP
+//! listener protected by a random capability token inherited only by child
+//! PTYs; this avoids exposing the main motifd bearer to coding-agent hooks.
 //!
 //! On each hook we (i) publish an `Event::Notification` to the originating
 //! session's broadcast (the "live" channel — attached clients show an in-app
 //! / terminal banner) and (ii) forward an encrypted payload to the push relay
 //! for iOS background delivery (`crate::relay`).
 
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,6 +27,9 @@ use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use motif_proto::event::Event;
 use serde::Deserialize;
+#[cfg(not(unix))]
+use tokio::net::TcpListener;
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio_util::sync::CancellationToken;
 
@@ -37,6 +40,45 @@ use crate::session::manager::SessionManager;
 /// env as `MOTIF_SESSION_NAME` and forwarded by `motif-notify.sh`). Empty /
 /// absent when the hook didn't fire inside a motif PTY.
 const SESSION_HEADER: &str = "x-motif-session";
+const TOKEN_HEADER: &str = "x-motif-hook-token";
+
+/// Bound hook ingress plus the environment values child PTYs need in order to
+/// post to it. Binding happens before these values are exported, so a PTY can
+/// never inherit an endpoint that is not ready yet.
+pub struct HookIngress {
+    task: tokio::task::JoinHandle<()>,
+    #[cfg(unix)]
+    path: PathBuf,
+    #[cfg(not(unix))]
+    url: String,
+    #[cfg(not(unix))]
+    token: String,
+}
+
+impl HookIngress {
+    pub fn install_environment(&self) {
+        clear_environment();
+        #[cfg(unix)]
+        std::env::set_var("MOTIF_HOOK_SOCK", &self.path);
+        #[cfg(not(unix))]
+        {
+            std::env::set_var("MOTIF_HOOK_URL", &self.url);
+            std::env::set_var("MOTIF_HOOK_TOKEN", &self.token);
+        }
+    }
+
+    pub fn into_task(self) -> tokio::task::JoinHandle<()> {
+        self.task
+    }
+}
+
+/// Remove endpoint values left by a previous embedded-server run. Existing
+/// PTYs already inherited their own copy; this only affects future children.
+pub fn clear_environment() {
+    std::env::remove_var("MOTIF_HOOK_SOCK");
+    std::env::remove_var("MOTIF_HOOK_URL");
+    std::env::remove_var("MOTIF_HOOK_TOKEN");
+}
 
 /// Coding-agent hook payload (subset we use), delivered on the hook command's
 /// stdin and forwarded verbatim as the POST body. Claude Code and Codex CLI
@@ -58,23 +100,21 @@ struct HookPayload {
 
 /// Resolve the hook socket path: `$XDG_RUNTIME_DIR/motifd/hook.sock`, else
 /// `$TMPDIR/motifd/hook.sock`, else `/tmp/motifd/hook.sock`.
+#[cfg(unix)]
 pub fn default_hook_socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("motifd").join("hook.sock")
+    crate::paths::runtime_dir("motifd").join("hook.sock")
 }
 
-/// Bind the unix socket (0600) and serve hook POSTs until `shutdown` fires.
-/// Returns the bound listener wrapped in a task. Errors binding are fatal to
-/// the push feature but not to motifd, so the caller logs and continues.
+/// Bind the platform-local endpoint and serve hook POSTs until `shutdown`
+/// fires. Errors are fatal to the push feature but not to motifd, so the caller
+/// logs and continues.
+#[cfg(unix)]
 pub fn spawn(
-    path: PathBuf,
     devices: DeviceState,
     manager: Arc<SessionManager>,
     shutdown: CancellationToken,
-) -> std::io::Result<tokio::task::JoinHandle<()>> {
+) -> std::io::Result<HookIngress> {
+    let path = default_hook_socket_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         let _ = set_dir_private(parent);
@@ -84,6 +124,7 @@ pub fn spawn(
     let listener = UnixListener::bind(&path)?;
     let _ = set_socket_private(&path);
     tracing::info!(socket = %path.display(), "hook ingress listening");
+    let env_path = path.clone();
 
     let handle = tokio::spawn(async move {
         loop {
@@ -102,7 +143,7 @@ pub fn spawn(
                     tokio::spawn(async move {
                         let io = TokioIo::new(stream);
                         let svc = service_fn(move |req| {
-                            handle(req, devices.clone(), manager.clone())
+                            handle(req, devices.clone(), manager.clone(), None)
                         });
                         if let Err(e) =
                             hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await
@@ -116,14 +157,86 @@ pub fn spawn(
         // Best-effort cleanup so a restart can rebind cleanly.
         let _ = std::fs::remove_file(&path);
     });
-    Ok(handle)
+    Ok(HookIngress {
+        task: handle,
+        path: env_path,
+    })
+}
+
+/// Windows fallback: loopback TCP with an unguessable per-run token. A random
+/// port avoids firewall prompts and collisions between concurrent users.
+#[cfg(not(unix))]
+pub fn spawn(
+    devices: DeviceState,
+    manager: Arc<SessionManager>,
+    shutdown: CancellationToken,
+) -> std::io::Result<HookIngress> {
+    let std_listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    std_listener.set_nonblocking(true)?;
+    let addr = std_listener.local_addr()?;
+    let listener = TcpListener::from_std(std_listener)?;
+    let token = crate::auth::generate_token();
+    let expected: Arc<str> = Arc::from(token.clone());
+    let url = format!("http://{addr}/hook");
+    tracing::info!(%url, "hook ingress listening on authenticated loopback");
+
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                accepted = listener.accept() => {
+                    let (stream, _addr) = match accepted {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::warn!("hook ingress accept failed: {e}");
+                            continue;
+                        }
+                    };
+                    let devices = devices.clone();
+                    let manager = manager.clone();
+                    let expected = expected.clone();
+                    tokio::spawn(async move {
+                        let io = TokioIo::new(stream);
+                        let svc = service_fn(move |req| {
+                            handle(
+                                req,
+                                devices.clone(),
+                                manager.clone(),
+                                Some(expected.clone()),
+                            )
+                        });
+                        if let Err(e) =
+                            hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await
+                        {
+                            tracing::debug!("hook ingress conn ended: {e}");
+                        }
+                    });
+                }
+            }
+        }
+    });
+    Ok(HookIngress {
+        task: handle,
+        url,
+        token,
+    })
 }
 
 async fn handle(
     req: Request<Incoming>,
     devices: DeviceState,
     manager: Arc<SessionManager>,
+    expected_token: Option<Arc<str>>,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    if let Some(expected) = expected_token {
+        let authorized = req
+            .headers()
+            .get(TOKEN_HEADER)
+            .is_some_and(|provided| constant_time_eq(provided.as_bytes(), expected.as_bytes()));
+        if !authorized {
+            return Ok(reply(StatusCode::FORBIDDEN));
+        }
+    }
     let session_name = req
         .headers()
         .get(SESSION_HEADER)
@@ -208,6 +321,17 @@ async fn handle(
     Ok(reply(StatusCode::OK))
 }
 
+fn constant_time_eq(provided: &[u8], expected: &[u8]) -> bool {
+    if provided.len() != expected.len() {
+        return false;
+    }
+    let mut different = 0u8;
+    for (&a, &b) in provided.iter().zip(expected) {
+        different |= a ^ b;
+    }
+    different == 0
+}
+
 /// Condense an assistant message into a one-line, notification-sized snippet:
 /// collapse runs of whitespace/newlines to single spaces, then truncate to a
 /// char-boundary with an ellipsis if cut.
@@ -241,16 +365,6 @@ fn set_dir_private(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-#[cfg(not(unix))]
-fn set_socket_private(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_dir_private(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +384,12 @@ mod tests {
         assert_eq!(out.chars().count(), 141); // 140 + ellipsis
         assert!(out.ends_with('…'));
         assert_eq!(summarize("short"), "short");
+    }
+
+    #[test]
+    fn hook_capability_comparison_requires_exact_token() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secreu", b"secret"));
+        assert!(!constant_time_eq(b"short", b"secret"));
     }
 }

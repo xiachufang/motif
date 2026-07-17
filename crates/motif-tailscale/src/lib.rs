@@ -15,19 +15,19 @@
 
 use std::path::PathBuf;
 
-#[cfg(feature = "bundled")]
+#[cfg(all(feature = "bundled", unix))]
 mod bundled;
-#[cfg(not(feature = "bundled"))]
+#[cfg(not(all(feature = "bundled", unix)))]
 mod stub;
 
-#[cfg(feature = "bundled")]
+#[cfg(all(feature = "bundled", unix))]
 pub use bundled::{TsBackendStatus, TsListener, TsServer, TsStream};
-#[cfg(not(feature = "bundled"))]
+#[cfg(not(all(feature = "bundled", unix)))]
 pub use stub::{TsBackendStatus, TsListener, TsServer, TsStream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TsError {
-    #[error("Tailscale support is not implemented in this build (enable feature `bundled`)")]
+    #[error("embedded Tailscale is unavailable in this build or on this platform")]
     Unimplemented,
     #[error("libtailscale call failed: {0}")]
     Native(String),

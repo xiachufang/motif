@@ -108,6 +108,8 @@ pub struct Pty {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
+    #[cfg(windows)]
+    process_job: Option<crate::windows_job::ProcessJob>,
     pub(crate) state: Mutex<PtyState>,
     /// Command channel to this PTY's dedicated **emulator thread**, which
     /// owns the byte ring, the live `broadcast::Sender`, AND a headless
@@ -340,6 +342,10 @@ impl Pty {
     }
 
     pub fn kill(&self) {
+        #[cfg(windows)]
+        if let Some(job) = &self.process_job {
+            job.terminate();
+        }
         if let Some(mut k) = self.killer.lock().take() {
             let _ = k.kill();
         }
@@ -488,16 +494,12 @@ impl PtyPool {
             })
             .map_err(|e| PtyError::OpenFailed(e.to_string()))?;
 
-        // Build child command.
-        let mut cb = if cmd_str.contains(' ') {
-            // Interpret as shell command — wrap in /bin/sh -lc.
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            let mut c = CommandBuilder::new(&shell);
-            c.args(["-lc", &cmd_str]);
-            c
-        } else {
-            CommandBuilder::new(&cmd_str)
-        };
+        // Build child command. The wire-level `cmd` is historically a single
+        // string: a bare executable is launched directly, while a command line
+        // is interpreted by the platform shell. Keep that compatibility, but
+        // don't mistake an existing executable path containing spaces for a
+        // command line (common under `C:\Program Files` on Windows).
+        let mut cb = command_builder(&cmd_str, is_default_cmd);
         if should_launch_default_zsh_as_login_shell(is_default_cmd, detected_kind, &cmd_str) {
             cb.arg("-l");
         }
@@ -508,6 +510,8 @@ impl PtyPool {
         // from a non-interactive context (CI, launchd) where TERM isn't
         // set. xterm.js advertises xterm-256color compatibility.
         cb.env("TERM", "xterm-256color");
+        cb.env("COLORTERM", "truecolor");
+        cb.env("TERM_PROGRAM", "motif");
         for (k, v) in &params.env {
             cb.env(k, v);
         }
@@ -535,6 +539,14 @@ impl PtyPool {
             .map_err(|e| PtyError::SpawnFailed(e.to_string()))?;
         let killer = child.clone_killer();
         let pid = child.process_id();
+        #[cfg(windows)]
+        let process_job = pid.and_then(|pid| match crate::windows_job::ProcessJob::assign(pid) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                tracing::warn!(pid, %error, "could not assign PTY shell to Windows Job Object");
+                None
+            }
+        });
 
         // Take writer + reader before we move master into Pty.
         let writer = pair
@@ -569,6 +581,8 @@ impl PtyPool {
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(Some(killer)),
+            #[cfg(windows)]
+            process_job,
             state: Mutex::new(PtyState {
                 cols,
                 rows,
@@ -1110,7 +1124,49 @@ fn formatter_vt_snapshot(term: &Terminal) -> Vec<u8> {
 }
 
 fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    if let Ok(shell) = std::env::var("MOTIFD_SHELL") {
+        if !shell.trim().is_empty() {
+            return shell;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        find_windows_executable("pwsh.exe").unwrap_or_else(|| "powershell.exe".into())
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    }
+}
+
+fn command_builder(cmd: &str, is_default_cmd: bool) -> CommandBuilder {
+    let unquoted = cmd
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(cmd);
+    let direct_path = Path::new(unquoted).exists();
+    if is_default_cmd || direct_path || !cmd.chars().any(char::is_whitespace) {
+        return CommandBuilder::new(unquoted);
+    }
+
+    let shell = default_shell();
+    let mut builder = CommandBuilder::new(&shell);
+    #[cfg(windows)]
+    builder.args(["-NoLogo", "-Command", cmd]);
+    #[cfg(not(windows))]
+    builder.args(["-lc", cmd]);
+    builder
+}
+
+#[cfg(windows)]
+fn find_windows_executable(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 fn should_launch_default_zsh_as_login_shell(
@@ -1154,6 +1210,21 @@ mod tests {
         let (tx, rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
         std::thread::spawn(move || emulator_loop(rx, cols, rows));
         tx
+    }
+
+    #[test]
+    fn command_lines_use_the_platform_shell() {
+        let builder = command_builder("echo motif command", false);
+        let argv: Vec<_> = builder
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        #[cfg(windows)]
+        assert!(argv.iter().any(|arg| arg == "-Command"));
+        #[cfg(not(windows))]
+        assert!(argv.iter().any(|arg| arg == "-lc"));
+        assert_eq!(argv.last().map(String::as_str), Some("echo motif command"));
     }
 
     fn feed(tx: &SyncSender<EmuCmd>, b: &[u8]) {

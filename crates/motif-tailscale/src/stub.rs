@@ -1,6 +1,7 @@
 //! Stub implementation: every API call returns `TsError::Unimplemented`.
-//! Compiled when the `bundled` feature is OFF. Lets downstream crates
-//! compile against this crate's surface without a Go toolchain.
+//! Compiled when the `bundled` feature is OFF, and on non-Unix platforms where
+//! upstream libtailscale's C wrapper is unavailable. Lets downstream crates
+//! compile against this surface without a Go/POSIX native dependency.
 
 use std::net::SocketAddr;
 use std::pin::Pin;

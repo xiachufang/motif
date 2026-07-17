@@ -199,18 +199,39 @@ fn percent_decode(bytes: &[u8]) -> Vec<u8> {
 /// (`%20` etc.) are unescaped. Anything that doesn't start with `file://`
 /// is taken as a literal path — a few shells emit just the path.
 fn parse_file_uri(s: &[u8]) -> Option<std::path::PathBuf> {
-    let bytes = if s.starts_with(b"file://") {
+    let (host, bytes) = if s.starts_with(b"file://") {
         // Skip past the host segment (between `//` and the first `/` of
         // the path). For `file:///abs` the host is empty.
         let after_scheme = &s[b"file://".len()..];
         let path_start = after_scheme.iter().position(|&b| b == b'/')?;
-        &after_scheme[path_start..]
+        (&after_scheme[..path_start], &after_scheme[path_start..])
     } else {
-        s
+        (&b""[..], s)
     };
-    Some(std::path::PathBuf::from(
-        String::from_utf8(percent_decode(bytes)).ok()?,
-    ))
+    let decoded = String::from_utf8(percent_decode(bytes)).ok()?;
+    #[cfg(not(windows))]
+    let _ = host;
+
+    #[cfg(windows)]
+    {
+        if !host.is_empty() && !host.eq_ignore_ascii_case(b"localhost") {
+            let host = String::from_utf8(percent_decode(host)).ok()?;
+            let tail = decoded.trim_start_matches('/').replace('/', "\\");
+            return Some(std::path::PathBuf::from(format!(r"\\{host}\{tail}")));
+        }
+        // RFC 8089 drive-letter form is `file:///C:/path`; Windows Path treats
+        // the URI's leading slash as a root on the current drive, so remove it.
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return Some(std::path::PathBuf::from(&decoded[1..]));
+        }
+    }
+
+    Some(std::path::PathBuf::from(decoded))
 }
 
 fn parse_exit_field(s: &[u8]) -> Option<i32> {
@@ -849,6 +870,26 @@ mod tests {
         match &r.queries[..] {
             [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/path/with space"),
             other => panic!("expected Osc7Cwd with decoded space, got {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn osc7_windows_drive_and_unc_paths() {
+        let drive = scan_one(b"\x1b]7;file:///C:/Users/Alice/My%20Repo\x07");
+        match &drive.queries[..] {
+            [QueryKind::Osc7Cwd { path }] => {
+                assert_eq!(path, &std::path::PathBuf::from(r"C:\Users\Alice\My Repo"));
+            }
+            other => panic!("expected Windows drive cwd, got {other:?}"),
+        }
+
+        let unc = scan_one(b"\x1b]7;file://server/share/repo\x07");
+        match &unc.queries[..] {
+            [QueryKind::Osc7Cwd { path }] => {
+                assert_eq!(path, &std::path::PathBuf::from(r"\\server\share\repo"));
+            }
+            other => panic!("expected Windows UNC cwd, got {other:?}"),
         }
     }
 

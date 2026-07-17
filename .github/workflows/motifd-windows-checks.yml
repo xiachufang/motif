@@ -1,0 +1,57 @@
+name: motifd Windows checks
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/motif-net/**'
+      - 'crates/motif-proto/**'
+      - 'crates/motif-server/**'
+      - 'crates/motif-tailscale/**'
+      - '.github/workflows/motifd-windows-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/motif-net/**'
+      - 'crates/motif-proto/**'
+      - 'crates/motif-server/**'
+      - 'crates/motif-tailscale/**'
+      - '.github/workflows/motifd-windows-checks.yml'
+
+concurrency:
+  group: motifd-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LIBGHOSTTY_VT_SYS_OPTIMIZE: ReleaseFast
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Validate PowerShell 7 bootstrap
+        shell: pwsh
+        run: ./crates/motif-server/tests/validate-powershell-bootstrap.ps1
+      - name: Validate Windows PowerShell 5.1 bootstrap
+        shell: powershell
+        run: ./crates/motif-server/tests/validate-powershell-bootstrap.ps1
+      - name: Build native Windows tests
+        run: cargo test -p motif-proto -p motif-server --no-default-features --no-run
+      - name: Test native Windows motifd
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem target/debug/build -Recurse -Filter ghostty-vt.dll |
+            Select-Object -First 1
+          if (-not $dll) { throw 'ghostty-vt.dll was not built' }
+          $env:PATH = "$($dll.Directory.FullName);$env:PATH"
+          cargo test -p motif-proto -p motif-server --no-default-features
+      - name: Check default-feature Tailscale stub
+        run: cargo check -p motif-server

@@ -11,14 +11,22 @@
 # forbids it), must be non-blocking, and must always exit 0 so a hiccup here
 # never disrupts the Claude session.
 
-[ -n "$MOTIF_HOOK_SOCK" ] || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
-cat | curl -s --max-time 3 \
-  --unix-socket "$MOTIF_HOOK_SOCK" \
-  -H "X-Motif-Session: ${MOTIF_SESSION_NAME:-}" \
-  -H "Content-Type: application/json" \
-  --data-binary @- \
-  http://localhost/hook >/dev/null 2>&1
+if [ -n "$MOTIF_HOOK_SOCK" ]; then
+  cat | curl -s --max-time 3 \
+    --unix-socket "$MOTIF_HOOK_SOCK" \
+    -H "X-Motif-Session: ${MOTIF_SESSION_NAME:-}" \
+    -H "Content-Type: application/json" \
+    --data-binary @- \
+    http://localhost/hook >/dev/null 2>&1
+elif [ -n "$MOTIF_HOOK_URL" ] && [ -n "$MOTIF_HOOK_TOKEN" ]; then
+  cat | curl -s --max-time 3 \
+    -H "X-Motif-Session: ${MOTIF_SESSION_NAME:-}" \
+    -H "X-Motif-Hook-Token: $MOTIF_HOOK_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data-binary @- \
+    "$MOTIF_HOOK_URL" >/dev/null 2>&1
+fi
 
 exit 0
