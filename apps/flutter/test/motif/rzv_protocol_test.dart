@@ -93,6 +93,7 @@ void main() {
       expect(ServerKind.fromWire(null), ServerKind.direct);
       expect(ServerKind.fromWire('tailscale'), ServerKind.tailscale);
       expect(ServerKind.fromWire('ssh'), ServerKind.ssh);
+      expect(ServerKind.fromWire('wsl'), ServerKind.wsl);
     });
   });
 }

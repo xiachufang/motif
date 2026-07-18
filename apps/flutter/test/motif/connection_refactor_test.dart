@@ -511,6 +511,71 @@ void main() {
       },
     );
 
+    test(
+      'bootstraps WSL and resolves it as a direct loopback target',
+      () async {
+        final tailscale = _FakeTailscale(TailscaleState.stopped);
+        addTearDown(tailscale.close);
+        final bootstrapped = <MotifServer>[];
+        final resolver = TransportResolver(
+          _platform(tailscale),
+          wslSupported: true,
+          wslAutoInitializer: (server) async => bootstrapped.add(server),
+        );
+        const server = MotifServer(
+          id: 'wsl',
+          name: 'Ubuntu',
+          host: 'ignored',
+          port: 17777,
+          kind: ServerKind.wsl,
+          wslDistribution: 'Ubuntu-24.04',
+        );
+
+        final result = await resolver.resolve(server);
+
+        expect(bootstrapped, [server]);
+        expect(result, isA<TransportReady>());
+        final ready = result as TransportReady;
+        expect(ready.target.host, '127.0.0.1');
+        expect(ready.target.port, 17777);
+        expect(ready.target.scheme, 'http');
+        expect(ready.proxy, ProxySettings.none);
+      },
+    );
+
+    test(
+      'blocks WSL when bootstrap fails or the platform is unsupported',
+      () async {
+        final tailscale = _FakeTailscale(TailscaleState.stopped);
+        addTearDown(tailscale.close);
+        const server = MotifServer(
+          id: 'wsl',
+          name: 'Ubuntu',
+          host: '127.0.0.1',
+          kind: ServerKind.wsl,
+        );
+        final unsupported = TransportResolver(
+          _platform(tailscale),
+          wslSupported: false,
+        );
+        expect(
+          unsupported.transportViewState(server).status,
+          TransportStatus.unavailable,
+        );
+
+        final failing = TransportResolver(
+          _platform(tailscale),
+          wslSupported: true,
+          wslAutoInitializer: (_) async => throw StateError('no distribution'),
+        );
+        final result = await failing.resolve(server);
+        expect(result, isA<TransportBlocked>());
+        final blocker = (result as TransportBlocked).blocker;
+        expect(blocker.transport.statusLabel, 'WSL init failed');
+        expect(blocker.message, contains('no distribution'));
+      },
+    );
+
     test('blocks rendezvous servers with invalid pairing settings', () async {
       final tailscale = _FakeTailscale(TailscaleState.stopped);
       addTearDown(tailscale.close);

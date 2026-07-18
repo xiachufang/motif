@@ -48,6 +48,7 @@ class WelcomeScreen extends StatelessWidget {
         showTailscaleConnectionSheet(context);
         return;
       case ServerKind.ssh:
+      case ServerKind.wsl:
         unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.rendezvous:

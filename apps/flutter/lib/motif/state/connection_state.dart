@@ -98,6 +98,31 @@ class TransportViewState {
     );
   }
 
+  factory TransportViewState.wsl(
+    MotifServer server, {
+    String? validationMessage,
+  }) {
+    if (validationMessage != null) {
+      return TransportViewState(
+        kind: ServerKind.wsl,
+        status: TransportStatus.setupNeeded,
+        statusLabel: 'WSL setup',
+        message: validationMessage,
+        tone: ServerConnectionTone.warning,
+        icon: ServerConnectionIconKind.wsl,
+        action: TransportAction.setup,
+      );
+    }
+    return TransportViewState(
+      kind: ServerKind.wsl,
+      status: TransportStatus.ready,
+      statusLabel: 'WSL configured',
+      message: '${server.wslLabel} -> 127.0.0.1:${server.port}',
+      tone: ServerConnectionTone.neutral,
+      icon: ServerConnectionIconKind.wsl,
+    );
+  }
+
   factory TransportViewState.tailscale(
     MotifServer server,
     TailscaleState state,
@@ -194,6 +219,7 @@ class TransportViewState {
         ServerKind.tailscale => ServerConnectionIconKind.tailscale,
         ServerKind.rendezvous => ServerConnectionIconKind.rendezvous,
         ServerKind.ssh => ServerConnectionIconKind.ssh,
+        ServerKind.wsl => ServerConnectionIconKind.wsl,
       };
 }
 
@@ -286,6 +312,7 @@ enum ServerConnectionIconKind {
   tailscale,
   rendezvous,
   ssh,
+  wsl,
   sync,
   warning,
   offline,
@@ -459,11 +486,16 @@ class ServerConnectionViewState {
   };
 
   static String _subtitleEndpoint(MotifServer server) {
-    if (server.kind != ServerKind.ssh) return server.endpoint;
-    final user = server.sshUsername.trim();
-    final ssh = user.isEmpty
-        ? server.sshEndpoint
-        : '$user@${server.sshEndpoint}';
-    return '${server.endpoint} via SSH $ssh';
+    return switch (server.kind) {
+      ServerKind.ssh => () {
+        final user = server.sshUsername.trim();
+        final ssh = user.isEmpty
+            ? server.sshEndpoint
+            : '$user@${server.sshEndpoint}';
+        return '${server.endpoint} via SSH $ssh';
+      }(),
+      ServerKind.wsl => '127.0.0.1:${server.port} via WSL ${server.wslLabel}',
+      _ => server.endpoint,
+    };
   }
 }

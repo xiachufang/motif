@@ -2,7 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 
 import '../log/log.dart';
 import '../models/motif_proto.dart';
@@ -13,6 +14,7 @@ import '../net/rzv/rzv_protocol.dart';
 import '../net/ssh/ssh_bootstrapper.dart';
 import '../net/ssh/ssh_forwarder.dart';
 import '../net/ssh/ssh_forwarder_handle.dart';
+import '../net/wsl/wsl_bootstrapper.dart';
 import '../platform/services.dart';
 import 'connection_state.dart';
 
@@ -31,6 +33,7 @@ typedef SshForwarderFactory =
     });
 
 typedef SshAutoInitializer = Future<void> Function(MotifServer server);
+typedef WslAutoInitializer = Future<void> Function(MotifServer server);
 
 sealed class TransportResolution {
   const TransportResolution();
@@ -64,6 +67,8 @@ class TransportResolver {
   final PlatformServices platform;
   final SshForwarderFactory _sshForwarderFactory;
   final SshAutoInitializer _sshAutoInitializer;
+  final WslAutoInitializer _wslAutoInitializer;
+  final bool _wslSupported;
 
   /// Live loopback forwarders for `rendezvous` servers, keyed by server id.
   /// Started lazily on [resolve] and torn down by [stopForwarder] when the
@@ -89,8 +94,14 @@ class TransportResolver {
     this.platform, {
     SshForwarderFactory? sshForwarderFactory,
     SshAutoInitializer? sshAutoInitializer,
+    WslAutoInitializer? wslAutoInitializer,
+    bool? wslSupported,
   }) : _sshForwarderFactory = sshForwarderFactory ?? _defaultSshForwarder,
-       _sshAutoInitializer = sshAutoInitializer ?? _defaultSshAutoInitialize;
+       _sshAutoInitializer = sshAutoInitializer ?? _defaultSshAutoInitialize,
+       _wslAutoInitializer = wslAutoInitializer ?? _defaultWslAutoInitialize,
+       _wslSupported =
+           wslSupported ??
+           (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows);
 
   static SshForwarderHandle _defaultSshForwarder({
     required String sshHost,
@@ -119,6 +130,9 @@ class TransportResolver {
   static Future<void> _defaultSshAutoInitialize(MotifServer server) =>
       SshBootstrapper(server: server).ensureMotifd();
 
+  static Future<void> _defaultWslAutoInitialize(MotifServer server) =>
+      WslBootstrapper(server: server).ensureMotifd();
+
   TransportViewState transportViewState(
     MotifServer server, {
     bool includeFailure = true,
@@ -137,6 +151,18 @@ class TransportResolver {
         server,
         validationMessage: _validateSsh(server),
       ),
+      ServerKind.wsl =>
+        _wslSupported
+            ? TransportViewState.wsl(
+                server,
+                validationMessage: _validateWsl(server),
+              )
+            : TransportViewState.unavailable(
+                kind: ServerKind.wsl,
+                statusLabel: 'WSL unavailable',
+                message:
+                    'WSL servers are available only in the Windows desktop app.',
+              ),
     };
     if (!base.isReady) return base;
     if (!includeFailure) return base;
@@ -160,6 +186,8 @@ class TransportResolver {
         return _resolveTailscale(server);
       case ServerKind.ssh:
         return _resolveSsh(server);
+      case ServerKind.wsl:
+        return _resolveWsl(server);
       case ServerKind.direct:
         return _resolveDirect(server);
     }
@@ -566,6 +594,25 @@ class TransportResolver {
     return TransportReady(target: target, proxy: ProxySettings.none);
   }
 
+  /// Ensure motifd is running inside WSL, then connect through Windows/WSL
+  /// localhost forwarding. Unlike SSH, no explicit tunnel is needed.
+  Future<TransportResolution> _resolveWsl(MotifServer server) async {
+    try {
+      await _wslAutoInitializer(server);
+    } catch (e) {
+      return _recordFailure(
+        server,
+        statusLabel: 'WSL init failed',
+        message: _wslInitFailureMessage(e),
+      );
+    }
+
+    return TransportReady(
+      target: server.copyWith(host: '127.0.0.1', scheme: 'http', token: ''),
+      proxy: ProxySettings.none,
+    );
+  }
+
   // The on-the-wire token is derived one-way from the 32-byte pairing secret
   // (HKDF-SHA256), matching `motif_server::rzv::derive_token`, so the relay
   // never sees the secret. The secret stays reserved for the P2 E2E layer.
@@ -636,6 +683,13 @@ class TransportResolver {
     return null;
   }
 
+  static String? _validateWsl(MotifServer server) {
+    if (server.port <= 0 || server.port > 65535) {
+      return 'WSL server has an invalid motifd port';
+    }
+    return null;
+  }
+
   TransportBlocked _recordFailure(
     MotifServer server, {
     required String statusLabel,
@@ -654,6 +708,11 @@ class TransportResolver {
       error is SshBootstrapException
       ? error.toString()
       : 'SSH auto-initialize failed: $error';
+
+  static String _wslInitFailureMessage(Object error) =>
+      error is WslBootstrapException
+      ? error.toString()
+      : 'WSL initialize failed: $error';
 }
 
 /// LAN-direct candidates for one rendezvous server: the plaintext port plus the

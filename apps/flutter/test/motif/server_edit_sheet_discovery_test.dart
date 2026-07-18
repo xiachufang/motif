@@ -544,6 +544,48 @@ void main() {
     expect(server.sshAutoInitialize, isFalse);
   });
 
+  testWidgets('Windows saves WSL as a bootstrap connection type', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+    try {
+      final app = await _app();
+      addTearDown(app.dispose);
+      await tester.pumpWidget(
+        ChangeNotifierProvider.value(
+          value: app,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.dark),
+            home: const Scaffold(body: ServerEditSheet()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('WSL'), findsWidgets);
+      expect(find.text('WSL MOTIFD'), findsOneWidget);
+      expect(find.text('SSH LOGIN'), findsNothing);
+      await tester.enterText(_fieldWithLabel('Name'), 'Ubuntu Dev');
+      await tester.enterText(
+        _fieldWithLabel('Distribution (optional)'),
+        'Ubuntu-24.04',
+      );
+      await _scrollTo(tester, _fieldWithLabel('WSL Port'));
+      await tester.enterText(_fieldWithLabel('WSL Port'), '17777');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final server = app.servers.servers.single;
+      expect(server.kind, ServerKind.wsl);
+      expect(server.host, '127.0.0.1');
+      expect(server.port, 17777);
+      expect(server.wslDistribution, 'Ubuntu-24.04');
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   testWidgets('prefills SSH login and key from discovered config', (
     tester,
   ) async {

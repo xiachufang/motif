@@ -79,15 +79,11 @@ void main() {
     expect(runtimeRzv['jwt'], 'header.payload.signature');
   });
 
-  test('persists the embedded default shell and passes it to Rust', () {
-    const config = EmbeddedServerConfig(shell: 'wsl.exe');
+  test('drops the retired embedded WSL shell setting', () {
+    final config = embeddedServerConfigFromJson({'shell': 'wsl.exe'});
 
-    expect(config.toPersistedJson()['shell'], 'wsl.exe');
-    expect(config.toRuntimeJson()['shell'], 'wsl.exe');
-    expect(
-      embeddedServerConfigFromJson(config.toPersistedJson()).shell,
-      'wsl.exe',
-    );
+    expect(config.toPersistedJson().containsKey('shell'), isFalse);
+    expect(config.toRuntimeJson().containsKey('shell'), isFalse);
   });
 
   test('migrates a legacy plaintext relay JWT into secure storage', () async {

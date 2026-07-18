@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -343,34 +342,6 @@ void main() {
 
     expect(find.text('CONTROL SERVER'), findsOneWidget);
     expect(find.text('SIGN-IN'), findsOneWidget);
-  });
-
-  testWidgets('Windows can select WSL as the embedded server shell', (
-    tester,
-  ) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-    try {
-      final service = _FakeEmbeddedServerService(
-        config: const EmbeddedServerConfig(),
-        status: const EmbeddedServerStatus(),
-      );
-
-      await _pumpSettings(tester, service);
-      await tester.pumpAndSettle();
-
-      expect(find.text('DEFAULT SHELL'), findsOneWidget);
-      expect(find.text('PowerShell'), findsOneWidget);
-      expect(find.text('WSL'), findsOneWidget);
-      expect(find.text('TAILSCALE'), findsNothing);
-
-      await tester.tap(find.text('WSL'));
-      await tester.pumpAndSettle();
-
-      expect(service.config.shell, 'wsl.exe');
-      expect(find.textContaining('Experimental:'), findsOneWidget);
-    } finally {
-      debugDefaultTargetPlatformOverride = null;
-    }
   });
 }
 

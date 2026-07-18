@@ -47,9 +47,6 @@ class EmbeddedServerConfig {
   final String rzvJwt;
   final String pushRelayUrl;
 
-  /// Default PTY command for the embedded server. Empty uses the platform
-  /// default; Windows stores `wsl.exe` for the experimental WSL mode.
-  final String shell;
   final bool autostart;
 
   const EmbeddedServerConfig({
@@ -63,7 +60,6 @@ class EmbeddedServerConfig {
     this.rzvRelay = '',
     this.rzvJwt = '',
     this.pushRelayUrl = kDefaultPushRelayAddress,
-    this.shell = '',
     this.autostart = true,
   });
 
@@ -78,7 +74,6 @@ class EmbeddedServerConfig {
     String? rzvRelay,
     String? rzvJwt,
     String? pushRelayUrl,
-    String? shell,
     bool? autostart,
   }) => EmbeddedServerConfig(
     listenMode: listenMode ?? this.listenMode,
@@ -91,7 +86,6 @@ class EmbeddedServerConfig {
     rzvRelay: rzvRelay ?? this.rzvRelay,
     rzvJwt: rzvJwt ?? this.rzvJwt,
     pushRelayUrl: pushRelayUrl ?? this.pushRelayUrl,
-    shell: shell ?? this.shell,
     autostart: autostart ?? this.autostart,
   );
 }

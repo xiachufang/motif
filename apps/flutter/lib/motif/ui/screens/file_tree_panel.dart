@@ -351,4 +351,3 @@ class _FileTreePanelState extends State<FileTreePanel> {
     GitFileStatus.unmodified => '',
   };
 }
-

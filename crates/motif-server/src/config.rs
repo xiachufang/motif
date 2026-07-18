@@ -39,11 +39,6 @@ pub struct ServerConfig {
     /// delivery. `None` disables push entirely. motifd never holds the APNs
     /// signing key — only this relay URL.
     pub push_relay_url: Option<String>,
-    /// Default command for newly-created PTYs. `None` preserves the CLI's
-    /// platform/environment default. Embedding hosts use this to choose a
-    /// shell without mutating their process-wide environment (notably the
-    /// Windows app's experimental `wsl.exe` mode).
-    pub shell: Option<String>,
 }
 
 // rustls::ServerConfig isn't Debug; render listen_tls as a presence flag.
@@ -57,7 +52,6 @@ impl std::fmt::Debug for ServerConfig {
             .field("rzv_direct", &self.rzv_direct)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("push_relay_url", &self.push_relay_url)
-            .field("shell", &self.shell)
             .finish()
     }
 }

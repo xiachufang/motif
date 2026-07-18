@@ -13,12 +13,14 @@ enum ServerKind {
   tailscale,
   direct,
   rendezvous,
-  ssh;
+  ssh,
+  wsl;
 
   static ServerKind fromWire(Object? v) => switch (v) {
     'tailscale' => ServerKind.tailscale,
     'rendezvous' => ServerKind.rendezvous,
     'ssh' => ServerKind.ssh,
+    'wsl' => ServerKind.wsl,
     _ => ServerKind.direct,
   };
 }
@@ -73,6 +75,10 @@ class MotifServer {
   final String sshPrivateKeyPassphrase;
   final bool sshAutoInitialize;
 
+  /// WSL-only (`kind == ServerKind.wsl`). Empty selects the user's default
+  /// distribution; otherwise this is passed to `wsl.exe --distribution`.
+  final String wslDistribution;
+
   const MotifServer({
     required this.id,
     required this.name,
@@ -93,11 +99,15 @@ class MotifServer {
     this.sshPrivateKey = '',
     this.sshPrivateKeyPassphrase = '',
     this.sshAutoInitialize = false,
+    this.wslDistribution = '',
   });
 
   String get endpoint => '$host:$port';
   String get origin => '$scheme://$endpoint';
   String get sshEndpoint => '$sshHost:$sshPort';
+  String get wslLabel => wslDistribution.trim().isEmpty
+      ? 'default distribution'
+      : wslDistribution.trim();
 
   MotifServer copyWith({
     String? name,
@@ -118,6 +128,7 @@ class MotifServer {
     String? sshPrivateKey,
     String? sshPrivateKeyPassphrase,
     bool? sshAutoInitialize,
+    String? wslDistribution,
   }) => MotifServer(
     id: id,
     name: name ?? this.name,
@@ -139,6 +150,7 @@ class MotifServer {
     sshPrivateKeyPassphrase:
         sshPrivateKeyPassphrase ?? this.sshPrivateKeyPassphrase,
     sshAutoInitialize: sshAutoInitialize ?? this.sshAutoInitialize,
+    wslDistribution: wslDistribution ?? this.wslDistribution,
   );
 
   Map<String, Object?> toJson() => {
@@ -159,6 +171,8 @@ class MotifServer {
       'sshAuthMethod': sshAuthMethod.name,
     if (kind == ServerKind.ssh && sshAutoInitialize)
       'sshAutoInitialize': sshAutoInitialize,
+    if (kind == ServerKind.wsl && wslDistribution.isNotEmpty)
+      'wslDistribution': wslDistribution,
   };
 
   factory MotifServer.fromJson(Map<String, Object?> j) {
@@ -186,6 +200,7 @@ class MotifServer {
       sshUsername: (j['sshUsername'] as String?) ?? '',
       sshAuthMethod: SshAuthMethod.fromWire(j['sshAuthMethod']),
       sshAutoInitialize: j['sshAutoInitialize'] == true,
+      wslDistribution: (j['wslDistribution'] as String?) ?? '',
     );
   }
 

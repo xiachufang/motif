@@ -125,8 +125,7 @@ class _EmbeddedServerSettingsSheetState
         previous.rzvEnabled != next.rzvEnabled ||
         previous.rzvRelay != next.rzvRelay ||
         previous.rzvJwt != next.rzvJwt ||
-        previous.pushRelayUrl != next.pushRelayUrl ||
-        previous.shell != next.shell;
+        previous.pushRelayUrl != next.pushRelayUrl;
   }
 
   bool _serverIsActive(EmbeddedServerService svc) {
@@ -238,10 +237,6 @@ class _EmbeddedServerSettingsSheetState
         _serverSection(svc, status, c),
         const SizedBox(height: MotifSpacing.lg),
         _listenSection(cfg, c),
-        if (defaultTargetPlatform == TargetPlatform.windows) ...[
-          const SizedBox(height: MotifSpacing.lg),
-          _windowsShellSection(cfg, c),
-        ],
         const SizedBox(height: MotifSpacing.lg),
         _pairingSection(cfg, status, c),
         const SizedBox(height: MotifSpacing.lg),
@@ -267,46 +262,6 @@ class _EmbeddedServerSettingsSheetState
               ),
             ),
           ],
-        ),
-      ],
-    );
-  }
-
-  Widget _windowsShellSection(EmbeddedServerConfig cfg, MotifColors c) {
-    final wsl = switch (cfg.shell.trim().toLowerCase()) {
-      'wsl' || 'wsl.exe' => true,
-      _ => false,
-    };
-    return MotifSection(
-      title: 'Default shell',
-      footer: wsl
-          ? 'Experimental: starts the default WSL distribution through '
-                'wsl.exe. Install and initialize WSL before creating a session.'
-          : 'PowerShell 7 is preferred when installed; Windows PowerShell is '
-                'used as the fallback.',
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(MotifSpacing.md),
-          child: SegmentedButton<bool>(
-            showSelectedIcon: false,
-            segments: const [
-              ButtonSegment(
-                value: false,
-                label: Text('PowerShell'),
-                icon: Icon(Icons.terminal_outlined),
-              ),
-              ButtonSegment(
-                value: true,
-                label: Text('WSL'),
-                icon: Icon(Icons.code_outlined),
-              ),
-            ],
-            selected: {wsl},
-            onSelectionChanged: (selection) => _save(
-              cfg.copyWith(shell: selection.first ? 'wsl.exe' : ''),
-              restartRequired: true,
-            ),
-          ),
         ),
       ],
     );

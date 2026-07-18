@@ -158,6 +158,23 @@ void main() {
       expect(decoded.single.sshAutoInitialize, isTrue);
     });
 
+    test('MotifServer WSL profile round-trips its distribution', () {
+      const server = MotifServer(
+        id: 'wsl-1',
+        name: 'Ubuntu',
+        host: '127.0.0.1',
+        port: 17777,
+        kind: ServerKind.wsl,
+        wslDistribution: 'Ubuntu-24.04',
+      );
+
+      final decoded = MotifServer.decodeList(MotifServer.encodeList([server]));
+
+      expect(decoded.single.kind, ServerKind.wsl);
+      expect(decoded.single.wslDistribution, 'Ubuntu-24.04');
+      expect(decoded.single.wslLabel, 'Ubuntu-24.04');
+    });
+
     test('TerminalSettings clamps font size', () {
       final s = TerminalSettings.fromJson({'fontSize': 100, 'theme': 'dark'});
       expect(s.fontSize, TerminalSettings.maxFontSize);

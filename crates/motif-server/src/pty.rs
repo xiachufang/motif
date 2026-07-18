@@ -420,20 +420,16 @@ pub struct PtyPool {
     /// Back-pointer to owning Session so the reader threads can publish events.
     /// Set after Session::new completes; weak to avoid cycles.
     session: parking_lot::Mutex<Option<Weak<Session>>>,
-    /// Server-scoped default command supplied by an embedding host. Keeping
-    /// it here avoids changing process-wide `MOTIFD_SHELL` in a GUI process.
-    default_shell: Option<Arc<str>>,
 }
 
 impl PtyPool {
-    pub fn new(default_shell: Option<Arc<str>>) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             next_id: parking_lot::Mutex::new(0),
             ptys: DashMap::new(),
             lifecycle: parking_lot::Mutex::new(()),
             closed: AtomicBool::new(false),
             session: parking_lot::Mutex::new(None),
-            default_shell,
         })
     }
 
@@ -479,11 +475,7 @@ impl PtyPool {
         };
 
         let is_default_cmd = params.cmd.is_none();
-        let cmd_str = params
-            .cmd
-            .clone()
-            .or_else(|| self.default_shell.as_deref().map(str::to_owned))
-            .unwrap_or_else(default_shell);
+        let cmd_str = params.cmd.clone().unwrap_or_else(default_shell);
         let detected_kind = crate::shell::detect(&cmd_str);
         let cwd = params
             .cwd
@@ -1233,22 +1225,6 @@ mod tests {
         #[cfg(not(windows))]
         assert!(argv.iter().any(|arg| arg == "-lc"));
         assert_eq!(argv.last().map(String::as_str), Some("echo motif command"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn wsl_default_shell_is_launched_directly() {
-        let builder = command_builder("wsl.exe", true);
-        let argv: Vec<_> = builder
-            .get_argv()
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(argv, ["wsl.exe"]);
-        assert!(matches!(
-            crate::shell::detect("wsl.exe"),
-            ShellKind::Unknown
-        ));
     }
 
     fn feed(tx: &SyncSender<EmuCmd>, b: &[u8]) {

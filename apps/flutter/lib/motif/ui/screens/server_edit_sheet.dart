@@ -46,6 +46,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _sshPassword;
   late final TextEditingController _sshPrivateKey;
   late final TextEditingController _sshPrivateKeyPassphrase;
+  late final TextEditingController _wslDistribution;
   late final TextEditingController _relay;
   late final TextEditingController _psk;
   late final TextEditingController _pubKey;
@@ -72,6 +73,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   bool get _supportsTailscale => tailscaleSupported;
   bool get _supportsSsh => !kIsWeb;
+  bool get _supportsWsl =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
   @override
   void initState() {
@@ -88,6 +91,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _sshPrivateKeyPassphrase = TextEditingController(
       text: e?.sshPrivateKeyPassphrase ?? '',
     );
+    _wslDistribution = TextEditingController(text: e?.wslDistribution ?? '');
     _relay = TextEditingController(text: e?.relay ?? '');
     _psk = TextEditingController(text: e?.psk ?? '');
     _pubKey = TextEditingController(text: e?.pubKey ?? '');
@@ -101,17 +105,22 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       _kind = ServerKind.direct;
     } else if (existingKind == ServerKind.ssh && !_supportsSsh) {
       _kind = ServerKind.direct;
+    } else if (existingKind == ServerKind.wsl && !_supportsWsl) {
+      _kind = ServerKind.direct;
     } else {
-      // Direct is no longer offered as a choice for new servers; prefer
-      // Tailscale, then SSH, falling back to direct only where neither exists
-      // (e.g. web, which shows no "Reach via" selector at all).
+      // Direct is no longer offered as a choice for new servers. Windows
+      // prefers WSL; other native clients prefer Tailscale, then SSH. Web
+      // falls back to direct and shows no "Reach via" selector.
       _kind =
           existingKind ??
-          (_supportsTailscale
-              ? ServerKind.tailscale
-              : (_supportsSsh ? ServerKind.ssh : ServerKind.direct));
+          (_supportsWsl
+              ? ServerKind.wsl
+              : (_supportsTailscale
+                    ? ServerKind.tailscale
+                    : (_supportsSsh ? ServerKind.ssh : ServerKind.direct)));
     }
-    if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
+    if ((_kind == ServerKind.ssh || _kind == ServerKind.wsl) &&
+        _host.text.trim().isEmpty) {
       _host.text = '127.0.0.1';
     }
     if (_kind == ServerKind.ssh) {
@@ -130,6 +139,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _sshPassword.dispose();
     _sshPrivateKey.dispose();
     _sshPrivateKeyPassphrase.dispose();
+    _wslDistribution.dispose();
     _relay.dispose();
     _psk.dispose();
     _pubKey.dispose();
@@ -231,6 +241,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       sshPrivateKey: _sshPrivateKey.text,
       sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
       sshAutoInitialize: _sshAutoInitialize,
+      wslDistribution: _wslDistribution.text.trim(),
     );
     if (existing == null) {
       await store.add(server);
@@ -397,9 +408,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     final next = selected.first;
     if (next == ServerKind.tailscale && !_supportsTailscale) return;
     if (next == ServerKind.ssh && !_supportsSsh) return;
+    if (next == ServerKind.wsl && !_supportsWsl) return;
     setState(() {
       _kind = next;
-      if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
+      if (_kind == ServerKind.wsl) {
+        _host.text = '127.0.0.1';
+      } else if (_kind == ServerKind.ssh && _host.text.trim().isEmpty) {
         _host.text = '127.0.0.1';
       }
     });
@@ -636,7 +650,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
           MotifSpacing.xl,
         ),
         children: [
-          if (_supportsTailscale || _supportsSsh) ...[
+          if (_supportsTailscale || _supportsSsh || _supportsWsl) ...[
             _reachViaSection(),
             const SizedBox(height: MotifSpacing.xl),
           ],
@@ -658,6 +672,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             _sshAuthSection(),
             const SizedBox(height: MotifSpacing.xl),
             _sshMotifdSection(),
+            const SizedBox(height: MotifSpacing.xl),
+          ],
+          if (_kind == ServerKind.wsl) ...[
+            _wslSection(),
             const SizedBox(height: MotifSpacing.xl),
           ],
           _motifdAddressSection(),
@@ -720,6 +738,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
           value: ServerKind.ssh,
           icon: Icon(Icons.key_outlined, size: 16),
           label: Text('SSH'),
+        ),
+      if (_supportsWsl)
+        const ButtonSegment(
+          value: ServerKind.wsl,
+          icon: Icon(Icons.developer_mode_outlined, size: 16),
+          label: Text('WSL'),
         ),
       if (_supportsTailscale)
         const ButtonSegment(
@@ -938,23 +962,52 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     );
   }
 
-  Widget _motifdAddressSection() {
-    final isSsh = _kind == ServerKind.ssh;
+  Widget _wslSection() {
     return MotifSection(
-      title: isSsh ? 'motifd target' : 'motifd address',
-      footer: isSsh
-          ? 'Host and port as seen from the SSH server. Use 127.0.0.1 when motifd only listens locally on that machine.'
-          : null,
+      title: 'WSL',
+      footer:
+          'Motif runs the same bootstrap used for SSH: it installs the latest '
+          'Linux motifd release when missing and reuses an existing process.',
       dividerIndent: MotifSpacing.lg,
       children: [
         _field(
-          _host,
-          isSsh ? 'Remote Host' : 'Host',
-          isSsh ? '127.0.0.1' : 'hostname or IP',
+          _wslDistribution,
+          'Distribution (optional)',
+          'Default WSL distribution',
         ),
+        const MotifSectionRow(
+          leading: Icon(Icons.download_for_offline_outlined, size: 18),
+          title: 'Auto initialize',
+          subtitle: 'Install and start motifd inside WSL when needed.',
+          trailing: Icon(Icons.check_circle_outline, size: 18),
+        ),
+      ],
+    );
+  }
+
+  Widget _motifdAddressSection() {
+    final isSsh = _kind == ServerKind.ssh;
+    final isWsl = _kind == ServerKind.wsl;
+    return MotifSection(
+      title: isSsh
+          ? 'motifd target'
+          : (isWsl ? 'WSL motifd' : 'motifd address'),
+      footer: isSsh
+          ? 'Host and port as seen from the SSH server. Use 127.0.0.1 when motifd only listens locally on that machine.'
+          : (isWsl
+                ? 'Windows connects to this port through WSL localhost forwarding.'
+                : null),
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        if (!isWsl)
+          _field(
+            _host,
+            isSsh ? 'Remote Host' : 'Host',
+            isSsh ? '127.0.0.1' : 'hostname or IP',
+          ),
         _field(
           _port,
-          isSsh ? 'Remote Port' : 'Port',
+          isSsh ? 'Remote Port' : (isWsl ? 'WSL Port' : 'Port'),
           '7777',
           keyboard: TextInputType.number,
           onChanged: () {

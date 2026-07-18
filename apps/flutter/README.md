@@ -107,8 +107,10 @@ Requires **Zig 0.15.2** on `PATH` for the libghostty native asset.
 | Windows | `flutter build windows -t lib/main_desktop.dart` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
 
 Desktop Windows builds also bundle `motif_embed.dll`; the Server page starts
-the native motifd in-process and can select PowerShell or an experimental
-`wsl.exe` shell. See [`../../docs/windows-wsl.md`](../../docs/windows-wsl.md).
+the native motifd in-process with PowerShell PTYs. The Client-side **WSL**
+server type reuses the SSH bootstrap script through `wsl.exe` and connects to
+the Linux motifd over localhost. See
+[`../../docs/windows-wsl.md`](../../docs/windows-wsl.md).
 
 ### Terminal renderer
 

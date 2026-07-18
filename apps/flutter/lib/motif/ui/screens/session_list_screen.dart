@@ -146,6 +146,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         showTailscaleConnectionSheet(context);
         return;
       case ServerKind.ssh:
+      case ServerKind.wsl:
         await showServerEditSheet(context, existing: server);
         return;
       case ServerKind.rendezvous:

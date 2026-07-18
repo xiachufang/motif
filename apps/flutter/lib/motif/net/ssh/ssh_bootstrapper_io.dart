@@ -341,9 +341,9 @@ if [ -f "\$PID_FILE" ]; then
   fi
 fi
 
-# The SSH tunnel terminates at the remote's loopback, so motifd runs plaintext
-# and unauthenticated there — SSH is the auth boundary. (motifd no longer takes
-# a token file; a network listener would auto-encrypt + psk-pair instead.)
+# The caller reaches this listener through a trusted loopback path: either an
+# SSH tunnel or Windows/WSL localhost forwarding. A network-facing listener
+# would instead need motifd's encrypted pairing flow.
 echo "starting motifd on \$LISTEN; log: \$LOG_FILE"
 nohup "\$BIN" --listen "\$LISTEN" >>"\$LOG_FILE" 2>&1 </dev/null &
 pid=\$!

@@ -96,6 +96,7 @@ class ConnectionScreen extends StatelessWidget {
         if (tailscaleSupported) showTailscaleConnectionSheet(context);
         return;
       case ServerKind.ssh:
+      case ServerKind.wsl:
         unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.rendezvous:
@@ -272,6 +273,7 @@ class _ServerRowState extends State<_ServerRow> {
     final result = switch (server.kind) {
       ServerKind.tailscale => await _pingTailscaleServer(tailscale, server),
       ServerKind.ssh => _ServerPingIndicator.unavailable('Via SSH'),
+      ServerKind.wsl => _ServerPingIndicator.unavailable('Via WSL'),
       ServerKind.rendezvous ||
       ServerKind.direct => await _pingDirectServer(server),
     };
@@ -419,6 +421,7 @@ IconData _iconForViewState(ServerConnectionViewState viewState) {
     ServerConnectionIconKind.tailscale => Icons.hub_outlined,
     ServerConnectionIconKind.rendezvous => Icons.cell_tower_outlined,
     ServerConnectionIconKind.ssh => Icons.key_outlined,
+    ServerConnectionIconKind.wsl => Icons.developer_mode_outlined,
     ServerConnectionIconKind.sync => Icons.cloud_sync_outlined,
     ServerConnectionIconKind.warning => Icons.warning_rounded,
     ServerConnectionIconKind.offline => Icons.cloud_off_outlined,

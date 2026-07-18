@@ -55,15 +55,24 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
     },
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
     'push_relay_url': pushRelayUrl,
-    'shell': shell,
     'autostart': autostart,
   };
 
   /// Full in-memory configuration passed directly to the embedded Rust server.
   Map<String, Object?> toRuntimeJson() {
-    final json = toPersistedJson();
-    json['rzv'] = {'enabled': rzvEnabled, 'relay': rzvRelay, 'jwt': rzvJwt};
-    return json;
+    return {
+      'listen_mode': listenMode.name,
+      'port': port,
+      'tailscale': {
+        'enabled': tsEnabled,
+        'hostname': tsHostname,
+        'authkey': tsAuthkey,
+        'control_url': tsControlUrl,
+      },
+      'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay, 'jwt': rzvJwt},
+      'push_relay_url': pushRelayUrl,
+      'autostart': autostart,
+    };
   }
 }
 
@@ -86,7 +95,6 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> j) {
     rzvRelay: _jsonString(rzv['relay'], defaults.rzvRelay),
     rzvJwt: _jsonString(rzv['jwt'], defaults.rzvJwt),
     pushRelayUrl: _jsonString(j['push_relay_url'], defaults.pushRelayUrl),
-    shell: _jsonString(j['shell'], defaults.shell),
     autostart: _jsonBool(j['autostart'], defaults.autostart),
   );
 }

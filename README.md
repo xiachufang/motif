@@ -142,10 +142,10 @@ the terminal parsing itself, so users do not need to edit `$PROFILE` or enable
 `autoMarkPrompts` in Windows Terminal.
 
 The Windows desktop App also bundles `motif_embed.dll`, so its **Server** page
-can start motifd in-process. It offers an experimental WSL default-shell mode;
-running motifd entirely inside WSL remains the better fit for Linux workdirs.
-See [`docs/windows-wsl.md`](docs/windows-wsl.md) for both flows and their test
-checklist.
+can start a native motifd in-process with PowerShell PTYs. Its Client-side
+**WSL** connection type runs the same bootstrap used by SSH Auto initialize
+through `wsl.exe`, then reaches the Linux motifd over localhost. See
+[`docs/windows-wsl.md`](docs/windows-wsl.md) for both flows and their test checklist.
 
 For deployments behind a TLS terminator or on a tailnet, see
 [`docs/tailscale.md`](docs/tailscale.md) and the `motifd --help` flags.

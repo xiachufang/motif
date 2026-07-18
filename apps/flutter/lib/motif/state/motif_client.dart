@@ -1624,6 +1624,10 @@ class MotifClient extends ChangeNotifier
       return "Can't reach ${server.endpoint} through the SSH tunnel. Check the "
           'SSH login, remote motifd host/port, and that motifd is running.\n$msg';
     }
+    if (server.kind == ServerKind.wsl) {
+      return "Can't reach 127.0.0.1:${server.port} through WSL. Check that the "
+          'distribution is installed and WSL localhost forwarding is enabled.\n$msg';
+    }
     return "Can't reach ${server.endpoint}. Check the host/port and that "
         'motifd is running.\n$msg';
   }

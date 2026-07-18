@@ -137,8 +137,9 @@ query-string token。
 
 推荐客户端把 `session` 状态、结构化事件和 PTY bytes 分开处理：
 
-1. **准备 transport**：直连、SSH tunnel、Tailscale tunnel 都只负责得到一个可
-   访问 motifd 的 `host:port`。Tailscale 客户端在首次连接前应先确认 tsnet 已
+1. **准备 transport**：直连、SSH、Tailscale、WSL 都只负责得到一个可访问 motifd
+   的 `host:port`。SSH 和 WSL 可以先 bootstrap 目标环境中的 motifd；WSL 随后走
+   localhost，SSH 则建立 local forward。Tailscale 客户端在首次连接前应先确认 tsnet 已
    `.running`，并可用一次短 TCP dial 或 `/ping` 预热到目标 peer 的路径，避免
    冷启动时首个 URLSession / WS 探测抢跑失败。
 2. **探测服务**：可先 `GET /ping`。它不需要鉴权，用于确认目标确实是 motifd
