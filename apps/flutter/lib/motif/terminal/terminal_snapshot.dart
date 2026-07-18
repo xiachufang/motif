@@ -42,6 +42,8 @@ class TerminalSnapshot {
     return maxOffset > 0 ? maxOffset : 0;
   }
 
+  bool get isAtLatest => viewportOffset >= maxViewportOffset;
+
   bool get hasScrollback =>
       scrollViewportRows > 0 && scrollTotalRows > scrollViewportRows;
 

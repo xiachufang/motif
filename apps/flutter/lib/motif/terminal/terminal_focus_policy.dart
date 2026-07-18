@@ -1,19 +1,5 @@
 import 'package:flutter/foundation.dart';
 
-/// Why a terminal surface is claiming keyboard focus.
-///
-/// Focusing for text selection must preserve the viewport: selection gestures
-/// use coordinates from the currently visible rows. Keyboard-oriented focus
-/// may reveal the live cursor at the bottom as before.
-enum TerminalFocusIntent {
-  keyboardInput(revealBottom: true),
-  textSelection(revealBottom: false);
-
-  const TerminalFocusIntent({required this.revealBottom});
-
-  final bool revealBottom;
-}
-
 /// Whether a completed terminal tap should enter keyboard-input focus.
 ///
 /// A tap that starts while text is selected belongs to the selection UI. It

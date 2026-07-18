@@ -3,14 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_focus_policy.dart';
 
 void main() {
-  test('selection focus preserves the current viewport', () {
-    expect(TerminalFocusIntent.textSelection.revealBottom, isFalse);
-  });
-
-  test('keyboard-oriented focus reveals the live cursor', () {
-    expect(TerminalFocusIntent.keyboardInput.revealBottom, isTrue);
-  });
-
   test('tap does not request input focus when selection was active', () {
     expect(terminalTapRequestsFocus(selectionActive: true), isFalse);
   });

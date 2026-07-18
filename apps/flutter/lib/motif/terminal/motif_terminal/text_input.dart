@@ -14,33 +14,22 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     _tapStartedWithSelection = false;
   }
 
-  void _requestFocus({
-    required bool showSoftKeyboard,
-    TerminalFocusIntent intent = TerminalFocusIntent.keyboardInput,
-  }) {
+  void _requestFocus({required bool showSoftKeyboard}) {
     if (!mounted || !widget.active || !_focusNode.canRequestFocus) return;
     _showSoftKeyboardOnFocus = showSoftKeyboard;
     final alreadyFocused = _focusNode.hasFocus;
     if (!alreadyFocused) {
-      // requestFocus may notify synchronously or on a later frame. Preserve the
-      // caller's intent for _onFocusChanged either way.
-      _revealBottomOnNextFocus = intent.revealBottom;
       _focusNode.requestFocus();
     }
     if (alreadyFocused &&
         _usesTextInputClient &&
         (!_usesSoftKeyboard || showSoftKeyboard)) {
-      _openTextInput(
-        showKeyboard: showSoftKeyboard,
-        revealBottom: intent.revealBottom,
-      );
+      _openTextInput(showKeyboard: showSoftKeyboard);
     }
   }
 
-  void _requestFocusWithoutKeyboard({
-    TerminalFocusIntent intent = TerminalFocusIntent.keyboardInput,
-  }) {
-    _requestFocus(showSoftKeyboard: false, intent: intent);
+  void _requestFocusWithoutKeyboard() {
+    _requestFocus(showSoftKeyboard: false);
   }
 
   void _requestFocusAndKeyboard() {
@@ -64,15 +53,10 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   }
 
   void _onFocusChanged() {
-    final revealBottom = _revealBottomOnNextFocus;
-    _revealBottomOnNextFocus = true;
     if (_focusNode.hasFocus &&
         _usesTextInputClient &&
         (!_usesSoftKeyboard || _showSoftKeyboardOnFocus)) {
-      _openTextInput(
-        showKeyboard: _showSoftKeyboardOnFocus,
-        revealBottom: revealBottom,
-      );
+      _openTextInput(showKeyboard: _showSoftKeyboardOnFocus);
     } else {
       _closeTextInput();
     }
@@ -99,22 +83,17 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     return composing.isValid && !composing.isCollapsed;
   }
 
-  void _openTextInput({
-    required bool showKeyboard,
-    required bool revealBottom,
-  }) {
+  void _openTextInput({required bool showKeyboard}) {
     if (!_usesTextInputClient || !widget.active || !_focusNode.hasFocus) return;
     // No soft keyboard while disconnected/reconnecting.
     if (!widget.motif.canInput) return;
     final existing = _textInputConnection;
     if (existing != null && existing.attached) {
-      if (revealBottom) _worker?.scrollToBottom();
       _syncImeRect();
       _scheduleImeRectSync();
       if (showKeyboard || !_usesSoftKeyboard) existing.show();
       return;
     }
-    if (revealBottom) _worker?.scrollToBottom();
     // Mobile gets a plain text keyboard so iOS exposes the language switch and
     // CJK IMEs are reachable; desktop keeps the shell-friendly config.
     final connection = TextInput.attach(

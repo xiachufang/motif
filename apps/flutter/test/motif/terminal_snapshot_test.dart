@@ -2,6 +2,33 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_snapshot.dart';
 
 void main() {
+  test('isAtLatest compares the viewport with the live bottom', () {
+    final history = _snapshot(
+      [_row(const [])],
+      cols: 8,
+      viewportOffset: 3,
+      scrollTotalRows: 12,
+      scrollViewportRows: 3,
+    );
+    final latest = _snapshot(
+      [_row(const [])],
+      cols: 8,
+      viewportOffset: 9,
+      scrollTotalRows: 12,
+      scrollViewportRows: 3,
+    );
+
+    expect(history.isAtLatest, isFalse);
+    expect(latest.isAtLatest, isTrue);
+  });
+
+  test('a terminal without scrollback is already at latest', () {
+    final snapshot = _snapshot([_row(const [])], cols: 8);
+
+    expect(snapshot.hasScrollback, isFalse);
+    expect(snapshot.isAtLatest, isTrue);
+  });
+
   test('selectedText extracts a trimmed multi-row terminal range', () {
     final snapshot = _snapshot([
       _row([_cell(2, 'a'), _cell(3, 'b'), _cell(5, 'c')]),
@@ -179,10 +206,16 @@ TerminalSnapshot _snapshot(
   List<TerminalSnapshotRow> rows, {
   required int cols,
   int? cursorX,
+  int viewportOffset = 0,
+  int scrollTotalRows = 0,
+  int scrollViewportRows = 0,
 }) {
   return TerminalSnapshot(
     cols: cols,
     rows: rows.length,
+    viewportOffset: viewportOffset,
+    scrollTotalRows: scrollTotalRows,
+    scrollViewportRows: scrollViewportRows,
     backgroundArgb: 0xff000000,
     foregroundArgb: 0xffffffff,
     cursorArgb: 0xffffffff,

@@ -2,6 +2,18 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+bool terminalReturnToCursorShouldBeVisible({
+  required bool controlsVisible,
+  required bool hasScrollback,
+  required bool alternateScreenActive,
+  required bool isAtLatest,
+}) {
+  return controlsVisible &&
+      hasScrollback &&
+      !alternateScreenActive &&
+      !isAtLatest;
+}
+
 /// Pixel geometry for a terminal scrollback thumb.
 class TerminalScrollbarGeometry {
   final double trackExtent;
@@ -88,8 +100,11 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
   Timer? _hideTimer;
   bool _canShow = false;
   bool _visible = false;
-  bool _hovered = false;
+  bool _scrollbarHovered = false;
+  bool _returnButtonHovered = false;
   bool _dragging = false;
+
+  bool get _hovered => _scrollbarHovered || _returnButtonHovered;
 
   bool get visible => _canShow && _visible;
   bool get dragging => _dragging;
@@ -100,7 +115,8 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
     if (!value) {
       _hideTimer?.cancel();
       _hideTimer = null;
-      _hovered = false;
+      _scrollbarHovered = false;
+      _returnButtonHovered = false;
       _dragging = false;
       _setVisible(false);
     }
@@ -113,9 +129,20 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
   }
 
   void setHovered(bool value) {
-    if (!_canShow || _hovered == value) return;
-    _hovered = value;
-    if (value) {
+    if (!_canShow || _scrollbarHovered == value) return;
+    _scrollbarHovered = value;
+    _updateHoverVisibility(value);
+  }
+
+  void setReturnButtonHovered(bool value) {
+    if (_returnButtonHovered == value) return;
+    _returnButtonHovered = value;
+    if (!_canShow) return;
+    _updateHoverVisibility(value);
+  }
+
+  void _updateHoverVisibility(bool entered) {
+    if (entered) {
       _hideTimer?.cancel();
       _setVisible(true);
     } else {
@@ -152,6 +179,76 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
   void dispose() {
     _hideTimer?.cancel();
     super.dispose();
+  }
+}
+
+/// Floating action that returns a scrolled-back terminal to its live cursor.
+class TerminalReturnToCursorButton extends StatelessWidget {
+  static const double size = 40;
+  static const double iconSize = 20;
+  static const double rightInset = TerminalScrollbarOverlay.hitWidth + 8;
+  static const double bottomInset = 12;
+
+  final bool visible;
+  final Color foregroundColor;
+  final Color backgroundColor;
+  final VoidCallback onPressed;
+  final ValueChanged<bool> onHoverChanged;
+
+  const TerminalReturnToCursorButton({
+    super.key,
+    required this.visible,
+    required this.foregroundColor,
+    required this.backgroundColor,
+    required this.onPressed,
+    required this.onHoverChanged,
+  });
+
+  static Rect hitRectForViewport(Size viewport) {
+    return Rect.fromLTWH(
+      viewport.width - rightInset - size,
+      viewport.height - bottomInset - size,
+      size,
+      size,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      key: const ValueKey('terminal-return-to-cursor-opacity'),
+      opacity: visible ? 1 : 0,
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: MouseRegion(
+          key: const ValueKey('terminal-return-to-cursor-hot-zone'),
+          onEnter: (_) => onHoverChanged(true),
+          onExit: (_) => onHoverChanged(false),
+          child: Tooltip(
+            message: 'Jump to cursor',
+            child: IconButton(
+              key: const ValueKey('terminal-return-to-cursor-button'),
+              onPressed: onPressed,
+              icon: const Icon(Icons.keyboard_arrow_down_rounded),
+              iconSize: iconSize,
+              style: ButtonStyle(
+                foregroundColor: WidgetStatePropertyAll(foregroundColor),
+                backgroundColor: WidgetStatePropertyAll(backgroundColor),
+                overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+                splashFactory: NoSplash.splashFactory,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                fixedSize: const WidgetStatePropertyAll(Size.square(size)),
+                minimumSize: const WidgetStatePropertyAll(Size.square(size)),
+                padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+                shape: const WidgetStatePropertyAll(CircleBorder()),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -1,8 +1,59 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_scrollbar.dart';
 
 void main() {
+  test('return-to-cursor visibility requires history and visible controls', () {
+    expect(
+      terminalReturnToCursorShouldBeVisible(
+        controlsVisible: true,
+        hasScrollback: true,
+        alternateScreenActive: false,
+        isAtLatest: false,
+      ),
+      isTrue,
+    );
+
+    for (final state in [
+      (
+        controlsVisible: false,
+        hasScrollback: true,
+        alternateScreenActive: false,
+        isAtLatest: false,
+      ),
+      (
+        controlsVisible: true,
+        hasScrollback: false,
+        alternateScreenActive: false,
+        isAtLatest: false,
+      ),
+      (
+        controlsVisible: true,
+        hasScrollback: true,
+        alternateScreenActive: true,
+        isAtLatest: false,
+      ),
+      (
+        controlsVisible: true,
+        hasScrollback: true,
+        alternateScreenActive: false,
+        isAtLatest: true,
+      ),
+    ]) {
+      expect(
+        terminalReturnToCursorShouldBeVisible(
+          controlsVisible: state.controlsVisible,
+          hasScrollback: state.hasScrollback,
+          alternateScreenActive: state.alternateScreenActive,
+          isAtLatest: state.isAtLatest,
+        ),
+        isFalse,
+        reason: '$state',
+      );
+    }
+  });
+
   test('thumb geometry reflects viewport fraction and offset', () {
     final geometry = TerminalScrollbarGeometry.calculate(
       trackExtent: 200,
@@ -68,6 +119,16 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     expect(controller.visible, isFalse);
 
+    controller.showTemporarily();
+    controller.setReturnButtonHovered(true);
+    controller.setHovered(true);
+    controller.setReturnButtonHovered(false);
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.visible, isTrue);
+    controller.setHovered(false);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(controller.visible, isFalse);
+
     controller.beginDrag();
     expect(controller.visible, isTrue);
     await tester.pump(const Duration(seconds: 2));
@@ -126,4 +187,74 @@ void main() {
     expect(dragEnds, 1);
     expect(offsets.last, 80);
   });
+
+  test('return-to-cursor hit rectangle matches its positioned layout', () {
+    final rect = TerminalReturnToCursorButton.hitRectForViewport(
+      const Size(320, 200),
+    );
+
+    expect(rect, const Rect.fromLTWH(256, 148, 40, 40));
+    expect(rect.contains(const Offset(276, 168)), isTrue);
+    expect(rect.contains(const Offset(300, 190)), isFalse);
+  });
+
+  testWidgets(
+    'return-to-cursor button fades, ignores taps, and handles hover',
+    (tester) async {
+      var presses = 0;
+      final hoverChanges = <bool>[];
+
+      Future<void> pumpButton({required bool visible}) {
+        return tester.pumpWidget(
+          MaterialApp(
+            home: Center(
+              child: TerminalReturnToCursorButton(
+                visible: visible,
+                foregroundColor: Colors.white,
+                backgroundColor: Colors.black,
+                onPressed: () => presses++,
+                onHoverChanged: hoverChanges.add,
+              ),
+            ),
+          ),
+        );
+      }
+
+      await pumpButton(visible: false);
+      var opacity = tester.widget<AnimatedOpacity>(
+        find.byKey(const ValueKey('terminal-return-to-cursor-opacity')),
+      );
+      expect(opacity.opacity, 0);
+      await tester.tap(
+        find.byKey(const ValueKey('terminal-return-to-cursor-button')),
+        warnIfMissed: false,
+      );
+      expect(presses, 0);
+
+      await pumpButton(visible: true);
+      await tester.pumpAndSettle();
+      opacity = tester.widget<AnimatedOpacity>(
+        find.byKey(const ValueKey('terminal-return-to-cursor-opacity')),
+      );
+      expect(opacity.opacity, 1);
+      final button = find.byKey(
+        const ValueKey('terminal-return-to-cursor-button'),
+      );
+      expect(tester.getSize(button), const Size.square(40));
+      expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
+
+      await tester.tap(button);
+      expect(presses, 1);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: const Offset(1, 1));
+      await mouse.moveTo(tester.getCenter(button));
+      await tester.pump();
+      expect(hoverChanges.last, isTrue);
+      await mouse.moveTo(const Offset(1, 1));
+      await tester.pump();
+      expect(hoverChanges.last, isFalse);
+      await mouse.removePointer();
+    },
+  );
 }

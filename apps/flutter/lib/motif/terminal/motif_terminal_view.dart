@@ -108,7 +108,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       TerminalScrollAccumulator();
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
-  final Set<int> _scrollbarPointers = <int>{};
+  final Set<int> _terminalOverlayPointers = <int>{};
   int? _terminalContextMenuPointer;
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
   final GlobalKey _terminalSurfaceKey = GlobalKey(
@@ -120,7 +120,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   String? _composingText;
   _CursorSnapshot? _lastCursorSnapshot;
   bool _showSoftKeyboardOnFocus = false;
-  bool _revealBottomOnNextFocus = true;
 
   double _cellWidth = 0;
   double _cellHeight = 0;
@@ -491,6 +490,34 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                               onDragStart: _onScrollbarDragStart,
                               onDragEnd: _onScrollbarDragEnd,
                             ),
+                          ),
+                        ),
+                      if (snapshot.hasScrollback &&
+                          !snapshot.alternateScreenActive)
+                        Positioned(
+                          right: TerminalReturnToCursorButton.rightInset,
+                          bottom: TerminalReturnToCursorButton.bottomInset,
+                          width: TerminalReturnToCursorButton.size,
+                          height: TerminalReturnToCursorButton.size,
+                          child: ListenableBuilder(
+                            listenable: _scrollbarVisibility,
+                            builder: (context, _) =>
+                                TerminalReturnToCursorButton(
+                                  visible:
+                                      terminalReturnToCursorShouldBeVisible(
+                                        controlsVisible:
+                                            _scrollbarVisibility.visible,
+                                        hasScrollback: snapshot.hasScrollback,
+                                        alternateScreenActive:
+                                            snapshot.alternateScreenActive,
+                                        isAtLatest: snapshot.isAtLatest,
+                                      ),
+                                  foregroundColor: colorScheme.onSurface,
+                                  backgroundColor: colorScheme.surface
+                                      .withValues(alpha: 0.92),
+                                  onPressed: _returnToCursor,
+                                  onHoverChanged: _onReturnButtonHoverChanged,
+                                ),
                           ),
                         ),
                     ],

@@ -49,12 +49,12 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerKind = e.kind;
     _lastPointerPosition = e.localPosition;
-    _tapStartedWithSelection =
-        (e.buttons & kPrimaryButton) != 0 && _selection != null;
-    if (_isScrollbarHotZone(e.localPosition)) {
-      _scrollbarPointers.add(e.pointer);
+    if (_isTerminalOverlayHotZone(e.localPosition)) {
+      _terminalOverlayPointers.add(e.pointer);
       return;
     }
+    _tapStartedWithSelection =
+        (e.buttons & kPrimaryButton) != 0 && _selection != null;
     if (terminalContextMenuShouldOpen(buttons: e.buttons)) {
       _terminalContextMenuPointer = e.pointer;
       unawaited(_showDesktopTerminalContextMenu(e.position));
@@ -92,7 +92,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
-    if (_scrollbarPointers.remove(e.pointer)) return;
+    if (_terminalOverlayPointers.remove(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -144,7 +144,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _onPointerCancel(PointerCancelEvent e) {
-    if (_scrollbarPointers.remove(e.pointer)) return;
+    if (_terminalOverlayPointers.remove(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -167,7 +167,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerMove(PointerMoveEvent e) {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
-    if (_scrollbarPointers.contains(e.pointer)) return;
+    if (_terminalOverlayPointers.contains(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) return;
     if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
@@ -312,7 +312,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _beginMouseSelection(PointerDownEvent e) {
     if (terminalTapRequestsFocus(selectionActive: _selection != null)) {
-      _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
+      _requestFocusWithoutKeyboard();
     }
     _stopScrollInertia(resetVelocity: true);
     _clearTerminalSelection();
@@ -354,7 +354,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _terminalCellAt(details.localPosition),
     );
     if (wordSelection == null) return;
-    _requestFocusWithoutKeyboard(intent: TerminalFocusIntent.textSelection);
+    _requestFocusWithoutKeyboard();
     _stopScrollInertia(resetVelocity: true);
     final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;
@@ -806,8 +806,34 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         position.dy <= _viewportHeight;
   }
 
+  bool _isReturnToCursorHotZone(Offset position) {
+    final snapshot = _snapshot;
+    if (snapshot == null ||
+        !terminalReturnToCursorShouldBeVisible(
+          controlsVisible: _scrollbarVisibility.visible,
+          hasScrollback: snapshot.hasScrollback,
+          alternateScreenActive: snapshot.alternateScreenActive,
+          isAtLatest: snapshot.isAtLatest,
+        ) ||
+        _viewportWidth <= 0 ||
+        _viewportHeight <= 0) {
+      return false;
+    }
+    return TerminalReturnToCursorButton.hitRectForViewport(
+      Size(_viewportWidth, _viewportHeight),
+    ).contains(position);
+  }
+
+  bool _isTerminalOverlayHotZone(Offset position) {
+    return _isScrollbarHotZone(position) || _isReturnToCursorHotZone(position);
+  }
+
   void _onScrollbarHoverChanged(bool hovered) {
     _scrollbarVisibility.setHovered(hovered);
+  }
+
+  void _onReturnButtonHoverChanged(bool hovered) {
+    _scrollbarVisibility.setReturnButtonHovered(hovered);
   }
 
   void _onScrollbarActivity() {
@@ -828,6 +854,13 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _scrollToOffsetFromScrollbar(int offset) {
     _worker?.scrollToOffset(offset);
+  }
+
+  void _returnToCursor() {
+    _stopScrollInertia(resetVelocity: true);
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.showTemporarily();
+    _worker?.scrollToBottom();
   }
 
   /// Wheel events are encoded as presses of buttons four/five (xterm
