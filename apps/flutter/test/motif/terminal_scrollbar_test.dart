@@ -257,4 +257,84 @@ void main() {
       await mouse.removePointer();
     },
   );
+
+  testWidgets('shared scroll controls drive scrollbar and return action', (
+    tester,
+  ) async {
+    final controller = TerminalScrollbarVisibilityController();
+    addTearDown(controller.dispose);
+    final offsets = <int>[];
+    var returns = 0;
+    controller.updateCanShow(true);
+    controller.showTemporarily();
+
+    Widget controls({int viewportOffset = 40, bool alternate = false}) {
+      return MaterialApp(
+        home: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 320,
+            height: 200,
+            child: TerminalScrollControls(
+              totalRows: 100,
+              visibleRows: 20,
+              viewportOffset: viewportOffset,
+              alternateScreenActive: alternate,
+              visibilityController: controller,
+              thumbColor: Colors.white,
+              trackColor: Colors.white24,
+              buttonForegroundColor: Colors.white,
+              buttonBackgroundColor: Colors.black,
+              onScrollToOffset: offsets.add,
+              onScrollbarHoverChanged: controller.setHovered,
+              onReturnButtonHoverChanged: controller.setReturnButtonHovered,
+              onScrollbarActivity: controller.showTemporarily,
+              onScrollbarDragStart: controller.beginDrag,
+              onScrollbarDragEnd: controller.endDrag,
+              onReturnToCursor: () => returns++,
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(controls());
+    expect(
+      find.byKey(const ValueKey('terminal-scrollbar-hot-zone')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.byKey(const ValueKey('terminal-return-to-cursor-opacity')),
+          )
+          .opacity,
+      1,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('terminal-return-to-cursor-button')),
+    );
+    expect(returns, 1);
+
+    await tester.tapAt(const Offset(312, 190));
+    await tester.pump();
+    expect(offsets.last, 60);
+
+    await tester.pumpWidget(controls(viewportOffset: 80));
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.byKey(const ValueKey('terminal-return-to-cursor-opacity')),
+          )
+          .opacity,
+      0,
+    );
+
+    await tester.pumpWidget(controls(alternate: true));
+    expect(
+      find.byKey(const ValueKey('terminal-scrollbar-hot-zone')),
+      findsNothing,
+    );
+    await tester.pump(const Duration(seconds: 1));
+  });
 }

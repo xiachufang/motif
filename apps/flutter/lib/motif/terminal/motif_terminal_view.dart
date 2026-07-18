@@ -464,62 +464,30 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                         ),
                         size: Size(constraints.maxWidth, constraints.maxHeight),
                       ),
-                      if (snapshot.hasScrollback &&
-                          !snapshot.alternateScreenActive)
-                        Positioned(
-                          top: 3,
-                          right: 0,
-                          bottom: 3,
-                          width: TerminalScrollbarOverlay.hitWidth,
-                          child: ListenableBuilder(
-                            listenable: _scrollbarVisibility,
-                            builder: (context, _) => TerminalScrollbarOverlay(
-                              totalRows: snapshot.scrollTotalRows,
-                              visibleRows: snapshot.scrollViewportRows,
-                              viewportOffset: snapshot.viewportOffset,
-                              visible: _scrollbarVisibility.visible,
-                              thumbColor: colorScheme.onSurface.withValues(
-                                alpha: 0.58,
-                              ),
-                              trackColor: colorScheme.onSurface.withValues(
-                                alpha: 0.10,
-                              ),
-                              onScrollToOffset: _scrollToOffsetFromScrollbar,
-                              onHoverChanged: _onScrollbarHoverChanged,
-                              onActivity: _onScrollbarActivity,
-                              onDragStart: _onScrollbarDragStart,
-                              onDragEnd: _onScrollbarDragEnd,
-                            ),
-                          ),
+                      TerminalScrollControls(
+                        totalRows: snapshot.scrollTotalRows,
+                        visibleRows: snapshot.scrollViewportRows,
+                        viewportOffset: snapshot.viewportOffset,
+                        alternateScreenActive: snapshot.alternateScreenActive,
+                        visibilityController: _scrollbarVisibility,
+                        thumbColor: colorScheme.onSurface.withValues(
+                          alpha: 0.58,
                         ),
-                      if (snapshot.hasScrollback &&
-                          !snapshot.alternateScreenActive)
-                        Positioned(
-                          right: TerminalReturnToCursorButton.rightInset,
-                          bottom: TerminalReturnToCursorButton.bottomInset,
-                          width: TerminalReturnToCursorButton.size,
-                          height: TerminalReturnToCursorButton.size,
-                          child: ListenableBuilder(
-                            listenable: _scrollbarVisibility,
-                            builder: (context, _) =>
-                                TerminalReturnToCursorButton(
-                                  visible:
-                                      terminalReturnToCursorShouldBeVisible(
-                                        controlsVisible:
-                                            _scrollbarVisibility.visible,
-                                        hasScrollback: snapshot.hasScrollback,
-                                        alternateScreenActive:
-                                            snapshot.alternateScreenActive,
-                                        isAtLatest: snapshot.isAtLatest,
-                                      ),
-                                  foregroundColor: colorScheme.onSurface,
-                                  backgroundColor: colorScheme.surface
-                                      .withValues(alpha: 0.92),
-                                  onPressed: _returnToCursor,
-                                  onHoverChanged: _onReturnButtonHoverChanged,
-                                ),
-                          ),
+                        trackColor: colorScheme.onSurface.withValues(
+                          alpha: 0.10,
                         ),
+                        buttonForegroundColor: colorScheme.onSurface,
+                        buttonBackgroundColor: colorScheme.surface.withValues(
+                          alpha: 0.92,
+                        ),
+                        onScrollToOffset: _scrollToOffsetFromScrollbar,
+                        onScrollbarHoverChanged: _onScrollbarHoverChanged,
+                        onReturnButtonHoverChanged: _onReturnButtonHoverChanged,
+                        onScrollbarActivity: _onScrollbarActivity,
+                        onScrollbarDragStart: _onScrollbarDragStart,
+                        onScrollbarDragEnd: _onScrollbarDragEnd,
+                        onReturnToCursor: _returnToCursor,
+                      ),
                     ],
                   );
                 },

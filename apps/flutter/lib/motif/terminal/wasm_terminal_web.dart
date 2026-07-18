@@ -10,6 +10,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -19,6 +21,8 @@ import 'terminal_focus_policy.dart';
 import 'terminal_fonts.dart';
 import 'terminal_input.dart';
 import 'terminal_palette.dart';
+import 'terminal_scroll_driver.dart';
+import 'terminal_scrollbar.dart';
 import 'terminal_session.dart';
 import 'web_key_encoder.dart';
 
@@ -31,6 +35,16 @@ extension type _GhosttyVt(JSObject _) implements JSObject {
   external void write(int term, JSUint8Array bytes);
   external String gridText(int term);
   external String gridCellsJson(int term);
+  external void resize(
+    int term,
+    int cols,
+    int rows,
+    int cellWidth,
+    int cellHeight,
+  );
+  external void scroll(int term, int delta);
+  external void scrollToOffset(int term, int offset);
+  external void scrollToBottom(int term);
 }
 
 Widget buildWebTerminal({
@@ -80,18 +94,33 @@ class _WasmTerminalView extends StatefulWidget {
 }
 
 class _WasmTerminalViewState extends State<_WasmTerminalView> {
+  static const double _padding = MotifSpacing.sm;
+
   int? _term;
   List<List<_Run>> _rows = const [];
   int _curX = -1, _curY = -1;
+  int _scrollTotalRows = 0;
+  int _scrollViewportRows = 0;
+  int _viewportOffset = 0;
+  bool _alternateScreenActive = false;
+  int _cols = 80;
+  int _gridRows = 24;
+  double _cellWidth = 0;
+  double _cellHeight = 0;
+  bool _resizeScheduled = false;
   bool _failed = false;
   Object? _failure;
-  final ScrollController _scroll = ScrollController();
   final FocusNode _focusNode = FocusNode(debugLabel: 'Wasm terminal');
+  final TerminalScrollAccumulator _scrollAccumulator =
+      TerminalScrollAccumulator();
+  final TerminalScrollbarVisibilityController _scrollbarVisibility =
+      TerminalScrollbarVisibilityController();
   Timer? _repaint;
 
   @override
   void initState() {
     super.initState();
+    _measureCell();
     widget.motif.registerPtySink(widget.ptyId, _onBytes);
     _init();
     if (terminalAutofocusesOnTabSwitchByDefault()) {
@@ -125,6 +154,12 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   @override
   void didUpdateWidget(covariant _WasmTerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.fontSize != widget.fontSize) {
+      _measureCell();
+      _cols = 0;
+      _gridRows = 0;
+      _resizeScheduled = false;
+    }
     final gainedActive = !oldWidget.active && widget.active;
     final shouldDefaultFocus =
         gainedActive && terminalAutofocusesOnTabSwitchByDefault();
@@ -153,13 +188,15 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     _repaint ??= Timer(const Duration(milliseconds: 16), () {
       _repaint = null;
       if (!mounted || _term == null) return;
-      setState(() => _rows = _parseGrid(_ghosttyVt!.gridCellsJson(_term!)));
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_scroll.hasClients) {
-          _scroll.jumpTo(_scroll.position.maxScrollExtent);
-        }
-      });
+      _refreshGrid();
     });
+  }
+
+  void _refreshGrid() {
+    final term = _term;
+    if (!mounted || term == null) return;
+    final rows = _parseGrid(_ghosttyVt!.gridCellsJson(term));
+    setState(() => _rows = rows);
   }
 
   List<List<_Run>> _parseGrid(String json) {
@@ -171,6 +208,20 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
         _curY = (cursor['y'] as num?)?.toInt() ?? -1;
       } else {
         _curX = _curY = -1;
+      }
+      final scrollbar = obj['scrollbar'] as Map?;
+      _scrollTotalRows = (scrollbar?['total'] as num?)?.toInt() ?? _rows.length;
+      _viewportOffset = (scrollbar?['offset'] as num?)?.toInt() ?? 0;
+      _scrollViewportRows =
+          (scrollbar?['len'] as num?)?.toInt() ?? _rows.length;
+      _alternateScreenActive = obj['alternateScreenActive'] as bool? ?? false;
+      final hasScrollback =
+          _scrollViewportRows > 0 &&
+          _scrollTotalRows > _scrollViewportRows &&
+          !_alternateScreenActive;
+      _scrollbarVisibility.updateCanShow(hasScrollback);
+      if (_isAtLatest || _alternateScreenActive) {
+        _scrollbarVisibility.setReturnButtonHovered(false);
       }
       final rows = (obj['rows'] as List?) ?? const [];
       return [
@@ -197,6 +248,121 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       (rgb[1] as num).toInt(),
       (rgb[2] as num).toInt(),
     );
+  }
+
+  bool get _isAtLatest {
+    final maxOffset = (_scrollTotalRows - _scrollViewportRows).clamp(
+      0,
+      _scrollTotalRows,
+    );
+    return _viewportOffset >= maxOffset;
+  }
+
+  bool get _usesMobileDirectTouchScroll =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.android;
+
+  void _measureCell() {
+    final font = platformTerminalFont();
+    final painter = TextPainter(
+      text: TextSpan(
+        text: 'M',
+        style: TextStyle(
+          fontFamily: font.family,
+          fontFamilyFallback: font.fallback,
+          fontSize: widget.fontSize,
+          height: 1.3,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    _cellWidth = painter.width;
+    _cellHeight = painter.height;
+    painter.dispose();
+  }
+
+  void _scheduleResize(BoxConstraints constraints) {
+    final term = _term;
+    if (term == null || _cellWidth <= 0 || _cellHeight <= 0) return;
+    final cols = ((constraints.maxWidth - 2 * _padding) / _cellWidth)
+        .floor()
+        .clamp(1, 1000);
+    final rows = ((constraints.maxHeight - 2 * _padding) / _cellHeight)
+        .floor()
+        .clamp(1, 1000);
+    if ((cols == _cols && rows == _gridRows) || _resizeScheduled) return;
+    _resizeScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resizeScheduled = false;
+      if (!mounted || _term != term) return;
+      _cols = cols;
+      _gridRows = rows;
+      _ghosttyVt!.resize(
+        term,
+        cols,
+        rows,
+        _cellWidth.round(),
+        _cellHeight.round(),
+      );
+      unawaited(widget.motif.resizePty(widget.ptyId, cols, rows));
+      _refreshGrid();
+    });
+  }
+
+  void _scrollByPixels(double pixels) {
+    if (_scrollTotalRows > _scrollViewportRows && !_alternateScreenActive) {
+      _scrollbarVisibility.showTemporarily();
+    }
+    final rows = _scrollAccumulator.applyPixelDelta(pixels, _cellHeight);
+    if (rows == 0 || _alternateScreenActive) return;
+    final term = _term;
+    if (term == null) return;
+    _ghosttyVt!.scroll(term, rows);
+    _refreshGrid();
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    _scrollByPixels(event.scrollDelta.dy);
+    event.respond(allowPlatformDefault: false);
+  }
+
+  void _onScrollbarHoverChanged(bool hovered) {
+    _scrollbarVisibility.setHovered(hovered);
+  }
+
+  void _onReturnButtonHoverChanged(bool hovered) {
+    _scrollbarVisibility.setReturnButtonHovered(hovered);
+  }
+
+  void _onScrollbarActivity() {
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.showTemporarily();
+  }
+
+  void _onScrollbarDragStart() {
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.beginDrag();
+  }
+
+  void _onScrollbarDragEnd() {
+    _scrollbarVisibility.endDrag();
+  }
+
+  void _scrollToOffset(int offset) {
+    final term = _term;
+    if (term == null) return;
+    _ghosttyVt!.scrollToOffset(term, offset);
+    _refreshGrid();
+  }
+
+  void _returnToCursor() {
+    final term = _term;
+    if (term == null) return;
+    _scrollAccumulator.reset();
+    _scrollbarVisibility.showTemporarily();
+    _ghosttyVt!.scrollToBottom(term);
+    _refreshGrid();
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
@@ -232,7 +398,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     widget.motif.unregisterPtySink(widget.ptyId);
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
     _repaint?.cancel();
-    _scroll.dispose();
+    _scrollbarVisibility.dispose();
     _focusNode.dispose();
     super.dispose();
   }
@@ -263,28 +429,76 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       autofocus: widget.active && terminalAutofocusesOnTabSwitchByDefault(),
       canRequestFocus: widget.active,
       onKeyEvent: _onKey,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTapDown: (_) => _requestFocus(),
-        child: Container(
-          color: widget.palette.background,
-          padding: const EdgeInsets.all(MotifSpacing.sm),
-          child: SelectionArea(
-            child: ListView.builder(
-              controller: _scroll,
-              itemCount: _rows.length,
-              itemBuilder: (_, i) => Text.rich(
-                _buildRow(
-                  _rows[i],
-                  i == _curY ? _curX : -1,
-                  base,
-                  c,
-                  widget.palette,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          _scheduleResize(constraints);
+          return Listener(
+            onPointerSignal: _onPointerSignal,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _requestFocus,
+              onVerticalDragUpdate: _usesMobileDirectTouchScroll
+                  ? (details) => _scrollByPixels(
+                      touchMoveDeltaToScrollPixels(details.delta.dy),
+                    )
+                  : null,
+              child: ColoredBox(
+                color: widget.palette.background,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(_padding),
+                      child: SelectionArea(
+                        child: ListView.builder(
+                          primary: false,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemExtent: _cellHeight > 0 ? _cellHeight : null,
+                          itemCount: _rows.length,
+                          itemBuilder: (_, i) => Text.rich(
+                            _buildRow(
+                              _rows[i],
+                              i == _curY ? _curX : -1,
+                              base,
+                              c,
+                              widget.palette,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    TerminalScrollControls(
+                      totalRows: _scrollTotalRows,
+                      visibleRows: _scrollViewportRows,
+                      viewportOffset: _viewportOffset,
+                      alternateScreenActive: _alternateScreenActive,
+                      visibilityController: _scrollbarVisibility,
+                      thumbColor: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.58),
+                      trackColor: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.10),
+                      buttonForegroundColor: Theme.of(
+                        context,
+                      ).colorScheme.onSurface,
+                      buttonBackgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.surface.withValues(alpha: 0.92),
+                      onScrollToOffset: _scrollToOffset,
+                      onScrollbarHoverChanged: _onScrollbarHoverChanged,
+                      onReturnButtonHoverChanged: _onReturnButtonHoverChanged,
+                      onScrollbarActivity: _onScrollbarActivity,
+                      onScrollbarDragStart: _onScrollbarDragStart,
+                      onScrollbarDragEnd: _onScrollbarDragEnd,
+                      onReturnToCursor: _returnToCursor,
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }

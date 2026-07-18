@@ -24,11 +24,55 @@
     const colorOk = !!redRun && redRun.f[0] > 150 && redRun.f[1] < 120 && redRun.f[2] < 120;
     const cur = data.cursor || {};
     const cursorOk = cur.vis === true && cur.y >= 0 && cur.x >= 0;
-    const pass = textOk && colorOk && cursorOk;
+    const scrollTerm = window.GhosttyVt.newTerminal(12, 3);
+    const scrollText = Array.from({length: 12}, (_, i) => 'line' + i).join('\r\n');
+    window.GhosttyVt.write(
+      scrollTerm,
+      new Uint8Array([...scrollText].map(c => c.charCodeAt(0))),
+    );
+    const bottomMetrics = JSON.parse(
+      window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
+    );
+    window.GhosttyVt.scrollToOffset(scrollTerm, 0);
+    const topData = JSON.parse(window.GhosttyVt.gridCellsJson(scrollTerm));
+    window.GhosttyVt.write(
+      scrollTerm,
+      new Uint8Array([...'\r\nnew-output'].map(c => c.charCodeAt(0))),
+    );
+    const preservedMetrics = JSON.parse(
+      window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
+    );
+    window.GhosttyVt.scroll(scrollTerm, 2);
+    const deltaMetrics = JSON.parse(
+      window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
+    );
+    window.GhosttyVt.scrollToBottom(scrollTerm);
+    const restoredMetrics = JSON.parse(
+      window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
+    );
+    window.GhosttyVt.resize(scrollTerm, 12, 4, 8, 16);
+    const resizedMetrics = JSON.parse(
+      window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
+    );
+    const initialMaxOffset = bottomMetrics.total - bottomMetrics.len;
+    const currentMaxOffset = preservedMetrics.total - preservedMetrics.len;
+    const scrollOk = initialMaxOffset > 0 &&
+      bottomMetrics.offset === initialMaxOffset &&
+      topData.scrollbar.offset === 0 &&
+      topData.alternateScreenActive === false &&
+      preservedMetrics.offset === 0 &&
+      preservedMetrics.offset < currentMaxOffset &&
+      deltaMetrics.offset === 2 &&
+      restoredMetrics.offset === currentMaxOffset &&
+      resizedMetrics.len === 4 &&
+      resizedMetrics.offset === resizedMetrics.total - resizedMetrics.len;
+    const pass = textOk && colorOk && cursorOk && scrollOk;
     out.textContent = (pass ? 'RESULT:PASS' : 'RESULT:FAIL') +
       '\ntextOk=' + textOk + ' colorOk=' + colorOk + ' cursorOk=' + cursorOk +
+      ' scrollOk=' + scrollOk +
       ' cursor=' + JSON.stringify(cur) +
       ' redFg=' + (redRun ? JSON.stringify(redRun.f) : 'none') +
+      ' scrollbar=' + JSON.stringify(resizedMetrics) +
       '\n--GRID--\n' + grid;
   } catch (e) {
     out.textContent = 'RESULT:ERROR:' + (e && e.message || e);

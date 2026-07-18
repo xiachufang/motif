@@ -394,3 +394,101 @@ class _TerminalScrollbarOverlayState extends State<TerminalScrollbarOverlay> {
     );
   }
 }
+
+/// Shared Native/Web overlay for terminal scrollback controls.
+class TerminalScrollControls extends StatelessWidget {
+  final int totalRows;
+  final int visibleRows;
+  final int viewportOffset;
+  final bool alternateScreenActive;
+  final TerminalScrollbarVisibilityController visibilityController;
+  final Color thumbColor;
+  final Color trackColor;
+  final Color buttonForegroundColor;
+  final Color buttonBackgroundColor;
+  final ValueChanged<int> onScrollToOffset;
+  final ValueChanged<bool> onScrollbarHoverChanged;
+  final ValueChanged<bool> onReturnButtonHoverChanged;
+  final VoidCallback onScrollbarActivity;
+  final VoidCallback onScrollbarDragStart;
+  final VoidCallback onScrollbarDragEnd;
+  final VoidCallback onReturnToCursor;
+
+  const TerminalScrollControls({
+    super.key,
+    required this.totalRows,
+    required this.visibleRows,
+    required this.viewportOffset,
+    required this.alternateScreenActive,
+    required this.visibilityController,
+    required this.thumbColor,
+    required this.trackColor,
+    required this.buttonForegroundColor,
+    required this.buttonBackgroundColor,
+    required this.onScrollToOffset,
+    required this.onScrollbarHoverChanged,
+    required this.onReturnButtonHoverChanged,
+    required this.onScrollbarActivity,
+    required this.onScrollbarDragStart,
+    required this.onScrollbarDragEnd,
+    required this.onReturnToCursor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasScrollback = visibleRows > 0 && totalRows > visibleRows;
+    if (!hasScrollback || alternateScreenActive) {
+      return const SizedBox.shrink();
+    }
+    final maxOffset = totalRows - visibleRows;
+    final isAtLatest = viewportOffset >= maxOffset;
+    return ListenableBuilder(
+      listenable: visibilityController,
+      builder: (context, _) {
+        final controlsVisible = visibilityController.visible;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned(
+              top: 3,
+              right: 0,
+              bottom: 3,
+              width: TerminalScrollbarOverlay.hitWidth,
+              child: TerminalScrollbarOverlay(
+                totalRows: totalRows,
+                visibleRows: visibleRows,
+                viewportOffset: viewportOffset,
+                visible: controlsVisible,
+                thumbColor: thumbColor,
+                trackColor: trackColor,
+                onScrollToOffset: onScrollToOffset,
+                onHoverChanged: onScrollbarHoverChanged,
+                onActivity: onScrollbarActivity,
+                onDragStart: onScrollbarDragStart,
+                onDragEnd: onScrollbarDragEnd,
+              ),
+            ),
+            Positioned(
+              right: TerminalReturnToCursorButton.rightInset,
+              bottom: TerminalReturnToCursorButton.bottomInset,
+              width: TerminalReturnToCursorButton.size,
+              height: TerminalReturnToCursorButton.size,
+              child: TerminalReturnToCursorButton(
+                visible: terminalReturnToCursorShouldBeVisible(
+                  controlsVisible: controlsVisible,
+                  hasScrollback: hasScrollback,
+                  alternateScreenActive: alternateScreenActive,
+                  isAtLatest: isAtLatest,
+                ),
+                foregroundColor: buttonForegroundColor,
+                backgroundColor: buttonBackgroundColor,
+                onPressed: onReturnToCursor,
+                onHoverChanged: onReturnButtonHoverChanged,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}

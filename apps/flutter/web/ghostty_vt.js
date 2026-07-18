@@ -15,6 +15,10 @@
   const CURSOR_HAS_VALUE = 14;
   const CURSOR_X = 15;
   const CURSOR_Y = 16;
+  const TERMINAL_DATA_ACTIVE_SCREEN = 6;
+  const TERMINAL_DATA_SCROLLBAR = 9;
+  const SCROLL_VIEWPORT_BOTTOM = 1;
+  const SCROLL_VIEWPORT_DELTA = 2;
 
   let e = null; // wasm exports
   const dv = () => new DataView(e.memory.buffer);
@@ -25,6 +29,27 @@
 
   // Scratch slots (allocated once after load).
   let rsSlot, iterSlot, cellsSlot, lenSlot, gbuf;
+  let terminalDataSlot, scrollbarSlot, scrollViewportSlot;
+
+  const readScrollbar = (term) => {
+    e.ghostty_terminal_get(term, TERMINAL_DATA_SCROLLBAR, scrollbarSlot);
+    const d = dv();
+    return {
+      total: Number(d.getBigUint64(scrollbarSlot, true)),
+      offset: Number(d.getBigUint64(scrollbarSlot + 8, true)),
+      len: Number(d.getBigUint64(scrollbarSlot + 16, true)),
+    };
+  };
+
+  const scrollViewport = (term, tag, delta = 0) => {
+    // GhosttyTerminalScrollViewport is a 4-byte tag followed by an 8-byte
+    // aligned, 16-byte union. intptr_t is 32-bit for wasm32.
+    u8().fill(0, scrollViewportSlot, scrollViewportSlot + 24);
+    const d = dv();
+    d.setUint32(scrollViewportSlot, tag, true);
+    d.setInt32(scrollViewportSlot + 8, delta, true);
+    e.ghostty_terminal_scroll_viewport(term, scrollViewportSlot);
+  };
 
   const api = {
     ready: null,
@@ -43,6 +68,27 @@
 
     resize(term, cols, rows, cw, ch) {
       if (e.ghostty_terminal_resize) e.ghostty_terminal_resize(term, cols, rows, cw, ch);
+    },
+
+    scroll(term, delta) {
+      if (!delta) return;
+      scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
+    },
+
+    scrollToOffset(term, offset) {
+      const metrics = readScrollbar(term);
+      const maxOffset = Math.max(0, metrics.total - metrics.len);
+      const target = Math.max(0, Math.min(maxOffset, Math.trunc(offset)));
+      const delta = target - metrics.offset;
+      if (delta) scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
+    },
+
+    scrollToBottom(term) {
+      scrollViewport(term, SCROLL_VIEWPORT_BOTTOM);
+    },
+
+    scrollbarMetricsJson(term) {
+      return JSON.stringify(readScrollbar(term));
     },
 
     // Feed bytes (Uint8Array) from the remote PTY into the engine.
@@ -135,7 +181,14 @@
         x: rsGet(CURSOR_X, 2),
         y: rsGet(CURSOR_Y, 2),
       };
-      return JSON.stringify({ rows, cursor });
+      e.ghostty_terminal_get(term, TERMINAL_DATA_ACTIVE_SCREEN, terminalDataSlot);
+      const alternateScreenActive = rdU32(terminalDataSlot) === 1;
+      return JSON.stringify({
+        rows,
+        cursor,
+        scrollbar: readScrollbar(term),
+        alternateScreenActive,
+      });
     },
   };
 
@@ -156,6 +209,9 @@
       e.ghostty_render_state_row_cells_new(0, cellsSlot);
       lenSlot = alloc(4);
       gbuf = alloc(64 * 4);
+      terminalDataSlot = alloc(4);
+      scrollbarSlot = alloc(24);
+      scrollViewportSlot = alloc(24);
       return true;
     })
     .catch((err) => {
