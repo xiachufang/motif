@@ -912,21 +912,6 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     }
   }
 
-  bool _isScrollbarHotZone(Offset position) {
-    final snapshot = _snapshot;
-    if (!_scrollbarVisibility.visible ||
-        snapshot == null ||
-        !snapshot.hasScrollback ||
-        snapshot.alternateScreenActive ||
-        _viewportWidth <= 0) {
-      return false;
-    }
-    return position.dx >= _viewportWidth - TerminalScrollbarOverlay.hitWidth &&
-        position.dx <= _viewportWidth &&
-        position.dy >= 0 &&
-        position.dy <= _viewportHeight;
-  }
-
   bool _isReturnToCursorHotZone(Offset position) {
     final snapshot = _snapshot;
     if (snapshot == null ||
@@ -947,38 +932,16 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   bool _isTerminalOverlayHotZone(Offset position) {
-    return _isScrollbarHotZone(position) || _isReturnToCursorHotZone(position);
-  }
-
-  void _onScrollbarHoverChanged(bool hovered) {
-    _scrollbarVisibility.setHovered(hovered);
+    return _isReturnToCursorHotZone(position);
   }
 
   void _onReturnButtonHoverChanged(bool hovered) {
     _scrollbarVisibility.setReturnButtonHovered(hovered);
   }
 
-  void _onScrollbarActivity() {
+  void _onReturnToCursorInteractionStart() {
     _stopScrollInertia(resetVelocity: true);
     _scrollAccumulator.reset();
-    _resetSmoothScroll();
-    _scrollbarVisibility.showTemporarily();
-  }
-
-  void _onScrollbarDragStart() {
-    _stopScrollInertia(resetVelocity: true);
-    _scrollAccumulator.reset();
-    _resetSmoothScroll();
-    _scrollbarVisibility.beginDrag();
-  }
-
-  void _onScrollbarDragEnd() {
-    _scrollbarVisibility.endDrag();
-  }
-
-  void _scrollToOffsetFromScrollbar(int offset) {
-    _resetSmoothScroll();
-    _worker?.scrollToOffset(offset);
   }
 
   void _returnToCursor() {

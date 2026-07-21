@@ -1,9 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_observation/flutter_observation.dart';
-
-part 'terminal_scrollbar.g.dart';
 
 bool terminalReturnToCursorShouldBeVisible({
   required bool controlsVisible,
@@ -17,83 +14,8 @@ bool terminalReturnToCursorShouldBeVisible({
       !isAtLatest;
 }
 
-/// Pixel geometry for a terminal scrollback thumb.
-class TerminalScrollbarGeometry {
-  final double trackExtent;
-  final double thumbExtent;
-  final double thumbOffset;
-  final int maxOffset;
-  final int currentOffset;
-  final int visibleRows;
-
-  const TerminalScrollbarGeometry._({
-    required this.trackExtent,
-    required this.thumbExtent,
-    required this.thumbOffset,
-    required this.maxOffset,
-    required this.currentOffset,
-    required this.visibleRows,
-  });
-
-  factory TerminalScrollbarGeometry.calculate({
-    required double trackExtent,
-    required int totalRows,
-    required int visibleRows,
-    required int viewportOffset,
-    double minThumbExtent = 28,
-  }) {
-    final safeTrack = trackExtent < 0 ? 0.0 : trackExtent;
-    final safeTotal = totalRows < 0 ? 0 : totalRows;
-    final safeVisible = visibleRows.clamp(0, safeTotal).toInt();
-    final maxOffset = safeTotal > safeVisible ? safeTotal - safeVisible : 0;
-    final currentOffset = viewportOffset.clamp(0, maxOffset).toInt();
-    final proportionalExtent = safeTotal == 0
-        ? safeTrack
-        : safeTrack * safeVisible / safeTotal;
-    final thumbExtent = proportionalExtent
-        .clamp(minThumbExtent.clamp(0, safeTrack), safeTrack)
-        .toDouble();
-    final travel = safeTrack - thumbExtent;
-    final thumbOffset = maxOffset == 0 || travel <= 0
-        ? 0.0
-        : travel * currentOffset / maxOffset;
-    return TerminalScrollbarGeometry._(
-      trackExtent: safeTrack,
-      thumbExtent: thumbExtent,
-      thumbOffset: thumbOffset,
-      maxOffset: maxOffset,
-      currentOffset: currentOffset,
-      visibleRows: safeVisible,
-    );
-  }
-
-  bool get isScrollable => maxOffset > 0 && trackExtent > thumbExtent;
-
-  double get thumbEnd => thumbOffset + thumbExtent;
-
-  int offsetForThumbTop(double thumbTop) {
-    final travel = trackExtent - thumbExtent;
-    if (maxOffset <= 0 || travel <= 0) return 0;
-    final clampedTop = thumbTop.clamp(0.0, travel);
-    return (maxOffset * clampedTop / travel)
-        .round()
-        .clamp(0, maxOffset)
-        .toInt();
-  }
-
-  int pageTargetForPointer(double position) {
-    if (position < thumbOffset) {
-      return (currentOffset - visibleRows).clamp(0, maxOffset).toInt();
-    }
-    if (position > thumbEnd) {
-      return (currentOffset + visibleRows).clamp(0, maxOffset).toInt();
-    }
-    return currentOffset;
-  }
-}
-
-/// Owns the scrollbar's show/hover/drag/idle-hide state independently of the
-/// terminal's much more expensive render tree.
+/// Owns the return-to-cursor button's show/hover/idle-hide state independently
+/// of the terminal's much more expensive render tree.
 class TerminalScrollbarVisibilityController extends ChangeNotifier {
   TerminalScrollbarVisibilityController({
     this.hideDelay = const Duration(milliseconds: 1000),
@@ -103,14 +25,9 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
   Timer? _hideTimer;
   bool _canShow = false;
   bool _visible = false;
-  bool _scrollbarHovered = false;
   bool _returnButtonHovered = false;
-  bool _dragging = false;
-
-  bool get _hovered => _scrollbarHovered || _returnButtonHovered;
 
   bool get visible => _canShow && _visible;
-  bool get dragging => _dragging;
 
   void updateCanShow(bool value) {
     if (_canShow == value) return;
@@ -118,9 +35,7 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
     if (!value) {
       _hideTimer?.cancel();
       _hideTimer = null;
-      _scrollbarHovered = false;
       _returnButtonHovered = false;
-      _dragging = false;
       _setVisible(false);
     }
   }
@@ -129,12 +44,6 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
     if (!_canShow) return;
     _setVisible(true);
     _scheduleHide();
-  }
-
-  void setHovered(bool value) {
-    if (!_canShow || _scrollbarHovered == value) return;
-    _scrollbarHovered = value;
-    _updateHoverVisibility(value);
   }
 
   void setReturnButtonHovered(bool value) {
@@ -153,22 +62,9 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
     }
   }
 
-  void beginDrag() {
-    if (!_canShow) return;
-    _dragging = true;
-    _hideTimer?.cancel();
-    _setVisible(true);
-  }
-
-  void endDrag() {
-    if (!_dragging) return;
-    _dragging = false;
-    _scheduleHide();
-  }
-
   void _scheduleHide() {
     _hideTimer?.cancel();
-    if (!_canShow || _hovered || _dragging) return;
+    if (!_canShow || _returnButtonHovered) return;
     _hideTimer = Timer(hideDelay, () => _setVisible(false));
   }
 
@@ -186,15 +82,16 @@ class TerminalScrollbarVisibilityController extends ChangeNotifier {
 }
 
 /// Floating action that returns a scrolled-back terminal to its live cursor.
-class TerminalReturnToCursorButton extends StatelessWidget {
+class TerminalReturnToCursorButton extends StatefulWidget {
   static const double size = 40;
   static const double iconSize = 20;
-  static const double rightInset = TerminalScrollbarOverlay.hitWidth + 8;
+  static const double rightInset = 12;
   static const double bottomInset = 12;
 
   final bool visible;
   final Color foregroundColor;
   final Color backgroundColor;
+  final VoidCallback onPressStart;
   final VoidCallback onPressed;
   final ValueChanged<bool> onHoverChanged;
 
@@ -203,6 +100,7 @@ class TerminalReturnToCursorButton extends StatelessWidget {
     required this.visible,
     required this.foregroundColor,
     required this.backgroundColor,
+    required this.onPressStart,
     required this.onPressed,
     required this.onHoverChanged,
   });
@@ -217,35 +115,76 @@ class TerminalReturnToCursorButton extends StatelessWidget {
   }
 
   @override
+  State<TerminalReturnToCursorButton> createState() =>
+      _TerminalReturnToCursorButtonState();
+}
+
+class _TerminalReturnToCursorButtonState
+    extends State<TerminalReturnToCursorButton> {
+  bool _handledPointerDown = false;
+
+  void _handlePointerDown(PointerDownEvent _) {
+    _handledPointerDown = true;
+    widget.onPressStart();
+    widget.onPressed();
+  }
+
+  void _handlePointerFinished(PointerEvent _) {
+    // IconButton resolves its tap from the same pointer-up dispatch. Keep the
+    // guard set through that dispatch, then clear it for keyboard/semantics.
+    scheduleMicrotask(() => _handledPointerDown = false);
+  }
+
+  void _handleIconPressed() {
+    if (_handledPointerDown) return;
+    widget.onPressed();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedOpacity(
       key: const ValueKey('terminal-return-to-cursor-opacity'),
-      opacity: visible ? 1 : 0,
+      opacity: widget.visible ? 1 : 0,
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOut,
       child: IgnorePointer(
-        ignoring: !visible,
-        child: MouseRegion(
-          key: const ValueKey('terminal-return-to-cursor-hot-zone'),
-          onEnter: (_) => onHoverChanged(true),
-          onExit: (_) => onHoverChanged(false),
-          child: Tooltip(
-            message: 'Jump to cursor',
-            child: IconButton(
-              key: const ValueKey('terminal-return-to-cursor-button'),
-              onPressed: onPressed,
-              icon: const Icon(Icons.keyboard_arrow_down_rounded),
-              iconSize: iconSize,
-              style: ButtonStyle(
-                foregroundColor: WidgetStatePropertyAll(foregroundColor),
-                backgroundColor: WidgetStatePropertyAll(backgroundColor),
-                overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-                splashFactory: NoSplash.splashFactory,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                fixedSize: const WidgetStatePropertyAll(Size.square(size)),
-                minimumSize: const WidgetStatePropertyAll(Size.square(size)),
-                padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-                shape: const WidgetStatePropertyAll(CircleBorder()),
+        ignoring: !widget.visible,
+        child: Listener(
+          onPointerDown: _handlePointerDown,
+          onPointerUp: _handlePointerFinished,
+          onPointerCancel: _handlePointerFinished,
+          child: MouseRegion(
+            key: const ValueKey('terminal-return-to-cursor-hot-zone'),
+            onEnter: (_) => widget.onHoverChanged(true),
+            onExit: (_) => widget.onHoverChanged(false),
+            child: Tooltip(
+              message: 'Jump to cursor',
+              child: IconButton(
+                key: const ValueKey('terminal-return-to-cursor-button'),
+                onPressed: _handleIconPressed,
+                icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                iconSize: TerminalReturnToCursorButton.iconSize,
+                style: ButtonStyle(
+                  foregroundColor: WidgetStatePropertyAll(
+                    widget.foregroundColor,
+                  ),
+                  backgroundColor: WidgetStatePropertyAll(
+                    widget.backgroundColor,
+                  ),
+                  overlayColor: const WidgetStatePropertyAll(
+                    Colors.transparent,
+                  ),
+                  splashFactory: NoSplash.splashFactory,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  fixedSize: const WidgetStatePropertyAll(
+                    Size.square(TerminalReturnToCursorButton.size),
+                  ),
+                  minimumSize: const WidgetStatePropertyAll(
+                    Size.square(TerminalReturnToCursorButton.size),
+                  ),
+                  padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+                  shape: const WidgetStatePropertyAll(CircleBorder()),
+                ),
               ),
             ),
           ),
@@ -255,173 +194,17 @@ class TerminalReturnToCursorButton extends StatelessWidget {
   }
 }
 
-/// Overlay scrollbar for terminal scrollback. The outer mouse region remains
-/// active while faded out so moving to the right edge can reveal the thumb.
-final class TerminalScrollbarInteraction {
-  TerminalScrollbarGeometry? geometry;
-  double dragGrabOffset = 0;
-  bool dragActive = false;
-}
-
-@ObservationWidget()
-class TerminalScrollbarOverlay extends _$TerminalScrollbarOverlay {
-  static const double hitWidth = 16;
-
-  final int totalRows;
-  final int visibleRows;
-  final int viewportOffset;
-  final bool visible;
-  final Color thumbColor;
-  final Color trackColor;
-  final ValueChanged<int> onScrollToOffset;
-  final ValueChanged<bool> onHoverChanged;
-  final VoidCallback onActivity;
-  final VoidCallback onDragStart;
-  final VoidCallback onDragEnd;
-
-  const TerminalScrollbarOverlay({
-    super.key,
-    required this.totalRows,
-    required this.visibleRows,
-    required this.viewportOffset,
-    required this.visible,
-    required this.thumbColor,
-    required this.trackColor,
-    required this.onScrollToOffset,
-    required this.onHoverChanged,
-    required this.onActivity,
-    required this.onDragStart,
-    required this.onDragEnd,
-  });
-
-  @PlainState(name: 'interaction')
-  TerminalScrollbarInteraction createInteraction() =>
-      TerminalScrollbarInteraction();
-
-  void _emitDragOffset(
-    TerminalScrollbarInteraction interaction,
-    double pointerY,
-  ) {
-    final geometry = interaction.geometry;
-    if (geometry == null) return;
-    onScrollToOffset(
-      geometry.offsetForThumbTop(pointerY - interaction.dragGrabOffset),
-    );
-  }
-
-  void _finishDrag(TerminalScrollbarInteraction interaction) {
-    if (!interaction.dragActive) return;
-    interaction.dragActive = false;
-    onDragEnd();
-  }
-
-  @override
-  Widget build(
-    BuildContext context, {
-    required TerminalScrollbarInteraction interaction,
-  }) {
-    return MouseRegion(
-      key: const ValueKey('terminal-scrollbar-hot-zone'),
-      opaque: true,
-      cursor: visible ? SystemMouseCursors.basic : MouseCursor.defer,
-      onEnter: (_) => onHoverChanged(true),
-      onExit: (_) => onHoverChanged(false),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final geometry = TerminalScrollbarGeometry.calculate(
-            trackExtent: constraints.maxHeight,
-            totalRows: totalRows,
-            visibleRows: visibleRows,
-            viewportOffset: viewportOffset,
-          );
-          interaction.geometry = geometry;
-          final interactive = visible && geometry.isScrollable;
-          return AnimatedOpacity(
-            key: const ValueKey('terminal-scrollbar'),
-            opacity: interactive ? 1 : 0,
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOut,
-            child: IgnorePointer(
-              ignoring: !interactive,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (details) {
-                  onActivity();
-                  onScrollToOffset(
-                    geometry.pageTargetForPointer(details.localPosition.dy),
-                  );
-                },
-                onVerticalDragStart: (details) {
-                  interaction.dragActive = true;
-                  onDragStart();
-                  final y = details.localPosition.dy;
-                  interaction.dragGrabOffset =
-                      y >= geometry.thumbOffset && y <= geometry.thumbEnd
-                      ? y - geometry.thumbOffset
-                      : geometry.thumbExtent / 2;
-                  _emitDragOffset(interaction, y);
-                },
-                onVerticalDragUpdate: (details) {
-                  _emitDragOffset(interaction, details.localPosition.dy);
-                },
-                onVerticalDragEnd: (_) => _finishDrag(interaction),
-                onVerticalDragCancel: () => _finishDrag(interaction),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Positioned(
-                      right: 5,
-                      top: 0,
-                      bottom: 0,
-                      width: 3,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: trackColor,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      key: const ValueKey('terminal-scrollbar-thumb'),
-                      right: 3,
-                      top: geometry.thumbOffset,
-                      width: 7,
-                      height: geometry.thumbExtent,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: thumbColor,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// Shared Native/Web overlay for terminal scrollback controls.
+/// Shared Native/Web return-to-cursor overlay.
 class TerminalScrollControls extends StatelessWidget {
   final int totalRows;
   final int visibleRows;
   final int viewportOffset;
   final bool alternateScreenActive;
   final TerminalScrollbarVisibilityController visibilityController;
-  final Color thumbColor;
-  final Color trackColor;
   final Color buttonForegroundColor;
   final Color buttonBackgroundColor;
-  final ValueChanged<int> onScrollToOffset;
-  final ValueChanged<bool> onScrollbarHoverChanged;
   final ValueChanged<bool> onReturnButtonHoverChanged;
-  final VoidCallback onScrollbarActivity;
-  final VoidCallback onScrollbarDragStart;
-  final VoidCallback onScrollbarDragEnd;
+  final VoidCallback onReturnToCursorInteractionStart;
   final VoidCallback onReturnToCursor;
 
   const TerminalScrollControls({
@@ -431,16 +214,10 @@ class TerminalScrollControls extends StatelessWidget {
     required this.viewportOffset,
     required this.alternateScreenActive,
     required this.visibilityController,
-    required this.thumbColor,
-    required this.trackColor,
     required this.buttonForegroundColor,
     required this.buttonBackgroundColor,
-    required this.onScrollToOffset,
-    required this.onScrollbarHoverChanged,
     required this.onReturnButtonHoverChanged,
-    required this.onScrollbarActivity,
-    required this.onScrollbarDragStart,
-    required this.onScrollbarDragEnd,
+    required this.onReturnToCursorInteractionStart,
     required this.onReturnToCursor,
   });
 
@@ -460,25 +237,6 @@ class TerminalScrollControls extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             Positioned(
-              top: 3,
-              right: 0,
-              bottom: 3,
-              width: TerminalScrollbarOverlay.hitWidth,
-              child: TerminalScrollbarOverlay(
-                totalRows: totalRows,
-                visibleRows: visibleRows,
-                viewportOffset: viewportOffset,
-                visible: controlsVisible,
-                thumbColor: thumbColor,
-                trackColor: trackColor,
-                onScrollToOffset: onScrollToOffset,
-                onHoverChanged: onScrollbarHoverChanged,
-                onActivity: onScrollbarActivity,
-                onDragStart: onScrollbarDragStart,
-                onDragEnd: onScrollbarDragEnd,
-              ),
-            ),
-            Positioned(
               right: TerminalReturnToCursorButton.rightInset,
               bottom: TerminalReturnToCursorButton.bottomInset,
               width: TerminalReturnToCursorButton.size,
@@ -492,6 +250,7 @@ class TerminalScrollControls extends StatelessWidget {
                 ),
                 foregroundColor: buttonForegroundColor,
                 backgroundColor: buttonBackgroundColor,
+                onPressStart: onReturnToCursorInteractionStart,
                 onPressed: onReturnToCursor,
                 onHoverChanged: onReturnButtonHoverChanged,
               ),

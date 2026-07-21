@@ -327,33 +327,8 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     event.respond(allowPlatformDefault: false);
   }
 
-  void _onScrollbarHoverChanged(bool hovered) {
-    _scrollbarVisibility.setHovered(hovered);
-  }
-
   void _onReturnButtonHoverChanged(bool hovered) {
     _scrollbarVisibility.setReturnButtonHovered(hovered);
-  }
-
-  void _onScrollbarActivity() {
-    _scrollAccumulator.reset();
-    _scrollbarVisibility.showTemporarily();
-  }
-
-  void _onScrollbarDragStart() {
-    _scrollAccumulator.reset();
-    _scrollbarVisibility.beginDrag();
-  }
-
-  void _onScrollbarDragEnd() {
-    _scrollbarVisibility.endDrag();
-  }
-
-  void _scrollToOffset(int offset) {
-    final term = _term;
-    if (term == null) return;
-    _ghosttyVt!.scrollToOffset(term, offset);
-    _refreshGrid();
   }
 
   void _returnToCursor() {
@@ -473,24 +448,15 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
                       viewportOffset: _viewportOffset,
                       alternateScreenActive: _alternateScreenActive,
                       visibilityController: _scrollbarVisibility,
-                      thumbColor: Theme.of(
-                        context,
-                      ).colorScheme.onSurface.withValues(alpha: 0.58),
-                      trackColor: Theme.of(
-                        context,
-                      ).colorScheme.onSurface.withValues(alpha: 0.10),
                       buttonForegroundColor: Theme.of(
                         context,
                       ).colorScheme.onSurface,
                       buttonBackgroundColor: Theme.of(
                         context,
                       ).colorScheme.surface.withValues(alpha: 0.92),
-                      onScrollToOffset: _scrollToOffset,
-                      onScrollbarHoverChanged: _onScrollbarHoverChanged,
                       onReturnButtonHoverChanged: _onReturnButtonHoverChanged,
-                      onScrollbarActivity: _onScrollbarActivity,
-                      onScrollbarDragStart: _onScrollbarDragStart,
-                      onScrollbarDragEnd: _onScrollbarDragEnd,
+                      onReturnToCursorInteractionStart:
+                          _scrollAccumulator.reset,
                       onReturnToCursor: _returnToCursor,
                     ),
                   ],

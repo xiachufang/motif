@@ -412,6 +412,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
             viewportBuilder: (context, position) => _TerminalScrollViewport(
               offset: position,
               maxScrollExtent: _terminalScrollMaxExtent,
+              scrollIdentity: widget.ptyId,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _onTerminalTap,
@@ -493,22 +494,13 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                             alternateScreenActive:
                                 snapshot.alternateScreenActive,
                             visibilityController: _scrollbarVisibility,
-                            thumbColor: colorScheme.onSurface.withValues(
-                              alpha: 0.58,
-                            ),
-                            trackColor: colorScheme.onSurface.withValues(
-                              alpha: 0.10,
-                            ),
                             buttonForegroundColor: colorScheme.onSurface,
                             buttonBackgroundColor: colorScheme.surface
                                 .withValues(alpha: 0.92),
-                            onScrollToOffset: _scrollToOffsetFromScrollbar,
-                            onScrollbarHoverChanged: _onScrollbarHoverChanged,
                             onReturnButtonHoverChanged:
                                 _onReturnButtonHoverChanged,
-                            onScrollbarActivity: _onScrollbarActivity,
-                            onScrollbarDragStart: _onScrollbarDragStart,
-                            onScrollbarDragEnd: _onScrollbarDragEnd,
+                            onReturnToCursorInteractionStart:
+                                _onReturnToCursorInteractionStart,
                             onReturnToCursor: _returnToCursor,
                           ),
                         ],
@@ -534,16 +526,22 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
 class _TerminalScrollViewport extends SingleChildRenderObjectWidget {
   final ViewportOffset offset;
   final double maxScrollExtent;
+  final Object scrollIdentity;
 
   const _TerminalScrollViewport({
     required this.offset,
     required this.maxScrollExtent,
+    required this.scrollIdentity,
     required super.child,
   });
 
   @override
   RenderObject createRenderObject(BuildContext context) {
-    return _RenderTerminalScrollViewport(offset, maxScrollExtent);
+    return _RenderTerminalScrollViewport(
+      offset,
+      maxScrollExtent,
+      scrollIdentity,
+    );
   }
 
   @override
@@ -553,12 +551,17 @@ class _TerminalScrollViewport extends SingleChildRenderObjectWidget {
   ) {
     renderObject
       ..offset = offset
-      ..maxScrollExtent = maxScrollExtent;
+      ..maxScrollExtent = maxScrollExtent
+      ..scrollIdentity = scrollIdentity;
   }
 }
 
 class _RenderTerminalScrollViewport extends RenderProxyBox {
-  _RenderTerminalScrollViewport(this._offset, this._maxScrollExtent);
+  _RenderTerminalScrollViewport(
+    this._offset,
+    this._maxScrollExtent,
+    this._scrollIdentity,
+  );
 
   ViewportOffset _offset;
   set offset(ViewportOffset value) {
@@ -574,10 +577,26 @@ class _RenderTerminalScrollViewport extends RenderProxyBox {
     markNeedsLayout();
   }
 
+  Object _scrollIdentity;
+  bool _initialBottomApplied = false;
+  set scrollIdentity(Object value) {
+    if (value == _scrollIdentity) return;
+    _scrollIdentity = value;
+    _initialBottomApplied = false;
+    markNeedsLayout();
+  }
+
   @override
   void performLayout() {
     super.performLayout();
     _offset.applyViewportDimension(size.height);
+    // A terminal opens on its live screen. Anchor the ScrollPosition to the
+    // trailing extent as soon as history first becomes available, during the
+    // same layout that publishes the extent, so there is no top-first frame.
+    if (!_initialBottomApplied && _maxScrollExtent > 0 && _offset.hasPixels) {
+      _offset.correctBy(_maxScrollExtent - _offset.pixels);
+      _initialBottomApplied = true;
+    }
     _offset.applyContentDimensions(0, _maxScrollExtent);
   }
 }

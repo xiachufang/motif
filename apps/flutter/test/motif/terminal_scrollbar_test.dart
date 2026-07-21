@@ -54,48 +54,7 @@ void main() {
     }
   });
 
-  test('thumb geometry reflects viewport fraction and offset', () {
-    final geometry = TerminalScrollbarGeometry.calculate(
-      trackExtent: 200,
-      totalRows: 100,
-      visibleRows: 20,
-      viewportOffset: 40,
-    );
-
-    expect(geometry.thumbExtent, 40);
-    expect(geometry.thumbOffset, 80);
-    expect(geometry.maxOffset, 80);
-    expect(geometry.offsetForThumbTop(0), 0);
-    expect(geometry.offsetForThumbTop(160), 80);
-  });
-
-  test('thumb enforces a usable minimum size and clamps offsets', () {
-    final geometry = TerminalScrollbarGeometry.calculate(
-      trackExtent: 120,
-      totalRows: 10000,
-      visibleRows: 20,
-      viewportOffset: 20000,
-    );
-
-    expect(geometry.thumbExtent, 28);
-    expect(geometry.currentOffset, geometry.maxOffset);
-    expect(geometry.thumbOffset, 92);
-  });
-
-  test('track clicks page by one visible viewport', () {
-    final geometry = TerminalScrollbarGeometry.calculate(
-      trackExtent: 200,
-      totalRows: 100,
-      visibleRows: 20,
-      viewportOffset: 40,
-    );
-
-    expect(geometry.pageTargetForPointer(20), 20);
-    expect(geometry.pageTargetForPointer(100), 40);
-    expect(geometry.pageTargetForPointer(180), 60);
-  });
-
-  testWidgets('visibility auto-hides but stays visible for hover and drag', (
+  testWidgets('visibility auto-hides but stays visible for button hover', (
     tester,
   ) async {
     final controller = TerminalScrollbarVisibilityController(
@@ -111,29 +70,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 1));
     expect(controller.visible, isFalse);
 
-    controller.setHovered(true);
-    expect(controller.visible, isTrue);
-    await tester.pump(const Duration(seconds: 2));
-    expect(controller.visible, isTrue);
-    controller.setHovered(false);
-    await tester.pump(const Duration(milliseconds: 500));
-    expect(controller.visible, isFalse);
-
     controller.showTemporarily();
     controller.setReturnButtonHovered(true);
-    controller.setHovered(true);
+    await tester.pump(const Duration(seconds: 2));
+    expect(controller.visible, isTrue);
     controller.setReturnButtonHovered(false);
-    await tester.pump(const Duration(seconds: 2));
-    expect(controller.visible, isTrue);
-    controller.setHovered(false);
-    await tester.pump(const Duration(milliseconds: 500));
-    expect(controller.visible, isFalse);
-
-    controller.beginDrag();
-    expect(controller.visible, isTrue);
-    await tester.pump(const Duration(seconds: 2));
-    expect(controller.visible, isTrue);
-    controller.endDrag();
     await tester.pump(const Duration(milliseconds: 500));
     expect(controller.visible, isFalse);
 
@@ -142,59 +83,13 @@ void main() {
     expect(controller.visible, isFalse);
   });
 
-  testWidgets('overlay pages and drags to absolute offsets', (tester) async {
-    final offsets = <int>[];
-    var dragStarts = 0;
-    var dragEnds = 0;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Align(
-          alignment: Alignment.topLeft,
-          child: SizedBox(
-            width: TerminalScrollbarOverlay.hitWidth,
-            height: 200,
-            child: TerminalScrollbarOverlay(
-              totalRows: 100,
-              visibleRows: 20,
-              viewportOffset: 40,
-              visible: true,
-              thumbColor: Colors.white,
-              trackColor: Colors.white24,
-              onScrollToOffset: offsets.add,
-              onHoverChanged: (_) {},
-              onActivity: () {},
-              onDragStart: () => dragStarts++,
-              onDragEnd: () => dragEnds++,
-            ),
-          ),
-        ),
-      ),
-    );
-
-    final thumb = find.byKey(const ValueKey('terminal-scrollbar-thumb'));
-    expect(tester.getSize(thumb).height, 40);
-    expect(tester.getTopLeft(thumb).dy, 80);
-
-    await tester.tapAt(const Offset(8, 180));
-    await tester.pump();
-    expect(offsets.last, 60);
-
-    final drag = await tester.startGesture(tester.getCenter(thumb));
-    await drag.moveTo(Offset(tester.getCenter(thumb).dx, 199));
-    await drag.up();
-    await tester.pump();
-    expect(dragStarts, 1);
-    expect(dragEnds, 1);
-    expect(offsets.last, 80);
-  });
-
   test('return-to-cursor hit rectangle matches its positioned layout', () {
     final rect = TerminalReturnToCursorButton.hitRectForViewport(
       const Size(320, 200),
     );
 
-    expect(rect, const Rect.fromLTWH(256, 148, 40, 40));
-    expect(rect.contains(const Offset(276, 168)), isTrue);
+    expect(rect, const Rect.fromLTWH(268, 148, 40, 40));
+    expect(rect.contains(const Offset(288, 168)), isTrue);
     expect(rect.contains(const Offset(300, 190)), isFalse);
   });
 
@@ -202,6 +97,7 @@ void main() {
     'return-to-cursor button fades, ignores taps, and handles hover',
     (tester) async {
       var presses = 0;
+      var pressStarts = 0;
       final hoverChanges = <bool>[];
 
       Future<void> pumpButton({required bool visible}) {
@@ -212,6 +108,7 @@ void main() {
                 visible: visible,
                 foregroundColor: Colors.white,
                 backgroundColor: Colors.black,
+                onPressStart: () => pressStarts++,
                 onPressed: () => presses++,
                 onHoverChanged: hoverChanges.add,
               ),
@@ -230,6 +127,7 @@ void main() {
         warnIfMissed: false,
       );
       expect(presses, 0);
+      expect(pressStarts, 0);
 
       await pumpButton(visible: true);
       await tester.pumpAndSettle();
@@ -243,7 +141,10 @@ void main() {
       expect(tester.getSize(button), const Size.square(40));
       expect(find.byIcon(Icons.keyboard_arrow_down_rounded), findsOneWidget);
 
-      await tester.tap(button);
+      final touch = await tester.startGesture(tester.getCenter(button));
+      expect(pressStarts, 1);
+      expect(presses, 1);
+      await touch.up();
       expect(presses, 1);
 
       final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
@@ -258,12 +159,9 @@ void main() {
     },
   );
 
-  testWidgets('shared scroll controls drive scrollbar and return action', (
-    tester,
-  ) async {
+  testWidgets('shared scroll controls drive the return action', (tester) async {
     final controller = TerminalScrollbarVisibilityController();
     addTearDown(controller.dispose);
-    final offsets = <int>[];
     var returns = 0;
     controller.updateCanShow(true);
     controller.showTemporarily();
@@ -281,16 +179,10 @@ void main() {
               viewportOffset: viewportOffset,
               alternateScreenActive: alternate,
               visibilityController: controller,
-              thumbColor: Colors.white,
-              trackColor: Colors.white24,
               buttonForegroundColor: Colors.white,
               buttonBackgroundColor: Colors.black,
-              onScrollToOffset: offsets.add,
-              onScrollbarHoverChanged: controller.setHovered,
               onReturnButtonHoverChanged: controller.setReturnButtonHovered,
-              onScrollbarActivity: controller.showTemporarily,
-              onScrollbarDragStart: controller.beginDrag,
-              onScrollbarDragEnd: controller.endDrag,
+              onReturnToCursorInteractionStart: () {},
               onReturnToCursor: () => returns++,
             ),
           ),
@@ -301,7 +193,7 @@ void main() {
     await tester.pumpWidget(controls());
     expect(
       find.byKey(const ValueKey('terminal-scrollbar-hot-zone')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(
       tester
@@ -315,10 +207,6 @@ void main() {
       find.byKey(const ValueKey('terminal-return-to-cursor-button')),
     );
     expect(returns, 1);
-
-    await tester.tapAt(const Offset(312, 190));
-    await tester.pump();
-    expect(offsets.last, 60);
 
     await tester.pumpWidget(controls(viewportOffset: 80));
     expect(
