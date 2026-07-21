@@ -37,6 +37,7 @@ import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
+import '../../terminal/terminal_paste.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/quick_command_row.dart';

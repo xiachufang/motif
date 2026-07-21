@@ -653,7 +653,7 @@ void main() {
     expect(inputField().controller?.text, isEmpty);
   });
 
-  testWidgets('send button writes content before enter', (tester) async {
+  testWidgets('send button ends bracketed paste before enter', (tester) async {
     final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
@@ -667,7 +667,21 @@ void main() {
 
     expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
     expect(motif.writtenPtyData, [
-      'echo hi'.codeUnits,
+      [
+        0x1b,
+        0x5b,
+        0x32,
+        0x30,
+        0x30,
+        0x7e,
+        ...'echo hi'.codeUnits,
+        0x1b,
+        0x5b,
+        0x32,
+        0x30,
+        0x31,
+        0x7e,
+      ],
       [0x0d],
     ]);
     expect(
@@ -719,7 +733,7 @@ void main() {
     expect(find.byTooltip('Second'), findsOneWidget);
   });
 
-  testWidgets('quick command writes trailing newline as separate enter', (
+  testWidgets('quick commands bracket text and preserve raw keys', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -732,7 +746,10 @@ void main() {
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
     final app = await _appState(motif: motif);
-    await app.commands.setGlobal([QuickCommand.text('run', 'Run', 'ls\n')]);
+    await app.commands.setGlobal([
+      QuickCommand.text('run', 'Run', 'ls\n'),
+      QuickCommand.bytes('escape', 'Escape', [0x1b]),
+    ]);
 
     await tester.pumpWidget(
       MotifScope(
@@ -753,9 +770,29 @@ void main() {
 
     expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
     expect(motif.writtenPtyData, [
-      'ls'.codeUnits,
+      [
+        0x1b,
+        0x5b,
+        0x32,
+        0x30,
+        0x30,
+        0x7e,
+        ...'ls'.codeUnits,
+        0x1b,
+        0x5b,
+        0x32,
+        0x30,
+        0x31,
+        0x7e,
+      ],
       [0x0d],
     ]);
+
+    await tester.tap(find.byTooltip('Escape'));
+    await tester.pump();
+
+    expect(motif.writtenPtyIds.last, 'pty-1');
+    expect(motif.writtenPtyData.last, [0x1b]);
   });
 
   testWidgets('multiline bottom input lifts terminal without resizing it', (

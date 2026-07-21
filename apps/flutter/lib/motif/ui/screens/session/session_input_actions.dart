@@ -134,23 +134,9 @@ extension _SessionScreenInputActions on _SessionScreenState {
       final remotePath =
           '/tmp/motif-${DateTime.now().microsecondsSinceEpoch}.$ext';
       await _workspaceApi.writeBytes(remotePath, bytes);
-      // Bracketed-paste the uploaded path into the shell.
-      final paste = <int>[
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x30,
-        0x7e,
-        ..._terminalBytes(remotePath),
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x31,
-        0x7e,
-      ];
-      await _sendBytes(paste);
+      // Insert the uploaded path without executing it. This uses the same
+      // paste envelope as the composer, but intentionally omits Enter.
+      await _sendBytes(bracketedPasteBytes(remotePath));
     } catch (e) {
       if (mounted) {
         showMotifToast(context, 'Attach failed: $e');

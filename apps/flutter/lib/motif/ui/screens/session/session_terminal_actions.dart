@@ -224,7 +224,14 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       return true;
     }
 
-    await _terminalController.writePty(ptyId, split.content);
+    // Mark command content as a completed paste before sending Enter. This
+    // prevents burst-paste detection in TUIs such as Codex and Claude Code
+    // from turning the trailing Enter into another pasted newline. Raw key
+    // quick commands (which have no trailing Enter) stay on the branch above.
+    await _terminalController.writePty(
+      ptyId,
+      bracketedPastePayloadBytes(split.content),
+    );
     await _terminalController.writePty(ptyId, split.enter);
     return true;
   }
