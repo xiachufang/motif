@@ -261,40 +261,40 @@ class TerminalWorkerClient {
     _send({'type': 'scrollToOffset', 'offset': offset});
   }
 
-  void beginSelection(TerminalCellPoint viewportPoint) {
+  void beginSelection(TerminalCellPoint screenPoint) {
     _send({
       'type': 'selectionBegin',
-      'row': viewportPoint.row,
-      'col': viewportPoint.col,
+      'row': screenPoint.row,
+      'col': screenPoint.col,
     });
   }
 
-  void updateSelectionEnd(TerminalCellPoint viewportPoint) {
+  void updateSelectionEnd(TerminalCellPoint screenPoint) {
     _send({
       'type': 'selectionUpdateEnd',
-      'row': viewportPoint.row,
-      'col': viewportPoint.col,
+      'row': screenPoint.row,
+      'col': screenPoint.col,
     });
   }
 
   void setSelection({
-    required TerminalCellPoint baseViewportPoint,
-    required TerminalCellPoint extentViewportPoint,
+    required TerminalCellPoint baseScreenPoint,
+    required TerminalCellPoint extentScreenPoint,
   }) {
     _send({
       'type': 'selectionSet',
-      'baseRow': baseViewportPoint.row,
-      'baseCol': baseViewportPoint.col,
-      'extentRow': extentViewportPoint.row,
-      'extentCol': extentViewportPoint.col,
+      'baseRow': baseScreenPoint.row,
+      'baseCol': baseScreenPoint.col,
+      'extentRow': extentScreenPoint.row,
+      'extentCol': extentScreenPoint.col,
     });
   }
 
-  void selectWord(TerminalCellPoint viewportPoint) {
+  void selectWord(TerminalCellPoint screenPoint) {
     _send({
       'type': 'selectionWord',
-      'row': viewportPoint.row,
-      'col': viewportPoint.col,
+      'row': screenPoint.row,
+      'col': screenPoint.col,
     });
   }
 
@@ -553,7 +553,10 @@ class _TerminalWorker {
         case 'scroll':
           framePacing.noteInteraction();
           state?.scroll(command['rows'] as int);
-          _scheduleSnapshot(force: true);
+          // Frame acknowledgement already provides backpressure. Queue scroll
+          // snapshots immediately so ProMotion displays are not capped by the
+          // ordinary 16 ms interaction delay while chasing a fast flick.
+          _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'scrollToBottom':
           framePacing.noteInteraction();
           state?.scrollToBottom();
@@ -587,7 +590,7 @@ class _TerminalWorker {
             _scheduleSnapshot(force: true, delay: Duration.zero);
           }
         case 'selectionWord':
-          if (state?.selectTrackedWordAtViewportPoint(
+          if (state?.selectTrackedWordAtScreenPoint(
                 _pointFromCommand(command),
               ) ==
               true) {

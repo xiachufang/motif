@@ -693,20 +693,20 @@ class TerminalState {
 
   int get viewportOffset => scrollbarMetrics.offset;
 
-  bool beginTrackedSelection(TerminalCellPoint viewportPoint) {
-    return setTrackedSelection(viewportPoint, viewportPoint);
+  bool beginTrackedSelection(TerminalCellPoint screenPoint) {
+    return setTrackedSelection(screenPoint, screenPoint);
   }
 
-  bool updateTrackedSelectionEnd(TerminalCellPoint viewportPoint) {
+  bool updateTrackedSelectionEnd(TerminalCellPoint screenPoint) {
     final start = _selectionStartRef;
     final end = _selectionEndRef;
     if (start == null || start.address == 0) {
-      return beginTrackedSelection(viewportPoint);
+      return beginTrackedSelection(screenPoint);
     }
     if (end == null || end.address == 0) {
       final nextEnd = _trackPoint(
-        GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
-        viewportPoint,
+        GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+        screenPoint,
       );
       if (nextEnd == null) return false;
       _selectionEndRef = nextEnd;
@@ -714,23 +714,23 @@ class TerminalState {
     }
     return _setTrackedPoint(
       end,
-      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
-      viewportPoint,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+      screenPoint,
     );
   }
 
   bool setTrackedSelection(
-    TerminalCellPoint baseViewportPoint,
-    TerminalCellPoint extentViewportPoint,
+    TerminalCellPoint baseScreenPoint,
+    TerminalCellPoint extentScreenPoint,
   ) {
     final nextStart = _trackPoint(
-      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
-      baseViewportPoint,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+      baseScreenPoint,
     );
     if (nextStart == null) return false;
     final nextEnd = _trackPoint(
-      GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
-      extentViewportPoint,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+      extentScreenPoint,
     );
     if (nextEnd == null) {
       ghostty_tracked_grid_ref_free(nextStart);
@@ -742,15 +742,15 @@ class TerminalState {
     return true;
   }
 
-  bool selectTrackedWordAtViewportPoint(TerminalCellPoint viewportPoint) {
+  bool selectTrackedWordAtScreenPoint(TerminalCellPoint screenPoint) {
     final ref = calloc<GhosttyGridRef>();
     final opts = calloc<GhosttyTerminalSelectWordOptions>();
     final selection = calloc<GhosttySelection>();
     try {
       ref.ref.size = sizeOf<GhosttyGridRef>();
       if (!_gridRefForPoint(
-        GhosttyPointTag.GHOSTTY_POINT_TAG_VIEWPORT,
-        viewportPoint,
+        GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+        screenPoint,
         ref,
       )) {
         clearTrackedSelection();

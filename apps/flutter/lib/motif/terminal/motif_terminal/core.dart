@@ -216,6 +216,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (newCols > 0 && newRows > 0 && (newCols != _cols || newRows != _rows)) {
       _cols = newCols;
       _rows = newRows;
+      _resetSmoothScroll(clearRows: true);
       _discardTerminalSelectionState();
       _worker?.resize(
         cols: _cols,
@@ -274,6 +275,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _scheduleResizeAndMaybeOpen();
     _syncKeyboardLift();
     if (mounted) setState(() {});
+    _scheduleTerminalScrollPositionSync();
   }
 
   void _onWorkerSnapshot(
@@ -311,8 +313,28 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
 
   void _applyWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
     if (!_isCurrentWorker(generation)) return;
+    final previousSnapshot = _snapshot;
+    final wasFollowingLatest =
+        previousSnapshot != null &&
+        _smoothScrollPosition.initialized &&
+        (_smoothScrollPosition.viewportOffset -
+                    previousSnapshot.maxViewportOffset)
+                .abs() <=
+            0.0001 &&
+        snapshot.isAtLatest;
+    if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
+      _resetSmoothScroll(clearRows: true);
+    } else {
+      if (wasFollowingLatest) _scrollRowCache.clear();
+      _smoothScrollPosition.synchronize(
+        viewportOffset: snapshot.viewportOffset,
+        maxOffset: snapshot.maxViewportOffset,
+        followLatest: wasFollowingLatest,
+      );
+      _scrollRowCache.ingest(snapshot);
+    }
     final viewportChanged =
-        _snapshot?.viewportOffset != snapshot.viewportOffset;
+        previousSnapshot?.viewportOffset != snapshot.viewportOffset;
     final selectionChanged = _selection != snapshot.selection;
     _snapshot = snapshot;
     _selection = snapshot.selection;
@@ -325,6 +347,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     final cursorSnapshot = _readCursorSnapshot();
     final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
     _lastCursorSnapshot = cursorSnapshot;
+    _prefetchMissingSmoothScrollRows(snapshot);
     if (cursorChanged) {
       _syncKeyboardLift();
       _scheduleImeRectSync();
@@ -344,6 +367,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       }
     }
     if (mounted) setState(() {});
+    _scheduleTerminalScrollPositionSync();
   }
 
   void _onWorkerError(int generation, Object error) {
@@ -419,6 +443,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (worker != null) unawaited(worker.dispose());
     _initialized = false;
     _workerStarting = false;
+    _resetSmoothScroll(clearRows: true);
     _discardTerminalSelectionState();
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
@@ -476,6 +501,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _workerNeedsColdResync = false;
     _snapshot = null;
+    _resetSmoothScroll(clearRows: true);
     _pendingFrameSnapshot?.acknowledge();
     _pendingFrameSnapshot = null;
     _discardTerminalSelectionState();

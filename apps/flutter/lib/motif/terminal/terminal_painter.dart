@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'ghostty_bindings.g.dart';
+import 'terminal_scroll_driver.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
 
@@ -263,6 +264,8 @@ class TerminalSnapshotPainter extends CustomPainter {
   final Color selectionBackground;
   final Color selectionForeground;
   final TerminalRenderCache? renderCache;
+  final double viewportOffsetRows;
+  final TerminalViewportRowCache? scrollRowCache;
 
   /// IME composition (preedit) text to render inline at the cursor. Null when
   /// no composition is active. This is a client-side overlay only — nothing is
@@ -283,7 +286,10 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.selectionForeground = Colors.white,
     this.renderCache,
     this.preeditText,
-  });
+    double? viewportOffsetRows,
+    this.scrollRowCache,
+  }) : viewportOffsetRows =
+           viewportOffsetRows ?? snapshot.viewportOffset.toDouble();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -293,10 +299,13 @@ class TerminalSnapshotPainter extends CustomPainter {
       Paint()..color = bgColor,
     );
 
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
+    final paintRows = _paintRows().toList(growable: false);
     final cache = renderCache;
     if (selection == null && cache != null) {
       cache.prepare(
-        rowCount: snapshot.lines.length,
+        rowCount: paintRows.length,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
         padding: padding,
@@ -304,20 +313,18 @@ class TerminalSnapshotPainter extends CustomPainter {
         fontFamilyFallback: fontFamilyFallback,
         fontSize: fontSize,
       );
-      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
-        _drawCachedRow(canvas, snapshot.lines[rowIdx], rowIdx, cache);
+      for (final paintRow in paintRows) {
+        _drawCachedRow(canvas, paintRow, cache);
       }
     } else {
-      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
-        final y = padding + rowIdx * cellHeight;
-        _drawCellBackgrounds(canvas, snapshot.lines[rowIdx], y);
+      for (final paintRow in paintRows) {
+        _drawCellBackgrounds(canvas, paintRow.row, paintRow.y);
       }
 
-      _drawSelection(canvas);
+      _drawSelection(canvas, paintRows);
 
-      for (var rowIdx = 0; rowIdx < snapshot.lines.length; rowIdx++) {
-        final y = padding + rowIdx * cellHeight;
-        _drawTextRuns(canvas, snapshot.lines[rowIdx], rowIdx, y);
+      for (final paintRow in paintRows) {
+        _drawTextRuns(canvas, paintRow.row, paintRow.screenRow, paintRow.y);
       }
     }
 
@@ -328,7 +335,8 @@ class TerminalSnapshotPainter extends CustomPainter {
         snapshot.cursorY >= 0) {
       final cursorSpan = snapshot.cursorCellSpan;
       final cx = padding + cursorSpan.col * cellWidth;
-      final cy = padding + snapshot.cursorY * cellHeight;
+      final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
+      final cy = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
       final cursorWidth = cursorSpan.widthCells * cellWidth;
       final cursorColor = Color(snapshot.cursorArgb);
       switch (GhosttyRenderStateCursorVisualStyle.fromValue(
@@ -375,6 +383,30 @@ class TerminalSnapshotPainter extends CustomPainter {
     }
 
     _drawPreedit(canvas);
+    canvas.restore();
+  }
+
+  Iterable<_TerminalPaintRow> _paintRows() sync* {
+    final range = terminalFractionalViewportRowRange(
+      viewportOffset: viewportOffsetRows,
+      visibleRows: snapshot.rows,
+      totalRows: snapshot.scrollTotalRows,
+    );
+    for (var screenRow = range.first; screenRow <= range.last; screenRow++) {
+      var row = scrollRowCache?.rowAt(screenRow);
+      if (row == null) {
+        final snapshotIndex = screenRow - snapshot.viewportOffset;
+        if (snapshotIndex >= 0 && snapshotIndex < snapshot.lines.length) {
+          row = snapshot.lines[snapshotIndex];
+        }
+      }
+      if (row == null) continue;
+      yield _TerminalPaintRow(
+        screenRow: screenRow,
+        row: row,
+        y: padding + (screenRow - viewportOffsetRows) * cellHeight,
+      );
+    }
   }
 
   void _drawCursorCellText(Canvas canvas, Color cursorColor) {
@@ -382,7 +414,8 @@ class TerminalSnapshotPainter extends CustomPainter {
     if (cell == null || cell.invisible || cell.text.isEmpty) return;
     final preferred = Color(cell.backgroundArgb);
     final x = padding + cell.col * cellWidth;
-    final y = padding + snapshot.cursorY * cellHeight;
+    final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
+    final y = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
     final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(x, y, widthCells * cellWidth, cellHeight));
@@ -415,7 +448,8 @@ class TerminalSnapshotPainter extends CustomPainter {
       return;
     }
 
-    final y = padding + snapshot.cursorY * cellHeight;
+    final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
+    final y = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
     final startX = padding + snapshot.cursorX * cellWidth;
     // The preedit must never paint left of the cursor — content there is
     // already-committed terminal output. This is the hard left boundary.
@@ -529,7 +563,7 @@ class TerminalSnapshotPainter extends CustomPainter {
   void _drawTextRuns(
     Canvas canvas,
     TerminalSnapshotRow row,
-    int rowIdx,
+    int screenRow,
     double y,
   ) {
     _CellTextRun? run;
@@ -559,7 +593,7 @@ class TerminalSnapshotPainter extends CustomPainter {
       }
 
       final selected = selection?.intersectsCell(
-        row: snapshot.viewportOffset + rowIdx,
+        row: screenRow,
         col: cell.col,
         widthCells: cell.widthCells,
         cols: snapshot.cols,
@@ -603,42 +637,39 @@ class TerminalSnapshotPainter extends CustomPainter {
 
   void _drawCachedRow(
     Canvas canvas,
-    TerminalSnapshotRow row,
-    int rowIdx,
+    _TerminalPaintRow paintRow,
     TerminalRenderCache cache,
   ) {
+    final row = paintRow.row;
     final key = row.renderKey;
     var picture = cache.pictureFor(key);
     if (picture == null) {
       final recorder = ui.PictureRecorder();
       final rowCanvas = Canvas(recorder);
       _drawCellBackgrounds(rowCanvas, row, 0);
-      _drawTextRuns(rowCanvas, row, rowIdx, 0);
+      _drawTextRuns(rowCanvas, row, paintRow.screenRow, 0);
       picture = recorder.endRecording();
       cache.put(key, picture);
     }
 
-    final y = padding + rowIdx * cellHeight;
     canvas
       ..save()
-      ..translate(0, y)
+      ..translate(0, paintRow.y)
       ..drawPicture(picture)
       ..restore();
   }
 
-  void _drawSelection(Canvas canvas) {
+  void _drawSelection(Canvas canvas, List<_TerminalPaintRow> paintRows) {
     final rawRange = selection;
     if (rawRange == null || cellWidth <= 0 || cellHeight <= 0) return;
     final range = snapshot.alignSelectionToCellBoundaries(rawRange);
     final paint = Paint()..color = selectionBackground;
-    for (var row = 0; row < snapshot.lines.length; row++) {
-      final screenRow = snapshot.viewportOffset + row;
-      final columns = range.columnsForRow(screenRow, snapshot.cols);
+    for (final paintRow in paintRows) {
+      final columns = range.columnsForRow(paintRow.screenRow, snapshot.cols);
       if (columns == null || columns.endCol < columns.startCol) continue;
       final x = padding + columns.startCol * cellWidth;
-      final y = padding + row * cellHeight;
       final width = (columns.endCol - columns.startCol + 1) * cellWidth;
-      canvas.drawRect(Rect.fromLTWH(x, y, width, cellHeight), paint);
+      canvas.drawRect(Rect.fromLTWH(x, paintRow.y, width, cellHeight), paint);
     }
   }
 
@@ -655,7 +686,21 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.selectionBackground != selectionBackground ||
       oldDelegate.selectionForeground != selectionForeground ||
       oldDelegate.renderCache != renderCache ||
-      oldDelegate.preeditText != preeditText;
+      oldDelegate.preeditText != preeditText ||
+      oldDelegate.viewportOffsetRows != viewportOffsetRows ||
+      oldDelegate.scrollRowCache != scrollRowCache;
+}
+
+class _TerminalPaintRow {
+  final int screenRow;
+  final TerminalSnapshotRow row;
+  final double y;
+
+  const _TerminalPaintRow({
+    required this.screenRow,
+    required this.row,
+    required this.y,
+  });
 }
 
 class TerminalRenderCache {
