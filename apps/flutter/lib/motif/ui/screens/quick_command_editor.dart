@@ -412,6 +412,7 @@ class _EditDialogState extends State<_EditDialog> {
       ),
       child: TextField(
         controller: controller,
+        scrollPhysics: motifFormTextFieldScrollPhysics(context),
         autocorrect: false,
         enableSuggestions: false,
         minLines: minLines,

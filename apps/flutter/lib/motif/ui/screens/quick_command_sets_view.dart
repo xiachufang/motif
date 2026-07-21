@@ -141,7 +141,12 @@ Future<String?> _promptText(
         title: 'Details',
         dividerIndent: MotifSpacing.lg,
         children: [
-          _sectionField(controller: ctrl, label: 'Name', autofocus: true),
+          _sectionField(
+            context: context,
+            controller: ctrl,
+            label: 'Name',
+            autofocus: true,
+          ),
         ],
       ),
       actions: [
@@ -168,8 +173,14 @@ Future<(String, List<String>)?> _promptNameMatches(
         title: 'Details',
         dividerIndent: MotifSpacing.lg,
         children: [
-          _sectionField(controller: name, label: 'Name', autofocus: true),
           _sectionField(
+            context: context,
+            controller: name,
+            label: 'Name',
+            autofocus: true,
+          ),
+          _sectionField(
+            context: context,
             controller: matches,
             label: 'Programs',
             hint: 'e.g. vim, nano',
@@ -195,6 +206,7 @@ Future<(String, List<String>)?> _promptNameMatches(
 }
 
 Widget _sectionField({
+  required BuildContext context,
   required TextEditingController controller,
   required String label,
   String? hint,
@@ -207,6 +219,7 @@ Widget _sectionField({
     ),
     child: TextField(
       controller: controller,
+      scrollPhysics: motifFormTextFieldScrollPhysics(context),
       autofocus: autofocus,
       autocorrect: false,
       enableSuggestions: false,
