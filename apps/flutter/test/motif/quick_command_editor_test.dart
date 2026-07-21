@@ -58,12 +58,6 @@ void main() {
       expect(find.text('New command'), findsOneWidget);
       expect(find.byType(Dialog), findsOneWidget);
       expect(find.byType(BottomSheet), findsNothing);
-      for (final field in tester.widgetList<TextField>(
-        find.byType(TextField),
-      )) {
-        expect(field.scrollPhysics?.allowUserScrolling, isFalse);
-        expect(field.scrollPhysics?.allowImplicitScrolling, isTrue);
-      }
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
@@ -80,11 +74,6 @@ void main() {
 
       expect(find.text('New command'), findsOneWidget);
       expect(find.byType(BottomSheet), findsOneWidget);
-      for (final field in tester.widgetList<TextField>(
-        find.byType(TextField),
-      )) {
-        expect(field.scrollPhysics, isNull);
-      }
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }

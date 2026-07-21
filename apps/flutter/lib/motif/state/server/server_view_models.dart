@@ -3,6 +3,7 @@ import 'package:flutter_observation/flutter_observation.dart';
 import '../../models/settings.dart';
 import '../connection/connection_state.dart';
 import 'device_registration_view_model.dart';
+import 'server_runtime_state.dart';
 import 'session_catalog_view_model.dart';
 import '../workspace/workspace_view_model.dart';
 
@@ -13,14 +14,15 @@ enum ServerAccessPhase { idle, resolving, ready, blocked, failed }
 @ObservableModel()
 class ServerAccessViewModel extends _$ServerAccessViewModel {
   ServerAccessViewModel({
+    ServerRuntimeState runtime = const ServerRuntimeDisconnected(),
     ServerAccessPhase phase = ServerAccessPhase.idle,
     TransportViewState? transport,
     ConnectionBlocker? blocker,
     String? error,
     String? resolvedEndpoint,
-  }) : super(phase, transport, blocker, error, resolvedEndpoint);
+  }) : super(runtime, phase, transport, blocker, error, resolvedEndpoint);
 
-  bool get isReady => phase == ServerAccessPhase.ready;
+  bool get isReady => runtime.isOnline;
 }
 
 @ObservableModel()

@@ -4,6 +4,7 @@ import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../../net/remote_port_forwarder.dart';
 import 'remote_port_mapping.dart';
+import 'remote_port_runtime.dart';
 import 'remote_ports_view_model.dart';
 
 typedef RemotePortRpcCall =
@@ -73,42 +74,37 @@ final class RemotePortController {
     RemotePortsViewModel? viewModel,
   }) : viewModel =
            viewModel ??
-           RemotePortsViewModel(mappings: ObservableList<RemotePortMapping>());
+           RemotePortsViewModel(mappings: ObservableList<RemotePortMapping>()) {
+    _runtime = RemotePortRuntimeController(onStateChanged: _projectRuntime);
+  }
 
   final RemotePortsViewModel viewModel;
   final RemotePortTransport transport;
   final Map<String, RemotePortForwarder> _forwarders = {};
+  late final RemotePortRuntimeController _runtime;
 
-  Future<List<RemotePortMapping>> refresh() async {
-    transport.requireAttachment();
-    viewModel
-      ..phase = RemotePortsPhase.loading
-      ..error = null;
-    try {
-      final body = await transport.call('remote_port.list');
-      final configs = ((body['mappings'] as List?) ?? [])
-          .map(
-            (mapping) => _RemotePortMappingConfig.fromJson(
-              (mapping as Map).cast<String, Object?>(),
-            ),
-          )
-          .toList();
-      await _reconcile(configs);
-      viewModel.phase = RemotePortsPhase.ready;
-      return List.unmodifiable(viewModel.mappings);
-    } catch (error) {
-      viewModel
-        ..phase = RemotePortsPhase.failed
-        ..error = '$error';
-      rethrow;
-    }
-  }
+  RemotePortRuntimeState get runtimeState => _runtime.state;
+
+  Future<List<RemotePortMapping>> refresh() =>
+      _runtime.run(RemotePortOperationKind.refresh, () async {
+        transport.requireAttachment();
+        final body = await transport.call('remote_port.list');
+        final configs = ((body['mappings'] as List?) ?? [])
+            .map(
+              (mapping) => _RemotePortMappingConfig.fromJson(
+                (mapping as Map).cast<String, Object?>(),
+              ),
+            )
+            .toList();
+        await _reconcile(configs);
+        return List.unmodifiable(viewModel.mappings);
+      });
 
   Future<RemotePortMapping> add({
     String remoteHost = '127.0.0.1',
     required int remotePort,
     String localScheme = 'http',
-  }) async {
+  }) => _runtime.run(RemotePortOperationKind.add, () async {
     final body = await transport.call('remote_port.add', {
       'remote_host': remoteHost,
       'remote_port': remotePort,
@@ -119,18 +115,15 @@ final class RemotePortController {
     );
     final started = await _start(config);
     _upsert(started);
-    viewModel
-      ..phase = RemotePortsPhase.ready
-      ..error = null;
     return started.mapping;
-  }
+  });
 
   Future<RemotePortMapping> update(
     String id, {
     String remoteHost = '127.0.0.1',
     required int remotePort,
     String localScheme = 'http',
-  }) async {
+  }) => _runtime.run(RemotePortOperationKind.update, () async {
     final body = await transport.call('remote_port.update', {
       'id': id,
       'remote_host': remoteHost,
@@ -143,23 +136,25 @@ final class RemotePortController {
     final existing = viewModel.mappings
         .where((mapping) => mapping.id == id)
         .firstOrNull;
-    if (existing != null && _matchesConfig(existing, config)) return existing;
+    if (existing != null && _matchesConfig(existing, config)) {
+      return existing;
+    }
 
     final started = await _start(config);
     _upsert(started);
-    viewModel
-      ..phase = RemotePortsPhase.ready
-      ..error = null;
     return started.mapping;
-  }
+  });
 
-  Future<void> remove(String id) async {
-    await transport.call('remote_port.remove', {'id': id});
-    final index = viewModel.mappings.indexWhere((mapping) => mapping.id == id);
-    if (index < 0) return;
-    viewModel.mappings.removeAt(index);
-    await _forwarders.remove(id)?.stop();
-  }
+  Future<void> remove(String id) =>
+      _runtime.run(RemotePortOperationKind.remove, () async {
+        await transport.call('remote_port.remove', {'id': id});
+        final index = viewModel.mappings.indexWhere(
+          (mapping) => mapping.id == id,
+        );
+        if (index < 0) return;
+        viewModel.mappings.removeAt(index);
+        await _forwarders.remove(id)?.stop();
+      });
 
   /// Transitional compatibility for callers that need the raw forwarder.
   Future<RemotePortForwarder> open({
@@ -167,7 +162,7 @@ final class RemotePortController {
     required int remotePort,
     int? localPort,
     String localScheme = 'http',
-  }) async {
+  }) => _runtime.run(RemotePortOperationKind.open, () async {
     final body = await transport.call('remote_port.add', {
       'remote_host': remoteHost,
       'remote_port': remotePort,
@@ -179,27 +174,31 @@ final class RemotePortController {
     final started = await _start(config, localPort: localPort);
     _upsert(started);
     return started.forwarder;
-  }
+  });
 
-  Future<void> stop(RemotePortForwarder forwarder) async {
-    final id = _forwarders.entries
-        .where((entry) => identical(entry.value, forwarder))
-        .map((entry) => entry.key)
-        .firstOrNull;
-    if (id != null) {
-      await transport.call('remote_port.remove', {'id': id});
-      viewModel.mappings.removeWhere((mapping) => mapping.id == id);
-      _forwarders.remove(id);
-    }
-    await forwarder.stop();
-  }
+  Future<void> stop(RemotePortForwarder forwarder) =>
+      _runtime.run(RemotePortOperationKind.stop, () async {
+        final id = _forwarders.entries
+            .where((entry) => identical(entry.value, forwarder))
+            .map((entry) => entry.key)
+            .firstOrNull;
+        if (id != null) {
+          await transport.call('remote_port.remove', {'id': id});
+          viewModel.mappings.removeWhere((mapping) => mapping.id == id);
+          _forwarders.remove(id);
+        }
+        await forwarder.stop();
+      });
 
-  Future<void> stopAll() async {
-    final forwarders = _forwarders.values.toList();
-    viewModel.mappings.clear();
-    _forwarders.clear();
-    await Future.wait([for (final forwarder in forwarders) forwarder.stop()]);
-  }
+  Future<void> stopAll() => _runtime.run(
+    RemotePortOperationKind.stopAll,
+    () async {
+      final forwarders = _forwarders.values.toList();
+      viewModel.mappings.clear();
+      _forwarders.clear();
+      await Future.wait([for (final forwarder in forwarders) forwarder.stop()]);
+    },
+  );
 
   Future<({RemotePortMapping mapping, RemotePortForwarder forwarder})> _start(
     _RemotePortMappingConfig config, {
@@ -296,4 +295,30 @@ final class RemotePortController {
       mapping.remoteHost == config.remoteHost &&
       mapping.remotePort == config.remotePort &&
       mapping.localScheme == config.localScheme;
+
+  void _projectRuntime(RemotePortRuntimeState state) {
+    observationTransaction(() {
+      viewModel.runtime = state;
+      switch (state) {
+        case RemotePortRuntimeIdle():
+          viewModel
+            ..phase = RemotePortsPhase.idle
+            ..error = null;
+        case RemotePortRuntimeRunning():
+          viewModel
+            ..phase = RemotePortsPhase.loading
+            ..error = null;
+        case RemotePortRuntimeReady():
+          viewModel
+            ..phase = RemotePortsPhase.ready
+            ..error = null;
+        case RemotePortRuntimeFailed(:final error):
+          viewModel
+            ..phase = RemotePortsPhase.failed
+            ..error = '$error';
+      }
+    });
+  }
+
+  void dispose() => _runtime.dispose();
 }

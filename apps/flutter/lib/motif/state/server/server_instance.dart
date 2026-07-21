@@ -35,6 +35,7 @@ final class ServerInstance {
 
   void dispose() {
     access.dispose();
+    device.dispose();
     unawaited(transport.close());
   }
 }

@@ -82,18 +82,11 @@ class DesktopTerminalRuntimePolicy implements TerminalRuntimePolicy {
   });
 
   final Duration backgroundRestoreDelay;
-  static final Expando<int> _restoreGeneration = Expando<int>();
-  static int _nextRestoreGeneration = 1;
 
   @override
   void onSessionAttached(TerminalRuntimeHost client) {
-    final generation = _nextRestoreGeneration++;
-    _restoreGeneration[client] = generation;
     unawaited(
-      _restoreLiveTabPtys(client, generation).catchError((
-        Object e,
-        StackTrace st,
-      ) {
+      _restoreLiveTabPtys(client).catchError((Object e, StackTrace st) {
         Log.w(
           'desktop staged pty restore failed',
           name: 'motif.runtime',
@@ -106,9 +99,8 @@ class DesktopTerminalRuntimePolicy implements TerminalRuntimePolicy {
 
   @override
   void onPtySubscriptionsChanged(TerminalRuntimeHost client) {
-    // A view was opened/closed while a staged attach restore was in flight.
-    // Cancel that snapshot and converge immediately on the new authoritative set.
-    _restoreGeneration[client] = _nextRestoreGeneration++;
+    // Production controllers route this through TerminalStreamRuntimeController,
+    // which invalidates an in-flight staged restore before synchronizing.
     _syncLiveTabPtys(client);
   }
 
@@ -145,10 +137,7 @@ class DesktopTerminalRuntimePolicy implements TerminalRuntimePolicy {
     );
   }
 
-  Future<void> _restoreLiveTabPtys(
-    TerminalRuntimeHost client,
-    int generation,
-  ) async {
+  Future<void> _restoreLiveTabPtys(TerminalRuntimeHost client) async {
     final initial = client.liveTabPtyIds;
     final active = client.activePtyId;
     final restored = <String>{};
@@ -168,13 +157,11 @@ class DesktopTerminalRuntimePolicy implements TerminalRuntimePolicy {
         'desktop active pty replay complete pty=$active',
         name: 'motif.runtime',
       );
-      if (_restoreGeneration[client] != generation) return;
     }
 
     for (final ptyId in initial) {
       if (restored.contains(ptyId)) continue;
       await Future<void>.delayed(backgroundRestoreDelay);
-      if (_restoreGeneration[client] != generation) return;
       final live = client.liveTabPtyIds;
       if (!live.contains(ptyId)) continue;
       restored

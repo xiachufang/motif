@@ -8,15 +8,18 @@ part of 'app_ui_state.dart';
 
 abstract class _$AppShellViewModel with ObservableModelMixin {
   _$AppShellViewModel(
+    AppRuntimeState runtime,
     AppViewMode viewMode,
     AppLifecyclePhase lifecycle,
     PendingSessionOpen? pendingSessionOpen,
     SessionSidebarViewModel sidebar,
-  ) : _viewMode = viewMode,
+  ) : _runtime = runtime,
+      _viewMode = viewMode,
       _lifecycle = lifecycle,
       _pendingSessionOpen = pendingSessionOpen,
       _sidebar = sidebar {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_viewModeKey, () => _viewMode);
       observationRegisterDebugProperty(_lifecycleKey, () => _lifecycle);
       observationRegisterDebugProperty(
@@ -26,6 +29,22 @@ abstract class _$AppShellViewModel with ObservableModelMixin {
       observationRegisterDebugProperty(_sidebarKey, () => _sidebar);
     }
   }
+  final ObservationKey<AppRuntimeState> _runtimeKey =
+      ObservationKey<AppRuntimeState>('AppShellViewModel.runtime');
+  AppRuntimeState _runtime;
+
+  AppRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(AppRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<AppViewMode> _viewModeKey = ObservationKey<AppViewMode>(
     'AppShellViewModel.viewMode',
   );

@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../platform/secret_store.dart';
 import 'embedded_server_models.dart';
+import 'embedded_server_runtime_state.dart';
 import 'embedded_server_view_model.dart';
 
 export 'embedded_server_models.dart';
@@ -31,6 +32,10 @@ abstract class EmbeddedServerService {
     EmbeddedServerStatus status = const EmbeddedServerStatus(),
   }) : viewModel = EmbeddedServerViewModel(
          available: available,
+         runtime: EmbeddedServerRuntimeState.fromStatus(
+           available: available,
+           status: status,
+         ),
          config: config,
          status: status,
        );
@@ -43,16 +48,42 @@ abstract class EmbeddedServerService {
 
   EmbeddedServerStatus get status => viewModel.status;
 
+  EmbeddedServerRuntimeState get runtimeState => viewModel.runtime;
+
   EmbeddedRunState get phase => status.phase;
 
   @protected
-  set availableState(bool value) => viewModel.available = value;
+  set availableState(bool value) => viewModel.applyRuntime(
+    value
+        ? runtimeState.copyWith(
+            generation: runtimeState.generation + 1,
+            lifecycle: embeddedLifecycleForStatus(status),
+          )
+        : runtimeState.copyWith(
+            generation: runtimeState.generation + 1,
+            lifecycle: const EmbeddedServerUnavailable(),
+            poll: const EmbeddedServerPollDormant(),
+          ),
+  );
 
   @protected
   set configState(EmbeddedServerConfig value) => viewModel.config = value;
 
   @protected
-  set statusState(EmbeddedServerStatus value) => viewModel.status = value;
+  set statusState(EmbeddedServerStatus value) => viewModel.applyRuntime(
+    runtimeState.copyWith(
+      generation: runtimeState.generation + 1,
+      lifecycle: runtimeState.available
+          ? embeddedLifecycleForStatus(value)
+          : const EmbeddedServerUnavailable(),
+      poll: const EmbeddedServerPollDormant(),
+    ),
+    status: value,
+  );
+
+  @protected
+  set embeddedRuntimeState(EmbeddedServerRuntimeState value) =>
+      viewModel.applyRuntime(value);
 
   Future<void> updateConfig(EmbeddedServerConfig next);
   String generateToken();

@@ -1,15 +1,17 @@
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
+import '../server/push_runtime_state.dart';
 
 part 'store_view_models.g.dart';
 
 @ObservableModel()
 class PushPreferencesViewModel extends _$PushPreferencesViewModel {
   PushPreferencesViewModel({
+    PushRuntimeState runtime = const PushRuntimeState.initial(),
     bool enabled = true,
     @ObservationReadOnly() required ObservableSet<String> mutedSessions,
-  }) : super(enabled, mutedSessions);
+  }) : super(runtime, enabled, mutedSessions);
 }
 
 @ObservableModel()

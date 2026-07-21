@@ -4,10 +4,9 @@ part of 'workspace_connection_controller.dart';
 extension _WorkspaceConnectionControllerRecovery
     on WorkspaceConnectionController {
   Future<RpcClient?> _waitForAttachedRpc() async {
-    final pending = _attachInFlight;
-    if (pending != null) {
+    if (_attachmentRuntime.isBusy) {
       try {
-        await pending;
+        await _attachmentRuntime.waitForSettled();
       } catch (_) {
         return null;
       }
@@ -41,53 +40,29 @@ extension _WorkspaceConnectionControllerRecovery
       );
     }
 
-    final recovered = await _recoverExpiredAttachment(rpc, attemptedSessionId);
+    if (rpc.sessionId == attemptedSessionId) {
+      await _attachmentRuntime.recover(attemptedSessionId);
+    }
+    final recovered = await _waitForAttachedRpc();
     if (recovered == null) return;
     await operation(recovered);
   }
 
-  Future<RpcClient?> _recoverExpiredAttachment(
-    RpcClient failedRpc,
-    String expiredSessionId,
-  ) async {
-    if (failedRpc.sessionId != expiredSessionId) {
-      return _waitForAttachedRpc();
-    }
-    final existing = _attachmentRecovery;
-    if (existing != null) {
-      await existing;
-      return _waitForAttachedRpc();
-    }
-
-    late final Future<void> recovery;
-    recovery = _reattachExpiredAttachment(failedRpc, expiredSessionId)
-        .whenComplete(() {
-          if (identical(_attachmentRecovery, recovery)) {
-            _attachmentRecovery = null;
-          }
-        });
-    _attachmentRecovery = recovery;
-    await recovery;
-    return _waitForAttachedRpc();
-  }
-
-  Future<void> _reattachExpiredAttachment(
-    RpcClient failedRpc,
-    String expiredSessionId,
-  ) async {
-    if (!identical(_rpc, failedRpc) ||
-        failedRpc.sessionId != expiredSessionId) {
+  Future<void> _reattachExpiredAttachment(String expiredSessionId) async {
+    final failedRpc = _rpc;
+    if (failedRpc == null || failedRpc.sessionId != expiredSessionId) return;
+    final currentState = _state;
+    if (currentState is! ConnAttached || currentState.session != session) {
       return;
     }
-    final currentState = _state;
-    if (currentState is! ConnAttached) return;
-    if (currentState.session != session) return;
 
     await failedRpc.releaseSession();
     if (!identical(_rpc, failedRpc)) return;
     _setState(const ConnConnecting());
     try {
-      await attach();
+      // The attachment child machine already owns this recovery effect; call
+      // the raw operation to avoid recursively joining itself.
+      await _attachSession();
     } catch (error) {
       if (identical(_rpc, failedRpc)) {
         _setState(ConnFailed('reattach failed: $error'));

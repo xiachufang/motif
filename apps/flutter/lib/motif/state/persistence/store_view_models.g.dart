@@ -7,14 +7,35 @@ part of 'store_view_models.dart';
 // **************************************************************************
 
 abstract class _$PushPreferencesViewModel with ObservableModelMixin {
-  _$PushPreferencesViewModel(bool enabled, ObservableSet<String> mutedSessions)
-    : _enabled = enabled,
+  _$PushPreferencesViewModel(
+    PushRuntimeState runtime,
+    bool enabled,
+    ObservableSet<String> mutedSessions,
+  ) : _runtime = runtime,
+      _enabled = enabled,
       _mutedSessions = mutedSessions {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_enabledKey, () => _enabled);
       observationRegisterDebugProperty(_mutedSessionsKey, () => _mutedSessions);
     }
   }
+  final ObservationKey<PushRuntimeState> _runtimeKey =
+      ObservationKey<PushRuntimeState>('PushPreferencesViewModel.runtime');
+  PushRuntimeState _runtime;
+
+  PushRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(PushRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<bool> _enabledKey = ObservationKey<bool>(
     'PushPreferencesViewModel.enabled',
   );

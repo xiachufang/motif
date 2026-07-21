@@ -95,7 +95,9 @@ case "$TARGET" in
     fi
     cc="$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/"${cc_prefix}-clang" 2>/dev/null | head -n1)"
     [[ -x "$cc" ]] || { echo "error: NDK clang not found ($cc_prefix)" >&2; exit 1; }
-    GOOS_ENV=(GOOS=android "GOARCH=$goarch" "${GOOS_ENV[@]}"); CC_ENV="$cc"; ext="so"
+    # `${array[@]+...}` is required for macOS Bash 3.2 with `set -u`: an
+    # initialized-but-empty array otherwise raises "unbound variable".
+    GOOS_ENV=(GOOS=android "GOARCH=$goarch" ${GOOS_ENV[@]+"${GOOS_ENV[@]}"}); CC_ENV="$cc"; ext="so"
     OUT="${OUT:-$PROJECT_DIR/build/native/tailscale/android/$arch/libtailscale.so}";;
   ios|ios-sim|ios-sim-arm64|ios-sim-x64)
     # libtailscale ships iOS as a Go c-archive. Wrap that archive into a
@@ -143,9 +145,9 @@ esac
 mkdir -p "$(dirname "$OUT")"
 echo ">>> building libtailscale ($TARGET) → $OUT"
 if [[ -n "$CC_ENV" ]]; then
-  ( cd "$SRC" && env CGO_ENABLED=1 "${GOOS_ENV[@]}" CC="$CC_ENV" CGO_CFLAGS="$CGO_CFLAGS_ENV" CGO_LDFLAGS="$CGO_LDFLAGS_ENV" go build -buildmode=c-shared "${GO_BUILD_EXTRA[@]}" -o "$OUT" . )
+  ( cd "$SRC" && env CGO_ENABLED=1 ${GOOS_ENV[@]+"${GOOS_ENV[@]}"} CC="$CC_ENV" CGO_CFLAGS="$CGO_CFLAGS_ENV" CGO_LDFLAGS="$CGO_LDFLAGS_ENV" go build -buildmode=c-shared ${GO_BUILD_EXTRA[@]+"${GO_BUILD_EXTRA[@]}"} -o "$OUT" . )
 else
-  ( cd "$SRC" && env CGO_ENABLED=1 "${GOOS_ENV[@]}" go build -buildmode=c-shared "${GO_BUILD_EXTRA[@]}" -o "$OUT" . )
+  ( cd "$SRC" && env CGO_ENABLED=1 ${GOOS_ENV[@]+"${GOOS_ENV[@]}"} go build -buildmode=c-shared ${GO_BUILD_EXTRA[@]+"${GO_BUILD_EXTRA[@]}"} -o "$OUT" . )
 fi
 # Emit the generated header next to the lib.
 cp -f "${OUT%.*}.h" "$(dirname "$OUT")/libtailscale.h" 2>/dev/null || true

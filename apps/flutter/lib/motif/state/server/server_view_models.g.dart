@@ -8,17 +8,20 @@ part of 'server_view_models.dart';
 
 abstract class _$ServerAccessViewModel with ObservableModelMixin {
   _$ServerAccessViewModel(
+    ServerRuntimeState runtime,
     ServerAccessPhase phase,
     TransportViewState? transport,
     ConnectionBlocker? blocker,
     String? error,
     String? resolvedEndpoint,
-  ) : _phase = phase,
+  ) : _runtime = runtime,
+      _phase = phase,
       _transport = transport,
       _blocker = blocker,
       _error = error,
       _resolvedEndpoint = resolvedEndpoint {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_phaseKey, () => _phase);
       observationRegisterDebugProperty(_transportKey, () => _transport);
       observationRegisterDebugProperty(_blockerKey, () => _blocker);
@@ -29,6 +32,22 @@ abstract class _$ServerAccessViewModel with ObservableModelMixin {
       );
     }
   }
+  final ObservationKey<ServerRuntimeState> _runtimeKey =
+      ObservationKey<ServerRuntimeState>('ServerAccessViewModel.runtime');
+  ServerRuntimeState _runtime;
+
+  ServerRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(ServerRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<ServerAccessPhase> _phaseKey =
       ObservationKey<ServerAccessPhase>('ServerAccessViewModel.phase');
   ServerAccessPhase _phase;

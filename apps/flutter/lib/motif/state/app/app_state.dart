@@ -20,6 +20,8 @@ import '../../net/rzv/pairing_payload.dart';
 import '../../platform/web_launch.dart';
 import '../../platform/services.dart';
 import '../../terminal/terminal_palette.dart';
+import 'app_runtime_controller.dart';
+import 'app_runtime_state.dart';
 import 'app_ui_state.dart';
 import 'app_view_model.dart';
 import '../connection/connection_state.dart';
@@ -39,6 +41,7 @@ import '../server/server_access_controller.dart';
 import '../workspace/workspace_lifecycle_controller.dart';
 import '../workspace/workspace_retention_policy.dart';
 import '../server/server_instance.dart';
+import '../server/server_runtime_state.dart';
 import '../server/server_transport.dart';
 import '../server/server_view_models.dart';
 import '../server/session_catalog_controller.dart';
@@ -78,14 +81,9 @@ class AppState {
   final WorkspaceRetentionPolicy _workspaceRetentionPolicy;
   late final TransportResolver _transportResolver;
   late final PushCoordinator _pushCoordinator;
+  late final AppRuntimeController _runtime;
   final Map<String, ServerInstance> _serverInstances = {};
   final WorkspaceRegistry _workspaces = WorkspaceRegistry();
-  final Map<
-    WorkspaceConnectionController,
-    ObservationSubscription<WorkspaceConnectionStatus>
-  >
-  _connectionSubscriptions = {};
-  final Map<String, Future<bool>> _serverConnectionTasks = {};
   bool _disposed = false;
   late final ObservationSubscription<
     ({List<MotifServer> servers, String? activeId})
@@ -101,7 +99,6 @@ class AppState {
     ({bool available, EmbeddedServerConfig config, EmbeddedServerStatus status})
   >?
   _embeddedServerSubscription;
-  bool _embeddedStartupConnectPending = false;
   late final ObservationSubscription<TailscaleState> _tailscaleSubscription;
   AppLifecycleListener? _lifecycleListener;
 
@@ -209,6 +206,18 @@ class AppState {
       showNotification: _showServerNotification,
       requestOpenSession: requestOpenSession,
     );
+    _runtime = AppRuntimeController(
+      connectStartupServer: _connectStartupServerEffect,
+      applyLifecycle: _applyRuntimeLifecycle,
+      onStateChanged: (state) {
+        observationTransaction(() {
+          shell.runtime = state;
+          shell.lifecycle = state.lifecycle is AppRuntimeForeground
+              ? AppLifecyclePhase.foreground
+              : AppLifecyclePhase.background;
+        });
+      },
+    );
     _serversSubscription = observe(
       () => (servers: servers.servers.toList(), activeId: servers.activeId),
       onChange: (_) => _relayStoreChange(),
@@ -304,6 +313,8 @@ class AppState {
   bool shouldAutoConnectServer(String serverId) =>
       startupActiveServerId == serverId;
 
+  AppRuntimeState get runtimeState => _runtime.state;
+
   /// Auto-connects the server that was active when this process started.
   ///
   /// A managed embedded server can take several seconds to bind its loopback
@@ -313,48 +324,36 @@ class AppState {
   /// [_syncEmbeddedServerEntry] observes the bound endpoint.
   Future<void> autoConnectStartupServer() async {
     final server = servers.activeServer;
-    if (server == null || !shouldAutoConnectServer(server.id)) return;
+    if (server == null || !shouldAutoConnectServer(server.id)) {
+      await _runtime.start(serverId: null, waitForEmbedded: false);
+      return;
+    }
 
     final embedded = embeddedServer;
-    if (server.id == kEmbeddedServerId &&
+    final waitForEmbedded =
+        server.id == kEmbeddedServerId &&
         embedded != null &&
         embedded.available &&
         embedded.config.autostart &&
         embedded.status.loopbackEndpoint == null &&
-        embedded.status.error == null) {
-      _embeddedStartupConnectPending = true;
+        embedded.status.error == null;
+    if (waitForEmbedded) {
       Log.i(
         'defer local startup connect until embedded endpoint is ready',
         name: 'motif.embedded',
       );
-      return;
     }
-
-    await _connectStartupServer(server.id);
+    await _runtime.start(serverId: server.id, waitForEmbedded: waitForEmbedded);
   }
 
-  Future<void> _connectStartupServer(String serverId) async {
+  Future<bool> _connectStartupServerEffect(String serverId) async {
     if (_disposed ||
         startupActiveServerId != serverId ||
         servers.activeId != serverId) {
-      _embeddedStartupConnectPending = false;
-      return;
-    }
-    final state = serverState(serverId);
-    if (state is ConnConnected ||
-        state is ConnAttached ||
-        state is ConnConnecting) {
-      _embeddedStartupConnectPending = false;
-      return;
+      return false;
     }
     try {
-      final connected = await ensureServerConnectedAndRefresh(
-        serverId,
-        makeActive: false,
-      );
-      if (connected || serverId != kEmbeddedServerId) {
-        _embeddedStartupConnectPending = false;
-      }
+      return await ensureServerConnectedAndRefresh(serverId, makeActive: false);
     } catch (error, stackTrace) {
       Log.w(
         'startup server connect failed server=$serverId',
@@ -362,9 +361,7 @@ class AppState {
         error: error,
         stackTrace: stackTrace,
       );
-      if (serverId != kEmbeddedServerId) {
-        _embeddedStartupConnectPending = false;
-      }
+      rethrow;
     }
   }
 
@@ -447,10 +444,6 @@ class AppState {
       workspace: workspace,
     );
     _serverInstances[serverId] = instance;
-    if (transport.isLive) {
-      viewModel.access.phase = ServerAccessPhase.ready;
-      unawaited(sessions.refresh().catchError((_) {}));
-    }
     _onServerAccessChanged(instance);
     return instance;
   }
@@ -475,7 +468,7 @@ class AppState {
       if (!registry.warmOrder.contains(current.key.session)) {
         registry.warmOrder.add(current.key.session);
       }
-      current.attachment.setForeground(false);
+      current.lifecycle.setForeground(false);
     }
 
     var target = _workspaces.activateWarm(key);
@@ -522,7 +515,6 @@ class AppState {
       connection: connection,
       lifecycle: lifecycle,
     );
-    _wireWorkspace(instance);
     _applyTerminalPaletteTo(connection);
     return instance;
   }
@@ -535,7 +527,6 @@ class AppState {
           serverRegistryViewModel.entries[key.serverId]?.workspaces;
       registry?.retained.remove(key.session);
       registry?.warmOrder.remove(key.session);
-      _connectionSubscriptions.remove(instance.connection)?.dispose();
       Log.i(
         'evict warm workspace server=${key.serverId} session=${key.session}',
         name: 'motif.session',
@@ -550,22 +541,27 @@ class AppState {
   WorkspaceConnectionStatus serverState(String serverId) {
     final instance = existingServerInstance(serverId);
     if (instance == null) return const ConnDisconnected();
-    return switch (instance.viewModel.access.phase) {
-      ServerAccessPhase.idle => const ConnDisconnected(),
-      ServerAccessPhase.resolving => const ConnConnecting(),
-      ServerAccessPhase.ready => const ConnConnected(),
-      ServerAccessPhase.blocked => ConnSuspended(
-        instance.viewModel.access.blocker?.message ?? 'transport unavailable',
-      ),
-      ServerAccessPhase.failed => ConnFailed(
-        instance.viewModel.access.error ?? 'connection failed',
+    return switch (instance.viewModel.access.runtime.visibleState) {
+      ServerRuntimeDisconnected() ||
+      ServerRuntimeDisconnecting() => const ConnDisconnected(),
+      ServerRuntimeSynchronizing() => const ConnConnecting(),
+      ServerRuntimeRecovering(:final error) => ConnFailed('$error'),
+      ServerRuntimeOnline() => const ConnConnected(),
+      ServerRuntimeBlocked(:final blocker) => ConnSuspended(blocker.message),
+      ServerRuntimePaused() => throw StateError(
+        'visibleState must unwrap paused state',
       ),
     };
   }
 
   ServerConnectionState connectionStateForServer(String serverId) {
     final controller = existingServerInstance(serverId)?.access;
-    if (controller != null) return controller.state;
+    if (controller != null) {
+      // Establish an Observation dependency on the authoritative runtime
+      // state, while keeping command behavior on the controller facade.
+      existingServerInstance(serverId)!.viewModel.access.runtime;
+      return controller.state;
+    }
     final access = serverRegistryViewModel.entries[serverId]?.access;
     if (access != null) {
       return switch (access.phase) {
@@ -680,7 +676,7 @@ class AppState {
       rethrow;
     }
     try {
-      await instance.sessions.refresh();
+      await instance.access.refreshSessions();
     } catch (error, stackTrace) {
       Log.w(
         'session list refresh after destroy failed session=$session',
@@ -720,7 +716,7 @@ class AppState {
 
     final current = _workspaces.activeForServer(fromServerId);
     if (keepSessionWarmOnSwitchAway) {
-      current?.attachment.setForeground(false);
+      current?.lifecycle.setForeground(false);
     } else if (current != null &&
         current.key != (serverId: toServerId, session: toSession)) {
       unawaited(
@@ -872,14 +868,11 @@ class AppState {
         existing.pubKey != desired.pubKey) {
       await servers.update(desired);
     }
-    if (_embeddedStartupConnectPending) {
-      Log.i(
-        'embedded endpoint ready; resume local startup connect '
-        'endpoint=${desired.endpoint}',
-        name: 'motif.embedded',
-      );
-      await _connectStartupServer(kEmbeddedServerId);
-    }
+    Log.i(
+      'embedded endpoint ready endpoint=${desired.endpoint}',
+      name: 'motif.embedded',
+    );
+    _runtime.embeddedReady(kEmbeddedServerId);
   }
 
   void _onTerminalSettingsChanged() {
@@ -901,15 +894,6 @@ class AppState {
       isLive: instance.isLive,
       device: instance.device,
     ));
-  }
-
-  void _wireWorkspace(WorkspaceInstance instance) {
-    final connection = instance.connection;
-    _connectionSubscriptions[connection] = observe(
-      () => connection.state,
-      onChange: (_) => instance.lifecycle.handleConnectionStateChanged(),
-      scheduler: ObservationSchedulers.immediate,
-    );
   }
 
   Iterable<PushServerEndpoint> _pushServerEndpoints() sync* {
@@ -959,17 +943,24 @@ class AppState {
   }
 
   void _onAppPaused() {
-    shell.lifecycle = AppLifecyclePhase.background;
-    for (final instance in _serverInstances.values) {
-      instance.access.handleAppPaused();
-    }
-    for (final controller in _workspaceLifecycles()) {
-      controller.handleAppPaused();
-    }
+    _runtime.setForeground(false);
   }
 
   void _onAppResumed() {
-    shell.lifecycle = AppLifecyclePhase.foreground;
+    _runtime.setForeground(true);
+  }
+
+  void _applyRuntimeLifecycle(bool foreground) {
+    if (!foreground) {
+      for (final instance in _serverInstances.values) {
+        instance.access.handleAppPaused();
+      }
+      for (final controller in _workspaceLifecycles()) {
+        controller.handleAppPaused();
+      }
+      return;
+    }
+
     for (final instance in _serverInstances.values) {
       instance.access.handleAppResumed();
     }
@@ -1013,7 +1004,7 @@ class AppState {
 
   void _setForegroundWorkspace(WorkspaceInstance foreground) {
     for (final instance in _workspaces.instances) {
-      instance.attachment.setForeground(identical(instance, foreground));
+      instance.lifecycle.setForeground(identical(instance, foreground));
     }
   }
 
@@ -1081,14 +1072,12 @@ class AppState {
   }) async {
     await connectServer(serverId, force: force, makeActive: makeActive);
     final runtime = existingServerInstance(serverId);
-    if (runtime == null || !runtime.isLive) return false;
-    await refreshServerSessions(serverId);
-    return true;
+    return runtime?.access.isReady ?? false;
   }
 
-  /// Join an existing connection attempt for [serverId], or start one. This is
-  /// used by startup and notification deep links so they cannot race two
-  /// transports for the same server runtime.
+  /// Join an existing connection attempt for [serverId], or start one. The
+  /// server runtime node coalesces non-forced requests and settles every API
+  /// waiter when that one state transition completes.
   Future<bool> ensureServerConnectedAndRefresh(
     String serverId, {
     bool force = false,
@@ -1100,28 +1089,11 @@ class AppState {
         return isServerLive(serverId);
       })();
     }
-    if (!force) {
-      final existing = _serverConnectionTasks[serverId];
-      if (existing != null) return existing;
-    }
-
-    final raw = connectServerAndRefresh(
+    return connectServerAndRefresh(
       serverId,
       force: force,
       makeActive: makeActive,
     );
-    late final Future<bool> task;
-    task = (() async {
-      try {
-        return await raw;
-      } finally {
-        if (identical(_serverConnectionTasks[serverId], task)) {
-          _serverConnectionTasks.remove(serverId);
-        }
-      }
-    })();
-    _serverConnectionTasks[serverId] = task;
-    return task;
   }
 
   Future<void> disconnectServer(String serverId) async {
@@ -1148,27 +1120,19 @@ class AppState {
   }
 
   Future<void> _refreshServerCatalog(ServerInstance instance) async {
-    try {
-      await instance.sessions.refresh();
-    } catch (e, st) {
-      // Session refresh is best-effort; keep the list usable on transient RPC
-      // failures, but hand stale transports to the reconnect controller.
-      instance.access.handleRefreshFailed(e, st);
-    }
+    await instance.access.refreshSessions();
   }
 
   void _pruneInstancesForDeletedServers() {
     final liveIds = {for (final server in servers.servers) server.id};
     unawaited(push.retainInstanceServers(liveIds));
     for (final instance in _workspaces.removeDeletedServers(liveIds)) {
-      _connectionSubscriptions.remove(instance.connection)?.dispose();
       unawaited(instance.closeAndDispose());
     }
     for (final id in _serverInstances.keys.toList()) {
       if (liveIds.contains(id)) continue;
       final instance = _serverInstances.remove(id)!;
       _pushCoordinator.removeServer(id);
-      _serverConnectionTasks.remove(id);
       unawaited(instance.close().whenComplete(instance.dispose));
     }
   }
@@ -1178,16 +1142,14 @@ class AppState {
     _disposed = true;
     _serversSubscription.dispose();
     _pushSubscription.dispose();
+    _runtime.dispose();
     _pushCoordinator.dispose();
     _embeddedServerSubscription?.dispose();
     embeddedServer?.dispose();
     _terminalSettingsSubscription.dispose();
     _tailscaleSubscription.dispose();
+    platform.tailscale.dispose();
     _lifecycleListener?.dispose();
-    for (final subscription in _connectionSubscriptions.values) {
-      subscription.dispose();
-    }
-    _connectionSubscriptions.clear();
     for (final instance in _workspaces.instances) {
       instance.dispose();
     }

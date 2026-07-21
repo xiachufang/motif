@@ -54,6 +54,7 @@ class _MutableTailscale extends TailscaleService {
   @override
   ProxySettings? get loopbackProxy => null;
 
+  @override
   Future<void> dispose() => Future<void>.value();
 }
 

@@ -43,6 +43,7 @@ class TailscalePingResult {
 abstract class TailscaleService {
   TailscaleService({TailscaleState initialState = TailscaleState.stopped})
     : viewModel = TailscaleViewModel(
+        runtime: TailscaleRuntimeState.fromVisible(initialState),
         status: initialState.status,
         authUrl: initialState.authUrl,
         detail: initialState.detail,
@@ -55,9 +56,20 @@ abstract class TailscaleService {
   final TailscaleViewModel viewModel;
 
   TailscaleState get state => viewModel.snapshot;
+  TailscaleRuntimeState get runtimeState => viewModel.runtime;
 
   @protected
-  set tailscaleState(TailscaleState value) => viewModel.apply(value);
+  set tailscaleState(TailscaleState value) => viewModel.applyRuntime(
+    runtimeState.copyWith(
+      generation: runtimeState.generation + 1,
+      lifecycle: tailscaleStableLifecycle(value),
+      health: const TailscaleHealthDormant(),
+    ),
+  );
+
+  @protected
+  set tailscaleRuntimeState(TailscaleRuntimeState value) =>
+      viewModel.applyRuntime(value);
 
   Future<void> start({String? authKey});
   Future<void> stop();
@@ -79,27 +91,36 @@ abstract class TailscaleService {
   /// Exposed on the interface so callers needn't depend on the FFI impl (keeps
   /// `dart:ffi` out of the web build — web has no Tailscale).
   ProxySettings? get loopbackProxy => null;
+
+  void dispose() {}
 }
 
 /// No-op: the platform has no embedded Tailscale. Direct (non-tailscale)
 /// servers still work; tailscale servers are simply unreachable until a real
 /// implementation is provided for the platform.
 class NoopTailscaleService extends TailscaleService {
-  void _set(TailscaleState state) => tailscaleState = state;
-
   @override
   Future<void> start({String? authKey}) async {
-    _set(
-      const TailscaleState(
-        TailscaleStatus.failed,
+    tailscaleRuntimeState = runtimeState.copyWith(
+      generation: runtimeState.generation + 1,
+      lifecycle: TailscaleLifecycleFailed(
+        StateError('Embedded Tailscale is unavailable in this build.'),
         detail:
             'Embedded Tailscale is unavailable in this build. Bundle libtailscale for this device, or use a direct server.',
       ),
+      health: const TailscaleHealthDormant(),
     );
   }
 
   @override
-  Future<void> stop() async => _set(TailscaleState.stopped);
+  Future<void> stop() async {
+    tailscaleRuntimeState = runtimeState.copyWith(
+      generation: runtimeState.generation + 1,
+      lifecycle: const TailscaleLifecycleStopped(),
+      health: const TailscaleHealthDormant(),
+    );
+  }
+
   @override
   Future<String> resolveHost(String host) async => host;
   @override

@@ -3,15 +3,6 @@ part of 'workspace_connection_controller.dart';
 /// Fixed-workspace attachment lifecycle.
 extension _WorkspaceConnectionControllerAttachment
     on WorkspaceConnectionController {
-  Future<void> _attachImpl() {
-    late final Future<void> tracked;
-    tracked = _attachSession().whenComplete(() {
-      if (identical(_attachInFlight, tracked)) _attachInFlight = null;
-    });
-    _attachInFlight = tracked;
-    return tracked;
-  }
-
   Future<void> _attachSession() async {
     final rpc = _rpc;
     if (rpc == null) throw const RpcException('not connected');
@@ -63,6 +54,7 @@ extension _WorkspaceConnectionControllerAttachment
   }
 
   Future<void> _detachImpl() async {
+    _attachmentRuntime.reset();
     await remotePorts.stopAll();
     await _rpc?.call('session.detach');
     resumeSequence = null;

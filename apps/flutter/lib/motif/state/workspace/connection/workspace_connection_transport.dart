@@ -10,6 +10,7 @@ extension _WorkspaceConnectionControllerConnection
     required Uint8List? certPin,
   }) async {
     if (!force && (_state is ConnConnected || _state is ConnAttached)) return;
+    _attachmentRuntime.reset();
     final total = Stopwatch()..start();
     var stage = Stopwatch()..start();
 
@@ -81,6 +82,7 @@ extension _WorkspaceConnectionControllerConnection
       }
     } catch (error) {
       if (_isSessionNotFound(error)) {
+        _attachmentRuntime.reset();
         resumeSequence = null;
         _carriedPtyCursors = {};
         pendingLocalViewId = null;
@@ -137,6 +139,7 @@ extension _WorkspaceConnectionControllerConnection
   }
 
   Future<void> _disconnectImpl() async {
+    _attachmentRuntime.reset();
     await _teardownRpc();
     _clearSessionState();
     resumeSequence = null;
@@ -147,6 +150,7 @@ extension _WorkspaceConnectionControllerConnection
   }
 
   Future<void> _suspendTransportImpl(String reason) async {
+    _attachmentRuntime.reset();
     final s = _state;
     if (s is ConnAttached && lastSeq > 0) {
       resumeSequence = lastSeq;
@@ -175,6 +179,7 @@ extension _WorkspaceConnectionControllerConnection
   Future<void> _handleConnectionLost([
     String message = 'connection lost',
   ]) async {
+    _attachmentRuntime.reset();
     final s = _state;
     if (s is ConnAttached && lastSeq > 0) {
       resumeSequence = lastSeq;

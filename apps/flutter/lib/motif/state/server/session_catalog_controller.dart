@@ -1,4 +1,5 @@
 import '../../models/motif_proto.dart';
+import 'server_transport.dart';
 import 'session_catalog_view_model.dart';
 
 typedef SessionCatalogRpcCall =
@@ -21,27 +22,40 @@ typedef RemovedSession = ({int index, SessionInfo? session});
 
 /// Server-scoped session catalog and commands.
 final class SessionCatalogController {
-  const SessionCatalogController({
-    required this.viewModel,
-    required this.transport,
-  });
+  SessionCatalogController({required this.viewModel, required this.transport});
 
   final SessionCatalogViewModel viewModel;
   final SessionCatalogTransport transport;
+  Future<void> Function()? refreshDelegate;
+
+  Future<List<SessionInfo>> fetch() async {
+    if (!transport.isAvailable()) {
+      throw const ServerTransportException('session catalog unavailable');
+    }
+    final body = await transport.call('session.list');
+    return ((body['sessions'] as List?) ?? [])
+        .map(
+          (entry) =>
+              SessionInfo.fromJson((entry as Map).cast<String, Object?>()),
+        )
+        .toList(growable: false);
+  }
 
   Future<void> refresh() async {
+    final delegate = refreshDelegate;
+    if (delegate != null) return delegate();
+    await refreshDirect();
+  }
+
+  /// Compatibility path for standalone controller tests. Runtime-owned
+  /// catalogs use [fetch] and project the result from ServerRuntimeState.
+  Future<void> refreshDirect() async {
     if (!transport.isAvailable()) return;
     viewModel
       ..phase = SessionCatalogPhase.loading
       ..error = null;
     try {
-      final body = await transport.call('session.list');
-      final sessions = ((body['sessions'] as List?) ?? [])
-          .map(
-            (entry) =>
-                SessionInfo.fromJson((entry as Map).cast<String, Object?>()),
-          )
-          .toList();
+      final sessions = await fetch();
       viewModel.sessions.replaceRange(0, viewModel.sessions.length, sessions);
       viewModel
         ..phase = SessionCatalogPhase.ready

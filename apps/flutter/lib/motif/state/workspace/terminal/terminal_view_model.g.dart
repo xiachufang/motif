@@ -8,15 +8,18 @@ part of 'terminal_view_model.dart';
 
 abstract class _$TerminalViewModel with ObservableModelMixin {
   _$TerminalViewModel(
+    TerminalStreamRuntimeState runtime,
     ObservableList<PtyInfo> ptys,
     ObservableMap<String, String> runningCommand,
     ObservableMap<String, ShellKind> shellKind,
     ObservableMap<String, ShellContext> shellContext,
-  ) : _ptys = ptys,
+  ) : _runtime = runtime,
+      _ptys = ptys,
       _runningCommand = runningCommand,
       _shellKind = shellKind,
       _shellContext = shellContext {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_ptysKey, () => _ptys);
       observationRegisterDebugProperty(
         _runningCommandKey,
@@ -26,6 +29,22 @@ abstract class _$TerminalViewModel with ObservableModelMixin {
       observationRegisterDebugProperty(_shellContextKey, () => _shellContext);
     }
   }
+  final ObservationKey<TerminalStreamRuntimeState> _runtimeKey =
+      ObservationKey<TerminalStreamRuntimeState>('TerminalViewModel.runtime');
+  TerminalStreamRuntimeState _runtime;
+
+  TerminalStreamRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(TerminalStreamRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<ObservableList<PtyInfo>> _ptysKey =
       ObservationKey<ObservableList<PtyInfo>>('TerminalViewModel.ptys');
   final ObservableList<PtyInfo> _ptys;

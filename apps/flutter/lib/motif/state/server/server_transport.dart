@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:typed_data';
+
+import 'package:http/http.dart' as http;
 
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
@@ -25,6 +28,16 @@ abstract interface class ServerTransport {
 
   Future<String> writeFileBytes(String path, Uint8List data);
   Future<void> close();
+}
+
+/// A control-channel failure for which rebuilding the transport is useful.
+final class ServerTransportException implements Exception {
+  const ServerTransportException(this.cause);
+
+  final Object cause;
+
+  @override
+  String toString() => '$cause';
 }
 
 final class RpcServerTransport implements ServerTransport {
@@ -85,10 +98,16 @@ final class RpcServerTransport implements ServerTransport {
   Future<Map<String, Object?>> call(
     String method, [
     Map<String, Object?> params = const {},
-  ]) {
+  ]) async {
     final rpc = _rpc;
     if (rpc == null) throw const RpcException('not connected');
-    return rpc.call(method, params);
+    try {
+      return await rpc.call(method, params);
+    } on http.ClientException catch (error) {
+      throw ServerTransportException(error);
+    } on TimeoutException catch (error) {
+      throw ServerTransportException(error);
+    }
   }
 
   @override

@@ -15,6 +15,7 @@ import 'package:motif/motif/state/workspace/connection/workspace_connection_view
 import 'package:motif/motif/state/workspace/workspace_lifecycle_controller.dart';
 import 'package:motif/motif/state/workspace/workspace_retention_policy.dart';
 import 'package:motif/motif/state/server/server_view_models.dart';
+import 'package:motif/motif/state/server/server_transport.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/state/server/transport_resolver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -114,7 +115,7 @@ class _RecordingWorkspaceConnectionController
 }
 
 class _RecordingServerFixture {
-  _RecordingServerFixture({this.failRefresh = false}) {
+  _RecordingServerFixture({this.refreshFailuresRemaining = 0}) {
     transport = TestServerTransport(
       onConnect:
           (
@@ -133,14 +134,17 @@ class _RecordingServerFixture {
       onCall: (method, [params = const {}]) async {
         if (method != 'session.list') return const {};
         refreshCalls++;
-        if (failRefresh) throw StateError('stale transport');
+        if (refreshFailuresRemaining > 0) {
+          refreshFailuresRemaining--;
+          throw const ServerTransportException('stale transport');
+        }
         return const {'sessions': <Object?>[]};
       },
     );
   }
 
   late final TestServerTransport transport;
-  final bool failRefresh;
+  int refreshFailuresRemaining;
   int refreshCalls = 0;
   int connectFailuresRemaining = 0;
 
@@ -698,7 +702,7 @@ void main() {
   });
 
   test(
-    'connection projection ignores unrelated workspace properties',
+    'runtime connection state ignores unrelated and projection-only writes',
     () async {
       final tailscale = _FakeTailscale(TailscaleState.stopped);
       addTearDown(tailscale.close);
@@ -724,8 +728,8 @@ void main() {
           ..phase = ServerAccessPhase.failed
           ..error = 'offline';
       });
-      expect(changes, 1);
-      expect(app.connectionStateForServer('tailnet'), isA<ServerFailed>());
+      expect(changes, 0);
+      expect(app.connectionStateForServer('tailnet'), isA<ServerIdle>());
     },
   );
 
@@ -858,27 +862,30 @@ void main() {
     },
   );
 
-  test('session refresh failure marks transport lost and reconnects', () async {
-    final tailscale = _FakeTailscale(
-      const TailscaleState(TailscaleStatus.running),
-    );
-    addTearDown(tailscale.close);
-    final server = _RecordingServerFixture(failRefresh: true);
-    final app = await _appWith(tailscale: tailscale, server: server);
-    addTearDown(app.dispose);
+  test(
+    'initial session refresh transport failure reconnects and resynchronizes',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final server = _RecordingServerFixture(refreshFailuresRemaining: 1);
+      final app = await _appWith(tailscale: tailscale, server: server);
+      addTearDown(app.dispose);
 
-    await app.connectServer('tailnet', force: true);
-    expect(server.connectCalls, 1);
+      await app.connectServer('tailnet', force: true);
+      expect(server.connectCalls, 1);
 
-    await app.refreshConnectedSessions();
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
 
-    expect(server.refreshCalls, 1);
-    expect(server.connectCalls, 2);
-    expect(server.connectForces.last, isTrue);
-    expect(app.connectionStateForServer('tailnet'), isA<ServerConnected>());
-  });
+      expect(server.refreshCalls, 2);
+      expect(server.connectCalls, 2);
+      expect(server.connectForces.last, isTrue);
+      expect(app.connectionStateForServer('tailnet'), isA<ServerConnected>());
+    },
+  );
 
   test('forced reconnect rebuilds SSH forwarder', () async {
     final tailscale = _FakeTailscale(TailscaleState.stopped);

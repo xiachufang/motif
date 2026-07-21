@@ -1,5 +1,7 @@
 import 'package:flutter_observation/flutter_observation.dart';
 
+import 'app_runtime_state.dart';
+
 part 'app_ui_state.g.dart';
 
 /// Desktop top-level view selector: use the client (sessions/terminal) or
@@ -19,11 +21,12 @@ final class PendingSessionOpen {
 @ObservableModel()
 class AppShellViewModel extends _$AppShellViewModel {
   AppShellViewModel({
+    AppRuntimeState runtime = const AppRuntimeState.initial(),
     AppViewMode viewMode = AppViewMode.client,
     AppLifecyclePhase lifecycle = AppLifecyclePhase.foreground,
     PendingSessionOpen? pendingSessionOpen,
     @ObservationReadOnly() required SessionSidebarViewModel sidebar,
-  }) : super(viewMode, lifecycle, pendingSessionOpen, sidebar);
+  }) : super(runtime, viewMode, lifecycle, pendingSessionOpen, sidebar);
 }
 
 /// Session workspace chrome shared while switching between live workspaces.

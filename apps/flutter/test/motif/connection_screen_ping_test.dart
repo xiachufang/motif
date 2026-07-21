@@ -415,7 +415,14 @@ void main() {
     await _pumpConnectionScreen(tester, app);
 
     await tester.tap(_serverRow('server-1'));
-    await tester.pumpAndSettle();
+    // A failed controller immediately schedules its reconnect effect, so the
+    // tree is intentionally never globally "settled" while it remains failed.
+    for (var i = 0; i < 20 && failing.attempts < 1; i++) {
+      await tester.pump();
+    }
+    for (var i = 0; i < 20 && find.text('Failed').evaluate().isEmpty; i++) {
+      await tester.pump();
+    }
 
     expect(failing.attempts, 1);
     expect(find.textContaining('No response'), findsOneWidget);

@@ -12,6 +12,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../platform/secret_store.dart';
 import '../../platform/motif_embed_ffi.dart';
+import '../runtime/runtime_effect.dart';
+import 'embedded_server_runtime_controller.dart';
+import 'embedded_server_runtime_state.dart';
 import 'embedded_server_serialization.dart';
 import 'embedded_server_service.dart';
 import '../persistence/serialization.dart';
@@ -32,12 +35,23 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   final SecretStore _secrets;
   final LibMotifEmbed? _lib;
 
-  Timer? _poll;
-  Future<void> _configUpdates = Future<void>.value();
+  late final EmbeddedServerRuntimeController _runtime;
 
   DesktopEmbeddedServerService._(this._prefs, this._secrets, LibMotifEmbed? lib)
     : _lib = lib,
-      super(available: lib != null, config: _loadConfig(_prefs));
+      super(available: lib != null, config: _loadConfig(_prefs)) {
+    _runtime = EmbeddedServerRuntimeController(
+      available: lib != null,
+      startNative: _startNative,
+      stopNative: _stopNative,
+      probeStatus: _probeStatus,
+      writeConfig: _applyConfig,
+      project: _projectRuntime,
+    );
+  }
+
+  @override
+  EmbeddedServerRuntimeState get runtimeState => _runtime.state;
 
   static EmbeddedServerConfig _loadConfig(SharedPreferences prefs) {
     final raw = prefs.getString(_kConfigKey);
@@ -108,26 +122,21 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     await _persistNonSecretConfig();
   }
 
-  Future<void> _persistNonSecretConfig() async {
+  Future<void> _persistNonSecretConfig([EmbeddedServerConfig? value]) async {
     await _prefs.setString(
       _kConfigKey,
-      jsonEncodeMap(config.toPersistedJson()),
+      jsonEncodeMap((value ?? config).toPersistedJson()),
     );
   }
 
   @override
-  Future<void> updateConfig(EmbeddedServerConfig next) {
-    final operation = _configUpdates.then((_) => _applyConfig(next));
-    // Keep later edits ordered even if one write fails, while still returning
-    // the original error to the caller that initiated the failed update.
-    _configUpdates = operation.then<void>(
-      (_) {},
-      onError: (Object _, StackTrace _) {},
-    );
-    return operation;
-  }
+  Future<void> updateConfig(EmbeddedServerConfig next) =>
+      _runtime.updateConfig(next);
 
-  Future<void> _applyConfig(EmbeddedServerConfig next) async {
+  Future<EmbeddedServerConfig> _applyConfig(
+    EmbeddedServerConfig next,
+    RuntimeEffectContext context,
+  ) async {
     final jwt = next.rzvJwt.trim();
     if (jwt != config.rzvJwt) {
       if (!_secrets.isAvailable && jwt.isNotEmpty) {
@@ -141,8 +150,9 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
         }
       }
     }
-    configState = next.copyWith(rzvJwt: jwt);
-    await _persistNonSecretConfig();
+    final applied = next.copyWith(rzvJwt: jwt);
+    await _persistNonSecretConfig(applied);
+    return applied;
   }
 
   /// Generate a fresh bearer token via the native RNG (empty if unavailable).
@@ -152,22 +162,26 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   /// Start the embedded server with the current config. Non-blocking; status
   /// is reflected through [status] as the poller advances.
   @override
-  Future<void> start() async {
+  Future<void> start() => _runtime.start();
+
+  Future<EmbeddedServerStatus> _startNative(
+    RuntimeEffectContext context,
+  ) async {
     final lib = _lib;
-    if (lib == null) return;
+    if (lib == null) return status;
     lib.start(jsonEncode(config.toRuntimeJson()));
-    _startPolling();
-    await _refresh();
+    return _readStatus(force: true) ?? status;
   }
 
   /// Stop the embedded server. Idempotent.
   @override
-  Future<void> stop() async {
+  Future<void> stop() => _runtime.stop();
+
+  Future<EmbeddedServerStatus> _stopNative(RuntimeEffectContext context) async {
     final lib = _lib;
-    if (lib == null) return;
+    if (lib == null) return status;
     lib.stop();
-    await _refresh();
-    if (!status.starting && !status.running) _stopPolling();
+    return _readStatus(force: true) ?? status;
   }
 
   /// Last [n] log lines from the native ring (empty list if unavailable).
@@ -219,46 +233,42 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     );
   }
 
-  void _startPolling() {
-    _poll ??= Timer.periodic(
-      const Duration(seconds: 2),
-      (_) => unawaited(_refresh()),
-    );
-  }
-
-  void _stopPolling() {
-    _poll?.cancel();
-    _poll = null;
-  }
-
   String _lastRaw = '';
 
-  Future<void> _refresh() async {
+  Future<EmbeddedServerStatus?> _probeStatus(
+    RuntimeEffectContext context,
+  ) async => _readStatus(force: false);
+
+  EmbeddedServerStatus? _readStatus({required bool force}) {
     final lib = _lib;
-    if (lib == null) return;
+    if (lib == null) return null;
     final String raw;
     try {
       raw = lib.statusJson();
     } catch (_) {
-      return;
+      return null;
     }
     // Only react when the status actually changed — the poll runs every couple
     // of seconds and an unchanged snapshot shouldn't rebuild the app.
-    if (raw == _lastRaw) return;
+    if (!force && raw == _lastRaw) return null;
     _lastRaw = raw;
     final map = jsonDecodeMap(raw);
-    statusState = map == null
+    return map == null
         ? const EmbeddedServerStatus()
         : embeddedServerStatusFromJson(map);
-    // Stop the poll loop once we settle into a terminal (non-running) state.
-    if (!status.running && !status.starting) _stopPolling();
-    // The host observes this property and registers the running server as a
-    // connectable target — the service itself stays client-agnostic.
+  }
+
+  void _projectRuntime(
+    EmbeddedServerRuntimeState runtime, {
+    EmbeddedServerStatus? status,
+    EmbeddedServerConfig? config,
+  }) {
+    viewModel.applyRuntime(runtime, status: status, config: config);
   }
 
   @override
   void dispose() {
-    _stopPolling();
+    _runtime.dispose();
     super.dispose();
   }
 }

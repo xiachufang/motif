@@ -8,6 +8,8 @@ part of 'workspace_connection_view_model.dart';
 
 abstract class _$WorkspaceConnectionViewModel with ObservableModelMixin {
   _$WorkspaceConnectionViewModel(
+    WorkspaceRuntimeState runtime,
+    WorkspaceAttachmentRuntimeState attachment,
     WorkspaceConnectionPhase phase,
     bool desiredConnected,
     bool transportAvailable,
@@ -15,7 +17,9 @@ abstract class _$WorkspaceConnectionViewModel with ObservableModelMixin {
     String? message,
     ConnectionBlocker? blocker,
     String? attachedSession,
-  ) : _phase = phase,
+  ) : _runtime = runtime,
+      _attachment = attachment,
+      _phase = phase,
       _desiredConnected = desiredConnected,
       _transportAvailable = transportAvailable,
       _reconnectAttempt = reconnectAttempt,
@@ -23,6 +27,8 @@ abstract class _$WorkspaceConnectionViewModel with ObservableModelMixin {
       _blocker = blocker,
       _attachedSession = attachedSession {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
+      observationRegisterDebugProperty(_attachmentKey, () => _attachment);
       observationRegisterDebugProperty(_phaseKey, () => _phase);
       observationRegisterDebugProperty(
         _desiredConnectedKey,
@@ -44,6 +50,42 @@ abstract class _$WorkspaceConnectionViewModel with ObservableModelMixin {
       );
     }
   }
+  final ObservationKey<WorkspaceRuntimeState> _runtimeKey =
+      ObservationKey<WorkspaceRuntimeState>(
+        'WorkspaceConnectionViewModel.runtime',
+      );
+  WorkspaceRuntimeState _runtime;
+
+  WorkspaceRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(WorkspaceRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
+  final ObservationKey<WorkspaceAttachmentRuntimeState> _attachmentKey =
+      ObservationKey<WorkspaceAttachmentRuntimeState>(
+        'WorkspaceConnectionViewModel.attachment',
+      );
+  WorkspaceAttachmentRuntimeState _attachment;
+
+  WorkspaceAttachmentRuntimeState get attachment {
+    observationAccess(_attachmentKey);
+    return _attachment;
+  }
+
+  set attachment(WorkspaceAttachmentRuntimeState value) {
+    if (_attachment == value) return;
+    observationMutation(_attachmentKey, () {
+      _attachment = value;
+    });
+  }
+
   final ObservationKey<WorkspaceConnectionPhase> _phaseKey =
       ObservationKey<WorkspaceConnectionPhase>(
         'WorkspaceConnectionViewModel.phase',

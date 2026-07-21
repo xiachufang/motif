@@ -9,13 +9,16 @@ part of 'embedded_server_view_model.dart';
 abstract class _$EmbeddedServerViewModel with ObservableModelMixin {
   _$EmbeddedServerViewModel(
     bool available,
+    EmbeddedServerRuntimeState runtime,
     EmbeddedServerConfig config,
     EmbeddedServerStatus status,
   ) : _available = available,
+      _runtime = runtime,
       _config = config,
       _status = status {
     if (!ObservationDebug.isReleaseMode) {
       observationRegisterDebugProperty(_availableKey, () => _available);
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_configKey, () => _config);
       observationRegisterDebugProperty(_statusKey, () => _status);
     }
@@ -34,6 +37,24 @@ abstract class _$EmbeddedServerViewModel with ObservableModelMixin {
     if (_available == value) return;
     observationMutation(_availableKey, () {
       _available = value;
+    });
+  }
+
+  final ObservationKey<EmbeddedServerRuntimeState> _runtimeKey =
+      ObservationKey<EmbeddedServerRuntimeState>(
+        'EmbeddedServerViewModel.runtime',
+      );
+  EmbeddedServerRuntimeState _runtime;
+
+  EmbeddedServerRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(EmbeddedServerRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
     });
   }
 

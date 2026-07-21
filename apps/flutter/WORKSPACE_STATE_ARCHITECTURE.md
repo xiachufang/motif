@@ -7,7 +7,8 @@
 
 - 一个 `ServerInstance` 对应一个已配置的 motifd Server。
 - 一个 `WorkspaceInstance` 对应一个确定的 `(serverId, session)`。
-- 所有可被 UI 或协调器读取的数据都属于 Observable ViewModel 树。
+- 长期控制事实属于 Runtime control state tree；UI 可读数据属于 Observable
+  projection tree。
 - RPC、Timer、Tunnel、Forwarder、Subscription 等资源不进入状态树。
 - UI 读取 ViewModel，通过 Controller/Service 发出命令。
 - ViewModel 只向下组合，不依赖 Controller、Service、Registry 或 AppState。
@@ -18,6 +19,61 @@
 文件不 import Controller、Service、网络实现或平台实现。
 
 ## 1. Runtime hierarchy
+
+当前实现有两棵同构但职责不同的树，而不是把所有内容塞进一个巨大对象：
+
+1. **Runtime control tree** 是控制面的事实来源，保存 phase、intent、generation、
+   request/operation id、retry metadata 和 pending ownership。
+2. **Observable projection tree** 保存 UI 数据与 runtime state 的只读投影。列表、
+   terminal metadata、配置和错误文案仍通过 ViewModel 被 UI 观察。
+
+“节点”指 ownership tree 中一个有独立生命周期的控制单元。每个节点由 immutable
+runtime state、同步 reducer、keyed effects、resource adapter 和 ViewModel projection
+组成。父节点拥有子节点的生命周期，但不会把所有子状态复制进一个全局 snapshot；
+这样 Server 或 PTY 节点变化不会复制整棵 App 树，也不会扩大 UI rebuild 范围。
+
+```text
+App runtime node
+├── lifecycle + startup intent
+├── Tailscale runtime node
+│   ├── native lifecycle
+│   └── health monitoring
+├── Embedded server runtime node
+│   ├── native lifecycle
+│   ├── status polling
+│   └── ordered config writes
+├── Push runtime node
+│   └── per-server registration nodes
+├── Server runtime node(serverId)
+│   ├── route / connection / catalog / recovery
+│   └── Device runtime node
+└── Workspace runtime node(serverId, session)
+    ├── activity region
+    ├── link / retry region
+    ├── attachment runtime node
+    ├── terminal stream runtime node
+    ├── view activation runtime node
+    └── remote-port runtime node
+```
+
+所有节点遵循同一条单向路径：
+
+```text
+Event -> Reducer(old state) -> new state + Effects
+                                  |
+                                  +-> transactional ViewModel projection
+                                  +-> Effect runner -> ResultEvent
+```
+
+Reducer 不执行 I/O。Effect runner 对同 key 的工作统一提供 `parallel`、
+`droppable`、`restartable`、`serial` 和 `coalescing` 语义；scope token 与节点中的
+generation/operation id 共同拒绝迟到结果。可取消 delay 取代 Controller 自己持有的
+Timer，资源仍由 Controller/Service adapter 持有并绑定节点生命周期。
+
+进入 Runtime state 的内容包括 desired connection、连接/刷新阶段、retry attempt、
+request id、pending operation ownership 和可判断的错误。Socket、RpcClient、FFI handle、
+Timer 实例、Completer、terminal cells/bytes、Picture cache 与 secret 内容都不是状态节点；
+它们是 effect/resource 层或数据面，由 state 中的 identity/generation 约束。
 
 ```text
 AppState (application coordinator)
@@ -584,7 +640,9 @@ class ViewTabsViewModel extends _$ViewTabsViewModel {
 }
 ```
 
-Pending activation、rollback snapshot 和 Completer 属于 `ViewController`，不属于状态树。
+Pending activation、rollback snapshot、generation 和 target view id 属于
+`ViewRuntimeState`；它们决定迟到结果是否有效。仅用于让命令调用方等待完成的
+Completer 属于 Controller resource adapter，不进入状态树。
 
 ### 4.14 RemotePortsViewModel
 

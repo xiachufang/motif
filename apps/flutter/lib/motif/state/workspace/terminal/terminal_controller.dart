@@ -4,6 +4,7 @@ import '../../../log/log.dart';
 import '../../../models/motif_proto.dart';
 import '../../../terminal/terminal_session.dart';
 import 'terminal_runtime_policy.dart';
+import 'terminal_stream_runtime.dart';
 import 'pty_output_hub.dart';
 import 'terminal_view_model.dart';
 
@@ -60,6 +61,21 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
     required this.runtime,
     required this.viewProjection,
   }) {
+    _streamRuntime = switch (runtime) {
+      DesktopTerminalRuntimePolicy(:final backgroundRestoreDelay) =>
+        TerminalStreamRuntimeController(
+          host: this,
+          policy: TerminalStreamPlatformPolicy.desktop,
+          backgroundRestoreDelay: backgroundRestoreDelay,
+          onStateChanged: (state) => viewModel.runtime = state,
+        ),
+      MobileTerminalRuntimePolicy() => TerminalStreamRuntimeController(
+        host: this,
+        policy: TerminalStreamPlatformPolicy.mobile,
+        onStateChanged: (state) => viewModel.runtime = state,
+      ),
+      _ => null,
+    };
     _output.describeActive = () =>
         'activePty=$activePtyId liveTabs=${liveTabPtyIds.length}';
     _output.onReplayOverflow = (ptyId, pendingBytes) {
@@ -84,6 +100,10 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   final TerminalRuntimePolicy runtime;
   final TerminalViewProjection viewProjection;
   final PtyOutputHub _output = PtyOutputHub();
+  late final TerminalStreamRuntimeController? _streamRuntime;
+
+  TerminalStreamRuntimeState get runtimeState =>
+      _streamRuntime?.state ?? viewModel.runtime;
 
   @override
   bool get canInput => transport.canInput();
@@ -151,10 +171,12 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
 
   @override
   Future<void> activatePtyStream(String ptyId) =>
+      _streamRuntime?.surfaceReady(ptyId) ??
       runtime.onTerminalSurfaceReady(this, ptyId);
 
   @override
   Future<void> deactivatePtyStream(String ptyId) =>
+      _streamRuntime?.surfaceDisposed(ptyId) ??
       runtime.onTerminalSurfaceDisposed(this, ptyId);
 
   @override
@@ -204,11 +226,28 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
     _output.clearAll();
   }
 
-  void onSessionAttached() => runtime.onSessionAttached(this);
+  void onSessionAttached() {
+    final streamRuntime = _streamRuntime;
+    if (streamRuntime != null) {
+      streamRuntime.sessionAttached();
+    } else {
+      runtime.onSessionAttached(this);
+    }
+  }
 
-  void onPtySubscriptionsChanged() => runtime.onPtySubscriptionsChanged(this);
+  void onPtySubscriptionsChanged() {
+    final streamRuntime = _streamRuntime;
+    if (streamRuntime != null) {
+      streamRuntime.subscriptionsChanged();
+    } else {
+      runtime.onPtySubscriptionsChanged(this);
+    }
+  }
 
   void onActiveViewChanged() => runtime.onActiveViewChanged(this);
 
-  void dispose() => _output.dispose();
+  void dispose() {
+    _streamRuntime?.dispose();
+    _output.dispose();
+  }
 }

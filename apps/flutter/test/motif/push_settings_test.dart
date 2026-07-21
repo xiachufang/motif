@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:motif/motif/platform/push_crypto.dart';
 import 'package:motif/motif/platform/secret_store.dart';
@@ -6,6 +7,7 @@ import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
+import 'package:motif/motif/state/server/push_runtime_state.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -195,6 +197,46 @@ void main() {
     expect(client.unregisteredTokens, ['token-1']);
     expect(platformPush.unregisterCount, 1);
 
+    app.dispose();
+  });
+
+  test('disabling push invalidates an in-flight first registration', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"Dev box","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final push = PushSettingsStore(prefs);
+    final platformPush = _FakePushService()
+      ..registrationGate = Completer<void>();
+    final client = _PushServerFixture('instance-1');
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: push,
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+      serverTransportFactory: (_) => _pushTransport(client),
+    );
+    app.serverInstance('s1');
+    await Future<void>.delayed(Duration.zero);
+    expect(platformPush.registerCount, 1);
+
+    await push.setEnabled(false);
+    await Future<void>.delayed(Duration.zero);
+    platformPush.registrationGate!.complete();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.registeredTokens, isEmpty);
+    expect(
+      push.viewModel.runtime.servers['s1']?.registration,
+      isA<PushServerIdle>(),
+    );
     app.dispose();
   });
 
@@ -427,6 +469,7 @@ void main() {
 class _FakePushService implements PushService {
   int registerCount = 0;
   int unregisterCount = 0;
+  Completer<void>? registrationGate;
   void Function(String e, String n)? _handler;
   void Function({required String? session, String? instanceId})? _openHandler;
   ({String? session, String? instanceId})? pendingOpen;
@@ -437,6 +480,7 @@ class _FakePushService implements PushService {
   @override
   Future<PushRegistration?> register({required String encKeyBase64}) async {
     registerCount += 1;
+    await registrationGate?.future;
     return PushRegistration(
       deviceToken: 'token-$registerCount',
       platform: 'ios',

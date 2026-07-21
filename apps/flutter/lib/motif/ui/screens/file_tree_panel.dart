@@ -181,48 +181,57 @@ class _FileTreePanelState extends State<FileTreePanel> {
           left: MotifSpacing.md + depth * MotifSpacing.lg,
           // right: MotifSpacing.md,
         ),
-        child: Row(
-          children: [
-            Icon(
-              isDir
-                  ? (expanded ? Icons.folder_open : Icons.folder)
-                  : Icons.insert_drive_file_outlined,
-              size: 18,
-              color: isDir ? c.accent : c.textSecondary,
-            ),
-            const SizedBox(width: MotifSpacing.sm),
-            Expanded(
-              child: Text(
-                e.name,
-                style: MotifType.body.copyWith(color: c.textPrimary),
-                overflow: TextOverflow.ellipsis,
+        child: SizedBox(
+          height: MotifControlSize.lg,
+          child: Row(
+            children: [
+              Icon(
+                isDir
+                    ? (expanded ? Icons.folder_open : Icons.folder)
+                    : Icons.insert_drive_file_outlined,
+                size: 18,
+                color: isDir ? c.accent : c.textSecondary,
               ),
-            ),
-            if (e.gitStatus != null && e.gitStatus != GitFileStatus.unmodified)
-              Text(
-                _gitGlyph(e.gitStatus!),
-                style: MotifType.monoSmall.copyWith(color: c.accent),
+              const SizedBox(width: MotifSpacing.sm),
+              Expanded(
+                child: Text(
+                  e.name,
+                  style: MotifType.body.copyWith(color: c.textPrimary),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-            PopupMenuButton<String>(
-              style: motifNoButtonFeedback,
-              icon: Icon(Icons.more_vert, size: 18, color: c.textTertiary),
-              onSelected: (v) {
-                final parent = _parentOf(path);
-                if (v == 'rename') _rename(path, e.name, parent);
-                if (v == 'delete') _delete(path, parent);
-                if (v == 'newfile') _newEntry(path, isDir: false);
-                if (v == 'newfolder') _newEntry(path, isDir: true);
-              },
-              itemBuilder: (_) => [
-                if (isDir) ...const [
-                  PopupMenuItem(value: 'newfile', child: Text('New file')),
-                  PopupMenuItem(value: 'newfolder', child: Text('New folder')),
+              if (e.gitStatus != null &&
+                  e.gitStatus != GitFileStatus.unmodified)
+                Text(
+                  _gitGlyph(e.gitStatus!),
+                  style: MotifType.monoSmall.copyWith(color: c.accent),
+                ),
+              PopupMenuButton<String>(
+                style: motifNoButtonFeedback.copyWith(
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                icon: Icon(Icons.more_vert, size: 18, color: c.textTertiary),
+                onSelected: (v) {
+                  final parent = _parentOf(path);
+                  if (v == 'rename') _rename(path, e.name, parent);
+                  if (v == 'delete') _delete(path, parent);
+                  if (v == 'newfile') _newEntry(path, isDir: false);
+                  if (v == 'newfolder') _newEntry(path, isDir: true);
+                },
+                itemBuilder: (_) => [
+                  if (isDir) ...const [
+                    PopupMenuItem(value: 'newfile', child: Text('New file')),
+                    PopupMenuItem(
+                      value: 'newfolder',
+                      child: Text('New folder'),
+                    ),
+                  ],
+                  const PopupMenuItem(value: 'rename', child: Text('Rename')),
+                  const PopupMenuItem(value: 'delete', child: Text('Delete')),
                 ],
-                const PopupMenuItem(value: 'rename', child: Text('Rename')),
-                const PopupMenuItem(value: 'delete', child: Text('Delete')),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
     );

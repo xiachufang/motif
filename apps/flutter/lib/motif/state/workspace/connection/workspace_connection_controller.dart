@@ -27,6 +27,7 @@ import '../workspace_content_view_model.dart';
 import '../workspace_api.dart';
 import '../workspace_event_router.dart';
 import '../workspace_presence_view_model.dart';
+import 'workspace_attachment_runtime.dart';
 
 part 'workspace_connection_transport.dart';
 part 'workspace_attachment_recovery.dart';
@@ -48,14 +49,27 @@ class WorkspaceConnectionController implements SessionAttachment {
     clients: ObservableList(),
   );
 
+  /// Control-plane bridge installed by the owning workspace runtime node.
+  /// Feature state stays in the focused ViewModels; lifecycle decisions are
+  /// driven by the parent machine rather than Observation side effects.
+  VoidCallback? onRuntimeStatusChanged;
+
   @protected
-  void updateConnectionState(WorkspaceConnectionStatus value, {bool? live}) =>
-      connection.applyStatus(value, live: live);
+  void updateConnectionState(WorkspaceConnectionStatus value, {bool? live}) {
+    connection.applyStatus(value, live: live);
+    onRuntimeStatusChanged?.call();
+  }
 
   WorkspaceConnectionController({
     required this.session,
     TerminalRuntimePolicy? runtime,
   }) {
+    _attachmentRuntime = WorkspaceAttachmentRuntimeController(
+      performAttach: _attachSession,
+      performRecovery: _reattachExpiredAttachment,
+      currentRpcSessionId: () => _rpc?.sessionId,
+      onStateChanged: (state) => connection.attachment = state,
+    );
     _remotePorts = RemotePortController(
       transport: RemotePortTransport(
         call: (method, [params = const {}]) {
@@ -187,21 +201,23 @@ class WorkspaceConnectionController implements SessionAttachment {
   late final WorkspaceApi _workspace;
   WorkspaceApi get workspace => _workspace;
   late final WorkspaceEventRouter events;
+  late final WorkspaceAttachmentRuntimeController _attachmentRuntime;
+  WorkspaceAttachmentRuntimeState get attachmentRuntimeState =>
+      _attachmentRuntime.state;
   TerminalViewModel get _terminalState => terminal.viewModel;
   ViewTabsViewModel get _viewState => viewsController.viewModel;
 
   WorkspaceConnectionStatus get _state => connection.status;
-  set _state(WorkspaceConnectionStatus value) => connection.applyStatus(value);
+  set _state(WorkspaceConnectionStatus value) => updateConnectionState(value);
   WorkspaceConnectionStatus get state => _state;
 
   RpcClient? _rpc;
   void _setRpc(RpcClient? value) {
     _rpc = value;
     connection.transportAvailable = value != null;
+    onRuntimeStatusChanged?.call();
   }
 
-  Future<void>? _attachInFlight;
-  Future<void>? _attachmentRecovery;
   StreamSubscription<MotifEvent>? _eventSub;
   int lastSeq = 0;
   int? resumeSequence;
@@ -251,7 +267,7 @@ class WorkspaceConnectionController implements SessionAttachment {
       _handleConnectionLost(message);
 
   @override
-  Future<void> attach() => _attachImpl();
+  Future<void> attach() => _attachmentRuntime.attach();
 
   @override
   Future<void> detach() => _detachImpl();
@@ -284,7 +300,9 @@ class WorkspaceConnectionController implements SessionAttachment {
   }
 
   void dispose() {
-    unawaited(_teardownRpc());
+    unawaited(_teardownRpc().whenComplete(remotePorts.dispose));
+    _attachmentRuntime.dispose();
+    viewsController.dispose();
     terminal.dispose();
   }
 }

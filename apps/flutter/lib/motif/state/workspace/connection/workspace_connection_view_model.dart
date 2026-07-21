@@ -1,6 +1,8 @@
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../connection/connection_state.dart';
+import '../workspace_runtime_state.dart';
+import 'workspace_attachment_runtime.dart';
 
 part 'workspace_connection_view_model.g.dart';
 
@@ -54,6 +56,9 @@ class ConnSuspended extends WorkspaceConnectionStatus {
 @ObservableModel()
 class WorkspaceConnectionViewModel extends _$WorkspaceConnectionViewModel {
   WorkspaceConnectionViewModel({
+    WorkspaceRuntimeState runtime = const WorkspaceRuntimeState.initial(),
+    WorkspaceAttachmentRuntimeState attachment =
+        const WorkspaceAttachmentDetached(),
     WorkspaceConnectionPhase phase = WorkspaceConnectionPhase.disconnected,
     bool desiredConnected = false,
     bool transportAvailable = false,
@@ -62,6 +67,8 @@ class WorkspaceConnectionViewModel extends _$WorkspaceConnectionViewModel {
     ConnectionBlocker? blocker,
     String? attachedSession,
   }) : super(
+         runtime,
+         attachment,
          phase,
          desiredConnected,
          transportAvailable,

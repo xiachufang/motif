@@ -8,12 +8,21 @@ Motif is a Flutter shell around remote motifd servers, the Ghostty terminal
 engine, and optional native platform services. Boundaries are enforced by
 focused interfaces and composition inside one Dart package.
 
+The runtime uses two coordinated trees. Immutable runtime nodes are the
+authoritative control plane; Observable ViewModels are transactional UI/data
+projections. A node processes `Event -> Reducer -> State + Effects`, and keyed
+effects return result events only while their scope and operation identity are
+current. This replaces controller-owned retry timers, generation counters,
+in-flight flags, and Future chains without putting sockets, FFI handles,
+terminal bytes, or caches into state.
+
 ## Runtime composition
 
 ```text
 MotifApp
 └── AppState                         application coordinator
-    ├── AppViewModel                 Observable process state root
+    ├── AppRuntimeController         lifecycle/startup control root
+    ├── AppViewModel                 Observable process projection root
     ├── PlatformServices             Tailscale, speech, push, secrets
     ├── ServerInstance registry
     │   └── ServerInstance
@@ -29,8 +38,15 @@ MotifApp
     │       ├── ViewController
     │       ├── RemotePortController
     │       └── WorkspaceApi
-    └── PushCoordinator
+    └── PushCoordinator              push runtime node
 ```
+
+Server, Workspace, attachment, terminal stream, view activation, remote-port,
+device, Tailscale, and embedded-server owners each contain a focused
+`RuntimeMachine`. The composition hierarchy makes these machines one ownership
+tree; they intentionally do not form one monolithic state object, so a leaf
+transition neither copies the whole application state nor rebuilds unrelated
+UI.
 
 One `ServerInstance` owns one configured server control channel. One
 `WorkspaceInstance` owns exactly one `(serverId, session)` attachment. SSH,
@@ -86,6 +102,9 @@ into a mutual dependency graph.
   are runtime resources and never enter the ViewModel tree.
 - `WorkspaceLifecycleController` projects reconnect metadata into the same
   `WorkspaceConnectionViewModel`; it does not keep a parallel access state.
+- Runtime phases, desired intent, retry metadata, generation/request ids, and
+  pending-operation ownership live in immutable runtime nodes. ViewModels do
+  not make concurrency decisions.
 - `WorkspaceScope` injects focused capabilities. Widgets never receive a
   `WorkspaceInstance` or a broad command facade.
 - PTY bytes bypass the observable state tree. `PtyOutputHub` delivers bytes

@@ -8,19 +8,22 @@ part of 'tailscale_view_model.dart';
 
 abstract class _$TailscaleViewModel with ObservableModelMixin {
   _$TailscaleViewModel(
+    TailscaleRuntimeState runtime,
     TailscaleStatus status,
     String? authUrl,
     String? detail,
     bool discovering,
     ObservableList<TailscalePeer> peers,
     String? error,
-  ) : _status = status,
+  ) : _runtime = runtime,
+      _status = status,
       _authUrl = authUrl,
       _detail = detail,
       _discovering = discovering,
       _peers = peers,
       _error = error {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_statusKey, () => _status);
       observationRegisterDebugProperty(_authUrlKey, () => _authUrl);
       observationRegisterDebugProperty(_detailKey, () => _detail);
@@ -29,6 +32,22 @@ abstract class _$TailscaleViewModel with ObservableModelMixin {
       observationRegisterDebugProperty(_errorKey, () => _error);
     }
   }
+  final ObservationKey<TailscaleRuntimeState> _runtimeKey =
+      ObservationKey<TailscaleRuntimeState>('TailscaleViewModel.runtime');
+  TailscaleRuntimeState _runtime;
+
+  TailscaleRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(TailscaleRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<TailscaleStatus> _statusKey =
       ObservationKey<TailscaleStatus>('TailscaleViewModel.status');
   TailscaleStatus _status;

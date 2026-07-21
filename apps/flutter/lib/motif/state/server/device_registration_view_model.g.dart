@@ -8,18 +8,37 @@ part of 'device_registration_view_model.dart';
 
 abstract class _$DeviceRegistrationViewModel with ObservableModelMixin {
   _$DeviceRegistrationViewModel(
+    DeviceRuntimeState runtime,
     DeviceRegistrationPhase phase,
     String? instanceId,
     String? error,
-  ) : _phase = phase,
+  ) : _runtime = runtime,
+      _phase = phase,
       _instanceId = instanceId,
       _error = error {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_phaseKey, () => _phase);
       observationRegisterDebugProperty(_instanceIdKey, () => _instanceId);
       observationRegisterDebugProperty(_errorKey, () => _error);
     }
   }
+  final ObservationKey<DeviceRuntimeState> _runtimeKey =
+      ObservationKey<DeviceRuntimeState>('DeviceRegistrationViewModel.runtime');
+  DeviceRuntimeState _runtime;
+
+  DeviceRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(DeviceRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<DeviceRegistrationPhase> _phaseKey =
       ObservationKey<DeviceRegistrationPhase>(
         'DeviceRegistrationViewModel.phase',

@@ -8,18 +8,37 @@ part of 'remote_ports_view_model.dart';
 
 abstract class _$RemotePortsViewModel with ObservableModelMixin {
   _$RemotePortsViewModel(
+    RemotePortRuntimeState runtime,
     RemotePortsPhase phase,
     ObservableList<RemotePortMapping> mappings,
     String? error,
-  ) : _phase = phase,
+  ) : _runtime = runtime,
+      _phase = phase,
       _mappings = mappings,
       _error = error {
     if (!ObservationDebug.isReleaseMode) {
+      observationRegisterDebugProperty(_runtimeKey, () => _runtime);
       observationRegisterDebugProperty(_phaseKey, () => _phase);
       observationRegisterDebugProperty(_mappingsKey, () => _mappings);
       observationRegisterDebugProperty(_errorKey, () => _error);
     }
   }
+  final ObservationKey<RemotePortRuntimeState> _runtimeKey =
+      ObservationKey<RemotePortRuntimeState>('RemotePortsViewModel.runtime');
+  RemotePortRuntimeState _runtime;
+
+  RemotePortRuntimeState get runtime {
+    observationAccess(_runtimeKey);
+    return _runtime;
+  }
+
+  set runtime(RemotePortRuntimeState value) {
+    if (_runtime == value) return;
+    observationMutation(_runtimeKey, () {
+      _runtime = value;
+    });
+  }
+
   final ObservationKey<RemotePortsPhase> _phaseKey =
       ObservationKey<RemotePortsPhase>('RemotePortsViewModel.phase');
   RemotePortsPhase _phase;

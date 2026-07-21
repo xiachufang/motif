@@ -20,6 +20,8 @@ import 'package:http/http.dart' as http;
 import '../log/log.dart';
 import '../models/motif_proto.dart';
 import '../net/proxy_client.dart';
+import '../state/platform/tailscale_runtime_controller.dart';
+import '../state/runtime/runtime_effect.dart';
 import 'services.dart';
 import 'tailscale_ffi.dart';
 
@@ -41,20 +43,28 @@ class TailscaleNativeService extends TailscaleService {
     required this.stateDir,
     this.hostname = 'motif-flutter',
     this.controlUrl,
-  });
+  }) {
+    _runtime = TailscaleRuntimeController(
+      startNode: _startNativeNode,
+      stopNode: _stopNativeNode,
+      probeHealth: _probeNativeHealth,
+      restartAuthKey: () => _lastAuthKey,
+      onStateChanged: _applyRuntimeState,
+      healthProbeInterval: _healthProbeInterval,
+      maxMissedHealthProbes: _maxMissedHealthProbes,
+      maxConsecutiveDegradedProbes: _maxConsecutiveDegradedProbes,
+      autoRestartMinInterval: _autoRestartMinInterval,
+    );
+  }
 
   LibTailscale? _lib;
   int? _sd;
   TailscaleLoopback? _loopback;
-  int _generation = 0;
-  Timer? _healthTimer;
-  bool _healthProbeInFlight = false;
-  int _missedHealthProbes = 0;
-  int _consecutiveDegradedProbes = 0;
-  String? _lastBackendState;
   String? _lastAuthKey;
-  DateTime? _lastAutoRestartAt;
-  bool _restarting = false;
+  late final TailscaleRuntimeController _runtime;
+
+  @override
+  TailscaleRuntimeState get runtimeState => _runtime.state;
 
   /// The active loopback proxy (host:port + credential), or null when not up.
   TailscaleLoopback? get proxy => _loopback;
@@ -79,60 +89,76 @@ class TailscaleNativeService extends TailscaleService {
     );
   }
 
-  void _set(TailscaleState s) {
-    if (state == s) return;
-    Log.i(
-      'state ${state.status.name} -> ${s.status.name}'
-      '${s.detail == null ? '' : ' (${s.detail})'}',
-      name: _logName,
-    );
-    tailscaleState = s;
-  }
-
-  bool _isCurrent(int generation, int sd) =>
-      _generation == generation && _sd == sd;
-
-  void _setCurrent(int generation, int sd, TailscaleState s) {
-    if (_isCurrent(generation, sd)) _set(s);
+  void _applyRuntimeState(TailscaleRuntimeState runtime) {
+    final previousRuntime = viewModel.runtime;
+    final previous = state;
+    final next = runtime.visibleState;
+    if (previous != next) {
+      Log.i(
+        'state ${previous.status.name} -> ${next.status.name}'
+        '${next.detail == null ? '' : ' (${next.detail})'}',
+        name: _logName,
+      );
+    }
+    final previousHealth = previousRuntime.health;
+    final nextHealth = runtime.health;
+    if (nextHealth is TailscaleHealthMonitoring) {
+      if (nextHealth.missedProbes > 0 &&
+          (previousHealth is! TailscaleHealthMonitoring ||
+              previousHealth.missedProbes != nextHealth.missedProbes)) {
+        Log.w(
+          'health probe missed (${nextHealth.missedProbes})',
+          name: _logName,
+        );
+      }
+      if (nextHealth.lastBackendState != null &&
+          (previousHealth is! TailscaleHealthMonitoring ||
+              previousHealth.lastBackendState != nextHealth.lastBackendState)) {
+        Log.i(
+          'health backendState=${nextHealth.lastBackendState}',
+          name: _logName,
+        );
+      }
+    }
+    if (runtime.lifecycle is TailscaleLifecycleRestarting &&
+        previousRuntime.lifecycle is! TailscaleLifecycleRestarting) {
+      Log.w(
+        'degraded for $_maxConsecutiveDegradedProbes consecutive probes; '
+        'restarting tsnet node',
+        name: _logName,
+      );
+    }
+    viewModel.applyRuntime(runtime);
   }
 
   @override
-  Future<void> start({String? authKey}) async {
+  Future<void> start({String? authKey}) {
     final hasAuthKey = authKey != null && authKey.isNotEmpty;
     if (hasAuthKey) _lastAuthKey = authKey;
-    final active =
-        state.status == TailscaleStatus.running ||
-        state.status == TailscaleStatus.starting ||
-        (state.status == TailscaleStatus.needsAuth && _sd != null);
-    if (active && hasAuthKey && state.status == TailscaleStatus.needsAuth) {
-      await stop();
-    } else if (active) {
-      Log.i('start skipped; already ${state.status.name}', name: _logName);
-      return;
-    } else if (_sd != null) {
-      // A leftover node from a degraded/failed session shares the state dir
-      // with the one we are about to create; close it first.
-      Log.i(
-        'closing stale node before restart (was ${state.status.name})',
-        name: _logName,
-      );
-      await stop();
-    }
+    return _runtime.start(authKey: authKey);
+  }
+
+  Future<TailscaleState> _startNativeNode(
+    String? authKey,
+    RuntimeEffectContext context,
+    TailscaleProgressSink onProgress,
+  ) async {
+    final hasAuthKey = authKey != null && authKey.isNotEmpty;
     Log.i('start hasAuthKey=$hasAuthKey stateDir=$stateDir', name: _logName);
-    _set(const TailscaleState(TailscaleStatus.starting));
-    final generation = ++_generation;
     try {
+      if (_sd != null) {
+        Log.i('closing stale node before start', name: _logName);
+        _closeNativeNode();
+      }
+      if (!context.isCurrent) return TailscaleState.stopped;
       final lib = _openLib();
       final sd = lib.create();
       if (sd < 0) {
         Log.e('tailscale_new failed sd=$sd', name: _logName);
-        _set(
-          const TailscaleState(
-            TailscaleStatus.failed,
-            detail: 'tailscale_new failed',
-          ),
+        return const TailscaleState(
+          TailscaleStatus.failed,
+          detail: 'tailscale_new failed',
         );
-        return;
       }
       Directory(stateDir).createSync(recursive: true);
       lib.setDir(sd, stateDir);
@@ -143,49 +169,40 @@ class TailscaleNativeService extends TailscaleService {
       _sd = sd;
 
       if (hasAuthKey) {
-        await _startWithAuthKey(lib, sd, generation);
-      } else {
-        await _startWithBrowserAuth(lib, sd, generation);
+        return await _startWithAuthKey(lib, sd, context);
       }
+      return await _startWithBrowserAuth(lib, sd, context, onProgress);
     } catch (e, st) {
       Log.e('start failed', name: _logName, error: e, stackTrace: st);
-      if (_generation == generation) {
-        _set(TailscaleState(TailscaleStatus.failed, detail: '$e'));
-      }
+      rethrow;
     }
   }
 
-  Future<void> _startWithAuthKey(
+  Future<TailscaleState> _startWithAuthKey(
     LibTailscale lib,
     int sd,
-    int generation,
+    RuntimeEffectContext context,
   ) async {
     final rc = await _runUp(sd);
-    if (!_isCurrent(generation, sd)) return;
-    if (!_handleUpResult(lib, sd, generation, rc)) return;
-    await _ensureLoopback(lib, sd, generation);
+    if (!context.isCurrent) return TailscaleState.stopped;
+    final failure = _upFailure(lib, sd, rc);
+    if (failure != null) {
+      return TailscaleState(TailscaleStatus.failed, detail: failure);
+    }
+    return _ensureLoopback(lib, sd, context);
   }
 
-  Future<void> _startWithBrowserAuth(
+  Future<TailscaleState> _startWithBrowserAuth(
     LibTailscale lib,
     int sd,
-    int generation,
+    RuntimeEffectContext context,
+    TailscaleProgressSink onProgress,
   ) async {
     final lb = lib.loopback(sd);
     if (lb == null) {
-      Log.e(
-        'loopback proxy failed: ${_detail(lib, sd, 'loopback proxy failed')}',
-        name: _logName,
-      );
-      _setCurrent(
-        generation,
-        sd,
-        TailscaleState(
-          TailscaleStatus.degraded,
-          detail: _detail(lib, sd, 'loopback proxy failed'),
-        ),
-      );
-      return;
+      final detail = _detail(lib, sd, 'loopback proxy failed');
+      Log.e('loopback proxy failed: $detail', name: _logName);
+      return TailscaleState(TailscaleStatus.degraded, detail: detail);
     }
     Log.i('loopback proxy at ${lb.proxyAddr}', name: _logName);
     _loopback = lb;
@@ -193,14 +210,16 @@ class TailscaleNativeService extends TailscaleService {
     final upFuture = _runUp(
       sd,
     ).then<Object?>((rc) => rc, onError: (Object error) => error);
+    final cancelled = Object();
     String? authUrl;
     String? lastBackend;
     try {
-      while (_isCurrent(generation, sd)) {
+      while (context.isCurrent) {
         final local = await api.status().timeout(
           const Duration(seconds: 2),
           onTimeout: () => null,
         );
+        if (!context.isCurrent) return TailscaleState.stopped;
         if (local != null) {
           if (local.backendState != lastBackend) {
             lastBackend = local.backendState;
@@ -210,11 +229,9 @@ class TailscaleNativeService extends TailscaleService {
             );
           }
           authUrl = local.authUrl ?? authUrl;
-          _setCurrent(generation, sd, local.toState(fallbackAuthUrl: authUrl));
+          onProgress(local.toState(fallbackAuthUrl: authUrl));
         } else if (authUrl == null) {
-          _setCurrent(
-            generation,
-            sd,
+          onProgress(
             const TailscaleState(
               TailscaleStatus.starting,
               detail: 'Waiting for Tailscale login URL…',
@@ -224,21 +241,21 @@ class TailscaleNativeService extends TailscaleService {
 
         final upResult = await Future.any<Object?>([
           upFuture,
-          Future<Object?>.delayed(const Duration(seconds: 2), () => null),
+          context
+              .delay(const Duration(seconds: 2))
+              .then<Object?>((elapsed) => elapsed ? null : cancelled),
         ]);
+        if (identical(upResult, cancelled)) return TailscaleState.stopped;
         if (upResult == null) continue;
-        if (!_isCurrent(generation, sd)) return;
+        if (!context.isCurrent) return TailscaleState.stopped;
         if (upResult is! int) throw upResult;
-        final rc = upResult;
-        if (!_handleUpResult(lib, sd, generation, rc)) return;
-        _setCurrent(
-          generation,
-          sd,
-          const TailscaleState(TailscaleStatus.running),
-        );
-        _startHealthMonitor(generation, sd, lb);
-        return;
+        final failure = _upFailure(lib, sd, upResult);
+        if (failure != null) {
+          return TailscaleState(TailscaleStatus.failed, detail: failure);
+        }
+        return const TailscaleState(TailscaleStatus.running);
       }
+      return TailscaleState.stopped;
     } finally {
       api.close();
     }
@@ -253,146 +270,51 @@ class TailscaleNativeService extends TailscaleService {
     });
   }
 
-  bool _handleUpResult(LibTailscale lib, int sd, int generation, int rc) {
+  String? _upFailure(LibTailscale lib, int sd, int rc) {
     if (rc == 0) {
       Log.i('tailscale_up ok', name: _logName);
-      return true;
+      return null;
     }
     final detail = _detail(lib, sd, 'tailscale_up rc=$rc');
     Log.e('tailscale_up failed rc=$rc detail=$detail', name: _logName);
-    _setCurrent(
-      generation,
-      sd,
-      TailscaleState(TailscaleStatus.failed, detail: detail),
-    );
-    return false;
+    return detail;
   }
 
-  Future<void> _ensureLoopback(LibTailscale lib, int sd, int generation) async {
+  TailscaleState _ensureLoopback(
+    LibTailscale lib,
+    int sd,
+    RuntimeEffectContext context,
+  ) {
     final lb = lib.loopback(sd);
-    if (!_isCurrent(generation, sd)) return;
+    if (!context.isCurrent) return TailscaleState.stopped;
     if (lb == null) {
-      Log.e(
-        'loopback proxy failed: ${_detail(lib, sd, 'loopback proxy failed')}',
-        name: _logName,
-      );
-      _setCurrent(
-        generation,
-        sd,
-        TailscaleState(
-          TailscaleStatus.degraded,
-          detail: _detail(lib, sd, 'loopback proxy failed'),
-        ),
-      );
-      return;
+      final detail = _detail(lib, sd, 'loopback proxy failed');
+      Log.e('loopback proxy failed: $detail', name: _logName);
+      return TailscaleState(TailscaleStatus.degraded, detail: detail);
     }
     Log.i('loopback proxy at ${lb.proxyAddr}', name: _logName);
     _loopback = lb;
-    _setCurrent(generation, sd, const TailscaleState(TailscaleStatus.running));
-    _startHealthMonitor(generation, sd, lb);
+    return const TailscaleState(TailscaleStatus.running);
   }
 
-  void _startHealthMonitor(int generation, int sd, TailscaleLoopback loopback) {
-    _healthTimer?.cancel();
-    _missedHealthProbes = 0;
-    _consecutiveDegradedProbes = 0;
-    _lastBackendState = null;
-    _healthProbeInFlight = false;
-    _healthTimer = Timer.periodic(_healthProbeInterval, (_) {
-      unawaited(_probeHealth(generation, sd, loopback));
-    });
-    unawaited(_probeHealth(generation, sd, loopback));
-  }
-
-  void _stopHealthMonitor() {
-    _healthTimer?.cancel();
-    _healthTimer = null;
-    _healthProbeInFlight = false;
-    _missedHealthProbes = 0;
-    _consecutiveDegradedProbes = 0;
-    _lastBackendState = null;
-  }
-
-  Future<void> _probeHealth(
-    int generation,
-    int sd,
-    TailscaleLoopback loopback,
+  Future<TailscaleHealthSample?> _probeNativeHealth(
+    RuntimeEffectContext context,
   ) async {
-    if (_healthProbeInFlight || !_isCurrent(generation, sd)) return;
-    _healthProbeInFlight = true;
+    final loopback = _loopback;
+    if (loopback == null || !context.isCurrent) return null;
     final api = TailscaleLocalApiClient(loopback: loopback);
     try {
       final local = await api.status().timeout(
         _healthProbeTimeout,
         onTimeout: () => null,
       );
-      if (!_isCurrent(generation, sd)) return;
-      if (local == null) {
-        _missedHealthProbes++;
-        Log.w('health probe missed ($_missedHealthProbes)', name: _logName);
-        if (_missedHealthProbes >= _maxMissedHealthProbes) {
-          _setCurrent(
-            generation,
-            sd,
-            const TailscaleState(
-              TailscaleStatus.degraded,
-              detail: 'Tailscale status probe failed.',
-            ),
-          );
-          _noteDegradedProbe(generation, sd);
-        }
-        return;
-      }
-      _missedHealthProbes = 0;
-      if (local.backendState != _lastBackendState) {
-        _lastBackendState = local.backendState;
-        Log.i('health backendState=${local.backendState}', name: _logName);
-      }
-      final health = local.toHealthState();
-      _setCurrent(generation, sd, health);
-      if (health.status == TailscaleStatus.degraded) {
-        _noteDegradedProbe(generation, sd);
-      } else {
-        _consecutiveDegradedProbes = 0;
-      }
+      if (!context.isCurrent || local == null) return null;
+      return TailscaleHealthSample(
+        state: local.toHealthState(),
+        backendState: local.backendState,
+      );
     } finally {
       api.close();
-      _healthProbeInFlight = false;
-    }
-  }
-
-  /// A reconnect that never converges (e.g. tsnet stuck in `Starting` after
-  /// iOS suspended the app's sockets) shows up as a run of degraded probes.
-  /// After [_maxConsecutiveDegradedProbes] in a row, tear the node down and
-  /// bring up a fresh one — cached credentials in the state dir keep this
-  /// headless. Rate-limited by [_autoRestartMinInterval].
-  void _noteDegradedProbe(int generation, int sd) {
-    _consecutiveDegradedProbes++;
-    if (_consecutiveDegradedProbes < _maxConsecutiveDegradedProbes) return;
-    if (!_isCurrent(generation, sd)) return;
-    final now = DateTime.now();
-    final last = _lastAutoRestartAt;
-    if (last != null && now.difference(last) < _autoRestartMinInterval) return;
-    _lastAutoRestartAt = now;
-    _consecutiveDegradedProbes = 0;
-    Log.w(
-      'degraded for $_maxConsecutiveDegradedProbes consecutive probes; '
-      'restarting tsnet node',
-      name: _logName,
-    );
-    unawaited(_restart());
-  }
-
-  Future<void> _restart() async {
-    if (_restarting) return;
-    _restarting = true;
-    try {
-      await stop();
-      await start(authKey: _lastAuthKey);
-    } catch (e, st) {
-      Log.e('tsnet restart failed', name: _logName, error: e, stackTrace: st);
-    } finally {
-      _restarting = false;
     }
   }
 
@@ -402,10 +324,14 @@ class TailscaleNativeService extends TailscaleService {
   }
 
   @override
-  Future<void> stop() async {
-    Log.i('stop (was ${state.status.name})', name: _logName);
-    _generation++;
-    _stopHealthMonitor();
+  Future<void> stop() => _runtime.stop();
+
+  Future<void> _stopNativeNode(RuntimeEffectContext context) async {
+    Log.i('stop native node (was ${state.status.name})', name: _logName);
+    _closeNativeNode();
+  }
+
+  void _closeNativeNode() {
     final lib = _lib, sd = _sd;
     if (lib != null && sd != null) {
       try {
@@ -415,7 +341,6 @@ class TailscaleNativeService extends TailscaleService {
     _lib = null;
     _sd = null;
     _loopback = null;
-    _set(TailscaleState.stopped);
   }
 
   @override
@@ -521,6 +446,12 @@ class TailscaleNativeService extends TailscaleService {
     if (message.contains('failed host lookup')) return 'Host not found';
     if (message.contains('connection refused')) return 'Port closed';
     return 'Ping failed';
+  }
+
+  @override
+  void dispose() {
+    _runtime.dispose();
+    _closeNativeNode();
   }
 }
 
