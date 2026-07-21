@@ -130,6 +130,13 @@ final class _SuspendCompleted extends _WorkspaceEvent {
   final int generation;
 }
 
+final class _TransportProbed extends _WorkspaceEvent {
+  const _TransportProbed({required this.generation, required this.healthy});
+
+  final int generation;
+  final bool healthy;
+}
+
 final class _WorkspaceEffectFailed extends _WorkspaceEvent {
   const _WorkspaceEffectFailed({
     required this.effect,
@@ -223,6 +230,16 @@ final class _SuspendTransport extends _WorkspaceEffect {
   const _SuspendTransport({required super.generation, required this.reason});
 
   final String reason;
+
+  @override
+  Object get key => 'workspace-control';
+
+  @override
+  RuntimeEffectMode get mode => RuntimeEffectMode.restartable;
+}
+
+final class _ProbeTransport extends _WorkspaceEffect {
+  const _ProbeTransport({required super.generation});
 
   @override
   Object get key => 'workspace-control';
@@ -502,6 +519,17 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
           ],
         );
       }
+      if (connection.isLive && connection.supportsResumeProbe) {
+        final generation = state.generation + 1;
+        return RuntimeTransition(
+          state.copyWith(generation: generation, activity: foreground),
+          invalidateEffects: true,
+          effects: [
+            _SetForeground(generation: generation, foreground: true),
+            _ProbeTransport(generation: generation),
+          ],
+        );
+      }
       return _beginResolve(
         state.copyWith(activity: foreground),
         force: true,
@@ -652,6 +680,21 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
     }
 
     if (event is _SuspendCompleted) return RuntimeTransition(state);
+
+    if (event case _TransportProbed(:final generation, :final healthy)) {
+      if (generation != state.generation ||
+          state.activity is WorkspaceActivityPaused ||
+          !state.wantsConnection) {
+        return RuntimeTransition(state);
+      }
+      if (healthy) return RuntimeTransition(state);
+      return _beginResolve(
+        state,
+        force: true,
+        reconnect: true,
+        attempt: _attempt(state.link),
+      );
+    }
 
     if (event is _WorkspaceEffectFailed) {
       if (event.effect.generation != state.generation) {
@@ -930,6 +973,10 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
       case _SuspendTransport(:final generation, :final reason):
         await connection.suspendTransport(reason);
         return _SuspendCompleted(generation: generation);
+      case _ProbeTransport(:final generation):
+        final healthy = await connection.probeTransport();
+        if (!context.isCurrent) return null;
+        return _TransportProbed(generation: generation, healthy: healthy);
       case _SetForeground(:final foreground):
         connection.setForeground(foreground);
         return null;

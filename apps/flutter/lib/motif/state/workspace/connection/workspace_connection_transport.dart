@@ -3,6 +3,46 @@ part of 'workspace_connection_controller.dart';
 /// Transport lifecycle and reconnect policy for [WorkspaceConnectionController].
 extension _WorkspaceConnectionControllerConnection
     on WorkspaceConnectionController {
+  Future<bool> _probeTransportImpl() async {
+    final rpc = _rpc;
+    if (rpc == null || !supportsResumeProbe) return false;
+    final sw = Stopwatch()..start();
+    try {
+      final result = await rpc.probeSessionStreams();
+      if (!identical(_rpc, rpc) || !connection.transportAvailable) return false;
+      if (!result.eventsAlive) {
+        Log.w(
+          'resume probe failed channel=events took=${sw.elapsedMilliseconds}ms',
+          name: 'motif.resume',
+        );
+        return false;
+      }
+      if (result.failedPtyIds.isNotEmpty) {
+        Log.w(
+          'resume probe repairing ptys=${result.failedPtyIds.join(",")} '
+          'took=${sw.elapsedMilliseconds}ms',
+          name: 'motif.resume',
+        );
+        await rpc.reopenPtyStreams(result.failedPtyIds);
+      }
+      final healthy = identical(_rpc, rpc) && connection.transportAvailable;
+      Log.i(
+        'resume probe healthy=$healthy repaired=${result.failedPtyIds.length} '
+        'took=${sw.elapsedMilliseconds}ms',
+        name: 'motif.resume',
+      );
+      return healthy;
+    } catch (e, st) {
+      Log.w(
+        'resume probe failed',
+        name: 'motif.resume',
+        error: e,
+        stackTrace: st,
+      );
+      return false;
+    }
+  }
+
   Future<void> _connectImpl(
     MotifServer server, {
     required bool force,

@@ -18,7 +18,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use bytes::Bytes;
 use flate2::read::ZlibDecoder;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use http::HeaderValue;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
@@ -102,6 +102,14 @@ impl TestServer {
 
     pub fn http_base(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    pub async fn ping(&self) -> Result<motif_proto::ping::PingInfo> {
+        let (status, _, body) = http_request(self.addr, "GET", "/ping", &[], Vec::new()).await?;
+        if !status.is_success() {
+            bail!("ping failed ({status})");
+        }
+        serde_json::from_slice(&body).context("decode /ping")
     }
 
     /// HTTP POST /rpc/<method> without an `X-Motif-Session` header. Suitable
@@ -318,6 +326,49 @@ impl TestClient {
         Ok(())
     }
 
+    /// Open a standalone events socket, round-trip an application-level
+    /// liveness probe, then close it. Intended for protocol tests that created
+    /// the client with `connect_no_events`.
+    pub async fn probe_events(&self, id: &str) -> Result<serde_json::Value> {
+        let url = format!(
+            "ws://{}/events?session={}&since=0&bin=0",
+            self.addr, self.session_id
+        );
+        let mut req = url
+            .into_client_request()
+            .context("build events probe request")?;
+        req.headers_mut().insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", self.token))?,
+        );
+        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .context("connect events probe")?;
+        ws.send(Message::Text(
+            serde_json::json!({"type": "motif.probe.v1", "id": id})
+                .to_string()
+                .into(),
+        ))
+        .await?;
+        let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = timeout(remaining, ws.next())
+                .await
+                .context("events probe timeout")?
+                .context("events probe socket closed")??;
+            let Message::Text(text) = msg else { continue };
+            let value: serde_json::Value = match serde_json::from_str(text.as_str()) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if value.get("type").and_then(|v| v.as_str()) == Some("motif.probe_ack.v1") {
+                let _ = ws.close(None).await;
+                return Ok(value);
+            }
+        }
+    }
+
     /// Issue a POST /rpc/<method> and parse the body as `R`. Panics on
     /// HTTP-level failures; the test should call `call_raw` if it expects an
     /// error response.
@@ -474,6 +525,32 @@ pub struct PtyWs {
 }
 
 impl PtyWs {
+    pub async fn probe(&mut self, id: &str, timeout_total: Duration) -> Result<serde_json::Value> {
+        self.ws
+            .send(Message::Text(
+                serde_json::json!({"type": "motif.probe.v1", "id": id})
+                    .to_string()
+                    .into(),
+            ))
+            .await?;
+        let deadline = tokio::time::Instant::now() + timeout_total;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = timeout(remaining, self.ws.next())
+                .await
+                .context("/pty probe timeout")?
+                .context("/pty probe socket closed")??;
+            let Message::Text(text) = msg else { continue };
+            let value: serde_json::Value = match serde_json::from_str(text.as_str()) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if value.get("type").and_then(|v| v.as_str()) == Some("motif.probe_ack.v1") {
+                return Ok(value);
+            }
+        }
+    }
+
     pub async fn read_text(&mut self, timeout_total: Duration) -> Result<String> {
         let msg = timeout(timeout_total, self.ws.next())
             .await
@@ -550,7 +627,6 @@ impl PtyWs {
     /// the web/iOS clients use for keystrokes now that the HTTP `pty.write`
     /// fallback is gone.
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        use futures_util::SinkExt;
         self.ws
             .send(Message::Binary(Bytes::copy_from_slice(data)))
             .await?;

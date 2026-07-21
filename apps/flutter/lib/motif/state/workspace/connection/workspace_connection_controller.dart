@@ -260,6 +260,13 @@ class WorkspaceConnectionController implements SessionAttachment {
 
   Future<void> suspendTransport(String reason) => _suspendTransportImpl(reason);
 
+  bool get supportsResumeProbe => lastPing?.supportsWsProbe ?? false;
+
+  /// Probe the existing session streams, repairing only failed PTY sockets.
+  /// Returns false when the events socket is unavailable or a repair fails, so
+  /// the owning lifecycle machine can fall back to a full reconnect.
+  Future<bool> probeTransport() => _probeTransportImpl();
+
   @override
   void setForeground(bool foreground) => _setForegroundImpl(foreground);
 

@@ -45,6 +45,26 @@ class RpcException implements Exception {
 
 /// PTY close code signalling our resume cursor is unusable.
 const _kCursorTruncated = 4011;
+const _kWsProbeRequest = 'motif.probe.v1';
+const _kWsProbeAck = 'motif.probe_ack.v1';
+const _kWsProbeTimeout = Duration(seconds: 2);
+
+final class WsProbeResult {
+  const WsProbeResult({
+    required this.eventsAlive,
+    this.failedPtyIds = const <String>{},
+  });
+
+  final bool eventsAlive;
+  final Set<String> failedPtyIds;
+}
+
+final class _PendingWsProbe {
+  const _PendingWsProbe(this.socket, this.completer);
+
+  final WebSocketChannel socket;
+  final Completer<bool> completer;
+}
 
 class _PtyChannel {
   WebSocketChannel? socket;
@@ -73,6 +93,7 @@ class RpcClient {
   RpcClient() : _http = _createHttpClient();
 
   static http.Client Function()? debugHttpClientFactory;
+  static WebSocketChannel Function(String url)? debugWebSocketFactory;
 
   static http.Client _createHttpClient() =>
       debugHttpClientFactory?.call() ?? http.Client();
@@ -93,6 +114,10 @@ class RpcClient {
 
   WebSocketChannel? _eventsSocket;
   StreamSubscription<Object?>? _eventsSub;
+  bool _eventsSocketOpen = false;
+  final Map<String, _PendingWsProbe> _pendingWsProbes = {};
+  Future<WsProbeResult>? _sessionProbe;
+  int _wsProbeSequence = 0;
 
   final Map<String, _PtyChannel> _ptys = {};
   String? _activePtyId;
@@ -110,6 +135,113 @@ class RpcClient {
 
   bool get isConnected => _host.isNotEmpty;
   String? get sessionId => _sessionId;
+
+  /// Actively verify the existing `/events` socket and every currently
+  /// streaming PTY socket. Calls made by duplicate lifecycle callbacks join
+  /// the same in-flight probe.
+  Future<WsProbeResult> probeSessionStreams({
+    Duration timeout = _kWsProbeTimeout,
+  }) {
+    final running = _sessionProbe;
+    if (running != null) return running;
+    late final Future<WsProbeResult> probe;
+    probe = _probeSessionStreams(timeout).whenComplete(() {
+      if (identical(_sessionProbe, probe)) _sessionProbe = null;
+    });
+    _sessionProbe = probe;
+    return probe;
+  }
+
+  Future<WsProbeResult> _probeSessionStreams(Duration timeout) async {
+    final eventSocket = _eventsSocket;
+    if (eventSocket == null || !_eventsSocketOpen) {
+      return const WsProbeResult(eventsAlive: false);
+    }
+
+    final sockets = <String, WebSocketChannel?>{
+      for (final ptyId in _streamingPtys) ptyId: _ptys[ptyId]?.socket,
+    };
+    final checks = <String, Future<bool>>{
+      'events': _probeSocket(eventSocket, timeout),
+      for (final entry in sockets.entries)
+        'pty:${entry.key}': entry.value == null
+            ? Future<bool>.value(false)
+            : _probeSocket(entry.value!, timeout),
+    };
+    final results = await Future.wait([
+      for (final entry in checks.entries)
+        entry.value.then((alive) => MapEntry(entry.key, alive)),
+    ]);
+    final byChannel = Map<String, bool>.fromEntries(results);
+    final failedPtys = <String>{
+      for (final ptyId in sockets.keys)
+        if (byChannel['pty:$ptyId'] != true) ptyId,
+    };
+    return WsProbeResult(
+      eventsAlive:
+          byChannel['events'] == true &&
+          _eventsSocketOpen &&
+          identical(_eventsSocket, eventSocket),
+      failedPtyIds: Set<String>.unmodifiable(failedPtys),
+    );
+  }
+
+  Future<bool> _probeSocket(WebSocketChannel socket, Duration timeout) async {
+    final id = (++_wsProbeSequence).toString();
+    final completer = Completer<bool>();
+    final pending = _PendingWsProbe(socket, completer);
+    _pendingWsProbes[id] = pending;
+    try {
+      await socket.ready;
+      socket.sink.add(jsonEncode({'type': _kWsProbeRequest, 'id': id}));
+      return await completer.future.timeout(timeout, onTimeout: () => false);
+    } catch (_) {
+      return false;
+    } finally {
+      if (identical(_pendingWsProbes[id], pending)) {
+        _pendingWsProbes.remove(id);
+      }
+    }
+  }
+
+  bool _consumeWsProbeAck(WebSocketChannel socket, Object? message) {
+    if (message is! String) return false;
+    try {
+      final decoded = jsonDecode(message);
+      if (decoded is! Map || decoded['type'] != _kWsProbeAck) return false;
+      final id = decoded['id'];
+      if (id is! String) return true;
+      final pending = _pendingWsProbes[id];
+      if (pending != null && identical(pending.socket, socket)) {
+        if (!pending.completer.isCompleted) pending.completer.complete(true);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _failWsProbesFor(WebSocketChannel socket) {
+    for (final pending in _pendingWsProbes.values.toList()) {
+      if (identical(pending.socket, socket) && !pending.completer.isCompleted) {
+        pending.completer.complete(false);
+      }
+    }
+  }
+
+  /// Reopen only failed PTY streams while retaining their last processed byte
+  /// cursors. The server will replay any missed tail, or send a cold snapshot
+  /// if the cursor has fallen out of its bounded history.
+  Future<void> reopenPtyStreams(Set<String> ptyIds) =>
+      Future.wait([for (final ptyId in ptyIds) _reopenPtyStream(ptyId)]);
+
+  Future<void> _reopenPtyStream(String ptyId) async {
+    if (!_streamingPtys.contains(ptyId)) return;
+    await _closePty(ptyId, removeState: false, removeProcessorState: false);
+    if (_streamingPtys.contains(ptyId) && _ptys.containsKey(ptyId)) {
+      await _openPty(ptyId);
+    }
+  }
 
   Map<String, String> get _authHeaders => {
     'Authorization': 'Bearer $_token',
@@ -312,15 +444,7 @@ class RpcClient {
     if (sid == null) throw const RpcException('not connected');
     final url =
         '$_wsScheme://$_host:$_port/events?session=$sid&since=$since&${_wsAuthQuery()}';
-    final socket = connectWebSocket(
-      url,
-      headers: {'Authorization': 'Bearer $_token'},
-      proxyHost: _proxy.proxyHost,
-      proxyPort: _proxy.proxyPort,
-      proxyUser: _proxy.username,
-      proxyPass: _proxy.password,
-      certPin: _certPin,
-    );
+    final socket = _connectSocket(url);
     final sw = Stopwatch()..start();
     await socket.ready;
     Log.i(
@@ -328,15 +452,21 @@ class RpcClient {
       name: 'motif.resume',
     );
     _eventsSocket = socket;
+    _eventsSocketOpen = true;
     _eventsSub = socket.stream.listen(
       (msg) {
+        if (_consumeWsProbeAck(socket, msg)) return;
         final data = msg is String ? utf8.encode(msg) : (msg as List<int>);
         _yieldFrame(Uint8List.fromList(data));
       },
       onDone: () {
+        if (identical(_eventsSocket, socket)) _eventsSocketOpen = false;
+        _failWsProbesFor(socket);
         if (!_events.isClosed) _events.close();
       },
       onError: (Object _) {
+        if (identical(_eventsSocket, socket)) _eventsSocketOpen = false;
+        _failWsProbesFor(socket);
         if (!_events.isClosed) _events.close();
       },
       cancelOnError: true,
@@ -358,15 +488,7 @@ class RpcClient {
       path: path,
       queryParameters: {...query, 'token': _token},
     );
-    return connectWebSocket(
-      uri.toString(),
-      headers: {'Authorization': 'Bearer $_token'},
-      proxyHost: _proxy.proxyHost,
-      proxyPort: _proxy.proxyPort,
-      proxyUser: _proxy.username,
-      proxyPass: _proxy.password,
-      certPin: _certPin,
-    );
+    return _connectSocket(uri.toString());
   }
 
   void _yieldFrame(Uint8List frame) {
@@ -391,6 +513,20 @@ class RpcClient {
       Uri(scheme: _scheme, host: _host, port: _port, path: path);
 
   String get _wsScheme => _scheme == 'https' ? 'wss' : 'ws';
+
+  WebSocketChannel _connectSocket(String url) {
+    final debugFactory = debugWebSocketFactory;
+    if (debugFactory != null) return debugFactory(url);
+    return connectWebSocket(
+      url,
+      headers: {'Authorization': 'Bearer $_token'},
+      proxyHost: _proxy.proxyHost,
+      proxyPort: _proxy.proxyPort,
+      proxyUser: _proxy.username,
+      proxyPass: _proxy.password,
+      certPin: _certPin,
+    );
+  }
 
   // ─────────────────────────── /pty/<id> ───────────────────────────
 
@@ -544,15 +680,7 @@ class RpcClient {
       'ws open pty=$ptyId gen=$generation since=${ch.hasCursor ? ch.cursor : "full"}',
       name: 'motif.rpc',
     );
-    final socket = connectWebSocket(
-      url,
-      headers: {'Authorization': 'Bearer $_token'},
-      proxyHost: _proxy.proxyHost,
-      proxyPort: _proxy.proxyPort,
-      proxyUser: _proxy.username,
-      proxyPass: _proxy.password,
-      certPin: _certPin,
-    );
+    final socket = _connectSocket(url);
     try {
       await socket.ready;
     } catch (e, st) {
@@ -613,6 +741,7 @@ class RpcClient {
   void _onPtyMessage(String ptyId, WebSocketChannel socket, Object? msg) {
     final ch = _ptys[ptyId];
     if (ch == null || ch.socket != socket) return;
+    if (_consumeWsProbeAck(socket, msg)) return;
 
     if (ch.awaitingMeta) {
       ch.awaitingMeta = false;
@@ -787,6 +916,7 @@ class RpcClient {
   }
 
   Future<void> _onPtyDone(String ptyId, WebSocketChannel socket) async {
+    _failWsProbesFor(socket);
     final ch = _ptys[ptyId];
     if (ch == null || ch.socket != socket) return;
     await ch.processing;
@@ -938,6 +1068,7 @@ class RpcClient {
     ch.sub = null;
     final socket = ch.socket;
     ch.socket = null;
+    if (socket != null) _failWsProbesFor(socket);
     if (removeState) {
       _ptys.remove(ptyId);
     } else {
@@ -994,6 +1125,9 @@ class RpcClient {
     final eventSocket = _eventsSocket;
     _eventsSub = null;
     _eventsSocket = null;
+    _eventsSocketOpen = false;
+    _sessionProbe = null;
+    if (eventSocket != null) _failWsProbesFor(eventSocket);
     final ptyIds = _ptys.keys.toList();
 
     await Future.wait<void>([

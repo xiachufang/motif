@@ -71,6 +71,7 @@ enum GitFileStatus {
 class PingInfo {
   final String service;
   final String version;
+  final List<String> capabilities;
 
   /// LAN-direct hint for a rendezvous server: the plaintext port and this
   /// host's NIC addresses to try at it. Empty/`null` unless the paired motifd
@@ -82,6 +83,7 @@ class PingInfo {
   const PingInfo({
     required this.service,
     required this.version,
+    this.capabilities = const [],
     this.rzvDirectPort,
     this.rzvDirectAddrs = const [],
   });
@@ -89,6 +91,8 @@ class PingInfo {
   factory PingInfo.fromJson(Map<String, Object?> j) => PingInfo(
     service: (j['service'] as String?) ?? '',
     version: (j['version'] as String?) ?? '',
+    capabilities:
+        (j['capabilities'] as List?)?.cast<String>().toList() ?? const [],
     rzvDirectPort: (j['rzv_direct_port'] as num?)?.toInt(),
     rzvDirectAddrs:
         (j['rzv_direct_addrs'] as List?)?.cast<String>().toList() ?? const [],
@@ -97,6 +101,8 @@ class PingInfo {
   /// True when the peer is a genuine motif-server (vs. some other HTTP service
   /// answering on the port).
   bool get isMotifServer => service == 'motif-server';
+
+  bool get supportsWsProbe => capabilities.contains('ws_probe_v1');
 }
 
 class SessionInfo {

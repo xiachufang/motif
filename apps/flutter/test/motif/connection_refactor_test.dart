@@ -68,8 +68,20 @@ class _RecordingWorkspaceConnectionController
   int connectCalls = 0;
   int suspendCalls = 0;
   int disconnectCalls = 0;
+  int probeCalls = 0;
   final List<bool> connectForces = [];
   int connectFailuresRemaining = 0;
+  bool probeSupported = false;
+  bool probeHealthy = true;
+
+  @override
+  bool get supportsResumeProbe => probeSupported;
+
+  @override
+  Future<bool> probeTransport() async {
+    probeCalls++;
+    return probeHealthy;
+  }
 
   @override
   Future<void> connect(
@@ -958,7 +970,7 @@ void main() {
   });
 
   test(
-    'mobile app resume reconnects attached session to rebuild websocket transport',
+    'mobile app resume reconnects when server lacks websocket probe support',
     () async {
       final tailscale = _FakeTailscale(
         const TailscaleState(TailscaleStatus.running),
@@ -999,10 +1011,96 @@ void main() {
 
       expect(client.isForeground, isTrue);
       expect(client.connectCalls, 2);
+      expect(client.probeCalls, 0);
       expect(client.connectForces.last, isTrue);
       expect(client.connection.phase, WorkspaceConnectionPhase.attached);
     },
   );
+
+  test(
+    'mobile app resume reuses a websocket transport that passes probe',
+    () async {
+      final tailscale = _FakeTailscale(
+        const TailscaleState(TailscaleStatus.running),
+      );
+      addTearDown(tailscale.close);
+      final client = _RecordingWorkspaceConnectionController()
+        ..probeSupported = true;
+      final controller = WorkspaceLifecycleController(
+        serverId: 'tailnet',
+        connection: client,
+        serverProvider: () => const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        resolver: TransportResolver(_platform(tailscale)),
+      );
+      final clientSubscription = observe(
+        () => client.state,
+        onChange: (_) => controller.handleConnectionStateChanged(),
+        scheduler: ObservationSchedulers.immediate,
+      );
+      addTearDown(() {
+        clientSubscription.dispose();
+        controller.dispose();
+      });
+
+      await controller.connect(force: true);
+      controller.handleAppPaused();
+      controller.handleAppResumed();
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(client.probeCalls, 1);
+      expect(client.connectCalls, 1);
+      expect(client.isForeground, isTrue);
+      expect(client.connection.phase, WorkspaceConnectionPhase.attached);
+    },
+  );
+
+  test('mobile app resume reconnects when websocket probe fails', () async {
+    final tailscale = _FakeTailscale(
+      const TailscaleState(TailscaleStatus.running),
+    );
+    addTearDown(tailscale.close);
+    final client = _RecordingWorkspaceConnectionController()
+      ..probeSupported = true
+      ..probeHealthy = false;
+    final controller = WorkspaceLifecycleController(
+      serverId: 'tailnet',
+      connection: client,
+      serverProvider: () => const MotifServer(
+        id: 'tailnet',
+        name: 'Tailnet',
+        host: 'motifd.tail.ts.net',
+        kind: ServerKind.tailscale,
+      ),
+      resolver: TransportResolver(_platform(tailscale)),
+    );
+    final clientSubscription = observe(
+      () => client.state,
+      onChange: (_) => controller.handleConnectionStateChanged(),
+      scheduler: ObservationSchedulers.immediate,
+    );
+    addTearDown(() {
+      clientSubscription.dispose();
+      controller.dispose();
+    });
+
+    await controller.connect(force: true);
+    controller.handleAppPaused();
+    controller.handleAppResumed();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.probeCalls, 1);
+    expect(client.connectCalls, 2);
+    expect(client.connectForces.last, isTrue);
+    expect(client.connection.phase, WorkspaceConnectionPhase.attached);
+  });
 
   test(
     'desktop app pause and resume keep attached transport connected',

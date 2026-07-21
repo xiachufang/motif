@@ -364,6 +364,12 @@ async fn handle_pty_socket(
             }
         };
         *last_recv.lock().unwrap() = Instant::now();
+        if let Some(ack) = ws::probe_ack(&msg) {
+            if out_tx.send(ack).await.is_err() {
+                break;
+            }
+            continue;
+        }
         match msg {
             Message::Binary(b) => {
                 if let Err(e) = pty.write_bytes(&b) {

@@ -229,7 +229,17 @@ async fn handle_events_socket(
         };
         let Some(item) = item else { break };
         match item {
-            Ok(_) => *last_recv.lock().unwrap() = Instant::now(),
+            Ok(msg) => {
+                *last_recv.lock().unwrap() = Instant::now();
+                if let Some(ack) = ws::probe_ack(&msg) {
+                    if out_tx.send(ack).await.is_err() {
+                        break;
+                    }
+                }
+                if matches!(msg, axum::extract::ws::Message::Close(_)) {
+                    break;
+                }
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "events ws read error");
                 break;

@@ -21,6 +21,11 @@ pub const PING_SERVICE: &str = "motif-server";
 pub struct PingInfo {
     pub service: String,
     pub version: String,
+    /// Optional protocol features supported by this server. Older servers
+    /// omit this field, so clients must treat an empty list as the legacy
+    /// capability set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     /// Plaintext direct port a same-LAN client can dial, or `None` when no
     /// direct listener is configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]

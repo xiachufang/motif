@@ -13,6 +13,7 @@ use axum::routing::get;
 use axum::Router;
 use motif_proto::envelope::Notification;
 use motif_proto::event::Event;
+use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::TokenStore;
@@ -89,8 +90,52 @@ async fn ping(
     axum::Json(motif_proto::ping::PingInfo {
         service: motif_proto::ping::PING_SERVICE.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        capabilities: vec![WS_PROBE_CAPABILITY.to_string()],
         rzv_direct_port,
         rzv_direct_addrs,
+    })
+}
+
+/// Capability and frame names for the cross-platform application-level
+/// WebSocket liveness probe. Browser clients cannot emit RFC 6455 Ping control
+/// frames, so `/events` and `/pty/<id>` echo this small text-frame probe.
+pub const WS_PROBE_CAPABILITY: &str = "ws_probe_v1";
+const WS_PROBE_REQUEST: &str = "motif.probe.v1";
+const WS_PROBE_ACK: &str = "motif.probe_ack.v1";
+const WS_PROBE_MAX_ID_BYTES: usize = 64;
+
+#[derive(Deserialize)]
+struct WsProbeFrame {
+    #[serde(rename = "type")]
+    kind: String,
+    id: String,
+}
+
+/// Return an acknowledgement for a valid liveness probe text frame. Other
+/// inbound messages are left to the endpoint's normal protocol handling.
+pub fn probe_ack(msg: &Message) -> Option<OutMsg> {
+    let Message::Text(text) = msg else {
+        return None;
+    };
+    // Bound parsing and the echoed identifier even though both WS endpoints
+    // are authenticated. Normal probe frames are well under 128 bytes.
+    if text.len() > 256 {
+        return None;
+    }
+    let probe: WsProbeFrame = serde_json::from_str(text.as_str()).ok()?;
+    if probe.kind != WS_PROBE_REQUEST
+        || probe.id.is_empty()
+        || probe.id.len() > WS_PROBE_MAX_ID_BYTES
+    {
+        return None;
+    }
+    let payload = serde_json::json!({"type": WS_PROBE_ACK, "id": probe.id}).to_string();
+    let size = payload.len();
+    Some(OutMsg {
+        msg: Message::Text(payload.into()),
+        enqueued_at: Instant::now(),
+        tag: "probe_ack".into(),
+        size,
     })
 }
 

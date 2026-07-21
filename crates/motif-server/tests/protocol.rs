@@ -58,6 +58,49 @@ fn shell_line(unix: &str, windows: &str) -> Vec<u8> {
     }
 }
 
+#[tokio::test]
+async fn websocket_probe_is_advertised_and_round_trips_on_events_and_pty() {
+    let server = TestServer::start().await;
+    let ping = server.ping().await.unwrap();
+    assert!(ping.capabilities.iter().any(|value| value == "ws_probe_v1"));
+
+    let dir = TempDir::new().unwrap();
+    let client = TestClient::connect_no_events(&server, "ws-probe", dir.path())
+        .await
+        .unwrap();
+    let events_ack = client.probe_events("events-1").await.unwrap();
+    assert_eq!(
+        events_ack.get("id").and_then(|v| v.as_str()),
+        Some("events-1")
+    );
+
+    // The standalone events socket detaches this client when it closes, so
+    // attach a fresh client before exercising the PTY channel.
+    let pty_client = TestClient::connect_no_events(&server, "ws-probe", dir.path())
+        .await
+        .unwrap();
+    let created: ppty::PtyCreateResult = pty_client
+        .call(
+            "pty.create",
+            ppty::PtyCreateParams {
+                cmd: Some(long_running_test_command()),
+                cwd: None,
+                env: vec![],
+                cols: 80,
+                rows: 24,
+            },
+        )
+        .await
+        .unwrap();
+    let mut pty_ws = pty_client
+        .open_pty_ws(&created.info.id, None)
+        .await
+        .unwrap();
+    let _meta = pty_ws.read_text(Duration::from_secs(2)).await.unwrap();
+    let pty_ack = pty_ws.probe("pty-1", Duration::from_secs(2)).await.unwrap();
+    assert_eq!(pty_ack.get("id").and_then(|v| v.as_str()), Some("pty-1"));
+}
+
 // ─────────────────────────── 1. session_lifecycle ───────────────────────────
 
 #[tokio::test]

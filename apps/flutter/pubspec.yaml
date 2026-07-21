@@ -95,6 +95,7 @@ dependency_overrides:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  stream_channel: ^2.1.4
   flutter_lints: ^6.0.0
   ffigen: ^20.1.1
   flutter_driver:
