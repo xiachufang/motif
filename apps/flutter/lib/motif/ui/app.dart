@@ -3,12 +3,12 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../models/settings.dart';
 import '../platform/desktop_window.dart';
-import '../state/app_state.dart';
-import '../state/motif_client.dart';
+import '../state/app/app_state.dart';
+import '../state/app/motif_scope.dart';
 import 'screens/connection_screen.dart';
 import 'screens/session_list_screen.dart';
 import 'screens/session_screen.dart';
@@ -17,6 +17,8 @@ import 'theme/motif_theme.dart';
 import 'widgets/adaptive_modal.dart';
 import 'widgets/notification_banner.dart';
 import 'widgets/top_toast.dart';
+
+part 'app.g.dart';
 
 final motifRouteObserver = RouteObserver<ModalRoute<void>>();
 
@@ -30,7 +32,8 @@ const double _desktopTitleBarHeight = 38;
 
 Widget _emptyEmbeddedServerPage() => const SizedBox.shrink();
 
-class MotifApp extends StatelessWidget {
+@ObservationWidget()
+class MotifApp extends _$MotifApp {
   const MotifApp({
     super.key,
     this.embeddedServerPageFactory = _emptyEmbeddedServerPage,
@@ -40,17 +43,14 @@ class MotifApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final terminalTheme = context.select<AppState, TerminalThemeSetting>(
-      (a) => a.terminalSettings.settings.theme,
-    );
+    final appState = ObservationScope.of<AppState>(context);
+    final terminalTheme = appState.terminalSettings.settings.theme;
     // With the desktop shell, the client lives under a nested Navigator that
     // owns `motifRouteObserver` (so the session list still gets didPopNext). A
     // RouteObserver can only be attached to one Navigator, so the root one
     // drops it in that case. Without the shell, the client is on the root
     // Navigator and keeps the observer.
-    final canServe = context.select<AppState, bool>(
-      (a) => a.embeddedServer?.available ?? false,
-    );
+    final canServe = appState.embeddedServer?.available ?? false;
     return MaterialApp(
       title: 'Motif',
       debugShowCheckedModeBanner: false,
@@ -64,7 +64,7 @@ class MotifApp extends StatelessWidget {
       navigatorKey: motifNavigatorKey,
       navigatorObservers: canServe ? const [] : [motifRouteObserver],
       builder: (context, child) {
-        final app = context.read<AppState>();
+        final app = readObservationScope<AppState>(context);
         return MotifToastHost(
           child: NotificationBannerHost(
             app: app,
@@ -88,6 +88,7 @@ class MotifApp extends StatelessWidget {
         child: Focus(
           autofocus: true,
           child: _HomeShell(
+            key: const ValueKey('home-shell'),
             embeddedServerPageFactory: embeddedServerPageFactory,
           ),
         ),
@@ -112,7 +113,9 @@ Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
   final isMac = defaultTargetPlatform == TargetPlatform.macOS;
   return {
     SingleActivator(LogicalKeyboardKey.keyW, meta: isMac, control: !isMac): () {
-      if (context.read<AppState>().takeCloseShortcutConsumed()) return;
+      if (readObservationScope<AppState>(context).takeCloseShortcutConsumed()) {
+        return;
+      }
       unawaited(DesktopWindow.hide());
     },
     if (isMac)
@@ -127,21 +130,24 @@ Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
 /// **server** control panel; the two are kept alive side-by-side so switching
 /// preserves state. On mobile / when no embedded server is available, the
 /// client is shown directly (unchanged behavior, no toolbar).
-class _HomeShell extends StatelessWidget {
-  const _HomeShell({required this.embeddedServerPageFactory});
+@ObservationWidget()
+class _HomeShell extends _$_HomeShell {
+  const _HomeShell({required this.embeddedServerPageFactory, super.key});
 
   final EmbeddedServerPageFactory embeddedServerPageFactory;
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ObservationScope.of<AppState>(context);
     final canServe = app.embeddedServer?.available ?? false;
     if (!canServe) {
-      if (!DesktopWindow.usesCustomTitleBar) return const _ClientHome();
+      if (!DesktopWindow.usesCustomTitleBar) {
+        return const _ClientHome(key: ValueKey('client-home'));
+      }
       return const Column(
         children: [
           _CustomTitleBarSpacer(),
-          Expanded(child: _ClientHome()),
+          Expanded(child: _ClientHome(key: ValueKey('client-home'))),
         ],
       );
     }
@@ -168,14 +174,18 @@ class _HomeShell extends StatelessWidget {
 
 /// The client content: the grouped session browser once a server is configured,
 /// otherwise the first-run welcome screen.
-class _ClientHome extends StatelessWidget {
-  const _ClientHome();
+@ObservationWidget()
+class _ClientHome extends _$_ClientHome {
+  const _ClientHome({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final hasServer = context.select<AppState, bool>((a) => a.hasActiveServer);
+    final hasServer = ObservationScope.of<AppState>(context).hasActiveServer;
     return _PendingSessionOpenListener(
-      child: hasServer ? const _Root() : const WelcomeScreen(),
+      key: const ValueKey('pending-session-open'),
+      child: hasServer
+          ? const _Root(key: ValueKey('client-root'))
+          : const WelcomeScreen(),
     );
   }
 }
@@ -188,8 +198,9 @@ class _ClientNavigator extends StatelessWidget {
   Widget build(BuildContext context) {
     return Navigator(
       observers: [motifRouteObserver],
-      onGenerateRoute: (settings) =>
-          MaterialPageRoute<void>(builder: (_) => const _ClientHome()),
+      onGenerateRoute: (settings) => MaterialPageRoute<void>(
+        builder: (_) => const _ClientHome(key: ValueKey('client-home')),
+      ),
     );
   }
 }
@@ -333,123 +344,122 @@ class _ModeSwitch extends StatelessWidget {
 
 /// Once a server is configured, show the grouped session browser. Servers are
 /// connected explicitly from the connection manager.
-class _Root extends StatefulWidget {
-  const _Root();
-
-  @override
-  State<_Root> createState() => _RootState();
+final class _RootStartupCoordinator {
+  bool scheduled = false;
+  bool autoConnectStarted = false;
 }
 
-class _RootState extends State<_Root> {
-  bool _autoConnectStarted = false;
+@ObservationWidget()
+class _Root extends _$_Root {
+  const _Root({super.key});
 
-  @override
-  void initState() {
-    super.initState();
+  @PlainState(name: 'startup')
+  _RootStartupCoordinator createStartup() => _RootStartupCoordinator();
+
+  void _scheduleAutoConnect(
+    BuildContext context,
+    _RootStartupCoordinator startup,
+  ) {
+    if (startup.scheduled) return;
+    startup.scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_autoConnectActiveServer());
+      if (context.mounted) {
+        unawaited(_autoConnectActiveServer(context, startup));
+      }
     });
   }
 
-  Future<void> _autoConnectActiveServer() async {
-    if (_autoConnectStarted) return;
-    _autoConnectStarted = true;
-    final app = context.read<AppState>();
-    final server = app.servers.activeServer;
-    if (server == null) return;
-    if (!app.shouldAutoConnectServer(server.id)) return;
-    final state = app.serverState(server.id);
-    if (state is ConnConnected ||
-        state is ConnAttached ||
-        state is ConnConnecting) {
-      return;
-    }
-    try {
-      await app.ensureServerConnectedAndRefresh(server.id, makeActive: false);
-    } catch (_) {
-      // The client exposes connection failure state; startup should not block UI.
-    }
+  Future<void> _autoConnectActiveServer(
+    BuildContext context,
+    _RootStartupCoordinator startup,
+  ) async {
+    if (startup.autoConnectStarted) return;
+    startup.autoConnectStarted = true;
+    final app = readObservationScope<AppState>(context);
+    await app.autoConnectStartupServer();
   }
 
   @override
-  Widget build(BuildContext context) => const SessionListScreen();
+  Widget build(
+    BuildContext context, {
+    required _RootStartupCoordinator startup,
+  }) {
+    _scheduleAutoConnect(context, startup);
+    return const SessionListScreen();
+  }
 }
 
 /// Watches [AppState.pendingSessionOpen] and pushes [SessionScreen] on the
 /// nearest navigator (the nested client navigator on desktop, the root one
 /// elsewhere). Stays mounted under the home route so taps from a live session
 /// still navigate.
-class _PendingSessionOpenListener extends StatefulWidget {
-  const _PendingSessionOpenListener({required this.child});
+final class _PendingSessionOpenCoordinator {
+  AppState? app;
+  bool opening = false;
+  bool openScheduled = false;
+}
+
+@ObservationWidget()
+class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
+  const _PendingSessionOpenListener({required this.child, super.key});
 
   final Widget child;
 
-  @override
-  State<_PendingSessionOpenListener> createState() =>
-      _PendingSessionOpenListenerState();
-}
+  @PlainState(name: 'coordinator')
+  _PendingSessionOpenCoordinator createCoordinator() =>
+      _PendingSessionOpenCoordinator();
 
-class _PendingSessionOpenListenerState
-    extends State<_PendingSessionOpenListener> {
-  AppState? _app;
-  bool _opening = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final app = context.read<AppState>();
-    if (!identical(_app, app)) {
-      _app?.removeListener(_onAppChanged);
-      _app = app;
-      _app!.addListener(_onAppChanged);
+  void _scheduleOpen(
+    BuildContext context,
+    _PendingSessionOpenCoordinator coordinator,
+  ) {
+    if (!context.mounted ||
+        coordinator.opening ||
+        coordinator.openScheduled ||
+        coordinator.app?.pendingSessionOpen == null) {
+      return;
     }
-    _scheduleOpen();
-  }
-
-  @override
-  void dispose() {
-    _app?.removeListener(_onAppChanged);
-    super.dispose();
-  }
-
-  void _onAppChanged() => _scheduleOpen();
-
-  void _scheduleOpen() {
-    if (!mounted || _opening || _app?.pendingSessionOpen == null) return;
+    coordinator.openScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) unawaited(_openPending());
+      coordinator.openScheduled = false;
+      if (context.mounted) {
+        unawaited(_openPending(context, coordinator));
+      }
     });
   }
 
-  Future<void> _openPending() async {
-    final app = _app;
-    if (app == null || _opening) return;
+  Future<void> _openPending(
+    BuildContext context,
+    _PendingSessionOpenCoordinator coordinator,
+  ) async {
+    final app = coordinator.app;
+    if (app == null || coordinator.opening) return;
     final pending = app.takePendingSessionOpen();
     if (pending == null) return;
-    _opening = true;
+    coordinator.opening = true;
     try {
       final routeName = sessionRouteName(pending.serverId, pending.session);
-      if (_topRouteName() == routeName) return;
+      if (_topRouteName(context) == routeName) return;
 
       if (app.serverById(pending.serverId) == null) return;
 
       if (app.servers.activeId != pending.serverId) {
         await app.servers.setActive(pending.serverId);
-        if (!mounted) return;
+        if (!context.mounted) return;
       }
 
       final connected = await app.ensureServerConnectedAndRefresh(
         pending.serverId,
         makeActive: false,
       );
-      if (!mounted) return;
+      if (!context.mounted) return;
       if (!connected) {
         showMotifToast(context, 'Could not connect to the notification server');
         return;
       }
-      app.clientForSession(pending.serverId, pending.session);
+      app.workspaceForSession(pending.serverId, pending.session);
       // The visible route may have changed while the connection was opening.
-      final topRouteName = _topRouteName();
+      final topRouteName = _topRouteName(context);
       if (topRouteName == routeName) return;
 
       final nav = Navigator.of(context);
@@ -464,14 +474,14 @@ class _PendingSessionOpenListenerState
         unawaited(nav.push<void>(route));
       }
     } finally {
-      _opening = false;
+      coordinator.opening = false;
       // A second tap may have arrived while a connection was opening. Drain
       // the latest request now instead of waiting for an unrelated app event.
-      _scheduleOpen();
+      _scheduleOpen(context, coordinator);
     }
   }
 
-  String? _topRouteName() {
+  String? _topRouteName(BuildContext context) {
     String? name;
     Navigator.of(context).popUntil((route) {
       name ??= route.settings.name;
@@ -481,7 +491,17 @@ class _PendingSessionOpenListenerState
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(
+    BuildContext context, {
+    required _PendingSessionOpenCoordinator coordinator,
+  }) {
+    final app = ObservationScope.of<AppState>(context);
+    coordinator.app = app;
+    if (app.shell.pendingSessionOpen != null) {
+      _scheduleOpen(context, coordinator);
+    }
+    return child;
+  }
 }
 
 /// Shared helper to open the connection/server manager as an adaptive

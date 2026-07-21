@@ -12,12 +12,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/net/rpc_client.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/state/workspace/workspace_instance.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
 import 'package:motif/motif/terminal/terminal_painter.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -44,6 +46,8 @@ void main() {
       const workdir = '/Users/feichao/Developer/flutter_ghostty';
       final fileName = '000_motif_sim_flow_$stamp.txt';
       var filePath = '$workdir/$fileName';
+      String? serverId;
+      WorkspaceInstance? activeWorkspace;
       final terminalFilePath = '$workdir/000_motif_terminal_$stamp.txt';
       final directKeysFilePath = '$workdir/000_motif_direct_keys_$stamp.txt';
       final interruptFilePath = '$workdir/000_motif_interrupt_$stamp.txt';
@@ -51,35 +55,36 @@ void main() {
           '$workdir/000_motif_interrupt_started_$stamp.txt';
 
       Future<void> cleanup() async {
+        final workspace = activeWorkspace;
         try {
-          await app.motif.fsRemove(directKeysFilePath);
+          await workspace?.workspace.remove(directKeysFilePath);
         } catch (_) {}
         try {
-          await app.motif.fsRemove(interruptStartedPath);
+          await workspace?.workspace.remove(interruptStartedPath);
         } catch (_) {}
         try {
-          await app.motif.fsRemove(interruptFilePath);
+          await workspace?.workspace.remove(interruptFilePath);
         } catch (_) {}
         try {
-          await app.motif.fsRemove(terminalFilePath);
+          await workspace?.workspace.remove(terminalFilePath);
         } catch (_) {}
         try {
-          await app.motif.fsRemove(filePath);
+          await workspace?.workspace.remove(filePath);
         } catch (_) {}
         try {
-          await app.motif.detach();
+          await workspace?.attachment.detach();
         } catch (_) {}
         try {
-          await app.motif.destroySession(session);
+          if (serverId != null) await app.destroySession(serverId, session);
         } catch (_) {}
         try {
-          await app.motif.disconnect();
+          if (serverId != null) await app.disconnectServer(serverId);
         } catch (_) {}
       }
 
       try {
         await tester.pumpWidget(
-          ChangeNotifierProvider.value(value: app, child: const MotifApp()),
+          MotifScope(appState: app, child: const MotifApp()),
         );
         await tester.pumpAndSettle();
 
@@ -93,16 +98,16 @@ void main() {
         await _enterField(tester, 'Port', '7777');
         await tester.tap(find.text('Save'));
         await tester.pumpAndSettle();
+        serverId = app.servers.activeId!;
+        final server = app.serverInstance(serverId);
 
         await _pumpUntil(
           tester,
-          () =>
-              app.motif.state is ConnConnected ||
-              app.motif.state is ConnAttached,
+          () => server.access.state is ServerConnected,
           reason: 'app connects to local motifd',
         );
         expect(find.text('Local motifd'), findsWidgets);
-        expect(app.motif.isLive, isTrue);
+        expect(server.isLive, isTrue);
 
         await tester.tap(find.byTooltip('Create session').last);
         await tester.pumpAndSettle();
@@ -113,14 +118,18 @@ void main() {
 
         await _pumpUntil(
           tester,
-          () => app.motif.sessions.any((s) => s.name == session),
+          () => server.viewModel.sessions.sessions.any(
+            (candidate) => candidate.name == session,
+          ),
           reason: 'new session appears',
         );
         await tester.tap(find.text(session).first);
         await tester.pumpAndSettle();
+        activeWorkspace = app.workspaceForSession(serverId, session);
+        final workspace = activeWorkspace;
         await _pumpUntil(
           tester,
-          () => app.motif.state is ConnAttached,
+          () => workspace.viewModel.connection.status is ConnAttached,
           reason: 'session attaches',
         );
 
@@ -130,31 +139,31 @@ void main() {
         await _pumpUntil(
           tester,
           () =>
-              app.motif.ptys.isNotEmpty &&
-              app.motif.views.any((v) => v.spec is PtyViewSpec),
+              workspace.viewModel.terminal.ptys.isNotEmpty &&
+              workspace.viewModel.views.items.any((v) => v.spec is PtyViewSpec),
           reason: 'terminal pty/view is created',
         );
         await _pumpUntil(
           tester,
-          () => _sameRemotePath(app.motif.activeCwd, workdir),
+          () => _sameRemotePath(workspace.workspace.activeCwd(), workdir),
           reason: 'terminal reports the session working directory',
           timeout: const Duration(seconds: 20),
         );
 
-        final firstViewId = app.motif.activeViewId!;
-        final firstPtyId = _activePtyId(app)!;
+        final firstViewId = workspace.viewModel.views.activeViewId!;
+        final firstPtyId = _activePtyId(workspace)!;
         await _sendCommand(tester, "printf terminal-ok > '$terminalFilePath'");
         await _pumpUntilAsync(tester, () async {
           try {
-            final r = await app.motif.fsRead(terminalFilePath);
+            final r = await workspace.workspace.read(terminalFilePath);
             return utf8.decode(base64Decode(r.contentB64)) == 'terminal-ok';
           } catch (_) {
             return false;
           }
         }, reason: 'terminal input executes a remote command');
 
-        await app.motif.activatePtyStream(firstPtyId);
-        await app.motif.writePty(firstPtyId, [
+        await workspace.terminal.activatePtyStream(firstPtyId);
+        await workspace.terminal.writePty(firstPtyId, [
           ..."cat > '$directKeysFilePath'".codeUnits,
           0x0d,
         ]);
@@ -176,7 +185,7 @@ void main() {
         await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
         await _pumpUntilAsync(tester, () async {
           try {
-            final r = await app.motif.fsRead(directKeysFilePath);
+            final r = await workspace.workspace.read(directKeysFilePath);
             final text = utf8.decode(
               base64Decode(r.contentB64),
               allowMalformed: true,
@@ -190,14 +199,14 @@ void main() {
 
         final interruptCommand =
             "sh -c 'trap \"printf interrupted > $interruptFilePath; exit\" INT; printf started > $interruptStartedPath; sleep 10; printf bad > $interruptFilePath'";
-        await app.motif.activatePtyStream(firstPtyId);
-        await app.motif.writePty(firstPtyId, [
+        await workspace.terminal.activatePtyStream(firstPtyId);
+        await workspace.terminal.writePty(firstPtyId, [
           ...interruptCommand.codeUnits,
           0x0d,
         ]);
         await _pumpUntilAsync(tester, () async {
           try {
-            final r = await app.motif.fsRead(interruptStartedPath);
+            final r = await workspace.workspace.read(interruptStartedPath);
             return utf8.decode(base64Decode(r.contentB64)) == 'started';
           } catch (_) {
             return false;
@@ -214,7 +223,7 @@ void main() {
         await tester.pumpAndSettle();
         await _pumpUntilAsync(tester, () async {
           try {
-            final r = await app.motif.fsRead(interruptFilePath);
+            final r = await workspace.workspace.read(interruptFilePath);
             return utf8.decode(base64Decode(r.contentB64)) == 'interrupted';
           } catch (_) {
             return false;
@@ -226,13 +235,13 @@ void main() {
         await _pumpUntil(
           tester,
           () =>
-              app.motif.ptys.length >= 2 &&
-              _activePtyId(app) != null &&
-              _activePtyId(app) != firstPtyId,
+              workspace.viewModel.terminal.ptys.length >= 2 &&
+              _activePtyId(workspace) != null &&
+              _activePtyId(workspace) != firstPtyId,
           reason: 'second terminal pty/view is created',
           timeout: const Duration(seconds: 20),
         );
-        final secondPtyId = _activePtyId(app)!;
+        final secondPtyId = _activePtyId(workspace)!;
         expect(
           find.byKey(ValueKey('terminal-$firstPtyId'), skipOffstage: false),
           findsOneWidget,
@@ -247,7 +256,7 @@ void main() {
         await tester.pumpAndSettle();
         await _pumpUntil(
           tester,
-          () => app.motif.activeViewId == firstViewId,
+          () => workspace.viewModel.views.activeViewId == firstViewId,
           reason: 'switches back to first terminal tab',
         );
         expect(
@@ -282,18 +291,18 @@ void main() {
 
         await _pumpUntil(
           tester,
-          () => _sameRemotePath(app.motif.activeCwd, workdir),
+          () => _sameRemotePath(workspace.workspace.activeCwd(), workdir),
           reason: 'cd here keeps the working directory active',
         );
 
-        final treeRoot = app.motif.activeCwd ?? workdir;
+        final treeRoot = workspace.workspace.activeCwd() ?? workdir;
         filePath = _joinRemote(treeRoot, fileName);
-        await app.motif.fsWrite(
+        await workspace.workspace.write(
           filePath,
           base64Encode(utf8.encode('hello from simulator flow\n')),
           force: true,
         );
-        final rootEntries = await app.motif.fsTree(treeRoot, depth: 1);
+        final rootEntries = await workspace.workspace.tree(treeRoot, depth: 1);
         expect(
           rootEntries.map((e) => e.name),
           contains(fileName),
@@ -318,7 +327,7 @@ void main() {
         await tester.pumpAndSettle();
         await _pumpUntil(
           tester,
-          () => _activeSpec(app) is PreviewViewSpec,
+          () => _activeSpec(workspace) is PreviewViewSpec,
           reason: 'preview tab becomes active',
         );
         await _pumpUntil(
@@ -335,7 +344,7 @@ void main() {
         await tester.enterText(_previewEditor(), 'edited in simulator\n');
         await tester.tap(find.byIcon(Icons.save).last);
         await tester.pumpAndSettle();
-        final edited = await app.motif.fsRead(filePath);
+        final edited = await workspace.workspace.read(filePath);
         expect(
           utf8.decode(base64Decode(edited.contentB64)),
           'edited in simulator\n',
@@ -375,16 +384,16 @@ void main() {
   );
 }
 
-ViewSpec? _activeSpec(AppState app) {
-  final id = app.motif.activeViewId;
-  for (final v in app.motif.views) {
+ViewSpec? _activeSpec(WorkspaceInstance workspace) {
+  final id = workspace.viewModel.views.activeViewId;
+  for (final v in workspace.viewModel.views.items) {
     if (v.id == id) return v.spec;
   }
   return null;
 }
 
-String? _activePtyId(AppState app) {
-  final spec = _activeSpec(app);
+String? _activePtyId(WorkspaceInstance workspace) {
+  final spec = _activeSpec(workspace);
   return spec is PtyViewSpec ? spec.ptyId : null;
 }
 

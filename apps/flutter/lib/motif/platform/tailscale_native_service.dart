@@ -23,7 +23,7 @@ import '../net/proxy_client.dart';
 import 'services.dart';
 import 'tailscale_ffi.dart';
 
-class TailscaleNativeService implements TailscaleService {
+class TailscaleNativeService extends TailscaleService {
   static const _logName = 'motif.tailscale';
   static const _healthProbeInterval = Duration(seconds: 5);
   static const _healthProbeTimeout = Duration(seconds: 2);
@@ -43,8 +43,6 @@ class TailscaleNativeService implements TailscaleService {
     this.controlUrl,
   });
 
-  final _controller = StreamController<TailscaleState>.broadcast();
-  TailscaleState _state = TailscaleState.stopped;
   LibTailscale? _lib;
   int? _sd;
   TailscaleLoopback? _loopback;
@@ -65,8 +63,8 @@ class TailscaleNativeService implements TailscaleService {
 
   @override
   ProxySettings? get loopbackProxy {
-    if (_state.status != TailscaleStatus.running &&
-        _state.status != TailscaleStatus.degraded) {
+    if (state.status != TailscaleStatus.running &&
+        state.status != TailscaleStatus.degraded) {
       return null;
     }
     final lb = _loopback;
@@ -81,24 +79,18 @@ class TailscaleNativeService implements TailscaleService {
     );
   }
 
-  @override
-  TailscaleState get state => _state;
-  @override
-  Stream<TailscaleState> get states => _controller.stream;
-
   void _set(TailscaleState s) {
-    if (_state == s) return;
+    if (state == s) return;
     Log.i(
-      'state ${_state.status.name} -> ${s.status.name}'
+      'state ${state.status.name} -> ${s.status.name}'
       '${s.detail == null ? '' : ' (${s.detail})'}',
       name: _logName,
     );
-    _state = s;
-    if (!_controller.isClosed) _controller.add(s);
+    tailscaleState = s;
   }
 
   bool _isCurrent(int generation, int sd) =>
-      _generation == generation && _sd == sd && !_controller.isClosed;
+      _generation == generation && _sd == sd;
 
   void _setCurrent(int generation, int sd, TailscaleState s) {
     if (_isCurrent(generation, sd)) _set(s);
@@ -109,19 +101,19 @@ class TailscaleNativeService implements TailscaleService {
     final hasAuthKey = authKey != null && authKey.isNotEmpty;
     if (hasAuthKey) _lastAuthKey = authKey;
     final active =
-        _state.status == TailscaleStatus.running ||
-        _state.status == TailscaleStatus.starting ||
-        (_state.status == TailscaleStatus.needsAuth && _sd != null);
-    if (active && hasAuthKey && _state.status == TailscaleStatus.needsAuth) {
+        state.status == TailscaleStatus.running ||
+        state.status == TailscaleStatus.starting ||
+        (state.status == TailscaleStatus.needsAuth && _sd != null);
+    if (active && hasAuthKey && state.status == TailscaleStatus.needsAuth) {
       await stop();
     } else if (active) {
-      Log.i('start skipped; already ${_state.status.name}', name: _logName);
+      Log.i('start skipped; already ${state.status.name}', name: _logName);
       return;
     } else if (_sd != null) {
       // A leftover node from a degraded/failed session shares the state dir
       // with the one we are about to create; close it first.
       Log.i(
-        'closing stale node before restart (was ${_state.status.name})',
+        'closing stale node before restart (was ${state.status.name})',
         name: _logName,
       );
       await stop();
@@ -411,7 +403,7 @@ class TailscaleNativeService implements TailscaleService {
 
   @override
   Future<void> stop() async {
-    Log.i('stop (was ${_state.status.name})', name: _logName);
+    Log.i('stop (was ${state.status.name})', name: _logName);
     _generation++;
     _stopHealthMonitor();
     final lib = _lib, sd = _sd;
@@ -446,7 +438,7 @@ class TailscaleNativeService implements TailscaleService {
   @override
   Future<List<TailscalePeer>> discoverPeers() async {
     final lb = _loopback;
-    if (lb == null || _state.status != TailscaleStatus.running) return const [];
+    if (lb == null || state.status != TailscaleStatus.running) return const [];
     final api = TailscaleLocalApiClient(loopback: lb);
     try {
       final status = await api.status(peers: true);
@@ -463,7 +455,7 @@ class TailscaleNativeService implements TailscaleService {
     required int port,
     Duration timeout = const Duration(seconds: 5),
   }) async {
-    if (_state.status != TailscaleStatus.running) {
+    if (state.status != TailscaleStatus.running) {
       return const TailscalePingResult.unreachable('Tailscale off');
     }
     final proxy = loopbackProxy;

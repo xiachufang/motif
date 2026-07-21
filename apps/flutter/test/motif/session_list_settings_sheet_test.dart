@@ -4,10 +4,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/macos_permissions.dart';
 import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
+import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/ui/screens/session_list_settings_sheet.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -26,8 +26,8 @@ void main() {
     addTearDown(app.dispose);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
           home: const Scaffold(body: SessionListSettingsSheet()),
@@ -148,8 +148,8 @@ Future<AppState> _pumpSettings(
     ),
   );
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
         home: Scaffold(

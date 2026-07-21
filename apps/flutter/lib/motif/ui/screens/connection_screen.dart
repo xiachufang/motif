@@ -1,14 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
 import '../../net/rpc_client.dart';
 import '../../platform/services.dart';
 import '../../platform/tailscale_support.dart';
-import '../../state/app_state.dart';
-import '../../state/connection_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/connection/connection_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/connection_details_dialog.dart';
@@ -18,8 +19,11 @@ import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 
+part 'connection_screen.g.dart';
+
 /// Server list + management (mirrors ConnectionView).
-class ConnectionScreen extends StatelessWidget {
+@ObservationWidget()
+class ConnectionScreen extends _$ConnectionScreen {
   const ConnectionScreen({super.key});
 
   Future<void> _addServer(
@@ -118,7 +122,7 @@ class ConnectionScreen extends StatelessWidget {
   }
 
   Widget _buildBody(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ObservationScope.of<AppState>(context);
     final c = context.motif;
     final servers = app.servers.servers;
     return SafeArea(
@@ -159,6 +163,7 @@ class ConnectionScreen extends StatelessWidget {
                 : [
                     for (final s in servers)
                       _ServerRow(
+                        key: ValueKey('server-row-state-${s.id}'),
                         server: s,
                         viewState: app.serverViewState(s.id),
                         onAction: (action) =>
@@ -186,7 +191,27 @@ class ConnectionPanel extends ConnectionScreen {
   }
 }
 
-class _ServerRow extends StatefulWidget {
+@ObservableModel()
+class _ServerRowViewModel extends _$_ServerRowViewModel {
+  _ServerRowViewModel({
+    _ServerPingIndicator pingIndicator = _ServerPingIndicator.idle,
+  }) : super(pingIndicator);
+}
+
+final class _ServerPingCoordinator {
+  TailscaleService? tailscale;
+  String? lastPingKey;
+  int generation = 0;
+  bool disposed = false;
+
+  void dispose() {
+    disposed = true;
+    generation++;
+  }
+}
+
+@ObservationWidget()
+class _ServerRow extends _$_ServerRow {
   final MotifServer server;
   final ServerConnectionViewState viewState;
   final ValueChanged<ServerConnectionAction> onAction;
@@ -199,77 +224,48 @@ class _ServerRow extends StatefulWidget {
     required this.onAction,
     required this.onEdit,
     required this.onDelete,
+    super.key,
   });
 
-  @override
-  State<_ServerRow> createState() => _ServerRowState();
-}
+  @ObservableState(name: 'viewModel')
+  _ServerRowViewModel createViewModel() => _ServerRowViewModel();
 
-class _ServerRowState extends State<_ServerRow> {
-  TailscaleService? _tailscale;
-  StreamSubscription<TailscaleState>? _tailscaleSub;
-  _ServerPingIndicator _pingIndicator = _ServerPingIndicator.idle;
-  String? _lastPingKey;
-  int _pingGeneration = 0;
+  @PlainState(name: 'coordinator')
+  _ServerPingCoordinator createCoordinator() => _ServerPingCoordinator();
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final tailscale = context.read<AppState>().platform.tailscale;
-    if (!identical(_tailscale, tailscale)) {
-      _tailscaleSub?.cancel();
-      _tailscale = tailscale;
-      _lastPingKey = null;
-      _tailscaleSub = tailscale.states.listen((_) {
-        if (widget.server.kind == ServerKind.tailscale) {
-          _schedulePingRefresh(force: true);
-        }
-      });
-    }
-    _schedulePingRefresh();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ServerRow oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.server.id != widget.server.id ||
-        oldWidget.server.host != widget.server.host ||
-        oldWidget.server.port != widget.server.port ||
-        oldWidget.server.kind != widget.server.kind) {
-      _schedulePingRefresh(force: true);
-    }
-  }
-
-  @override
-  void dispose() {
-    _pingGeneration++;
-    _tailscaleSub?.cancel();
-    super.dispose();
-  }
-
-  String get _pingKey {
-    final server = widget.server;
+  String _pingKey(_ServerPingCoordinator coordinator) {
     final tailscaleStatus = server.kind == ServerKind.tailscale
-        ? (_tailscale?.state.status.name ?? 'unknown')
+        ? (coordinator.tailscale?.state.status.name ?? 'unknown')
         : 'n/a';
     return '${server.id}|${server.host}|${server.port}|${server.kind.name}|$tailscaleStatus';
   }
 
-  void _schedulePingRefresh({bool force = false}) {
-    final key = _pingKey;
-    if (!force && key == _lastPingKey) return;
-    _lastPingKey = key;
+  void _schedulePingRefresh(
+    BuildContext context,
+    _ServerRowViewModel viewModel,
+    _ServerPingCoordinator coordinator,
+  ) {
+    final key = _pingKey(coordinator);
+    if (key == coordinator.lastPingKey) return;
+    coordinator.lastPingKey = key;
     Future.microtask(() {
-      if (mounted) _refreshPingIndicator();
+      if (context.mounted && !coordinator.disposed) {
+        unawaited(_refreshPingIndicator(context, viewModel, coordinator));
+      }
     });
   }
 
-  Future<void> _refreshPingIndicator() async {
-    final server = widget.server;
-    final tailscale = _tailscale ?? context.read<AppState>().platform.tailscale;
-    final generation = ++_pingGeneration;
+  Future<void> _refreshPingIndicator(
+    BuildContext context,
+    _ServerRowViewModel viewModel,
+    _ServerPingCoordinator coordinator,
+  ) async {
+    final tailscale =
+        coordinator.tailscale ??
+        readObservationScope<AppState>(context).platform.tailscale;
+    final generation = ++coordinator.generation;
 
-    _setPingIndicator(_ServerPingIndicator.checking);
+    _setPingIndicator(viewModel, coordinator, _ServerPingIndicator.checking);
     final result = switch (server.kind) {
       ServerKind.tailscale => await _pingTailscaleServer(tailscale, server),
       ServerKind.ssh => _ServerPingIndicator.unavailable('Via SSH'),
@@ -277,13 +273,21 @@ class _ServerRowState extends State<_ServerRow> {
       ServerKind.rendezvous ||
       ServerKind.direct => await _pingDirectServer(server),
     };
-    if (!mounted || generation != _pingGeneration) return;
-    _setPingIndicator(result);
+    if (!context.mounted ||
+        coordinator.disposed ||
+        generation != coordinator.generation) {
+      return;
+    }
+    _setPingIndicator(viewModel, coordinator, result);
   }
 
-  void _setPingIndicator(_ServerPingIndicator indicator) {
-    if (_pingIndicator == indicator || !mounted) return;
-    setState(() => _pingIndicator = indicator);
+  void _setPingIndicator(
+    _ServerRowViewModel viewModel,
+    _ServerPingCoordinator coordinator,
+    _ServerPingIndicator indicator,
+  ) {
+    if (coordinator.disposed || viewModel.pingIndicator == indicator) return;
+    viewModel.pingIndicator = indicator;
   }
 
   Future<_ServerPingIndicator> _pingTailscaleServer(
@@ -325,30 +329,43 @@ class _ServerRowState extends State<_ServerRow> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _ServerRowViewModel viewModel,
+    required _ServerPingCoordinator coordinator,
+  }) {
+    final tailscale = ObservationScope.of<AppState>(context).platform.tailscale;
+    if (!identical(coordinator.tailscale, tailscale)) {
+      coordinator
+        ..tailscale = tailscale
+        ..lastPingKey = null;
+    }
+    final _ = tailscale.state;
+    _schedulePingRefresh(context, viewModel, coordinator);
     final c = context.motif;
-    final view = widget.viewState;
+    final view = viewState;
+    final pingIndicator = viewModel.pingIndicator;
     final action = view.primaryAction;
     final showPingBadge =
         view.statusLabel == 'Offline' &&
-        _pingIndicator.kind == _ServerPingIndicatorKind.reachable;
+        pingIndicator.kind == _ServerPingIndicatorKind.reachable;
     final showDetails = hasConnectionDetails(view);
     return MotifSectionRow(
-      key: ValueKey('server-row-${widget.server.id}'),
+      key: ValueKey('server-row-${server.id}'),
       leading: Icon(
         _iconForViewState(view),
-        key: ValueKey('server-kind-icon-${widget.server.id}'),
+        key: ValueKey('server-kind-icon-${server.id}'),
         color: _toneColor(c, view.tone),
         size: 18,
       ),
-      title: widget.server.name,
+      title: server.name,
       subtitle: view.subtitle,
-      titleWeight: view.canOpenTerminal ? FontWeight.w700 : FontWeight.w500,
+      titleWeight: view.canOpenSessions ? FontWeight.w700 : FontWeight.w500,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           if (showPingBadge)
-            _ServerPingBadge(indicator: _pingIndicator)
+            _ServerPingBadge(indicator: pingIndicator)
           else
             _ServerConnectionBadge(viewState: view),
           if (showDetails) ...[
@@ -359,7 +376,7 @@ class _ServerRowState extends State<_ServerRow> {
               onPressed: () => unawaited(
                 showConnectionDetailsDialog(
                   context,
-                  title: '${widget.server.name}: ${view.statusLabel}',
+                  title: '${server.name}: ${view.statusLabel}',
                   detail: view.subtitle,
                 ),
               ),
@@ -370,7 +387,7 @@ class _ServerRowState extends State<_ServerRow> {
             IconButton(
               icon: Icon(_iconForAction(action)),
               tooltip: _tooltipForAction(action),
-              onPressed: () => widget.onAction(action),
+              onPressed: () => onAction(action),
             ),
           PopupMenuButton<String>(
             // Keep the trigger free of the regenerated hover overlay (see note
@@ -380,10 +397,10 @@ class _ServerRowState extends State<_ServerRow> {
             onSelected: (value) {
               switch (value) {
                 case 'edit':
-                  widget.onEdit();
+                  onEdit();
                   break;
                 case 'delete':
-                  widget.onDelete();
+                  onDelete();
                   break;
               }
             },
@@ -410,7 +427,7 @@ class _ServerRowState extends State<_ServerRow> {
       ),
       onTap: view.tapAction == ServerConnectionAction.none
           ? null
-          : () => widget.onAction(view.tapAction),
+          : () => onAction(view.tapAction),
     );
   }
 }

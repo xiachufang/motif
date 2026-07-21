@@ -10,10 +10,10 @@ import 'package:flutter/foundation.dart'
         defaultTargetPlatform,
         kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../log/log.dart';
@@ -22,16 +22,23 @@ import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
 import '../../platform/apple_input_document.dart';
 import '../../platform/window_title.dart';
-import '../../state/app_state.dart';
-import '../../state/motif_client.dart';
-import '../../state/sticky_modifiers.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
+import '../../state/workspace/remote_port/remote_port_controller.dart';
+import '../../state/workspace/session_attachment.dart';
+import '../../state/workspace/terminal/sticky_modifiers.dart';
+import '../../state/workspace/terminal/terminal_controller.dart';
+import '../../state/workspace/view/view_controller.dart';
+import '../../state/workspace/workspace_api.dart';
+import '../../state/workspace/connection/workspace_connection_view_model.dart';
+import '../../state/workspace/workspace_view_model.dart';
 import '../../terminal/native_terminal.dart';
 import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_palette.dart';
 import '../theme/motif_theme.dart';
-import '../widgets/listenable_select.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/quick_command_row.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
@@ -111,8 +118,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
   void _selectWorkspace(String serverId, String session) {
     final next = (serverId: serverId, session: session);
     if (next == _active) return;
-    final app = context.read<AppState>();
-    app.clientForSession(serverId, session);
+    final app = ObservationScope.of<AppState>(context);
+    app.workspaceForSession(serverId, session);
     setState(() {
       // Refresh recency when revisiting a pane, then evict the oldest mounted
       // pane in lockstep with AppState's bounded warm-workspace cache.
@@ -127,9 +134,14 @@ class _SessionScreenHostState extends State<SessionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final keepWarm = context.read<AppState>().keepSessionWarmOnSwitchAway;
+    final app = readObservationScope<AppState>(context);
+    final keepWarm = app.keepSessionWarmOnSwitchAway;
     if (!keepWarm) {
-      return _SessionPane(serverId: widget.serverId, session: widget.session);
+      return _scopedPane(
+        app,
+        serverId: widget.serverId,
+        session: widget.session,
+      );
     }
     return Stack(
       children: [
@@ -142,7 +154,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
               offstage: workspace != _active,
               child: TickerMode(
                 enabled: workspace == _active,
-                child: _SessionPane(
+                child: _scopedPane(
+                  app,
                   serverId: workspace.serverId,
                   session: workspace.session,
                   workspaceActive: workspace == _active,
@@ -152,6 +165,30 @@ class _SessionScreenHostState extends State<SessionScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _scopedPane(
+    AppState app, {
+    required String serverId,
+    required String session,
+    bool workspaceActive = true,
+    void Function(String serverId, String session)? onWorkspaceSelected,
+  }) {
+    final capabilities = app.workspaceCapabilities(serverId, session);
+    return WorkspaceScope(
+      viewModel: capabilities.viewModel,
+      attachment: capabilities.attachment,
+      terminal: capabilities.terminal,
+      views: capabilities.views,
+      workspace: capabilities.workspace,
+      remotePorts: capabilities.remotePorts,
+      child: _SessionPane(
+        serverId: serverId,
+        session: session,
+        workspaceActive: workspaceActive,
+        onWorkspaceSelected: onWorkspaceSelected,
+      ),
     );
   }
 }
@@ -184,7 +221,12 @@ class _SessionScreenState extends State<_SessionPane>
   final Set<String> _mountedViewIds = <String>{};
   final Set<String> _appleInputDocumentIds = <String>{};
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
-  late final MotifClient _sessionClient;
+  late final WorkspaceViewModel _workspaceState;
+  late final SessionAttachment _attachment;
+  late final TerminalController _terminalController;
+  late final ViewController _viewController;
+  late final WorkspaceApi _workspaceApi;
+  late final RemotePortController _remotePortController;
   late final _TabInputState _fallbackInput;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
@@ -209,10 +251,12 @@ class _SessionScreenState extends State<_SessionPane>
   @override
   void initState() {
     super.initState();
-    _sessionClient = context.read<AppState>().clientForSession(
-      widget.serverId,
-      widget.session,
-    );
+    _workspaceState = readObservationScope<WorkspaceViewModel>(context);
+    _attachment = readObservationScope<SessionAttachment>(context);
+    _terminalController = readObservationScope<TerminalController>(context);
+    _viewController = readObservationScope<ViewController>(context);
+    _workspaceApi = readObservationScope<WorkspaceApi>(context);
+    _remotePortController = readObservationScope<RemotePortController>(context);
     _fallbackInput = _createInputState('fallback');
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
@@ -228,34 +272,34 @@ class _SessionScreenState extends State<_SessionPane>
     _attachIfNeeded();
   }
 
-  /// Attach to [SessionScreen.session] if this client isn't already attached
-  /// to it. Callers navigate here immediately and the attach round trips
+  /// Attach the fixed workspace if it isn't already attached. Callers navigate
+  /// here immediately and the attach round trips
   /// (RPC POST + /events WebSocket) happen behind a connecting overlay instead
   /// of blocking the page transition.
   void _attachIfNeeded() {
-    final motif = _sessionClient;
-    // While the transport is down the reconnect flow owns reattaching
-    // (intendedSession); attaching here would just throw "not connected".
-    if (!motif.isLive) return;
-    final state = motif.state;
+    final attachment = _attachment;
+    // While the transport is down the reconnect flow owns reattaching;
+    // attaching here would just throw "not connected".
+    if (!attachment.isLive) return;
+    final state = attachment.connection.status;
     if (state is ConnAttached && state.session == widget.session) {
       // Already attached — this is a switch-back to a session kept warm in the
       // background. Reclaim the foreground so it reactivates its view and
       // re-advertises the terminal palette.
-      motif.setForeground(true);
+      attachment.setForeground(true);
       // Entering a session with no terminal (e.g. all were closed) should still
       // land on a usable pane.
-      if (motif.ptys.isEmpty) unawaited(_newPty());
+      if (_terminalController.viewModel.ptys.isEmpty) unawaited(_newPty());
       return;
     }
     _attachingSession = true;
-    unawaited(_attachToSession(motif));
+    unawaited(_attachToSession(attachment));
   }
 
-  Future<void> _attachToSession(MotifClient motif) async {
+  Future<void> _attachToSession(SessionAttachment attachment) async {
     final sw = Stopwatch()..start();
     try {
-      await motif.attach(widget.session);
+      await attachment.attach();
       Log.i(
         'open attach session=${widget.session} took=${sw.elapsedMilliseconds}ms',
         name: 'motif.ui',
@@ -263,7 +307,7 @@ class _SessionScreenState extends State<_SessionPane>
       // A freshly-attached session with no PTYs (brand-new, or every terminal
       // closed) would open an empty pane — auto-create one. _newPty handles its
       // own errors, so it won't trip the attach catch/pop below.
-      if (mounted && motif.ptys.isEmpty) {
+      if (mounted && _terminalController.viewModel.ptys.isEmpty) {
         await _newPty();
       }
     } catch (e) {
@@ -334,7 +378,6 @@ class _SessionScreenState extends State<_SessionPane>
       _disposeInputState(input);
     }
     _tabInputs.clear();
-    _modifiers.dispose();
     if (_wakelockApplies) WakelockPlus.disable().ignore();
     super.dispose();
   }
@@ -357,32 +400,55 @@ class _SessionScreenState extends State<_SessionPane>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ObservationSelect<Object?>(
+    selector: () => null,
+    builder: (context, _, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
     final media = MediaQuery.of(context);
     if ((media.viewInsets.bottom - _keyboardInset.value).abs() >= 0.5) {
       _scheduleKeyboardInsetSync();
     }
-    final app = context.read<AppState>();
-    final motif = _sessionClient;
+    final app = ObservationScope.of<AppState>(context);
     final c = context.motif;
-    final fontSize = context.select<AppState, double>(
-      (a) => a.terminalSettings.settings.fontSize,
-    );
-    final overlayFromApp = context.select<AppState, String?>(
-      (a) => a.serverViewState(widget.serverId).terminalOverlay,
-    );
+    final fontSize = app.terminalSettings.settings.fontSize;
+    final workspaceConnection = _workspaceState.connection;
+    final overlayFromWorkspace = switch (workspaceConnection.phase) {
+      WorkspaceConnectionPhase.connecting ||
+      WorkspaceConnectionPhase.reconnecting => 'Connecting...',
+      WorkspaceConnectionPhase.attaching => 'Attaching...',
+      WorkspaceConnectionPhase.suspended =>
+        workspaceConnection.blocker?.message ??
+            workspaceConnection.message ??
+            'Connection suspended',
+      WorkspaceConnectionPhase.failed =>
+        workspaceConnection.message ?? 'Connection failed',
+      _ => null,
+    };
     final terminalPalette = terminalPaletteForBrightness(
       Theme.of(context).brightness,
     );
     final sidebar = app.sessionSidebar;
+    final sidebarState = (
+      showSessions: sidebar.showSessions,
+      showFileTree: sidebar.showFileTree,
+      showGitDiff: sidebar.showGitDiff,
+      showBottomBar: sidebar.showBottomBar,
+      hasVisiblePanel: sidebar.hasVisiblePanel,
+      width: sidebar.width,
+      splitFraction: sidebar.splitFraction,
+      firstSplitFraction: sidebar.firstSplitFraction,
+      secondSplitFraction: sidebar.secondSplitFraction,
+    );
     final overlayMessage =
-        overlayFromApp ?? (_attachingSession ? 'Connecting...' : null);
+        overlayFromWorkspace ?? (_attachingSession ? 'Connecting...' : null);
     return LayoutBuilder(
       builder: (context, constraints) {
         final usesSidebar = constraints.maxWidth >= _sidebarBreakpoint;
         _usesSidebarLayout = usesSidebar;
-        final showBottomBar = !usesSidebar || sidebar.showBottomBar;
-        final showSidebar = usesSidebar && sidebar.hasVisiblePanel;
+        final showBottomBar = !usesSidebar || sidebarState.showBottomBar;
+        final showSidebar = usesSidebar && sidebarState.hasVisiblePanel;
         final sidebarMaxWidth = math.max(
           _sidebarMinWidth,
           math.min(
@@ -390,7 +456,7 @@ class _SessionScreenState extends State<_SessionPane>
             constraints.maxWidth - _mainMinWidth,
           ),
         );
-        final sidebarWidth = sidebar.width
+        final sidebarWidth = sidebarState.width
             .clamp(_sidebarMinWidth, sidebarMaxWidth)
             .toDouble();
         return Title(
@@ -400,11 +466,12 @@ class _SessionScreenState extends State<_SessionPane>
             resizeToAvoidBottomInset: false,
             appBar: AppBar(
               title: usesSidebar
-                  ? ListenableSelect(
-                      listenable: motif,
-                      selector: () => _tabBarSelectKey(motif),
+                  ? ObservationSelect(
+                      selector: () => _tabBarSelectKey(_workspaceState),
                       builder: (context, _, _) => _TabBar(
-                        motif: motif,
+                        workspaceState: _workspaceState,
+                        terminal: _terminalController,
+                        views: _viewController,
                         onNewPty: _newPty,
                         inTitleBar: true,
                       ),
@@ -422,11 +489,11 @@ class _SessionScreenState extends State<_SessionPane>
                           icon: const Icon(Icons.close),
                           tooltip:
                               'Close all sessions (${_primaryShortcutLabel('W', shift: true)})',
-                          onPressed: () => _closeSession(motif),
+                          onPressed: _closeSession,
                         ),
                         IconButton(
                           key: const ValueKey('sessions-sidebar-toggle'),
-                          icon: sidebar.showSessions
+                          icon: sidebarState.showSessions
                               ? const Icon(Icons.list_alt)
                               : const Icon(Icons.list_alt_outlined),
                           tooltip:
@@ -434,7 +501,7 @@ class _SessionScreenState extends State<_SessionPane>
                           style: _sidebarButtonStyle(
                             context,
                             c,
-                            sidebar.showSessions,
+                            sidebarState.showSessions,
                           ),
                           onPressed: () => _toggleSessionsPanel(app),
                         ),
@@ -450,7 +517,7 @@ class _SessionScreenState extends State<_SessionPane>
                             icon: const Icon(Icons.menu),
                             tooltip: 'Session menu',
                             onPressed: () =>
-                                _showSessionMenu(app, motif, buttonContext),
+                                _showSessionMenu(app, buttonContext),
                           ),
                         ),
                       ),
@@ -458,20 +525,20 @@ class _SessionScreenState extends State<_SessionPane>
               actions: [
                 IconButton(
                   key: const ValueKey('file-tree-sidebar-toggle'),
-                  icon: sidebar.showFileTree
+                  icon: sidebarState.showFileTree
                       ? const Icon(Icons.folder)
                       : const Icon(Icons.folder_outlined),
                   tooltip: 'Files (${_primaryShortcutLabel('E', shift: true)})',
                   style: _sidebarButtonStyle(
                     context,
                     c,
-                    usesSidebar && sidebar.showFileTree,
+                    usesSidebar && sidebarState.showFileTree,
                   ),
-                  onPressed: () => _toggleFileTree(motif),
+                  onPressed: _toggleFileTree,
                 ),
                 IconButton(
                   key: const ValueKey('git-diff-sidebar-toggle'),
-                  icon: sidebar.showGitDiff
+                  icon: sidebarState.showGitDiff
                       ? const Icon(Icons.difference)
                       : const Icon(Icons.difference_outlined),
                   tooltip:
@@ -479,37 +546,36 @@ class _SessionScreenState extends State<_SessionPane>
                   style: _sidebarButtonStyle(
                     context,
                     c,
-                    usesSidebar && sidebar.showGitDiff,
+                    usesSidebar && sidebarState.showGitDiff,
                   ),
-                  onPressed: () => _toggleGitDiff(motif),
+                  onPressed: _toggleGitDiff,
                 ),
                 if (usesSidebar)
                   IconButton(
                     key: const ValueKey('bottom-bar-toggle'),
-                    icon: sidebar.showBottomBar
+                    icon: sidebarState.showBottomBar
                         ? const Icon(Icons.keyboard_alt)
                         : const Icon(Icons.keyboard_alt_outlined),
                     tooltip: 'Bottom bar',
                     style: _sidebarButtonStyle(
                       context,
                       c,
-                      sidebar.showBottomBar,
+                      sidebarState.showBottomBar,
                     ),
                     onPressed: () {
                       setState(() {
-                        sidebar.showBottomBar = !sidebar.showBottomBar;
+                        sidebar.showBottomBar = !sidebarState.showBottomBar;
                       });
                     },
                   ),
-                ListenableSelect(
-                  listenable: motif,
-                  selector: () => motif.state is ConnAttached,
+                ObservationSelect(
+                  selector: () => _workspaceState.connection.isAttached,
                   builder: (context, attached, _) => IconButton(
                     key: const ValueKey('open-remote-port-button'),
                     icon: const Icon(Icons.open_in_browser_outlined),
                     tooltip: 'Remote ports',
                     onPressed: attached
-                        ? () => _showRemotePortMappings(motif)
+                        ? () => _showRemotePortMappings(_remotePortController)
                         : null,
                   ),
                 ),
@@ -523,32 +589,31 @@ class _SessionScreenState extends State<_SessionPane>
             body: _AnimatedSidebarLayout(
               visible: showSidebar,
               width: sidebarWidth,
-              sidebar: ListenableSelect(
-                listenable: motif,
-                selector: () => motif.activeCwd,
+              sidebar: ObservationSelect(
+                selector: _workspaceApi.activeCwd,
                 builder: (context, cwd, _) => _SessionSidebar(
                   app: app,
-                  showSessions: sidebar.showSessions,
-                  showFileTree: sidebar.showFileTree,
-                  showDiff: sidebar.showGitDiff,
+                  showSessions: sidebarState.showSessions,
+                  showFileTree: sidebarState.showFileTree,
+                  showDiff: sidebarState.showGitDiff,
                   currentServerId: widget.serverId,
                   currentSession: widget.session,
                   root: cwd ?? '~',
                   cwd: cwd,
-                  motif: motif,
+                  workspace: _workspaceApi,
                   onSessionSelected: (serverId, session) =>
-                      _switchSession(app, motif, serverId, session),
+                      _switchSession(app, serverId, session),
                   onOpenPreview: _openPreview,
                   onOpenDiff: _openDiff,
-                  splitFraction: sidebar.splitFraction,
+                  splitFraction: sidebarState.splitFraction,
                   onSplitChanged: (fraction) {
                     setState(() => sidebar.splitFraction = fraction);
                   },
-                  firstSplitFraction: sidebar.firstSplitFraction,
+                  firstSplitFraction: sidebarState.firstSplitFraction,
                   onFirstSplitChanged: (fraction) {
                     setState(() => sidebar.firstSplitFraction = fraction);
                   },
-                  secondSplitFraction: sidebar.secondSplitFraction,
+                  secondSplitFraction: sidebarState.secondSplitFraction,
                   onSecondSplitChanged: (fraction) {
                     setState(() => sidebar.secondSplitFraction = fraction);
                   },
@@ -570,28 +635,36 @@ class _SessionScreenState extends State<_SessionPane>
                   Column(
                     children: [
                       if (!usesSidebar)
-                        ListenableSelect(
-                          listenable: motif,
-                          selector: () => _tabBarSelectKey(motif),
-                          builder: (context, _, _) =>
-                              _TabBar(motif: motif, onNewPty: _newPty),
+                        ObservationSelect(
+                          selector: () => _tabBarSelectKey(_workspaceState),
+                          builder: (context, _, _) => _TabBar(
+                            workspaceState: _workspaceState,
+                            terminal: _terminalController,
+                            views: _viewController,
+                            onNewPty: _newPty,
+                          ),
                         ),
                       Expanded(
                         child: ClipRect(
                           child: _BottomBarLiftedPane(
                             enabled: showBottomBar,
                             contentHeight: _bottomBarContentHeight,
-                            child: ListenableSelect(
-                              listenable: motif,
-                              selector: () => _paneSelectKey(motif),
+                            child: ObservationSelect(
+                              selector: () => _paneSelectKey(
+                                _workspaceState,
+                                _workspaceApi,
+                              ),
                               builder: (context, _, _) {
                                 final activeView = _switchingSession
                                     ? null
-                                    : _activeView(motif);
-                                _reconcileTabInputs(motif, activeView);
+                                    : _workspaceState.views.active;
+                                _reconcileTabInputs(
+                                  _workspaceState.views.items,
+                                  activeView,
+                                );
                                 _syncAppleInputDocument(activeView?.id);
                                 final mountedViews = _paneMountReady
-                                    ? _mountedViews(motif, activeView)
+                                    ? _mountedViews(activeView)
                                     : const <ViewInfo>[];
                                 return _PaneStack(
                                   activeView: activeView,
@@ -599,7 +672,8 @@ class _SessionScreenState extends State<_SessionPane>
                                   mountPanes: _paneMountReady,
                                   workspaceActive: widget.workspaceActive,
                                   mountedViews: mountedViews,
-                                  motif: motif,
+                                  terminal: _terminalController,
+                                  workspace: _workspaceApi,
                                   fontSize: fontSize,
                                   palette: terminalPalette,
                                   focusSerial: _terminalFocusSerial,
@@ -617,20 +691,20 @@ class _SessionScreenState extends State<_SessionPane>
                     Positioned.fill(
                       child: _KeyboardAnchoredBottomBar(
                         keyboardInset: _keyboardInset,
-                        child: ListenableSelect(
-                          listenable: motif,
-                          selector: () => _bottomBarSelectKey(motif),
+                        child: ObservationSelect(
+                          selector: () => _bottomBarSelectKey(_workspaceState),
                           builder: (context, snap, _) {
-                            final commandStore = context
-                                .read<AppState>()
-                                .commands;
+                            final commandStore = ObservationScope.of<AppState>(
+                              context,
+                            ).commands;
                             final runningProgram = snap.runningProgram;
                             final inputState = _inputStateForView(
                               snap.activeViewId,
                             );
-                            return ListenableBuilder(
-                              listenable: commandStore,
-                              builder: (context, _) {
+                            return ObservationSelect(
+                              selector: () =>
+                                  commandStore.resolved(runningProgram),
+                              builder: (context, commands, _) {
                                 return _MeasureSize(
                                   onChange: _setBottomBarContentSize,
                                   child: ColoredBox(
@@ -639,16 +713,14 @@ class _SessionScreenState extends State<_SessionPane>
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
                                         QuickCommandRow(
-                                          commands: commandStore.resolved(
-                                            runningProgram,
-                                          ),
+                                          commands: commands,
                                           modifiers: _modifiers,
                                           onSendBytes: (b) => _sendBytes(b),
                                           onSendCommandBytes: (b) =>
                                               _sendCommandBytes(b),
                                           onInsertText: _insertText,
-                                          onChangeDirectory: () =>
-                                              _openChangeDirectory(motif),
+                                          onChangeDirectory:
+                                              _openChangeDirectory,
                                           onEdit: () =>
                                               Navigator.of(context).push(
                                                 MaterialPageRoute<void>(
@@ -705,7 +777,7 @@ class _SessionScreenState extends State<_SessionPane>
 }
 
 /// Small pill shown over the terminal while the connection is being
-/// re-established. Input is blocked in this state ([MotifClient.canInput]).
+/// re-established. Input is blocked while the workspace is unavailable.
 class _ReconnectBanner extends StatelessWidget {
   final String message;
 

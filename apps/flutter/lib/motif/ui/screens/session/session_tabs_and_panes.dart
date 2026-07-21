@@ -1,11 +1,15 @@
 part of '../session_screen.dart';
 
 class _TabBar extends StatelessWidget {
-  final MotifClient motif;
+  final WorkspaceViewModel workspaceState;
+  final TerminalController terminal;
+  final ViewController views;
   final VoidCallback onNewPty;
   final bool inTitleBar;
   const _TabBar({
-    required this.motif,
+    required this.workspaceState,
+    required this.terminal,
+    required this.views,
     required this.onNewPty,
     this.inTitleBar = false,
   });
@@ -13,6 +17,7 @@ class _TabBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    final items = workspaceState.views.items;
     return Container(
       key: ValueKey(inTitleBar ? 'title-tab-bar' : 'body-tab-bar'),
       height: 44,
@@ -42,16 +47,14 @@ class _TabBar extends StatelessWidget {
                 horizontal: MotifSpacing.sm,
                 vertical: MotifSpacing.sm,
               ),
-              itemCount: motif.views.length,
+              itemCount: items.length,
               onReorderItem: (oldIndex, newIndex) {
-                if (oldIndex < 0 || oldIndex >= motif.views.length) return;
-                final targetIndex = newIndex
-                    .clamp(0, motif.views.length - 1)
-                    .toInt();
+                if (oldIndex < 0 || oldIndex >= items.length) return;
+                final targetIndex = newIndex.clamp(0, items.length - 1).toInt();
                 if (targetIndex == oldIndex) return;
-                final viewId = motif.views[oldIndex].id;
+                final viewId = items[oldIndex].id;
                 unawaited(
-                  motif.moveView(viewId, targetIndex).catchError((Object e) {
+                  views.move(viewId, targetIndex).catchError((Object e) {
                     if (context.mounted) {
                       showMotifToast(context, 'Move tab failed: $e');
                     }
@@ -59,9 +62,9 @@ class _TabBar extends StatelessWidget {
                 );
               },
               itemBuilder: (context, i) {
-                final v = motif.views[i];
-                final active = v.id == motif.activeViewId;
-                final (icon, label) = _describe(v, motif);
+                final v = items[i];
+                final active = v.id == workspaceState.views.activeViewId;
+                final (icon, label) = _describe(v);
                 return Padding(
                   key: ValueKey('tab-${v.id}'),
                   padding: const EdgeInsets.only(right: MotifSpacing.xs),
@@ -71,14 +74,19 @@ class _TabBar extends StatelessWidget {
                     label: label,
                     dragIndex: i,
                     onTap: () {
-                      if (motif.isLive) {
-                        motif.activateView(v.id);
+                      if (workspaceState.connection.transportAvailable) {
+                        views.activate(v.id);
                       } else {
-                        motif.selectViewLocally(v.id);
+                        views.selectLocally(v.id);
                       }
                     },
                     onClose: () => unawaited(
-                      _closeViewWithConfirmation(context, motif, v),
+                      _closeViewWithConfirmation(
+                        context,
+                        terminal: terminal,
+                        views: views,
+                        view: v,
+                      ),
                     ),
                     closeKey: ValueKey('close-tab-${v.id}'),
                   ),
@@ -97,12 +105,12 @@ class _TabBar extends StatelessWidget {
     );
   }
 
-  (IconData, String) _describe(ViewInfo v, MotifClient motif) {
+  (IconData, String) _describe(ViewInfo v) {
     return switch (v.spec) {
       PtyViewSpec(:final ptyId) => (
         Icons.terminal,
-        motif.runningCommand[ptyId] ??
-            motif.ptys
+        terminal.viewModel.runningCommand[ptyId] ??
+            terminal.viewModel.ptys
                 .firstWhere(
                   (p) => p.id == ptyId,
                   orElse: () => PtyInfo(id: ptyId, cols: 0, rows: 0),
@@ -219,7 +227,8 @@ class _PaneStack extends StatelessWidget {
   final bool mountPanes;
   final bool workspaceActive;
   final List<ViewInfo> mountedViews;
-  final MotifClient motif;
+  final TerminalController terminal;
+  final WorkspaceApi workspace;
   final double fontSize;
   final TerminalPalette palette;
   final int focusSerial;
@@ -231,7 +240,8 @@ class _PaneStack extends StatelessWidget {
     required this.mountPanes,
     required this.workspaceActive,
     required this.mountedViews,
-    required this.motif,
+    required this.terminal,
+    required this.workspace,
     required this.fontSize,
     required this.palette,
     required this.focusSerial,
@@ -275,7 +285,8 @@ class _PaneStack extends StatelessWidget {
                 child: _PaneForView(
                   view: view,
                   active: workspaceActive && view.id == active.id,
-                  motif: motif,
+                  terminal: terminal,
+                  workspace: workspace,
                   fontSize: fontSize,
                   palette: palette,
                   focusSerial: focusSerial,
@@ -292,7 +303,8 @@ class _PaneStack extends StatelessWidget {
 class _PaneForView extends StatelessWidget {
   final ViewInfo view;
   final bool active;
-  final MotifClient motif;
+  final TerminalController terminal;
+  final WorkspaceApi workspace;
   final double fontSize;
   final TerminalPalette palette;
   final int focusSerial;
@@ -301,7 +313,8 @@ class _PaneForView extends StatelessWidget {
   const _PaneForView({
     required this.view,
     required this.active,
-    required this.motif,
+    required this.terminal,
+    required this.workspace,
     required this.fontSize,
     required this.palette,
     required this.focusSerial,
@@ -316,7 +329,7 @@ class _PaneForView extends StatelessWidget {
         (kIsWeb || kUseNativeTerminal)
             ? nativeTerminalView(
                 key: ValueKey('terminal-$ptyId'),
-                motif: motif,
+                motif: terminal,
                 ptyId: ptyId,
                 fontSize: fontSize,
                 active: active,
@@ -332,20 +345,20 @@ class _PaneForView extends StatelessWidget {
       PreviewViewSpec(:final path) => PreviewPane(
         key: ValueKey('preview-$path'),
         path: path,
-        motif: motif,
+        workspace: workspace,
       ),
       DiffViewSpec(:final staged, :final path) => GitDiffView(
         key: ValueKey('diff-$staged-$path'),
-        cwd: motif.activeCwd,
+        cwd: workspace.activeCwd(),
         initialStaged: staged,
         path: path,
-        motif: motif,
+        workspace: workspace,
         embedded: true,
       ),
       ImageViewSpec(:final path) => PreviewPane(
         key: ValueKey('image-$path'),
         path: path,
-        motif: motif,
+        workspace: workspace,
       ),
       OtherViewSpec(:final typeName) => Center(
         child: Text(

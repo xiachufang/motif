@@ -8,12 +8,13 @@
 // Skips gracefully (passes) if no server is reachable.
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rpc_client.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -47,33 +48,31 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
+    final server = app.serverInstance('live');
 
     // Allow connect + session.list to complete.
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 250));
-      if (app.motif.state is ConnConnected || app.motif.state is ConnAttached) {
+      if (server.access.state is ServerConnected) {
         break;
       }
     }
     expect(
-      app.motif.state,
-      anyOf(isA<ConnConnected>(), isA<ConnAttached>()),
+      server.access.state,
+      isA<ServerConnected>(),
       reason: 'should connect to motifd',
     );
 
     // If there's a session, attach and confirm the terminal route opens.
-    if (app.motif.sessions.isNotEmpty) {
-      final name = app.motif.sessions.first.name;
-      await app.motif.attach(name);
+    if (server.viewModel.sessions.sessions.isNotEmpty) {
+      final name = server.viewModel.sessions.sessions.first.name;
+      final workspace = app.workspaceForSession('live', name);
       await tester.pump(const Duration(seconds: 1));
       await tester.pump(const Duration(seconds: 1));
-      // The session is attached; the client should hold ptys/views from attach.
-      expect(app.motif.state, isA<ConnAttached>());
+      expect(workspace.viewModel.connection.status, isA<ConnAttached>());
     }
 
-    await app.motif.disconnect();
+    await app.disconnectServer('live');
   });
 }

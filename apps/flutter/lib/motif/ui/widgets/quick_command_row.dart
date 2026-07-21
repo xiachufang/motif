@@ -1,16 +1,20 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 
 import '../../models/settings.dart';
-import '../../state/sticky_modifiers.dart';
+import '../../state/workspace/terminal/sticky_modifiers.dart';
 import '../../terminal/terminal_paste.dart';
 import '../theme/motif_theme.dart';
 
+part 'quick_command_row.g.dart';
+
 /// Horizontal scrollable row of sticky modifier chips + quick-command capsules.
 /// Mirrors the iOS QuickCommandRow. Pure Flutter; no native dependency.
-class QuickCommandRow extends StatelessWidget {
+@ObservationWidget()
+class QuickCommandRow extends _$QuickCommandRow {
   final List<QuickCommand> commands;
   final StickyModifiers modifiers;
 
@@ -46,69 +50,64 @@ class QuickCommandRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return ListenableBuilder(
-      listenable: modifiers,
-      builder: (context, _) {
-        return SizedBox(
-          height: 48,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(
-              horizontal: MotifSpacing.md,
-              vertical: 6,
-            ),
-            children: [
-              for (final cmd in commands) ...[
-                switch (cmd.kind) {
-                  QuickCommandKind.ctrl => _modChip(
-                    context,
-                    cmd.label,
-                    cmd.symbol,
-                    modifiers.ctrl,
-                    modifiers.toggleCtrl,
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(
+          horizontal: MotifSpacing.md,
+          vertical: 6,
+        ),
+        children: [
+          for (final cmd in commands) ...[
+            switch (cmd.kind) {
+              QuickCommandKind.ctrl => _modChip(
+                context,
+                cmd.label,
+                cmd.symbol,
+                modifiers.ctrl,
+                modifiers.toggleCtrl,
+              ),
+              QuickCommandKind.alt => _modChip(
+                context,
+                cmd.label,
+                cmd.symbol,
+                modifiers.alt,
+                modifiers.toggleAlt,
+              ),
+              QuickCommandKind.shift => _modChip(
+                context,
+                cmd.label,
+                cmd.symbol,
+                modifiers.shift,
+                modifiers.toggleShift,
+              ),
+              _ => _commandChip(context, c, cmd),
+            },
+            _gap,
+          ],
+          if (onEdit != null)
+            Tooltip(
+              message: 'Edit quick commands',
+              child: GestureDetector(
+                onTap: onEdit,
+                child: Container(
+                  width: 40,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: c.subtleFill,
+                    borderRadius: BorderRadius.circular(MotifRadius.pill),
                   ),
-                  QuickCommandKind.alt => _modChip(
-                    context,
-                    cmd.label,
-                    cmd.symbol,
-                    modifiers.alt,
-                    modifiers.toggleAlt,
-                  ),
-                  QuickCommandKind.shift => _modChip(
-                    context,
-                    cmd.label,
-                    cmd.symbol,
-                    modifiers.shift,
-                    modifiers.toggleShift,
-                  ),
-                  _ => _commandChip(context, c, cmd),
-                },
-                _gap,
-              ],
-              if (onEdit != null)
-                Tooltip(
-                  message: 'Edit quick commands',
-                  child: GestureDetector(
-                    onTap: onEdit,
-                    child: Container(
-                      width: 40,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: c.subtleFill,
-                        borderRadius: BorderRadius.circular(MotifRadius.pill),
-                      ),
-                      child: Icon(
-                        Icons.edit_outlined,
-                        size: MotifIconSize.sm,
-                        color: c.textSecondary,
-                      ),
-                    ),
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: MotifIconSize.sm,
+                    color: c.textSecondary,
                   ),
                 ),
-            ],
-          ),
-        );
-      },
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -166,6 +165,7 @@ class QuickCommandRow extends StatelessWidget {
     return Tooltip(
       message: cmd.label,
       child: _RepeatingQuickCommandChip(
+        key: ValueKey('quick-command-repeat-${cmd.id}'),
         repeatable: _canRepeat(cmd),
         onActivate: () => _handleTap(context, cmd),
         child: Container(
@@ -271,7 +271,19 @@ class QuickCommandRow extends StatelessWidget {
   }
 }
 
-class _RepeatingQuickCommandChip extends StatefulWidget {
+final class _QuickCommandRepeatTimer {
+  Timer? timer;
+
+  void cancel() {
+    timer?.cancel();
+    timer = null;
+  }
+
+  void dispose() => cancel();
+}
+
+@ObservationWidget()
+class _RepeatingQuickCommandChip extends _$_RepeatingQuickCommandChip {
   final bool repeatable;
   final Future<void> Function() onActivate;
   final Widget child;
@@ -280,54 +292,44 @@ class _RepeatingQuickCommandChip extends StatefulWidget {
     required this.repeatable,
     required this.onActivate,
     required this.child,
+    super.key,
   });
 
-  @override
-  State<_RepeatingQuickCommandChip> createState() =>
-      _RepeatingQuickCommandChipState();
-}
-
-class _RepeatingQuickCommandChipState
-    extends State<_RepeatingQuickCommandChip> {
   static const _repeatInterval = Duration(milliseconds: 90);
-  Timer? _repeatTimer;
+
+  @PlainState(name: 'repeatTimer')
+  _QuickCommandRepeatTimer createRepeatTimer() => _QuickCommandRepeatTimer();
 
   @override
-  void didUpdateWidget(covariant _RepeatingQuickCommandChip oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (!widget.repeatable) _stopRepeating();
+  void didUpdateStates(
+    covariant _RepeatingQuickCommandChip oldWidget, {
+    required _QuickCommandRepeatTimer repeatTimer,
+  }) {
+    if (!repeatable) repeatTimer.cancel();
   }
 
   void _activate() {
-    unawaited(widget.onActivate());
+    unawaited(onActivate());
   }
 
-  void _startRepeating() {
-    _stopRepeating();
+  void _startRepeating(_QuickCommandRepeatTimer repeatTimer) {
+    repeatTimer.cancel();
     _activate();
-    if (!widget.repeatable) return;
-    _repeatTimer = Timer.periodic(_repeatInterval, (_) => _activate());
-  }
-
-  void _stopRepeating() {
-    _repeatTimer?.cancel();
-    _repeatTimer = null;
+    if (!repeatable) return;
+    repeatTimer.timer = Timer.periodic(_repeatInterval, (_) => _activate());
   }
 
   @override
-  void dispose() {
-    _stopRepeating();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _QuickCommandRepeatTimer repeatTimer,
+  }) {
     return GestureDetector(
       onTap: _activate,
-      onLongPressStart: (_) => _startRepeating(),
-      onLongPressEnd: (_) => _stopRepeating(),
-      onLongPressCancel: _stopRepeating,
-      child: widget.child,
+      onLongPressStart: (_) => _startRepeating(repeatTimer),
+      onLongPressEnd: (_) => repeatTimer.cancel(),
+      onLongPressCancel: repeatTimer.cancel,
+      child: child,
     );
   }
 }

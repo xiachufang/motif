@@ -12,7 +12,7 @@ class _SessionSidebar extends StatelessWidget {
   final String currentSession;
   final String root;
   final String? cwd;
-  final MotifClient motif;
+  final WorkspaceApi workspace;
   final Future<void> Function(String serverId, String session)
   onSessionSelected;
   final ValueChanged<String> onOpenPreview;
@@ -33,7 +33,7 @@ class _SessionSidebar extends StatelessWidget {
     required this.currentSession,
     required this.root,
     required this.cwd,
-    required this.motif,
+    required this.workspace,
     required this.onSessionSelected,
     required this.onOpenPreview,
     required this.onOpenDiff,
@@ -52,8 +52,7 @@ class _SessionSidebar extends StatelessWidget {
     final panels = <Widget>[
       if (showSessions)
         panel(
-          ListenableSelect(
-            listenable: app,
+          ObservationSelect(
             selector: () => _connectedSessionsSelectKey(app),
             builder: (context, _, _) => _ConnectedSessionsPanel(
               app: app,
@@ -69,7 +68,7 @@ class _SessionSidebar extends StatelessWidget {
             key: ValueKey('sidebar-files-$root'),
             root: root,
             onOpen: onOpenPreview,
-            motif: motif,
+            workspace: workspace,
             embedded: true,
           ),
         ),
@@ -78,7 +77,7 @@ class _SessionSidebar extends StatelessWidget {
           GitDiffPanel(
             key: ValueKey('sidebar-diff-$cwd'),
             cwd: cwd,
-            motif: motif,
+            workspace: workspace,
             onOpenDiff: onOpenDiff,
             embedded: true,
           ),

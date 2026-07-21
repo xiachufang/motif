@@ -34,7 +34,7 @@ class _InputBar extends StatelessWidget {
         !const {'TW', 'HK', 'MO'}.contains(locale.countryCode);
     final speechAvailable =
         systemLanguageIsChinese &&
-        context.read<AppState>().platform.speech.isAvailable;
+        readObservationScope<AppState>(context).platform.speech.isAvailable;
     return Container(
       key: const ValueKey('bottom-bar'),
       padding: const EdgeInsets.symmetric(

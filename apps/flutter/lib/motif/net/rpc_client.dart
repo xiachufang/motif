@@ -26,18 +26,14 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../log/log.dart';
+import '../models/motif_event.dart';
 import '../models/motif_proto.dart';
 import 'pty_frame_processor.dart';
 import 'proxy_client.dart';
 import 'shell_integration.dart';
 import 'ws_channel.dart';
 
-/// A server-pushed notification (no id). Carries the decoded `params` map.
-class MotifEvent {
-  final String method;
-  final Map<String, Object?> params;
-  const MotifEvent(this.method, this.params);
-}
+export '../models/motif_event.dart' show MotifEvent;
 
 class RpcException implements Exception {
   final String message;

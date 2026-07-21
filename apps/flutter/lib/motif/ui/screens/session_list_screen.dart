@@ -1,19 +1,23 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../platform/window_title.dart';
-import '../../state/app_state.dart';
-import '../../state/connection_state.dart';
-import '../../state/motif_client.dart';
+import '../../state/app/app_state.dart';
+import '../../state/connection/connection_state.dart';
+import '../../state/app/motif_scope.dart';
+import '../../state/server/server_view_models.dart';
+import '../../state/server/session_catalog_controller.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../app.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/motif_status_badge.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
@@ -21,6 +25,8 @@ import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
 import 'session_screen.dart';
+
+part 'session_list_screen.g.dart';
 
 /// Root screen after servers are configured: grouped session picker for all
 /// manually connected servers.
@@ -108,7 +114,7 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   Future<void> _refreshAllImpl() async {
     await Future.wait([
-      context.read<AppState>().refreshConnectedSessions(),
+      readObservationScope<AppState>(context).refreshConnectedSessions(),
       // Keep the pull-to-refresh affordance visible even when RPC returns
       // immediately, so the gesture has clear feedback.
       Future<void>.delayed(const Duration(milliseconds: 250)),
@@ -124,13 +130,13 @@ class _SessionListScreenState extends State<SessionListScreen>
   Future<void> _pairAndConnectServer() async {
     final id = await showRzvPairingSheet(context);
     if (id == null || !mounted) return;
-    final server = context.read<AppState>().serverById(id);
+    final server = readObservationScope<AppState>(context).serverById(id);
     if (server == null) return;
     await _connectServer(server);
   }
 
   Future<void> _connectServer(MotifServer server) async {
-    final app = context.read<AppState>();
+    final app = readObservationScope<AppState>(context);
     await app.connectServerAndRefresh(server.id, force: true);
     if (mounted &&
         app.serverViewState(server.id).primaryAction ==
@@ -158,9 +164,14 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final groups = app.connectedServerClients;
+  Widget build(BuildContext context) => ObservationSelect<Object?>(
+    selector: () => null,
+    builder: (context, _, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
+    final app = ObservationScope.of<AppState>(context);
+    final groups = app.connectedServerCapabilities;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sessions'),
@@ -183,6 +194,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         onRefresh: _refreshAll,
         child: groups.isEmpty
             ? _SessionListEmptyState(
+                key: const ValueKey('session-list-empty'),
                 app: app,
                 onAddServer: _addAndConnectServer,
                 onPairServer: _pairAndConnectServer,
@@ -203,17 +215,18 @@ class _SessionListScreenState extends State<SessionListScreen>
                 itemBuilder: (context, index) {
                   final group = groups[index];
                   return _ServerSessionSection(
-                    server: group.server,
-                    motif: group.client,
-                    viewState: app.serverViewState(group.server.id),
-                    onRefresh: () => app.refreshServerSessions(group.server.id),
-                    onAttach: (session) => _attach(
-                      context,
-                      app,
-                      group.server,
-                      group.client,
-                      session,
-                    ),
+                    key: ValueKey(group.viewModel.id),
+                    server: group.viewModel,
+                    sessions: group.sessions,
+                    workspace: group.workspace,
+                    isLive: group.isLive,
+                    viewState: app.serverViewState(group.viewModel.id),
+                    onRefresh: () =>
+                        app.refreshServerSessions(group.viewModel.id),
+                    onAttach: (session) =>
+                        _attach(context, app, group.viewModel.profile, session),
+                    onDestroy: (session) =>
+                        app.destroySession(group.viewModel.id, session),
                   );
                 },
               ),
@@ -225,13 +238,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     BuildContext context,
     AppState app,
     MotifServer server,
-    MotifClient motif,
     String name,
   ) {
     // Navigate immediately; SessionScreen performs the attach itself and shows
     // a connecting overlay, so opening a session never blocks on the network.
     unawaited(app.servers.setActive(server.id));
-    app.clientForSession(server.id, name);
+    app.workspaceForSession(server.id, name);
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         settings: RouteSettings(name: sessionRouteName(server.id, name)),
@@ -241,51 +253,60 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 }
 
-class _ServerSessionSection extends StatelessWidget {
-  final MotifServer server;
-  final MotifClient motif;
+@ObservationWidget()
+class _ServerSessionSection extends _$_ServerSessionSection {
+  final ServerViewModel server;
+  final SessionCatalogController sessions;
+  final WorkspaceApi workspace;
+  final bool isLive;
   final ServerConnectionViewState viewState;
   final Future<void> Function() onRefresh;
   final ValueChanged<String> onAttach;
+  final Future<void> Function(String session) onDestroy;
 
   const _ServerSessionSection({
     required this.server,
-    required this.motif,
+    required this.sessions,
+    required this.workspace,
+    required this.isLive,
     required this.viewState,
     required this.onRefresh,
     required this.onAttach,
+    required this.onDestroy,
+    super.key,
   });
 
   @override
   Widget build(BuildContext context) {
     return MotifSection(
-      title: server.name,
+      title: server.profile.name,
       headerTrailing: _ServerHeaderActions(
-        motif: motif,
+        key: ValueKey('server-header-actions-${server.id}'),
+        isLive: isLive,
         viewState: viewState,
         serverId: server.id,
-        serverName: server.name,
+        serverName: server.profile.name,
         onRefresh: onRefresh,
       ),
       children: [
         _CreateSessionRow(
-          onPressed: motif.isLive
-              ? () => createSessionWithDialog(context, motif)
+          onPressed: isLive
+              ? () => createSessionWithDialog(context, sessions, workspace)
               : null,
         ),
-        if (motif.sessions.isEmpty)
+        if (server.sessions.sessions.isEmpty)
           const MotifSectionRow(
             title: 'No sessions yet',
             subtitle: 'Create a session on this server.',
             titleWeight: FontWeight.w400,
           )
         else
-          for (final session in motif.sessions)
+          for (final session in server.sessions.sessions)
             _SessionRow(
               serverId: server.id,
               session: session,
-              motif: motif,
               onAttach: () => onAttach(session.name),
+              onDestroy: () => onDestroy(session.name),
             ),
       ],
     );
@@ -295,14 +316,14 @@ class _ServerSessionSection extends StatelessWidget {
 class _SessionRow extends StatelessWidget {
   final String serverId;
   final SessionInfo session;
-  final MotifClient motif;
   final VoidCallback onAttach;
+  final Future<void> Function() onDestroy;
 
   const _SessionRow({
     required this.serverId,
     required this.session,
-    required this.motif,
     required this.onAttach,
+    required this.onDestroy,
   });
 
   @override
@@ -428,11 +449,11 @@ class _SessionRow extends StatelessWidget {
   }
 
   Future<void> _destroySession(BuildContext context) async {
-    // This row is removed synchronously by MotifClient's optimistic update, so
+    // This row is removed synchronously by WorkspaceConnectionController's optimistic update, so
     // retain the root Overlay's stable context for reporting an async failure.
     final toastContext = Overlay.of(context, rootOverlay: true).context;
     try {
-      await motif.destroySession(session.name);
+      await onDestroy();
     } catch (e) {
       if (toastContext.mounted) {
         showMotifToast(toastContext, 'Destroy failed: $e');
@@ -499,55 +520,62 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-class _ServerHeaderActions extends StatefulWidget {
-  final MotifClient motif;
+@ObservableModel()
+class _ServerHeaderActionsViewModel extends _$_ServerHeaderActionsViewModel {
+  _ServerHeaderActionsViewModel({bool refreshing = false}) : super(refreshing);
+}
+
+@ObservationWidget()
+class _ServerHeaderActions extends _$_ServerHeaderActions {
+  final bool isLive;
   final ServerConnectionViewState viewState;
   final String serverId;
   final String serverName;
   final Future<void> Function() onRefresh;
 
   const _ServerHeaderActions({
-    required this.motif,
+    required this.isLive,
     required this.viewState,
     required this.serverId,
     required this.serverName,
     required this.onRefresh,
+    super.key,
   });
 
-  @override
-  State<_ServerHeaderActions> createState() => _ServerHeaderActionsState();
-}
+  @ObservableState(name: 'viewModel')
+  _ServerHeaderActionsViewModel createViewModel() =>
+      _ServerHeaderActionsViewModel();
 
-class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
-  bool _refreshing = false;
-
-  Future<void> _refresh() async {
-    if (_refreshing) return;
-    setState(() => _refreshing = true);
+  Future<void> _refresh(_ServerHeaderActionsViewModel viewModel) async {
+    if (viewModel.refreshing) return;
+    viewModel.refreshing = true;
     try {
-      await widget.onRefresh();
+      await onRefresh();
     } finally {
-      if (mounted) setState(() => _refreshing = false);
+      viewModel.refreshing = false;
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _ServerHeaderActionsViewModel viewModel,
+  }) {
     final c = context.motif;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _StatusChip(viewState: widget.viewState),
+        _StatusChip(viewState: viewState),
         IconButton(
-          key: ValueKey('refresh-server-sessions-${widget.serverId}'),
-          icon: _refreshing
+          key: ValueKey('refresh-server-sessions-$serverId'),
+          icon: viewModel.refreshing
               ? const SizedBox(
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.refresh),
-          tooltip: 'Refresh ${widget.serverName} sessions',
+          tooltip: 'Refresh $serverName sessions',
           visualDensity: VisualDensity.compact,
           // IconButton.color routes through styleFrom(foregroundColor:), which
           // regenerates a
@@ -555,8 +583,8 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
           // one — re-adding the hover circle. iconButtonStyle() keeps the
           // theme's transparent overlay and just swaps the foreground.
           style: context.iconButtonStyle(foregroundColor: c.textSecondary),
-          onPressed: widget.motif.isLive && !_refreshing
-              ? () => unawaited(_refresh())
+          onPressed: isLive && !viewModel.refreshing
+              ? () => unawaited(_refresh(viewModel))
               : null,
         ),
       ],
@@ -564,7 +592,8 @@ class _ServerHeaderActionsState extends State<_ServerHeaderActions> {
   }
 }
 
-class _SessionListEmptyState extends StatelessWidget {
+@ObservationWidget()
+class _SessionListEmptyState extends _$_SessionListEmptyState {
   final AppState app;
   final Future<void> Function() onAddServer;
   final Future<void> Function() onPairServer;
@@ -577,6 +606,7 @@ class _SessionListEmptyState extends StatelessWidget {
     required this.onPairServer,
     required this.onConnectServer,
     required this.onSetupTransport,
+    super.key,
   });
 
   @override

@@ -1,26 +1,30 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
-import '../../state/app_state.dart';
-import '../../state/connection_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/connection/connection_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 
+part 'welcome_screen.g.dart';
+
 /// First-run screen, shown when no server is configured.
-class WelcomeScreen extends StatelessWidget {
+@ObservationWidget()
+class WelcomeScreen extends _$WelcomeScreen {
   const WelcomeScreen({super.key});
 
   Future<void> _connectServer(
     BuildContext context, {
     ServerKind? initialKind,
   }) async {
-    final app = context.read<AppState>();
+    final app = readObservationScope<AppState>(context);
     final result = await showServerEditSheet(
       context,
       initialKind: initialKind,
@@ -36,7 +40,7 @@ class WelcomeScreen extends StatelessWidget {
   }
 
   Future<void> _pairServer(BuildContext context) async {
-    final app = context.read<AppState>();
+    final app = readObservationScope<AppState>(context);
     final id = await showRzvPairingSheet(context);
     if (id == null || !context.mounted) return;
     await app.connectServerAndRefresh(id, force: true);
@@ -62,8 +66,6 @@ class WelcomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    // Rebuild when a server gets added so we transition into the app.
-    context.watch<AppState>();
     return Scaffold(
       appBar: AppBar(title: const Text('motif'), centerTitle: true),
       body: SafeArea(

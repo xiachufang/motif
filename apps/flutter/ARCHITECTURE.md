@@ -1,63 +1,120 @@
 # Flutter architecture
 
-Motif is a Flutter shell around three runtime systems: a remote motifd
-connection, the Ghostty terminal engine, and optional native platform services.
-The application intentionally stays in one Dart package; boundaries are kept by
-interfaces and composition rather than by publishing many internal packages.
+This is the high-level implementation overview. The complete Observable state
+tree, ownership rules, and collection semantics are documented in
+[WORKSPACE_STATE_ARCHITECTURE.md](WORKSPACE_STATE_ARCHITECTURE.md).
+
+Motif is a Flutter shell around remote motifd servers, the Ghostty terminal
+engine, and optional native platform services. Boundaries are enforced by
+focused interfaces and composition inside one Dart package.
 
 ## Runtime composition
 
 ```text
 MotifApp
-├── AppState                    app shell and compatibility facade
-│   ├── WorkspaceRegistry       active/warm workspace identity and LRU
-│   │   └── ServerConnectionController
-│   │       ├── TransportResolver
-│   │       └── MotifClient     RPC session projection
-│   ├── PushCoordinator         registration and notification routing
-│   ├── settings stores         profiles, terminal and quick commands
-│   └── PlatformServices        Tailscale, speech, push and secrets
-└── terminal surfaces
-    ├── TerminalSession         narrow PTY host interface
-    ├── PtyOutputHub            capped replay and direct byte delivery
-    └── TerminalWorkerClient    isolate-owned Ghostty engine
+└── AppState                         application coordinator
+    ├── AppViewModel                 Observable process state root
+    ├── PlatformServices             Tailscale, speech, push, secrets
+    ├── ServerInstance registry
+    │   └── ServerInstance
+    │       ├── ServerTransport
+    │       ├── ServerAccessController
+    │       ├── SessionCatalogController
+    │       └── DeviceController
+    ├── WorkspaceRegistry            ordinary runtime resource index
+    │   └── WorkspaceInstance(serverId, session)
+    │       ├── WorkspaceConnectionController
+    │       ├── WorkspaceLifecycleController
+    │       ├── TerminalController
+    │       ├── ViewController
+    │       ├── RemotePortController
+    │       └── WorkspaceApi
+    └── PushCoordinator
 ```
 
-`lib/main.dart` starts the client-only app. `lib/main_desktop.dart` supplies the
-embedded server page and desktop runtime policies through `runMotif`; shared
-code never imports the desktop implementation.
+One `ServerInstance` owns one configured server control channel. One
+`WorkspaceInstance` owns exactly one `(serverId, session)` attachment. SSH,
+Tailscale, WSL, and Rendezvous access state belongs to the Server projection;
+PTY, View, File/Git invalidation, presence, and remote ports belong to the
+Workspace projection.
+
+## State source layout
+
+`lib/motif/state` is grouped by owning domain first, then by Workspace feature:
+
+```text
+state/
+├── app/                    composition root, app shell state, and scopes
+├── connection/             shared connection/access value types
+├── embedded/               embedded motifd models, service, and ViewModel
+├── persistence/            stores, serialization, and preference ViewModels
+├── platform/               observable projections of platform capabilities
+├── server/                 server access, catalog, device, push, and transport
+└── workspace/              workspace composition, lifecycle, content, presence
+    ├── connection/         fixed-session transport and attach coordination
+    ├── terminal/           PTY state, runtime policy, and output delivery
+    ├── view/               tab/view state and commands
+    └── remote_port/        remote-port state and forwarding
+```
+
+The directory name answers which lifetime owns a file. A Controller is kept
+beside the ViewModel and transport contract it drives; generated `.g.dart`
+parts stay beside their source. New files must enter the narrowest owning
+domain. Do not create generic `common`, `models`, `controllers`, or `utils`
+dumping grounds under `state`.
+
+`app` is the outer composition layer and may depend on every lower domain.
+Server and Workspace coordinators may compose focused features. Leaf Workspace
+features (`terminal`, `view`, and `remote_port`) do not import `app`, instances,
+or one another. The Workspace connection layer is the explicit attach
+coordinator, so it may assemble those focused features without turning them
+into a mutual dependency graph.
 
 ## State and data flow
 
-- `RpcClient` owns HTTP, event WebSocket and PTY WebSocket mechanics.
-- `MotifClient` projects protocol events into session, PTY and view state.
-- `ServerConnectionController` owns reconnect/backoff and transport blockers.
-- `WorkspaceRegistry` keeps at most four fully retained desktop workspaces.
-  Mobile retains one. Eviction releases the controller, transport and terminal
-  pane resources.
-- PTY output bypasses `ChangeNotifier`. `PtyOutputHub` delivers bytes directly
-  and retains at most 2 MiB per PTY for late subscribers.
-- `AppState` relays one notification per client update; connection projection
-  only runs when the client connection state actually changes.
+- All long-lived UI-readable state is an `@ObservableModel` ViewModel.
+- ViewModels live in state-only source files; Services and Controllers depend
+  on them, never the reverse.
+- Every UI region that reads observable state runs through a generated
+  `@ObservationWidget()` boundary. Widget-owned observable state uses
+  `@ObservableState()`; ordinary owned resources use `@PlainState()`.
+- Widgets that require Flutter-only lifecycle mixins remain `StatefulWidget`s
+  and delegate their reactive subtree to generated `ObservationSelect` regions.
+- Long-lived collections use stable `ObservableList`, `ObservableMap`, or
+  `ObservableSet` identities and support direct mutation.
+- `RpcClient`, timers, sockets, forwarders, subscriptions, and replay buffers
+  are runtime resources and never enter the ViewModel tree.
+- `WorkspaceLifecycleController` projects reconnect metadata into the same
+  `WorkspaceConnectionViewModel`; it does not keep a parallel access state.
+- `WorkspaceScope` injects focused capabilities. Widgets never receive a
+  `WorkspaceInstance` or a broad command facade.
+- PTY bytes bypass the observable state tree. `PtyOutputHub` delivers bytes
+  directly and keeps a capped replay buffer for late surfaces.
 
 ## Persistence and secrets
 
-Shared preferences contain only non-sensitive server profiles and UI settings.
-Tokens, rendezvous PSKs, SSH passwords/private keys, and the Push E2E key use
-`SecretStore`, backed by `flutter_secure_storage`. Startup migrates legacy
-plaintext values only after the secure write succeeds.
+Persistence adapters serialize immutable DTO snapshots; ViewModels contain no
+JSON or SharedPreferences logic. Shared preferences store non-sensitive
+profiles and preferences. Tokens, rendezvous PSKs, SSH credentials, and the
+Push E2E key use `SecretStore`.
 
-## Dependency rules
+## Dependency direction
 
-- `models` has no Flutter or platform dependencies.
-- `net` may depend on models and transport adapters, never UI.
-- `state` coordinates network and platform capabilities.
-- terminal rendering depends on `TerminalSession`, not on `MotifClient`.
-- desktop-specific composition belongs in the desktop entrypoint.
-- UI may depend on state and terminal public interfaces.
+```text
+UI -> ViewModels + focused feature interfaces
+AppState/registries -> ServerInstance + WorkspaceInstance
+instances/coordinators -> focused controllers -> transport interfaces
+transport implementations -> RpcClient/platform services
+ViewModels -> immutable DTOs/enums only
+```
+
+Reverse dependencies are forbidden: ViewModels do not import controllers,
+features do not import instances or sibling features, and transports do not
+mutate ViewModels.
 
 ## Verification
 
-Pull requests run `flutter analyze` plus pure Dart/widget tests with native FFI
-assets disabled. Native, live motifd and Tailscale suites remain explicit tagged
-lanes because they require toolchains or external services.
+The migration guard requires no legacy client symbols or handwritten
+observation keys in production source. Pull requests run `flutter analyze` and
+the Flutter test suite; native/live motifd and Tailscale suites remain explicit
+lanes when they require external services.

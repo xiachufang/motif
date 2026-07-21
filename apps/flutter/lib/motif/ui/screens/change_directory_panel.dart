@@ -3,15 +3,17 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../models/motif_proto.dart';
-import '../../state/motif_client.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
+
+const _directoryRowDensity = VisualDensity(vertical: -3);
 
 /// Presents [ChangeDirectoryPanel] as a bottom sheet. [onChoose] fires with the
 /// selected directory; the panel dismisses the sheet itself afterward.
 Future<void> showChangeDirectorySheet(
   BuildContext context, {
-  required MotifClient motif,
+  required WorkspaceApi workspace,
   required String baseDir,
   required void Function(String path) onChoose,
 }) {
@@ -29,7 +31,7 @@ Future<void> showChangeDirectorySheet(
         child: SizedBox(
           height: media.size.height * 0.82,
           child: ChangeDirectoryPanel(
-            motif: motif,
+            workspace: workspace,
             baseDir: baseDir,
             onChoose: onChoose,
           ),
@@ -44,12 +46,12 @@ Future<void> showChangeDirectorySheet(
 class ChangeDirectoryPanel extends StatefulWidget {
   final String baseDir;
   final void Function(String path) onChoose;
-  final MotifClient motif;
+  final WorkspaceApi workspace;
   const ChangeDirectoryPanel({
     super.key,
     required this.baseDir,
     required this.onChoose,
-    required this.motif,
+    required this.workspace,
   });
 
   @override
@@ -63,7 +65,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
   final TextEditingController _pathController = TextEditingController();
   final FocusNode _pathFocusNode = FocusNode(debugLabel: 'Change directory');
 
-  MotifClient get _motif => widget.motif;
+  WorkspaceApi get _workspace => widget.workspace;
 
   @override
   void initState() {
@@ -86,7 +88,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
     if (_loading.contains(dir)) return;
     setState(() => _loading.add(dir));
     try {
-      final entries = await _motif.fsTree(dir, depth: 1, showHidden: false);
+      final entries = await _workspace.tree(dir, depth: 1, showHidden: false);
       if (!mounted) return;
       setState(() {
         _cache[dir] = entries.where((e) => e.type == FileType.dir).toList()
@@ -238,6 +240,7 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
           ),
           _Header(onCancel: () => Navigator.of(context).pop()),
           Padding(
+            key: const ValueKey('change-directory-path-row'),
             padding: const EdgeInsets.fromLTRB(
               MotifSpacing.lg,
               MotifSpacing.md,
@@ -246,7 +249,11 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
             ),
             child: Row(
               children: [
-                Icon(Icons.chevron_right, color: c.accent, size: MotifIconSize.md),
+                Icon(
+                  Icons.chevron_right,
+                  color: c.accent,
+                  size: MotifIconSize.md,
+                ),
                 const SizedBox(width: MotifSpacing.sm),
                 Expanded(
                   child: TextField(
@@ -341,31 +348,36 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
   }
 
   Widget _parentRow(MotifColors colors) {
-    return ListTile(
-      leading: Icon(
-        Icons.subdirectory_arrow_left,
-        color: colors.textSecondary,
-        size: MotifIconSize.md,
-      ),
-      title: Row(
-        children: [
-          Text(
-            '..',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontFamily: 'monospace',
-              fontWeight: FontWeight.w600,
+    return Material(
+      key: const ValueKey('change-directory-parent-row'),
+      type: MaterialType.transparency,
+      child: ListTile(
+        visualDensity: _directoryRowDensity,
+        leading: Icon(
+          Icons.subdirectory_arrow_left,
+          color: colors.textSecondary,
+          size: MotifIconSize.md,
+        ),
+        title: Row(
+          children: [
+            Text(
+              '..',
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
-          const SizedBox(width: MotifSpacing.sm),
-          Text(
-            'parent',
-            style: MotifType.caption.copyWith(color: colors.textTertiary),
-          ),
-        ],
+            const SizedBox(width: MotifSpacing.sm),
+            Text(
+              'parent',
+              style: MotifType.caption.copyWith(color: colors.textTertiary),
+            ),
+          ],
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: MotifSpacing.lg),
+        onTap: _goUp,
       ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: MotifSpacing.lg),
-      onTap: _goUp,
     );
   }
 
@@ -374,27 +386,36 @@ class _ChangeDirectoryPanelState extends State<ChangeDirectoryPanel> {
     required bool isFirst,
     required MotifColors colors,
   }) {
-    return ListTile(
-      tileColor: isFirst ? colors.accentFill(0.12) : null,
-      leading: Icon(Icons.folder, color: colors.accent, size: MotifIconSize.md),
-      title: Text(
-        entry.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: colors.textPrimary, fontFamily: 'monospace'),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (isFirst) ...[
-            Icon(Icons.keyboard_return, size: 16, color: colors.accent),
-            const SizedBox(width: MotifSpacing.sm),
+    return Material(
+      key: ValueKey('change-directory-candidate:${entry.name}'),
+      type: MaterialType.transparency,
+      child: ListTile(
+        visualDensity: _directoryRowDensity,
+        tileColor: isFirst ? colors.accentFill(0.12) : null,
+        leading: Icon(
+          Icons.folder,
+          color: colors.accent,
+          size: MotifIconSize.md,
+        ),
+        title: Text(
+          entry.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: colors.textPrimary, fontFamily: 'monospace'),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isFirst) ...[
+              Icon(Icons.keyboard_return, size: 16, color: colors.accent),
+              const SizedBox(width: MotifSpacing.sm),
+            ],
+            Icon(Icons.chevron_right, size: 16, color: colors.textTertiary),
           ],
-          Icon(Icons.chevron_right, size: 16, color: colors.textTertiary),
-        ],
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: MotifSpacing.lg),
+        onTap: () => _drill(entry.name),
       ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: MotifSpacing.lg),
-      onTap: () => _drill(entry.name),
     );
   }
 }

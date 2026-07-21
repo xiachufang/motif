@@ -1,0 +1,214 @@
+import 'dart:async';
+
+import '../../../log/log.dart';
+import '../../../models/motif_proto.dart';
+import '../../../terminal/terminal_session.dart';
+import 'terminal_runtime_policy.dart';
+import 'pty_output_hub.dart';
+import 'terminal_view_model.dart';
+
+typedef TerminalRpcCall =
+    Future<Map<String, Object?>> Function(
+      String method, [
+      Map<String, Object?> params,
+    ]);
+
+/// Narrow attachment/transport capability used by [TerminalController].
+final class TerminalTransport {
+  const TerminalTransport({
+    required this.canInput,
+    required this.call,
+    required this.writePty,
+    required this.resizePty,
+    required this.ensurePtyStream,
+    required this.closePtyStream,
+    required this.syncPtyStreams,
+    required this.waitForPtyReplay,
+    required this.resyncPtyStream,
+  });
+
+  final bool Function() canInput;
+  final TerminalRpcCall call;
+  final Future<void> Function(String ptyId, List<int> data) writePty;
+  final Future<void> Function(String ptyId, int cols, int rows) resizePty;
+  final Future<void> Function(String ptyId) ensurePtyStream;
+  final Future<void> Function(String ptyId) closePtyStream;
+  final Future<void> Function(Set<String> ptyIds) syncPtyStreams;
+  final Future<void> Function(String ptyId) waitForPtyReplay;
+  final Future<void> Function(String ptyId, {required String reason})
+  resyncPtyStream;
+}
+
+/// Read-only view projection needed by terminal runtime policy.
+final class TerminalViewProjection {
+  const TerminalViewProjection({
+    required this.activePtyId,
+    required this.liveTabPtyIds,
+  });
+
+  final String? Function() activePtyId;
+  final Set<String> Function() liveTabPtyIds;
+}
+
+/// Owns terminal state, PTY surfaces/output buffers, and terminal commands for
+/// one workspace. It has no dependency on views or the workspace composition
+/// root; the coordinator supplies the two small projection callbacks.
+final class TerminalController implements TerminalSession, TerminalRuntimeHost {
+  TerminalController({
+    required this.viewModel,
+    required this.transport,
+    required this.runtime,
+    required this.viewProjection,
+  }) {
+    _output.describeActive = () =>
+        'activePty=$activePtyId liveTabs=${liveTabPtyIds.length}';
+    _output.onReplayOverflow = (ptyId, pendingBytes) {
+      unawaited(
+        resyncPtyStream(
+          ptyId,
+          reason: 'replay backlog $pendingBytes bytes',
+        ).catchError((Object error, StackTrace stackTrace) {
+          Log.w(
+            'pty replay overflow resync failed pty=$ptyId',
+            name: 'motif.pty',
+            error: error,
+            stackTrace: stackTrace,
+          );
+        }),
+      );
+    };
+  }
+
+  final TerminalViewModel viewModel;
+  final TerminalTransport transport;
+  final TerminalRuntimePolicy runtime;
+  final TerminalViewProjection viewProjection;
+  final PtyOutputHub _output = PtyOutputHub();
+
+  @override
+  bool get canInput => transport.canInput();
+
+  @override
+  String? get activePtyId => viewProjection.activePtyId();
+
+  @override
+  Set<String> get liveTabPtyIds => viewProjection.liveTabPtyIds();
+
+  @override
+  Set<String> get terminalSurfacePtyIds => _output.sinkPtyIds;
+
+  @override
+  void registerPtySink(String ptyId, PtyByteSink sink) =>
+      _output.registerSink(ptyId, sink);
+
+  @override
+  void unregisterPtySink(String ptyId, [PtyByteSink? sink]) =>
+      _output.unregisterSink(ptyId, sink);
+
+  @override
+  Future<void> writePty(String ptyId, List<int> data) {
+    if (!canInput) return Future<void>.value();
+    return transport.writePty(ptyId, data);
+  }
+
+  Future<PtyInfo> create({
+    String? cmd,
+    String? cwd,
+    required int cols,
+    required int rows,
+  }) async {
+    final body = await transport.call('pty.create', {
+      'cmd': ?cmd,
+      'cwd': ?cwd,
+      'cols': cols,
+      'rows': rows,
+    });
+    final info = PtyInfo.fromJson(
+      (body['info'] as Map).cast<String, Object?>(),
+    );
+    addCreated(info);
+    return info;
+  }
+
+  @override
+  Future<void> resizePty(String ptyId, int cols, int rows) =>
+      transport.resizePty(ptyId, cols, rows);
+
+  @override
+  Future<void> ensurePtyStream(String ptyId) =>
+      transport.ensurePtyStream(ptyId);
+
+  @override
+  Future<void> closePtyStream(String ptyId) => transport.closePtyStream(ptyId);
+
+  @override
+  Future<void> syncPtyStreams(Set<String> ptyIds) =>
+      transport.syncPtyStreams(ptyIds);
+
+  @override
+  Future<void> waitForPtyReplay(String ptyId) =>
+      transport.waitForPtyReplay(ptyId);
+
+  @override
+  Future<void> activatePtyStream(String ptyId) =>
+      runtime.onTerminalSurfaceReady(this, ptyId);
+
+  @override
+  Future<void> deactivatePtyStream(String ptyId) =>
+      runtime.onTerminalSurfaceDisposed(this, ptyId);
+
+  @override
+  Future<void> resyncPtyStream(String ptyId, {required String reason}) async {
+    _output.clearPty(ptyId);
+    await transport.resyncPtyStream(ptyId, reason: reason);
+  }
+
+  Future<void> kill(String ptyId) =>
+      transport.call('pty.kill', {'pty_id': ptyId}).then((_) {});
+
+  void handleOutput(Map<String, Object?> params) {
+    final id = params['pty_id'] as String?;
+    final bytes = PtyOutputHub.bytesFromPtyOutput(params);
+    if (id != null && bytes != null) _output.handleOutput(id, bytes);
+  }
+
+  void addCreated(PtyInfo info) {
+    if (viewModel.ptys.any((pty) => pty.id == info.id)) return;
+    viewModel.ptys.add(info);
+    onPtySubscriptionsChanged();
+  }
+
+  void markExited(String id) {
+    updatePty(id, (pty) => pty.copyWith(alive: false));
+    _output.clearPty(id);
+    viewModel.runningCommand.remove(id);
+    viewModel.shellKind.remove(id);
+    viewModel.shellContext.remove(id);
+    onPtySubscriptionsChanged();
+  }
+
+  void updatePty(String id, PtyInfo Function(PtyInfo) transform) {
+    final index = viewModel.ptys.indexWhere((pty) => pty.id == id);
+    if (index >= 0) viewModel.ptys[index] = transform(viewModel.ptys[index]);
+  }
+
+  void replacePtys(Iterable<PtyInfo> ptys) {
+    viewModel.ptys.replaceRange(0, viewModel.ptys.length, ptys);
+  }
+
+  void clear() {
+    viewModel.ptys.clear();
+    viewModel.runningCommand.clear();
+    viewModel.shellKind.clear();
+    viewModel.shellContext.clear();
+    _output.clearAll();
+  }
+
+  void onSessionAttached() => runtime.onSessionAttached(this);
+
+  void onPtySubscriptionsChanged() => runtime.onPtySubscriptionsChanged(this);
+
+  void onActiveViewChanged() => runtime.onActiveViewChanged(this);
+
+  void dispose() => _output.dispose();
+}

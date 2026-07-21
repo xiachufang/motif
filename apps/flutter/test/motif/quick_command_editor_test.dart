@@ -2,13 +2,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/screens/quick_command_editor.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/test_server_transport.dart';
 
 Future<AppState> _appState() async {
   SharedPreferences.setMockInitialValues({});
@@ -19,15 +20,15 @@ Future<AppState> _appState() async {
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
-    clientFactory: (_) => MotifClient(),
+    serverTransportFactory: (_) => TestServerTransport(),
   );
 }
 
 Future<void> _pumpEditor(WidgetTester tester) async {
   final app = await _appState();
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
         home: const QuickCommandEditor(),

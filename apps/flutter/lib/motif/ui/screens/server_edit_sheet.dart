@@ -3,16 +3,17 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../../models/settings.dart';
 import '../../net/ssh/ssh_config_discovery.dart';
 import '../../platform/services.dart';
 import '../../platform/tailscale_support.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/tailscale_section.dart';
 
 typedef SshConfigDiscoveryLoader = Future<SshConfigSnapshot> Function();
@@ -213,7 +214,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       _saving = true;
       _savingConnect = connectAfterSave;
     });
-    final store = context.read<AppState>().servers;
+    final store = readObservationScope<AppState>(context).servers;
     final existing = widget.existing;
     final id = existing?.id ?? 'srv-${DateTime.now().microsecondsSinceEpoch}';
     final isDirect = _kind == ServerKind.direct;
@@ -321,7 +322,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   Future<void> _loadDiscovery() async {
     final generation = ++_discoveryGeneration;
-    final svc = context.read<AppState>().platform.tailscale;
+    final svc = readObservationScope<AppState>(context).platform.tailscale;
     setState(() {
       _discoveryLoading = true;
       _discoveryMessage = null;
@@ -355,7 +356,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
         _discoveryLoading) {
       return;
     }
-    final svc = context.read<AppState>().platform.tailscale;
+    final svc = readObservationScope<AppState>(context).platform.tailscale;
     final port = int.tryParse(_port.text.trim());
     final peers = _visiblePeers;
     if (peers.isEmpty || port == null) return;
@@ -499,7 +500,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       psk: _psk.text.trim(),
       pubKey: _pubKey.text.trim(),
     );
-    await context.read<AppState>().servers.update(updated);
+    await readObservationScope<AppState>(context).servers.update(updated);
     if (mounted) {
       Navigator.of(
         context,
@@ -620,73 +621,76 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    // A rendezvous server has no host/port/token/transport to edit (it's reached
-    // through a relay via a scanned pairing link). Show a safe read-only panel
-    // instead of the Direct/Tailscale form, which can't represent it.
-    final existing = widget.existing;
-    if (existing != null && existing.kind == ServerKind.rendezvous) {
-      return _buildRendezvous(context, existing);
-    }
-    final title = widget.existing == null
-        ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
-        : 'Edit Server';
-    return AdaptivePanel(
-      title: title,
-      actions: [
-        TextButton(
-          onPressed: _valid && !_saving
-              ? () => _save(connectAfterSave: widget.connectOnSave)
-              : null,
-          child: Text(_primaryActionLabel),
-        ),
-      ],
-      body: ListView(
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: EdgeInsets.fromLTRB(
-          MotifSpacing.lg,
-          MotifSpacing.md,
-          MotifSpacing.lg,
-          MotifSpacing.xl,
-        ),
-        children: [
-          if (_supportsTailscale || _supportsSsh || _supportsWsl) ...[
-            _reachViaSection(),
-            const SizedBox(height: MotifSpacing.xl),
-          ],
-          if (_supportsTailscale &&
-              _isNew &&
-              _kind == ServerKind.tailscale) ...[
-            _discoverySection(context),
-            const SizedBox(height: MotifSpacing.xl),
-          ],
-          MotifSection(
-            title: 'Name',
-            dividerIndent: MotifSpacing.lg,
-            children: [_field(_name, 'Name', 'e.g. Dev box')],
+  Widget build(BuildContext context) => ObservationSelect<Object?>(
+    selector: () => null,
+    builder: (context, _, _) {
+      // A rendezvous server has no host/port/token/transport to edit (it's reached
+      // through a relay via a scanned pairing link). Show a safe read-only panel
+      // instead of the Direct/Tailscale form, which can't represent it.
+      final existing = widget.existing;
+      if (existing != null && existing.kind == ServerKind.rendezvous) {
+        return _buildRendezvous(context, existing);
+      }
+      final title = widget.existing == null
+          ? (widget.connectOnSave ? 'Connect Server' : 'Add Server')
+          : 'Edit Server';
+      return AdaptivePanel(
+        title: title,
+        actions: [
+          TextButton(
+            onPressed: _valid && !_saving
+                ? () => _save(connectAfterSave: widget.connectOnSave)
+                : null,
+            child: Text(_primaryActionLabel),
           ),
-          const SizedBox(height: MotifSpacing.xl),
-          if (_kind == ServerKind.ssh) ...[
-            _sshLoginSection(),
-            const SizedBox(height: MotifSpacing.xl),
-            _sshAuthSection(),
-            const SizedBox(height: MotifSpacing.xl),
-            _sshMotifdSection(),
-            const SizedBox(height: MotifSpacing.xl),
-          ],
-          if (_kind == ServerKind.wsl) ...[
-            _wslSection(),
-            const SizedBox(height: MotifSpacing.xl),
-          ],
-          _motifdAddressSection(),
-          if (_kind == ServerKind.direct) ...[
-            const SizedBox(height: MotifSpacing.xl),
-            _pairingFieldsSection(),
-          ],
         ],
-      ),
-    );
-  }
+        body: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: EdgeInsets.fromLTRB(
+            MotifSpacing.lg,
+            MotifSpacing.md,
+            MotifSpacing.lg,
+            MotifSpacing.xl,
+          ),
+          children: [
+            if (_supportsTailscale || _supportsSsh || _supportsWsl) ...[
+              _reachViaSection(),
+              const SizedBox(height: MotifSpacing.xl),
+            ],
+            if (_supportsTailscale &&
+                _isNew &&
+                _kind == ServerKind.tailscale) ...[
+              _discoverySection(context),
+              const SizedBox(height: MotifSpacing.xl),
+            ],
+            MotifSection(
+              title: 'Name',
+              dividerIndent: MotifSpacing.lg,
+              children: [_field(_name, 'Name', 'e.g. Dev box')],
+            ),
+            const SizedBox(height: MotifSpacing.xl),
+            if (_kind == ServerKind.ssh) ...[
+              _sshLoginSection(),
+              const SizedBox(height: MotifSpacing.xl),
+              _sshAuthSection(),
+              const SizedBox(height: MotifSpacing.xl),
+              _sshMotifdSection(),
+              const SizedBox(height: MotifSpacing.xl),
+            ],
+            if (_kind == ServerKind.wsl) ...[
+              _wslSection(),
+              const SizedBox(height: MotifSpacing.xl),
+            ],
+            _motifdAddressSection(),
+            if (_kind == ServerKind.direct) ...[
+              const SizedBox(height: MotifSpacing.xl),
+              _pairingFieldsSection(),
+            ],
+          ],
+        ),
+      );
+    },
+  );
 
   Widget _pairingFieldsSection() {
     return MotifSection(
@@ -1065,56 +1069,50 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   Widget _discoverySection(BuildContext context) {
-    final svc = context.read<AppState>().platform.tailscale;
-    return StreamBuilder<TailscaleState>(
-      stream: svc.states,
-      initialData: svc.state,
-      builder: (context, snap) {
-        final state = snap.data ?? svc.state;
-        final ready = state.status == TailscaleStatus.running;
-        final peers = _visiblePeers;
-        return MotifSection(
-          title: 'Discovered on tailnet',
-          headerTrailing: ready ? _discoveryHeaderActions() : null,
-          footer: ready
-              ? (widget.connectOnSave
-                    ? 'Choose a reachable peer, then connect.'
-                    : 'Tap a peer to fill in the address.')
-              : 'Set up Tailscale to discover and prefill tailnet hosts.',
-          children: [
-            if (!ready)
-              _TailscaleSetupMessageRow(
-                state: state,
-                onSetup: () => unawaited(_openTailscaleSetup(svc)),
-              )
-            else if (_discoveryLoading)
-              const _DiscoveryMessageRow(
-                message: 'Scanning tailnet…',
-                loading: true,
-              )
-            else if (_discoveryMessage != null)
-              _DiscoveryMessageRow(message: _discoveryMessage!)
-            else if (_discovered.isEmpty)
-              const _DiscoveryMessageRow(
-                message: 'No peers visible on the tailnet.',
-              )
-            else if (peers.isEmpty)
-              const _DiscoveryMessageRow(
-                message:
-                    'No motifd-named peers. Use Show all to pick a renamed host.',
-              )
-            else
-              for (final peer in peers)
-                _DiscoveredPeerRow(
-                  peer: peer,
-                  ping: _peerPing[peer.id],
-                  checking: _checkingPeers.contains(peer.id),
-                  selected: peer.id == _selectedPeerId,
-                  onTap: () => _applyDiscoveredPeer(peer),
-                ),
-          ],
-        );
-      },
+    final svc = readObservationScope<AppState>(context).platform.tailscale;
+    final state = svc.state;
+    final ready = state.status == TailscaleStatus.running;
+    final peers = _visiblePeers;
+    return MotifSection(
+      title: 'Discovered on tailnet',
+      headerTrailing: ready ? _discoveryHeaderActions() : null,
+      footer: ready
+          ? (widget.connectOnSave
+                ? 'Choose a reachable peer, then connect.'
+                : 'Tap a peer to fill in the address.')
+          : 'Set up Tailscale to discover and prefill tailnet hosts.',
+      children: [
+        if (!ready)
+          _TailscaleSetupMessageRow(
+            state: state,
+            onSetup: () => unawaited(_openTailscaleSetup(svc)),
+          )
+        else if (_discoveryLoading)
+          const _DiscoveryMessageRow(
+            message: 'Scanning tailnet…',
+            loading: true,
+          )
+        else if (_discoveryMessage != null)
+          _DiscoveryMessageRow(message: _discoveryMessage!)
+        else if (_discovered.isEmpty)
+          const _DiscoveryMessageRow(
+            message: 'No peers visible on the tailnet.',
+          )
+        else if (peers.isEmpty)
+          const _DiscoveryMessageRow(
+            message:
+                'No motifd-named peers. Use Show all to pick a renamed host.',
+          )
+        else
+          for (final peer in peers)
+            _DiscoveredPeerRow(
+              peer: peer,
+              ping: _peerPing[peer.id],
+              checking: _checkingPeers.contains(peer.id),
+              selected: peer.id == _selectedPeerId,
+              onTap: () => _applyDiscoveredPeer(peer),
+            ),
+      ],
     );
   }
 

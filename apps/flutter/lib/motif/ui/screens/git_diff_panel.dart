@@ -3,9 +3,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../models/motif_proto.dart';
-import '../../state/motif_client.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_panel_header.dart';
+import '../widgets/observation_select.dart';
 
 typedef OpenDiffView =
     Future<void> Function({String? path, required bool staged});
@@ -15,7 +16,7 @@ typedef OpenDiffView =
 class GitDiffPanel extends StatefulWidget {
   final String? cwd;
   final bool initialStaged;
-  final MotifClient motif;
+  final WorkspaceApi workspace;
   final bool embedded;
   final bool popOnOpen;
   final OpenDiffView onOpenDiff;
@@ -24,7 +25,7 @@ class GitDiffPanel extends StatefulWidget {
     super.key,
     this.cwd,
     this.initialStaged = false,
-    required this.motif,
+    required this.workspace,
     required this.onOpenDiff,
     this.embedded = false,
     this.popOnOpen = false,
@@ -42,36 +43,30 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
   bool _loading = true;
   String? _error;
   int _lastTick = -1;
+  bool _reloadScheduled = false;
 
-  late final MotifClient _motif;
+  late final WorkspaceApi _workspace;
 
   @override
   void initState() {
     super.initState();
     _staged = widget.initialStaged;
-    _motif = widget.motif;
-    _motif.addListener(_onTick);
+    _workspace = widget.workspace;
     _load();
   }
 
   void _onTick() {
-    if (_motif.gitChangeTick != _lastTick) _load();
-  }
-
-  @override
-  void dispose() {
-    _motif.removeListener(_onTick);
-    super.dispose();
+    if (_workspace.content.gitVersion != _lastTick) _load();
   }
 
   Future<void> _load() async {
-    _lastTick = _motif.gitChangeTick;
+    _lastTick = _workspace.content.gitVersion;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final summary = await _motif.gitDiffSummary(
+      final summary = await _workspace.gitDiffSummary(
         staged: _staged,
         cwd: widget.cwd,
       );
@@ -97,7 +92,21 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ObservationSelect<int>(
+    selector: () => _workspace.content.gitVersion,
+    builder: (context, version, _) {
+      if (version != _lastTick && !_reloadScheduled) {
+        _reloadScheduled = true;
+        Future.microtask(() {
+          _reloadScheduled = false;
+          if (mounted) _onTick();
+        });
+      }
+      return _buildContent(context);
+    },
+  );
+
+  Widget _buildContent(BuildContext context) {
     final c = context.motif;
     final body = _loading
         ? const Center(child: CircularProgressIndicator())
@@ -191,7 +200,7 @@ class GitDiffView extends StatefulWidget {
   final String? cwd;
   final bool initialStaged;
   final String? path;
-  final MotifClient motif;
+  final WorkspaceApi workspace;
   final bool embedded;
 
   const GitDiffView({
@@ -199,7 +208,7 @@ class GitDiffView extends StatefulWidget {
     this.cwd,
     this.initialStaged = false,
     this.path,
-    required this.motif,
+    required this.workspace,
     this.embedded = false,
   });
 
@@ -215,41 +224,35 @@ class _GitDiffViewState extends State<GitDiffView> {
   bool _loading = true;
   String? _error;
   int _lastTick = -1;
+  bool _reloadScheduled = false;
 
-  late final MotifClient _motif;
+  late final WorkspaceApi _workspace;
 
   @override
   void initState() {
     super.initState();
     _staged = widget.initialStaged;
-    _motif = widget.motif;
-    _motif.addListener(_onTick);
+    _workspace = widget.workspace;
     _load();
   }
 
   void _onTick() {
-    if (_motif.gitChangeTick != _lastTick) _load();
-  }
-
-  @override
-  void dispose() {
-    _motif.removeListener(_onTick);
-    super.dispose();
+    if (_workspace.content.gitVersion != _lastTick) _load();
   }
 
   Future<void> _load() async {
-    _lastTick = _motif.gitChangeTick;
+    _lastTick = _workspace.content.gitVersion;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final summary = await _motif.gitDiffSummary(
+      final summary = await _workspace.gitDiffSummary(
         path: widget.path,
         staged: _staged,
         cwd: widget.cwd,
       );
-      final patch = await _motif.gitDiff(
+      final patch = await _workspace.gitDiff(
         path: widget.path,
         staged: _staged,
         cwd: widget.cwd,
@@ -270,7 +273,21 @@ class _GitDiffViewState extends State<GitDiffView> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ObservationSelect<int>(
+    selector: () => _workspace.content.gitVersion,
+    builder: (context, version, _) {
+      if (version != _lastTick && !_reloadScheduled) {
+        _reloadScheduled = true;
+        Future.microtask(() {
+          _reloadScheduled = false;
+          if (mounted) _onTick();
+        });
+      }
+      return _buildContent(context);
+    },
+  );
+
+  Widget _buildContent(BuildContext context) {
     final c = context.motif;
     final body = _loading
         ? const Center(child: CircularProgressIndicator())
@@ -846,9 +863,7 @@ class _DiffTreeFileRow extends StatelessWidget {
                 name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: MotifType.mono.copyWith(
-                  color: c.textPrimary,
-                ),
+                style: MotifType.mono.copyWith(color: c.textPrimary),
               ),
             ),
             _ChangeStats(additions: file.additions, deletions: file.deletions),

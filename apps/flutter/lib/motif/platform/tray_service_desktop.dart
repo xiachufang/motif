@@ -13,10 +13,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:nativeapi/nativeapi.dart' as na;
 
-import '../state/app_state.dart';
-import '../state/embedded_server_service.dart';
+import '../state/app/app_state.dart';
+import '../state/embedded/embedded_server_service.dart';
 import 'desktop_launch_desktop.dart';
 import 'desktop_window.dart';
 import 'tray_icons.g.dart';
@@ -31,6 +32,10 @@ class TrayService {
   // Current menu items, retained so their click-event closures aren't GC'd.
   final List<na.MenuItem> _items = [];
   EmbeddedServerService? _svc;
+  ObservationSubscription<
+    ({EmbeddedRunState phase, bool hasLoopback, bool hasAuth})
+  >?
+  _serviceSubscription;
   EmbeddedRunState? _lastPhase;
   bool _lastHasLoopback = false;
   bool _lastHasAuth = false;
@@ -71,12 +76,20 @@ class TrayService {
       _tray = null;
       return;
     }
-    svc.addListener(_sync);
+    _serviceSubscription = observe(
+      () => (
+        phase: svc.status.phase,
+        hasLoopback: svc.status.loopbackEndpoint != null,
+        hasAuth: svc.status.authUrl != null,
+      ),
+      onChange: (_) => _sync(),
+      scheduler: ObservationSchedulers.immediate,
+    );
     _sync(force: true);
   }
 
   void dispose() {
-    _svc?.removeListener(_sync);
+    _serviceSubscription?.dispose();
     try {
       _tray?.dispose();
     } catch (_) {}

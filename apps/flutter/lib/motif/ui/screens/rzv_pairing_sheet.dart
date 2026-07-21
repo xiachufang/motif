@@ -1,12 +1,15 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../net/rzv/pairing_payload.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import 'rzv_scan_screen.dart';
+
+part 'rzv_pairing_sheet.g.dart';
 
 /// Whether camera QR scanning is available on this platform. mobile_scanner
 /// supports iOS / Android / macOS / web; desktop Linux/Windows fall back to
@@ -30,81 +33,100 @@ bool get _scanSupported {
 Future<String?> showRzvPairingSheet(BuildContext context) {
   return showAdaptiveModal<String>(
     context,
-    builder: (_) => const _RzvPairingSheet(),
+    builder: (_) =>
+        const _RzvPairingSheet(key: ValueKey('rendezvous-pairing-sheet')),
   );
 }
 
-class _RzvPairingSheet extends StatefulWidget {
-  const _RzvPairingSheet();
-
-  @override
-  State<_RzvPairingSheet> createState() => _RzvPairingSheetState();
+@ObservableModel()
+class _RzvPairingViewModel extends _$_RzvPairingViewModel {
+  _RzvPairingViewModel({
+    MotifPairingPayload? parsed,
+    String? error,
+    bool busy = false,
+  }) : super(parsed, error, busy);
 }
 
-class _RzvPairingSheetState extends State<_RzvPairingSheet> {
-  final _controller = TextEditingController();
-  MotifPairingPayload? _parsed;
-  String? _error;
-  bool _busy = false;
+@ObservationWidget()
+class _RzvPairingSheet extends _$_RzvPairingSheet {
+  const _RzvPairingSheet({super.key});
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
+  @PlainState(name: 'controller')
+  TextEditingController createController() => TextEditingController();
 
-  void _onChanged(String value) {
+  @ObservableState(name: 'viewModel')
+  _RzvPairingViewModel createViewModel() => _RzvPairingViewModel();
+
+  void _onChanged(_RzvPairingViewModel viewModel, String value) {
     final text = value.trim();
-    setState(() {
+    observationTransaction(() {
       if (text.isEmpty) {
-        _parsed = null;
-        _error = null;
+        viewModel
+          ..parsed = null
+          ..error = null;
         return;
       }
       try {
-        _parsed = MotifPairingPayload.parse(text);
-        _error = null;
+        viewModel
+          ..parsed = MotifPairingPayload.parse(text)
+          ..error = null;
       } on FormatException catch (e) {
-        _parsed = null;
-        _error = e.message;
+        viewModel
+          ..parsed = null
+          ..error = e.message;
       }
     });
   }
 
-  Future<void> _scan() async {
+  Future<void> _scan(
+    BuildContext context,
+    TextEditingController controller,
+    _RzvPairingViewModel viewModel,
+  ) async {
     final link = await showRzvScanScreen(context);
-    if (link == null || !mounted) return;
-    _controller.text = link;
-    _onChanged(link);
+    if (link == null || !context.mounted) return;
+    controller.text = link;
+    _onChanged(viewModel, link);
   }
 
-  Future<void> _pair() async {
-    if (_parsed == null || _busy) return;
-    setState(() => _busy = true);
+  Future<void> _pair(
+    BuildContext context,
+    TextEditingController controller,
+    _RzvPairingViewModel viewModel,
+  ) async {
+    if (viewModel.parsed == null || viewModel.busy) return;
+    viewModel.busy = true;
     try {
-      final id = await context.read<AppState>().addServerFromPairingUri(
-        _controller.text.trim(),
-      );
-      if (mounted) Navigator.of(context).pop(id);
+      final id = await readObservationScope<AppState>(
+        context,
+      ).addServerFromPairingUri(controller.text.trim());
+      if (context.mounted) Navigator.of(context).pop(id);
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = '$e';
-          _busy = false;
+      if (context.mounted) {
+        observationTransaction(() {
+          viewModel
+            ..error = '$e'
+            ..busy = false;
         });
       }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required TextEditingController controller,
+    required _RzvPairingViewModel viewModel,
+  }) {
     final c = context.motif;
-    final payload = _parsed;
+    final payload = viewModel.parsed;
     return AdaptiveModal(
       title: 'Pair with a server',
       actions: [
         TextButton(
-          onPressed: payload != null && !_busy ? _pair : null,
+          onPressed: payload != null && !viewModel.busy
+              ? () => _pair(context, controller, viewModel)
+              : null,
           child: const Text('Pair'),
         ),
       ],
@@ -122,7 +144,9 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
-                onPressed: _busy ? null : _scan,
+                onPressed: viewModel.busy
+                    ? null
+                    : () => _scan(context, controller, viewModel),
                 icon: const Icon(Icons.qr_code_scanner, size: 18),
                 label: const Text('Scan QR'),
               ),
@@ -130,18 +154,18 @@ class _RzvPairingSheetState extends State<_RzvPairingSheet> {
             const SizedBox(height: MotifSpacing.md),
           ],
           TextField(
-            controller: _controller,
+            controller: controller,
             autofocus: true,
             autocorrect: false,
             enableSuggestions: false,
             minLines: 1,
             maxLines: 3,
             keyboardType: TextInputType.url,
-            onChanged: _onChanged,
+            onChanged: (value) => _onChanged(viewModel, value),
             decoration: InputDecoration(
               hintText: 'motif://pair?v=1&rzv=…',
               border: const OutlineInputBorder(),
-              errorText: _error,
+              errorText: viewModel.error,
             ),
           ),
           if (payload != null) ...[

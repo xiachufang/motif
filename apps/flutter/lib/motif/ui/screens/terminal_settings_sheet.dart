@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 
+part 'terminal_settings_sheet.g.dart';
+
 /// Font size + theme controls (mirrors TerminalSettingsSheet).
-class TerminalSettingsSheet extends StatelessWidget {
+@ObservationWidget()
+class TerminalSettingsSheet extends _$TerminalSettingsSheet {
   const TerminalSettingsSheet({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
+    final app = ObservationScope.of<AppState>(context);
     final store = app.terminalSettings;
     final s = store.settings;
     final c = context.motif;

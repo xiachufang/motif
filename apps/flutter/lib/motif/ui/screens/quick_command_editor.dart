@@ -2,25 +2,29 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/key_picker.dart';
 import '../widgets/motif_form.dart';
 import 'quick_command_sets_view.dart';
 
+part 'quick_command_editor.g.dart';
+
 /// Reorderable editor for the global or per-program quick-command list.
-class QuickCommandEditor extends StatelessWidget {
+@ObservationWidget()
+class QuickCommandEditor extends _$QuickCommandEditor {
   /// null = global list; otherwise a per-program set id.
   final String? setId;
   const QuickCommandEditor({super.key, this.setId});
 
   @override
   Widget build(BuildContext context) {
-    final store = context.watch<AppState>().commands;
+    final store = ObservationScope.of<AppState>(context).commands;
     final c = context.motif;
     final cmds = store.commandsForScope(setId);
     final title = setId == null
@@ -191,7 +195,7 @@ class QuickCommandEditor extends StatelessWidget {
   }
 
   Future<void> _add(BuildContext context, String value) async {
-    final store = context.read<AppState>().commands;
+    final store = readObservationScope<AppState>(context).commands;
     final id = newQuickCommandId();
     switch (value) {
       case 'snippet':
@@ -210,7 +214,7 @@ class QuickCommandEditor extends StatelessWidget {
   }
 
   Future<void> _edit(BuildContext context, QuickCommand? existing) async {
-    final store = context.read<AppState>().commands;
+    final store = readObservationScope<AppState>(context).commands;
     final result = await showAdaptiveModal<QuickCommand>(
       context,
       builder: (_) => _EditDialog(existing: existing),

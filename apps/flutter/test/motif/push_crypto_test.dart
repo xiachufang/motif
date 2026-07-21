@@ -1,7 +1,7 @@
 import 'dart:convert';
 
 import 'package:motif/motif/platform/push_crypto.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

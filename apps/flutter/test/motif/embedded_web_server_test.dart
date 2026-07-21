@@ -2,8 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/embedded_web_server.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/embedded/embedded_web_server.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {

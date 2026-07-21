@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/state/connection_state.dart';
+import 'package:motif/motif/state/connection/connection_state.dart';
 import 'package:motif/motif/ui/widgets/connection_details_dialog.dart';
 
 void main() {
@@ -22,9 +22,7 @@ void main() {
       tone: ServerConnectionTone.danger,
       icon: ServerConnectionIconKind.ssh,
       showSpinner: false,
-      canOpenTerminal: false,
-      canInput: false,
-      terminalOverlay: null,
+      canOpenSessions: false,
       primaryAction: ServerConnectionAction.retry,
       tapAction: ServerConnectionAction.retry,
     );
@@ -40,16 +38,14 @@ void main() {
     );
   });
 
-  test('does not mark ordinary attached session subtitles as diagnostics', () {
+  test('does not mark an ordinary connected endpoint as diagnostics', () {
     const view = ServerConnectionViewState(
-      statusLabel: 'Live',
-      subtitle: '127.0.0.1:7777\nAttached: shell',
+      statusLabel: 'Connected',
+      subtitle: '127.0.0.1:7777',
       tone: ServerConnectionTone.success,
       icon: ServerConnectionIconKind.direct,
       showSpinner: false,
-      canOpenTerminal: true,
-      canInput: true,
-      terminalOverlay: null,
+      canOpenSessions: true,
       primaryAction: ServerConnectionAction.openSessions,
       tapAction: ServerConnectionAction.openSessions,
     );

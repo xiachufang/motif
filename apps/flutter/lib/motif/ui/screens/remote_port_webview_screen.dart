@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../platform/desktop_window.dart';
 import '../theme/motif_theme.dart';
+
+part 'remote_port_webview_screen.g.dart';
 
 const double _desktopTitleBarHeight = 38;
 const double _mobileHistoryEdgeWidth = 28;
@@ -223,6 +226,7 @@ class _RemotePortWebViewScreenState extends State<RemotePortWebViewScreen> {
           bottom: 0,
           width: _mobileHistoryEdgeWidth,
           child: _HistorySwipeEdge(
+            key: const ValueKey('webview-history-back-edge'),
             direction: _HistoryDirection.back,
             enabled: _canGoBack,
             onFeedback: _showHistoryGestureFeedback,
@@ -235,6 +239,7 @@ class _RemotePortWebViewScreenState extends State<RemotePortWebViewScreen> {
           bottom: 0,
           width: _mobileHistoryEdgeWidth,
           child: _HistorySwipeEdge(
+            key: const ValueKey('webview-history-forward-edge'),
             direction: _HistoryDirection.forward,
             enabled: _canGoForward,
             onFeedback: _showHistoryGestureFeedback,
@@ -343,12 +348,19 @@ class _DesktopTitleBarPadding extends StatelessWidget {
   }
 }
 
-class _HistorySwipeEdge extends StatefulWidget {
+final class _HistorySwipeInteraction {
+  double dragDx = 0;
+  bool dragActive = false;
+}
+
+@ObservationWidget()
+class _HistorySwipeEdge extends _$_HistorySwipeEdge {
   const _HistorySwipeEdge({
     required this.direction,
     required this.enabled,
     required this.onFeedback,
     required this.onTriggered,
+    super.key,
   });
 
   final _HistoryDirection direction;
@@ -356,26 +368,25 @@ class _HistorySwipeEdge extends StatefulWidget {
   final ValueChanged<_HistoryGestureFeedback> onFeedback;
   final Future<void> Function() onTriggered;
 
-  @override
-  State<_HistorySwipeEdge> createState() => _HistorySwipeEdgeState();
-}
-
-class _HistorySwipeEdgeState extends State<_HistorySwipeEdge> {
-  double _dragDx = 0;
-  bool _dragActive = false;
+  @PlainState(name: 'interaction')
+  _HistorySwipeInteraction createInteraction() => _HistorySwipeInteraction();
 
   @override
-  void didUpdateWidget(covariant _HistorySwipeEdge oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.enabled && !widget.enabled && _dragActive) {
-      _cancelGesture();
+  void didUpdateStates(
+    covariant _HistorySwipeEdge oldWidget, {
+    required _HistorySwipeInteraction interaction,
+  }) {
+    if (oldWidget.enabled && !enabled && interaction.dragActive) {
+      _cancelGesture(interaction);
     }
   }
 
-  bool get _isBackGesture => widget.direction == _HistoryDirection.back;
+  bool get _isBackGesture => direction == _HistoryDirection.back;
 
-  double get _progress {
-    final intendedDx = _isBackGesture ? _dragDx : -_dragDx;
+  double _progress(_HistorySwipeInteraction interaction) {
+    final intendedDx = _isBackGesture
+        ? interaction.dragDx
+        : -interaction.dragDx;
     return (intendedDx / _mobileHistorySwipeDistance).clamp(0.0, 1.0);
   }
 
@@ -384,9 +395,9 @@ class _HistorySwipeEdgeState extends State<_HistorySwipeEdge> {
     required bool active,
     bool committed = false,
   }) {
-    widget.onFeedback(
+    onFeedback(
       _HistoryGestureFeedback(
-        direction: widget.direction,
+        direction: direction,
         progress: progress,
         active: active,
         committed: committed,
@@ -394,48 +405,56 @@ class _HistorySwipeEdgeState extends State<_HistorySwipeEdge> {
     );
   }
 
-  void _cancelGesture() {
-    _dragActive = false;
-    _dragDx = 0;
+  void _cancelGesture(_HistorySwipeInteraction interaction) {
+    interaction.dragActive = false;
+    interaction.dragDx = 0;
     _emitGestureFeedback(progress: 0, active: false);
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _HistorySwipeInteraction interaction,
+  }) {
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
-      onHorizontalDragStart: widget.enabled
+      onHorizontalDragStart: enabled
           ? (details) {
-              _dragActive = true;
-              _dragDx = 0;
+              interaction.dragActive = true;
+              interaction.dragDx = 0;
               _emitGestureFeedback(progress: 0, active: true);
             }
           : null,
-      onHorizontalDragUpdate: widget.enabled
+      onHorizontalDragUpdate: enabled
           ? (details) {
-              _dragDx += details.delta.dx;
-              _emitGestureFeedback(progress: _progress, active: true);
+              interaction.dragDx += details.delta.dx;
+              _emitGestureFeedback(
+                progress: _progress(interaction),
+                active: true,
+              );
             }
           : null,
-      onHorizontalDragCancel: widget.enabled ? _cancelGesture : null,
-      onHorizontalDragEnd: widget.enabled
+      onHorizontalDragCancel: enabled
+          ? () => _cancelGesture(interaction)
+          : null,
+      onHorizontalDragEnd: enabled
           ? (details) {
               final velocity = details.primaryVelocity ?? 0;
               final distanceTriggered = _isBackGesture
-                  ? _dragDx >= _mobileHistorySwipeDistance
-                  : _dragDx <= -_mobileHistorySwipeDistance;
+                  ? interaction.dragDx >= _mobileHistorySwipeDistance
+                  : interaction.dragDx <= -_mobileHistorySwipeDistance;
               final velocityTriggered = _isBackGesture
                   ? velocity >= _mobileHistorySwipeVelocity
                   : velocity <= -_mobileHistorySwipeVelocity;
-              _dragActive = false;
-              _dragDx = 0;
+              interaction.dragActive = false;
+              interaction.dragDx = 0;
               if (distanceTriggered || velocityTriggered) {
                 _emitGestureFeedback(
                   progress: 1,
                   active: false,
                   committed: true,
                 );
-                unawaited(widget.onTriggered());
+                unawaited(onTriggered());
               } else {
                 _emitGestureFeedback(progress: 0, active: false);
               }

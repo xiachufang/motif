@@ -3,8 +3,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../../state/motif_client.dart';
 import '../../terminal/terminal_fonts.dart';
+import '../../terminal/terminal_session.dart';
 import '../theme/motif_theme.dart';
 
 /// A minimal, cross-platform remote-output view used until the full libghostty
@@ -14,13 +14,13 @@ import '../theme/motif_theme.dart';
 /// as monospace scrollback. Good enough to prove the end-to-end pipe and run
 /// line-oriented commands; not a substitute for real VT emulation.
 class BasicTerminalView extends StatefulWidget {
-  final MotifClient motif;
+  final TerminalSession terminal;
   final String ptyId;
   final double fontSize;
 
   const BasicTerminalView({
     super.key,
-    required this.motif,
+    required this.terminal,
     required this.ptyId,
     this.fontSize = 13,
   });
@@ -39,21 +39,21 @@ class _BasicTerminalViewState extends State<BasicTerminalView> {
   @override
   void initState() {
     super.initState();
-    widget.motif.registerPtySink(widget.ptyId, _onBytes);
+    widget.terminal.registerPtySink(widget.ptyId, _onBytes);
   }
 
   @override
   void didUpdateWidget(covariant BasicTerminalView old) {
     super.didUpdateWidget(old);
     if (old.ptyId != widget.ptyId) {
-      widget.motif.unregisterPtySink(old.ptyId);
-      widget.motif.registerPtySink(widget.ptyId, _onBytes);
+      widget.terminal.unregisterPtySink(old.ptyId);
+      widget.terminal.registerPtySink(widget.ptyId, _onBytes);
     }
   }
 
   @override
   void dispose() {
-    widget.motif.unregisterPtySink(widget.ptyId);
+    widget.terminal.unregisterPtySink(widget.ptyId);
     _scroll.dispose();
     super.dispose();
   }

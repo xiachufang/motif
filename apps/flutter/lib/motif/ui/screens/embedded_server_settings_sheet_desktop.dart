@@ -9,16 +9,20 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../platform/desktop_launch_desktop.dart';
-import '../../state/embedded_server_service.dart';
+import '../../state/embedded/embedded_server_service.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
+
+part 'embedded_server_settings_sheet_desktop.g.dart';
 
 /// Which control plane the embedded node joins. Derived from `tsControlUrl`
 /// (empty ⇒ official Tailscale; set ⇒ a self-hosted Headscale URL), but held
@@ -64,7 +68,8 @@ class _EmbeddedServerSettingsSheetState
   _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
   int _pushRelayHealthCheckId = 0;
 
-  EmbeddedServerService get _svc => context.read<EmbeddedServerService>();
+  EmbeddedServerService get _svc =>
+      readObservationScope<EmbeddedServerService>(context);
 
   @override
   void initState() {
@@ -224,8 +229,13 @@ class _EmbeddedServerSettingsSheetState
   }
 
   @override
-  Widget build(BuildContext context) {
-    final svc = context.watch<EmbeddedServerService>();
+  Widget build(BuildContext context) => ObservationSelect<Object?>(
+    selector: () => null,
+    builder: (context, _, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
+    final svc = ObservationScope.of<EmbeddedServerService>(context);
     final cfg = svc.config;
     final status = svc.status;
     final c = context.motif;
@@ -930,7 +940,10 @@ class _EmbeddedServerSettingsSheetState
       context,
       builder: (_) => AdaptiveModal(
         title: 'Registered Push Tokens',
-        content: _PushTokensView(service: _svc),
+        content: _PushTokensView(
+          key: const ValueKey('embedded-push-tokens'),
+          service: _svc,
+        ),
       ),
     );
   }
@@ -1115,59 +1128,66 @@ Uri? _pushRelayHealthUri(String address) {
   }
 }
 
-class _PushTokensView extends StatefulWidget {
-  final EmbeddedServerService service;
-
-  const _PushTokensView({required this.service});
-
-  @override
-  State<_PushTokensView> createState() => _PushTokensViewState();
+@ObservableModel()
+class _PushTokensViewModel extends _$_PushTokensViewModel {
+  _PushTokensViewModel({
+    required Future<List<RegisteredPushToken>> tokens,
+    @ObservationReadOnly() required ObservableSet<String> sending,
+  }) : super(tokens, sending);
 }
 
-class _PushTokensViewState extends State<_PushTokensView> {
-  late Future<List<RegisteredPushToken>> _tokens;
-  final Set<String> _sending = {};
+@ObservationWidget()
+class _PushTokensView extends _$_PushTokensView {
+  final EmbeddedServerService service;
+
+  const _PushTokensView({required this.service, super.key});
+
+  @ObservableState(name: 'viewModel')
+  _PushTokensViewModel createViewModel() => _PushTokensViewModel(
+    tokens: service.registeredPushTokens(),
+    sending: ObservableSet(),
+  );
 
   @override
-  void initState() {
-    super.initState();
-    _tokens = widget.service.registeredPushTokens();
-  }
+  bool shouldRecreateStates(covariant _PushTokensView oldWidget) =>
+      !identical(oldWidget.service, service);
 
-  void _refresh() {
-    setState(() {
-      _tokens = widget.service.registeredPushTokens();
-    });
-  }
+  void _refresh(_PushTokensViewModel viewModel) =>
+      viewModel.tokens = service.registeredPushTokens();
 
-  Future<void> _sendTest(RegisteredPushToken token) async {
-    if (_sending.contains(token.deviceToken)) return;
-    setState(() => _sending.add(token.deviceToken));
+  Future<void> _sendTest(
+    BuildContext context,
+    _PushTokensViewModel viewModel,
+    RegisteredPushToken token,
+  ) async {
+    if (viewModel.sending.contains(token.deviceToken)) return;
+    viewModel.sending.add(token.deviceToken);
     try {
-      final result = await widget.service.sendTestPush(token.deviceToken);
-      if (!mounted) return;
+      final result = await service.sendTestPush(token.deviceToken);
+      if (!context.mounted) return;
       final message = result.pruned
           ? 'Token was rejected by the relay and removed'
           : result.sent
           ? 'Test push sent'
           : 'Test push was not sent';
       showMotifToast(context, message);
-      if (result.pruned) _refresh();
+      if (result.pruned) _refresh(viewModel);
     } catch (e) {
-      if (!mounted) return;
+      if (!context.mounted) return;
       showMotifToast(context, _friendlyError(e));
     } finally {
-      if (mounted) {
-        setState(() => _sending.remove(token.deviceToken));
-      }
+      viewModel.sending.remove(token.deviceToken);
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _PushTokensViewModel viewModel,
+  }) {
     final c = context.motif;
     return FutureBuilder<List<RegisteredPushToken>>(
-      future: _tokens,
+      future: viewModel.tokens,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return SizedBox(
@@ -1183,7 +1203,7 @@ class _PushTokensViewState extends State<_PushTokensView> {
                 title: 'Could not load push tokens',
                 subtitle: _friendlyError(snap.error!),
                 trailing: TextButton.icon(
-                  onPressed: _refresh,
+                  onPressed: () => _refresh(viewModel),
                   icon: const Icon(Icons.refresh, size: 16),
                   label: const Text('Retry'),
                 ),
@@ -1211,7 +1231,7 @@ class _PushTokensViewState extends State<_PushTokensView> {
         return MotifSection(
           headerTrailing: IconButton(
             tooltip: 'Refresh push tokens',
-            onPressed: _refresh,
+            onPressed: () => _refresh(viewModel),
             icon: const Icon(Icons.refresh, size: 18),
           ),
           footer:
@@ -1221,8 +1241,8 @@ class _PushTokensViewState extends State<_PushTokensView> {
             for (final token in tokens)
               _PushTokenRow(
                 token: token,
-                sending: _sending.contains(token.deviceToken),
-                onSend: () => unawaited(_sendTest(token)),
+                sending: viewModel.sending.contains(token.deviceToken),
+                onSend: () => unawaited(_sendTest(context, viewModel, token)),
               ),
           ],
         );
@@ -1569,24 +1589,18 @@ Future<void> showEmbeddedServerSettingsSheet(BuildContext context) {
 /// Full-page form of the embedded-server settings, for the desktop shell's
 /// "Server" view. Same content as the sheet, given room to breathe (and a
 /// bigger pairing QR).
-class EmbeddedServerPage extends StatefulWidget {
+@ObservationWidget()
+class EmbeddedServerPage extends _$EmbeddedServerPage {
   const EmbeddedServerPage({super.key});
 
-  @override
-  State<EmbeddedServerPage> createState() => _EmbeddedServerPageState();
-}
-
-class _EmbeddedServerPageState extends State<EmbeddedServerPage> {
-  final ScrollController _scrollController = ScrollController();
+  @PlainState(name: 'scrollController')
+  ScrollController createScrollController() => ScrollController();
 
   @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required ScrollController scrollController,
+  }) {
     return Scaffold(
       backgroundColor: context.motif.background,
       body: SafeArea(
@@ -1601,7 +1615,7 @@ class _EmbeddedServerPageState extends State<EmbeddedServerPage> {
             return false;
           },
           child: ListView(
-            controller: _scrollController,
+            controller: scrollController,
             primary: false,
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(

@@ -1,6 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
+
+part 'terminal_scrollbar.g.dart';
 
 bool terminalReturnToCursorShouldBeVisible({
   required bool controlsVisible,
@@ -254,7 +257,14 @@ class TerminalReturnToCursorButton extends StatelessWidget {
 
 /// Overlay scrollbar for terminal scrollback. The outer mouse region remains
 /// active while faded out so moving to the right edge can reveal the thumb.
-class TerminalScrollbarOverlay extends StatefulWidget {
+final class TerminalScrollbarInteraction {
+  TerminalScrollbarGeometry? geometry;
+  double dragGrabOffset = 0;
+  bool dragActive = false;
+}
+
+@ObservationWidget()
+class TerminalScrollbarOverlay extends _$TerminalScrollbarOverlay {
   static const double hitWidth = 16;
 
   final int totalRows;
@@ -284,48 +294,48 @@ class TerminalScrollbarOverlay extends StatefulWidget {
     required this.onDragEnd,
   });
 
-  @override
-  State<TerminalScrollbarOverlay> createState() =>
-      _TerminalScrollbarOverlayState();
-}
+  @PlainState(name: 'interaction')
+  TerminalScrollbarInteraction createInteraction() =>
+      TerminalScrollbarInteraction();
 
-class _TerminalScrollbarOverlayState extends State<TerminalScrollbarOverlay> {
-  TerminalScrollbarGeometry? _geometry;
-  double _dragGrabOffset = 0;
-  bool _dragActive = false;
-
-  void _emitDragOffset(double pointerY) {
-    final geometry = _geometry;
+  void _emitDragOffset(
+    TerminalScrollbarInteraction interaction,
+    double pointerY,
+  ) {
+    final geometry = interaction.geometry;
     if (geometry == null) return;
-    widget.onScrollToOffset(
-      geometry.offsetForThumbTop(pointerY - _dragGrabOffset),
+    onScrollToOffset(
+      geometry.offsetForThumbTop(pointerY - interaction.dragGrabOffset),
     );
   }
 
-  void _finishDrag() {
-    if (!_dragActive) return;
-    _dragActive = false;
-    widget.onDragEnd();
+  void _finishDrag(TerminalScrollbarInteraction interaction) {
+    if (!interaction.dragActive) return;
+    interaction.dragActive = false;
+    onDragEnd();
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required TerminalScrollbarInteraction interaction,
+  }) {
     return MouseRegion(
       key: const ValueKey('terminal-scrollbar-hot-zone'),
       opaque: true,
-      cursor: widget.visible ? SystemMouseCursors.basic : MouseCursor.defer,
-      onEnter: (_) => widget.onHoverChanged(true),
-      onExit: (_) => widget.onHoverChanged(false),
+      cursor: visible ? SystemMouseCursors.basic : MouseCursor.defer,
+      onEnter: (_) => onHoverChanged(true),
+      onExit: (_) => onHoverChanged(false),
       child: LayoutBuilder(
         builder: (context, constraints) {
           final geometry = TerminalScrollbarGeometry.calculate(
             trackExtent: constraints.maxHeight,
-            totalRows: widget.totalRows,
-            visibleRows: widget.visibleRows,
-            viewportOffset: widget.viewportOffset,
+            totalRows: totalRows,
+            visibleRows: visibleRows,
+            viewportOffset: viewportOffset,
           );
-          _geometry = geometry;
-          final interactive = widget.visible && geometry.isScrollable;
+          interaction.geometry = geometry;
+          final interactive = visible && geometry.isScrollable;
           return AnimatedOpacity(
             key: const ValueKey('terminal-scrollbar'),
             opacity: interactive ? 1 : 0,
@@ -336,26 +346,26 @@ class _TerminalScrollbarOverlayState extends State<TerminalScrollbarOverlay> {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTapUp: (details) {
-                  widget.onActivity();
-                  widget.onScrollToOffset(
+                  onActivity();
+                  onScrollToOffset(
                     geometry.pageTargetForPointer(details.localPosition.dy),
                   );
                 },
                 onVerticalDragStart: (details) {
-                  _dragActive = true;
-                  widget.onDragStart();
+                  interaction.dragActive = true;
+                  onDragStart();
                   final y = details.localPosition.dy;
-                  _dragGrabOffset =
+                  interaction.dragGrabOffset =
                       y >= geometry.thumbOffset && y <= geometry.thumbEnd
                       ? y - geometry.thumbOffset
                       : geometry.thumbExtent / 2;
-                  _emitDragOffset(y);
+                  _emitDragOffset(interaction, y);
                 },
                 onVerticalDragUpdate: (details) {
-                  _emitDragOffset(details.localPosition.dy);
+                  _emitDragOffset(interaction, details.localPosition.dy);
                 },
-                onVerticalDragEnd: (_) => _finishDrag(),
-                onVerticalDragCancel: _finishDrag,
+                onVerticalDragEnd: (_) => _finishDrag(interaction),
+                onVerticalDragCancel: () => _finishDrag(interaction),
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -366,7 +376,7 @@ class _TerminalScrollbarOverlayState extends State<TerminalScrollbarOverlay> {
                       width: 3,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: widget.trackColor,
+                          color: trackColor,
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -379,7 +389,7 @@ class _TerminalScrollbarOverlayState extends State<TerminalScrollbarOverlay> {
                       height: geometry.thumbExtent,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: widget.thumbColor,
+                          color: thumbColor,
                           borderRadius: BorderRadius.circular(4),
                         ),
                       ),

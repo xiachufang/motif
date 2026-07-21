@@ -2,18 +2,19 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../log/log.dart';
 import '../../log/log_export.dart';
 import '../../platform/macos_permissions.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
 import '../../update/desktop_update_service.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/desktop_update_dialog.dart';
 import '../widgets/motif_form.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
 
 class SessionListSettingsSheet extends StatefulWidget {
@@ -191,9 +192,14 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
   }
 
   @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final updater = context.watch<DesktopUpdateService?>();
+  Widget build(BuildContext context) => ObservationSelect<Object?>(
+    selector: () => null,
+    builder: (context, _, _) => _buildContent(context),
+  );
+
+  Widget _buildContent(BuildContext context) {
+    final app = ObservationScope.of<AppState>(context);
+    final updater = ObservationScope.of<DesktopUpdateService?>(context);
     final push = app.push;
     final c = context.motif;
     // The embedded server is configured in the dedicated "Server" view, not

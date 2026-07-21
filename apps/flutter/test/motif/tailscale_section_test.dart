@@ -1,24 +1,19 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/tailscale_section.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _FakeTailscale implements TailscaleService {
-  @override
-  final TailscaleState state;
+class _FakeTailscale extends TailscaleService {
   final Future<void> Function(String? authKey)? onStart;
-  _FakeTailscale(this.state, {this.onStart});
-  @override
-  Stream<TailscaleState> get states => const Stream.empty();
+  _FakeTailscale(TailscaleState state, {this.onStart})
+    : super(initialState: state);
   @override
   Future<void> start({String? authKey}) async => onStart?.call(authKey);
   @override
@@ -37,21 +32,11 @@ class _FakeTailscale implements TailscaleService {
   ProxySettings? get loopbackProxy => null;
 }
 
-class _MutableTailscale implements TailscaleService {
-  final _controller = StreamController<TailscaleState>.broadcast();
-  TailscaleState _state;
+class _MutableTailscale extends TailscaleService {
+  _MutableTailscale(TailscaleState state) : super(initialState: state);
 
-  _MutableTailscale(this._state);
+  void emit(TailscaleState state) => tailscaleState = state;
 
-  void emit(TailscaleState state) {
-    _state = state;
-    _controller.add(state);
-  }
-
-  @override
-  TailscaleState get state => _state;
-  @override
-  Stream<TailscaleState> get states => _controller.stream;
   @override
   Future<void> start({String? authKey}) async {}
   @override
@@ -69,7 +54,7 @@ class _MutableTailscale implements TailscaleService {
   @override
   ProxySettings? get loopbackProxy => null;
 
-  Future<void> dispose() => _controller.close();
+  Future<void> dispose() => Future<void>.value();
 }
 
 Future<AppState> _appWith(
@@ -94,8 +79,8 @@ Future<AppState> _appWith(
 Future<void> _pump(WidgetTester tester, TailscaleState st) async {
   final app = await _appWith(st);
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
         home: const Scaffold(body: TailscaleSection()),
@@ -125,8 +110,8 @@ void main() {
     );
     final app = await _appWith(TailscaleState.stopped, tailscale: fake);
     await t.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: TailscaleSection()),
@@ -150,8 +135,8 @@ void main() {
       tailscale: NoopTailscaleService(),
     );
     await t.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: TailscaleSection()),
@@ -187,8 +172,8 @@ void main() {
     addTearDown(tailscale.dispose);
     final app = await _appWith(TailscaleState.stopped, tailscale: tailscale);
     await t.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: TailscaleSection()),

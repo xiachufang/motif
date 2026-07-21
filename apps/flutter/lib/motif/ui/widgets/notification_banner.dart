@@ -1,16 +1,45 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/motif_proto.dart';
-import '../../state/app_state.dart';
-import '../../state/motif_client.dart';
+import '../../state/app/app_state.dart';
+import '../../state/workspace/workspace_view_model.dart';
 import '../theme/motif_theme.dart';
+
+part 'notification_banner.g.dart';
+
+final class NotificationBannerCoordinator {
+  Timer? _dismiss;
+  MotifNotification? _scheduledNotification;
+
+  void sync(
+    AppState app,
+    ({WorkspaceKey key, MotifNotification notification})? current,
+  ) {
+    final notification = current?.notification;
+    if (identical(_scheduledNotification, notification)) return;
+    _scheduledNotification = notification;
+    _dismiss?.cancel();
+    if (current != null) {
+      _dismiss = Timer(
+        const Duration(seconds: 4),
+        () => app.consumeNotification(current.key),
+      );
+    }
+  }
+
+  void cancel() => _dismiss?.cancel();
+
+  void dispose() => cancel();
+}
 
 /// Top-anchored in-app banner for server `notification` events (mirrors the iOS
 /// LiveNotificationBanner). Auto-dismisses after a few seconds; tap opens the
 /// named session when present, otherwise dismisses.
-class NotificationBannerHost extends StatefulWidget {
+@ObservationWidget()
+class NotificationBannerHost extends _$NotificationBannerHost {
   final AppState app;
   final Widget child;
   const NotificationBannerHost({
@@ -19,81 +48,39 @@ class NotificationBannerHost extends StatefulWidget {
     required this.child,
   });
 
-  @override
-  State<NotificationBannerHost> createState() => _NotificationBannerHostState();
-}
-
-class _NotificationBannerHostState extends State<NotificationBannerHost> {
-  Timer? _dismiss;
+  @PlainState()
+  NotificationBannerCoordinator createCoordinator() =>
+      NotificationBannerCoordinator();
 
   @override
-  void initState() {
-    super.initState();
-    widget.app.addListener(_onChange);
-  }
-
-  @override
-  void didUpdateWidget(covariant NotificationBannerHost oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.app != widget.app) {
-      oldWidget.app.removeListener(_onChange);
-      widget.app.addListener(_onChange);
-    }
-  }
-
-  void _onChange() {
-    if (_currentNotification != null) {
-      _dismiss?.cancel();
-      _dismiss = Timer(const Duration(seconds: 4), () {
-        _currentNotification?.client.consumeNotification();
-      });
-    }
-    if (mounted) setState(() {});
-  }
-
-  ({MotifClient client, MotifNotification notification, String serverId})?
-  get _currentNotification {
-    for (final group in widget.app.knownServerClients) {
-      final notification = group.client.latestNotification;
-      if (notification != null) {
-        return (
-          client: group.client,
-          notification: notification,
-          serverId: group.server.id,
-        );
-      }
-    }
-    return null;
-  }
+  bool shouldRecreateStates(covariant NotificationBannerHost oldWidget) =>
+      !identical(oldWidget.app, app);
 
   void _onTap(
-    MotifClient client,
+    NotificationBannerCoordinator coordinator,
+    WorkspaceKey key,
     MotifNotification notification,
-    String serverId,
   ) {
-    _dismiss?.cancel();
+    coordinator.cancel();
     final sessionId = notification.sessionId?.trim();
-    client.consumeNotification();
+    app.consumeNotification(key);
     if (sessionId != null && sessionId.isNotEmpty) {
-      widget.app.requestOpenSession(serverId: serverId, session: sessionId);
+      app.requestOpenSession(serverId: key.serverId, session: sessionId);
     }
   }
 
   @override
-  void dispose() {
-    _dismiss?.cancel();
-    widget.app.removeListener(_onChange);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final current = _currentNotification;
+  Widget build(
+    BuildContext context, {
+    required NotificationBannerCoordinator coordinator,
+  }) {
+    final current = app.currentNotification;
+    coordinator.sync(app, current);
     final n = current?.notification;
     final c = context.motif;
     return Stack(
       children: [
-        widget.child,
+        child,
         if (n != null && current != null)
           Positioned(
             top: MediaQuery.of(context).padding.top + MotifSpacing.sm,
@@ -105,7 +92,7 @@ class _NotificationBannerHostState extends State<NotificationBannerHost> {
                 color: Colors.transparent,
                 child: GestureDetector(
                   onTap: () =>
-                      _onTap(current.client, current.notification, current.serverId),
+                      _onTap(coordinator, current.key, current.notification),
                   child: Container(
                     padding: const EdgeInsets.all(MotifSpacing.md),
                     decoration: BoxDecoration(

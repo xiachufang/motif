@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rzv/pairing_payload.dart';
 import 'package:motif/motif/platform/secret_store.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {

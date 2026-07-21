@@ -3,11 +3,11 @@ import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/state/embedded_server_service.dart';
+import 'package:motif/motif/state/embedded/embedded_server_service.dart';
 import 'package:motif/motif/ui/screens/embedded_server_settings_sheet_desktop.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/top_toast.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 
 void main() {
   testWidgets('renders condensed embedded server settings without overflow', (
@@ -356,7 +356,7 @@ Future<void> _pumpSettings(
   addTearDown(tester.view.resetDevicePixelRatio);
 
   await tester.pumpWidget(
-    ChangeNotifierProvider<EmbeddedServerService>.value(
+    MotifValueScope<EmbeddedServerService>(
       value: service,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
@@ -385,7 +385,7 @@ Future<void> _pumpPage(
   addTearDown(tester.view.resetDevicePixelRatio);
 
   await tester.pumpWidget(
-    ChangeNotifierProvider<EmbeddedServerService>.value(
+    MotifValueScope<EmbeddedServerService>(
       value: service,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
@@ -412,8 +412,6 @@ Future<List<FlutterErrorDetails>> _captureFlutterErrors(
 }
 
 class _FakeEmbeddedServerService extends EmbeddedServerService {
-  EmbeddedServerConfig _config;
-  EmbeddedServerStatus _status;
   final List<RegisteredPushToken> pushTokens;
   int startCount = 0;
   int stopCount = 0;
@@ -421,19 +419,10 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   final List<String> testedTokens = [];
 
   _FakeEmbeddedServerService({
-    required this._config,
-    required this._status,
+    required super.config,
+    required super.status,
     this.pushTokens = const [],
-  });
-
-  @override
-  bool get available => true;
-
-  @override
-  EmbeddedServerConfig get config => _config;
-
-  @override
-  EmbeddedServerStatus get status => _status;
+  }) : super(available: true);
 
   @override
   String generateToken() => 'generated-token';
@@ -441,15 +430,13 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   @override
   Future<void> start() async {
     startCount += 1;
-    _status = const EmbeddedServerStatus(running: true);
-    notifyListeners();
+    statusState = const EmbeddedServerStatus(running: true);
   }
 
   @override
   Future<void> stop() async {
     stopCount += 1;
-    _status = const EmbeddedServerStatus();
-    notifyListeners();
+    statusState = const EmbeddedServerStatus();
   }
 
   @override
@@ -469,12 +456,8 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
 
   @override
   Future<void> updateConfig(EmbeddedServerConfig next) async {
-    _config = next;
-    notifyListeners();
+    configState = next;
   }
 
-  void setStatus(EmbeddedServerStatus next) {
-    _status = next;
-    notifyListeners();
-  }
+  void setStatus(EmbeddedServerStatus next) => statusState = next;
 }

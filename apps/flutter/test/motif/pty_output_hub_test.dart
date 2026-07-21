@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/state/pty_output_hub.dart';
+import 'package:motif/motif/state/workspace/terminal/pty_output_hub.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

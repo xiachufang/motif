@@ -2,22 +2,34 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/server_connection_runtime.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
+import 'package:motif/motif/state/workspace/workspace_retention_policy.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
+import 'package:motif/motif/state/workspace/terminal/terminal_controller.dart';
+import 'package:motif/motif/state/workspace/terminal/terminal_view_model.dart';
+import 'package:motif/motif/state/workspace/terminal/terminal_runtime_policy.dart';
+import 'package:motif/motif/state/workspace/view/view_controller.dart';
+import 'package:motif/motif/state/workspace/view/view_tabs_view_model.dart';
+import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/terminal/terminal_input.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/test_server_transport.dart';
+import 'support/workspace_connection_fixture.dart';
 
 class _RouteCounter extends NavigatorObserver {
   int pushes = 0;
@@ -38,38 +50,29 @@ class _RouteCounter extends NavigatorObserver {
   }
 }
 
-class _RecordingMotifClient extends MotifClient {
-  final List<String> closedViews = [];
+class _RecordingWorkspaceConnectionController
+    extends _ShortcutWorkspaceConnectionController {}
 
-  @override
-  Future<void> closeView(String viewId) async {
-    closedViews.add(viewId);
-    await super.closeView(viewId);
-  }
-}
-
-class _SessionMenuMotifClient extends MotifClient {
+class _SessionMenuWorkspaceConnectionController
+    extends WorkspaceConnectionController {
   final List<String> attached = [];
+  List<SessionInfo> sessions = [];
   int detaches = 0;
   int disconnects = 0;
-  final List<String> preparedSwitches = [];
-
-  _SessionMenuMotifClient() {
+  _SessionMenuWorkspaceConnectionController({
+    String session = 'test-session',
+    bool initiallyAttached = true,
+  }) : super(session: session) {
+    updateConnectionState(
+      initiallyAttached ? ConnAttached(session) : const ConnConnected(),
+      live: true,
+    );
     // Seed a terminal so SessionScreen's attach-if-needed path does not call
     // createPty (which needs a live RpcClient and would toast + leave a timer).
     ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
     views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))];
     activeViewId = 'v1';
   }
-
-  @override
-  MotifConnState get state => const ConnAttached('test-session');
-
-  @override
-  bool get isLive => true;
-
-  @override
-  Future<void> refreshSessions() async {}
 
   @override
   Future<void> detach() async {
@@ -82,17 +85,14 @@ class _SessionMenuMotifClient extends MotifClient {
   }
 
   @override
-  Future<void> attach(String name) async {
-    attached.add(name);
-  }
-
-  @override
-  void prepareSessionSwitch(String name) {
-    preparedSwitches.add(name);
+  Future<void> attach() async {
+    attached.add(session);
+    updateConnectionState(ConnAttached(session), live: true);
   }
 }
 
-class _GitDiffRouteMotifClient extends _SessionMenuMotifClient {
+class _GitDiffRouteWorkspaceConnectionController
+    extends _SessionMenuWorkspaceConnectionController {
   static const _files = [
     DiffSummaryFile(
       path: 'lib/motif/ui/screens/session_screen.dart',
@@ -101,35 +101,53 @@ class _GitDiffRouteMotifClient extends _SessionMenuMotifClient {
     ),
   ];
 
-  @override
-  Future<List<DiffSummaryFile>> gitDiffSummary({
-    String? path,
-    bool staged = false,
-    String? cwd,
-  }) async {
-    if (path == null) return _files;
-    return _files.where((file) => file.path == path).toList();
-  }
+  late final WorkspaceApi _fakeWorkspace = WorkspaceApi(
+    content: WorkspaceContentViewModel(),
+    transport: WorkspaceApiTransport(
+      isAvailable: () => true,
+      call: (method, [params = const {}]) async {
+        final path = params['path'] as String?;
+        if (method == 'git.diffSummary') {
+          final files = path == null
+              ? _files
+              : _files.where((file) => file.path == path);
+          return {
+            'files': [
+              for (final file in files)
+                {
+                  'path': file.path,
+                  'additions': file.additions,
+                  'deletions': file.deletions,
+                },
+            ],
+          };
+        }
+        if (method == 'git.diff') {
+          final diffPath = path ?? _files.first.path;
+          return {
+            'patch': [
+              'diff --git a/$diffPath b/$diffPath',
+              'index abc123..def456 100644',
+              '--- a/$diffPath',
+              '+++ b/$diffPath',
+              '@@ -1,1 +1,1 @@',
+              '+narrow route diff',
+            ].join('\n'),
+          };
+        }
+        return const {};
+      },
+      writeFileBytes: (_, _) async => '',
+    ),
+    activeCwd: () => '/work',
+  );
 
   @override
-  Future<String> gitDiff({
-    String? path,
-    bool staged = false,
-    String? cwd,
-  }) async {
-    final diffPath = path ?? _files.first.path;
-    return [
-      'diff --git a/$diffPath b/$diffPath',
-      'index abc123..def456 100644',
-      '--- a/$diffPath',
-      '+++ b/$diffPath',
-      '@@ -1,1 +1,1 @@',
-      '+narrow route diff',
-    ].join('\n');
-  }
+  WorkspaceApi get workspace => _fakeWorkspace;
 }
 
-class _BlockingDetachMotifClient extends _SessionMenuMotifClient {
+class _BlockingDetachWorkspaceConnectionController
+    extends _SessionMenuWorkspaceConnectionController {
   final Completer<void> detachCompleter = Completer<void>();
 
   @override
@@ -141,108 +159,176 @@ class _BlockingDetachMotifClient extends _SessionMenuMotifClient {
 
 /// Connected to a server but not attached to any session — `session.detach`
 /// would be rejected server-side, so close-all must skip it.
-class _ConnectedNotAttachedMotifClient extends _SessionMenuMotifClient {
-  @override
-  MotifConnState get state => const ConnConnected();
+class _ConnectedNotAttachedWorkspaceConnectionController
+    extends _SessionMenuWorkspaceConnectionController {
+  _ConnectedNotAttachedWorkspaceConnectionController() {
+    updateConnectionState(const ConnConnected(), live: true);
+  }
 }
 
-class _ShortcutMotifClient extends MotifClient {
+class _ShortcutWorkspaceConnectionController
+    extends WorkspaceConnectionController {
+  _ShortcutWorkspaceConnectionController({String session = 'test-session'})
+    : super(session: session) {
+    updateConnectionState(ConnAttached(session), live: true);
+  }
+
   int createdPtys = 0;
   final List<String> closedViews = [];
   final List<String> writtenPtyIds = [];
   final List<List<int>> writtenPtyData = [];
 
-  @override
-  MotifConnState get state => const ConnAttached('test-session');
-
-  @override
-  bool get isLive => true;
-
-  @override
-  bool get canInput => true;
-
-  @override
-  Future<PtyInfo> createPty({
-    String? cmd,
-    String? cwd,
-    required int cols,
-    required int rows,
-  }) async {
-    createdPtys++;
-    final pty = PtyInfo(id: 'new-pty-$createdPtys', cols: cols, rows: rows);
-    final view = ViewInfo(
-      id: 'new-view-$createdPtys',
-      spec: PtyViewSpec(pty.id),
-    );
-    ptys = [...ptys, pty];
-    views = [...views, view];
-    activeViewId = view.id;
-    notifyListeners();
-    return pty;
-  }
-
-  @override
-  Future<void> closeView(String viewId) async {
-    closedViews.add(viewId);
-    views = [
-      for (final view in views)
-        if (view.id != viewId) view,
-    ];
-    if (activeViewId == viewId) activeViewId = views.firstOrNull?.id;
-    notifyListeners();
-  }
-
-  @override
-  Future<void> activateView(String? viewId) async {
-    if (viewId == null) return;
-    activeViewId = viewId;
-    notifyListeners();
-  }
-
-  @override
-  Future<void> writePty(String ptyId, List<int> data) async {
-    writtenPtyIds.add(ptyId);
-    writtenPtyData.add(List<int>.from(data));
-  }
-}
-
-class _SuspendedMotifClient extends _ShortcutMotifClient {
-  MotifConnState _state = const ConnSuspended(
-    'Tailscale disconnected',
-    session: 'test-session',
+  late final TerminalViewModel _terminalViewModel = TerminalViewModel(
+    ptys: ObservableList(),
+    runningCommand: ObservableMap(),
+    shellKind: ObservableMap(),
+    shellContext: ObservableMap(),
+  );
+  late final ViewTabsViewModel _viewTabs = ViewTabsViewModel(
+    items: ObservableList(),
+  );
+  late final TerminalController _fakeTerminal = TerminalController(
+    viewModel: _terminalViewModel,
+    transport: TerminalTransport(
+      canInput: () => true,
+      call: (method, [params = const {}]) async {
+        if (method == 'pty.create') {
+          createdPtys++;
+          final pty = PtyInfo(
+            id: 'new-pty-$createdPtys',
+            cmd: params['cmd'] as String?,
+            cwd: params['cwd'] as String?,
+            cols: params['cols']! as int,
+            rows: params['rows']! as int,
+          );
+          final view = ViewInfo(
+            id: 'new-view-$createdPtys',
+            spec: PtyViewSpec(pty.id),
+          );
+          _viewTabs.items.add(view);
+          _viewTabs.activeViewId = view.id;
+          return {
+            'info': {
+              'id': pty.id,
+              'cmd': pty.cmd,
+              'cwd': pty.cwd,
+              'cols': pty.cols,
+              'rows': pty.rows,
+            },
+          };
+        }
+        return const {};
+      },
+      writePty: (ptyId, data) async {
+        writtenPtyIds.add(ptyId);
+        writtenPtyData.add(List<int>.from(data));
+      },
+      resizePty: (_, _, _) async {},
+      ensurePtyStream: (_) async {},
+      closePtyStream: (_) async {},
+      syncPtyStreams: (_) async {},
+      waitForPtyReplay: (_) async {},
+      resyncPtyStream: (_, {required reason}) async {},
+    ),
+    runtime: const MobileTerminalRuntimePolicy(),
+    viewProjection: TerminalViewProjection(
+      activePtyId: () {
+        final spec = _viewTabs.active?.spec;
+        return spec is PtyViewSpec ? spec.ptyId : null;
+      },
+      liveTabPtyIds: () => {
+        for (final view in _viewTabs.items)
+          if (view.spec case PtyViewSpec(:final ptyId)) ptyId,
+      },
+    ),
+  );
+  late final ViewController _fakeViews = ViewController(
+    viewModel: _viewTabs,
+    transport: ViewTransport(
+      isAvailable: () => true,
+      call: (method, [params = const {}]) async {
+        if (method == 'view.activate') {
+          _fakeViews.handleActiveChanged(params['view_id'] as String?);
+        } else if (method == 'view.close') {
+          closedViews.add(params['view_id']! as String);
+        }
+        return const {};
+      },
+    ),
+    callbacks: ViewProjectionCallbacks(
+      onTabsChanged: () {},
+      onActiveChanged: () {},
+    ),
   );
 
   @override
-  MotifConnState get state => _state;
+  TerminalController get terminal => _fakeTerminal;
 
   @override
-  bool get isLive => false;
+  ViewController get viewsController => _fakeViews;
+}
 
+class _SuspendedWorkspaceConnectionController
+    extends _ShortcutWorkspaceConnectionController {
   void emitSuspended() {
-    _state = const ConnSuspended(
-      'Tailscale disconnected',
-      session: 'test-session',
+    updateConnectionState(
+      const ConnSuspended('Tailscale disconnected', session: 'test-session'),
+      live: false,
     );
-    notifyListeners();
   }
 }
 
 Future<AppState> _appStateWith(
-  Map<String, MotifClient> clients, {
-  ServerConnectionRuntime? serverConnectionRuntime,
-  MotifClient Function(MotifServer server)? workspaceClientFactory,
+  Map<String, WorkspaceConnectionController> clients, {
+  WorkspaceRetentionPolicy? workspaceRetentionPolicy,
+  WorkspaceConnectionController Function(MotifServer server, String session)?
+  workspaceConnectionFactory,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
+  final serverSessions = {
+    for (final entry in clients.entries)
+      entry.key: [
+        if (entry.value case _SessionMenuWorkspaceConnectionController fixture)
+          ...fixture.sessions,
+      ],
+  };
   final app = AppState(
     servers: ServerStore(prefs),
     terminalSettings: TerminalSettingsStore(prefs),
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
-    clientFactory: (server) => clients[server.id] ?? MotifClient(),
-    workspaceClientFactory: workspaceClientFactory,
-    serverConnectionRuntime: serverConnectionRuntime,
+    serverTransportFactory: (server) {
+      final sessions = serverSessions[server.id] ?? const <SessionInfo>[];
+      return TestServerTransport(
+        live: true,
+        onCall: (method, [params = const {}]) async {
+          if (method != 'session.list') return const {};
+          return {
+            'sessions': [
+              for (final session in sessions)
+                {
+                  'name': session.name,
+                  'workdir': session.workdir,
+                  'created_at': session.createdAt,
+                  'client_count': session.clientCount,
+                },
+            ],
+          };
+        },
+      );
+    },
+    workspaceConnectionFactory:
+        workspaceConnectionFactory ??
+        (server, session) {
+          final configured = clients[server.id];
+          if (configured != null && configured.session == session) {
+            return configured;
+          }
+          return _SessionMenuWorkspaceConnectionController(session: session);
+        },
+    workspaceRetentionPolicy: workspaceRetentionPolicy,
   );
   for (final entry in clients.entries) {
     await app.servers.add(
@@ -252,30 +338,41 @@ Future<AppState> _appStateWith(
         host: '127.0.0.1',
       ),
     );
-    app.clientForServer(entry.key);
+    app.serverInstance(entry.key);
   }
   return app;
 }
 
-Future<AppState> _appState({MotifClient? motif}) {
-  return _appStateWith({'server-1': motif ?? MotifClient()});
+Future<AppState> _appState({
+  WorkspaceConnectionController? motif,
+  WorkspaceConnectionController Function(MotifServer server, String session)?
+  workspaceConnectionFactory,
+}) {
+  return _appStateWith({
+    'server-1': motif ?? _SessionMenuWorkspaceConnectionController(),
+  }, workspaceConnectionFactory: workspaceConnectionFactory);
 }
 
 Future<_RouteCounter> _pumpSession(
   WidgetTester tester,
   Size size, {
-  MotifClient? motif,
+  WorkspaceConnectionController? motif,
+  WorkspaceConnectionController Function(MotifServer server, String session)?
+  workspaceConnectionFactory,
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
-  final app = await _appState(motif: motif);
+  final app = await _appState(
+    motif: motif,
+    workspaceConnectionFactory: workspaceConnectionFactory,
+  );
   final routes = _RouteCounter();
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
         navigatorObservers: [routes],
@@ -327,7 +424,7 @@ void main() {
   testWidgets('large screen puts terminal tabs in the title bar', (
     tester,
   ) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -364,15 +461,15 @@ void main() {
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     try {
-      final motif = _ShortcutMotifClient()
+      final motif = _ShortcutWorkspaceConnectionController()
         ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
         ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
         ..activeViewId = 'v1';
       final app = await _appState(motif: motif);
 
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(
-          value: app,
+        MotifScope(
+          appState: app,
           child: MaterialApp(
             theme: motifTheme(Brightness.dark),
             home: const Scaffold(body: Text('Session list')),
@@ -404,15 +501,15 @@ void main() {
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     try {
-      final motif = _ShortcutMotifClient()
+      final motif = _ShortcutWorkspaceConnectionController()
         ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
         ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
         ..activeViewId = 'v1';
       final app = await _appState(motif: motif);
 
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(
-          value: app,
+        MotifScope(
+          appState: app,
           child: MaterialApp(
             theme: motifTheme(Brightness.dark),
             home: const Scaffold(body: Text('Session list')),
@@ -442,8 +539,7 @@ void main() {
   testWidgets('suspended connection keeps terminal pane and shows overlay', (
     tester,
   ) async {
-    final motif = _SuspendedMotifClient()
-      ..intendedSession = 'test-session'
+    final motif = _SuspendedWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -457,7 +553,7 @@ void main() {
   });
 
   testWidgets('narrow screen keeps terminal tabs in the body', (tester) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -476,7 +572,7 @@ void main() {
   });
 
   testWidgets('bottom input state is scoped to the active tab', (tester) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [
         PtyInfo(id: 'pty-1', cols: 80, rows: 24),
         PtyInfo(id: 'pty-2', cols: 80, rows: 24),
@@ -525,7 +621,7 @@ void main() {
   });
 
   testWidgets('send button writes content before enter', (tester) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -555,7 +651,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -565,8 +661,8 @@ void main() {
     ]);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionScreen(
@@ -598,7 +694,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -606,8 +702,8 @@ void main() {
     await app.commands.setGlobal([QuickCommand.text('run', 'Run', 'ls\n')]);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionScreen(
@@ -632,7 +728,7 @@ void main() {
   testWidgets('multiline bottom input lifts terminal without resizing it', (
     tester,
   ) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
@@ -723,7 +819,7 @@ void main() {
   testWidgets('iPad sidebar stacks sessions files and git diff panels', (
     tester,
   ) async {
-    final motif = _SessionMenuMotifClient()
+    final motif = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session'),
@@ -783,7 +879,7 @@ void main() {
   testWidgets('sidebar closes with animation and shrinks to compact width', (
     tester,
   ) async {
-    final motif = _SessionMenuMotifClient()
+    final motif = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session'),
@@ -814,7 +910,7 @@ void main() {
   testWidgets('sidebar keyboard shortcuts toggle sessions files and git diff', (
     tester,
   ) async {
-    final motif = _SessionMenuMotifClient()
+    final motif = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session'),
@@ -837,7 +933,7 @@ void main() {
   });
 
   testWidgets('narrow buttons keep opening pages', (tester) async {
-    final motif = _GitDiffRouteMotifClient();
+    final motif = _GitDiffRouteWorkspaceConnectionController();
     final routes = await _pumpSession(
       tester,
       const Size(700, 768),
@@ -881,7 +977,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final motif = _BlockingDetachMotifClient()
+    final motif = _BlockingDetachWorkspaceConnectionController()
       ..sessions = const [SessionInfo(name: 'test-session')];
     addTearDown(() {
       if (!motif.detachCompleter.isCompleted) {
@@ -891,8 +987,8 @@ void main() {
     final app = await _appState(motif: motif);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: Text('home')),
@@ -923,15 +1019,17 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final current = _SessionMenuMotifClient()
+    final current = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [SessionInfo(name: 'test-session')];
-    final prod = _SessionMenuMotifClient()
-      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final prod = _SessionMenuWorkspaceConnectionController(
+      session: 'prod-session',
+    )..sessions = const [SessionInfo(name: 'prod-session')];
     final app = await _appStateWith({'server-1': current, 'server-2': prod});
+    app.workspaceForSession('server-2', 'prod-session');
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: Text('home')),
@@ -966,14 +1064,14 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final current = _SessionMenuMotifClient()
+    final current = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [SessionInfo(name: 'test-session')];
-    final idle = _ConnectedNotAttachedMotifClient();
+    final idle = _ConnectedNotAttachedWorkspaceConnectionController();
     final app = await _appStateWith({'server-1': current, 'server-2': idle});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: Text('home')),
@@ -1003,7 +1101,7 @@ void main() {
   testWidgets('terminal tab close prompts while a command is running', (
     tester,
   ) async {
-    final motif = _RecordingMotifClient()
+    final motif = _RecordingWorkspaceConnectionController()
       ..views = const [
         ViewInfo(id: 'term-view', spec: PtyViewSpec('pty-1')),
         ViewInfo(id: 'other-view', spec: OtherViewSpec('notes')),
@@ -1044,7 +1142,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final motif = _RecordingMotifClient()
+    final motif = _RecordingWorkspaceConnectionController()
       ..views = const [
         ViewInfo(id: 'term-view', spec: PtyViewSpec('pty-1')),
         ViewInfo(id: 'other-view', spec: OtherViewSpec('notes')),
@@ -1055,8 +1153,8 @@ void main() {
     final nestedNavigatorKey = GlobalKey<NavigatorState>();
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Navigator(
@@ -1092,7 +1190,7 @@ void main() {
   testWidgets('Chrome-style tab shortcuts create close and switch tabs', (
     tester,
   ) async {
-    final motif = _ShortcutMotifClient()
+    final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [
         PtyInfo(id: 'pty-1', cols: 80, rows: 24),
         PtyInfo(id: 'pty-2', cols: 80, rows: 24),
@@ -1133,16 +1231,22 @@ void main() {
   testWidgets('large session panel omits create action and switches sessions', (
     tester,
   ) async {
-    final motif = _SessionMenuMotifClient()
+    final motif = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session', workdir: '~/next'),
       ];
+    final next = _SessionMenuWorkspaceConnectionController(
+      session: 'next-session',
+      initiallyAttached: false,
+    );
 
     final routes = await _pumpSession(
       tester,
       const Size(1024, 768),
       motif: motif,
+      workspaceConnectionFactory: (_, session) =>
+          session == 'test-session' ? motif : next,
     );
 
     await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
@@ -1158,9 +1262,8 @@ void main() {
     await tester.tap(find.text('next-session'));
     await tester.pumpAndSettle();
 
-    expect(motif.detaches, 0);
-    expect(motif.preparedSwitches, ['next-session']);
-    expect(motif.attached, ['next-session']);
+    expect(motif.detaches, 1);
+    expect(next.attached, ['next-session']);
     expect(routes.replacements, 1);
     expect(routes.lastReplacement, isA<PageRouteBuilder<void>>());
     expect(
@@ -1172,16 +1275,22 @@ void main() {
   testWidgets('sidebar panel state is shared while switching sessions', (
     tester,
   ) async {
-    final motif = _SessionMenuMotifClient()
+    final motif = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session', workdir: '~/next'),
       ];
+    final next = _SessionMenuWorkspaceConnectionController(
+      session: 'next-session',
+      initiallyAttached: false,
+    );
 
     final routes = await _pumpSession(
       tester,
       const Size(1024, 768),
       motif: motif,
+      workspaceConnectionFactory: (_, session) =>
+          session == 'test-session' ? motif : next,
     );
 
     await tester.tap(find.byKey(const ValueKey('sessions-sidebar-toggle')));
@@ -1216,18 +1325,20 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final current = _SessionMenuMotifClient()
+    final current = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'next-session'),
       ];
-    final prod = _SessionMenuMotifClient()
-      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final prod = _SessionMenuWorkspaceConnectionController(
+      session: 'prod-session',
+      initiallyAttached: false,
+    )..sessions = const [SessionInfo(name: 'prod-session')];
     final app = await _appStateWith({'server-1': current, 'server-2': prod});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionScreen(
@@ -1273,10 +1384,12 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final current = _BlockingDetachMotifClient()
+    final current = _BlockingDetachWorkspaceConnectionController()
       ..sessions = const [SessionInfo(name: 'test-session')];
-    final prod = _SessionMenuMotifClient()
-      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final prod = _SessionMenuWorkspaceConnectionController(
+      session: 'prod-session',
+      initiallyAttached: false,
+    )..sessions = const [SessionInfo(name: 'prod-session')];
     addTearDown(() {
       if (!current.detachCompleter.isCompleted) {
         current.detachCompleter.complete();
@@ -1286,8 +1399,8 @@ void main() {
     final routes = _RouteCounter();
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           navigatorObservers: [routes],
@@ -1319,18 +1432,20 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    final current = _SessionMenuMotifClient()
+    final current = _SessionMenuWorkspaceConnectionController()
       ..sessions = const [SessionInfo(name: 'test-session')];
-    final prod = _SessionMenuMotifClient()
-      ..sessions = const [SessionInfo(name: 'prod-session')];
+    final prod = _SessionMenuWorkspaceConnectionController(
+      session: 'prod-session',
+      initiallyAttached: false,
+    )..sessions = const [SessionInfo(name: 'prod-session')];
     final app = await _appStateWith({
       'server-1': current,
       'server-2': prod,
-    }, serverConnectionRuntime: const DesktopServerConnectionRuntime());
+    }, workspaceRetentionPolicy: const DesktopWorkspaceRetentionPolicy());
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionScreen(
@@ -1354,7 +1469,10 @@ void main() {
     expect(current.isForeground, isFalse);
     expect(prod.isForeground, isTrue);
     expect(prod.attached, ['prod-session']);
-    expect(app.connectedWorkspaceClients.toSet(), {current, prod});
+    expect(app.connectedWorkspaces.map((item) => item.connection).toSet(), {
+      current,
+      prod,
+    });
   });
 
   testWidgets(
@@ -1369,20 +1487,25 @@ void main() {
         SessionInfo(name: 'test-session'),
         SessionInfo(name: 'other-session'),
       ];
-      final current = _SessionMenuMotifClient()..sessions = sessions;
+      final current = _SessionMenuWorkspaceConnectionController()
+        ..sessions = sessions;
       // A newly created desktop workspace has no session.list snapshot of its
       // own yet. Switching must carry over the server-level list so the prior
       // session remains available for switching back.
-      final other = _SessionMenuMotifClient();
+      final other = _SessionMenuWorkspaceConnectionController(
+        session: 'other-session',
+        initiallyAttached: false,
+      );
       final app = await _appStateWith(
         {'server-1': current},
-        serverConnectionRuntime: const DesktopServerConnectionRuntime(),
-        workspaceClientFactory: (_) => other,
+        workspaceRetentionPolicy: const DesktopWorkspaceRetentionPolicy(),
+        workspaceConnectionFactory: (_, session) =>
+            session == 'test-session' ? current : other,
       );
 
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(
-          value: app,
+        MotifScope(
+          appState: app,
           child: MaterialApp(
             theme: motifTheme(Brightness.dark),
             home: const SessionScreen(
@@ -1405,7 +1528,10 @@ void main() {
       expect(current.detaches, 0);
       expect(current.isForeground, isFalse);
       expect(other.attached, ['other-session']);
-      expect(app.connectedWorkspaceClients.toSet(), {current, other});
+      expect(app.connectedWorkspaces.map((item) => item.connection).toSet(), {
+        current,
+        other,
+      });
       expect(find.text('test-session'), findsOneWidget);
 
       await tester.tap(find.text('test-session'));
@@ -1415,7 +1541,10 @@ void main() {
       expect(other.isForeground, isFalse);
       expect(current.isForeground, isTrue);
       expect(current.attached, isEmpty);
-      expect(app.clientForSession('server-1', 'test-session'), same(current));
+      expect(
+        app.workspaceForSession('server-1', 'test-session').connection,
+        same(current),
+      );
       expect(
         tester.state(find.byKey(const ValueKey('terminal-pty-1'))),
         same(originalTerminal),
@@ -1433,27 +1562,31 @@ void main() {
       const SessionInfo(name: 'test-session'),
       for (var i = 2; i <= 5; i++) SessionInfo(name: 'session-$i'),
     ];
-    final current = _SessionMenuMotifClient()..sessions = sessions;
-    final created = <_SessionMenuMotifClient>[];
+    final current = _SessionMenuWorkspaceConnectionController()
+      ..sessions = sessions;
+    final created = <_SessionMenuWorkspaceConnectionController>[];
     final app = await _appStateWith(
       {'server-1': current},
-      serverConnectionRuntime: const DesktopServerConnectionRuntime(),
-      workspaceClientFactory: (_) {
-        final client = _SessionMenuMotifClient()..sessions = sessions;
+      workspaceRetentionPolicy: const DesktopWorkspaceRetentionPolicy(),
+      workspaceConnectionFactory: (_, session) {
+        if (session == 'test-session') return current;
+        final client = _SessionMenuWorkspaceConnectionController(
+          session: session,
+        )..sessions = sessions;
         created.add(client);
         return client;
       },
     );
     addTearDown(app.dispose);
 
-    app.clientForSession('server-1', 'test-session');
+    app.workspaceForSession('server-1', 'test-session');
     for (var i = 2; i <= 5; i++) {
-      app.clientForSession('server-1', 'session-$i');
+      app.workspaceForSession('server-1', 'session-$i');
     }
     await Future<void>.delayed(Duration.zero);
 
     expect(app.maxRetainedWorkspaces, 4);
-    expect(app.connectedWorkspaceClients, hasLength(4));
+    expect(app.connectedWorkspaces, hasLength(4));
     expect(current.disconnects, 1);
     expect(created.take(3).every((client) => client.disconnects == 0), isTrue);
   });

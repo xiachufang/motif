@@ -7,48 +7,44 @@ import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/notification_banner.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _NotifMotifClient extends MotifClient {
-  @override
-  MotifConnState get state => const ConnAttached('work');
+import 'support/test_server_transport.dart';
+import 'support/workspace_connection_fixture.dart';
+
+class _NotifWorkspaceConnectionController
+    extends WorkspaceConnectionController {
+  _NotifWorkspaceConnectionController({String session = 'work'})
+    : super(session: session) {
+    updateConnectionState(ConnAttached(session), live: true);
+  }
 
   @override
-  bool get isLive => true;
-
-  @override
-  Future<void> attach(String name) async {}
-
-  @override
-  Future<void> refreshSessions() async {}
+  Future<void> attach() async {}
 }
 
-class _ConnectingNotifMotifClient extends MotifClient {
+class _ConnectingNotifWorkspaceConnectionController
+    extends WorkspaceConnectionController {
   final Completer<void> connectGate = Completer<void>();
   final List<String> attachedSessions = [];
   int connectCalls = 0;
-  bool _live = false;
-  MotifConnState _state = const ConnDisconnected();
 
-  _ConnectingNotifMotifClient() {
+  _ConnectingNotifWorkspaceConnectionController({
+    super.session = 'cold-start',
+  }) {
     ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
     views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))];
     activeViewId = 'v1';
   }
-
-  @override
-  MotifConnState get state => _state;
-
-  @override
-  bool get isLive => _live;
 
   @override
   Future<void> connect(
@@ -58,26 +54,19 @@ class _ConnectingNotifMotifClient extends MotifClient {
     Uint8List? certPin,
   }) async {
     connectCalls++;
-    _state = const ConnConnecting();
-    notifyListeners();
+    updateConnectionState(const ConnConnecting(), live: false);
     await connectGate.future;
-    _live = true;
-    _state = const ConnConnected();
-    notifyListeners();
+    updateConnectionState(const ConnConnected(), live: true);
   }
 
   @override
-  Future<void> attach(String name) async {
-    attachedSessions.add(name);
-    intendedSession = name;
-    _state = ConnAttached(name);
+  Future<void> attach() async {
+    attachedSessions.add(session);
+    updateConnectionState(ConnAttached(session), live: true);
   }
-
-  @override
-  Future<void> refreshSessions() async {}
 }
 
-Future<AppState> _appWithClient(MotifClient client) async {
+Future<AppState> _appWithClient(WorkspaceConnectionController client) async {
   SharedPreferences.setMockInitialValues({
     'motif.servers.v1':
         '[{"id":"server-1","name":"Dev","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
@@ -90,9 +79,28 @@ Future<AppState> _appWithClient(MotifClient client) async {
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
-    clientFactory: (_) => client,
+    serverTransportFactory: (_) => TestServerTransport(
+      live: client is! _ConnectingNotifWorkspaceConnectionController,
+      onConnect: client is _ConnectingNotifWorkspaceConnectionController
+          ? (
+              transport,
+              server, {
+              required force,
+              required proxy,
+              certPin,
+            }) async {
+              await client.connectGate.future;
+              return const PingInfo(service: 'motif-server', version: 'test');
+            }
+          : null,
+      onCall: (method, [params = const {}]) async =>
+          method == 'session.list' ? const {'sessions': <Object?>[]} : const {},
+    ),
+    workspaceConnectionFactory: (_, session) => session == client.session
+        ? client
+        : _NotifWorkspaceConnectionController(session: session),
   );
-  app.clientForServer('server-1');
+  app.serverInstance('server-1');
   return app;
 }
 
@@ -122,29 +130,26 @@ void main() {
   );
 
   testWidgets('banner tap opens the named session', (tester) async {
-    final client = _NotifMotifClient()
+    final client = _NotifWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
     final app = await _appWithClient(client);
     addTearDown(app.dispose);
+    final workspace = app.workspaceForSession('server-1', 'work');
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(app.hasActiveServer, isTrue);
     expect(find.byType(SessionScreen), findsNothing);
 
-    client.showNotification(
-      const MotifNotification(
-        title: 'Command finished',
-        body: 'make test',
-        sessionId: 'work',
-        kind: 'finished',
-      ),
+    workspace.viewModel.presence.latestNotification = const MotifNotification(
+      title: 'Command finished',
+      body: 'make test',
+      sessionId: 'work',
+      kind: 'finished',
     );
     await tester.pump();
 
@@ -154,20 +159,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(SessionScreen), findsOneWidget);
-    expect(client.latestNotification, isNull);
+    expect(workspace.viewModel.presence.latestNotification, isNull);
     final screen = tester.widget<SessionScreen>(find.byType(SessionScreen));
     expect(screen.serverId, 'server-1');
     expect(screen.session, 'work');
   });
 
   testWidgets('banner tap without sessionId only dismisses', (tester) async {
-    final client = _NotifMotifClient();
+    final client = _NotifWorkspaceConnectionController();
     final app = await _appWithClient(client);
     addTearDown(app.dispose);
+    final workspace = app.workspaceForSession('server-1', 'work');
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: NotificationBannerHost(
@@ -179,13 +185,11 @@ void main() {
     );
     await tester.pump();
 
-    client.showNotification(
-      const MotifNotification(
-        title: 'Ping',
-        body: 'hello',
-        sessionId: null,
-        kind: 'info',
-      ),
+    workspace.viewModel.presence.latestNotification = const MotifNotification(
+      title: 'Ping',
+      body: 'hello',
+      sessionId: null,
+      kind: 'info',
     );
     await tester.pump();
     expect(find.text('Ping'), findsOneWidget);
@@ -193,7 +197,7 @@ void main() {
     await tester.tap(find.text('Ping'));
     await tester.pump();
 
-    expect(client.latestNotification, isNull);
+    expect(workspace.viewModel.presence.latestNotification, isNull);
     expect(app.pendingSessionOpen, isNull);
     expect(find.text('home'), findsOneWidget);
   });
@@ -201,24 +205,27 @@ void main() {
   testWidgets('notification waits for a disconnected server before opening', (
     tester,
   ) async {
-    final client = _ConnectingNotifMotifClient();
+    final client = _ConnectingNotifWorkspaceConnectionController();
     final app = await _appWithClient(client);
     addTearDown(app.dispose);
     app.requestOpenSession(serverId: 'server-1', session: 'cold-start');
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
     await tester.pump();
 
-    expect(client.connectCalls, 1);
+    final serverTransport =
+        app.existingServerInstance('server-1')!.transport
+            as TestServerTransport;
+    expect(serverTransport.connectCalls, 1);
+    expect(client.connectCalls, 0);
     expect(find.byType(SessionScreen), findsNothing);
 
     client.connectGate.complete();
     await tester.pumpAndSettle();
 
     expect(find.byType(SessionScreen), findsOneWidget);
+    expect(client.connectCalls, 1);
     final screen = tester.widget<SessionScreen>(find.byType(SessionScreen));
     expect(screen.session, 'cold-start');
     expect(client.attachedSessions, ['cold-start']);
@@ -227,16 +234,14 @@ void main() {
   testWidgets('a second notification replaces the visible session', (
     tester,
   ) async {
-    final client = _NotifMotifClient()
+    final client = _NotifWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
     final app = await _appWithClient(client);
     addTearDown(app.dispose);
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
 
     app.requestOpenSession(serverId: 'server-1', session: 'first');

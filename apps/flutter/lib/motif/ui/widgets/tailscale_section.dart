@@ -1,48 +1,49 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 
 import '../../platform/services.dart';
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import 'adaptive_modal.dart';
 import 'motif_form.dart';
 import 'top_toast.dart';
 
+part 'tailscale_section.g.dart';
+
 const _browserChannel = MethodChannel('motif/browser');
 
 /// Single-row Tailscale entry plus setup/details sheets.
-class TailscaleSection extends StatelessWidget {
+@ObservationWidget()
+class TailscaleSection extends _$TailscaleSection {
   const TailscaleSection({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final svc = context.read<AppState>().platform.tailscale;
+    final svc = readObservationScope<AppState>(context).platform.tailscale;
     final c = context.motif;
-    return StreamBuilder<TailscaleState>(
-      stream: svc.states,
-      initialData: svc.state,
-      builder: (context, snap) {
-        final st = snap.data ?? TailscaleState.stopped;
-        final desc = _describe(st, c);
-        return MotifSectionRow(
-          leading: desc.leading,
-          title: desc.title,
-          subtitle: desc.subtitle,
-          titleWeight: desc.bold ? FontWeight.w700 : FontWeight.w500,
-          onTap: () => showTailscaleConnectionSheet(context, svc: svc),
-          showChevron: true,
-        );
-      },
+    final desc = _describe(svc.state, c);
+    return MotifSectionRow(
+      leading: desc.leading,
+      title: desc.title,
+      subtitle: desc.subtitle,
+      titleWeight: desc.bold ? FontWeight.w700 : FontWeight.w500,
+      onTap: () => showTailscaleConnectionSheet(context, svc: svc),
+      showChevron: true,
     );
   }
 
   _EntryDescription _describe(TailscaleState st, MotifColors c) {
     return switch (st.status) {
       TailscaleStatus.stopped => _EntryDescription(
-        leading: Icon(Icons.shield_outlined, color: c.accent, size: MotifIconSize.md),
+        leading: Icon(
+          Icons.shield_outlined,
+          color: c.accent,
+          size: MotifIconSize.md,
+        ),
         title: 'Setup Tailscale',
         subtitle: 'Sign in so motif can reach your servers',
         bold: true,
@@ -57,24 +58,40 @@ class TailscaleSection extends StatelessWidget {
         subtitle: st.detail,
       ),
       TailscaleStatus.needsAuth => _EntryDescription(
-        leading: Icon(Icons.warning_rounded, color: c.warning, size: MotifIconSize.md),
+        leading: Icon(
+          Icons.warning_rounded,
+          color: c.warning,
+          size: MotifIconSize.md,
+        ),
         title: 'Tailscale needs login',
         subtitle: st.detail ?? 'Tap to finish signing in',
         bold: true,
       ),
       TailscaleStatus.running => _EntryDescription(
-        leading: Icon(Icons.verified_user, color: c.success, size: MotifIconSize.md),
+        leading: Icon(
+          Icons.verified_user,
+          color: c.success,
+          size: MotifIconSize.md,
+        ),
         title: 'Tailscale connected',
         subtitle: st.detail,
       ),
       TailscaleStatus.degraded => _EntryDescription(
-        leading: Icon(Icons.sync_problem, color: c.warning, size: MotifIconSize.md),
+        leading: Icon(
+          Icons.sync_problem,
+          color: c.warning,
+          size: MotifIconSize.md,
+        ),
         title: 'Tailscale reconnecting…',
         subtitle: st.detail,
         bold: true,
       ),
       TailscaleStatus.failed => _EntryDescription(
-        leading: Icon(Icons.error_outline, color: c.danger, size: MotifIconSize.md),
+        leading: Icon(
+          Icons.error_outline,
+          color: c.danger,
+          size: MotifIconSize.md,
+        ),
         title: 'Tailscale failed',
         subtitle: st.detail,
         bold: true,
@@ -87,30 +104,26 @@ Future<void> showTailscaleConnectionSheet(
   BuildContext context, {
   TailscaleService? svc,
 }) {
-  final service = svc ?? context.read<AppState>().platform.tailscale;
+  final service =
+      svc ?? readObservationScope<AppState>(context).platform.tailscale;
   return showAdaptivePanel<void>(
     context,
-    builder: (_) => _TailscaleConnectionSheet(svc: service),
+    builder: (_) =>
+        _TailscaleConnectionSheet(key: ObjectKey(service), svc: service),
   );
 }
 
-class _TailscaleConnectionSheet extends StatelessWidget {
+@ObservationWidget()
+class _TailscaleConnectionSheet extends _$_TailscaleConnectionSheet {
   final TailscaleService svc;
 
-  const _TailscaleConnectionSheet({required this.svc});
+  const _TailscaleConnectionSheet({required this.svc, super.key});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<TailscaleState>(
-      stream: svc.states,
-      initialData: svc.state,
-      builder: (context, snap) {
-        final status = (snap.data ?? svc.state).status;
-        return _showsTailscaleDetails(status)
-            ? _TailscaleDetailsSheet(svc: svc)
-            : _TailscaleSetupSheet(svc: svc);
-      },
-    );
+    return _showsTailscaleDetails(svc.state.status)
+        ? _TailscaleDetailsSheet(key: ObjectKey(svc), svc: svc)
+        : _TailscaleSetupSheet(key: ObjectKey(svc), svc: svc);
   }
 }
 
@@ -131,232 +144,249 @@ class _EntryDescription {
   });
 }
 
-class _TailscaleSetupSheet extends StatefulWidget {
-  final TailscaleService svc;
-
-  const _TailscaleSetupSheet({required this.svc});
-
-  @override
-  State<_TailscaleSetupSheet> createState() => _TailscaleSetupSheetState();
+@ObservableModel()
+class _TailscaleSetupViewModel extends _$_TailscaleSetupViewModel {
+  _TailscaleSetupViewModel({
+    bool browserLoginRequested = false,
+    String authKey = '',
+    String? startError,
+  }) : super(browserLoginRequested, authKey, startError);
 }
 
-class _TailscaleSetupSheetState extends State<_TailscaleSetupSheet> {
-  final _key = TextEditingController();
-  bool _browserLoginRequested = false;
-  String? _openedAuthUrl;
-  String? _startError;
+final class _TailscaleSetupEffects {
+  String? openedAuthUrl;
+}
+
+@ObservationWidget()
+class _TailscaleSetupSheet extends _$_TailscaleSetupSheet {
+  final TailscaleService svc;
+
+  const _TailscaleSetupSheet({required this.svc, super.key});
+
+  @PlainState(name: 'keyController')
+  TextEditingController createKeyController() => TextEditingController();
+
+  @ObservableState(name: 'viewModel')
+  _TailscaleSetupViewModel createViewModel() => _TailscaleSetupViewModel();
+
+  @PlainState(name: 'effects')
+  _TailscaleSetupEffects createEffects() => _TailscaleSetupEffects();
 
   @override
-  void dispose() {
-    _key.dispose();
-    super.dispose();
-  }
+  bool shouldRecreateStates(covariant _TailscaleSetupSheet oldWidget) =>
+      !identical(oldWidget.svc, svc);
 
   @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<TailscaleState>(
-      stream: widget.svc.states,
-      initialData: widget.svc.state,
-      builder: (context, snap) {
-        final st = snap.data ?? TailscaleState.stopped;
-        final starting = st.status == TailscaleStatus.starting;
-        final authUrl = st.authUrl;
-        if (_browserLoginRequested && authUrl != null) {
-          _openAuthUrlOnce(authUrl);
-        }
-        return AdaptivePanel(
-          title: 'Setup Tailscale',
-          body: ListView(
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.fromLTRB(
-              MotifSpacing.lg,
-              MotifSpacing.md,
-              MotifSpacing.lg,
-              MotifSpacing.xl,
+  Widget build(
+    BuildContext context, {
+    required TextEditingController keyController,
+    required _TailscaleSetupViewModel viewModel,
+    required _TailscaleSetupEffects effects,
+  }) {
+    final st = svc.state;
+    final starting = st.status == TailscaleStatus.starting;
+    final authUrl = st.authUrl;
+    if (viewModel.browserLoginRequested && authUrl != null) {
+      _openAuthUrlOnce(context, authUrl, effects);
+    }
+    return AdaptivePanel(
+      title: 'Setup Tailscale',
+      body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
+        children: [
+          MotifSection(
+            title: 'Status',
+            children: [_TailscaleStatusRow(state: st)],
+          ),
+          if (st.authUrl != null) ...[
+            const SizedBox(height: MotifSpacing.xl),
+            MotifSection(
+              title: 'Web auth',
+              footer: 'Open this URL in a browser to finish signing in.',
+              children: [_AuthUrlRow(url: st.authUrl!)],
             ),
+          ],
+          if (st.authUrl == null) ...[
+            const SizedBox(height: MotifSpacing.xl),
+            MotifSection(
+              title: 'Browser login',
+              footer: 'Creates a Tailscale sign-in URL for this device.',
+              children: [
+                MotifSectionRow(
+                  leading: Icon(
+                    Icons.open_in_browser,
+                    color: context.motif.accent,
+                  ),
+                  title: starting
+                      ? 'Preparing sign-in URL…'
+                      : 'Connect with browser',
+                  subtitle: viewModel.startError,
+                  titleColor: context.motif.accent,
+                  titleWeight: FontWeight.w700,
+                  onTap: starting
+                      ? null
+                      : () => _startBrowserLogin(context, viewModel),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: MotifSpacing.xl),
+          MotifSection(
+            title: 'Auth key',
+            footer:
+                'Pre-shared key from your Tailscale admin console. Headless; no browser needed.',
+            dividerIndent: MotifSpacing.lg,
             children: [
-              MotifSection(
-                title: 'Status',
-                children: [_TailscaleStatusRow(state: st)],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  MotifSpacing.md,
+                  MotifSpacing.sm,
+                  MotifSpacing.md,
+                  MotifSpacing.sm,
+                ),
+                child: TextField(
+                  controller: keyController,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: const InputDecoration(
+                    hintText: 'tskey-…',
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    errorBorder: InputBorder.none,
+                    focusedErrorBorder: InputBorder.none,
+                    isDense: true,
+                  ),
+                  onChanged: (value) => viewModel.authKey = value,
+                ),
               ),
-              if (st.authUrl != null) ...[
-                const SizedBox(height: MotifSpacing.xl),
-                MotifSection(
-                  title: 'Web auth',
-                  footer: 'Open this URL in a browser to finish signing in.',
-                  children: [_AuthUrlRow(url: st.authUrl!)],
-                ),
-              ],
-              if (st.authUrl == null) ...[
-                const SizedBox(height: MotifSpacing.xl),
-                MotifSection(
-                  title: 'Browser login',
-                  footer: 'Creates a Tailscale sign-in URL for this device.',
-                  children: [
-                    MotifSectionRow(
-                      leading: Icon(
-                        Icons.open_in_browser,
-                        color: context.motif.accent,
-                      ),
-                      title: starting
-                          ? 'Preparing sign-in URL…'
-                          : 'Connect with browser',
-                      subtitle: _startError,
-                      titleColor: context.motif.accent,
-                      titleWeight: FontWeight.w700,
-                      onTap: starting ? null : _startBrowserLogin,
-                    ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: MotifSpacing.xl),
-              MotifSection(
-                title: 'Auth key',
-                footer:
-                    'Pre-shared key from your Tailscale admin console. Headless; no browser needed.',
-                dividerIndent: MotifSpacing.lg,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(
-                      MotifSpacing.md,
-                      MotifSpacing.sm,
-                      MotifSpacing.md,
-                      MotifSpacing.sm,
-                    ),
-                    child: TextField(
-                      controller: _key,
-                      obscureText: true,
-                      autocorrect: false,
-                      enableSuggestions: false,
-                      decoration: const InputDecoration(
-                        hintText: 'tskey-…',
-                        filled: false,
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        errorBorder: InputBorder.none,
-                        focusedErrorBorder: InputBorder.none,
-                        isDense: true,
-                      ),
-                      onChanged: (_) => setState(() {}),
-                    ),
-                  ),
-                  MotifSectionRow(
-                    leading: Icon(Icons.key, color: context.motif.accent),
-                    title: 'Connect with auth key',
-                    titleColor: context.motif.accent,
-                    titleWeight: FontWeight.w700,
-                    onTap: _key.text.trim().isEmpty || starting
-                        ? null
-                        : () async {
-                            final key = _key.text.trim();
-                            await widget.svc.start(authKey: key);
-                            _key.clear();
-                            if (mounted) setState(() {});
-                          },
-                  ),
-                ],
+              MotifSectionRow(
+                leading: Icon(Icons.key, color: context.motif.accent),
+                title: 'Connect with auth key',
+                titleColor: context.motif.accent,
+                titleWeight: FontWeight.w700,
+                onTap: viewModel.authKey.trim().isEmpty || starting
+                    ? null
+                    : () async {
+                        final key = viewModel.authKey.trim();
+                        await svc.start(authKey: key);
+                        keyController.clear();
+                        viewModel.authKey = '';
+                      },
               ),
             ],
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
-  void _startBrowserLogin() {
-    setState(() {
-      _browserLoginRequested = true;
-      _startError = null;
+  void _startBrowserLogin(
+    BuildContext context,
+    _TailscaleSetupViewModel viewModel,
+  ) {
+    observationTransaction(() {
+      viewModel
+        ..browserLoginRequested = true
+        ..startError = null;
     });
-    unawaited(_startTailscaleLogin());
-    _showUnavailableIfStartDidNothing();
+    unawaited(_startTailscaleLogin(context, viewModel));
+    _showUnavailableIfStartDidNothing(context, viewModel);
   }
 
-  Future<void> _startTailscaleLogin() async {
+  Future<void> _startTailscaleLogin(
+    BuildContext context,
+    _TailscaleSetupViewModel viewModel,
+  ) async {
     try {
-      await widget.svc.start();
+      await svc.start();
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _startError = 'Could not start embedded Tailscale: $e';
-      });
+      if (!context.mounted) return;
+      viewModel.startError = 'Could not start embedded Tailscale: $e';
     }
   }
 
-  void _showUnavailableIfStartDidNothing() {
+  void _showUnavailableIfStartDidNothing(
+    BuildContext context,
+    _TailscaleSetupViewModel viewModel,
+  ) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final st = widget.svc.state;
+      if (!context.mounted) return;
+      final st = svc.state;
       if (st.status != TailscaleStatus.stopped) return;
-      setState(() {
-        _startError =
-            'Embedded Tailscale is unavailable in this build. Bundle libtailscale for this device, or use a direct server.';
-      });
+      viewModel.startError =
+          'Embedded Tailscale is unavailable in this build. Bundle libtailscale for this device, or use a direct server.';
     });
   }
 
-  void _openAuthUrlOnce(String url) {
-    if (_openedAuthUrl == url) return;
-    _openedAuthUrl = url;
+  void _openAuthUrlOnce(
+    BuildContext context,
+    String url,
+    _TailscaleSetupEffects effects,
+  ) {
+    if (effects.openedAuthUrl == url) return;
+    effects.openedAuthUrl = url;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
+      if (!context.mounted) return;
       unawaited(openTailscaleAuthUrl(context, url));
     });
   }
 }
 
-class _TailscaleDetailsSheet extends StatelessWidget {
+@ObservationWidget()
+class _TailscaleDetailsSheet extends _$_TailscaleDetailsSheet {
   final TailscaleService svc;
 
-  const _TailscaleDetailsSheet({required this.svc});
+  const _TailscaleDetailsSheet({required this.svc, super.key});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<TailscaleState>(
-      stream: svc.states,
-      initialData: svc.state,
-      builder: (context, snap) {
-        final st = snap.data ?? TailscaleState.stopped;
-        return AdaptivePanel(
-          title: 'Tailscale',
-          body: ListView(
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.fromLTRB(
-              MotifSpacing.lg,
-              MotifSpacing.md,
-              MotifSpacing.lg,
-              MotifSpacing.xl,
-            ),
+    final st = svc.state;
+    return AdaptivePanel(
+      title: 'Tailscale',
+      body: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(
+          MotifSpacing.lg,
+          MotifSpacing.md,
+          MotifSpacing.lg,
+          MotifSpacing.xl,
+        ),
+        children: [
+          MotifSection(
+            title: 'Connection',
+            children: [_TailscaleStatusRow(state: st)],
+          ),
+          const SizedBox(height: MotifSpacing.xl),
+          MotifSection(
+            footer:
+                'Disconnect drops the tsnet session. Cached credentials stay on device.',
             children: [
-              MotifSection(
-                title: 'Connection',
-                children: [_TailscaleStatusRow(state: st)],
-              ),
-              const SizedBox(height: MotifSpacing.xl),
-              MotifSection(
-                footer:
-                    'Disconnect drops the tsnet session. Cached credentials stay on device.',
-                children: [
-                  MotifSectionRow(
-                    leading: Icon(
-                      Icons.power_settings_new,
-                      color: context.motif.danger,
-                    ),
-                    title: 'Disconnect',
-                    titleColor: context.motif.danger,
-                    titleWeight: FontWeight.w700,
-                    onTap: () async {
-                      await svc.stop();
-                      if (context.mounted) Navigator.of(context).pop();
-                    },
-                  ),
-                ],
+              MotifSectionRow(
+                leading: Icon(
+                  Icons.power_settings_new,
+                  color: context.motif.danger,
+                ),
+                title: 'Disconnect',
+                titleColor: context.motif.danger,
+                titleWeight: FontWeight.w700,
+                onTap: () async {
+                  await svc.stop();
+                  if (context.mounted) Navigator.of(context).pop();
+                },
               ),
             ],
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

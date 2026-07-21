@@ -116,7 +116,9 @@ class ApnsPushService implements PushService {
   takePendingNotificationOpen() async {
     if (!isSupported) return null;
     try {
-      final raw = await _ch.invokeMethod<Object?>('takePendingNotificationOpen');
+      final raw = await _ch.invokeMethod<Object?>(
+        'takePendingNotificationOpen',
+      );
       if (raw is! Map) return null;
       final args = raw.cast<String, Object?>();
       final session = args['session'] as String?;

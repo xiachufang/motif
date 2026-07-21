@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/motif_proto.dart';
-import '../../state/motif_client.dart';
+import '../../state/server/session_catalog_controller.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
@@ -9,17 +11,24 @@ import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
 import 'session_name_generator.dart';
 
+part 'create_session_dialog.g.dart';
+
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
-  MotifClient motif,
+  SessionCatalogController sessions,
+  WorkspaceApi workspace,
 ) async {
   final result = await showAdaptiveModal<(String, String)>(
     context,
-    builder: (_) => _CreateSessionDialog(motif: motif),
+    builder: (_) => _CreateSessionDialog(
+      key: const ValueKey('create-session-dialog'),
+      sessions: sessions,
+      workspace: workspace,
+    ),
   );
   if (result == null) return null;
   try {
-    return await motif.createSession(result.$1, result.$2);
+    return await sessions.create(result.$1, result.$2);
   } catch (e) {
     if (context.mounted) {
       showMotifToast(context, 'Create failed: $e');
@@ -28,38 +37,44 @@ Future<SessionInfo?> createSessionWithDialog(
   }
 }
 
-class _CreateSessionDialog extends StatefulWidget {
-  const _CreateSessionDialog({required this.motif});
-
-  final MotifClient motif;
-
-  @override
-  State<_CreateSessionDialog> createState() => _CreateSessionDialogState();
+@ObservableModel()
+class _CreateSessionDialogViewModel extends _$_CreateSessionDialogViewModel {
+  _CreateSessionDialogViewModel({bool canCreate = true}) : super(canCreate);
 }
 
-class _CreateSessionDialogState extends State<_CreateSessionDialog> {
-  late final TextEditingController _name;
-  final _workdir = TextEditingController(text: '~');
+@ObservationWidget()
+class _CreateSessionDialog extends _$_CreateSessionDialog {
+  const _CreateSessionDialog({
+    required this.sessions,
+    required this.workspace,
+    super.key,
+  });
+
+  final SessionCatalogController sessions;
+  final WorkspaceApi workspace;
+
+  @PlainState(name: 'nameController')
+  TextEditingController createNameController() => TextEditingController(
+    text: generateSessionName(
+      existingNames: sessions.viewModel.sessions.map((session) => session.name),
+    ),
+  );
+
+  @PlainState(name: 'workdirController')
+  TextEditingController createWorkdirController() =>
+      TextEditingController(text: '~');
+
+  @ObservableState(name: 'viewModel')
+  _CreateSessionDialogViewModel createViewModel() =>
+      _CreateSessionDialogViewModel();
 
   @override
-  void initState() {
-    super.initState();
-    _name = TextEditingController(
-      text: generateSessionName(
-        existingNames: widget.motif.sessions.map((session) => session.name),
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _workdir.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required TextEditingController nameController,
+    required TextEditingController workdirController,
+    required _CreateSessionDialogViewModel viewModel,
+  }) {
     return AdaptiveModal(
       title: 'New session',
       content: MotifSection(
@@ -67,42 +82,45 @@ class _CreateSessionDialogState extends State<_CreateSessionDialog> {
         dividerIndent: MotifSpacing.lg,
         children: [
           _sectionField(
-            controller: _name,
+            controller: nameController,
             label: 'Name',
-            onChanged: (_) => setState(() {}),
+            onChanged: (value) => viewModel.canCreate = value.trim().isNotEmpty,
           ),
           _sectionField(
-            controller: _workdir,
+            controller: workdirController,
             label: 'Working directory',
             trailing: IconButton(
               icon: const Icon(Icons.folder_open),
               tooltip: 'Browse',
-              onPressed: _pickWorkdir,
+              onPressed: () => _pickWorkdir(context, workdirController),
             ),
           ),
         ],
       ),
       actions: [
         TextButton(
-          onPressed: _name.text.trim().isEmpty
-              ? null
-              : () => Navigator.pop(context, (
-                  _name.text.trim(),
-                  _workdir.text.trim(),
-                )),
+          onPressed: viewModel.canCreate
+              ? () => Navigator.pop(context, (
+                  nameController.text.trim(),
+                  workdirController.text.trim(),
+                ))
+              : null,
           child: const Text('Create'),
         ),
       ],
     );
   }
 
-  void _pickWorkdir() {
-    final current = _workdir.text.trim();
+  void _pickWorkdir(
+    BuildContext context,
+    TextEditingController workdirController,
+  ) {
+    final current = workdirController.text.trim();
     showChangeDirectorySheet(
       context,
-      motif: widget.motif,
+      workspace: workspace,
       baseDir: current.isEmpty ? '~' : current,
-      onChoose: (path) => setState(() => _workdir.text = path),
+      onChoose: (path) => workdirController.text = path,
     );
   }
 

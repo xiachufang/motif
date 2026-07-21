@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../../models/motif_proto.dart';
-import '../../state/motif_client.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/motif_panel_header.dart';
+import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
 
 /// Lazy file-tree browser rooted at a directory (mirrors FileTreePanel).
@@ -15,13 +16,13 @@ import '../widgets/top_toast.dart';
 class FileTreePanel extends StatefulWidget {
   final String root;
   final void Function(String path) onOpen;
-  final MotifClient motif;
+  final WorkspaceApi workspace;
   final bool embedded;
   const FileTreePanel({
     super.key,
     required this.root,
     required this.onOpen,
-    required this.motif,
+    required this.workspace,
     this.embedded = false,
   });
 
@@ -36,32 +37,25 @@ class _FileTreePanelState extends State<FileTreePanel> {
   bool _loading = true;
   String? _error;
 
-  late final MotifClient _motif;
-
+  late final WorkspaceApi _workspace;
   int _lastTreeTick = -1;
+  bool _treeReloadScheduled = false;
 
   @override
   void initState() {
     super.initState();
-    _motif = widget.motif;
-    _lastTreeTick = _motif.treeChangeTick;
-    _motif.addListener(_onTreeChanged);
+    _workspace = widget.workspace;
+    _lastTreeTick = _workspace.content.treeVersion;
     _loadDir(widget.root).then((_) {
       if (mounted) setState(() => _loading = false);
     });
   }
 
-  @override
-  void dispose() {
-    _motif.removeListener(_onTreeChanged);
-    super.dispose();
-  }
-
   /// Re-pull every already-loaded directory when the server reports a
   /// filesystem change (mirrors the iOS FileTreePanel invalidation).
   void _onTreeChanged() {
-    if (_motif.treeChangeTick == _lastTreeTick) return;
-    _lastTreeTick = _motif.treeChangeTick;
+    if (_workspace.content.treeVersion == _lastTreeTick) return;
+    _lastTreeTick = _workspace.content.treeVersion;
     for (final dir in _children.keys.toList()) {
       _loadDir(dir);
     }
@@ -69,7 +63,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
 
   Future<void> _loadDir(String path) async {
     try {
-      final entries = await _motif.fsTree(path, depth: 1);
+      final entries = await _workspace.tree(path, depth: 1);
       entries.sort((a, b) {
         if ((a.type == FileType.dir) != (b.type == FileType.dir)) {
           return a.type == FileType.dir ? -1 : 1;
@@ -95,7 +89,21 @@ class _FileTreePanelState extends State<FileTreePanel> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ObservationSelect<int>(
+    selector: () => _workspace.content.treeVersion,
+    builder: (context, version, _) {
+      if (version != _lastTreeTick && !_treeReloadScheduled) {
+        _treeReloadScheduled = true;
+        Future.microtask(() {
+          _treeReloadScheduled = false;
+          if (mounted) _onTreeChanged();
+        });
+      }
+      return _buildContent(context);
+    },
+  );
+
+  Widget _buildContent(BuildContext context) {
     final c = context.motif;
     final title =
         widget.root.split('/').where((s) => s.isNotEmpty).lastOrNull ?? '/';
@@ -159,6 +167,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
   Widget _row(TreeEntry e, String path, bool isDir, bool expanded, int depth) {
     final c = context.motif;
     return InkWell(
+      key: ValueKey('file-tree-row:$path'),
       onTap: () {
         if (isDir) {
           _toggle(path);
@@ -170,9 +179,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
       child: Padding(
         padding: EdgeInsets.only(
           left: MotifSpacing.md + depth * MotifSpacing.lg,
-          right: MotifSpacing.md,
-          top: MotifSpacing.sm,
-          bottom: MotifSpacing.sm,
+          // right: MotifSpacing.md,
         ),
         child: Row(
           children: [
@@ -194,9 +201,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
             if (e.gitStatus != null && e.gitStatus != GitFileStatus.unmodified)
               Text(
                 _gitGlyph(e.gitStatus!),
-                style: MotifType.monoSmall.copyWith(
-                  color: c.accent,
-                ),
+                style: MotifType.monoSmall.copyWith(color: c.accent),
               ),
             PopupMenuButton<String>(
               style: motifNoButtonFeedback,
@@ -240,9 +245,9 @@ class _FileTreePanelState extends State<FileTreePanel> {
     final path = _join(dir, name.trim());
     try {
       if (isDir) {
-        await _motif.fsMkdir(path);
+        await _workspace.mkdir(path);
       } else {
-        await _motif.fsWrite(path, base64Encode(const []));
+        await _workspace.write(path, base64Encode(const []));
       }
       _expanded.add(dir);
       await _refreshDir(dir);
@@ -255,7 +260,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
     final name = await _prompt('Rename', initial: current);
     if (name == null || name.trim().isEmpty || name.trim() == current) return;
     try {
-      await _motif.fsRename(path, _join(parent, name.trim()));
+      await _workspace.rename(path, _join(parent, name.trim()));
       await _refreshDir(parent);
     } catch (e) {
       _snack('Rename failed: $e');
@@ -281,7 +286,7 @@ class _FileTreePanelState extends State<FileTreePanel> {
     );
     if (ok != true) return;
     try {
-      await _motif.fsRemove(path);
+      await _workspace.remove(path);
       await _refreshDir(parent);
     } catch (e) {
       _snack('Delete failed: $e');

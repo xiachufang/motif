@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
-import 'package:motif/motif/state/motif_client.dart';
+import 'package:motif/motif/state/workspace/workspace_api.dart';
+import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 
-class _DiffMotifClient extends MotifClient {
+class _DiffWorkspace {
   final diffPaths = <String?>[];
+  late final WorkspaceApi api;
 
   static const _files = [
     DiffSummaryFile(
@@ -21,21 +23,36 @@ class _DiffMotifClient extends MotifClient {
     ),
   ];
 
-  @override
-  Future<List<DiffSummaryFile>> gitDiffSummary({
-    String? path,
-    bool staged = false,
-    String? cwd,
-  }) async {
-    return _files;
+  _DiffWorkspace() {
+    api = WorkspaceApi(
+      content: WorkspaceContentViewModel(),
+      transport: WorkspaceApiTransport(
+        isAvailable: () => true,
+        call: (method, [params = const {}]) async {
+          if (method == 'git.diffSummary') {
+            return {
+              'files': [
+                for (final file in _files)
+                  {
+                    'path': file.path,
+                    'additions': file.additions,
+                    'deletions': file.deletions,
+                  },
+              ],
+            };
+          }
+          if (method == 'git.diff') {
+            return {'patch': _diff(params['path'] as String?)};
+          }
+          return const {};
+        },
+        writeFileBytes: (_, _) async => '',
+      ),
+      activeCwd: () => '/work',
+    );
   }
 
-  @override
-  Future<String> gitDiff({
-    String? path,
-    bool staged = false,
-    String? cwd,
-  }) async {
+  String _diff(String? path) {
     diffPaths.add(path);
     if (path == null) {
       return [
@@ -64,7 +81,7 @@ void main() {
   testWidgets('embedded panel lists changed files and opens diff tabs', (
     tester,
   ) async {
-    final motif = _DiffMotifClient();
+    final motif = _DiffWorkspace();
     final opened = <({String? path, bool staged})>[];
     await tester.pumpWidget(
       MaterialApp(
@@ -74,7 +91,7 @@ void main() {
             width: 420,
             height: 420,
             child: GitDiffPanel(
-              motif: motif,
+              workspace: motif.api,
               cwd: '/work',
               embedded: true,
               onOpenDiff: ({path, required staged}) async {
@@ -155,7 +172,7 @@ void main() {
   testWidgets('embedded panel can switch to a changed-file tree', (
     tester,
   ) async {
-    final motif = _DiffMotifClient();
+    final motif = _DiffWorkspace();
     final opened = <String?>[];
     await tester.pumpWidget(
       MaterialApp(
@@ -165,7 +182,7 @@ void main() {
             width: 360,
             height: 520,
             child: GitDiffPanel(
-              motif: motif,
+              workspace: motif.api,
               cwd: '/work',
               embedded: true,
               onOpenDiff: ({path, required staged}) async => opened.add(path),
@@ -204,7 +221,7 @@ void main() {
   });
 
   testWidgets('diff view renders a concrete patch', (tester) async {
-    final motif = _DiffMotifClient();
+    final motif = _DiffWorkspace();
     await tester.pumpWidget(
       MaterialApp(
         theme: motifTheme(Brightness.dark),
@@ -213,7 +230,7 @@ void main() {
             width: 640,
             height: 420,
             child: GitDiffView(
-              motif: motif,
+              workspace: motif.api,
               cwd: '/work',
               path: 'lib/motif/ui/screens/git_diff_panel.dart',
               embedded: true,
@@ -247,7 +264,7 @@ void main() {
   });
 
   testWidgets('diff view groups full patch by changed file', (tester) async {
-    final motif = _DiffMotifClient();
+    final motif = _DiffWorkspace();
     await tester.pumpWidget(
       MaterialApp(
         theme: motifTheme(Brightness.dark),
@@ -255,7 +272,11 @@ void main() {
           body: SizedBox(
             width: 720,
             height: 72,
-            child: GitDiffView(motif: motif, cwd: '/work', embedded: true),
+            child: GitDiffView(
+              workspace: motif.api,
+              cwd: '/work',
+              embedded: true,
+            ),
           ),
         ),
       ),
@@ -288,7 +309,7 @@ void main() {
   });
 
   testWidgets('diff view sections can collapse and expand', (tester) async {
-    final motif = _DiffMotifClient();
+    final motif = _DiffWorkspace();
     await tester.pumpWidget(
       MaterialApp(
         theme: motifTheme(Brightness.dark),
@@ -296,7 +317,11 @@ void main() {
           body: SizedBox(
             width: 720,
             height: 240,
-            child: GitDiffView(motif: motif, cwd: '/work', embedded: true),
+            child: GitDiffView(
+              workspace: motif.api,
+              cwd: '/work',
+              embedded: true,
+            ),
           ),
         ),
       ),

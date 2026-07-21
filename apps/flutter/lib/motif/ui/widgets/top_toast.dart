@@ -1,14 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../platform/desktop_window.dart';
 import '../theme/motif_theme.dart';
 
+part 'top_toast.g.dart';
+
 const double _desktopTitleBarHeight = 38;
 const double _toastMaxWidth = 560;
 
-_MotifToastHostState? _activeMotifToastHost;
+MotifToastCoordinator? _activeMotifToastHost;
 OverlayEntry? _activeMotifToastEntry;
 Timer? _activeMotifToastTimer;
 
@@ -20,7 +23,7 @@ void showMotifToast(
   if (!context.mounted || message.isEmpty) return;
 
   final host = _activeMotifToastHost;
-  if (host != null && host.mounted) {
+  if (host != null && !host.disposed) {
     _clearOverlayToast();
     host.show(message, duration: duration);
     return;
@@ -29,64 +32,62 @@ void showMotifToast(
   _showOverlayToast(context, message, duration: duration);
 }
 
-class MotifToastHost extends StatefulWidget {
-  const MotifToastHost({super.key, required this.child});
-
-  final Widget child;
-
-  @override
-  State<MotifToastHost> createState() => _MotifToastHostState();
-}
-
-class _MotifToastHostState extends State<MotifToastHost> {
-  Timer? _timer;
-  _MotifToastData? _toast;
-  int _serial = 0;
-
-  @override
-  void initState() {
-    super.initState();
+@ObservableModel()
+class MotifToastCoordinator extends _$MotifToastCoordinator {
+  MotifToastCoordinator({MotifToastData? toast}) : super(toast) {
     _activeMotifToastHost = this;
   }
 
-  @override
-  void dispose() {
-    if (_activeMotifToastHost == this) {
-      _activeMotifToastHost = null;
-    }
-    _timer?.cancel();
-    super.dispose();
-  }
+  Timer? _timer;
+  int _serial = 0;
+  bool disposed = false;
 
   void show(String message, {required Duration duration}) {
     _timer?.cancel();
-    setState(() {
-      _toast = _MotifToastData(++_serial, message);
-    });
+    toast = MotifToastData(++_serial, message);
     _timer = Timer(duration, () {
-      if (!mounted) return;
-      setState(() {
-        _toast = null;
-      });
+      if (disposed) return;
+      toast = null;
       _timer = null;
     });
   }
 
+  void dispose() {
+    disposed = true;
+    if (identical(_activeMotifToastHost, this)) {
+      _activeMotifToastHost = null;
+    }
+    _timer?.cancel();
+  }
+}
+
+@ObservationWidget()
+class MotifToastHost extends _$MotifToastHost {
+  const MotifToastHost({super.key, required this.child});
+
+  final Widget child;
+
+  @ObservableState(name: 'coordinator')
+  MotifToastCoordinator createCoordinator() => MotifToastCoordinator();
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required MotifToastCoordinator coordinator,
+  }) {
     return Stack(
       fit: StackFit.expand,
       clipBehavior: Clip.none,
       children: [
-        widget.child,
-        _MotifToastPositioned(toast: _toast),
+        child,
+        _MotifToastPositioned(toast: coordinator.toast),
       ],
     );
   }
 }
 
-class _MotifToastData {
-  const _MotifToastData(this.id, this.message);
+class MotifToastData {
+  const MotifToastData(this.id, this.message);
 
   final int id;
   final String message;
@@ -102,7 +103,7 @@ void _showOverlayToast(
 
   _clearOverlayToast();
 
-  final data = _MotifToastData(0, message);
+  final data = MotifToastData(0, message);
   final theme = Theme.of(context);
   final entry = OverlayEntry(
     builder: (_) => Theme(
@@ -138,7 +139,7 @@ void _clearOverlayToast() {
 class _MotifToastPositioned extends StatelessWidget {
   const _MotifToastPositioned({required this.toast});
 
-  final _MotifToastData? toast;
+  final MotifToastData? toast;
 
   @override
   Widget build(BuildContext context) {

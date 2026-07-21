@@ -1,7 +1,10 @@
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../theme/motif_theme.dart';
+
+part 'adaptive_modal.g.dart';
 
 /// Whether adaptive modals present as bottom sheets (phones) instead of
 /// dialogs (desktop / web).
@@ -37,6 +40,7 @@ Future<T?> showAdaptiveModal<T>(
     clipBehavior: Clip.antiAlias,
     backgroundColor: background,
     builder: (context) => _KeyboardAwareSheet(
+      key: const ValueKey('adaptive-modal-keyboard-sheet'),
       maxHeightFraction: _sheetMaxHeightFraction,
       child: builder(context),
     ),
@@ -74,9 +78,11 @@ Future<T?> showAdaptivePanel<T>(
     clipBehavior: Clip.antiAlias,
     backgroundColor: Colors.transparent,
     builder: (context) => _KeyboardAwareSheet(
+      key: const ValueKey('adaptive-panel-keyboard-sheet'),
       maxHeightFraction: _sheetMaxHeightFraction,
       fillHeight: true,
       child: _DraggablePanelSheet(
+        key: const ValueKey('adaptive-panel-draggable-sheet'),
         backgroundColor: background,
         builder: builder,
       ),
@@ -84,7 +90,20 @@ Future<T?> showAdaptivePanel<T>(
   );
 }
 
-class _KeyboardAwareSheet extends StatefulWidget {
+final class _FocusChangeTracker {
+  _FocusChangeTracker() {
+    FocusManager.instance.addListener(_onFocusChanged);
+  }
+
+  final Observable<int> revision = Observable(0);
+
+  void _onFocusChanged() => revision.value++;
+
+  void dispose() => FocusManager.instance.removeListener(_onFocusChanged);
+}
+
+@ObservationWidget()
+class _KeyboardAwareSheet extends _$_KeyboardAwareSheet {
   final Widget child;
   final double maxHeightFraction;
   final bool fillHeight;
@@ -93,33 +112,16 @@ class _KeyboardAwareSheet extends StatefulWidget {
     required this.child,
     required this.maxHeightFraction,
     this.fillHeight = false,
+    super.key,
   });
 
-  @override
-  State<_KeyboardAwareSheet> createState() => _KeyboardAwareSheetState();
-}
+  @PlainState(name: 'focusTracker')
+  _FocusChangeTracker createFocusTracker() => _FocusChangeTracker();
 
-class _KeyboardAwareSheetState extends State<_KeyboardAwareSheet> {
-  @override
-  void initState() {
-    super.initState();
-    FocusManager.instance.addListener(_onFocusChanged);
-  }
-
-  @override
-  void dispose() {
-    FocusManager.instance.removeListener(_onFocusChanged);
-    super.dispose();
-  }
-
-  void _onFocusChanged() {
-    if (mounted) setState(() {});
-  }
-
-  bool _hasPrimaryFocusInSheet() {
+  bool _hasPrimaryFocusInSheet(BuildContext context) {
     final focusedContext = FocusManager.instance.primaryFocus?.context;
     if (focusedContext is! Element || context is! Element) return false;
-    final sheetElement = context as Element;
+    final sheetElement = context;
     if (identical(focusedContext, sheetElement)) return true;
     var containsFocus = false;
     focusedContext.visitAncestorElements((ancestor) {
@@ -133,16 +135,20 @@ class _KeyboardAwareSheetState extends State<_KeyboardAwareSheet> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _FocusChangeTracker focusTracker,
+  }) {
+    focusTracker.revision.value;
     final media = MediaQuery.of(context);
-    final keyboardInset = _hasPrimaryFocusInSheet()
+    final keyboardInset = _hasPrimaryFocusInSheet(context)
         ? media.viewInsets.bottom
         : 0.0;
     final topGap = media.viewPadding.top + MotifSpacing.sm;
     final maxHeight = (media.size.height - topGap)
         .clamp(0.0, media.size.height)
         .toDouble();
-    final sheetHeight = (media.size.height * widget.maxHeightFraction)
+    final sheetHeight = (media.size.height * maxHeightFraction)
         .clamp(0.0, maxHeight)
         .toDouble();
     final minVisibleHeight = (kToolbarHeight + MotifSpacing.lg)
@@ -155,9 +161,9 @@ class _KeyboardAwareSheetState extends State<_KeyboardAwareSheet> {
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOut,
       padding: EdgeInsets.only(bottom: bottomInset),
-      child: widget.child,
+      child: child,
     );
-    final boundedChild = widget.fillHeight
+    final boundedChild = fillHeight
         ? SizedBox(height: sheetHeight, child: paddedChild)
         : ConstrainedBox(
             constraints: BoxConstraints(maxHeight: sheetHeight),
@@ -177,7 +183,18 @@ class _KeyboardAwareSheetState extends State<_KeyboardAwareSheet> {
 /// starts settling downward with no finger on screen, the snap is frozen and
 /// the route popped immediately, so the visible close is the standard
 /// modal-bottom-sheet exit animation — identical to non-scrolling sheets.
-class _DraggablePanelSheet extends StatefulWidget {
+final class _DraggablePanelInteraction {
+  final DraggableScrollableController controller =
+      DraggableScrollableController();
+  int pointersDown = 0;
+  double lastExtent = _DraggablePanelSheet.restingSize;
+  bool popped = false;
+
+  void dispose() => controller.dispose();
+}
+
+@ObservationWidget()
+class _DraggablePanelSheet extends _$_DraggablePanelSheet {
   final WidgetBuilder builder;
   final Color backgroundColor;
 
@@ -186,56 +203,53 @@ class _DraggablePanelSheet extends StatefulWidget {
   const _DraggablePanelSheet({
     required this.backgroundColor,
     required this.builder,
+    super.key,
   });
 
-  @override
-  State<_DraggablePanelSheet> createState() => _DraggablePanelSheetState();
-}
+  @PlainState(name: 'interaction')
+  _DraggablePanelInteraction createInteraction() =>
+      _DraggablePanelInteraction();
 
-class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
-  final _controller = DraggableScrollableController();
-  int _pointersDown = 0;
-  double _lastExtent = _DraggablePanelSheet.restingSize;
-  bool _popped = false;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  bool _onExtentChanged(DraggableScrollableNotification notification) {
+  bool _onExtentChanged(
+    BuildContext context,
+    _DraggablePanelInteraction interaction,
+    DraggableScrollableNotification notification,
+  ) {
     final extent = notification.extent;
     final settlingDown =
-        _pointersDown == 0 &&
-        extent < _lastExtent &&
+        interaction.pointersDown == 0 &&
+        extent < interaction.lastExtent &&
         extent < _DraggablePanelSheet.restingSize - 0.001;
-    _lastExtent = extent;
-    if (settlingDown && !_popped) {
-      _popped = true;
+    interaction.lastExtent = extent;
+    if (settlingDown && !interaction.popped) {
+      interaction.popped = true;
       // Halt the sheet's own shrink-to-zero snap; the route's standard exit
       // animation takes over from the current position.
-      _controller.jumpTo(extent);
+      interaction.controller.jumpTo(extent);
       Navigator.pop(context);
     }
     return false;
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _DraggablePanelInteraction interaction,
+  }) {
     return Listener(
       behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => _pointersDown++,
+      onPointerDown: (_) => interaction.pointersDown++,
       onPointerUp: (_) {
-        if (_pointersDown > 0) _pointersDown--;
+        if (interaction.pointersDown > 0) interaction.pointersDown--;
       },
       onPointerCancel: (_) {
-        if (_pointersDown > 0) _pointersDown--;
+        if (interaction.pointersDown > 0) interaction.pointersDown--;
       },
       child: NotificationListener<DraggableScrollableNotification>(
-        onNotification: _onExtentChanged,
+        onNotification: (notification) =>
+            _onExtentChanged(context, interaction, notification),
         child: DraggableScrollableSheet(
-          controller: _controller,
+          controller: interaction.controller,
           expand: false,
           initialChildSize: _DraggablePanelSheet.restingSize,
           minChildSize: 0,
@@ -244,7 +258,7 @@ class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
           builder: (context, scrollController) => PrimaryScrollController(
             controller: scrollController,
             child: Material(
-              color: widget.backgroundColor,
+              color: backgroundColor,
               surfaceTintColor: Colors.transparent,
               clipBehavior: Clip.antiAlias,
               shape: const RoundedRectangleBorder(
@@ -252,7 +266,7 @@ class _DraggablePanelSheetState extends State<_DraggablePanelSheet> {
                   top: Radius.circular(MotifRadius.xl),
                 ),
               ),
-              child: widget.builder(context),
+              child: builder(context),
             ),
           ),
         ),

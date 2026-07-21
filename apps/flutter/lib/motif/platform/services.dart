@@ -11,62 +11,15 @@ library;
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../net/proxy_client.dart';
+import '../state/platform/tailscale_view_model.dart';
 import 'secret_store.dart';
 
+export '../state/platform/tailscale_view_model.dart';
+
 // ─────────────────────────── Tailscale ───────────────────────────
-
-enum TailscaleStatus { stopped, starting, running, needsAuth, degraded, failed }
-
-class TailscaleState {
-  final TailscaleStatus status;
-  final String? authUrl;
-  final String? detail;
-  const TailscaleState(this.status, {this.authUrl, this.detail});
-  static const stopped = TailscaleState(TailscaleStatus.stopped);
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is TailscaleState &&
-          status == other.status &&
-          authUrl == other.authUrl &&
-          detail == other.detail;
-
-  @override
-  int get hashCode => Object.hash(status, authUrl, detail);
-}
-
-/// A visible tailnet peer that may be a motifd target.
-class TailscalePeer {
-  final String hostname;
-  final String dnsName;
-  final String? primaryIP;
-  final bool isLikelyMotifd;
-  final bool isOnline;
-
-  const TailscalePeer({
-    required this.hostname,
-    required this.dnsName,
-    this.primaryIP,
-    required this.isLikelyMotifd,
-    required this.isOnline,
-  });
-
-  String get id => dnsName.isEmpty ? hostname : dnsName;
-
-  /// Best address to persist in a server config: MagicDNS when present, IP
-  /// otherwise.
-  String get preferredAddress {
-    if (dnsName.isNotEmpty) {
-      return dnsName.endsWith('.')
-          ? dnsName.substring(0, dnsName.length - 1)
-          : dnsName;
-    }
-    return primaryIP ?? hostname;
-  }
-}
 
 class TailscalePingResult {
   final bool reachable;
@@ -87,9 +40,25 @@ class TailscalePingResult {
 }
 
 /// Embeds a tsnet node so the app can reach a tailnet peer directly.
-abstract interface class TailscaleService {
-  TailscaleState get state;
-  Stream<TailscaleState> get states;
+abstract class TailscaleService {
+  TailscaleService({TailscaleState initialState = TailscaleState.stopped})
+    : viewModel = TailscaleViewModel(
+        status: initialState.status,
+        authUrl: initialState.authUrl,
+        detail: initialState.detail,
+        peers: ObservableList(),
+        error: initialState.status == TailscaleStatus.failed
+            ? initialState.detail
+            : null,
+      );
+
+  final TailscaleViewModel viewModel;
+
+  TailscaleState get state => viewModel.snapshot;
+
+  @protected
+  set tailscaleState(TailscaleState value) => viewModel.apply(value);
+
   Future<void> start({String? authKey});
   Future<void> stop();
 
@@ -115,19 +84,8 @@ abstract interface class TailscaleService {
 /// No-op: the platform has no embedded Tailscale. Direct (non-tailscale)
 /// servers still work; tailscale servers are simply unreachable until a real
 /// implementation is provided for the platform.
-class NoopTailscaleService implements TailscaleService {
-  final _controller = StreamController<TailscaleState>.broadcast();
-  TailscaleState _state = TailscaleState.stopped;
-
-  @override
-  TailscaleState get state => _state;
-  @override
-  Stream<TailscaleState> get states => _controller.stream;
-
-  void _set(TailscaleState state) {
-    _state = state;
-    if (!_controller.isClosed) _controller.add(state);
-  }
+class NoopTailscaleService extends TailscaleService {
+  void _set(TailscaleState state) => tailscaleState = state;
 
   @override
   Future<void> start({String? authKey}) async {

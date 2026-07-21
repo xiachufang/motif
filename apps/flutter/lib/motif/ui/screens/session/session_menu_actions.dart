@@ -5,8 +5,8 @@ part of '../session_screen.dart';
 extension _SessionScreenMenuActions on _SessionScreenState {
   Future<void> _newPty() async {
     try {
-      final (cols, rows) = _preferredPtySize(_motif);
-      await _motif.createPty(cols: cols, rows: rows);
+      final (cols, rows) = _preferredPtySize();
+      await _terminalController.create(cols: cols, rows: rows);
       _focusTerminalAfterTabSwitch();
     } catch (e) {
       if (mounted) {
@@ -15,12 +15,12 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     }
   }
 
-  Future<void> _showRemotePortMappings(MotifClient motif) async {
+  Future<void> _showRemotePortMappings(RemotePortController controller) async {
     if (!_remotePortWebViewSupported()) {
       showMotifToast(context, 'In-app browser is not supported here');
       return;
     }
-    await showRemotePortMappingsSheet(context, motif);
+    await showRemotePortMappingsSheet(context, controller);
   }
 
   bool _remotePortWebViewSupported() {
@@ -30,16 +30,17 @@ extension _SessionScreenMenuActions on _SessionScreenState {
         defaultTargetPlatform == TargetPlatform.macOS;
   }
 
-  (int, int) _preferredPtySize(MotifClient motif) {
-    final activePty = _activePtyId(motif);
+  (int, int) _preferredPtySize() {
+    final ptys = _terminalController.viewModel.ptys;
+    final activePty = _activePtyId();
     if (activePty != null) {
-      for (final pty in motif.ptys) {
+      for (final pty in ptys) {
         if (pty.id == activePty && pty.cols > 0 && pty.rows > 0) {
           return (pty.cols, pty.rows);
         }
       }
     }
-    for (final pty in motif.ptys) {
+    for (final pty in ptys) {
       if ((pty.alive ?? true) && pty.cols > 0 && pty.rows > 0) {
         return (pty.cols, pty.rows);
       }
@@ -47,31 +48,25 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     return (80, 24);
   }
 
-  ViewInfo? _activeView(MotifClient motif) {
-    final id = motif.activeViewId;
-    if (id != null) {
-      for (final v in motif.views) {
-        if (v.id == id) return v;
-      }
-    }
-    return motif.views.isEmpty ? null : motif.views.first;
-  }
-
-  List<ViewInfo> _mountedViews(MotifClient motif, ViewInfo? activeView) {
+  List<ViewInfo> _mountedViews(ViewInfo? activeView) {
     if (_switchingSession) return const [];
-    final liveIds = {for (final view in motif.views) view.id};
+    final items = _workspaceState.views.items;
+    final liveIds = {for (final view in items) view.id};
     _mountedViewIds.removeWhere((id) => !liveIds.contains(id));
     if (activeView != null) _mountedViewIds.add(activeView.id);
     return [
-      for (final view in motif.views)
+      for (final view in items)
         if (_mountedViewIds.contains(view.id)) view,
     ];
   }
 
-  List<SessionInfo> _sessionsForMenu(MotifServer server, MotifClient motif) {
+  List<SessionInfo> _sessionsForMenu(
+    MotifServer server,
+    Iterable<SessionInfo> sessions,
+  ) {
     return _sessionsForServer(
       server,
-      motif,
+      sessions,
       currentServerId: widget.serverId,
       currentSession: widget.session,
     );
@@ -91,14 +86,15 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       ),
       const PopupMenuDivider(),
     ];
-    for (final group in app.connectedServerClients) {
-      final sessions = _sessionsForMenu(group.server, group.client);
+    for (final group in app.connectedServers) {
+      final server = group.profile;
+      final sessions = _sessionsForMenu(server, group.sessions.sessions);
       if (sessions.isEmpty) continue;
       entries.add(
         PopupMenuItem<_SessionMenuAction>(
           enabled: false,
           child: Text(
-            group.server.name,
+            server.name,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.w700),
           ),
@@ -106,12 +102,11 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       );
       for (final session in sessions) {
         final selected =
-            group.server.id == widget.serverId &&
-            session.name == widget.session;
+            server.id == widget.serverId && session.name == widget.session;
         entries.add(
           PopupMenuItem<_SessionMenuAction>(
-            value: _SwitchSessionAction(group.server.id, session.name),
-            enabled: group.client.isLive,
+            value: _SwitchSessionAction(server.id, session.name),
+            enabled: group.access.isReady,
             child: Row(
               children: [
                 Icon(selected ? Icons.check : Icons.terminal),
@@ -131,31 +126,18 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   /// "Close session" leaves *every* open session, not just the current one:
   /// detach all connected clients (one per connected server) and return to the
   /// list. Detach is non-destructive — the sessions keep running server-side.
-  Future<void> _closeSession(MotifClient motif) async {
-    final app = context.read<AppState>();
-    // Only detach clients that are actually attached to a session. A merely
-    // connected client (ConnConnected) has no X-Motif-Session, so
-    // `session.detach` would be rejected by the server ("missing X-Motif-Session
-    // header") and surface a spurious "Close failed" toast.
-    final clients = <MotifClient>{
-      if (motif.state is ConnAttached) motif,
-      for (final client in app.connectedWorkspaceClients)
-        if (client.state is ConnAttached) client,
-    };
+  Future<void> _closeSession() async {
+    final app = readObservationScope<AppState>(context);
     if (mounted) Navigator.of(context).pop();
     unawaited(
-      Future.wait([
-        for (final client in clients)
-          client.detach().catchError((Object e) {
-            if (mounted) showMotifToast(context, 'Close failed: $e');
-          }),
-      ]),
+      app.detachAllSessions().catchError((Object e) {
+        if (mounted) showMotifToast(context, 'Close failed: $e');
+      }),
     );
   }
 
   Future<void> _switchSession(
     AppState app,
-    MotifClient motif,
     String serverId,
     String name,
   ) async {
@@ -168,41 +150,11 @@ extension _SessionScreenMenuActions on _SessionScreenState {
           _mountedViewIds.clear();
         });
       }
-      final crossServer = serverId != widget.serverId;
-      if (keepWarm) {
-        // Desktop treats every server/session pair as an independent live
-        // workspace. Park this client without touching its attachment and
-        // select (or create) the target workspace client before navigation.
-        motif.setForeground(false);
-        app.clientForSession(serverId, name);
-      } else if (!crossServer) {
-        // Keep the transport/session id and let the target screen issue an
-        // atomic replacement attach. motifd detaches the old session as part of
-        // session.attach, avoiding a serial detach round trip.
-        motif.prepareSessionSwitch(name);
-      } else {
-        // The target belongs to a different client, so its route/attach does not
-        // depend on this cleanup. Let old sockets close in the background.
-        unawaited(
-          motif.detach().catchError((Object e, StackTrace st) {
-            Log.w(
-              'background detach failed while switching sessions',
-              name: 'motif.ui',
-              error: e,
-              stackTrace: st,
-            );
-          }),
-        );
-      }
-      unawaited(
-        app.servers.setActive(serverId).catchError((Object e, StackTrace st) {
-          Log.w(
-            'persist active server failed during session switch',
-            name: 'motif.ui',
-            error: e,
-            stackTrace: st,
-          );
-        }),
+      app.prepareWorkspaceSelection(
+        fromServerId: widget.serverId,
+        fromSession: widget.session,
+        toServerId: serverId,
+        toSession: name,
       );
       if (!mounted) return;
       if (keepWarm && widget.onWorkspaceSelected != null) {
@@ -223,20 +175,18 @@ extension _SessionScreenMenuActions on _SessionScreenState {
 
   Future<void> _onSessionMenuSelected(
     AppState app,
-    MotifClient motif,
     _SessionMenuAction action,
   ) async {
     switch (action) {
       case _CloseSessionAction():
-        await _closeSession(motif);
+        await _closeSession();
       case _SwitchSessionAction(:final serverId, :final name):
-        await _switchSession(app, motif, serverId, name);
+        await _switchSession(app, serverId, name);
     }
   }
 
   Future<void> _showSessionMenu(
     AppState app,
-    MotifClient motif,
     BuildContext buttonContext,
   ) async {
     try {
@@ -268,13 +218,10 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       items: _sessionMenuEntries(app),
     );
     if (!mounted || action == null) return;
-    await _onSessionMenuSelected(app, motif, action);
+    await _onSessionMenuSelected(app, action);
   }
 
-  Future<void> _showSessionMenuAtOverlay(
-    AppState app,
-    MotifClient motif,
-  ) async {
+  Future<void> _showSessionMenuAtOverlay(AppState app) async {
     try {
       await app.refreshConnectedSessions();
     } catch (_) {
@@ -296,7 +243,7 @@ extension _SessionScreenMenuActions on _SessionScreenState {
       items: _sessionMenuEntries(app),
     );
     if (!mounted || action == null) return;
-    await _onSessionMenuSelected(app, motif, action);
+    await _onSessionMenuSelected(app, action);
   }
 
   ButtonStyle? _sidebarButtonStyle(

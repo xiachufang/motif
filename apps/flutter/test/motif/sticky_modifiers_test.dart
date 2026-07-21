@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'package:motif/motif/state/sticky_modifiers.dart';
+import 'package:motif/motif/state/workspace/terminal/sticky_modifiers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Uint8List _b(List<int> b) => Uint8List.fromList(b);

@@ -17,19 +17,19 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
 
     if (primaryPressed && hw.isShiftPressed && !hw.isAltPressed) {
       if (key == LogicalKeyboardKey.keyW) {
-        unawaited(_closeSession(_motif));
+        unawaited(_closeSession());
         return true;
       }
       if (key == LogicalKeyboardKey.keyL) {
-        _toggleSessionsPanel(context.read<AppState>());
+        _toggleSessionsPanel(readObservationScope<AppState>(context));
         return true;
       }
       if (key == LogicalKeyboardKey.keyE) {
-        _toggleFileTree(_motif);
+        _toggleFileTree();
         return true;
       }
       if (key == LogicalKeyboardKey.keyG) {
-        _toggleGitDiff(_motif);
+        _toggleGitDiff();
         return true;
       }
     }
@@ -49,8 +49,8 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         // the session has no tabs left. Claim this ⌘W so the app-level "hide
         // window" binding (which Flutter fires right after this handler) doesn't
         // also hide the window on top of a tab close.
-        context.read<AppState>().markCloseShortcutConsumed();
-        if (_motif.views.isEmpty) {
+        readObservationScope<AppState>(context).markCloseShortcutConsumed();
+        if (_workspaceState.views.items.isEmpty) {
           unawaited(DesktopWindow.hide());
         } else {
           unawaited(_closeActiveTab());
@@ -109,7 +109,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   void _activateTabAtChromeIndex(int chromeIndex) {
-    final views = _motif.views;
+    final views = _workspaceState.views.items;
     if (views.isEmpty) return;
     final index = chromeIndex == 9
         ? views.length - 1
@@ -118,39 +118,44 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   void _activateRelativeTab(int delta) {
-    final motif = _motif;
-    final views = motif.views;
+    final views = _workspaceState.views.items;
     if (views.isEmpty) return;
-    final current = views.indexWhere((v) => v.id == motif.activeViewId);
+    final current = views.indexWhere(
+      (v) => v.id == _workspaceState.views.activeViewId,
+    );
     final base = current < 0 ? 0 : current;
     final next = (base + delta) % views.length;
     _activateView(views[next < 0 ? next + views.length : next].id);
   }
 
   void _activateView(String viewId) {
-    final motif = _motif;
-    if (motif.isLive) {
-      unawaited(motif.activateView(viewId));
+    if (_attachment.isLive) {
+      unawaited(_viewController.activate(viewId));
     } else {
-      motif.selectViewLocally(viewId);
+      _viewController.selectLocally(viewId);
     }
     _focusTerminalAfterTabSwitch();
   }
 
   Future<void> _closeActiveTab() async {
-    final motif = _motif;
-    final activeViewId = motif.activeViewId;
+    final items = _workspaceState.views.items;
+    final activeViewId = _workspaceState.views.activeViewId;
     final view = activeViewId == null
-        ? motif.views.firstOrNull
-        : motif.views.where((v) => v.id == activeViewId).firstOrNull;
+        ? items.firstOrNull
+        : items.where((v) => v.id == activeViewId).firstOrNull;
     if (view == null) return;
-    await _closeViewWithConfirmation(context, motif, view);
+    await _closeViewWithConfirmation(
+      context,
+      terminal: _terminalController,
+      views: _viewController,
+      view: view,
+    );
     _focusTerminalAfterTabSwitch();
   }
 
   void _toggleSessionsPanel(AppState app) {
     if (!_usesSidebarLayout) {
-      unawaited(_showSessionMenuAtOverlay(app, _motif));
+      unawaited(_showSessionMenuAtOverlay(app));
       return;
     }
     final sidebar = app.sessionSidebar;
@@ -160,30 +165,30 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     }
   }
 
-  void _toggleFileTree(MotifClient motif) {
+  void _toggleFileTree() {
     if (!_usesSidebarLayout) {
-      _openFileTree(motif);
+      _openFileTree();
       return;
     }
-    final sidebar = context.read<AppState>().sessionSidebar;
+    final sidebar = readObservationScope<AppState>(context).sessionSidebar;
     setState(() => sidebar.showFileTree = !sidebar.showFileTree);
   }
 
-  void _toggleGitDiff(MotifClient motif) {
+  void _toggleGitDiff() {
     if (!_usesSidebarLayout) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => GitDiffPanel(
-            cwd: motif.activeCwd,
-            motif: motif,
+            cwd: _workspaceApi.activeCwd(),
+            workspace: _workspaceApi,
             onOpenDiff: ({path, required staged}) =>
-                _pushDiffView(motif, path: path, staged: staged),
+                _pushDiffView(path: path, staged: staged),
           ),
         ),
       );
       return;
     }
-    final sidebar = context.read<AppState>().sessionSidebar;
+    final sidebar = readObservationScope<AppState>(context).sessionSidebar;
     setState(() => sidebar.showGitDiff = !sidebar.showGitDiff);
   }
 
@@ -198,29 +203,29 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   Future<void> _sendBytes(List<int> bytes) async {
-    if (!_motif.canInput) return;
-    final ptyId = _activePtyId(_motif);
+    if (!_terminalController.canInput) return;
+    final ptyId = _activePtyId();
     if (ptyId == null || bytes.isEmpty) return;
     _focusTerminal();
-    await _motif.activatePtyStream(ptyId);
-    await _motif.writePty(ptyId, bytes);
+    await _terminalController.activatePtyStream(ptyId);
+    await _terminalController.writePty(ptyId, bytes);
   }
 
   Future<bool> _sendCommandBytes(List<int> bytes) async {
-    if (!_motif.canInput) return false;
-    final ptyId = _activePtyId(_motif);
+    if (!_terminalController.canInput) return false;
+    final ptyId = _activePtyId();
     if (ptyId == null || bytes.isEmpty) return false;
     _focusTerminal();
-    await _motif.activatePtyStream(ptyId);
+    await _terminalController.activatePtyStream(ptyId);
 
     final split = _splitTrailingCommandEnter(bytes);
     if (split == null) {
-      await _motif.writePty(ptyId, bytes);
+      await _terminalController.writePty(ptyId, bytes);
       return true;
     }
 
-    await _motif.writePty(ptyId, split.content);
-    await _motif.writePty(ptyId, split.enter);
+    await _terminalController.writePty(ptyId, split.content);
+    await _terminalController.writePty(ptyId, split.enter);
     return true;
   }
 
@@ -257,24 +262,25 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     }
   }
 
-  String? _activePtyId(MotifClient motif) {
-    final vid = motif.activeViewId;
-    for (final v in motif.views) {
+  String? _activePtyId() {
+    final vid = _workspaceState.views.activeViewId;
+    for (final v in _workspaceState.views.items) {
       if (v.id == vid && v.spec is PtyViewSpec) {
         return (v.spec as PtyViewSpec).ptyId;
       }
     }
     // If a non-PTY view is active, route explicit terminal actions to the first PTY.
-    for (final v in motif.views) {
+    for (final v in _workspaceState.views.items) {
       if (v.spec is PtyViewSpec) return (v.spec as PtyViewSpec).ptyId;
     }
-    return motif.ptys.isEmpty ? null : motif.ptys.first.id;
+    final ptys = _terminalController.viewModel.ptys;
+    return ptys.isEmpty ? null : ptys.first.id;
   }
 
   Future<void> _send() async {
     // Keep the typed text in the input box while disconnected.
-    if (!_motif.canInput) return;
-    final ptyId = _activePtyId(_motif);
+    if (!_terminalController.canInput) return;
+    final ptyId = _activePtyId();
     if (ptyId == null) return;
     final text = _input.text.replaceAll('\n', '');
     if (await _sendCommandBytes(_terminalBytes(text, enter: true))) {
@@ -282,11 +288,11 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     }
   }
 
-  void _openChangeDirectory(MotifClient motif) {
+  void _openChangeDirectory() {
     showChangeDirectorySheet(
       context,
-      motif: motif,
-      baseDir: motif.activeCwd ?? '~',
+      workspace: _workspaceApi,
+      baseDir: _workspaceApi.activeCwd() ?? '~',
       onChoose: (path) {
         final cmd = "cd '$path'";
         _sendCommandBytes(_terminalBytes(cmd, enter: true));
@@ -294,28 +300,30 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     );
   }
 
-  void _openFileTree(MotifClient motif) {
-    final root = motif.activeCwd ?? '~';
+  void _openFileTree() {
+    final root = _workspaceApi.activeCwd() ?? '~';
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            FileTreePanel(root: root, onOpen: _openPreview, motif: motif),
+        builder: (_) => FileTreePanel(
+          root: root,
+          onOpen: _openPreview,
+          workspace: _workspaceApi,
+        ),
       ),
     );
   }
 
   Future<void> _openPreview(String path) async {
-    final motif = _motif;
-    final existing = motif.views.where((v) {
+    final existing = _workspaceState.views.items.where((v) {
       final spec = v.spec;
       return spec is PreviewViewSpec && spec.path == path;
     }).firstOrNull;
     if (existing != null) {
-      await motif.activateView(existing.id);
+      await _viewController.activate(existing.id);
       return;
     }
     try {
-      await motif.openView(spec: PreviewViewSpec(path), activate: true);
+      await _viewController.open(spec: PreviewViewSpec(path), activate: true);
     } catch (e) {
       if (mounted) {
         showMotifToast(context, 'Open preview failed: $e');
@@ -323,36 +331,31 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     }
   }
 
-  Future<void> _pushDiffView(
-    MotifClient motif, {
-    String? path,
-    required bool staged,
-  }) async {
+  Future<void> _pushDiffView({String? path, required bool staged}) async {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => GitDiffView(
-          cwd: motif.activeCwd,
+          cwd: _workspaceApi.activeCwd(),
           initialStaged: staged,
           path: path,
-          motif: motif,
+          workspace: _workspaceApi,
         ),
       ),
     );
   }
 
   Future<void> _openDiff({String? path, required bool staged}) async {
-    final motif = _motif;
-    final existing = motif.views.where((v) {
+    final existing = _workspaceState.views.items.where((v) {
       final spec = v.spec;
       return spec is DiffViewSpec && spec.path == path && spec.staged == staged;
     }).firstOrNull;
     if (existing != null) {
-      await motif.activateView(existing.id);
+      await _viewController.activate(existing.id);
       return;
     }
     try {
-      await motif.openView(
+      await _viewController.open(
         spec: DiffViewSpec(staged: staged, path: path),
         activate: true,
       );

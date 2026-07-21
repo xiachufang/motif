@@ -5,11 +5,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rzv/pairing_payload.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/screens/rzv_pairing_sheet.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<AppState> _appState() async {
@@ -30,8 +30,8 @@ Future<void> _pumpHost(
   required void Function(BuildContext context) onOpen,
 }) {
   return tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
         home: Builder(

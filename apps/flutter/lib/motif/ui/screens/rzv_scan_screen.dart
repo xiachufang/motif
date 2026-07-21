@@ -1,27 +1,35 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../theme/motif_theme.dart';
 
+part 'rzv_scan_screen.g.dart';
+
 /// Full-screen camera scanner that pops back the first `motif://pair` link it
 /// detects (the QR `motifd --rzv-relay` prints). The [MobileScanner] widget
 /// manages its own camera controller lifecycle (start/stop/dispose).
-class RzvScanScreen extends StatefulWidget {
-  const RzvScanScreen({super.key});
-
-  @override
-  State<RzvScanScreen> createState() => _RzvScanScreenState();
+final class RzvScanCoordinator {
+  bool handled = false;
 }
 
-class _RzvScanScreenState extends State<RzvScanScreen> {
-  bool _handled = false;
+@ObservationWidget()
+class RzvScanScreen extends _$RzvScanScreen {
+  const RzvScanScreen({super.key});
 
-  void _onDetect(BarcodeCapture capture) {
-    if (_handled) return;
+  @PlainState(name: 'coordinator')
+  RzvScanCoordinator createCoordinator() => RzvScanCoordinator();
+
+  void _onDetect(
+    BuildContext context,
+    RzvScanCoordinator coordinator,
+    BarcodeCapture capture,
+  ) {
+    if (coordinator.handled) return;
     for (final barcode in capture.barcodes) {
       final raw = barcode.rawValue?.trim();
       if (raw != null && raw.startsWith('motif://pair')) {
-        _handled = true;
+        coordinator.handled = true;
         Navigator.of(context).pop(raw);
         return;
       }
@@ -29,7 +37,10 @@ class _RzvScanScreenState extends State<RzvScanScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required RzvScanCoordinator coordinator,
+  }) {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -40,7 +51,9 @@ class _RzvScanScreenState extends State<RzvScanScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          MobileScanner(onDetect: _onDetect),
+          MobileScanner(
+            onDetect: (capture) => _onDetect(context, coordinator, capture),
+          ),
           Positioned(
             left: 0,
             right: 0,

@@ -11,9 +11,9 @@ import 'motif/platform/desktop_window_desktop.dart';
 import 'motif/platform/secret_store.dart';
 import 'motif/platform/tray_service_desktop.dart' as desktop_tray;
 import 'motif/platform/window_title_desktop.dart';
-import 'motif/state/embedded_server_service_desktop.dart';
-import 'motif/state/motif_runtime.dart';
-import 'motif/state/server_connection_runtime.dart';
+import 'motif/state/embedded/embedded_server_service_desktop.dart';
+import 'motif/state/workspace/terminal/terminal_runtime_policy.dart';
+import 'motif/state/workspace/workspace_retention_policy.dart';
 import 'motif/update/desktop_update_service.dart';
 import 'motif/ui/app.dart' show motifNavigatorKey;
 import 'motif/ui/screens/embedded_server_settings_sheet_desktop.dart'
@@ -32,8 +32,8 @@ Future<void> main() async {
   final updates = DesktopUpdateService();
   await runMotif(
     embeddedServerFactory: createDesktopEmbeddedServerService,
-    clientRuntime: const DesktopMotifClientRuntime(),
-    serverConnectionRuntime: const DesktopServerConnectionRuntime(),
+    terminalRuntime: const DesktopTerminalRuntimePolicy(),
+    workspaceRetentionPolicy: const DesktopWorkspaceRetentionPolicy(),
     embeddedServerPageFactory: () => const desktop_server.EmbeddedServerPage(),
     desktopUpdateService: updates,
     afterFirstFrame: (appState) {

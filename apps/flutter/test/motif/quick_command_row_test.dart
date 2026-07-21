@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/state/sticky_modifiers.dart';
+import 'package:motif/motif/state/workspace/terminal/sticky_modifiers.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/quick_command_row.dart';
 

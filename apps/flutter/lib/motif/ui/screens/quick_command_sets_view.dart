@@ -1,21 +1,25 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
-import '../../state/app_state.dart';
+import '../../state/app/app_state.dart';
+import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import 'quick_command_editor.dart';
 
+part 'quick_command_sets_view.g.dart';
+
 /// Manage the global list + per-program quick-command sets (mirrors the iOS
 /// QuickCommandSetsView). A set overrides the global list when the running
 /// program matches one of its names.
-class QuickCommandSetsView extends StatelessWidget {
+@ObservationWidget()
+class QuickCommandSetsView extends _$QuickCommandSetsView {
   const QuickCommandSetsView({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final store = context.watch<AppState>().commands;
+    final store = ObservationScope.of<AppState>(context).commands;
     final c = context.motif;
     return Scaffold(
       appBar: AppBar(
@@ -83,14 +87,14 @@ class QuickCommandSetsView extends StatelessWidget {
   }
 
   Future<void> _newSet(BuildContext context) async {
-    final store = context.read<AppState>().commands;
+    final store = readObservationScope<AppState>(context).commands;
     final result = await _promptNameMatches(context, title: 'New set');
     if (result == null) return;
     await store.createSet(result.$1, result.$2);
   }
 
   Future<void> _rename(BuildContext context, String id, String current) async {
-    final store = context.read<AppState>().commands;
+    final store = readObservationScope<AppState>(context).commands;
     final name = await _promptText(
       context,
       title: 'Rename set',
@@ -106,7 +110,7 @@ class QuickCommandSetsView extends StatelessWidget {
     String id,
     List<String> current,
   ) async {
-    final store = context.read<AppState>().commands;
+    final store = readObservationScope<AppState>(context).commands;
     final text = await _promptText(
       context,
       title: 'Matched programs (comma-separated)',

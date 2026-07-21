@@ -7,25 +7,17 @@ import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/net/ssh/ssh_config_discovery.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/screens/server_edit_sheet.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _DiscoveryTailscale implements TailscaleService {
-  final TailscaleState _state;
-
-  const _DiscoveryTailscale([
-    this._state = const TailscaleState(TailscaleStatus.running),
-  ]);
-
-  @override
-  TailscaleState get state => _state;
-
-  @override
-  Stream<TailscaleState> get states => const Stream.empty();
+class _DiscoveryTailscale extends TailscaleService {
+  _DiscoveryTailscale([
+    TailscaleState state = const TailscaleState(TailscaleStatus.running),
+  ]) : super(initialState: state);
 
   @override
   Future<void> start({String? authKey}) async {}
@@ -76,7 +68,7 @@ Future<AppState> _app({TailscaleService? tailscale}) async {
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices(
-      tailscale: tailscale ?? const _DiscoveryTailscale(),
+      tailscale: tailscale ?? _DiscoveryTailscale(),
       speech: NoopSpeechService(),
       push: NoopPushService(),
     ),
@@ -119,8 +111,8 @@ void main() {
 
     final app = await _app();
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: ServerEditSheet()),
@@ -162,8 +154,8 @@ void main() {
       tailscale: _DiscoveryTailscale(TailscaleState.stopped),
     );
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: ServerEditSheet()),
@@ -210,8 +202,8 @@ void main() {
     await app.servers.add(server);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: server)),
@@ -268,8 +260,8 @@ void main() {
     await app.servers.add(server);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: server)),
@@ -306,8 +298,8 @@ void main() {
     await app.servers.add(paired);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: paired)),
@@ -341,8 +333,8 @@ void main() {
     await app.servers.add(paired);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: paired)),
@@ -384,8 +376,8 @@ void main() {
     await app.servers.add(paired);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: paired)),
@@ -422,8 +414,8 @@ void main() {
     await app.servers.add(server);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(body: ServerEditSheet(existing: server)),
@@ -449,8 +441,8 @@ void main() {
 
     final app = await _app();
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(
@@ -498,8 +490,8 @@ void main() {
 
     final app = await _app();
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(
@@ -553,8 +545,8 @@ void main() {
       final app = await _app();
       addTearDown(app.dispose);
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(
-          value: app,
+        MotifScope(
+          appState: app,
           child: MaterialApp(
             theme: motifTheme(Brightness.dark),
             home: const Scaffold(body: ServerEditSheet()),
@@ -593,8 +585,8 @@ void main() {
 
     final app = await _app();
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: Scaffold(
@@ -626,8 +618,8 @@ void main() {
 
     final app = await _app();
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: ServerEditSheet()),

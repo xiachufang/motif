@@ -1,6 +1,6 @@
-import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
@@ -8,34 +8,29 @@ import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/net/ssh/ssh_bootstrapper.dart';
 import 'package:motif/motif/net/ssh/ssh_forwarder_handle.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/connection_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/server_connection_controller.dart';
-import 'package:motif/motif/state/server_connection_runtime.dart';
-import 'package:motif/motif/state/stores.dart';
-import 'package:motif/motif/state/transport_resolver.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/state/workspace/workspace_lifecycle_controller.dart';
+import 'package:motif/motif/state/workspace/workspace_retention_policy.dart';
+import 'package:motif/motif/state/server/server_view_models.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
+import 'package:motif/motif/state/server/transport_resolver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _FakeTailscale implements TailscaleService {
-  final _controller = StreamController<TailscaleState>.broadcast();
-  TailscaleState _state;
+import 'support/test_server_transport.dart';
+import 'support/workspace_connection_fixture.dart';
+
+class _FakeTailscale extends TailscaleService {
   String resolvedHost;
   ProxySettings? proxy;
   int resolveCalls = 0;
 
-  _FakeTailscale(this._state, {this.resolvedHost = '', this.proxy});
+  _FakeTailscale(TailscaleState state, {this.resolvedHost = '', this.proxy})
+    : super(initialState: state);
 
-  void emit(TailscaleState state) {
-    _state = state;
-    _controller.add(state);
-  }
-
-  @override
-  TailscaleState get state => _state;
-
-  @override
-  Stream<TailscaleState> get states => _controller.stream;
+  void emit(TailscaleState state) => tailscaleState = state;
 
   @override
   Future<void> start({String? authKey}) async {}
@@ -62,27 +57,18 @@ class _FakeTailscale implements TailscaleService {
   @override
   ProxySettings? get loopbackProxy => proxy;
 
-  Future<void> close() async => _controller.close();
+  Future<void> close() => Future<void>.value();
 }
 
-class _RecordingMotifClient extends MotifClient {
-  MotifConnState _state = const ConnDisconnected();
-  bool _live = false;
+class _RecordingWorkspaceConnectionController
+    extends WorkspaceConnectionController {
+  _RecordingWorkspaceConnectionController({super.session = 'dev'});
+
   int connectCalls = 0;
   int suspendCalls = 0;
   int disconnectCalls = 0;
-  int refreshCalls = 0;
-  int markConnectionLostCalls = 0;
   final List<bool> connectForces = [];
-  bool failRefresh = false;
   int connectFailuresRemaining = 0;
-  String? lastConnectionLostMessage;
-
-  @override
-  MotifConnState get state => _state;
-
-  @override
-  bool get isLive => _live;
 
   @override
   Future<void> connect(
@@ -97,62 +83,69 @@ class _RecordingMotifClient extends MotifClient {
       connectFailuresRemaining--;
       throw StateError('motifd unavailable');
     }
-    _live = true;
-    final session = intendedSession;
-    _state = session == null ? const ConnConnected() : ConnAttached(session);
-    notifyListeners();
+    updateConnectionState(ConnAttached(session), live: true);
   }
 
-  @override
-  Future<void> refreshSessions() async {
-    refreshCalls++;
-    if (failRefresh) throw StateError('stale transport');
-  }
-
-  @override
-  Future<void> markConnectionLost([String message = 'connection lost']) async {
-    markConnectionLostCalls++;
-    lastConnectionLostMessage = message;
-    _live = false;
-    _state = ConnFailed(message);
-    notifyListeners();
-  }
-
-  void attachSnapshot(String session) {
-    intendedSession = session;
+  void attachSnapshot() {
     ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
     views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))];
     activeViewId = 'view-1';
-    _live = true;
-    _state = ConnAttached(session);
-    notifyListeners();
+    updateConnectionState(ConnAttached(session), live: true);
   }
 
   void failConnection(String message) {
-    _live = false;
-    _state = ConnFailed(message);
-    notifyListeners();
+    updateConnectionState(ConnFailed(message), live: false);
   }
 
   @override
   Future<void> suspendTransport(String reason) async {
     suspendCalls++;
-    _live = false;
-    _state = ConnSuspended(reason, session: intendedSession);
-    notifyListeners();
+    updateConnectionState(ConnSuspended(reason, session: session), live: false);
   }
 
   @override
   Future<void> disconnect() async {
     disconnectCalls++;
-    _live = false;
-    _state = const ConnDisconnected();
-    intendedSession = null;
+    updateConnectionState(const ConnDisconnected(), live: false);
     ptys = [];
     views = [];
     activeViewId = null;
-    notifyListeners();
   }
+}
+
+class _RecordingServerFixture {
+  _RecordingServerFixture({this.failRefresh = false}) {
+    transport = TestServerTransport(
+      onConnect:
+          (
+            transport,
+            server, {
+            required force,
+            required proxy,
+            required certPin,
+          }) async {
+            if (connectFailuresRemaining > 0) {
+              connectFailuresRemaining--;
+              throw StateError('motifd unavailable');
+            }
+            return const PingInfo(service: 'motif-server', version: 'test');
+          },
+      onCall: (method, [params = const {}]) async {
+        if (method != 'session.list') return const {};
+        refreshCalls++;
+        if (failRefresh) throw StateError('stale transport');
+        return const {'sessions': <Object?>[]};
+      },
+    );
+  }
+
+  late final TestServerTransport transport;
+  final bool failRefresh;
+  int refreshCalls = 0;
+  int connectFailuresRemaining = 0;
+
+  int get connectCalls => transport.connectCalls;
+  List<bool> get connectForces => transport.connectForces;
 }
 
 class _FakeSshForwarder implements SshForwarderHandle {
@@ -199,7 +192,8 @@ PlatformServices _platform(_FakeTailscale tailscale) => PlatformServices(
 
 Future<AppState> _appWith({
   required _FakeTailscale tailscale,
-  required MotifClient client,
+  required _RecordingServerFixture server,
+  WorkspaceConnectionController? workspace,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -218,7 +212,8 @@ Future<AppState> _appWith({
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: _platform(tailscale),
-    clientFactory: (_) => client,
+    serverTransportFactory: (_) => server.transport,
+    workspaceConnectionFactory: workspace == null ? null : (_, _) => workspace,
   );
 }
 
@@ -626,47 +621,129 @@ void main() {
     });
   });
 
-  test('blocked Tailscale connect does not call MotifClient.connect', () async {
+  test(
+    'blocked Tailscale connect does not call ServerTransport.connect',
+    () async {
+      final tailscale = _FakeTailscale(TailscaleState.stopped);
+      addTearDown(tailscale.close);
+      final server = _RecordingServerFixture();
+      final app = await _appWith(tailscale: tailscale, server: server);
+      addTearDown(app.dispose);
+
+      await app.connectServer('tailnet', force: true);
+
+      expect(server.connectCalls, 0);
+      expect(app.connectionStateForServer('tailnet'), isA<ServerBlocked>());
+      expect(
+        app.serverViewState('tailnet').primaryAction,
+        ServerConnectionAction.setupTransport,
+      );
+      final transport = app.transportViewStateForServer('tailnet');
+      expect(transport.status, TransportStatus.setupNeeded);
+      expect(transport.action, TransportAction.setup);
+    },
+  );
+
+  test('session data updates notify only their observable property', () async {
     final tailscale = _FakeTailscale(TailscaleState.stopped);
     addTearDown(tailscale.close);
-    final client = _RecordingMotifClient();
-    final app = await _appWith(tailscale: tailscale, client: client);
+    final client = _RecordingWorkspaceConnectionController();
+    final server = _RecordingServerFixture();
+    final app = await _appWith(tailscale: tailscale, server: server);
     addTearDown(app.dispose);
 
-    await app.connectServer('tailnet', force: true);
-
-    expect(client.connectCalls, 0);
-    expect(app.connectionStateForServer('tailnet'), isA<ServerBlocked>());
-    expect(
-      app.serverViewState('tailnet').primaryAction,
-      ServerConnectionAction.setupTransport,
-    );
-    final transport = app.transportViewStateForServer('tailnet');
-    expect(transport.status, TransportStatus.setupNeeded);
-    expect(transport.action, TransportAction.setup);
-  });
-
-  test('session data updates emit one app notification', () async {
-    final tailscale = _FakeTailscale(TailscaleState.stopped);
-    addTearDown(tailscale.close);
-    final client = _RecordingMotifClient();
-    final app = await _appWith(tailscale: tailscale, client: client);
-    addTearDown(app.dispose);
-
-    app.clientForServer('tailnet');
+    app.serverInstance('tailnet');
     var notifications = 0;
-    app.addListener(() => notifications++);
+    final subscription = observe(
+      () => client.presence.latestNotification,
+      onChange: (_) => notifications++,
+      scheduler: ObservationSchedulers.immediate,
+    );
+    addTearDown(subscription.dispose);
 
-    client.showNotification(
-      const MotifNotification(
-        title: 'Build complete',
-        body: 'Ready',
-        kind: 'test',
-      ),
+    client.presence.latestNotification = const MotifNotification(
+      title: 'Build complete',
+      body: 'Ready',
+      kind: 'test',
     );
 
     expect(notifications, 1);
     expect(app.connectionStateForServer('tailnet'), isA<ServerIdle>());
+  });
+
+  test('dynamic workspace membership is observed directly', () async {
+    final tailscale = _FakeTailscale(TailscaleState.stopped);
+    addTearDown(tailscale.close);
+    final server = _RecordingServerFixture();
+    final app = await _appWith(tailscale: tailscale, server: server);
+    addTearDown(app.dispose);
+
+    var changes = 0;
+    final subscription = observe(
+      () => app
+          .serverRegistryViewModel
+          .entries['tailnet']!
+          .workspaces
+          .retained
+          .length,
+      onChange: (_) => changes++,
+      scheduler: ObservationSchedulers.immediate,
+    );
+    addTearDown(subscription.dispose);
+
+    app.workspaceForSession('tailnet', 'dev');
+
+    expect(changes, 1);
+    expect(app.existingWorkspace('tailnet', 'dev'), isNotNull);
+  });
+
+  test(
+    'connection projection ignores unrelated workspace properties',
+    () async {
+      final tailscale = _FakeTailscale(TailscaleState.stopped);
+      addTearDown(tailscale.close);
+      final client = _RecordingWorkspaceConnectionController();
+      final server = _RecordingServerFixture();
+      final app = await _appWith(tailscale: tailscale, server: server);
+      addTearDown(app.dispose);
+      app.serverInstance('tailnet');
+
+      var changes = 0;
+      final subscription = observe(
+        () => app.connectionStateForServer('tailnet'),
+        onChange: (_) => changes++,
+        scheduler: ObservationSchedulers.immediate,
+      );
+      addTearDown(subscription.dispose);
+
+      client.ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
+      expect(changes, 0);
+
+      observationTransaction(() {
+        app.serverRegistryViewModel.entries['tailnet']!.access
+          ..phase = ServerAccessPhase.failed
+          ..error = 'offline';
+      });
+      expect(changes, 1);
+      expect(app.connectionStateForServer('tailnet'), isA<ServerFailed>());
+    },
+  );
+
+  test('Tailscale state is observed without a stream bridge', () {
+    final tailscale = _FakeTailscale(TailscaleState.stopped);
+    addTearDown(tailscale.close);
+    var changes = 0;
+    final subscription = observe(
+      () => tailscale.state,
+      onChange: (_) => changes++,
+      scheduler: ObservationSchedulers.immediate,
+    );
+    addTearDown(subscription.dispose);
+
+    tailscale.emit(const TailscaleState(TailscaleStatus.running));
+
+    expect(changes, 1);
+    expect(tailscale.state.status, TailscaleStatus.running);
   });
 
   test('Tailscale resumes a suspended attached terminal', () async {
@@ -674,29 +751,50 @@ void main() {
       const TailscaleState(TailscaleStatus.running),
     );
     addTearDown(tailscale.close);
-    final client = _RecordingMotifClient();
-    final app = await _appWith(tailscale: tailscale, client: client);
-    addTearDown(app.dispose);
-
-    app.clientForServer('tailnet');
-    client.attachSnapshot('dev');
-    expect(app.connectionStateForServer('tailnet'), isA<ServerAttached>());
+    final client = _RecordingWorkspaceConnectionController();
+    client.attachSnapshot();
+    final controller = WorkspaceLifecycleController(
+      serverId: 'tailnet',
+      connection: client,
+      serverProvider: () => const MotifServer(
+        id: 'tailnet',
+        name: 'Tailnet',
+        host: 'motifd.tail.ts.net',
+        kind: ServerKind.tailscale,
+      ),
+      resolver: TransportResolver(_platform(tailscale)),
+    );
+    final subscription = observe(
+      () => client.state,
+      onChange: (_) => controller.handleConnectionStateChanged(),
+      scheduler: ObservationSchedulers.immediate,
+    );
+    addTearDown(() {
+      subscription.dispose();
+      controller.dispose();
+    });
+    await controller.connect(force: true);
+    expect(client.connection.phase, WorkspaceConnectionPhase.attached);
 
     tailscale.emit(TailscaleState.stopped);
+    controller.handleTailscaleState(tailscale.state);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
     expect(client.suspendCalls, 1);
-    expect(client.intendedSession, 'dev');
+    expect(client.session, 'dev');
     expect(client.views, isNotEmpty);
-    expect(app.connectionStateForServer('tailnet'), isA<ServerSuspended>());
+    expect(client.connection.phase, WorkspaceConnectionPhase.suspended);
+    expect(client.connection.blocker, isNotNull);
 
     tailscale.emit(const TailscaleState(TailscaleStatus.running));
+    controller.handleTailscaleState(tailscale.state);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(client.connectCalls, 1);
-    expect(app.connectionStateForServer('tailnet'), isA<ServerAttached>());
+    // One explicit initial connect plus one reconnect after Tailscale resumes.
+    expect(client.connectCalls, 2);
+    expect(client.connection.phase, WorkspaceConnectionPhase.attached);
   });
 
   test(
@@ -706,20 +804,55 @@ void main() {
         const TailscaleState(TailscaleStatus.running),
       );
       addTearDown(tailscale.close);
-      final client = _RecordingMotifClient()..intendedSession = 'dev';
-      final app = await _appWith(tailscale: tailscale, client: client);
-      addTearDown(app.dispose);
+      final client = _RecordingWorkspaceConnectionController();
+      final resolver = TransportResolver(_platform(tailscale));
+      final controller = WorkspaceLifecycleController(
+        serverId: 'tailnet',
+        connection: client,
+        serverProvider: () => const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        resolver: resolver,
+      );
+      final subscription = observe(
+        () => client.state,
+        onChange: (_) => controller.handleConnectionStateChanged(),
+        scheduler: ObservationSchedulers.immediate,
+      );
+      addTearDown(() {
+        subscription.dispose();
+        controller.dispose();
+      });
 
-      await app.connectServer('tailnet', force: true);
-      expect(app.connectionStateForServer('tailnet'), isA<ServerAttached>());
+      await controller.connect(force: true);
+      expect(client.connection.phase, WorkspaceConnectionPhase.attached);
 
       client.failConnection('connection lost');
       await Future<void>.delayed(Duration.zero);
 
-      final state = app.connectionStateForServer('tailnet');
-      expect(state, isA<ServerFailed>());
-      expect((state as ServerFailed).session, 'dev');
-      final view = app.serverViewState('tailnet');
+      expect(client.connection.phase, WorkspaceConnectionPhase.failed);
+      expect(client.connection.message, 'connection lost');
+      final state = ServerFailed(client.connection.message!);
+      final view = ServerConnectionViewState.from(
+        server: const MotifServer(
+          id: 'tailnet',
+          name: 'Tailnet',
+          host: 'motifd.tail.ts.net',
+          kind: ServerKind.tailscale,
+        ),
+        state: state,
+        transport: resolver.transportViewState(
+          const MotifServer(
+            id: 'tailnet',
+            name: 'Tailnet',
+            host: 'motifd.tail.ts.net',
+            kind: ServerKind.tailscale,
+          ),
+        ),
+      );
       expect(view.statusLabel, 'Failed');
       expect(view.showSpinner, isFalse);
     },
@@ -730,32 +863,27 @@ void main() {
       const TailscaleState(TailscaleStatus.running),
     );
     addTearDown(tailscale.close);
-    final client = _RecordingMotifClient()..failRefresh = true;
-    final app = await _appWith(tailscale: tailscale, client: client);
+    final server = _RecordingServerFixture(failRefresh: true);
+    final app = await _appWith(tailscale: tailscale, server: server);
     addTearDown(app.dispose);
 
     await app.connectServer('tailnet', force: true);
-    expect(client.connectCalls, 1);
+    expect(server.connectCalls, 1);
 
     await app.refreshConnectedSessions();
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(client.refreshCalls, 1);
-    expect(client.markConnectionLostCalls, 1);
-    expect(
-      client.lastConnectionLostMessage,
-      contains('session refresh failed'),
-    );
-    expect(client.connectCalls, 2);
-    expect(client.connectForces.last, isTrue);
+    expect(server.refreshCalls, 1);
+    expect(server.connectCalls, 2);
+    expect(server.connectForces.last, isTrue);
     expect(app.connectionStateForServer('tailnet'), isA<ServerConnected>());
   });
 
   test('forced reconnect rebuilds SSH forwarder', () async {
     final tailscale = _FakeTailscale(TailscaleState.stopped);
     addTearDown(tailscale.close);
-    final client = _RecordingMotifClient()..failRefresh = true;
+    final client = _RecordingWorkspaceConnectionController();
     final forwarders = <_FakeSshForwarder>[];
     final resolver = TransportResolver(
       _platform(tailscale),
@@ -780,9 +908,9 @@ void main() {
             return fwd;
           },
     );
-    final controller = ServerConnectionController(
+    final controller = WorkspaceLifecycleController(
       serverId: 'ssh',
-      client: client,
+      connection: client,
       serverProvider: () => const MotifServer(
         id: 'ssh',
         name: 'SSH',
@@ -794,11 +922,14 @@ void main() {
         sshPassword: 'secret',
       ),
       resolver: resolver,
-      onChanged: () {},
     );
-    client.addListener(controller.handleClientStateChanged);
+    final clientSubscription = observe(
+      () => client.state,
+      onChange: (_) => controller.handleConnectionStateChanged(),
+      scheduler: ObservationSchedulers.immediate,
+    );
     addTearDown(() {
-      client.removeListener(controller.handleClientStateChanged);
+      clientSubscription.dispose();
       controller.dispose();
     });
 
@@ -807,7 +938,7 @@ void main() {
     expect(forwarders, hasLength(1));
     expect(forwarders.single.startCalls, 1);
 
-    controller.handleRefreshFailed(StateError('stale tunnel'));
+    controller.handleTransportFailure(StateError('stale tunnel'));
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
@@ -816,7 +947,7 @@ void main() {
     expect(forwarders, hasLength(2));
     expect(forwarders.first.stopCalls, 1);
     expect(forwarders.last.startCalls, 1);
-    expect(controller.state, isA<ServerConnected>());
+    expect(client.connection.phase, WorkspaceConnectionPhase.attached);
   });
 
   test(
@@ -826,10 +957,10 @@ void main() {
         const TailscaleState(TailscaleStatus.running),
       );
       addTearDown(tailscale.close);
-      final client = _RecordingMotifClient()..intendedSession = 'dev';
-      final controller = ServerConnectionController(
+      final client = _RecordingWorkspaceConnectionController();
+      final controller = WorkspaceLifecycleController(
         serverId: 'tailnet',
-        client: client,
+        connection: client,
         serverProvider: () => const MotifServer(
           id: 'tailnet',
           name: 'Tailnet',
@@ -837,11 +968,14 @@ void main() {
           kind: ServerKind.tailscale,
         ),
         resolver: TransportResolver(_platform(tailscale)),
-        onChanged: () {},
       );
-      client.addListener(controller.handleClientStateChanged);
+      final clientSubscription = observe(
+        () => client.state,
+        onChange: (_) => controller.handleConnectionStateChanged(),
+        scheduler: ObservationSchedulers.immediate,
+      );
       addTearDown(() {
-        client.removeListener(controller.handleClientStateChanged);
+        clientSubscription.dispose();
         controller.dispose();
       });
 
@@ -859,7 +993,7 @@ void main() {
       expect(client.isForeground, isTrue);
       expect(client.connectCalls, 2);
       expect(client.connectForces.last, isTrue);
-      expect(controller.state, isA<ServerAttached>());
+      expect(client.connection.phase, WorkspaceConnectionPhase.attached);
     },
   );
 
@@ -870,10 +1004,10 @@ void main() {
         const TailscaleState(TailscaleStatus.running),
       );
       addTearDown(tailscale.close);
-      final client = _RecordingMotifClient()..intendedSession = 'dev';
-      final controller = ServerConnectionController(
+      final client = _RecordingWorkspaceConnectionController();
+      final controller = WorkspaceLifecycleController(
         serverId: 'tailnet',
-        client: client,
+        connection: client,
         serverProvider: () => const MotifServer(
           id: 'tailnet',
           name: 'Tailnet',
@@ -881,12 +1015,15 @@ void main() {
           kind: ServerKind.tailscale,
         ),
         resolver: TransportResolver(_platform(tailscale)),
-        onChanged: () {},
-        runtime: const DesktopServerConnectionRuntime(),
+        retentionPolicy: const DesktopWorkspaceRetentionPolicy(),
       );
-      client.addListener(controller.handleClientStateChanged);
+      final clientSubscription = observe(
+        () => client.state,
+        onChange: (_) => controller.handleConnectionStateChanged(),
+        scheduler: ObservationSchedulers.immediate,
+      );
       addTearDown(() {
-        client.removeListener(controller.handleClientStateChanged);
+        clientSubscription.dispose();
         controller.dispose();
       });
 
@@ -903,7 +1040,7 @@ void main() {
 
       expect(client.isForeground, isTrue);
       expect(client.connectCalls, 1);
-      expect(controller.state, isA<ServerAttached>());
+      expect(client.connection.phase, WorkspaceConnectionPhase.attached);
     },
   );
 
@@ -914,10 +1051,11 @@ void main() {
         const TailscaleState(TailscaleStatus.running),
       );
       addTearDown(tailscale.close);
-      final client = _RecordingMotifClient()..connectFailuresRemaining = 1;
-      final controller = ServerConnectionController(
+      final client = _RecordingWorkspaceConnectionController()
+        ..connectFailuresRemaining = 1;
+      final controller = WorkspaceLifecycleController(
         serverId: 'tailnet',
-        client: client,
+        connection: client,
         serverProvider: () => const MotifServer(
           id: 'tailnet',
           name: 'Tailnet',
@@ -925,17 +1063,20 @@ void main() {
           kind: ServerKind.tailscale,
         ),
         resolver: TransportResolver(_platform(tailscale)),
-        onChanged: () {},
       );
-      client.addListener(controller.handleClientStateChanged);
+      final clientSubscription = observe(
+        () => client.state,
+        onChange: (_) => controller.handleConnectionStateChanged(),
+        scheduler: ObservationSchedulers.immediate,
+      );
       addTearDown(() {
-        client.removeListener(controller.handleClientStateChanged);
+        clientSubscription.dispose();
         controller.dispose();
       });
 
       await controller.connect(force: true);
       expect(client.connectCalls, 1);
-      expect(controller.state, isA<ServerFailed>());
+      expect(client.connection.phase, WorkspaceConnectionPhase.failed);
 
       controller.handleAppPaused();
       controller.handleAppResumed();
@@ -944,31 +1085,33 @@ void main() {
 
       expect(client.connectCalls, 2);
       expect(client.connectForces.last, isTrue);
-      expect(controller.state, isA<ServerConnected>());
+      expect(client.connection.phase, WorkspaceConnectionPhase.attached);
     },
   );
 
-  test('MotifClient.suspendTransport preserves terminal snapshot', () async {
-    final motif = MotifClient();
-    motif.intendedSession = 'dev';
-    motif.ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
-    motif.views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))];
-    motif.activeViewId = 'view-1';
+  test(
+    'WorkspaceConnectionController.suspendTransport preserves terminal snapshot',
+    () async {
+      final motif = WorkspaceConnectionController(session: 'dev');
+      motif.ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
+      motif.views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))];
+      motif.activeViewId = 'view-1';
 
-    await motif.suspendTransport('Tailscale disconnected');
+      await motif.suspendTransport('Tailscale disconnected');
 
-    expect(motif.state, isA<ConnSuspended>());
-    expect(motif.canInput, isFalse);
-    expect(motif.intendedSession, 'dev');
-    expect(motif.ptys, isNotEmpty);
-    expect(motif.views, isNotEmpty);
-    expect(motif.activeViewId, 'view-1');
+      expect(motif.state, isA<ConnSuspended>());
+      expect(motif.terminal.canInput, isFalse);
+      expect(motif.session, 'dev');
+      expect(motif.ptys, isNotEmpty);
+      expect(motif.views, isNotEmpty);
+      expect(motif.activeViewId, 'view-1');
 
-    await motif.disconnect();
+      await motif.disconnect();
 
-    expect(motif.state, isA<ConnDisconnected>());
-    expect(motif.intendedSession, isNull);
-    expect(motif.ptys, isEmpty);
-    expect(motif.views, isEmpty);
-  });
+      expect(motif.state, isA<ConnDisconnected>());
+      expect(motif.session, 'dev');
+      expect(motif.ptys, isEmpty);
+      expect(motif.views, isEmpty);
+    },
+  );
 }

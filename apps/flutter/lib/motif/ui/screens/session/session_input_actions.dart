@@ -56,7 +56,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
 
   Future<void> _toggleMic() async {
     if (_micStarting) return;
-    final speech = context.read<AppState>().platform.speech;
+    final speech = readObservationScope<AppState>(context).platform.speech;
     if (_recording) {
       final finalText = await speech.stop();
       final input = _inputControllerForView(_asrInputViewId) ?? _input;
@@ -69,7 +69,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
       if (mounted) setState(() => _recording = false);
       return;
     }
-    _asrInputViewId = _activeView(_motif)?.id;
+    _asrInputViewId = _workspaceState.views.active?.id;
     final input = _inputControllerForView(_asrInputViewId) ?? _input;
     _asrBase = input.text;
     _ignoreFinal = false;
@@ -123,7 +123,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
   }
 
   Future<void> _attachPhoto() async {
-    final ptyId = _activePtyId(_motif);
+    final ptyId = _activePtyId();
     if (ptyId == null) return;
     try {
       final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
@@ -133,7 +133,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
       final ext = dot >= 0 ? picked.name.substring(dot + 1) : 'jpg';
       final remotePath =
           '/tmp/motif-${DateTime.now().microsecondsSinceEpoch}.$ext';
-      await _motif.writeFileBytes(remotePath, bytes);
+      await _workspaceApi.writeBytes(remotePath, bytes);
       // Bracketed-paste the uploaded path into the shell.
       final paste = <int>[
         0x1b,
@@ -163,8 +163,6 @@ extension _SessionScreenInputActions on _SessionScreenState {
     if (text.isEmpty) return base;
     return base.codeUnits.last <= 0x20 ? '$base$text' : '$base $text';
   }
-
-  MotifClient get _motif => _sessionClient;
 
   void _syncWindowTitle() {
     unawaited(MotifWindowTitle.set(widget.session).catchError((_) {}));

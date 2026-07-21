@@ -17,7 +17,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final groups = app.connectedServerClients;
+    final groups = app.connectedServers;
     return Column(
       children: [
         const _SidebarPanelHeader(
@@ -52,7 +52,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       MotifSpacing.xs,
                     ),
                     child: Text(
-                      group.server.name,
+                      group.profile.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: MotifType.caption.copyWith(
@@ -62,24 +62,24 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                     ),
                   ),
                   for (final session in _sessionsForServer(
-                    group.server,
-                    group.client,
+                    group.profile,
+                    group.sessions.sessions,
                     currentServerId: currentServerId,
                     currentSession: currentSession,
                   ))
                     _SidebarSessionRow(
-                      serverId: group.server.id,
+                      serverId: group.profile.id,
                       session: session,
                       selected:
-                          group.server.id == currentServerId &&
+                          group.profile.id == currentServerId &&
                           session.name == currentSession,
-                      enabled: group.client.isLive,
+                      enabled: group.access.isReady,
                       onTap: () =>
-                          onSessionSelected(group.server.id, session.name),
+                          onSessionSelected(group.profile.id, session.name),
                     ),
                   if (_sessionsForServer(
-                    group.server,
-                    group.client,
+                    group.profile,
+                    group.sessions.sessions,
                     currentServerId: currentServerId,
                     currentSession: currentSession,
                   ).isEmpty)
@@ -90,7 +90,9 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       ),
                       child: Text(
                         'No sessions',
-                        style: MotifType.caption.copyWith(color: c.textTertiary),
+                        style: MotifType.caption.copyWith(
+                          color: c.textTertiary,
+                        ),
                       ),
                     ),
                 ],

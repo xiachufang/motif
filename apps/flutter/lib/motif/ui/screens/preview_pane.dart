@@ -3,15 +3,15 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../../state/motif_client.dart';
+import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/top_toast.dart';
 
 /// Read-only file preview with an edit/save toggle (mirrors PreviewPane).
 class PreviewPane extends StatefulWidget {
   final String path;
-  final MotifClient motif;
-  const PreviewPane({super.key, required this.path, required this.motif});
+  final WorkspaceApi workspace;
+  const PreviewPane({super.key, required this.path, required this.workspace});
 
   @override
   State<PreviewPane> createState() => _PreviewPaneState();
@@ -35,7 +35,7 @@ class _PreviewPaneState extends State<PreviewPane> {
     return _imageExts.contains(widget.path.substring(dot + 1).toLowerCase());
   }
 
-  MotifClient get _motif => widget.motif;
+  WorkspaceApi get _workspace => widget.workspace;
 
   @override
   void initState() {
@@ -55,7 +55,7 @@ class _PreviewPaneState extends State<PreviewPane> {
       _error = null;
     });
     try {
-      final r = await _motif.fsRead(widget.path);
+      final r = await _workspace.read(widget.path);
       final raw = base64Decode(r.contentB64);
       final isImg =
           _isImage && (r.binary || (r.mime?.startsWith('image/') ?? false));
@@ -86,7 +86,7 @@ class _PreviewPaneState extends State<PreviewPane> {
       final b64 = base64Encode(utf8.encode(_editor.text));
       // First try a guarded write (force:false): the server rejects it if the
       // file changed since we read it, so we can prompt instead of clobbering.
-      final newSha = await _motif.fsWrite(
+      final newSha = await _workspace.write(
         widget.path,
         b64,
         expectedSha256: force ? null : _sha,
@@ -144,16 +144,35 @@ class _PreviewPaneState extends State<PreviewPane> {
     final c = context.motif;
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.path.split('/').last),
+        automaticallyImplyLeading: false,
+        title: Text(
+          widget.path.split('/').last,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
-          if (!_binary && _imageBytes == null)
+          IconButton(
+            key: const ValueKey('preview-refresh'),
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh file',
+            style: context.iconButtonStyle(foregroundColor: c.textSecondary),
+            onPressed: _loading ? null : _load,
+          ),
+          if (!_binary && _imageBytes == null) ...[
+            const SizedBox(width: MotifSpacing.xs),
             IconButton(
-              icon: Icon(_editing ? Icons.save : Icons.edit),
+              key: const ValueKey('preview-edit-save'),
+              icon: Icon(_editing ? Icons.save_outlined : Icons.edit_outlined),
+              tooltip: _editing ? 'Save file' : 'Edit file',
+              style: context.iconButtonStyle(
+                foregroundColor: _editing ? c.textOnAccent : c.accent,
+                backgroundColor: _editing ? c.accent : c.accentFill(),
+              ),
               onPressed: _editing
                   ? _save
                   : () => setState(() => _editing = true),
             ),
+          ],
         ],
       ),
       body: _loading

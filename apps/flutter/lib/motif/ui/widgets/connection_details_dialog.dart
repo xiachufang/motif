@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../state/connection_state.dart';
+import '../../state/connection/connection_state.dart';
 import '../theme/motif_theme.dart';
 import 'top_toast.dart';
 
@@ -54,10 +54,7 @@ Future<void> showConnectionDetailsDialog(
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 620, maxHeight: 420),
         child: SingleChildScrollView(
-          child: SelectableText(
-            detail,
-            style: MotifType.monoSmall,
-          ),
+          child: SelectableText(detail, style: MotifType.monoSmall),
         ),
       ),
       actions: [

@@ -2,15 +2,15 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import 'log/log.dart';
 import 'platform/platform_factory.dart';
 import 'platform/window_title.dart';
-import 'state/app_state.dart';
-import 'state/embedded_server_service.dart';
-import 'state/motif_runtime.dart';
-import 'state/server_connection_runtime.dart';
+import 'state/app/app_state.dart';
+import 'state/embedded/embedded_server_service.dart';
+import 'state/workspace/terminal/terminal_runtime_policy.dart';
+import 'state/app/motif_scope.dart';
+import 'state/workspace/workspace_retention_policy.dart';
 import 'update/desktop_update_service.dart';
 import 'ui/app.dart';
 
@@ -23,8 +23,8 @@ typedef MotifStartupHook = FutureOr<void> Function(AppState appState);
 /// into the compile graph. Desktop builds opt in from `main_desktop.dart`.
 Future<void> runMotif({
   EmbeddedServerFactory? embeddedServerFactory,
-  MotifClientRuntime? clientRuntime,
-  ServerConnectionRuntime? serverConnectionRuntime,
+  TerminalRuntimePolicy? terminalRuntime,
+  WorkspaceRetentionPolicy? workspaceRetentionPolicy,
   EmbeddedServerPageFactory? embeddedServerPageFactory,
   DesktopUpdateService? desktopUpdateService,
   MotifStartupHook? afterFirstFrame,
@@ -64,24 +64,15 @@ Future<void> runMotif({
           final appState = await AppState.load(
             platform: makePlatformServices(),
             embeddedServerFactory: embeddedServerFactory,
-            clientRuntime: clientRuntime,
-            serverConnectionRuntime: serverConnectionRuntime,
+            terminalRuntime: terminalRuntime,
+            workspaceRetentionPolicy: workspaceRetentionPolicy,
           );
           final embedded = appState.embeddedServer;
           runApp(
-            MultiProvider(
-              providers: [
-                ChangeNotifierProvider<AppState>.value(value: appState),
-                // Desktop installs this provider from `main_desktop.dart`.
-                if (embedded != null)
-                  ChangeNotifierProvider<EmbeddedServerService>.value(
-                    value: embedded,
-                  ),
-                if (desktopUpdateService != null)
-                  Provider<DesktopUpdateService>.value(
-                    value: desktopUpdateService,
-                  ),
-              ],
+            MotifScope(
+              appState: appState,
+              embeddedServer: embedded,
+              desktopUpdateService: desktopUpdateService,
               child: MotifApp(
                 embeddedServerPageFactory:
                     embeddedServerPageFactory ?? _emptyServerPage,

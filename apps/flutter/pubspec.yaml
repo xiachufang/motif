@@ -35,7 +35,6 @@ dependencies:
   code_assets: ^1.0.0
   hooks: ^2.0.0
   shared_preferences: ^2.5.5
-  provider: ^6.1.5+1
   http: ^1.6.0
   package_info_plus: ^10.2.0
   web: ^1.1.1
@@ -61,7 +60,12 @@ dependencies:
   share_plus: ^13.1.0
   wakelock_plus: ^1.2.8
   flutter_secure_storage: ^10.3.1
+  flutter_observation: ^0.2.0-dev.2
 dependency_overrides:
+  flutter_observation:
+    git:
+      url: https://github.com/gfreezy/flutter-observation.git
+      ref: 3f790a5919dfdb16ba5962a5cfa4326d43eb6a37
   opus_flutter_android:
     git:
       url: https://github.com/gfreezy/opus_flutter.git
@@ -97,6 +101,12 @@ dev_dependencies:
     sdk: flutter
   integration_test:
     sdk: flutter
+  build_runner: ^2.15.1
+  flutter_observation_generator:
+    git:
+      url: https://github.com/gfreezy/flutter-observation.git
+      ref: 3f790a5919dfdb16ba5962a5cfa4326d43eb6a37
+      path: packages/flutter_observation_generator
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

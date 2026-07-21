@@ -1,14 +1,15 @@
 import 'dart:convert';
-
-import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/platform/push_crypto.dart';
 import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/test_server_transport.dart';
 
 void main() {
   test('generates a persistent 256-bit AES key', () async {
@@ -62,8 +63,9 @@ void main() {
     });
     final prefs = await SharedPreferences.getInstance();
     final push = PushSettingsStore(prefs);
+    await push.setEnabled(false);
     final platformPush = _FakePushService();
-    final client = _PushMotifClient('instance-1');
+    final client = _PushServerFixture('instance-1');
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -74,12 +76,10 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
+      serverTransportFactory: (_) => _pushTransport(client),
     );
-    app.clientForServer('s1');
+    app.serverInstance('s1');
 
-    await push.setEnabled(false);
-    await Future<void>.delayed(Duration.zero);
     expect(client.registeredTokens, isEmpty);
 
     await push.setEnabled(true);
@@ -99,7 +99,7 @@ void main() {
     });
     final prefs = await SharedPreferences.getInstance();
     final platformPush = _FakePushService();
-    final client = _PushMotifClient('instance-1', live: false);
+    final client = _PushServerFixture('instance-1', live: false);
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -110,19 +110,18 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
+      serverTransportFactory: (_) => _pushTransport(client),
     );
-    app.clientForServer('s1');
+    final server = app.serverInstance('s1');
 
-    client.setLive(true);
+    await server.access.connect();
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
     expect(client.registeredTokens, ['token-1']);
 
-    client.setLive(false);
-    await Future<void>.delayed(Duration.zero);
-    client.setLive(true);
+    await server.access.disconnect();
+    await server.access.connect();
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
@@ -138,7 +137,7 @@ void main() {
     });
     final prefs = await SharedPreferences.getInstance();
     final platformPush = _FakePushService();
-    final client = _PushMotifClient('instance-1');
+    final client = _PushServerFixture('instance-1');
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -149,11 +148,11 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
+      serverTransportFactory: (_) => _pushTransport(client),
     );
-    app.clientForServer('s1');
+    app.serverInstance('s1');
 
-    await app.registerForPush(client: client);
+    await app.registerForPush(serverId: 's1');
     expect(client.registeredTokens, ['token-1']);
 
     app.debugHandleAppResumed();
@@ -173,7 +172,7 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     final push = PushSettingsStore(prefs);
     final platformPush = _FakePushService();
-    final client = _PushMotifClient('instance-1');
+    final client = _PushServerFixture('instance-1');
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -184,11 +183,11 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
+      serverTransportFactory: (_) => _pushTransport(client),
     );
-    app.clientForServer('s1');
+    app.serverInstance('s1');
 
-    await app.registerForPush(client: client);
+    await app.registerForPush(serverId: 's1');
     await push.setEnabled(false);
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
@@ -209,8 +208,12 @@ void main() {
     final push = PushSettingsStore(prefs);
     final platformPush = _FakePushService();
     final clients = {
-      's1': _PushMotifClient('instance-1'),
-      's2': _PushMotifClient('instance-2'),
+      's1': _PushServerFixture('instance-1'),
+      's2': _PushServerFixture('instance-2'),
+    };
+    final workspaces = {
+      's1': _PushWorkspaceFixture(session: 'work'),
+      's2': _PushWorkspaceFixture(session: 'work'),
     };
     final app = AppState(
       servers: ServerStore(prefs),
@@ -222,13 +225,15 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (server) => clients[server.id]!,
+      serverTransportFactory: (server) => _pushTransport(clients[server.id]!),
+      workspaceConnectionFactory: (server, _) => workspaces[server.id]!,
     );
-    app.clientForServer('s1');
-    app.clientForServer('s2');
+    app.serverInstance('s1');
+    app.serverInstance('s2');
 
-    await app.registerForPush(client: clients['s1']);
-    await app.registerForPush(client: clients['s2']);
+    await app.registerForPush(serverId: 's1');
+    await app.registerForPush(serverId: 's2');
+    app.workspaceForSession('s2', 'work');
 
     final encrypted = await encryptPushPayload(
       encKeyB64: push.encKeyBase64,
@@ -246,10 +251,10 @@ void main() {
     );
     await platformPush.emitEncrypted(encrypted.e, encrypted.n);
 
-    expect(clients['s1']!.latestNotification, isNull);
-    expect(clients['s2']!.latestNotification?.title, 'Ready');
-    expect(clients['s2']!.latestNotification?.sessionId, 'work');
-    expect(clients['s2']!.latestNotification?.kind, 'finished');
+    final notification = app.currentNotification?.notification;
+    expect(notification?.title, 'Ready');
+    expect(notification?.sessionId, 'work');
+    expect(notification?.kind, 'finished');
 
     app.dispose();
   });
@@ -265,8 +270,8 @@ void main() {
     final push = PushSettingsStore(prefs);
     final platformPush = _FakePushService();
     final clients = {
-      's1': _PushMotifClient('instance-1'),
-      's2': _PushMotifClient('instance-2'),
+      's1': _PushServerFixture('instance-1'),
+      's2': _PushServerFixture('instance-2'),
     };
     final app = AppState(
       servers: ServerStore(prefs),
@@ -278,12 +283,12 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (server) => clients[server.id]!,
+      serverTransportFactory: (server) => _pushTransport(clients[server.id]!),
     );
-    app.clientForServer('s1');
-    app.clientForServer('s2');
-    await app.registerForPush(client: clients['s1']);
-    await app.registerForPush(client: clients['s2']);
+    app.serverInstance('s1');
+    app.serverInstance('s2');
+    await app.registerForPush(serverId: 's1');
+    await app.registerForPush(serverId: 's2');
 
     platformPush.emitNotificationOpen(
       session: 'work',
@@ -303,7 +308,7 @@ void main() {
     });
     final prefs = await SharedPreferences.getInstance();
     final platformPush = _FakePushService();
-    final client = _PushMotifClient('instance-1');
+    final client = _PushServerFixture('instance-1');
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -314,9 +319,9 @@ void main() {
         speech: NoopSpeechService(),
         push: platformPush,
       ),
-      clientFactory: (_) => client,
+      serverTransportFactory: (_) => _pushTransport(client),
     );
-    app.clientForServer('s1');
+    app.serverInstance('s1');
 
     platformPush.emitNotificationOpen(session: 'nightly');
 
@@ -336,7 +341,7 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       final platformPush = _FakePushService()
         ..pendingOpen = (session: 'boot-session', instanceId: 'instance-1');
-      final client = _PushMotifClient('instance-1');
+      final client = _PushServerFixture('instance-1');
       final app = AppState(
         servers: ServerStore(prefs),
         terminalSettings: TerminalSettingsStore(prefs),
@@ -347,9 +352,9 @@ void main() {
           speech: NoopSpeechService(),
           push: platformPush,
         ),
-        clientFactory: (_) => client,
+        serverTransportFactory: (_) => _pushTransport(client),
       );
-      app.clientForServer('s1');
+      app.serverInstance('s1');
       await Future<void>.delayed(Duration.zero);
 
       expect(app.pendingSessionOpen?.serverId, 's1');
@@ -476,51 +481,44 @@ class _FakePushService implements PushService {
   }
 }
 
-class _PushMotifClient extends MotifClient {
+TestServerTransport _pushTransport(_PushServerFixture fixture) =>
+    fixture.transport;
+
+class _PushServerFixture {
   final String instanceId;
   final List<String> registeredTokens = [];
   final List<String?> registeredEnvironments = [];
   final List<String> unregisteredTokens = [];
-  bool _live;
-  MotifConnState _state;
-
-  _PushMotifClient(this.instanceId, {bool live = true})
-    : _live = live,
-      _state = live ? const ConnConnected() : const ConnDisconnected();
-
-  @override
-  MotifConnState get state => _state;
-
-  @override
-  bool get isLive => _live;
-
-  void setLive(bool live) {
-    _live = live;
-    _state = live ? const ConnConnected() : const ConnDisconnected();
-    notifyListeners();
+  _PushServerFixture(this.instanceId, {bool live = true}) {
+    transport = TestServerTransport(live: live, onCall: handleServerCall);
   }
 
-  @override
-  Future<String?> registerDevice({
-    required String deviceToken,
-    required String platform,
-    required String encKeyBase64,
-    String? environment,
-    String? appVersion,
-    List<String> mutedSessions = const [],
-  }) async {
-    registeredTokens.add(deviceToken);
-    registeredEnvironments.add(environment);
-    return instanceId;
+  late final TestServerTransport transport;
+
+  Future<Map<String, Object?>> handleServerCall(
+    String method, [
+    Map<String, Object?> params = const {},
+  ]) async {
+    switch (method) {
+      case 'device.register':
+        registeredTokens.add(params['device_token']! as String);
+        registeredEnvironments.add(params['environment'] as String?);
+        return {'instance_id': instanceId};
+      case 'device.unregister':
+        unregisteredTokens.add(params['device_token']! as String);
+        return const {};
+      case 'session.list':
+        return const {'sessions': <Object?>[]};
+      default:
+        return const {};
+    }
   }
 
-  @override
-  Future<void> unregisterDevice(String deviceToken) async {
-    unregisteredTokens.add(deviceToken);
-  }
+  void setLive(bool live) => transport.setLive(live);
+}
 
-  @override
-  void showNotification(MotifNotification n) {
-    latestNotification = n;
+class _PushWorkspaceFixture extends WorkspaceConnectionController {
+  _PushWorkspaceFixture({required super.session}) {
+    updateConnectionState(ConnAttached(session), live: true);
   }
 }

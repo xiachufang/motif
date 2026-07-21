@@ -1,7 +1,4 @@
-import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -10,24 +7,22 @@ import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/net/rpc_client.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/screens/connection_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _PingTailscale implements TailscaleService {
-  @override
-  final TailscaleState state;
+import 'support/test_server_transport.dart';
+
+class _PingTailscale extends TailscaleService {
   final Map<String, TailscalePingResult> results;
   final List<String> pingedHosts = [];
 
-  _PingTailscale({required this.state, this.results = const {}});
-
-  @override
-  Stream<TailscaleState> get states => const Stream.empty();
+  _PingTailscale({required TailscaleState state, this.results = const {}})
+    : super(initialState: state);
 
   @override
   Future<void> start({String? authKey}) async {}
@@ -56,25 +51,12 @@ class _PingTailscale implements TailscaleService {
   ProxySettings? get loopbackProxy => null;
 }
 
-class _MutableTailscale implements TailscaleService {
-  TailscaleState _state;
-  final StreamController<TailscaleState> _states =
-      StreamController<TailscaleState>.broadcast();
+class _MutableTailscale extends TailscaleService {
+  _MutableTailscale(TailscaleState state) : super(initialState: state);
 
-  _MutableTailscale(this._state);
+  void emit(TailscaleState state) => tailscaleState = state;
 
-  @override
-  TailscaleState get state => _state;
-
-  @override
-  Stream<TailscaleState> get states => _states.stream;
-
-  void emit(TailscaleState state) {
-    _state = state;
-    _states.add(state);
-  }
-
-  Future<void> close() => _states.close();
+  Future<void> close() => Future<void>.value();
 
   @override
   Future<void> start({String? authKey}) async {}
@@ -99,69 +81,54 @@ class _MutableTailscale implements TailscaleService {
   ProxySettings? get loopbackProxy => null;
 }
 
-class _ManualMotifClient extends MotifClient {
-  MotifConnState _manualState = const ConnDisconnected();
-  bool _live = false;
-  int refreshes = 0;
-
-  @override
-  MotifConnState get state => _manualState;
-
-  @override
-  bool get isLive => _live;
-
-  @override
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) async {
-    _live = true;
-    _manualState = const ConnConnected();
-    notifyListeners();
-  }
-
-  @override
-  Future<void> disconnect() async {
-    _live = false;
-    _manualState = const ConnDisconnected();
-    notifyListeners();
-  }
-
-  @override
-  Future<void> refreshSessions() async {
-    refreshes++;
-  }
+abstract interface class _ServerFixture {
+  TestServerTransport get transport;
 }
 
-class _FailingMotifClient extends MotifClient {
-  int attempts = 0;
-  MotifConnState _manualState = const ConnDisconnected();
-
-  @override
-  MotifConnState get state => _manualState;
-
-  @override
-  bool get isLive => false;
-
-  @override
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) async {
-    attempts++;
-    _manualState = const ConnFailed('No response');
-    notifyListeners();
+class _ManualServerFixture implements _ServerFixture {
+  _ManualServerFixture() {
+    transport = TestServerTransport(
+      onCall: (method, [params = const {}]) async {
+        if (method == 'session.list') {
+          refreshes++;
+          return const {'sessions': <Object?>[]};
+        }
+        return const {};
+      },
+    );
   }
+
+  int refreshes = 0;
+  @override
+  late final TestServerTransport transport;
+}
+
+class _FailingServerFixture implements _ServerFixture {
+  _FailingServerFixture() {
+    transport = TestServerTransport(
+      onConnect:
+          (
+            transport,
+            server, {
+            required force,
+            required proxy,
+            required certPin,
+          }) async {
+            attempts++;
+            throw const RpcException('No response');
+          },
+    );
+  }
+
+  int attempts = 0;
+  @override
+  late final TestServerTransport transport;
 }
 
 Future<AppState> _appWith({
   required TailscaleService tailscale,
   required List<MotifServer> servers,
-  MotifClient Function(MotifServer server)? clientFactory,
+  _ServerFixture Function(MotifServer server)? serverChannelFactory,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
@@ -175,8 +142,12 @@ Future<AppState> _appWith({
       speech: NoopSpeechService(),
       push: NoopPushService(),
     ),
-    clientFactory: clientFactory,
+    serverTransportFactory: (server) {
+      return serverChannelFactory?.call(server).transport ??
+          TestServerTransport();
+    },
   );
+  addTearDown(app.dispose);
   for (final server in servers) {
     await app.servers.add(server);
   }
@@ -185,8 +156,8 @@ Future<AppState> _appWith({
 
 Future<void> _pumpConnectionScreen(WidgetTester tester, AppState app) async {
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
         home: const ConnectionScreen(),
@@ -327,7 +298,7 @@ void main() {
   ) async {
     _mockDirectPing({'service': 'motif-server', 'version': 'direct-test'});
 
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
@@ -342,7 +313,7 @@ void main() {
           kind: ServerKind.direct,
         ),
       ],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
 
     await _pumpConnectionScreen(tester, app);
@@ -357,20 +328,21 @@ void main() {
 
     expect(app.isServerLive('server-1'), isTrue);
     expect(manual.refreshes, 1);
+    expect(app.connectionStateForServer('server-1'), isA<ServerConnected>());
     expect(tester.widget<Icon>(icon).color, MotifColors.dark.success);
     expect(find.text('Connected'), findsOneWidget);
     expect(find.text('Reachable'), findsNothing);
   });
 
   testWidgets('add server saves and connects in one flow', (tester) async {
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
     final app = await _appWith(
       tailscale: tailscale,
       servers: const [],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
 
     await _pumpConnectionScreen(tester, app);
@@ -393,14 +365,14 @@ void main() {
   testWidgets('connect flow only shows Save and Connect action', (
     tester,
   ) async {
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
     final app = await _appWith(
       tailscale: tailscale,
       servers: const [],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
 
     await _pumpConnectionScreen(tester, app);
@@ -422,7 +394,7 @@ void main() {
   testWidgets('connection failures are shown inline and can retry', (
     tester,
   ) async {
-    final failing = _FailingMotifClient();
+    final failing = _FailingServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
@@ -437,7 +409,7 @@ void main() {
           kind: ServerKind.direct,
         ),
       ],
-      clientFactory: (_) => failing,
+      serverChannelFactory: (_) => failing,
     );
 
     await _pumpConnectionScreen(tester, app);
@@ -446,7 +418,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(failing.attempts, 1);
-    expect(find.textContaining('Failed: No response'), findsOneWidget);
+    expect(find.textContaining('No response'), findsOneWidget);
     expect(find.text('Failed'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Retry Connection'));
@@ -456,10 +428,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 10));
 
     expect(failing.attempts, 2);
+    app.dispose();
   });
 
   testWidgets('connected server row returns to sessions', (tester) async {
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
@@ -474,13 +447,13 @@ void main() {
           kind: ServerKind.direct,
         ),
       ],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
     await app.connectServerAndRefresh('server-1', force: true);
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const Scaffold(body: Text('Sessions home')),
@@ -540,7 +513,7 @@ void main() {
   });
 
   test('connects and disconnects a direct server manually', () async {
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(
       state: const TailscaleState(TailscaleStatus.running),
     );
@@ -555,7 +528,7 @@ void main() {
           kind: ServerKind.direct,
         ),
       ],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
 
     await app.connectServer('server-1', force: true);
@@ -570,7 +543,7 @@ void main() {
   testWidgets('opens Tailscale setup sheet before connecting tailnet servers', (
     tester,
   ) async {
-    final manual = _ManualMotifClient();
+    final manual = _ManualServerFixture();
     final tailscale = _PingTailscale(state: TailscaleState.stopped);
     final app = await _appWith(
       tailscale: tailscale,
@@ -582,7 +555,7 @@ void main() {
           kind: ServerKind.tailscale,
         ),
       ],
-      clientFactory: (_) => manual,
+      serverChannelFactory: (_) => manual,
     );
 
     await _pumpConnectionScreen(tester, app);
@@ -599,8 +572,8 @@ void main() {
       final tailscale = _MutableTailscale(
         const TailscaleState(TailscaleStatus.running),
       );
-      final tailnet = _ManualMotifClient();
-      final direct = _ManualMotifClient();
+      final tailnet = _ManualServerFixture();
+      final direct = _ManualServerFixture();
       final app = await _appWith(
         tailscale: tailscale,
         servers: const [
@@ -617,7 +590,8 @@ void main() {
             kind: ServerKind.direct,
           ),
         ],
-        clientFactory: (server) => server.id == 'tailnet' ? tailnet : direct,
+        serverChannelFactory: (server) =>
+            server.id == 'tailnet' ? tailnet : direct,
       );
       addTearDown(tailscale.close);
 

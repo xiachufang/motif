@@ -1,66 +1,63 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 
-import '../../state/motif_client.dart';
+import '../../state/workspace/remote_port/remote_port_controller.dart';
+import '../../state/workspace/remote_port/remote_port_mapping.dart';
+import '../../state/workspace/remote_port/remote_ports_view_model.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/top_toast.dart';
 import 'remote_port_webview_screen.dart';
 
+part 'remote_port_mapping_sheet.g.dart';
+
+final class _RemotePortPanelCoordinator {
+  bool refreshStarted = false;
+}
+
 Future<void> showRemotePortMappingsSheet(
   BuildContext context,
-  MotifClient motif,
+  RemotePortController controller,
 ) {
   return showAdaptivePanel<void>(
     context,
-    builder: (_) => _RemotePortMappingsPanel(motif: motif),
+    builder: (_) => _RemotePortMappingsPanel(
+      key: ObjectKey(controller),
+      controller: controller,
+    ),
   );
 }
 
-class _RemotePortMappingsPanel extends StatefulWidget {
-  const _RemotePortMappingsPanel({required this.motif});
+@ObservationWidget()
+class _RemotePortMappingsPanel extends _$_RemotePortMappingsPanel {
+  const _RemotePortMappingsPanel({required this.controller, super.key});
 
-  final MotifClient motif;
-  @override
-  State<_RemotePortMappingsPanel> createState() =>
-      _RemotePortMappingsPanelState();
-}
+  final RemotePortController controller;
 
-class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
-  bool _loading = true;
-  String? _error;
-
-  MotifClient get motif => widget.motif;
+  @PlainState(name: 'coordinator')
+  _RemotePortPanelCoordinator createCoordinator() =>
+      _RemotePortPanelCoordinator();
 
   @override
-  void initState() {
-    super.initState();
-    unawaited(_refreshMappings());
-  }
+  bool shouldRecreateStates(covariant _RemotePortMappingsPanel oldWidget) =>
+      !identical(oldWidget.controller, controller);
 
-  Future<void> _refreshMappings() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  Future<void> _refreshMappings(_RemotePortPanelCoordinator coordinator) async {
+    coordinator.refreshStarted = true;
     try {
-      await motif.refreshRemotePortMappings();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _error = '$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+      await controller.refresh();
+    } catch (_) {}
   }
 
   Future<void> _addMapping(BuildContext context) async {
     final request = await _showRemotePortForm(context);
     if (!context.mounted || request == null) return;
     try {
-      await motif.addRemotePortMapping(
+      await controller.add(
         remotePort: request.remotePort,
         localScheme: request.scheme,
       );
@@ -76,7 +73,7 @@ class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
     final request = await _showRemotePortForm(context, initial: mapping);
     if (!context.mounted || request == null) return;
     try {
-      await motif.updateRemotePortMapping(
+      await controller.update(
         mapping.id,
         remotePort: request.remotePort,
         localScheme: request.scheme,
@@ -109,7 +106,7 @@ class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
     );
     if (!context.mounted || ok != true) return;
     try {
-      await motif.removeRemotePortMapping(mapping.id);
+      await controller.remove(mapping.id);
     } catch (e) {
       if (context.mounted) showMotifToast(context, 'Delete port failed: $e');
     }
@@ -131,7 +128,20 @@ class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required _RemotePortPanelCoordinator coordinator,
+  }) {
+    if (!coordinator.refreshStarted) {
+      coordinator.refreshStarted = true;
+      Future.microtask(() => _refreshMappings(coordinator));
+    }
+    final viewModel = controller.viewModel;
+    final mappings = viewModel.mappings;
+    final loading =
+        viewModel.phase == RemotePortsPhase.idle ||
+        viewModel.phase == RemotePortsPhase.loading;
+    final error = viewModel.error;
     final c = context.motif;
     return AdaptivePanel(
       title: 'Remote ports',
@@ -139,22 +149,22 @@ class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
         IconButton(
           icon: const Icon(Icons.refresh),
           tooltip: 'Refresh',
-          onPressed: _loading ? null : _refreshMappings,
+          onPressed: loading
+              ? null
+              : () => unawaited(_refreshMappings(coordinator)),
         ),
         IconButton(
           icon: const Icon(Icons.add),
           tooltip: 'Add port',
-          onPressed: _loading ? null : () => _addMapping(context),
+          onPressed: loading ? null : () => _addMapping(context),
         ),
       ],
-      body: ListenableBuilder(
-        listenable: motif,
-        builder: (context, _) {
-          final mappings = motif.remotePortMappings;
-          if (_loading && mappings.isEmpty) {
+      body: Builder(
+        builder: (context) {
+          if (loading && mappings.isEmpty) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (_error != null && mappings.isEmpty) {
+          if (error != null && mappings.isEmpty) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(MotifSpacing.xl),
@@ -172,13 +182,13 @@ class _RemotePortMappingsPanelState extends State<_RemotePortMappingsPanel> {
                     ),
                     const SizedBox(height: MotifSpacing.xs),
                     Text(
-                      _error!,
+                      error,
                       textAlign: TextAlign.center,
                       style: TextStyle(color: c.textTertiary),
                     ),
                     const SizedBox(height: MotifSpacing.lg),
                     FilledButton.icon(
-                      onPressed: _refreshMappings,
+                      onPressed: () => unawaited(_refreshMappings(coordinator)),
                       icon: const Icon(Icons.refresh),
                       label: const Text('Retry'),
                     ),
@@ -276,81 +286,88 @@ Future<_RemotePortRequest?> _showRemotePortForm(
 }) {
   return showAdaptiveModal<_RemotePortRequest>(
     context,
-    builder: (_) => _RemotePortFormModal(initial: initial),
+    builder: (_) => _RemotePortFormModal(
+      key: ValueKey('remote-port-form-${initial?.id ?? 'new'}'),
+      initial: initial,
+    ),
   );
 }
 
-class _RemotePortFormModal extends StatefulWidget {
-  const _RemotePortFormModal({this.initial});
+@ObservableModel()
+class _RemotePortFormViewModel extends _$_RemotePortFormViewModel {
+  _RemotePortFormViewModel({String scheme = 'http', String? errorText})
+    : super(scheme, errorText);
+}
+
+@ObservationWidget()
+class _RemotePortFormModal extends _$_RemotePortFormModal {
+  const _RemotePortFormModal({this.initial, super.key});
 
   final RemotePortMapping? initial;
 
-  @override
-  State<_RemotePortFormModal> createState() => _RemotePortFormModalState();
-}
+  @PlainState(name: 'portController')
+  TextEditingController createPortController() =>
+      TextEditingController(text: '${initial?.remotePort ?? 3000}');
 
-class _RemotePortFormModalState extends State<_RemotePortFormModal> {
-  late final TextEditingController _portController;
-  late String _scheme;
-  String? _errorText;
-
-  @override
-  void initState() {
-    super.initState();
-    _portController = TextEditingController(
-      text: '${widget.initial?.remotePort ?? 3000}',
-    );
-    _scheme = widget.initial?.localScheme ?? 'http';
-  }
+  @ObservableState(name: 'viewModel')
+  _RemotePortFormViewModel createViewModel() =>
+      _RemotePortFormViewModel(scheme: initial?.localScheme ?? 'http');
 
   @override
-  void dispose() {
-    _portController.dispose();
-    super.dispose();
-  }
+  bool shouldRecreateStates(covariant _RemotePortFormModal oldWidget) =>
+      oldWidget.initial?.id != initial?.id;
 
-  _RemotePortRequest? _buildRequest() {
-    final port = int.tryParse(_portController.text.trim());
+  _RemotePortRequest? _buildRequest(
+    TextEditingController portController,
+    _RemotePortFormViewModel viewModel,
+  ) {
+    final port = int.tryParse(portController.text.trim());
     if (port == null || port <= 0 || port > 65535) return null;
-    return _RemotePortRequest(remotePort: port, scheme: _scheme);
+    return _RemotePortRequest(remotePort: port, scheme: viewModel.scheme);
   }
 
-  void _submit() {
-    final request = _buildRequest();
+  void _submit(
+    BuildContext context,
+    TextEditingController portController,
+    _RemotePortFormViewModel viewModel,
+  ) {
+    final request = _buildRequest(portController, viewModel);
     if (request == null) {
-      setState(() => _errorText = 'Enter a port from 1 to 65535');
+      viewModel.errorText = 'Enter a port from 1 to 65535';
       return;
     }
     Navigator.of(context).pop(request);
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context, {
+    required TextEditingController portController,
+    required _RemotePortFormViewModel viewModel,
+  }) {
     return AdaptiveModal(
-      title: widget.initial == null ? 'Add port' : 'Edit port',
+      title: initial == null ? 'Add port' : 'Edit port',
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           TextField(
-            controller: _portController,
+            controller: portController,
             autofocus: true,
             keyboardType: TextInputType.number,
             inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: InputDecoration(
               labelText: 'Remote port',
               hintText: '3000',
-              errorText: _errorText,
+              errorText: viewModel.errorText,
             ),
             onChanged: (_) {
-              if (_errorText != null) {
-                setState(() => _errorText = null);
-              }
+              if (viewModel.errorText != null) viewModel.errorText = null;
             },
-            onSubmitted: (_) => _submit(),
+            onSubmitted: (_) => _submit(context, portController, viewModel),
           ),
           const SizedBox(height: MotifSpacing.md),
           DropdownButtonFormField<String>(
-            initialValue: _scheme,
+            initialValue: viewModel.scheme,
             decoration: const InputDecoration(labelText: 'Open as'),
             items: const [
               DropdownMenuItem(value: 'http', child: Text('http')),
@@ -358,12 +375,17 @@ class _RemotePortFormModalState extends State<_RemotePortFormModal> {
             ],
             onChanged: (value) {
               if (value == null) return;
-              setState(() => _scheme = value);
+              viewModel.scheme = value;
             },
           ),
         ],
       ),
-      actions: [TextButton(onPressed: _submit, child: const Text('Save'))],
+      actions: [
+        TextButton(
+          onPressed: () => _submit(context, portController, viewModel),
+          child: const Text('Save'),
+        ),
+      ],
     );
   }
 }

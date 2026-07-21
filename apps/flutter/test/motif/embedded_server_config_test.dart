@@ -2,8 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/secret_store.dart';
-import 'package:motif/motif/state/embedded_server_service.dart';
-import 'package:motif/motif/state/embedded_server_service_desktop.dart';
+import 'package:motif/motif/state/embedded/embedded_server_serialization.dart';
+import 'package:motif/motif/state/embedded/embedded_server_service.dart';
+import 'package:motif/motif/state/embedded/embedded_server_service_desktop.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {

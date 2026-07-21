@@ -9,7 +9,7 @@ import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rzv/rzv_protocol.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/transport_resolver.dart';
+import 'package:motif/motif/state/server/transport_resolver.dart';
 
 void main() {
   final pskBytes = Uint8List.fromList(List.generate(32, (i) => i + 3));

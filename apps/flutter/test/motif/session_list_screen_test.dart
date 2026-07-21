@@ -1,56 +1,84 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
 import 'package:motif/motif/ui/screens/session_name_generator.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/top_toast.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _CreatingMotifClient extends MotifClient {
+import 'support/test_server_transport.dart';
+
+class _CreatingServerFixture {
+  _CreatingServerFixture({this.live = true, this.onConnect});
+
   final List<(String, String)> created = [];
+  final bool live;
+  final TestServerConnect? onConnect;
+  List<SessionInfo> _sessions = [];
+  List<SessionInfo> get sessions => _sessions;
+  set sessions(Iterable<SessionInfo> value) => _sessions = [...value];
   int refreshes = 0;
+  late final TestServerTransport transport = TestServerTransport(
+    live: live,
+    onConnect: onConnect,
+    onCall: handleServerCall,
+  );
 
-  @override
-  bool get isLive => true;
-
-  @override
-  Future<void> refreshSessions() async {
-    refreshes++;
+  Future<Map<String, Object?>> handleServerCall(
+    String method, [
+    Map<String, Object?> params = const {},
+  ]) async {
+    switch (method) {
+      case 'session.create':
+        final name = params['name']! as String;
+        final workdir = params['workdir']! as String;
+        created.add((name, workdir));
+        sessions.add(SessionInfo(name: name, workdir: workdir));
+        return {
+          'session': {'name': name, 'workdir': workdir},
+        };
+      case 'session.list':
+        refreshes++;
+        return {
+          'sessions': [
+            for (final session in sessions)
+              {'name': session.name, 'workdir': session.workdir},
+          ],
+        };
+      case 'session.destroy':
+        await destroyServerSession(params['name']! as String);
+        return const {};
+      default:
+        return const {};
+    }
   }
 
-  @override
-  Future<SessionInfo> createSession(String name, String workdir) async {
-    created.add((name, workdir));
-    final session = SessionInfo(name: name, workdir: workdir);
-    sessions = [...sessions, session];
-    notifyListeners();
-    return session;
-  }
+  Future<void> destroyServerSession(String name) async {}
 }
 
-class _DestroyingMotifClient extends _CreatingMotifClient {
-  _DestroyingMotifClient({this.fail = false});
+class _DestroyingServerFixture extends _CreatingServerFixture {
+  _DestroyingServerFixture({this.fail = false});
 
   final bool fail;
   final List<String> destroyed = [];
 
   @override
-  Future<void> destroySession(String name) async {
+  Future<void> destroyServerSession(String name) async {
     destroyed.add(name);
     final index = sessions.indexWhere((session) => session.name == name);
     final removed = index < 0 ? null : sessions[index];
     if (removed != null) {
       sessions = [...sessions]..removeAt(index);
-      notifyListeners();
     }
 
     await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -59,19 +87,12 @@ class _DestroyingMotifClient extends _CreatingMotifClient {
     if (removed != null) {
       final restored = [...sessions]..insert(index, removed);
       sessions = restored;
-      notifyListeners();
     }
     throw StateError('server rejected destroy');
   }
 }
 
-class _StoppedTailscale implements TailscaleService {
-  @override
-  TailscaleState get state => TailscaleState.stopped;
-
-  @override
-  Stream<TailscaleState> get states => const Stream.empty();
-
+class _StoppedTailscale extends TailscaleService {
   @override
   Future<void> start({String? authKey}) async {}
 
@@ -95,7 +116,9 @@ class _StoppedTailscale implements TailscaleService {
   ProxySettings? get loopbackProxy => null;
 }
 
-Future<AppState> _appStateFor(Map<String, MotifClient> clients) async {
+Future<AppState> _appStateFor(
+  Map<String, _CreatingServerFixture> fixtures,
+) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
   final app = AppState(
@@ -104,26 +127,29 @@ Future<AppState> _appStateFor(Map<String, MotifClient> clients) async {
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: PlatformServices.defaults(),
-    clientFactory: (server) => clients[server.id] ?? MotifClient(),
+    serverTransportFactory: (server) => fixtures[server.id]!.transport,
   );
-  for (final entry in clients.entries) {
+  for (final entry in fixtures.entries) {
     await app.servers.add(
       MotifServer(id: entry.key, name: entry.key, host: '127.0.0.1'),
     );
-    app.clientForServer(entry.key);
+    app.serverInstance(entry.key);
   }
   return app;
 }
 
-Future<AppState> _appState(MotifClient motif) async {
+Future<AppState> _appState(_CreatingServerFixture motif) async {
   return _appStateFor({'server-1': motif});
 }
 
-Future<void> _pumpSessionList(WidgetTester tester, MotifClient motif) async {
+Future<void> _pumpSessionList(
+  WidgetTester tester,
+  _CreatingServerFixture motif,
+) async {
   final app = await _appState(motif);
   await tester.pumpWidget(
-    ChangeNotifierProvider.value(
-      value: app,
+    MotifScope(
+      appState: app,
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
         home: const MotifToastHost(child: SessionListScreen()),
@@ -138,10 +164,40 @@ Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
 );
 
 void main() {
+  testWidgets('async connection replaces the connect empty state', (
+    tester,
+  ) async {
+    final connectGate = Completer<void>();
+    final motif = _CreatingServerFixture(
+      live: false,
+      onConnect:
+          (_, _, {required force, required proxy, required certPin}) async {
+            await connectGate.future;
+            return const PingInfo(service: 'motif-server', version: 'test');
+          },
+    );
+
+    await _pumpSessionList(tester, motif);
+
+    expect(find.text('Connect server-1'), findsOneWidget);
+    await tester.tap(find.text('Connect server-1'));
+    await tester.pump();
+    expect(find.text('Connecting…'), findsOneWidget);
+
+    connectGate.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect server-1'), findsNothing);
+    expect(find.text('Create session'), findsOneWidget);
+    expect(find.text('No sessions yet'), findsOneWidget);
+    expect(motif.transport.connectCalls, 1);
+    expect(motif.refreshes, 1);
+  });
+
   testWidgets('non-empty session list includes create session action', (
     tester,
   ) async {
-    final motif = _CreatingMotifClient()
+    final motif = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
     await _pumpSessionList(tester, motif);
@@ -165,7 +221,7 @@ void main() {
   testWidgets('create session dialog pre-fills adjective fruit name', (
     tester,
   ) async {
-    final motif = _CreatingMotifClient()
+    final motif = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
     await _pumpSessionList(tester, motif);
@@ -187,7 +243,7 @@ void main() {
   });
 
   testWidgets('swipe destroy alert cancel keeps the session', (tester) async {
-    final motif = _DestroyingMotifClient()
+    final motif = _DestroyingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
     await _pumpSessionList(tester, motif);
@@ -204,7 +260,7 @@ void main() {
   });
 
   testWidgets('swipe destroy confirms and removes the session', (tester) async {
-    final motif = _DestroyingMotifClient()
+    final motif = _DestroyingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
     await _pumpSessionList(tester, motif);
@@ -223,7 +279,7 @@ void main() {
   testWidgets('swipe destroy failure restores the session and reports it', (
     tester,
   ) async {
-    final motif = _DestroyingMotifClient(fail: true)
+    final motif = _DestroyingServerFixture(fail: true)
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
     await _pumpSessionList(tester, motif);
@@ -245,15 +301,15 @@ void main() {
   });
 
   testWidgets('groups sessions by connected server', (tester) async {
-    final dev = _CreatingMotifClient()
+    final dev = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev-shell', workdir: '~/dev')];
-    final prod = _CreatingMotifClient()
+    final prod = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'prod-shell', workdir: '~/prod')];
     final app = await _appStateFor({'dev': dev, 'prod': prod});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionListScreen(),
@@ -271,15 +327,15 @@ void main() {
   testWidgets('refreshes one server from section header action', (
     tester,
   ) async {
-    final dev = _CreatingMotifClient()
+    final dev = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev-shell')];
-    final prod = _CreatingMotifClient()
+    final prod = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'prod-shell')];
     final app = await _appStateFor({'dev': dev, 'prod': prod});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionListScreen(),
@@ -287,6 +343,8 @@ void main() {
       ),
     );
     await tester.pump();
+    dev.refreshes = 0;
+    prod.refreshes = 0;
 
     await tester.tap(find.byKey(const ValueKey('refresh-server-sessions-dev')));
     await tester.pumpAndSettle();
@@ -298,15 +356,15 @@ void main() {
   testWidgets('pull to refresh reloads all connected server sessions', (
     tester,
   ) async {
-    final dev = _CreatingMotifClient()
+    final dev = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev-shell')];
-    final prod = _CreatingMotifClient()
+    final prod = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'prod-shell')];
     final app = await _appStateFor({'dev': dev, 'prod': prod});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionListScreen(),
@@ -314,6 +372,8 @@ void main() {
       ),
     );
     await tester.pump();
+    dev.refreshes = 0;
+    prod.refreshes = 0;
 
     await tester.drag(find.byType(ListView), const Offset(0, 360));
     await tester.pump();
@@ -326,13 +386,13 @@ void main() {
   testWidgets('refreshes sessions after returning from another page', (
     tester,
   ) async {
-    final dev = _CreatingMotifClient()
+    final dev = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev-shell')];
     final app = await _appStateFor({'dev': dev});
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           navigatorObservers: [motifRouteObserver],
@@ -341,6 +401,7 @@ void main() {
       ),
     );
     await tester.pump();
+    dev.refreshes = 0;
 
     Navigator.of(
       tester.element(find.byType(SessionListScreen)),
@@ -380,8 +441,8 @@ void main() {
     );
 
     await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: app,
+      MotifScope(
+        appState: app,
         child: MaterialApp(
           theme: motifTheme(Brightness.dark),
           home: const SessionListScreen(),

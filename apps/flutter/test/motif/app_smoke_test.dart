@@ -1,34 +1,24 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/desktop_window.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/state/app_state.dart';
-import 'package:motif/motif/state/motif_client.dart';
-import 'package:motif/motif/state/stores.dart';
+import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/embedded/embedded_server_service.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
-import 'package:provider/provider.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class _SmokeMotifClient extends MotifClient {
-  bool _live = false;
+import 'support/test_server_transport.dart';
 
-  @override
-  bool get isLive => _live;
-
-  @override
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) async {
-    _live = true;
-    notifyListeners();
-  }
-}
+TestServerTransport _smokeTransport() => TestServerTransport(
+  onCall: (method, [params = const {}]) async =>
+      method == 'session.list' ? const {'sessions': <Object?>[]} : const {},
+);
 
 class _RecordingDesktopWindowDelegate extends NoopDesktopWindowDelegate {
   int quitCalls = 0;
@@ -37,6 +27,46 @@ class _RecordingDesktopWindowDelegate extends NoopDesktopWindowDelegate {
   Future<void> quit() async {
     quitCalls++;
   }
+}
+
+class _DelayedEmbeddedServerService extends EmbeddedServerService {
+  _DelayedEmbeddedServerService()
+    : super(
+        available: true,
+        config: const EmbeddedServerConfig(),
+        status: const EmbeddedServerStatus(starting: true),
+      );
+
+  void becomeReady(int port) {
+    statusState = EmbeddedServerStatus(
+      running: true,
+      boundAddrs: ['tcp://0.0.0.0:$port'],
+    );
+  }
+
+  @override
+  Future<void> updateConfig(EmbeddedServerConfig next) async {
+    configState = next;
+  }
+
+  @override
+  String generateToken() => '';
+
+  @override
+  Future<void> start() async {}
+
+  @override
+  Future<void> stop() async {}
+
+  @override
+  Future<List<RegisteredPushToken>> registeredPushTokens() async => const [];
+
+  @override
+  Future<PushTestResult> sendTestPush(String deviceToken) async =>
+      const PushTestResult(sent: false);
+
+  @override
+  List<String> tailLogs([int n = 200]) => const [];
 }
 
 void main() {
@@ -49,12 +79,10 @@ void main() {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: PlatformServices.defaults(),
-      clientFactory: (_) => _SmokeMotifClient(),
+      serverTransportFactory: (_) => _smokeTransport(),
     );
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
 
     expect(find.text('Welcome to motif'), findsOneWidget);
@@ -76,12 +104,10 @@ void main() {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: PlatformServices.defaults(),
-      clientFactory: (_) => _SmokeMotifClient(),
+      serverTransportFactory: (_) => _smokeTransport(),
     );
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
     await tester.pump();
 
@@ -101,12 +127,10 @@ void main() {
       commands: QuickCommandStore(prefs),
       push: PushSettingsStore(prefs),
       platform: PlatformServices.defaults(),
-      clientFactory: (_) => _SmokeMotifClient(),
+      serverTransportFactory: (_) => _smokeTransport(),
     );
 
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(value: app, child: const MotifApp()),
-    );
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
     expect(find.text('Welcome to motif'), findsOneWidget);
 
@@ -123,7 +147,52 @@ void main() {
     await tester.pump();
 
     expect(find.text('Sessions'), findsOneWidget);
-    expect(app.existingClientForServer('s1'), isNull);
+    expect(app.existingServerInstance('s1'), isNull);
+  });
+
+  test('startup local server waits for its embedded endpoint', () async {
+    final listener = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final accepted = listener.listen((socket) => socket.destroy());
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"embedded-local","name":"This computer",'
+          '"host":"127.0.0.1","port":${listener.port},'
+          '"token":"","kind":"direct"}]',
+      'activeServerID': 'embedded-local',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final embedded = _DelayedEmbeddedServerService();
+    final transport = _smokeTransport();
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: PlatformServices.defaults(),
+      embeddedServer: embedded,
+      serverTransportFactory: (_) => transport,
+    );
+    addTearDown(() async {
+      app.dispose();
+      await accepted.cancel();
+      await listener.close();
+    });
+
+    await app.autoConnectStartupServer();
+    expect(transport.connectCalls, 0);
+
+    embedded.becomeReady(listener.port);
+    for (
+      var attempt = 0;
+      attempt < 100 && transport.connectCalls == 0;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    expect(transport.connectCalls, 1);
+    expect(app.isServerLive(kEmbeddedServerId), isTrue);
+    expect(app.serverById(kEmbeddedServerId)?.port, listener.port);
   });
 
   testWidgets('command q quits the complete macOS app', (tester) async {
@@ -143,7 +212,7 @@ void main() {
       addTearDown(app.dispose);
 
       await tester.pumpWidget(
-        ChangeNotifierProvider.value(value: app, child: const MotifApp()),
+        MotifScope(appState: app, child: const MotifApp()),
       );
       await tester.pump();
 

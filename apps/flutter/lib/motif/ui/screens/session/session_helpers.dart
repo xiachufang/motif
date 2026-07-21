@@ -29,7 +29,7 @@ extension _SessionScreenTabInputs on _SessionScreenState {
   TextEditingController get _input => _activeInputState.controller;
 
   _TabInputState get _activeInputState =>
-      _inputStateForView(_activeView(_motif)?.id);
+      _inputStateForView(_workspaceState.views.active?.id);
 
   _TabInputState _createInputState(String id) {
     final input = _TabInputState(id);
@@ -47,8 +47,8 @@ extension _SessionScreenTabInputs on _SessionScreenState {
     return _tabInputs[viewId]?.controller;
   }
 
-  void _reconcileTabInputs(MotifClient motif, ViewInfo? activeView) {
-    final liveIds = {for (final view in motif.views) view.id};
+  void _reconcileTabInputs(Iterable<ViewInfo> views, ViewInfo? activeView) {
+    final liveIds = {for (final view in views) view.id};
     if (activeView != null) liveIds.add(activeView.id);
     final staleAppleDocumentIds = [
       for (final id in _appleInputDocumentIds)
@@ -122,12 +122,13 @@ Route<void> _sessionSwitchRoute(String serverId, String session) {
 }
 
 Future<void> _closeViewWithConfirmation(
-  BuildContext context,
-  MotifClient motif,
-  ViewInfo view,
-) async {
+  BuildContext context, {
+  required TerminalController terminal,
+  required ViewController views,
+  required ViewInfo view,
+}) async {
   final runningCommand = switch (view.spec) {
-    PtyViewSpec(:final ptyId) => motif.runningCommand[ptyId],
+    PtyViewSpec(:final ptyId) => terminal.viewModel.runningCommand[ptyId],
     _ => null,
   };
   if (runningCommand != null && runningCommand.isNotEmpty) {
@@ -136,7 +137,7 @@ Future<void> _closeViewWithConfirmation(
   }
   try {
     unawaited(
-      motif.closeView(view.id).catchError((Object e) {
+      views.close(view.id).catchError((Object e) {
         if (context.mounted) {
           showMotifToast(context, 'Close tab failed: $e');
         }
@@ -175,11 +176,11 @@ Future<bool> _confirmCloseRunningTab(
 
 List<SessionInfo> _sessionsForServer(
   MotifServer server,
-  MotifClient motif, {
+  Iterable<SessionInfo> source, {
   required String currentServerId,
   required String currentSession,
 }) {
-  final sessions = [...motif.sessions];
+  final sessions = [...source];
   if (server.id == currentServerId &&
       !sessions.any((s) => s.name == currentSession)) {
     sessions.insert(0, SessionInfo(name: currentSession));
@@ -203,13 +204,13 @@ String _primaryShortcutLabel(String key, {bool shift = false}) {
 
 /// Equality key for tab-bar rebuilds (views / active / labels / live).
 ({String views, String? activeViewId, String labels, bool isLive})
-_tabBarSelectKey(MotifClient motif) {
+_tabBarSelectKey(WorkspaceViewModel workspace) {
   final labels = <String>[];
-  for (final view in motif.views) {
+  for (final view in workspace.views.items) {
     labels.add(switch (view.spec) {
       PtyViewSpec(:final ptyId) =>
-        motif.runningCommand[ptyId] ??
-            motif.ptys
+        workspace.terminal.runningCommand[ptyId] ??
+            workspace.terminal.ptys
                 .where((p) => p.id == ptyId)
                 .map((p) => p.cwd?.split('/').last)
                 .firstOrNull ??
@@ -221,60 +222,67 @@ _tabBarSelectKey(MotifClient motif) {
     });
   }
   return (
-    views: motif.views.map((v) => v.id).join(','),
-    activeViewId: motif.activeViewId,
+    views: workspace.views.items.map((v) => v.id).join(','),
+    activeViewId: workspace.views.activeViewId,
     labels: labels.join('\u{1e}'),
-    isLive: motif.isLive,
+    isLive: workspace.connection.transportAvailable,
   );
 }
 
 /// Equality key for pane-stack rebuilds.
 ({String views, String? activeViewId, String? cwd}) _paneSelectKey(
-  MotifClient motif,
-) => (
-  views: motif.views.map((v) => '${v.id}:${v.spec.runtimeType}').join(','),
-  activeViewId: motif.activeViewId,
-  cwd: motif.activeCwd,
-);
+  WorkspaceViewModel workspace,
+  WorkspaceApi api,
+) {
+  return (
+    views: workspace.views.items
+        .map((v) => '${v.id}:${v.spec.runtimeType}')
+        .join(','),
+    activeViewId: workspace.views.activeViewId,
+    cwd: api.activeCwd(),
+  );
+}
 
 /// Equality key for bottom bar / quick-command rebuilds.
 ({String? activeViewId, String? runningProgram}) _bottomBarSelectKey(
-  MotifClient motif,
+  WorkspaceViewModel workspace,
 ) {
-  final activeId = motif.activeViewId;
+  final activeId = workspace.views.activeViewId;
   ViewInfo? active;
   if (activeId != null) {
-    for (final v in motif.views) {
+    for (final v in workspace.views.items) {
       if (v.id == activeId) {
         active = v;
         break;
       }
     }
   }
-  active ??= motif.views.isEmpty ? null : motif.views.first;
+  active ??= workspace.views.items.firstOrNull;
   final ptyId = switch (active?.spec) {
     PtyViewSpec(:final ptyId) => ptyId,
     _ => null,
   };
   return (
     activeViewId: active?.id,
-    runningProgram: ptyId == null ? null : motif.runningCommand[ptyId],
+    runningProgram: ptyId == null
+        ? null
+        : workspace.terminal.runningCommand[ptyId],
   );
 }
 
 /// Equality key for connected-sessions sidebar (ignores view/tick noise).
 ({String servers, String sessions}) _connectedSessionsSelectKey(AppState app) {
-  final groups = app.connectedServerClients;
+  final groups = app.connectedServers;
   return (
     servers: jsonEncode([
       for (final g in groups)
-        {'id': g.server.id, 'name': g.server.name, 'live': g.client.isLive},
+        {'id': g.profile.id, 'name': g.profile.name, 'live': g.access.isReady},
     ]),
     sessions: jsonEncode([
       for (final g in groups)
         {
-          'server': g.server.id,
-          'sessions': [for (final s in g.client.sessions) s.name],
+          'server': g.profile.id,
+          'sessions': [for (final s in g.sessions.sessions) s.name],
         },
     ]),
   );
