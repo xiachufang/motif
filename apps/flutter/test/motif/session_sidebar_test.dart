@@ -630,6 +630,9 @@ void main() {
     expect(inputField().keyboardType, TextInputType.multiline);
     expect(inputField().textInputAction, TextInputAction.send);
     expect(inputField().hintLocales, terminalEnglishHintLocales);
+    // Must remain true: Flutter otherwise marks Android fields as visible
+    // passwords, which blocks language switching in some IMEs.
+    expect(inputField().enableSuggestions, isTrue);
 
     await tester.tap(find.byKey(const ValueKey('tab-v2')));
     await tester.pump();

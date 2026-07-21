@@ -82,7 +82,10 @@ class _InputBar extends StatelessWidget {
                       autocorrect: false,
                       smartDashesType: SmartDashesType.disabled,
                       smartQuotesType: SmartQuotesType.disabled,
-                      enableSuggestions: false,
+                      // Flutter maps false to Android's visible-password input
+                      // variation, which blocks language switching/CJK in some
+                      // IMEs. Autocorrect remains disabled above.
+                      enableSuggestions: true,
                       enableIMEPersonalizedLearning: false,
                       enableInlinePrediction: false,
                       minLines: 1,

@@ -44,8 +44,12 @@ const TextInputConfiguration terminalTextInputConfiguration =
 /// IMEs unreachable. The English [hintLocales] only biases a *fresh* keyboard
 /// toward English: the globe key still switches input source, and on Apple
 /// platforms the native per-tab `textInputContextIdentifier` restores each tab's
-/// last-used IME (see `AppleInputDocument`). Autocorrect / suggestions / smart
-/// punctuation stay disabled so the shell never receives substituted text.
+/// last-used IME (see `AppleInputDocument`). Autocorrect and smart punctuation
+/// stay disabled so the shell never receives substituted text.
+/// `enableSuggestions` deliberately stays true: Flutter's Android embedding
+/// maps false to `TYPE_TEXT_VARIATION_VISIBLE_PASSWORD`, which prevents some
+/// Android IMEs from switching languages or offering CJK composition. Android
+/// autocorrection remains disabled separately via [autocorrect].
 const TextInputConfiguration terminalSoftKeyboardInputConfiguration =
     TextInputConfiguration(
       inputType: TextInputType.text,
@@ -53,7 +57,7 @@ const TextInputConfiguration terminalSoftKeyboardInputConfiguration =
       autocorrect: false,
       smartDashesType: SmartDashesType.disabled,
       smartQuotesType: SmartQuotesType.disabled,
-      enableSuggestions: false,
+      enableSuggestions: true,
       enableInteractiveSelection: false,
       enableIMEPersonalizedLearning: false,
       hintLocales: terminalEnglishHintLocales,

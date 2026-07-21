@@ -66,9 +66,12 @@ void main() {
             .toLanguageTag(),
         'en-US',
       );
-      // ...while substitution stays off so the shell never gets altered text.
+      // Flutter's Android embedding maps enableSuggestions=false to a visible
+      // password input, which prevents language switching in some IMEs.
+      // Autocorrect remains off independently so committed shell text is not
+      // automatically substituted.
       expect(terminalSoftKeyboardInputConfiguration.autocorrect, isFalse);
-      expect(terminalSoftKeyboardInputConfiguration.enableSuggestions, isFalse);
+      expect(terminalSoftKeyboardInputConfiguration.enableSuggestions, isTrue);
       expect(
         terminalSoftKeyboardInputConfiguration.smartDashesType,
         SmartDashesType.disabled,
