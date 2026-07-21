@@ -178,6 +178,11 @@ class _ShortcutWorkspaceConnectionController
   final List<String> writtenPtyIds = [];
   final List<List<int>> writtenPtyData = [];
 
+  void simulateConnectionState(
+    WorkspaceConnectionStatus state, {
+    required bool live,
+  }) => updateConnectionState(state, live: live);
+
   late final TerminalViewModel _terminalViewModel = TerminalViewModel(
     ptys: ObservableList(),
     runningCommand: ObservableMap(),
@@ -454,6 +459,34 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('terminal page creates a PTY after async attachment completes', (
+    tester,
+  ) async {
+    final motif = _ShortcutWorkspaceConnectionController()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+    expect(motif.createdPtys, 0);
+
+    motif
+      ..ptys = const []
+      ..views = const []
+      ..activeViewId = null;
+    motif.simulateConnectionState(const ConnFailed('offline'), live: false);
+    await tester.pump();
+
+    motif.simulateConnectionState(
+      const ConnAttached('test-session'),
+      live: true,
+    );
+    await tester.pump();
+
+    expect(motif.createdPtys, 1);
+    expect(motif.terminal.viewModel.ptys, hasLength(1));
   });
 
   testWidgets('Android push transition mounts terminal pane immediately', (

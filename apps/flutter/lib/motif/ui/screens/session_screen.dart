@@ -228,6 +228,7 @@ class _SessionScreenState extends State<_SessionPane>
   late final WorkspaceApi _workspaceApi;
   late final RemotePortController _remotePortController;
   late final _TabInputState _fallbackInput;
+  late final ObservationSubscription<WorkspaceConnectionStatus> _connectionSub;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
     _bottomBarCollapsedContentHeight,
@@ -242,6 +243,7 @@ class _SessionScreenState extends State<_SessionPane>
   bool _attachingSession = false;
   bool _recording = false;
   bool _micStarting = false;
+  Future<void>? _autoCreatePtyFuture;
   String? _lastAppleInputDocumentId;
   String _asrBase = '';
   String _lastAsrText = ''; // last value ASR wrote to the input bar
@@ -258,6 +260,11 @@ class _SessionScreenState extends State<_SessionPane>
     _workspaceApi = readObservationScope<WorkspaceApi>(context);
     _remotePortController = readObservationScope<RemotePortController>(context);
     _fallbackInput = _createInputState('fallback');
+    _connectionSub = observe(
+      () => _attachment.connection.status,
+      onChange: (_) => unawaited(_ensurePtyOnOpen()),
+      scheduler: ObservationSchedulers.immediate,
+    );
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
     if (widget.workspaceActive) {
@@ -289,7 +296,7 @@ class _SessionScreenState extends State<_SessionPane>
       attachment.setForeground(true);
       // Entering a session with no terminal (e.g. all were closed) should still
       // land on a usable pane.
-      if (_terminalController.viewModel.ptys.isEmpty) unawaited(_newPty());
+      unawaited(_ensurePtyOnOpen());
       return;
     }
     _attachingSession = true;
@@ -307,9 +314,7 @@ class _SessionScreenState extends State<_SessionPane>
       // A freshly-attached session with no PTYs (brand-new, or every terminal
       // closed) would open an empty pane — auto-create one. _newPty handles its
       // own errors, so it won't trip the attach catch/pop below.
-      if (mounted && _terminalController.viewModel.ptys.isEmpty) {
-        await _newPty();
-      }
+      await _ensurePtyOnOpen();
     } catch (e) {
       Log.w(
         'open attach failed session=${widget.session}',
@@ -343,6 +348,7 @@ class _SessionScreenState extends State<_SessionPane>
       if (widget.workspaceActive) {
         _registerShortcutHandler();
         _syncWindowTitle();
+        unawaited(_ensurePtyOnOpen());
       } else {
         _unregisterShortcutHandler();
       }
@@ -365,6 +371,7 @@ class _SessionScreenState extends State<_SessionPane>
 
   @override
   void dispose() {
+    _connectionSub.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
@@ -380,6 +387,32 @@ class _SessionScreenState extends State<_SessionPane>
     _tabInputs.clear();
     if (_wakelockApplies) WakelockPlus.disable().ignore();
     super.dispose();
+  }
+
+  /// Ensure the visible terminal page never settles on an attached workspace
+  /// with no PTY. Workspace connections attach asynchronously, so checking
+  /// only from [initState] misses the common cold-open path.
+  Future<void> _ensurePtyOnOpen() {
+    final existing = _autoCreatePtyFuture;
+    if (existing != null) return existing;
+    final state = _attachment.connection.status;
+    if (!mounted ||
+        !widget.workspaceActive ||
+        !_attachment.isLive ||
+        state is! ConnAttached ||
+        state.session != widget.session ||
+        _terminalController.viewModel.ptys.isNotEmpty) {
+      return Future<void>.value();
+    }
+
+    late final Future<void> creation;
+    creation = _newPty().whenComplete(() {
+      if (identical(_autoCreatePtyFuture, creation)) {
+        _autoCreatePtyFuture = null;
+      }
+    });
+    _autoCreatePtyFuture = creation;
+    return creation;
   }
 
   @override
