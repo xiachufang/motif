@@ -150,7 +150,8 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     try {
       final worker = await TerminalWorkerClient.spawn(
         onHostWrite: _onHostWrite,
-        onSnapshot: (snapshot) => _onWorkerSnapshot(generation, snapshot),
+        onSnapshot: (snapshot, acknowledge) =>
+            _onWorkerSnapshot(generation, snapshot, acknowledge),
         onInitialized: () => _onWorkerInitialized(generation),
         onError: (error) => _onWorkerError(generation, error),
       );
@@ -275,12 +276,24 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (mounted) setState(() {});
   }
 
-  void _onWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
-    if (!_isCurrentWorker(generation)) return;
-    // Isolate messages are not synchronized to Flutter's vsync. Keep the most
-    // recent snapshot and apply it once at the start of the next UI frame so a
-    // burst cannot cause several redundant rebuilds before one paint.
-    _pendingFrameSnapshot = (generation: generation, snapshot: snapshot);
+  void _onWorkerSnapshot(
+    int generation,
+    TerminalSnapshot snapshot,
+    void Function() acknowledge,
+  ) {
+    if (!_isCurrentWorker(generation)) {
+      acknowledge();
+      return;
+    }
+    // Isolate messages are not synchronized to Flutter's vsync. Apply the
+    // frame at the next vsync boundary, then acknowledge it so the worker can
+    // build at most one successor from all output accumulated in the meantime.
+    _pendingFrameSnapshot?.acknowledge();
+    _pendingFrameSnapshot = (
+      generation: generation,
+      snapshot: snapshot,
+      acknowledge: acknowledge,
+    );
     if (_snapshotFrameScheduled) return;
     _snapshotFrameScheduled = true;
     SchedulerBinding.instance.scheduleFrameCallback((_) {
@@ -288,7 +301,11 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       final pending = _pendingFrameSnapshot;
       _pendingFrameSnapshot = null;
       if (pending == null) return;
-      _applyWorkerSnapshot(pending.generation, pending.snapshot);
+      try {
+        _applyWorkerSnapshot(pending.generation, pending.snapshot);
+      } finally {
+        pending.acknowledge();
+      }
     });
   }
 
@@ -397,6 +414,8 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _terminalInitTimer?.cancel();
     final worker = _worker;
     _worker = null;
+    _pendingFrameSnapshot?.acknowledge();
+    _pendingFrameSnapshot = null;
     if (worker != null) unawaited(worker.dispose());
     _initialized = false;
     _workerStarting = false;
@@ -457,6 +476,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _workerNeedsColdResync = false;
     _snapshot = null;
+    _pendingFrameSnapshot?.acknowledge();
     _pendingFrameSnapshot = null;
     _discardTerminalSelectionState();
     _terminalRenderCache.clear();

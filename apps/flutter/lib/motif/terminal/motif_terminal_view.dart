@@ -147,7 +147,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final TerminalByteBatcher _remoteByteBatcher = TerminalByteBatcher();
   DateTime? _lastHostWriteAt;
   TerminalSnapshot? _snapshot;
-  ({int generation, TerminalSnapshot snapshot})? _pendingFrameSnapshot;
+  ({int generation, TerminalSnapshot snapshot, void Function() acknowledge})?
+  _pendingFrameSnapshot;
   bool _snapshotFrameScheduled = false;
   TerminalSelection? _selection;
   TerminalCellPoint? _mouseSelectionAnchor;
@@ -266,6 +267,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _terminalInitTimer?.cancel();
     _remoteByteFlushTimer?.cancel();
     _retryTimer?.cancel();
+    _pendingFrameSnapshot?.acknowledge();
     _pendingFrameSnapshot = null;
     _remoteByteBatcher.clear();
     _stopScrollInertia(resetVelocity: true);

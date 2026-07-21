@@ -14,7 +14,7 @@ void main() {
     final overflow = Completer<Object>();
     final worker = await TerminalWorkerClient.spawn(
       onHostWrite: (_) {},
-      onSnapshot: (_) {},
+      onSnapshot: (_, acknowledge) => acknowledge(),
       onInitialized: () {},
       onError: overflow.complete,
       maxPendingFeedBytes: 4,
@@ -36,9 +36,10 @@ void main() {
 
     final worker = await TerminalWorkerClient.spawn(
       onHostWrite: (bytes) => hostWrites.addAll(bytes),
-      onSnapshot: (snapshot) {
+      onSnapshot: (snapshot, acknowledge) {
         emittedSnapshots.add(snapshot);
         snapshots.add(snapshot);
+        acknowledge();
       },
       onInitialized: initialized.complete,
       onError: (error) => fail('worker error: $error'),
@@ -100,4 +101,59 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(hostWrites, contains(0x61));
   });
+
+  test(
+    'worker waits for frame acknowledgement before emitting another',
+    () async {
+      final initialized = Completer<void>();
+      final firstFrame = Completer<void>();
+      final secondFrame = Completer<TerminalSnapshot>();
+      late void Function() acknowledgeFirst;
+      var deliveredFrames = 0;
+
+      final worker = await TerminalWorkerClient.spawn(
+        onHostWrite: (_) {},
+        onSnapshot: (snapshot, acknowledge) {
+          deliveredFrames++;
+          if (!firstFrame.isCompleted) {
+            acknowledgeFirst = acknowledge;
+            firstFrame.complete();
+            return;
+          }
+          acknowledge();
+          if (!secondFrame.isCompleted) secondFrame.complete(snapshot);
+        },
+        onInitialized: initialized.complete,
+        onError: (error) => fail('worker error: $error'),
+      );
+      addTearDown(worker.dispose);
+
+      worker.init(
+        cols: 20,
+        rows: 4,
+        screenWidth: 200,
+        screenHeight: 80,
+        cellWidth: 10,
+        cellHeight: 20,
+        paddingLeft: 0,
+        paddingTop: 0,
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+        waitForFirstFeed: true,
+      );
+      await initialized.future.timeout(const Duration(seconds: 2));
+
+      worker.feedBytes(Uint8List.fromList(utf8.encode('A')));
+      await firstFrame.future.timeout(const Duration(seconds: 2));
+      worker.feedBytes(Uint8List.fromList(utf8.encode('B')));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(deliveredFrames, 1);
+
+      acknowledgeFirst();
+      final snapshot = await secondFrame.future.timeout(
+        const Duration(seconds: 2),
+      );
+      expect(snapshot.visibleText, contains('AB'));
+    },
+  );
 }

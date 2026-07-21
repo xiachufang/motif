@@ -200,6 +200,99 @@ void main() {
     );
     expect(snapshot.selectedText(expected), '好');
   });
+
+  test('binary rows decode lazily and preserve visible text columns', () {
+    final encoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    encoder.startRow(0)
+      ..addCell(
+        col: 2,
+        widthCells: 1,
+        textBytes: const [0x61],
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+        drawsBackground: false,
+        bold: false,
+        italic: false,
+        invisible: false,
+      )
+      ..finish();
+    encoder.startRow(1).finish();
+
+    final snapshot = TerminalFrameUpdate.decode(
+      encoder.finish(0).bytes,
+    ).applyTo(null);
+    expect(snapshot.lines.every((row) => !row.cellsDecoded), isTrue);
+    expect(snapshot.lines.first.cells.single.text, 'a');
+    expect(snapshot.lines.first.cellsDecoded, isTrue);
+    expect(snapshot.lines.last.cellsDecoded, isFalse);
+    expect(snapshot.visibleText, '  a');
+  });
+
+  test('delta frame reuses unchanged row objects', () {
+    final fullEncoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    fullEncoder.startRow(0).finish();
+    fullEncoder.startRow(1).finish();
+    final first = TerminalFrameUpdate.decode(
+      fullEncoder.finish(0).bytes,
+    ).applyTo(null);
+
+    final deltaEncoder = TerminalFrameEncoder(
+      frameId: 2,
+      baseFrameId: 1,
+      full: false,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    deltaEncoder.startRow(1)
+      ..addCell(
+        col: 0,
+        widthCells: 1,
+        textBytes: const [0x62],
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+        drawsBackground: false,
+        bold: false,
+        italic: false,
+        invisible: false,
+      )
+      ..finish();
+    final second = TerminalFrameUpdate.decode(
+      deltaEncoder.finish(0).bytes,
+    ).applyTo(first);
+
+    expect(identical(second.lines[0], first.lines[0]), isTrue);
+    expect(identical(second.lines[1], first.lines[1]), isFalse);
+    expect(second.lines[1].cells.single.text, 'b');
+  });
+}
+
+TerminalFrameMetadata _metadata({required int cols, required int rows}) {
+  return TerminalFrameMetadata(
+    cols: cols,
+    rows: rows,
+    viewportOffset: 0,
+    scrollTotalRows: rows,
+    scrollViewportRows: rows,
+    backgroundArgb: 0xff000000,
+    foregroundArgb: 0xffffffff,
+    cursorArgb: 0xffffffff,
+    cursorVisible: false,
+    cursorInViewport: false,
+    cursorX: -1,
+    cursorY: -1,
+    cursorStyle: 0,
+    mouseTrackingActive: false,
+    alternateScreenActive: false,
+  );
 }
 
 TerminalSnapshot _snapshot(
@@ -231,10 +324,7 @@ TerminalSnapshot _snapshot(
 }
 
 TerminalSnapshotRow _row(List<TerminalSnapshotCell> cells) {
-  return TerminalSnapshotRow(
-    text: cells.map((cell) => cell.text).join(),
-    cells: cells,
-  );
+  return TerminalSnapshotRow(cells: cells);
 }
 
 List<TerminalSnapshotCell> _cellsFromText(String text) {

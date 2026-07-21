@@ -607,15 +607,15 @@ class TerminalSnapshotPainter extends CustomPainter {
     int rowIdx,
     TerminalRenderCache cache,
   ) {
-    final signature = _rowRenderSignature(row);
-    var picture = cache.pictureFor(signature);
+    final key = row.renderKey;
+    var picture = cache.pictureFor(key);
     if (picture == null) {
       final recorder = ui.PictureRecorder();
       final rowCanvas = Canvas(recorder);
       _drawCellBackgrounds(rowCanvas, row, 0);
       _drawTextRuns(rowCanvas, row, rowIdx, 0);
       picture = recorder.endRecording();
-      cache.put(signature, picture);
+      cache.put(key, picture);
     }
 
     final y = padding + rowIdx * cellHeight;
@@ -659,8 +659,8 @@ class TerminalSnapshotPainter extends CustomPainter {
 }
 
 class TerminalRenderCache {
-  final LinkedHashMap<int, _CachedTerminalRow> _rows =
-      LinkedHashMap<int, _CachedTerminalRow>();
+  final LinkedHashMap<TerminalRowRenderKey, _CachedTerminalRow> _rows =
+      LinkedHashMap<TerminalRowRenderKey, _CachedTerminalRow>();
   int? _configSignature;
   int _maxEntries = 256;
   bool _disposed = false;
@@ -683,7 +683,7 @@ class TerminalRenderCache {
       Object.hashAll(fontFamilyFallback),
       fontSize,
     );
-    _maxEntries = (rowCount * 4).clamp(128, 512);
+    _maxEntries = (rowCount * 8).clamp(128, 1024);
     if (_configSignature != nextConfig) {
       clear();
       _configSignature = nextConfig;
@@ -691,21 +691,21 @@ class TerminalRenderCache {
     _evictOverflow();
   }
 
-  ui.Picture? pictureFor(int signature) {
+  ui.Picture? pictureFor(TerminalRowRenderKey key) {
     if (_disposed) return null;
-    final cached = _rows.remove(signature);
+    final cached = _rows.remove(key);
     if (cached == null) return null;
-    _rows[signature] = cached;
+    _rows[key] = cached;
     return cached.picture;
   }
 
-  void put(int signature, ui.Picture picture) {
+  void put(TerminalRowRenderKey key, ui.Picture picture) {
     if (_disposed) {
       picture.dispose();
       return;
     }
-    _rows.remove(signature)?.picture.dispose();
-    _rows[signature] = _CachedTerminalRow(picture);
+    _rows.remove(key)?.picture.dispose();
+    _rows[key] = _CachedTerminalRow(picture);
     _evictOverflow();
   }
 
@@ -740,44 +740,6 @@ bool _isAsciiSingleWidthCell(TerminalSnapshotCell cell) {
   if (cell.widthCells != 1 || cell.text.length != 1) return false;
   final codeUnit = cell.text.codeUnitAt(0);
   return codeUnit >= 0x20 && codeUnit <= 0x7e;
-}
-
-int _rowRenderSignature(TerminalSnapshotRow row) {
-  var hash = _hashInt(0, row.cells.length);
-  for (final cell in row.cells) {
-    hash = _hashInt(hash, cell.col);
-    hash = _hashInt(hash, cell.widthCells);
-    hash = _hashString(hash, cell.text);
-    hash = _hashInt(hash, cell.foregroundArgb);
-    hash = _hashInt(hash, cell.backgroundArgb);
-    hash = _hashBool(hash, cell.drawsBackground);
-    hash = _hashBool(hash, cell.bold);
-    hash = _hashBool(hash, cell.italic);
-    hash = _hashBool(hash, cell.invisible);
-  }
-  return _finishHash(hash);
-}
-
-int _hashBool(int hash, bool value) => _hashInt(hash, value ? 1 : 0);
-
-int _hashString(int hash, String value) {
-  hash = _hashInt(hash, value.length);
-  for (var i = 0; i < value.length; i++) {
-    hash = _hashInt(hash, value.codeUnitAt(i));
-  }
-  return hash;
-}
-
-int _hashInt(int hash, int value) {
-  hash = 0x1fffffff & (hash + value);
-  hash = 0x1fffffff & (hash + ((0x0007ffff & hash) << 10));
-  return hash ^ (hash >> 6);
-}
-
-int _finishHash(int hash) {
-  hash = 0x1fffffff & (hash + ((0x03ffffff & hash) << 3));
-  hash = hash ^ (hash >> 11);
-  return 0x1fffffff & (hash + ((0x00003fff & hash) << 15));
 }
 
 class _CellBackgroundRun {

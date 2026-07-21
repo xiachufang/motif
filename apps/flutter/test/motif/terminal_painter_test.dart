@@ -23,10 +23,9 @@ void main() {
           .value,
       mouseTrackingActive: false,
       alternateScreenActive: false,
-      lines: const [
+      lines: [
         TerminalSnapshotRow(
-          text: 'M',
-          cells: [
+          cells: const [
             TerminalSnapshotCell(
               col: 0,
               widthCells: 1,
@@ -71,5 +70,78 @@ void main() {
       }
     }
     expect(contrastingPixels, greaterThan(0));
+  });
+
+  test('Picture cache hit does not decode an encoded row', () {
+    const metadata = TerminalFrameMetadata(
+      cols: 2,
+      rows: 1,
+      viewportOffset: 0,
+      scrollTotalRows: 1,
+      scrollViewportRows: 1,
+      backgroundArgb: 0xff000000,
+      foregroundArgb: 0xffffffff,
+      cursorArgb: 0xffffffff,
+      cursorVisible: false,
+      cursorInViewport: false,
+      cursorX: -1,
+      cursorY: -1,
+      cursorStyle: 0,
+      mouseTrackingActive: false,
+      alternateScreenActive: false,
+    );
+    final encoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: metadata,
+    );
+    encoder.startRow(0)
+      ..addCell(
+        col: 0,
+        widthCells: 1,
+        textBytes: const [0x4d],
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+        drawsBackground: false,
+        bold: false,
+        italic: false,
+        invisible: false,
+      )
+      ..finish();
+    final snapshot = TerminalFrameUpdate.decode(
+      encoder.finish(0).bytes,
+    ).applyTo(null);
+    final row = snapshot.lines.single;
+    expect(row.cellsDecoded, isFalse);
+
+    final cache = TerminalRenderCache();
+    addTearDown(cache.dispose);
+    cache.prepare(
+      rowCount: 1,
+      cellWidth: 14,
+      cellHeight: 20,
+      padding: 0,
+      fontFamily: 'Menlo',
+      fontFamilyFallback: const [],
+      fontSize: 14,
+    );
+    final cachedRecorder = ui.PictureRecorder();
+    Canvas(cachedRecorder);
+    cache.put(row.renderKey, cachedRecorder.endRecording());
+
+    final recorder = ui.PictureRecorder();
+    TerminalSnapshotPainter(
+      snapshot: snapshot,
+      cellWidth: 14,
+      cellHeight: 20,
+      padding: 0,
+      fontSize: 14,
+      showCursor: false,
+      renderCache: cache,
+    ).paint(Canvas(recorder), const Size(28, 20));
+    recorder.endRecording().dispose();
+
+    expect(row.cellsDecoded, isFalse);
   });
 }

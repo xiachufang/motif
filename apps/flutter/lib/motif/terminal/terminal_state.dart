@@ -37,8 +37,46 @@ class TerminalState {
 
   final Pointer<Uint8> _keyBuf = calloc.allocate<Uint8>(256);
   final Pointer<Size> _keyLen = calloc<Size>();
+  Pointer<Uint8> _feedBuf = calloc<Uint8>(16 * 1024);
+  int _feedBufCapacity = 16 * 1024;
+  Pointer<Uint8> _keyTextBuf = calloc<Uint8>(64);
+  int _keyTextBufCapacity = 64;
   final Pointer<Uint32> _graphemeBuf = calloc<Uint32>(32);
   final Pointer<Uint32> _graphemeLen = calloc<Uint32>();
+  final Pointer<Int32> _dirtyPtr = calloc<Int32>();
+  final Pointer<Bool> _rowDirtyPtr = calloc<Bool>();
+  final Pointer<Bool> _rowDirtyValuePtr = calloc<Bool>();
+  final Pointer<Size> _multiWrittenPtr = calloc<Size>();
+  final Pointer<Bool> _cursorVisiblePtr = calloc<Bool>();
+  final Pointer<Bool> _cursorInViewportPtr = calloc<Bool>();
+  final Pointer<Uint16> _cursorXPtr = calloc<Uint16>();
+  final Pointer<Uint16> _cursorYPtr = calloc<Uint16>();
+  final Pointer<Int32> _cursorStylePtr = calloc<Int32>();
+  final Pointer<Bool> _cursorHasColorPtr = calloc<Bool>();
+  final Pointer<GhosttyColorRgb> _cursorColorPtr = calloc<GhosttyColorRgb>();
+  final Pointer<Bool> _mouseTrackingPtr = calloc<Bool>();
+  final Pointer<Int32> _activeScreenPtr = calloc<Int32>();
+  final Pointer<GhosttyTerminalScrollbar> _scrollbarPtr =
+      calloc<GhosttyTerminalScrollbar>();
+  final Pointer<GhosttyTerminalScrollViewport> _scrollViewportPtr =
+      calloc<GhosttyTerminalScrollViewport>();
+  final Pointer<GhosttyMousePosition> _mousePositionPtr =
+      calloc<GhosttyMousePosition>();
+  final Pointer<GhosttyMouseEncoderSize> _mouseEncoderSizePtr =
+      calloc<GhosttyMouseEncoderSize>();
+  final Pointer<GhosttyBuffer> _cellUtf8BufferPtr = calloc<GhosttyBuffer>();
+  Pointer<Uint8> _cellUtf8Bytes = calloc<Uint8>(64);
+  int _cellUtf8Capacity = 64;
+  late final Pointer<UnsignedInt> _rowGetKeys;
+  late final Pointer<Pointer<Void>> _rowGetValues;
+  late final Pointer<UnsignedInt> _cellGetKeys;
+  late final Pointer<Pointer<Void>> _cellGetValues;
+  late final Pointer<UnsignedInt> _cursorGetKeys;
+  late final Pointer<Pointer<Void>> _cursorGetValues;
+  late final Pointer<UnsignedInt> _cursorPositionKeys;
+  late final Pointer<Pointer<Void>> _cursorPositionValues;
+  late final Pointer<UnsignedInt> _terminalGetKeys;
+  late final Pointer<Pointer<Void>> _terminalGetValues;
 
   TerminalState({required this.onHostWrite});
 
@@ -100,6 +138,7 @@ class TerminalState {
     // Create row cells
     _rowCellsPtr = calloc<GhosttyRenderStateRowCells>();
     ghostty_render_state_row_cells_new(nullptr, _rowCellsPtr);
+    _initializeFrameScratch();
 
     // Create key encoder + event
     final kePtr = calloc<GhosttyKeyEncoder>();
@@ -124,13 +163,87 @@ class TerminalState {
     calloc.free(mevtPtr);
   }
 
+  void _initializeFrameScratch() {
+    _rowGetKeys = calloc<UnsignedInt>(2);
+    _rowGetValues = calloc<Pointer<Void>>(2);
+    _rowGetKeys[0] =
+        GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY.value;
+    _rowGetKeys[1] =
+        GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS.value;
+    _rowGetValues[0] = _rowDirtyPtr.cast();
+    _rowGetValues[1] = _rowCellsPtr.cast();
+
+    _cellGetKeys = calloc<UnsignedInt>(3);
+    _cellGetValues = calloc<Pointer<Void>>(3);
+    _cellGetKeys[0] = GhosttyRenderStateRowCellsData
+        .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW
+        .value;
+    _cellGetKeys[1] = GhosttyRenderStateRowCellsData
+        .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE
+        .value;
+    _cellGetKeys[2] = GhosttyRenderStateRowCellsData
+        .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8
+        .value;
+    _cellGetValues[0] = _cellPtr.cast();
+    _cellGetValues[1] = _stylePtr.cast();
+    _cellGetValues[2] = _cellUtf8BufferPtr.cast();
+    _cellUtf8BufferPtr.ref
+      ..ptr = _cellUtf8Bytes
+      ..cap = _cellUtf8Capacity
+      ..len = 0;
+
+    _cursorGetKeys = calloc<UnsignedInt>(4);
+    _cursorGetValues = calloc<Pointer<Void>>(4);
+    _cursorGetKeys[0] =
+        GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE.value;
+    _cursorGetKeys[1] = GhosttyRenderStateData
+        .GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE
+        .value;
+    _cursorGetKeys[2] = GhosttyRenderStateData
+        .GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE
+        .value;
+    _cursorGetKeys[3] = GhosttyRenderStateData
+        .GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR_HAS_VALUE
+        .value;
+    _cursorGetValues[0] = _cursorVisiblePtr.cast();
+    _cursorGetValues[1] = _cursorInViewportPtr.cast();
+    _cursorGetValues[2] = _cursorStylePtr.cast();
+    _cursorGetValues[3] = _cursorHasColorPtr.cast();
+
+    _cursorPositionKeys = calloc<UnsignedInt>(2);
+    _cursorPositionValues = calloc<Pointer<Void>>(2);
+    _cursorPositionKeys[0] = GhosttyRenderStateData
+        .GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X
+        .value;
+    _cursorPositionKeys[1] = GhosttyRenderStateData
+        .GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y
+        .value;
+    _cursorPositionValues[0] = _cursorXPtr.cast();
+    _cursorPositionValues[1] = _cursorYPtr.cast();
+
+    _terminalGetKeys = calloc<UnsignedInt>(3);
+    _terminalGetValues = calloc<Pointer<Void>>(3);
+    _terminalGetKeys[0] =
+        GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING.value;
+    _terminalGetKeys[1] =
+        GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN.value;
+    _terminalGetKeys[2] =
+        GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_SCROLLBAR.value;
+    _terminalGetValues[0] = _mouseTrackingPtr.cast();
+    _terminalGetValues[1] = _activeScreenPtr.cast();
+    _terminalGetValues[2] = _scrollbarPtr.cast();
+  }
+
   /// Feed bytes received from the remote PTY (network mode) into the engine.
   void feedBytes(Uint8List data) {
     if (data.isEmpty) return;
-    final ptr = calloc<Uint8>(data.length);
-    ptr.asTypedList(data.length).setAll(0, data);
-    ghostty_terminal_vt_write(_terminal, ptr, data.length);
-    calloc.free(ptr);
+    if (data.length > _feedBufCapacity) {
+      calloc.free(_feedBuf);
+      _feedBufCapacity = _nextBufferCapacity(data.length);
+      _feedBuf = calloc<Uint8>(_feedBufCapacity);
+    }
+    _feedBuf.asTypedList(data.length).setAll(0, data);
+    ghostty_terminal_vt_write(_terminal, _feedBuf, data.length);
   }
 
   void dispose() {
@@ -147,8 +260,39 @@ class TerminalState {
     ghostty_terminal_free(_terminal);
     calloc.free(_keyBuf);
     calloc.free(_keyLen);
+    calloc.free(_feedBuf);
+    calloc.free(_keyTextBuf);
     calloc.free(_graphemeBuf);
     calloc.free(_graphemeLen);
+    calloc.free(_dirtyPtr);
+    calloc.free(_rowDirtyPtr);
+    calloc.free(_rowDirtyValuePtr);
+    calloc.free(_multiWrittenPtr);
+    calloc.free(_cursorVisiblePtr);
+    calloc.free(_cursorInViewportPtr);
+    calloc.free(_cursorXPtr);
+    calloc.free(_cursorYPtr);
+    calloc.free(_cursorStylePtr);
+    calloc.free(_cursorHasColorPtr);
+    calloc.free(_cursorColorPtr);
+    calloc.free(_mouseTrackingPtr);
+    calloc.free(_activeScreenPtr);
+    calloc.free(_scrollbarPtr);
+    calloc.free(_scrollViewportPtr);
+    calloc.free(_mousePositionPtr);
+    calloc.free(_mouseEncoderSizePtr);
+    calloc.free(_cellUtf8BufferPtr);
+    calloc.free(_cellUtf8Bytes);
+    calloc.free(_rowGetKeys);
+    calloc.free(_rowGetValues);
+    calloc.free(_cellGetKeys);
+    calloc.free(_cellGetValues);
+    calloc.free(_cursorGetKeys);
+    calloc.free(_cursorGetValues);
+    calloc.free(_cursorPositionKeys);
+    calloc.free(_cursorPositionValues);
+    calloc.free(_terminalGetKeys);
+    calloc.free(_terminalGetValues);
     calloc.free(_colorsPtr);
     calloc.free(_stylePtr);
     calloc.free(_cellPtr);
@@ -195,26 +339,21 @@ class TerminalState {
   }
 
   GhosttyRenderStateDirty getDirty() {
-    final out = calloc<Int32>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_DIRTY,
-      out.cast(),
+      _dirtyPtr.cast(),
     );
-    final val = GhosttyRenderStateDirty.fromValue(out.value);
-    calloc.free(out);
-    return val;
+    return GhosttyRenderStateDirty.fromValue(_dirtyPtr.value);
   }
 
   void setDirty(GhosttyRenderStateDirty dirty) {
-    final val = calloc<Int32>();
-    val.value = dirty.value;
+    _dirtyPtr.value = dirty.value;
     ghostty_render_state_set(
       _renderState,
       GhosttyRenderStateOption.GHOSTTY_RENDER_STATE_OPTION_DIRTY,
-      val.cast(),
+      _dirtyPtr.cast(),
     );
-    calloc.free(val);
   }
 
   GhosttyRenderStateColors getColors() {
@@ -254,26 +393,21 @@ class TerminalState {
   }
 
   bool isRowDirty() {
-    final out = calloc<Bool>();
     ghostty_render_state_row_get(
       _rowIteratorPtr.value,
       GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
-      out.cast(),
+      _rowDirtyPtr.cast(),
     );
-    final val = out.value;
-    calloc.free(out);
-    return val;
+    return _rowDirtyPtr.value;
   }
 
   void setRowDirty(bool dirty) {
-    final val = calloc<Bool>();
-    val.value = dirty;
+    _rowDirtyValuePtr.value = dirty;
     ghostty_render_state_row_set(
       _rowIteratorPtr.value,
       GhosttyRenderStateRowOption.GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY,
-      val.cast(),
+      _rowDirtyValuePtr.cast(),
     );
-    calloc.free(val);
   }
 
   void populateRowCells() {
@@ -377,105 +511,184 @@ class TerminalState {
 
   // Cursor info
   bool get cursorVisible {
-    final out = calloc<Bool>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE,
-      out.cast(),
+      _cursorVisiblePtr.cast(),
     );
-    final val = out.value;
-    calloc.free(out);
-    return val;
+    return _cursorVisiblePtr.value;
   }
 
   bool get cursorInViewport {
-    final out = calloc<Bool>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData
           .GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE,
-      out.cast(),
+      _cursorInViewportPtr.cast(),
     );
-    final val = out.value;
-    calloc.free(out);
-    return val;
+    return _cursorInViewportPtr.value;
   }
 
   int get cursorX {
-    final out = calloc<Uint16>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X,
-      out.cast(),
+      _cursorXPtr.cast(),
     );
-    final val = out.value;
-    calloc.free(out);
-    return val;
+    return _cursorXPtr.value;
   }
 
   int get cursorY {
-    final out = calloc<Uint16>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y,
-      out.cast(),
+      _cursorYPtr.cast(),
     );
-    final val = out.value;
-    calloc.free(out);
-    return val;
+    return _cursorYPtr.value;
   }
 
   GhosttyRenderStateCursorVisualStyle get cursorStyle {
-    final out = calloc<Int32>();
     ghostty_render_state_get(
       _renderState,
       GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE,
-      out.cast(),
+      _cursorStylePtr.cast(),
     );
-    final val = GhosttyRenderStateCursorVisualStyle.fromValue(out.value);
-    calloc.free(out);
-    return val;
+    return GhosttyRenderStateCursorVisualStyle.fromValue(_cursorStylePtr.value);
   }
 
   bool get mouseTrackingActive {
-    final out = calloc<Bool>();
     final result = ghostty_terminal_get(
       _terminal,
       GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
-      out.cast(),
+      _mouseTrackingPtr.cast(),
     );
-    final val = result == GhosttyResult.GHOSTTY_SUCCESS && out.value;
-    calloc.free(out);
-    return val;
+    return result == GhosttyResult.GHOSTTY_SUCCESS && _mouseTrackingPtr.value;
   }
 
   bool get alternateScreenActive {
-    final out = calloc<Int32>();
     final result = ghostty_terminal_get(
       _terminal,
       GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
-      out.cast(),
+      _activeScreenPtr.cast(),
     );
-    final val =
-        result == GhosttyResult.GHOSTTY_SUCCESS &&
-        out.value ==
+    return result == GhosttyResult.GHOSTTY_SUCCESS &&
+        _activeScreenPtr.value ==
             GhosttyTerminalScreen.GHOSTTY_TERMINAL_SCREEN_ALTERNATE.value;
-    calloc.free(out);
-    return val;
   }
 
   ({int total, int offset, int length}) get scrollbarMetrics {
-    final out = calloc<GhosttyTerminalScrollbar>();
     final result = ghostty_terminal_get(
       _terminal,
       GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_SCROLLBAR,
-      out.cast(),
+      _scrollbarPtr.cast(),
     );
     final metrics = result == GhosttyResult.GHOSTTY_SUCCESS
-        ? (total: out.ref.total, offset: out.ref.offset, length: out.ref.len)
+        ? (
+            total: _scrollbarPtr.ref.total,
+            offset: _scrollbarPtr.ref.offset,
+            length: _scrollbarPtr.ref.len,
+          )
         : (total: rows, offset: 0, length: rows);
-    calloc.free(out);
     return metrics;
+  }
+
+  ({bool visible, bool inViewport, int x, int y, int style, int? colorArgb})
+  readCursorState() {
+    final result = ghostty_render_state_get_multi(
+      _renderState,
+      4,
+      _cursorGetKeys,
+      _cursorGetValues,
+      _multiWrittenPtr,
+    );
+    if (result != GhosttyResult.GHOSTTY_SUCCESS) {
+      throw StateError('failed to read terminal cursor state: $result');
+    }
+    final inViewport = _cursorInViewportPtr.value;
+    if (inViewport) {
+      final positionResult = ghostty_render_state_get_multi(
+        _renderState,
+        2,
+        _cursorPositionKeys,
+        _cursorPositionValues,
+        _multiWrittenPtr,
+      );
+      if (positionResult != GhosttyResult.GHOSTTY_SUCCESS) {
+        throw StateError(
+          'failed to read terminal cursor position: $positionResult',
+        );
+      }
+    }
+    int? colorArgb;
+    if (_cursorHasColorPtr.value) {
+      final colorResult = ghostty_render_state_get(
+        _renderState,
+        GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR,
+        _cursorColorPtr.cast(),
+      );
+      if (colorResult != GhosttyResult.GHOSTTY_SUCCESS) {
+        throw StateError('failed to read terminal cursor color: $colorResult');
+      }
+      colorArgb = _rgbArgb(
+        _cursorColorPtr.ref.r,
+        _cursorColorPtr.ref.g,
+        _cursorColorPtr.ref.b,
+      );
+    }
+    return (
+      visible: _cursorVisiblePtr.value,
+      inViewport: inViewport,
+      x: inViewport ? _cursorXPtr.value : -1,
+      y: inViewport ? _cursorYPtr.value : -1,
+      style: _cursorStylePtr.value,
+      colorArgb: colorArgb,
+    );
+  }
+
+  TerminalFrameMetadata captureFrameMetadata({
+    required int defaultForegroundArgb,
+    required int defaultBackgroundArgb,
+    required ({
+      bool visible,
+      bool inViewport,
+      int x,
+      int y,
+      int style,
+      int? colorArgb,
+    })
+    cursor,
+    TerminalSelection? selection,
+  }) {
+    final result = ghostty_terminal_get_multi(
+      _terminal,
+      3,
+      _terminalGetKeys,
+      _terminalGetValues,
+      _multiWrittenPtr,
+    );
+    if (result != GhosttyResult.GHOSTTY_SUCCESS) {
+      throw StateError('failed to read terminal frame metadata: $result');
+    }
+    return TerminalFrameMetadata(
+      cols: cols,
+      rows: rows,
+      viewportOffset: _scrollbarPtr.ref.offset,
+      scrollTotalRows: _scrollbarPtr.ref.total,
+      scrollViewportRows: _scrollbarPtr.ref.len,
+      backgroundArgb: defaultBackgroundArgb,
+      foregroundArgb: defaultForegroundArgb,
+      cursorArgb: cursor.colorArgb ?? defaultForegroundArgb,
+      cursorVisible: cursor.visible,
+      cursorInViewport: cursor.inViewport,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      cursorStyle: cursor.style,
+      mouseTrackingActive: _mouseTrackingPtr.value,
+      alternateScreenActive:
+          _activeScreenPtr.value ==
+          GhosttyTerminalScreen.GHOSTTY_TERMINAL_SCREEN_ALTERNATE.value,
+      selection: selection,
+    );
   }
 
   int get viewportOffset => scrollbarMetrics.offset;
@@ -814,8 +1027,18 @@ class TerminalState {
     ghostty_key_event_set_unshifted_codepoint(_keyEvent, unshiftedCodepoint);
 
     if (text != null && text.isNotEmpty) {
-      final utf8 = text.toNativeUtf8();
-      ghostty_key_event_set_utf8(_keyEvent, utf8.cast(), text.length);
+      final textBytes = utf8.encode(text);
+      if (textBytes.length > _keyTextBufCapacity) {
+        calloc.free(_keyTextBuf);
+        _keyTextBufCapacity = _nextBufferCapacity(textBytes.length);
+        _keyTextBuf = calloc<Uint8>(_keyTextBufCapacity);
+      }
+      _keyTextBuf.asTypedList(textBytes.length).setAll(0, textBytes);
+      ghostty_key_event_set_utf8(
+        _keyEvent,
+        _keyTextBuf.cast(),
+        textBytes.length,
+      );
       final result = ghostty_key_encoder_encode(
         _keyEncoder,
         _keyEvent,
@@ -823,7 +1046,6 @@ class TerminalState {
         256,
         _keyLen,
       );
-      calloc.free(utf8);
       if (result == GhosttyResult.GHOSTTY_SUCCESS && _keyLen.value > 0) {
         _writeOut(_keyBuf, _keyLen.value);
       }
@@ -859,11 +1081,9 @@ class TerminalState {
     }
     ghostty_mouse_event_set_mods(_mouseEvent, mods);
 
-    final pos = calloc<GhosttyMousePosition>();
-    pos.ref.x = x;
-    pos.ref.y = y;
-    ghostty_mouse_event_set_position(_mouseEvent, pos.ref);
-    calloc.free(pos);
+    _mousePositionPtr.ref.x = x;
+    _mousePositionPtr.ref.y = y;
+    ghostty_mouse_event_set_position(_mouseEvent, _mousePositionPtr.ref);
 
     final result = ghostty_mouse_encoder_encode(
       _mouseEncoder,
@@ -890,20 +1110,16 @@ class TerminalState {
 
   // Scroll
   void scroll(int delta) {
-    final sv = calloc<GhosttyTerminalScrollViewport>();
-    sv.ref.tagAsInt =
+    _scrollViewportPtr.ref.tagAsInt =
         GhosttyTerminalScrollViewportTag.GHOSTTY_SCROLL_VIEWPORT_DELTA.value;
-    sv.ref.value.delta = delta;
-    ghostty_terminal_scroll_viewport(_terminal, sv.ref);
-    calloc.free(sv);
+    _scrollViewportPtr.ref.value.delta = delta;
+    ghostty_terminal_scroll_viewport(_terminal, _scrollViewportPtr.ref);
   }
 
   void scrollToBottom() {
-    final sv = calloc<GhosttyTerminalScrollViewport>();
-    sv.ref.tagAsInt =
+    _scrollViewportPtr.ref.tagAsInt =
         GhosttyTerminalScrollViewportTag.GHOSTTY_SCROLL_VIEWPORT_BOTTOM.value;
-    ghostty_terminal_scroll_viewport(_terminal, sv.ref);
-    calloc.free(sv);
+    ghostty_terminal_scroll_viewport(_terminal, _scrollViewportPtr.ref);
   }
 
   void scrollToOffset(int offset) {
@@ -925,22 +1141,20 @@ class TerminalState {
     int paddingLeft,
     int paddingTop,
   ) {
-    final size = calloc<GhosttyMouseEncoderSize>();
-    size.ref.size = sizeOf<GhosttyMouseEncoderSize>();
-    size.ref.screen_width = screenWidth;
-    size.ref.screen_height = screenHeight;
-    size.ref.cell_width = cellWidth;
-    size.ref.cell_height = cellHeight;
-    size.ref.padding_left = paddingLeft;
-    size.ref.padding_top = paddingTop;
-    size.ref.padding_right = 0;
-    size.ref.padding_bottom = 0;
+    _mouseEncoderSizePtr.ref.size = sizeOf<GhosttyMouseEncoderSize>();
+    _mouseEncoderSizePtr.ref.screen_width = screenWidth;
+    _mouseEncoderSizePtr.ref.screen_height = screenHeight;
+    _mouseEncoderSizePtr.ref.cell_width = cellWidth;
+    _mouseEncoderSizePtr.ref.cell_height = cellHeight;
+    _mouseEncoderSizePtr.ref.padding_left = paddingLeft;
+    _mouseEncoderSizePtr.ref.padding_top = paddingTop;
+    _mouseEncoderSizePtr.ref.padding_right = 0;
+    _mouseEncoderSizePtr.ref.padding_bottom = 0;
     ghostty_mouse_encoder_setopt(
       _mouseEncoder,
       GhosttyMouseEncoderOption.GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
-      size.cast(),
+      _mouseEncoderSizePtr.cast(),
     );
-    calloc.free(size);
   }
 
   // Cache palette
@@ -948,6 +1162,14 @@ class TerminalState {
     256,
   );
   bool _paletteDirty = true;
+
+  int _nextBufferCapacity(int required) {
+    var capacity = 64;
+    while (capacity < required) {
+      capacity *= 2;
+    }
+    return capacity;
+  }
 
   void _refreshPalette() {
     ghostty_render_state_get(
@@ -968,93 +1190,144 @@ class TerminalState {
     _paletteDirty = true;
   }
 
+  TerminalFrameEncodingResult encodeFrame({
+    required int frameId,
+    required int baseFrameId,
+    required bool full,
+    required TerminalFrameMetadata metadata,
+  }) {
+    final encoder = TerminalFrameEncoder(
+      frameId: frameId,
+      baseFrameId: baseFrameId,
+      full: full,
+      metadata: metadata,
+    );
+    populateRowIterator();
+    var rowIndex = 0;
+    while (rowIteratorNext()) {
+      final rowResult = ghostty_render_state_row_get_multi(
+        _rowIteratorPtr.value,
+        2,
+        _rowGetKeys,
+        _rowGetValues,
+        _multiWrittenPtr,
+      );
+      if (rowResult != GhosttyResult.GHOSTTY_SUCCESS) {
+        throw StateError('failed to read terminal row: $rowResult');
+      }
+      if (!full && !_rowDirtyPtr.value) {
+        rowIndex++;
+        continue;
+      }
+
+      final encodedRow = encoder.startRow(rowIndex);
+      var colIndex = 0;
+      while (rowCellsNext()) {
+        _readCurrentCellIntoScratch();
+        final wide = GhosttyCellWide.fromValue(_cellWidePtr.value);
+        if (wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
+          colIndex++;
+          continue;
+        }
+
+        final style = _stylePtr.ref;
+        var foreground = _resolveSnapshotColor(
+          style.fg_color,
+          metadata.foregroundArgb,
+        );
+        var background = _resolveSnapshotColor(
+          style.bg_color,
+          metadata.backgroundArgb,
+        );
+        if (style.inverse) {
+          final swap = foreground;
+          foreground = background;
+          background = swap;
+        }
+        if (style.faint) foreground = _withAlpha(foreground, 0x80);
+        final drawsBackground = background != metadata.backgroundArgb;
+        final textLength = _cellUtf8BufferPtr.ref.len;
+        if (textLength > 0 || drawsBackground) {
+          encodedRow.addCell(
+            col: colIndex,
+            widthCells: wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_WIDE ? 2 : 1,
+            textBytes: _cellUtf8Bytes.asTypedList(textLength),
+            foregroundArgb: foreground,
+            backgroundArgb: background,
+            drawsBackground: drawsBackground,
+            bold: style.bold,
+            italic: style.italic,
+            invisible: style.invisible,
+          );
+        }
+        colIndex++;
+      }
+      encodedRow.finish();
+      setRowDirty(false);
+      rowIndex++;
+    }
+    if (rowIndex != rows) {
+      throw StateError('terminal frame row count changed during encoding');
+    }
+    setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);
+    return encoder.finish(metadata.viewportOffset);
+  }
+
+  void _readCurrentCellIntoScratch() {
+    while (true) {
+      _stylePtr.ref.size = sizeOf<GhosttyStyle>();
+      _cellUtf8BufferPtr.ref.len = 0;
+      final result = ghostty_render_state_row_cells_get_multi(
+        _rowCellsPtr.value,
+        3,
+        _cellGetKeys,
+        _cellGetValues,
+        _multiWrittenPtr,
+      );
+      if (result == GhosttyResult.GHOSTTY_SUCCESS) break;
+      if (result != GhosttyResult.GHOSTTY_OUT_OF_SPACE) {
+        throw StateError('failed to read terminal cell: $result');
+      }
+      final required = _cellUtf8BufferPtr.ref.len;
+      if (required <= _cellUtf8Capacity) {
+        throw StateError('invalid terminal grapheme buffer size: $required');
+      }
+      calloc.free(_cellUtf8Bytes);
+      _cellUtf8Capacity = required;
+      _cellUtf8Bytes = calloc<Uint8>(_cellUtf8Capacity);
+      _cellUtf8BufferPtr.ref
+        ..ptr = _cellUtf8Bytes
+        ..cap = _cellUtf8Capacity;
+    }
+    final wideResult = ghostty_cell_get(
+      _cellPtr.value,
+      GhosttyCellData.GHOSTTY_CELL_DATA_WIDE,
+      _cellWidePtr.cast(),
+    );
+    if (wideResult != GhosttyResult.GHOSTTY_SUCCESS) {
+      throw StateError('failed to read terminal cell width: $wideResult');
+    }
+  }
+
   TerminalSnapshot snapshot({
     required int defaultForegroundArgb,
     required int defaultBackgroundArgb,
     TerminalSelection? selection,
   }) {
-    final colors = this.colors;
-    final bgColor = defaultBackgroundArgb;
-    final fgDefault = defaultForegroundArgb;
-    final cursorColor = colors.cursor_has_value
-        ? _rgbArgb(colors.cursor.r, colors.cursor.g, colors.cursor.b)
-        : fgDefault;
-    final scrollbar = scrollbarMetrics;
-
-    final lines = <TerminalSnapshotRow>[];
-    populateRowIterator();
-    while (rowIteratorNext()) {
-      final rowText = StringBuffer();
-      final cells = <TerminalSnapshotCell>[];
-      populateRowCells();
-      var colIdx = 0;
-      while (rowCellsNext()) {
-        final wide = cellWide;
-        final graphemeLen = getCellGraphemeLen();
-        final grapheme = graphemeLen > 0 ? getCellGrapheme(graphemeLen) : '';
-        rowText.write(grapheme);
-
-        if (wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
-          colIdx++;
-          continue;
-        }
-
-        final style = cellStyle;
-        var fg = _resolveSnapshotColor(style.fg_color, fgDefault);
-        var bg = _resolveSnapshotColor(style.bg_color, bgColor);
-        if (style.inverse) {
-          final tmp = fg;
-          fg = bg;
-          bg = tmp;
-        }
-        if (style.faint) {
-          fg = _withAlpha(fg, 0x80);
-        }
-        final drawsBackground = bg != bgColor;
-        if (grapheme.isNotEmpty || drawsBackground) {
-          cells.add(
-            TerminalSnapshotCell(
-              col: colIdx,
-              widthCells: wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_WIDE
-                  ? 2
-                  : 1,
-              text: grapheme,
-              foregroundArgb: fg,
-              backgroundArgb: bg,
-              drawsBackground: drawsBackground,
-              bold: style.bold,
-              italic: style.italic,
-              invisible: style.invisible,
-            ),
-          );
-        }
-        colIdx++;
-      }
-      setRowDirty(false);
-      lines.add(TerminalSnapshotRow(text: rowText.toString(), cells: cells));
-    }
-
-    final snapshot = TerminalSnapshot(
-      cols: cols,
-      rows: rows,
-      viewportOffset: scrollbar.offset,
-      scrollTotalRows: scrollbar.total,
-      scrollViewportRows: scrollbar.length,
-      backgroundArgb: bgColor,
-      foregroundArgb: fgDefault,
-      cursorArgb: cursorColor,
-      cursorVisible: cursorVisible,
-      cursorInViewport: cursorInViewport,
-      cursorX: cursorInViewport ? cursorX : -1,
-      cursorY: cursorInViewport ? cursorY : -1,
-      cursorStyle: cursorStyle.value,
-      mouseTrackingActive: mouseTrackingActive,
-      alternateScreenActive: alternateScreenActive,
+    final cursor = readCursorState();
+    final metadata = captureFrameMetadata(
+      defaultForegroundArgb: defaultForegroundArgb,
+      defaultBackgroundArgb: defaultBackgroundArgb,
+      cursor: cursor,
       selection: selection,
-      lines: lines,
     );
-    setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);
-    return snapshot;
+    final encoded = encodeFrame(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: metadata,
+    );
+    return TerminalFrameUpdate.decode(encoded.bytes).applyTo(null);
   }
 
   int _resolveSnapshotColor(GhosttyStyleColor styleColor, int defaultColor) {
@@ -1080,9 +1353,6 @@ class TerminalState {
   // Write raw bytes to the host (the remote PTY, via the network sink).
   void writeToPty(Uint8List data) {
     if (data.isEmpty) return;
-    final ptr = calloc<Uint8>(data.length);
-    ptr.asTypedList(data.length).setAll(0, data);
-    _writeOut(ptr, data.length);
-    calloc.free(ptr);
+    onHostWrite(data);
   }
 }

@@ -2,33 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../theme/motif_theme.dart';
 
-/// Prevent macOS form fields from competing with their enclosing vertical
-/// scroll view for trackpad pan gestures.
-///
-/// EditableText owns a horizontal Scrollable even when a single-line field is
-/// empty. On macOS that Scrollable can enter the PointerPanZoom gesture arena
-/// while the pointer is over the field, interrupting the outer view's edge
-/// drag. Programmatic/implicit scrolling stays enabled so caret movement still
-/// reveals text that extends beyond the field.
-ScrollPhysics? motifFormTextFieldScrollPhysics(BuildContext context) =>
-    Theme.of(context).platform == TargetPlatform.macOS
-    ? const _MotifFormTextFieldScrollPhysics()
-    : null;
-
-class _MotifFormTextFieldScrollPhysics extends ScrollPhysics {
-  const _MotifFormTextFieldScrollPhysics({super.parent});
-
-  @override
-  _MotifFormTextFieldScrollPhysics applyTo(ScrollPhysics? ancestor) =>
-      _MotifFormTextFieldScrollPhysics(parent: buildParent(ancestor));
-
-  @override
-  bool get allowUserScrolling => false;
-
-  @override
-  bool get allowImplicitScrolling => true;
-}
-
 /// Inset grouped form primitives used by the Motif settings-style screens.
 class MotifSection extends StatelessWidget {
   final String? title;

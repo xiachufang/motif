@@ -11,7 +11,7 @@ import 'terminal_state.dart';
 
 typedef TerminalWorkerBytesCallback = void Function(Uint8List bytes);
 typedef TerminalWorkerSnapshotCallback =
-    void Function(TerminalSnapshot snapshot);
+    void Function(TerminalSnapshot snapshot, void Function() acknowledge);
 typedef TerminalWorkerErrorCallback = void Function(Object error);
 
 class TerminalWorkerBacklogOverflow implements Exception {
@@ -73,6 +73,7 @@ class TerminalWorkerClient {
   int _nextCopyRequestId = 1;
   final Map<int, Completer<String?>> _copySelectionRequests =
       <int, Completer<String?>>{};
+  TerminalSnapshot? _lastSnapshot;
 
   static Future<TerminalWorkerClient> spawn({
     required TerminalWorkerBytesCallback onHostWrite,
@@ -379,9 +380,38 @@ class TerminalWorkerClient {
         if (data is TransferableTypedData) {
           _onHostWrite(data.materialize().asUint8List());
         }
-      case 'snapshot':
-        final snapshot = message['snapshot'];
-        if (snapshot is TerminalSnapshot) _onSnapshot(snapshot);
+      case 'frame':
+        final frameId = message['frameId'];
+        final data = message['bytes'];
+        if (frameId is! int) return;
+        var acknowledged = false;
+        void acknowledge() {
+          if (_disposed || acknowledged) return;
+          acknowledged = true;
+          _commands.send({'type': 'frameAck', 'frameId': frameId});
+        }
+
+        try {
+          if (data is! TransferableTypedData) {
+            throw const FormatException('terminal frame payload is missing');
+          }
+          final update = TerminalFrameUpdate.decode(
+            data.materialize().asUint8List(),
+          );
+          if (update.frameId != frameId) {
+            throw const FormatException('terminal frame id mismatch');
+          }
+          final snapshot = update.applyTo(_lastSnapshot);
+          _lastSnapshot = snapshot;
+          _onSnapshot(snapshot, acknowledge);
+        } catch (error) {
+          acknowledge();
+          _commands.send({'type': 'frameResync'});
+          Log.d(
+            'discarding terminal frame $frameId: $error',
+            name: 'motif.terminal.worker',
+          );
+        }
       case 'commandProcessed':
         final byteCount = message['feedBytes'];
         if (byteCount is int) {
@@ -430,6 +460,11 @@ class _TerminalWorker {
   DateTime? frameDueAt;
   Timer? cursorTimer;
   bool forceSnapshot = false;
+  bool forceFullFrame = true;
+  bool framePendingWhileInFlight = false;
+  int nextFrameId = 1;
+  int lastSentFrameId = 0;
+  int? inFlightFrameId;
   int foregroundArgb = 0xffffffff;
   int backgroundArgb = 0xff000000;
   _WorkerCursorSnapshot? lastCursor;
@@ -446,6 +481,15 @@ class _TerminalWorker {
 
   void _handleCommand(Object? command) {
     if (command is! Map) return;
+    switch (command['type']) {
+      case 'frameAck':
+        _ackFrame(command['frameId']);
+        return;
+      case 'frameResync':
+        forceFullFrame = true;
+        _scheduleSnapshot(force: true, delay: Duration.zero);
+        return;
+    }
     var processedFeedBytes = 0;
     try {
       switch (command['type']) {
@@ -454,6 +498,7 @@ class _TerminalWorker {
         case 'theme':
           foregroundArgb = command['foregroundArgb'] as int;
           backgroundArgb = command['backgroundArgb'] as int;
+          forceFullFrame = true;
           if (!waitingForFirstFeed) {
             _scheduleSnapshot(force: true, delay: Duration.zero);
           }
@@ -677,6 +722,10 @@ class _TerminalWorker {
   }) {
     forceSnapshot = forceSnapshot || force;
     if (state == null) return;
+    if (inFlightFrameId != null) {
+      framePendingWhileInFlight = true;
+      return;
+    }
     final dueAt = DateTime.now().add(delay);
     final existingDueAt = frameDueAt;
     if (frameTimer != null &&
@@ -694,7 +743,12 @@ class _TerminalWorker {
   }
 
   void _scheduleCursorPoll() {
-    if (state == null || frameTimer != null || cursorTimer != null) return;
+    if (state == null ||
+        inFlightFrameId != null ||
+        frameTimer != null ||
+        cursorTimer != null) {
+      return;
+    }
     cursorTimer = Timer(_cursorPollInterval, _pumpFrame);
   }
 
@@ -704,38 +758,74 @@ class _TerminalWorker {
     cursorTimer = null;
     final terminal = state;
     if (terminal == null) return;
+    if (inFlightFrameId != null) {
+      framePendingWhileInFlight = true;
+      return;
+    }
     final sw = Stopwatch()..start();
     terminal.updateRenderState();
-    final dirty =
-        terminal.getDirty() !=
-        GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE;
-    final cursor = _WorkerCursorSnapshot.fromState(terminal);
+    final dirty = terminal.getDirty();
+    final cursorState = terminal.readCursorState();
+    final cursor = _WorkerCursorSnapshot.fromRecord(cursorState);
     final cursorChanged = cursor != lastCursor;
     lastCursor = cursor;
-    if (!dirty && !cursorChanged && !forceSnapshot) {
+    if (dirty == GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE &&
+        !cursorChanged &&
+        !forceSnapshot &&
+        !forceFullFrame) {
       _scheduleCursorPoll();
       return;
     }
+    final full =
+        forceFullFrame ||
+        dirty == GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FULL;
     forceSnapshot = false;
-    final snapshot = terminal.snapshot(
+    forceFullFrame = false;
+    final metadata = terminal.captureFrameMetadata(
       defaultForegroundArgb: foregroundArgb,
       defaultBackgroundArgb: backgroundArgb,
+      cursor: cursorState,
       selection: terminal.trackedSelection(),
     );
-    framePacing.observeViewportOffset(snapshot.viewportOffset);
+    final frameId = nextFrameId++;
+    final encoded = terminal.encodeFrame(
+      frameId: frameId,
+      baseFrameId: full ? 0 : lastSentFrameId,
+      full: full,
+      metadata: metadata,
+    );
+    framePacing.observeViewportOffset(metadata.viewportOffset);
     diagnosticSnapshots++;
-    events.send({'type': 'snapshot', 'snapshot': snapshot});
+    inFlightFrameId = frameId;
+    lastSentFrameId = frameId;
+    events.send({
+      'type': 'frame',
+      'frameId': frameId,
+      'bytes': TransferableTypedData.fromList([encoded.bytes]),
+    });
     if (diagnosticSnapshots <= 3 || diagnosticSnapshots % 100 == 0) {
       events.send({
         'type': 'diagnostic',
         'info': diagnosticSnapshots <= 3,
         'message':
-            'snapshot count=$diagnosticSnapshots rows=${snapshot.lines.length} '
+            'frame count=$diagnosticSnapshots full=$full '
+            'rows=${encoded.encodedRows} cells=${encoded.encodedCells} '
+            'bytes=${encoded.bytes.length} '
             'feedChunks=$diagnosticFeedChunks feedBytes=$diagnosticFeedBytes '
             'buildUs=${sw.elapsedMicroseconds}',
       });
     }
-    _scheduleCursorPoll();
+  }
+
+  void _ackFrame(Object? value) {
+    if (value is! int || value != inFlightFrameId) return;
+    inFlightFrameId = null;
+    if (framePendingWhileInFlight || forceSnapshot || forceFullFrame) {
+      framePendingWhileInFlight = false;
+      _scheduleSnapshot(force: false, delay: Duration.zero);
+    } else {
+      _scheduleCursorPoll();
+    }
   }
 
   void _dispose() {
@@ -756,6 +846,11 @@ class _TerminalWorker {
     lastCursor = null;
     framePacing.reset();
     forceSnapshot = false;
+    forceFullFrame = true;
+    framePendingWhileInFlight = false;
+    nextFrameId = 1;
+    lastSentFrameId = 0;
+    inFlightFrameId = null;
     waitingForFirstFeed = false;
     diagnosticFeedChunks = 0;
     diagnosticFeedBytes = 0;
@@ -769,6 +864,7 @@ class _WorkerCursorSnapshot {
   final int x;
   final int y;
   final int style;
+  final int? colorArgb;
 
   const _WorkerCursorSnapshot({
     required this.visible,
@@ -776,16 +872,20 @@ class _WorkerCursorSnapshot {
     required this.x,
     required this.y,
     required this.style,
+    required this.colorArgb,
   });
 
-  factory _WorkerCursorSnapshot.fromState(TerminalState state) {
-    final inViewport = state.cursorInViewport;
+  factory _WorkerCursorSnapshot.fromRecord(
+    ({bool visible, bool inViewport, int x, int y, int style, int? colorArgb})
+    cursor,
+  ) {
     return _WorkerCursorSnapshot(
-      visible: state.cursorVisible,
-      inViewport: inViewport,
-      x: inViewport ? state.cursorX : -1,
-      y: inViewport ? state.cursorY : -1,
-      style: state.cursorStyle.value,
+      visible: cursor.visible,
+      inViewport: cursor.inViewport,
+      x: cursor.x,
+      y: cursor.y,
+      style: cursor.style,
+      colorArgb: cursor.colorArgb,
     );
   }
 
@@ -797,8 +897,9 @@ class _WorkerCursorSnapshot {
           other.inViewport == inViewport &&
           other.x == x &&
           other.y == y &&
-          other.style == style;
+          other.style == style &&
+          other.colorArgb == colorArgb;
 
   @override
-  int get hashCode => Object.hash(visible, inViewport, x, y, style);
+  int get hashCode => Object.hash(visible, inViewport, x, y, style, colorArgb);
 }
