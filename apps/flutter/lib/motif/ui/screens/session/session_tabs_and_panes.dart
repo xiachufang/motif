@@ -1,6 +1,6 @@
 part of '../session_screen.dart';
 
-class _TabBar extends StatelessWidget {
+class _TabBar extends StatefulWidget {
   final WorkspaceViewModel workspaceState;
   final TerminalController terminal;
   final ViewController views;
@@ -15,91 +15,143 @@ class _TabBar extends StatelessWidget {
   });
 
   @override
+  State<_TabBar> createState() => _TabBarState();
+}
+
+class _TabBarState extends State<_TabBar> {
+  static const _scrollDuration = Duration(milliseconds: 180);
+  static const _tabScrollCacheExtent = ScrollCacheExtent.pixels(100000);
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, GlobalKey> _tabKeys = {};
+  int? _revealSignature;
+  int _revealGeneration = 0;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final items = workspaceState.views.items;
+    final items = widget.workspaceState.views.items;
+    final descriptions = [for (final item in items) _describe(item)];
+    final itemIds = {for (final item in items) item.id};
+    _tabKeys.removeWhere((id, _) => !itemIds.contains(id));
+    for (final id in itemIds) {
+      _tabKeys.putIfAbsent(id, GlobalKey.new);
+    }
     return Container(
-      key: ValueKey(inTitleBar ? 'title-tab-bar' : 'body-tab-bar'),
+      key: ValueKey(widget.inTitleBar ? 'title-tab-bar' : 'body-tab-bar'),
       height: 44,
-      color: inTitleBar ? Colors.transparent : c.background,
+      color: widget.inTitleBar ? Colors.transparent : c.background,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
-            child: ReorderableListView.builder(
-              scrollDirection: Axis.horizontal,
-              buildDefaultDragHandles: false,
-              proxyDecorator: (child, index, animation) => AnimatedBuilder(
-                animation: animation,
-                child: child,
-                builder: (context, child) {
-                  final lift = Curves.easeOut.transform(animation.value);
-                  return Transform.scale(
-                    scale: 1 + lift * 0.04,
-                    child: Material(
-                      key: const ValueKey('tab-drag-feedback'),
-                      color: c.surfaceElevated,
-                      elevation: 8 * lift,
-                      shadowColor: c.shadow,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(MotifRadius.pill),
-                        side: BorderSide(
-                          color: c.accent.withValues(alpha: 0.75 * lift),
-                          width: 1.5,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                _scheduleActiveTabReveal(
+                  items: items,
+                  labels: [
+                    for (final description in descriptions) description.$2,
+                  ],
+                  viewportWidth: constraints.maxWidth,
+                );
+                return ReorderableListView.builder(
+                  scrollController: _scrollController,
+                  scrollDirection: Axis.horizontal,
+                  // Tabs are cheap, and retaining their render boxes lets an
+                  // activation reveal even a tab far outside the viewport.
+                  scrollCacheExtent: _tabScrollCacheExtent,
+                  buildDefaultDragHandles: false,
+                  proxyDecorator: (child, index, animation) => AnimatedBuilder(
+                    animation: animation,
+                    child: child,
+                    builder: (context, child) {
+                      final lift = Curves.easeOut.transform(animation.value);
+                      return Transform.scale(
+                        scale: 1 + lift * 0.04,
+                        child: Material(
+                          key: const ValueKey('tab-drag-feedback'),
+                          color: c.surfaceElevated,
+                          elevation: 8 * lift,
+                          shadowColor: c.shadow,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              MotifRadius.pill,
+                            ),
+                            side: BorderSide(
+                              color: c.accent.withValues(alpha: 0.75 * lift),
+                              width: 1.5,
+                            ),
+                          ),
+                          child: child,
+                        ),
+                      );
+                    },
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: MotifSpacing.sm,
+                    vertical: MotifSpacing.sm,
+                  ),
+                  itemCount: items.length,
+                  onReorderItem: (oldIndex, newIndex) {
+                    if (oldIndex < 0 || oldIndex >= items.length) return;
+                    final targetIndex = newIndex
+                        .clamp(0, items.length - 1)
+                        .toInt();
+                    if (targetIndex == oldIndex) return;
+                    final viewId = items[oldIndex].id;
+                    unawaited(
+                      widget.views.move(viewId, targetIndex).catchError((
+                        Object e,
+                      ) {
+                        if (context.mounted) {
+                          showMotifToast(context, 'Move tab failed: $e');
+                        }
+                      }),
+                    );
+                  },
+                  itemBuilder: (context, i) {
+                    final v = items[i];
+                    final active =
+                        v.id == widget.workspaceState.views.activeViewId;
+                    final (icon, label) = descriptions[i];
+                    return Padding(
+                      key: ValueKey('tab-${v.id}'),
+                      padding: const EdgeInsets.only(right: MotifSpacing.xs),
+                      child: SizedBox(
+                        key: _tabKeys[v.id],
+                        child: _SessionTabChip(
+                          active: active,
+                          icon: icon,
+                          label: label,
+                          dragIndex: i,
+                          onTap: () {
+                            if (widget
+                                .workspaceState
+                                .connection
+                                .transportAvailable) {
+                              widget.views.activate(v.id);
+                            } else {
+                              widget.views.selectLocally(v.id);
+                            }
+                          },
+                          onClose: () => unawaited(
+                            _closeViewWithConfirmation(
+                              context,
+                              terminal: widget.terminal,
+                              views: widget.views,
+                              view: v,
+                            ),
+                          ),
+                          closeKey: ValueKey('close-tab-${v.id}'),
                         ),
                       ),
-                      child: child,
-                    ),
-                  );
-                },
-              ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: MotifSpacing.sm,
-                vertical: MotifSpacing.sm,
-              ),
-              itemCount: items.length,
-              onReorderItem: (oldIndex, newIndex) {
-                if (oldIndex < 0 || oldIndex >= items.length) return;
-                final targetIndex = newIndex.clamp(0, items.length - 1).toInt();
-                if (targetIndex == oldIndex) return;
-                final viewId = items[oldIndex].id;
-                unawaited(
-                  views.move(viewId, targetIndex).catchError((Object e) {
-                    if (context.mounted) {
-                      showMotifToast(context, 'Move tab failed: $e');
-                    }
-                  }),
-                );
-              },
-              itemBuilder: (context, i) {
-                final v = items[i];
-                final active = v.id == workspaceState.views.activeViewId;
-                final (icon, label) = _describe(v);
-                return Padding(
-                  key: ValueKey('tab-${v.id}'),
-                  padding: const EdgeInsets.only(right: MotifSpacing.xs),
-                  child: _SessionTabChip(
-                    active: active,
-                    icon: icon,
-                    label: label,
-                    dragIndex: i,
-                    onTap: () {
-                      if (workspaceState.connection.transportAvailable) {
-                        views.activate(v.id);
-                      } else {
-                        views.selectLocally(v.id);
-                      }
-                    },
-                    onClose: () => unawaited(
-                      _closeViewWithConfirmation(
-                        context,
-                        terminal: terminal,
-                        views: views,
-                        view: v,
-                      ),
-                    ),
-                    closeKey: ValueKey('close-tab-${v.id}'),
-                  ),
+                    );
+                  },
                 );
               },
             ),
@@ -107,7 +159,7 @@ class _TabBar extends StatelessWidget {
           IconButton(
             key: const ValueKey('new-terminal-button'),
             tooltip: 'New terminal (${_primaryShortcutLabel('T')})',
-            onPressed: onNewPty,
+            onPressed: widget.onNewPty,
             icon: Icon(Icons.add_circle, size: 20, color: c.accent),
           ),
         ],
@@ -115,12 +167,56 @@ class _TabBar extends StatelessWidget {
     );
   }
 
+  void _scheduleActiveTabReveal({
+    required List<ViewInfo> items,
+    required List<String> labels,
+    required double viewportWidth,
+  }) {
+    final activeId = widget.workspaceState.views.activeViewId;
+    final signature = Object.hashAll([
+      activeId,
+      viewportWidth,
+      for (var i = 0; i < items.length; i++) items[i].id,
+      ...labels,
+    ]);
+    if (_revealSignature == signature) return;
+    _revealSignature = signature;
+
+    final activeIndex = items.indexWhere((item) => item.id == activeId);
+    if (activeIndex < 0) return;
+    final generation = ++_revealGeneration;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _revealGeneration ||
+          !_scrollController.hasClients) {
+        return;
+      }
+      final position = _scrollController.position;
+      final tabContext = _tabKeys[activeId]?.currentContext;
+      final renderObject = tabContext?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.attached) return;
+      final viewportObject = RenderAbstractViewport.maybeOf(renderObject);
+      if (viewportObject == null) return;
+      final target = viewportObject.getOffsetToReveal(renderObject, 0.5).offset;
+      final clamped = target.clamp(0.0, position.maxScrollExtent).toDouble();
+      if ((clamped - position.pixels).abs() < 0.5) return;
+      unawaited(
+        _scrollController.animateTo(
+          clamped,
+          duration: _scrollDuration,
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
   (IconData, String) _describe(ViewInfo v) {
     return switch (v.spec) {
       PtyViewSpec(:final ptyId) => (
         Icons.terminal,
-        terminal.viewModel.runningCommand[ptyId] ??
-            terminal.viewModel.ptys
+        widget.terminal.viewModel.runningCommand[ptyId] ??
+            widget.terminal.viewModel.ptys
                 .firstWhere(
                   (p) => p.id == ptyId,
                   orElse: () => PtyInfo(id: ptyId, cols: 0, rows: 0),

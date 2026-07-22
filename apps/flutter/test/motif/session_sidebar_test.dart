@@ -695,6 +695,67 @@ void main() {
     }
   });
 
+  testWidgets('switching tabs centers the active tab when bounds allow', (
+    tester,
+  ) async {
+    final motif = _ShortcutWorkspaceConnectionController()
+      ..ptys = const [PtyInfo(id: 'seed', cols: 80, rows: 24)]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: OtherViewSpec('first-wide-tab')),
+        ViewInfo(id: 'v2', spec: OtherViewSpec('second-wide-tab')),
+        ViewInfo(id: 'v3', spec: OtherViewSpec('third-wide-tab')),
+        ViewInfo(id: 'v4', spec: OtherViewSpec('fourth-wide-tab')),
+        ViewInfo(id: 'v5', spec: OtherViewSpec('fifth-wide-tab')),
+      ]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(360, 768), motif: motif);
+
+    final tabList = find.byType(ReorderableListView);
+    final scrollable = find.descendant(
+      of: tabList,
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable).position;
+    expect(position.pixels, 0);
+
+    final viewport = tester.getRect(scrollable);
+    final secondTabBeforeScroll = tester.getRect(
+      find.byKey(const ValueKey('tab-v2')),
+    );
+    final secondTabOverflow = secondTabBeforeScroll.right - viewport.right;
+    position.jumpTo(position.pixels + secondTabOverflow - 2);
+    await tester.pump();
+    expect(
+      tester.getRect(find.byKey(const ValueKey('tab-v2'))).right,
+      greaterThan(viewport.right),
+    );
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.digit2);
+    await tester.pumpAndSettle();
+
+    expect(motif.activeViewId, 'v2');
+    final secondTab = tester.getRect(find.byKey(const ValueKey('tab-v2')));
+    expect((secondTab.center.dx - viewport.center.dx).abs(), lessThan(2.5));
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.digit9);
+    await tester.pumpAndSettle();
+
+    expect(motif.activeViewId, 'v5');
+    expect(position.pixels, greaterThan(0));
+    final activeTab = tester.getRect(find.byKey(const ValueKey('tab-v5')));
+    expect(activeTab.left, greaterThanOrEqualTo(viewport.left - 0.5));
+    expect(activeTab.right, lessThanOrEqualTo(viewport.right + 0.5));
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.digit1);
+    await tester.pumpAndSettle();
+
+    expect(motif.activeViewId, 'v1');
+    final firstTab = tester.getRect(find.byKey(const ValueKey('tab-v1')));
+    expect(firstTab.left, greaterThanOrEqualTo(viewport.left - 0.5));
+    expect(firstTab.right, lessThanOrEqualTo(viewport.right + 0.5));
+  });
+
   testWidgets('mobile long press starts tab reorder', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     try {
