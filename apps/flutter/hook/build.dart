@@ -61,6 +61,13 @@ String _bashExecutable() {
   return 'bash';
 }
 
+/// Forward both output streams concurrently so a verbose child cannot fill
+/// one pipe while the hook is waiting for the other pipe to reach EOF.
+Future<void> _forwardProcessOutput(Process process) => Future.wait([
+  stdout.addStream(process.stdout),
+  stderr.addStream(process.stderr),
+]);
+
 File? _findRelativeFile(BuildInput input, List<String> relativeCandidates) {
   for (final relativePath in relativeCandidates) {
     final lib = File.fromUri(input.packageRoot.resolve(relativePath));
@@ -120,8 +127,7 @@ Future<void> _runTailscaleBuild(
     workingDirectory: packageRoot,
     environment: environment,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   final exitCode = await process.exitCode;
   if (exitCode != 0) {
     throw ProcessException(
@@ -215,8 +221,7 @@ Future<void> _runMotifEmbedBuild(
     workingDirectory: packageRoot,
     environment: environment,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   final exitCode = await process.exitCode;
   if (exitCode != 0) {
     throw ProcessException(
@@ -267,8 +272,7 @@ Future<void> _buildLinux(BuildInput input, BuildOutputBuilder output) async {
     args,
     workingDirectory: packageRoot,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   if (await process.exitCode != 0) {
     throw ProcessException('/usr/bin/env', args, 'Linux native build failed');
   }
@@ -348,8 +352,7 @@ Future<void> _buildAndroid(BuildInput input, BuildOutputBuilder output) async {
     args,
     workingDirectory: packageRoot,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   if (await process.exitCode != 0) {
     throw ProcessException('/usr/bin/env', args, 'Android native build failed');
   }
@@ -431,8 +434,7 @@ Future<void> _buildWindows(BuildInput input, BuildOutputBuilder output) async {
     args,
     workingDirectory: packageRoot,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   if (await process.exitCode != 0) {
     throw ProcessException(bash, args, 'Windows native build failed');
   }
@@ -524,8 +526,7 @@ Future<void> _buildIOS(BuildInput input, BuildOutputBuilder output) async {
     args,
     workingDirectory: packageRoot,
   );
-  await stdout.addStream(process.stdout);
-  await stderr.addStream(process.stderr);
+  await _forwardProcessOutput(process);
   if (await process.exitCode != 0) {
     throw ProcessException('/usr/bin/env', args, 'iOS native build failed');
   }
@@ -652,8 +653,7 @@ Future<void> main(List<String> args) async {
       workingDirectory: packageRoot,
     );
 
-    await stdout.addStream(process.stdout);
-    await stderr.addStream(process.stderr);
+    await _forwardProcessOutput(process);
     final exitCode = await process.exitCode;
     if (exitCode != 0) {
       throw ProcessException(
