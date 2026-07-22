@@ -269,7 +269,7 @@ class TerminalWorkerClient {
   }
 
   void scrollToOffset(int offset) {
-    _send({'type': 'scrollToOffset', 'offset': offset});
+    _enqueueLatestScrollOffset(offset);
   }
 
   void beginSelection(TerminalCellPoint screenPoint) {
@@ -357,6 +357,25 @@ class TerminalWorkerClient {
   void _send(Map<String, Object?> message) {
     if (_disposed) return;
     _enqueue(_QueuedWorkerCommand.message(message));
+  }
+
+  void _enqueueLatestScrollOffset(int offset) {
+    if (_disposed || _backlogFailed) return;
+    // The command already in flight cannot be replaced, but consecutive
+    // pending viewport targets have no observable intermediate value. Keep
+    // only the newest one so a fast flick does not make the worker visit stale
+    // offsets. Never coalesce across another command because feed/input and
+    // selection operations have ordering semantics relative to scrolling.
+    if (_commandQueue.isNotEmpty &&
+        _commandQueue.last.message['type'] == 'scrollToOffset') {
+      _commandQueue.removeLast();
+    }
+    _enqueue(
+      _QueuedWorkerCommand.message({
+        'type': 'scrollToOffset',
+        'offset': offset,
+      }),
+    );
   }
 
   void _enqueue(_QueuedWorkerCommand command) {

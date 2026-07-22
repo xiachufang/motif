@@ -103,6 +103,74 @@ void main() {
     expect(hostWrites, contains(0x61));
   });
 
+  test('worker client keeps only the latest pending scroll target', () async {
+    final initialized = Completer<void>();
+    final snapshots = StreamController<TerminalSnapshot>.broadcast();
+    final error = Completer<Object>();
+    final worker = await TerminalWorkerClient.spawn(
+      onHostWrite: (_) {},
+      onSnapshot: (snapshot, acknowledge) {
+        snapshots.add(snapshot);
+        acknowledge();
+      },
+      onInitialized: initialized.complete,
+      onError: (value) {
+        if (!error.isCompleted) error.complete(value);
+      },
+      // Without latest-wins coalescing, the synchronous burst below overflows
+      // this deliberately small pending-command queue.
+      maxPendingCommandCount: 2,
+    );
+    addTearDown(() async {
+      await snapshots.close();
+      await worker.dispose();
+    });
+
+    worker.init(
+      cols: 20,
+      rows: 4,
+      screenWidth: 200,
+      screenHeight: 80,
+      cellWidth: 10,
+      cellHeight: 20,
+      paddingLeft: 0,
+      paddingTop: 0,
+      foregroundArgb: 0xffffffff,
+      backgroundArgb: 0xff000000,
+      waitForFirstFeed: true,
+    );
+    await initialized.future.timeout(const Duration(seconds: 2));
+
+    final scrollbackFuture = snapshots.stream.firstWhere(
+      (snapshot) => snapshot.hasScrollback && snapshot.maxViewportOffset > 4,
+    );
+    worker.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(24, (i) => 'line$i').join('\r\n')),
+      ),
+    );
+    final scrollback = await scrollbackFuture.timeout(
+      const Duration(seconds: 2),
+    );
+    final target = scrollback.maxViewportOffset ~/ 2;
+    final targetFuture = snapshots.stream.firstWhere(
+      (snapshot) => snapshot.viewportOffset == target,
+    );
+
+    // The first target may already be in flight. Every later consecutive
+    // target should replace the one pending behind it.
+    for (var offset = 0; offset < 100; offset++) {
+      worker.scrollToOffset(offset % (scrollback.maxViewportOffset + 1));
+    }
+    worker.scrollToOffset(target);
+
+    await Future.any<void>([
+      targetFuture.then((_) {}),
+      error.future.then((value) => throw value),
+    ]).timeout(const Duration(seconds: 2));
+    expect(error.isCompleted, isFalse);
+  });
+
   test('worker returns OSC 8 URI for a linked cell', () async {
     const uri = 'https://example.com/worker-link';
     final initialized = Completer<void>();

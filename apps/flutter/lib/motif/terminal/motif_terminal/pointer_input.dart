@@ -843,7 +843,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
     if (target == null) return;
     final delta = _smoothScrollPosition.requestOffset(target);
-    if (delta != 0) _worker?.scroll(delta);
+    if (delta != 0) _worker?.scrollToOffset(target);
   }
 
   // Trackpad/touch two-finger scroll arrives as pan/zoom events.
@@ -976,7 +976,9 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       );
       final update = _smoothScrollPosition.applyPixelDelta(pixels, _cellHeight);
       if (!update.changed) return;
-      if (update.rowDelta != 0) _worker?.scroll(update.rowDelta);
+      if (update.rowDelta != 0) {
+        _worker?.scrollToOffset(update.requestedOffset);
+      }
       if (mounted) setState(() {});
     }
   }
