@@ -105,7 +105,7 @@ pub struct Pty {
     /// OS pid of the spawned shell. Used by the cwd watcher.
     pub pid: Option<u32>,
 
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     #[cfg(windows)]
@@ -349,6 +349,11 @@ impl Pty {
         if let Some(mut k) = self.killer.lock().take() {
             let _ = k.kill();
         }
+        // Terminating the child does not close a Windows pseudoconsole. Keep
+        // draining it on the reader thread while releasing the HPCON here;
+        // that makes the output pipe reach EOF so normal exit cleanup runs.
+        #[cfg(windows)]
+        drop(self.master.lock().take());
     }
 
     pub fn is_alive(&self) -> bool {
@@ -385,7 +390,7 @@ fn compute_effective(
 /// match what the program now renders at.
 fn apply_size(
     state: &mut PtyState,
-    master: &Mutex<Box<dyn MasterPty + Send>>,
+    master: &Mutex<Option<Box<dyn MasterPty + Send>>>,
     emu_tx: &SyncSender<EmuCmd>,
     eff_c: u16,
     eff_r: u16,
@@ -396,6 +401,7 @@ fn apply_size(
     state.cols = eff_c;
     state.rows = eff_r;
     let m = master.lock();
+    let m = m.as_ref()?;
     let _ = m.resize(PtySize {
         cols: eff_c,
         rows: eff_r,
@@ -578,7 +584,7 @@ impl PtyPool {
             cwd: cwd.clone(),
             created_at: now_ms(),
             pid,
-            master: Mutex::new(pair.master),
+            master: Mutex::new(Some(pair.master)),
             writer: Mutex::new(writer),
             killer: Mutex::new(Some(killer)),
             #[cfg(windows)]
