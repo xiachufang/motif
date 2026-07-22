@@ -22,6 +22,35 @@ class TerminalScrollAccumulator {
 
 double touchMoveDeltaToScrollPixels(double deltaY) => -deltaY;
 
+/// Maps Ghostty's absolute viewport offset to Flutter's reversed scroll axis.
+///
+/// Flutter position zero is the live bottom. Increasing pixels moves into
+/// history, while Ghostty uses zero for the oldest row and [maxOffset] for the
+/// live bottom.
+double terminalScrollPixelsFromViewportOffset({
+  required double viewportOffset,
+  required int maxOffset,
+  required double rowHeight,
+}) {
+  if (rowHeight <= 0) return 0;
+  final max = math.max(0, maxOffset).toDouble();
+  final viewport = viewportOffset.clamp(0.0, max);
+  return (max - viewport) * rowHeight;
+}
+
+/// Inverse of [terminalScrollPixelsFromViewportOffset].
+double terminalViewportOffsetFromScrollPixels({
+  required double scrollPixels,
+  required int maxOffset,
+  required double rowHeight,
+}) {
+  final max = math.max(0, maxOffset).toDouble();
+  if (rowHeight <= 0) return max;
+  final maxPixels = max * rowHeight;
+  final pixels = scrollPixels.clamp(0.0, maxPixels);
+  return max - pixels / rowHeight;
+}
+
 /// Screen rows needed to paint a fractional terminal viewport.
 ///
 /// The leading edge starts at `floor(offset)`. The trailing edge deliberately

@@ -22,6 +22,41 @@ void main() {
     expect(touchMoveDeltaToScrollPixels(0), 0);
   });
 
+  test('reversed scroll position uses zero for the live bottom', () {
+    expect(
+      terminalScrollPixelsFromViewportOffset(
+        viewportOffset: 30,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      0,
+    );
+    expect(
+      terminalScrollPixelsFromViewportOffset(
+        viewportOffset: 0,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      600,
+    );
+    expect(
+      terminalViewportOffsetFromScrollPixels(
+        scrollPixels: 0,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      30,
+    );
+    expect(
+      terminalViewportOffsetFromScrollPixels(
+        scrollPixels: 600,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      0,
+    );
+  });
+
   test(
     'keeps a fractional viewport while requesting adjacent integer rows',
     () {

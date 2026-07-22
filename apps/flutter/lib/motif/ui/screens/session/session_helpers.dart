@@ -1,18 +1,6 @@
 part of '../session_screen.dart';
 
-sealed class _SessionMenuAction {
-  const _SessionMenuAction();
-}
-
-class _CloseSessionAction extends _SessionMenuAction {
-  const _CloseSessionAction();
-}
-
-class _SwitchSessionAction extends _SessionMenuAction {
-  final String serverId;
-  final String name;
-  const _SwitchSessionAction(this.serverId, this.name);
-}
+enum _MobileEndDrawerPanel { files, gitDiff }
 
 class _TabInputState {
   _TabInputState(String id)

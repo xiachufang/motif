@@ -1,6 +1,18 @@
 part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
+  bool _onTerminalLinkHardwareEvent(KeyEvent _) {
+    if (!widget.active) return false;
+    final keyboard = HardwareKeyboard.instance;
+    _setTerminalLinkMode(
+      terminalLinkModifierPressed(
+        control: keyboard.isControlPressed,
+        meta: keyboard.isMetaPressed,
+      ),
+    );
+    return false;
+  }
+
   bool _onTerminalInput(TerminalInputEvent input) {
     if (input case TerminalPasteInput(:final bytes) when bytes.isEmpty) {
       return false;

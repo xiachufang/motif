@@ -36,6 +36,7 @@ dependencies:
   hooks: ^2.0.0
   shared_preferences: ^2.5.5
   http: ^1.6.0
+  highlight: ^0.7.0
   package_info_plus: ^10.2.0
   web: ^1.1.1
   web_socket_channel: ^3.0.3

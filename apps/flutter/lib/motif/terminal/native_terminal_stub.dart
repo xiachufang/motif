@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 
 import 'terminal_palette.dart';
 import 'terminal_session.dart';
+import 'terminal_link.dart';
 import 'wasm_terminal_web.dart';
 
 /// Web: use the libghostty-vt WebAssembly terminal (via the GhosttyVt JS
@@ -17,6 +18,7 @@ Widget nativeTerminalView({
   required int focusSerial,
   required TerminalPalette palette,
   required ValueListenable<double> keyboardInset,
+  Future<void> Function(TerminalFileTarget target)? onOpenFile,
 }) => KeyedSubtree(
   key: key,
   child: buildWebTerminal(

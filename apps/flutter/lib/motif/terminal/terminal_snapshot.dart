@@ -228,23 +228,31 @@ class TerminalSnapshot {
 
 class TerminalSnapshotRow {
   final TerminalRowRenderKey renderKey;
+  final bool wrap;
+  final bool wrapContinuation;
   final Uint8List? _encodedCells;
   List<TerminalSnapshotCell>? _cells;
 
   TerminalSnapshotRow({
     required List<TerminalSnapshotCell> cells,
     TerminalRowRenderKey? renderKey,
+    this.wrap = false,
+    this.wrapContinuation = false,
   }) : _cells = List<TerminalSnapshotCell>.unmodifiable(cells),
        _encodedCells = null,
        renderKey = renderKey ?? TerminalRowRenderKey.fromCells(cells);
 
   factory TerminalSnapshotRow.encoded({
     required TerminalRowRenderKey renderKey,
+    required bool wrap,
+    required bool wrapContinuation,
     required Uint8List encodedCells,
   }) = TerminalSnapshotRow._encoded;
 
   TerminalSnapshotRow._encoded({
     required this.renderKey,
+    required this.wrap,
+    required this.wrapContinuation,
     required this._encodedCells,
   });
 
@@ -299,6 +307,7 @@ class TerminalSnapshotCell {
   final bool italic;
   final bool invisible;
   final bool hasHyperlink;
+  final String? hyperlinkUri;
 
   const TerminalSnapshotCell({
     required this.col,
@@ -311,6 +320,7 @@ class TerminalSnapshotCell {
     required this.italic,
     required this.invisible,
     this.hasHyperlink = false,
+    this.hyperlinkUri,
   });
 
   int get endCol => col + (widthCells <= 0 ? 1 : widthCells) - 1;
@@ -495,7 +505,7 @@ class TerminalFrameEncodingResult {
 
 class TerminalFrameEncoder {
   static const int _magic = 0x4d544631;
-  static const int _version = 1;
+  static const int _version = 2;
   static const int _flagFull = 1;
 
   final _TerminalBinaryWriter _writer = _TerminalBinaryWriter();
@@ -548,11 +558,21 @@ class TerminalFrameEncoder {
     _writer.writeUint16(0);
   }
 
-  TerminalEncodedRowWriter startRow(int rowIndex) {
+  TerminalEncodedRowWriter startRow(
+    int rowIndex, {
+    bool wrap = false,
+    bool wrapContinuation = false,
+  }) {
     if (_activeRow != null) {
       throw StateError('finish the active terminal row before starting one');
     }
-    final row = TerminalEncodedRowWriter._(_writer, rowIndex, _finishRow);
+    final row = TerminalEncodedRowWriter._(
+      _writer,
+      rowIndex,
+      _finishRow,
+      wrap: wrap,
+      wrapContinuation: wrapContinuation,
+    );
     _activeRow = row;
     return row;
   }
@@ -588,8 +608,16 @@ class TerminalEncodedRowWriter {
   int _cellCount = 0;
   bool _finished = false;
 
-  TerminalEncodedRowWriter._(this._writer, int rowIndex, this._onFinish) {
-    _writer.writeUint16(rowIndex);
+  TerminalEncodedRowWriter._(
+    this._writer,
+    int rowIndex,
+    this._onFinish, {
+    required bool wrap,
+    required bool wrapContinuation,
+  }) {
+    _writer
+      ..writeUint16(rowIndex)
+      ..writeUint8((wrap ? 1 : 0) | (wrapContinuation ? 1 << 1 : 0));
     _keyOffset = _writer.length;
     for (var i = 0; i < 4; i++) {
       _writer.writeUint32(0);
@@ -612,10 +640,17 @@ class TerminalEncodedRowWriter {
     required bool italic,
     required bool invisible,
     bool hasHyperlink = false,
+    String? hyperlinkUri,
   }) {
     if (_finished) throw StateError('terminal row is already finished');
     if (textBytes.length > 0xffff) {
       throw StateError('terminal grapheme is too large to encode');
+    }
+    final hyperlinkBytes = hyperlinkUri == null
+        ? const <int>[]
+        : utf8.encode(hyperlinkUri);
+    if (hyperlinkBytes.length > 0xffff) {
+      throw StateError('terminal hyperlink URI is too large to encode');
     }
     final flags =
         (drawsBackground ? 1 : 0) |
@@ -630,7 +665,9 @@ class TerminalEncodedRowWriter {
       ..writeUint32(foregroundArgb)
       ..writeUint32(backgroundArgb)
       ..writeUint16(textBytes.length)
-      ..writeBytes(textBytes);
+      ..writeBytes(textBytes)
+      ..writeUint16(hyperlinkBytes.length)
+      ..writeBytes(hyperlinkBytes);
     _hasher.addCell(
       col: col,
       widthCells: widthCells,
@@ -718,6 +755,7 @@ class TerminalFrameUpdate {
     final patches = <TerminalRowPatch>[];
     for (var i = 0; i < patchCount; i++) {
       final rowIndex = reader.readUint16();
+      final rowFlags = reader.readUint8();
       final key = TerminalRowRenderKey(
         reader.readUint32(),
         reader.readUint32(),
@@ -730,6 +768,8 @@ class TerminalFrameUpdate {
           rowIndex: rowIndex,
           row: TerminalSnapshotRow.encoded(
             renderKey: key,
+            wrap: rowFlags & 1 != 0,
+            wrapContinuation: rowFlags & (1 << 1) != 0,
             encodedCells: reader.readBytesView(payloadLength),
           ),
         ),
@@ -822,6 +862,13 @@ List<TerminalSnapshotCell> _decodeTerminalSnapshotCells(Uint8List payload) {
     final text = textLength == 0
         ? ''
         : utf8.decode(reader.readBytesView(textLength));
+    final hyperlinkLength = reader.readUint16();
+    final hyperlinkUri = hyperlinkLength == 0
+        ? null
+        : utf8.decode(
+            reader.readBytesView(hyperlinkLength),
+            allowMalformed: true,
+          );
     cells.add(
       TerminalSnapshotCell(
         col: col,
@@ -834,6 +881,7 @@ List<TerminalSnapshotCell> _decodeTerminalSnapshotCells(Uint8List payload) {
         italic: flags & (1 << 2) != 0,
         invisible: flags & (1 << 3) != 0,
         hasHyperlink: flags & (1 << 4) != 0,
+        hyperlinkUri: hyperlinkUri,
       ),
     );
   }

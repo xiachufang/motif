@@ -1135,7 +1135,7 @@ void main() {
     expect(find.byType(GitDiffPanel), findsOneWidget);
   });
 
-  testWidgets('narrow buttons keep opening pages', (tester) async {
+  testWidgets('narrow buttons open file and git diff drawers', (tester) async {
     final motif = _GitDiffRouteWorkspaceConnectionController();
     final routes = await _pumpSession(
       tester,
@@ -1147,29 +1147,93 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('file-tree-sidebar-toggle')));
     await tester.pumpAndSettle();
 
-    expect(routes.pushes, initialPushes + 1);
+    final scaffold = tester.state<ScaffoldState>(
+      find.ancestor(
+        of: find.byKey(const ValueKey('file-tree-sidebar-toggle')),
+        matching: find.byType(Scaffold),
+      ),
+    );
+    expect(routes.pushes, initialPushes);
+    expect(scaffold.isEndDrawerOpen, isTrue);
+    expect(find.byKey(const ValueKey('mobile-files-drawer')), findsOneWidget);
     expect(find.byType(FileTreePanel), findsOneWidget);
 
-    Navigator.of(tester.element(find.byType(FileTreePanel))).pop();
+    scaffold.closeEndDrawer();
     await tester.pumpAndSettle();
+    expect(scaffold.isEndDrawerOpen, isFalse);
 
     await tester.tap(find.byKey(const ValueKey('git-diff-sidebar-toggle')));
     await tester.pumpAndSettle();
 
-    expect(routes.pushes, initialPushes + 2);
+    expect(routes.pushes, initialPushes);
+    expect(scaffold.isEndDrawerOpen, isTrue);
+    expect(
+      find.byKey(const ValueKey('mobile-git-diff-drawer')),
+      findsOneWidget,
+    );
     expect(find.byType(GitDiffPanel), findsOneWidget);
 
     await tester.tap(find.byTooltip('Show diff'));
     await tester.pumpAndSettle();
 
-    expect(routes.pushes, initialPushes + 3);
+    expect(routes.pushes, initialPushes + 1);
     expect(find.byType(GitDiffView), findsOneWidget);
     expect(find.text('+narrow route diff'), findsOneWidget);
 
     Navigator.of(tester.element(find.byType(GitDiffView))).pop();
     await tester.pumpAndSettle();
 
-    expect(find.byType(GitDiffPanel), findsOneWidget);
+    expect(scaffold.isEndDrawerOpen, isFalse);
+    expect(find.byType(GitDiffPanel), findsNothing);
+  });
+
+  testWidgets('narrow session menu opens a sessions drawer', (tester) async {
+    final motif = _SessionMenuWorkspaceConnectionController()
+      ..sessions = const [
+        SessionInfo(name: 'test-session'),
+        SessionInfo(name: 'next-session', workdir: '~/next'),
+      ];
+    final next = _SessionMenuWorkspaceConnectionController(
+      session: 'next-session',
+      initiallyAttached: false,
+    );
+    final routes = await _pumpSession(
+      tester,
+      const Size(390, 844),
+      motif: motif,
+      workspaceConnectionFactory: (_, session) =>
+          session == 'test-session' ? motif : next,
+    );
+    final initialPushes = routes.pushes;
+
+    await tester.tap(find.byKey(const ValueKey('session-menu-button')));
+    await tester.pumpAndSettle();
+
+    final scaffold = tester.state<ScaffoldState>(
+      find.ancestor(
+        of: find.byKey(const ValueKey('session-menu-button')),
+        matching: find.byType(Scaffold),
+      ),
+    );
+    expect(routes.pushes, initialPushes);
+    expect(scaffold.isDrawerOpen, isTrue);
+    expect(
+      find.byKey(const ValueKey('mobile-sessions-drawer')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('sidebar-session-list')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('mobile-close-all-sessions')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('next-session'));
+    await tester.pumpAndSettle();
+
+    expect(routes.pushes, initialPushes);
+    expect(routes.replacements, 1);
+    expect(next.attached, ['next-session']);
+    expect(find.text('next-session'), findsWidgets);
   });
 
   testWidgets('close session pops without waiting for detach RPC', (

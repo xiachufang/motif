@@ -6,9 +6,15 @@ import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
 import 'package:motif/motif/ui/screens/preview_pane.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:motif/motif/ui/widgets/syntax_highlight.dart';
 
 final class _FakeWorkspace {
+  final String content;
+  final String mime;
   var readCount = 0;
+
+  _FakeWorkspace({this.content = '# README', this.mime = 'text/markdown'});
+
   late final WorkspaceApi api = WorkspaceApi(
     content: WorkspaceContentViewModel(),
     transport: WorkspaceApiTransport(
@@ -17,11 +23,11 @@ final class _FakeWorkspace {
         if (method == 'fs.read') {
           readCount++;
           return {
-            'content_b64': base64Encode(utf8.encode('# README')),
+            'content_b64': base64Encode(utf8.encode(content)),
             'sha256': 'sha-$readCount',
             'truncated': false,
             'binary': false,
-            'mime': 'text/markdown',
+            'mime': mime,
           };
         }
         if (method == 'fs.write') return {'sha256': 'saved-sha'};
@@ -82,4 +88,66 @@ void main() {
       expect(find.byType(TextField), findsOneWidget);
     },
   );
+
+  testWidgets('preview scrollbar fills the pane and Dart is highlighted', (
+    tester,
+  ) async {
+    final workspace = _FakeWorkspace(
+      content: List.filled(
+        40,
+        "import 'package:flutter/material.dart';\nfinal value = 42;",
+      ).join('\n'),
+      mime: 'text/x-dart',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: PreviewPane(path: '/work/example.dart', workspace: workspace.api),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scrollbar = find.byKey(const ValueKey('preview-scrollbar'));
+    final scaffold = find.byType(Scaffold);
+    expect(scrollbar, findsOneWidget);
+    expect(
+      tester.getTopRight(scrollbar).dx,
+      closeTo(tester.getTopRight(scaffold).dx, 0.01),
+    );
+
+    final code = tester.widget<Text>(
+      find.byKey(const ValueKey('preview-highlighted-code')),
+    );
+    expect(
+      _effectiveColorForText(code.textSpan!, 'final'),
+      MotifColors.light.accent,
+    );
+  });
+
+  test('syntax highlighting language follows the file name', () {
+    expect(MotifSyntaxHighlight.languageForPath('/tmp/file.dart'), 'dart');
+    expect(
+      MotifSyntaxHighlight.languageForPath('/tmp/Dockerfile'),
+      'dockerfile',
+    );
+    expect(MotifSyntaxHighlight.languageForPath('/tmp/README.md'), 'markdown');
+    expect(MotifSyntaxHighlight.languageForPath('/tmp/file.unknown'), isNull);
+  });
+}
+
+Color? _effectiveColorForText(
+  InlineSpan span,
+  String text, [
+  Color? inheritedColor,
+]) {
+  if (span is! TextSpan) return null;
+
+  final effectiveColor = span.style?.color ?? inheritedColor;
+  if (span.text == text) return effectiveColor;
+
+  for (final child in span.children ?? const <InlineSpan>[]) {
+    final color = _effectiveColorForText(child, text, effectiveColor);
+    if (color != null) return color;
+  }
+  return null;
 }

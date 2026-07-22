@@ -101,4 +101,31 @@ void main() {
       isFalse,
     );
   });
+
+  test('link matching mode follows the platform modifier', () {
+    expect(
+      terminalLinkModifierPressed(
+        control: false,
+        meta: true,
+        platform: TargetPlatform.macOS,
+      ),
+      isTrue,
+    );
+    expect(
+      terminalLinkModifierPressed(
+        control: true,
+        meta: false,
+        platform: TargetPlatform.windows,
+      ),
+      isTrue,
+    );
+    expect(
+      terminalLinkModifierPressed(
+        control: true,
+        meta: true,
+        platform: TargetPlatform.iOS,
+      ),
+      isFalse,
+    );
+  });
 }

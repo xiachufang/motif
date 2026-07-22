@@ -245,6 +245,7 @@ class _PaneStack extends StatelessWidget {
   final TerminalPalette palette;
   final int focusSerial;
   final ValueListenable<double> keyboardInset;
+  final Future<void> Function(TerminalFileTarget target) onOpenTerminalFile;
 
   const _PaneStack({
     required this.activeView,
@@ -258,6 +259,7 @@ class _PaneStack extends StatelessWidget {
     required this.palette,
     required this.focusSerial,
     required this.keyboardInset,
+    required this.onOpenTerminalFile,
   });
 
   @override
@@ -303,6 +305,7 @@ class _PaneStack extends StatelessWidget {
                   palette: palette,
                   focusSerial: focusSerial,
                   keyboardInset: keyboardInset,
+                  onOpenTerminalFile: onOpenTerminalFile,
                 ),
               ),
             ),
@@ -321,6 +324,7 @@ class _PaneForView extends StatelessWidget {
   final TerminalPalette palette;
   final int focusSerial;
   final ValueListenable<double> keyboardInset;
+  final Future<void> Function(TerminalFileTarget target) onOpenTerminalFile;
 
   const _PaneForView({
     required this.view,
@@ -331,6 +335,7 @@ class _PaneForView extends StatelessWidget {
     required this.palette,
     required this.focusSerial,
     required this.keyboardInset,
+    required this.onOpenTerminalFile,
   });
 
   @override
@@ -348,6 +353,7 @@ class _PaneForView extends StatelessWidget {
                 focusSerial: focusSerial,
                 palette: palette,
                 keyboardInset: keyboardInset,
+                onOpenFile: onOpenTerminalFile,
               )
             : const TerminalErrorView(
                 title: 'Native terminal disabled',

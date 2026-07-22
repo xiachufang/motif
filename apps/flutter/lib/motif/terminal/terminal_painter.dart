@@ -2,6 +2,7 @@ import 'dart:collection';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'ghostty_bindings.g.dart';
+import 'terminal_link.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
@@ -266,6 +267,8 @@ class TerminalSnapshotPainter extends CustomPainter {
   final TerminalRenderCache? renderCache;
   final double viewportOffsetRows;
   final TerminalViewportRowCache? scrollRowCache;
+  final List<TerminalLinkSegment> linkSegments;
+  final Color linkUnderlineColor;
 
   /// IME composition (preedit) text to render inline at the cursor. Null when
   /// no composition is active. This is a client-side overlay only — nothing is
@@ -286,6 +289,8 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.selectionForeground = Colors.white,
     this.renderCache,
     this.preeditText,
+    this.linkSegments = const [],
+    this.linkUnderlineColor = const Color(0xff6ea8fe),
     double? viewportOffsetRows,
     this.scrollRowCache,
   }) : viewportOffsetRows =
@@ -327,6 +332,8 @@ class TerminalSnapshotPainter extends CustomPainter {
         _drawTextRuns(canvas, paintRow.row, paintRow.screenRow, paintRow.y);
       }
     }
+
+    _drawLinkUnderlines(canvas);
 
     if (showCursor &&
         snapshot.cursorVisible &&
@@ -673,6 +680,27 @@ class TerminalSnapshotPainter extends CustomPainter {
     }
   }
 
+  void _drawLinkUnderlines(Canvas canvas) {
+    if (linkSegments.isEmpty || cellWidth <= 0 || cellHeight <= 0) return;
+    final paint = Paint()..color = linkUnderlineColor;
+    final firstVisibleRow = viewportOffsetRows.floor() - 1;
+    final lastVisibleRow = (viewportOffsetRows + snapshot.rows).ceil();
+    final thickness = (cellHeight / 18).clamp(1.0, 2.0).toDouble();
+    for (final segment in linkSegments) {
+      if (segment.row < firstVisibleRow || segment.row > lastVisibleRow) {
+        continue;
+      }
+      final x = padding + segment.startCol * cellWidth;
+      final y =
+          padding +
+          (segment.row - viewportOffsetRows + 1) * cellHeight -
+          thickness;
+      final width = (segment.endCol - segment.startCol + 1) * cellWidth;
+      if (width <= 0) continue;
+      canvas.drawRect(Rect.fromLTWH(x, y, width, thickness), paint);
+    }
+  }
+
   @override
   bool shouldRepaint(covariant TerminalSnapshotPainter oldDelegate) =>
       oldDelegate.snapshot != snapshot ||
@@ -687,6 +715,8 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.selectionForeground != selectionForeground ||
       oldDelegate.renderCache != renderCache ||
       oldDelegate.preeditText != preeditText ||
+      oldDelegate.linkSegments != linkSegments ||
+      oldDelegate.linkUnderlineColor != linkUnderlineColor ||
       oldDelegate.viewportOffsetRows != viewportOffsetRows ||
       oldDelegate.scrollRowCache != scrollRowCache;
 }

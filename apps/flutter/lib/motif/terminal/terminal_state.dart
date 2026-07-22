@@ -40,6 +40,7 @@ class TerminalState {
   final Pointer<Size> _keyLen = calloc<Size>();
   Pointer<Uint8> _feedBuf = calloc<Uint8>(16 * 1024);
   int _feedBufCapacity = 16 * 1024;
+  int _restoreSnapshotPreludeMatchLength = 0;
   Pointer<Uint8> _keyTextBuf = calloc<Uint8>(64);
   int _keyTextBufCapacity = 64;
   Pointer<Uint8> _pasteInputBuf = calloc<Uint8>(4096);
@@ -52,6 +53,9 @@ class TerminalState {
   final Pointer<Int32> _dirtyPtr = calloc<Int32>();
   final Pointer<Bool> _rowDirtyPtr = calloc<Bool>();
   final Pointer<Bool> _rowDirtyValuePtr = calloc<Bool>();
+  final Pointer<Uint64> _rowRawPtr = calloc<Uint64>();
+  final Pointer<Bool> _rowWrapPtr = calloc<Bool>();
+  final Pointer<Bool> _rowWrapContinuationPtr = calloc<Bool>();
   final Pointer<Size> _multiWrittenPtr = calloc<Size>();
   final Pointer<Bool> _cursorVisiblePtr = calloc<Bool>();
   final Pointer<Bool> _cursorInViewportPtr = calloc<Bool>();
@@ -73,6 +77,11 @@ class TerminalState {
   final Pointer<GhosttyBuffer> _cellUtf8BufferPtr = calloc<GhosttyBuffer>();
   Pointer<Uint8> _cellUtf8Bytes = calloc<Uint8>(64);
   int _cellUtf8Capacity = 64;
+  final Pointer<GhosttyPoint> _hyperlinkPointPtr = calloc<GhosttyPoint>();
+  final Pointer<GhosttyGridRef> _hyperlinkGridRefPtr = calloc<GhosttyGridRef>();
+  final Pointer<Size> _hyperlinkUriLenPtr = calloc<Size>();
+  Pointer<Uint8> _hyperlinkUriBytes = calloc<Uint8>(256);
+  int _hyperlinkUriCapacity = 256;
   late final Pointer<UnsignedInt> _rowGetKeys;
   late final Pointer<Pointer<Void>> _rowGetValues;
   late final Pointer<UnsignedInt> _cellGetKeys;
@@ -170,14 +179,17 @@ class TerminalState {
   }
 
   void _initializeFrameScratch() {
-    _rowGetKeys = calloc<UnsignedInt>(2);
-    _rowGetValues = calloc<Pointer<Void>>(2);
+    _rowGetKeys = calloc<UnsignedInt>(3);
+    _rowGetValues = calloc<Pointer<Void>>(3);
     _rowGetKeys[0] =
         GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY.value;
     _rowGetKeys[1] =
         GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_CELLS.value;
+    _rowGetKeys[2] =
+        GhosttyRenderStateRowData.GHOSTTY_RENDER_STATE_ROW_DATA_RAW.value;
     _rowGetValues[0] = _rowDirtyPtr.cast();
     _rowGetValues[1] = _rowCellsPtr.cast();
+    _rowGetValues[2] = _rowRawPtr.cast();
 
     _cellGetKeys = calloc<UnsignedInt>(3);
     _cellGetValues = calloc<Pointer<Void>>(3);
@@ -243,6 +255,7 @@ class TerminalState {
   /// Feed bytes received from the remote PTY (network mode) into the engine.
   void feedBytes(Uint8List data) {
     if (data.isEmpty) return;
+    final restoresTerminalSnapshot = _consumeRestoreSnapshotPrelude(data);
     // Treat the viewport as an explicit user choice across output. A viewport
     // at the live bottom follows new rows; a viewport in history stays at the
     // same absolute offset. Ghostty currently behaves this way too, but doing
@@ -265,11 +278,68 @@ class TerminalState {
     // between primary and alternate screens (for example entering/leaving
     // vim). The follow/preserve rule applies while staying on one screen.
     if (wasAlternateScreen != alternateScreenActive) return;
-    if (followLatest) {
+    // motifd's self-contained PTY restore starts by clearing the screen and
+    // scrollback with this prelude before replaying its current VT snapshot.
+    // That is a new live baseline, not ordinary background output: preserving
+    // an old absolute history offset here leaves a restored PTY visibly stuck
+    // above its cursor.
+    if (restoresTerminalSnapshot || followLatest) {
       scrollToBottom();
     } else {
       scrollToOffset(viewportBefore.offset);
     }
+  }
+
+  static const List<int> _restoreSnapshotClearSequence = <int>[
+    0x1b,
+    0x5b,
+    0x48, // CSI H
+    0x1b,
+    0x5b,
+    0x32,
+    0x4a, // CSI 2 J
+    0x1b,
+    0x5b,
+    0x33,
+    0x4a, // CSI 3 J
+    0x1b,
+    0x5b,
+    0x30,
+    0x6d, // CSI 0 m
+  ];
+  static final List<int> _restoreSnapshotClearSequenceFailure =
+      _buildSequenceFailureTable(_restoreSnapshotClearSequence);
+
+  bool _consumeRestoreSnapshotPrelude(Uint8List data) {
+    final pattern = _restoreSnapshotClearSequence;
+    final failure = _restoreSnapshotClearSequenceFailure;
+    var matched = _restoreSnapshotPreludeMatchLength;
+    var found = false;
+    for (final byte in data) {
+      while (matched > 0 && byte != pattern[matched]) {
+        matched = failure[matched - 1];
+      }
+      if (byte == pattern[matched]) matched++;
+      if (matched == pattern.length) {
+        found = true;
+        matched = failure[matched - 1];
+      }
+    }
+    _restoreSnapshotPreludeMatchLength = matched;
+    return found;
+  }
+
+  static List<int> _buildSequenceFailureTable(List<int> pattern) {
+    final failure = List<int>.filled(pattern.length, 0);
+    var prefixLength = 0;
+    for (var index = 1; index < pattern.length; index++) {
+      while (prefixLength > 0 && pattern[index] != pattern[prefixLength]) {
+        prefixLength = failure[prefixLength - 1];
+      }
+      if (pattern[index] == pattern[prefixLength]) prefixLength++;
+      failure[index] = prefixLength;
+    }
+    return failure;
   }
 
   void dispose() {
@@ -296,6 +366,9 @@ class TerminalState {
     calloc.free(_dirtyPtr);
     calloc.free(_rowDirtyPtr);
     calloc.free(_rowDirtyValuePtr);
+    calloc.free(_rowRawPtr);
+    calloc.free(_rowWrapPtr);
+    calloc.free(_rowWrapContinuationPtr);
     calloc.free(_multiWrittenPtr);
     calloc.free(_cursorVisiblePtr);
     calloc.free(_cursorInViewportPtr);
@@ -312,6 +385,10 @@ class TerminalState {
     calloc.free(_mouseEncoderSizePtr);
     calloc.free(_cellUtf8BufferPtr);
     calloc.free(_cellUtf8Bytes);
+    calloc.free(_hyperlinkPointPtr);
+    calloc.free(_hyperlinkGridRefPtr);
+    calloc.free(_hyperlinkUriLenPtr);
+    calloc.free(_hyperlinkUriBytes);
     calloc.free(_rowGetKeys);
     calloc.free(_rowGetValues);
     calloc.free(_cellGetKeys);
@@ -1315,7 +1392,7 @@ class TerminalState {
     while (rowIteratorNext()) {
       final rowResult = ghostty_render_state_row_get_multi(
         _rowIteratorPtr.value,
-        2,
+        3,
         _rowGetKeys,
         _rowGetValues,
         _multiWrittenPtr,
@@ -1328,7 +1405,26 @@ class TerminalState {
         continue;
       }
 
-      final encodedRow = encoder.startRow(rowIndex);
+      final wrapResult = ghostty_row_get(
+        _rowRawPtr.value,
+        GhosttyRowData.GHOSTTY_ROW_DATA_WRAP,
+        _rowWrapPtr.cast(),
+      );
+      final continuationResult = ghostty_row_get(
+        _rowRawPtr.value,
+        GhosttyRowData.GHOSTTY_ROW_DATA_WRAP_CONTINUATION,
+        _rowWrapContinuationPtr.cast(),
+      );
+      if (wrapResult != GhosttyResult.GHOSTTY_SUCCESS ||
+          continuationResult != GhosttyResult.GHOSTTY_SUCCESS) {
+        throw StateError('failed to read terminal row wrapping state');
+      }
+
+      final encodedRow = encoder.startRow(
+        rowIndex,
+        wrap: _rowWrapPtr.value,
+        wrapContinuation: _rowWrapContinuationPtr.value,
+      );
       var colIndex = 0;
       while (rowCellsNext()) {
         _readCurrentCellIntoScratch();
@@ -1356,6 +1452,12 @@ class TerminalState {
         final drawsBackground = background != metadata.backgroundArgb;
         final textLength = _cellUtf8BufferPtr.ref.len;
         final hasHyperlink = _cellHasHyperlinkPtr.value;
+        final hyperlinkUri = hasHyperlink
+            ? _hyperlinkUriForScreenCell(
+                row: metadata.viewportOffset + rowIndex,
+                col: colIndex,
+              )
+            : null;
         if (textLength > 0 || drawsBackground || hasHyperlink) {
           encodedRow.addCell(
             col: colIndex,
@@ -1368,6 +1470,7 @@ class TerminalState {
             italic: style.italic,
             invisible: style.invisible,
             hasHyperlink: hasHyperlink,
+            hyperlinkUri: hyperlinkUri,
           );
         }
         colIndex++;
@@ -1427,6 +1530,52 @@ class TerminalState {
         'failed to read terminal cell hyperlink: $hyperlinkResult',
       );
     }
+  }
+
+  String? _hyperlinkUriForScreenCell({required int row, required int col}) {
+    _hyperlinkGridRefPtr.ref.size = sizeOf<GhosttyGridRef>();
+    _setPoint(
+      _hyperlinkPointPtr.ref,
+      GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+      TerminalCellPoint(row: row, col: col),
+    );
+    final refResult = ghostty_terminal_grid_ref(
+      _terminal,
+      _hyperlinkPointPtr.ref,
+      _hyperlinkGridRefPtr,
+    );
+    if (refResult != GhosttyResult.GHOSTTY_SUCCESS) return null;
+
+    var result = ghostty_grid_ref_hyperlink_uri(
+      _hyperlinkGridRefPtr,
+      nullptr,
+      0,
+      _hyperlinkUriLenPtr,
+    );
+    if (result == GhosttyResult.GHOSTTY_SUCCESS) return null;
+    final required = _hyperlinkUriLenPtr.value;
+    if (result != GhosttyResult.GHOSTTY_OUT_OF_SPACE || required <= 0) {
+      return null;
+    }
+    if (required > _hyperlinkUriCapacity) {
+      calloc.free(_hyperlinkUriBytes);
+      _hyperlinkUriCapacity = _nextBufferCapacity(required);
+      _hyperlinkUriBytes = calloc<Uint8>(_hyperlinkUriCapacity);
+    }
+    result = ghostty_grid_ref_hyperlink_uri(
+      _hyperlinkGridRefPtr,
+      _hyperlinkUriBytes,
+      _hyperlinkUriCapacity,
+      _hyperlinkUriLenPtr,
+    );
+    if (result != GhosttyResult.GHOSTTY_SUCCESS ||
+        _hyperlinkUriLenPtr.value <= 0) {
+      return null;
+    }
+    return utf8.decode(
+      _hyperlinkUriBytes.asTypedList(_hyperlinkUriLenPtr.value),
+      allowMalformed: true,
+    );
   }
 
   TerminalSnapshot snapshot({

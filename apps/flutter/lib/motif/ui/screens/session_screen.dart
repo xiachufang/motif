@@ -37,6 +37,7 @@ import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
 import '../../terminal/terminal_key.dart';
+import '../../terminal/terminal_link.dart';
 import '../../terminal/terminal_palette.dart';
 import '../../terminal/terminal_session.dart';
 import '../theme/motif_theme.dart';
@@ -230,7 +231,9 @@ class _SessionScreenState extends State<_SessionPane>
   static const double _sidebarMinWidth = 96;
   static const double _sidebarMaxWidthFraction = 0.6;
   static const double _mainMinWidth = 360;
+  static const double _mobileDrawerMaxWidth = 400;
 
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final StickyModifiers _modifiers = StickyModifiers();
   final Set<String> _mountedViewIds = <String>{};
   final Set<String> _appleInputDocumentIds = <String>{};
@@ -264,6 +267,7 @@ class _SessionScreenState extends State<_SessionPane>
   String? _asrInputViewId;
   bool _ignoreFinal = false; // set when the user bailed out of ASR by typing
   bool _initialViewApplied = false;
+  _MobileEndDrawerPanel _mobileEndDrawerPanel = _MobileEndDrawerPanel.files;
 
   @override
   void initState() {
@@ -537,7 +541,70 @@ class _SessionScreenState extends State<_SessionPane>
           title: widget.session,
           color: c.accent,
           child: Scaffold(
+            key: _scaffoldKey,
             resizeToAvoidBottomInset: false,
+            drawer: usesSidebar
+                ? null
+                : Drawer(
+                    key: const ValueKey('mobile-sessions-drawer'),
+                    width: math.min(
+                      constraints.maxWidth * 0.88,
+                      _mobileDrawerMaxWidth,
+                    ),
+                    backgroundColor: c.surface,
+                    child: SafeArea(
+                      child: ObservationSelect(
+                        selector: () => _connectedSessionsSelectKey(app),
+                        builder: (context, _, _) => _ConnectedSessionsPanel(
+                          app: app,
+                          currentServerId: widget.serverId,
+                          currentSession: widget.session,
+                          onCloseAll: _closeAllSessionsFromMobileDrawer,
+                          onSessionSelected: (serverId, session) =>
+                              _switchSessionFromMobileDrawer(
+                                app,
+                                serverId,
+                                session,
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+            endDrawer: usesSidebar
+                ? null
+                : Drawer(
+                    key: ValueKey(switch (_mobileEndDrawerPanel) {
+                      _MobileEndDrawerPanel.files => 'mobile-files-drawer',
+                      _MobileEndDrawerPanel.gitDiff => 'mobile-git-diff-drawer',
+                    }),
+                    width: math.min(
+                      constraints.maxWidth * 0.88,
+                      _mobileDrawerMaxWidth,
+                    ),
+                    backgroundColor: c.surface,
+                    child: SafeArea(
+                      child: switch (_mobileEndDrawerPanel) {
+                        _MobileEndDrawerPanel.files => FileTreePanel(
+                          key: ValueKey(
+                            'mobile-drawer-files-${_workspaceApi.activeCwd()}',
+                          ),
+                          root: _workspaceApi.activeCwd() ?? '~',
+                          workspace: _workspaceApi,
+                          embedded: true,
+                          onOpen: _openPreviewFromMobileDrawer,
+                        ),
+                        _MobileEndDrawerPanel.gitDiff => GitDiffPanel(
+                          key: ValueKey(
+                            'mobile-drawer-diff-${_workspaceApi.activeCwd()}',
+                          ),
+                          cwd: _workspaceApi.activeCwd(),
+                          workspace: _workspaceApi,
+                          embedded: true,
+                          onOpenDiff: _openDiffFromMobileDrawer,
+                        ),
+                      },
+                    ),
+                  ),
             appBar: AppBar(
               title: usesSidebar
                   ? ObservationSelect(
@@ -585,14 +652,11 @@ class _SessionScreenState extends State<_SessionPane>
                       child: SizedBox(
                         width: MotifControlSize.md,
                         height: MotifControlSize.md,
-                        child: Builder(
-                          builder: (buttonContext) => IconButton(
-                            key: const ValueKey('session-menu-button'),
-                            icon: const Icon(Icons.menu),
-                            tooltip: 'Session menu',
-                            onPressed: () =>
-                                _showSessionMenu(app, buttonContext),
-                          ),
+                        child: IconButton(
+                          key: const ValueKey('session-menu-button'),
+                          icon: const Icon(Icons.menu),
+                          tooltip: 'Sessions',
+                          onPressed: () => _toggleSessionsPanel(app),
                         ),
                       ),
                     ),
@@ -752,6 +816,7 @@ class _SessionScreenState extends State<_SessionPane>
                                   palette: terminalPalette,
                                   focusSerial: _terminalFocusSerial,
                                   keyboardInset: _keyboardInset,
+                                  onOpenTerminalFile: _openTerminalFile,
                                 );
                               },
                             ),

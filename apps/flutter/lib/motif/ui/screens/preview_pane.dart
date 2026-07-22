@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/syntax_highlight.dart';
 import '../widgets/top_toast.dart';
 
 /// Read-only file preview with an edit/save toggle (mirrors PreviewPane).
@@ -27,6 +28,11 @@ class _PreviewPaneState extends State<PreviewPane> {
   String? _error;
   Uint8List? _imageBytes;
   final TextEditingController _editor = TextEditingController();
+  final ScrollController _previewScrollController = ScrollController();
+  String? _highlightedSource;
+  String? _highlightedPath;
+  MotifColors? _highlightedColors;
+  TextSpan? _highlightedSpan;
 
   static const _imageExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
   bool get _isImage {
@@ -46,7 +52,25 @@ class _PreviewPaneState extends State<PreviewPane> {
   @override
   void dispose() {
     _editor.dispose();
+    _previewScrollController.dispose();
     super.dispose();
+  }
+
+  TextSpan _highlightedCode(MotifColors colors) {
+    if (_highlightedSpan == null ||
+        _highlightedSource != _content ||
+        _highlightedPath != widget.path ||
+        _highlightedColors != colors) {
+      _highlightedSource = _content;
+      _highlightedPath = widget.path;
+      _highlightedColors = colors;
+      _highlightedSpan = MotifSyntaxHighlight.build(
+        source: _content,
+        path: widget.path,
+        colors: colors,
+      );
+    }
+    return _highlightedSpan!;
   }
 
   Future<void> _load() async {
@@ -227,14 +251,33 @@ class _PreviewPaneState extends State<PreviewPane> {
                           ),
                         )
                       : SelectionArea(
-                          child: SingleChildScrollView(
-                            padding: const EdgeInsets.all(MotifSpacing.sm),
-                            child: Text(
-                              _content,
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                                color: c.textPrimary,
+                          child: SizedBox.expand(
+                            child: Scrollbar(
+                              key: const ValueKey('preview-scrollbar'),
+                              controller: _previewScrollController,
+                              child: ScrollConfiguration(
+                                behavior: ScrollConfiguration.of(
+                                  context,
+                                ).copyWith(scrollbars: false),
+                                child: SingleChildScrollView(
+                                  controller: _previewScrollController,
+                                  primary: false,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    MotifSpacing.sm,
+                                    MotifSpacing.sm,
+                                    MotifSpacing.lg,
+                                    MotifSpacing.sm,
+                                  ),
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: Text.rich(
+                                      key: const ValueKey(
+                                        'preview-highlighted-code',
+                                      ),
+                                      _highlightedCode(c),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),

@@ -155,7 +155,8 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
 
   void _toggleSessionsPanel(AppState app) {
     if (!_usesSidebarLayout) {
-      unawaited(_showSessionMenuAtOverlay(app));
+      _scaffoldKey.currentState?.openDrawer();
+      unawaited(app.refreshConnectedSessions().catchError((_) => null));
       return;
     }
     final sidebar = app.sessionSidebar;
@@ -167,7 +168,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
 
   void _toggleFileTree() {
     if (!_usesSidebarLayout) {
-      _openFileTree();
+      _openMobileEndDrawer(_MobileEndDrawerPanel.files);
       return;
     }
     final sidebar = readObservationScope<AppState>(context).sessionSidebar;
@@ -176,20 +177,44 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
 
   void _toggleGitDiff() {
     if (!_usesSidebarLayout) {
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => GitDiffPanel(
-            cwd: _workspaceApi.activeCwd(),
-            workspace: _workspaceApi,
-            onOpenDiff: ({path, required staged}) =>
-                _pushDiffView(path: path, staged: staged),
-          ),
-        ),
-      );
+      _openMobileEndDrawer(_MobileEndDrawerPanel.gitDiff);
       return;
     }
     final sidebar = readObservationScope<AppState>(context).sessionSidebar;
     setState(() => sidebar.showGitDiff = !sidebar.showGitDiff);
+  }
+
+  void _openMobileEndDrawer(_MobileEndDrawerPanel panel) {
+    setState(() => _mobileEndDrawerPanel = panel);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scaffoldKey.currentState?.openEndDrawer();
+    });
+  }
+
+  Future<void> _closeMobileDrawers() async {
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold == null) return;
+    if (scaffold.isDrawerOpen) scaffold.closeDrawer();
+    if (scaffold.isEndDrawerOpen) scaffold.closeEndDrawer();
+    for (var frame = 0; frame < 30; frame++) {
+      if (!mounted || (!scaffold.isDrawerOpen && !scaffold.isEndDrawerOpen)) {
+        return;
+      }
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  Future<void> _openPreviewFromMobileDrawer(String path) async {
+    await _closeMobileDrawers();
+    if (mounted) await _openPreview(path);
+  }
+
+  Future<void> _openDiffFromMobileDrawer({
+    String? path,
+    required bool staged,
+  }) async {
+    await _closeMobileDrawers();
+    if (mounted) await _pushDiffView(path: path, staged: staged);
   }
 
   void _focusTerminal() {
@@ -341,19 +366,6 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     );
   }
 
-  void _openFileTree() {
-    final root = _workspaceApi.activeCwd() ?? '~';
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => FileTreePanel(
-          root: root,
-          onOpen: _openPreview,
-          workspace: _workspaceApi,
-        ),
-      ),
-    );
-  }
-
   Future<void> _openPreview(String path) async {
     final existing = _workspaceState.views.items.where((v) {
       final spec = v.spec;
@@ -370,6 +382,17 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         showMotifToast(context, 'Open preview failed: $e');
       }
     }
+  }
+
+  Future<void> _openTerminalFile(TerminalFileTarget target) async {
+    final path = target.resolveAgainst(_workspaceApi.activeCwd());
+    if (path == null) {
+      if (mounted) {
+        showMotifToast(context, 'Cannot resolve ${target.path}.');
+      }
+      return;
+    }
+    await _openPreview(path);
   }
 
   Future<void> _pushDiffView({String? path, required bool staged}) async {

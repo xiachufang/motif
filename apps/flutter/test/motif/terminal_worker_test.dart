@@ -98,6 +98,44 @@ void main() {
         .timeout(const Duration(seconds: 2));
     expect(top.viewportOffset, 0);
 
+    final resizedAtLatest = snapshots.stream.firstWhere(
+      (s) => s.rows == 5 && s.isAtLatest,
+    );
+    worker.resize(
+      cols: 20,
+      rows: 5,
+      screenWidth: 200,
+      screenHeight: 100,
+      cellWidth: 10,
+      cellHeight: 20,
+      paddingLeft: 0,
+      paddingTop: 0,
+      scrollToBottom: true,
+    );
+    final resized = await resizedAtLatest.timeout(const Duration(seconds: 2));
+    expect(resized.viewportOffset, resized.maxViewportOffset);
+
+    worker.scrollToOffset(0);
+    await snapshots.stream
+        .firstWhere((s) => s.rows == 5 && s.viewportOffset == 0)
+        .timeout(const Duration(seconds: 2));
+    final sameGridAtLatest = snapshots.stream.firstWhere(
+      (s) => s.rows == 5 && s.isAtLatest,
+    );
+    worker.resize(
+      cols: 20,
+      rows: 5,
+      screenWidth: 205,
+      screenHeight: 105,
+      cellWidth: 10,
+      cellHeight: 20,
+      paddingLeft: 0,
+      paddingTop: 0,
+      scrollToBottom: true,
+    );
+    final sameGrid = await sameGridAtLatest.timeout(const Duration(seconds: 2));
+    expect(sameGrid.viewportOffset, sameGrid.maxViewportOffset);
+
     worker.writeBytes(Uint8List.fromList([0x61]));
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(hostWrites, contains(0x61));

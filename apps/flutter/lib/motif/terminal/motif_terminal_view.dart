@@ -33,6 +33,7 @@ import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_hyperlink.dart';
+import 'terminal_link.dart';
 import 'terminal_palette.dart';
 import 'terminal_pointer_policy.dart';
 import 'terminal_scroll_driver.dart';
@@ -59,6 +60,7 @@ class MotifTerminalView extends StatefulWidget {
   final int focusSerial;
   final TerminalPalette palette;
   final ValueListenable<double> keyboardInset;
+  final Future<void> Function(TerminalFileTarget target)? onOpenFile;
 
   const MotifTerminalView({
     super.key,
@@ -71,6 +73,7 @@ class MotifTerminalView extends StatefulWidget {
     required this.focusSerial,
     required this.palette,
     required this.keyboardInset,
+    this.onOpenFile,
   });
 
   @override
@@ -107,6 +110,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   PointerDeviceKind? _lastPointerKind;
   Offset? _lastPointerPosition;
   Offset? _touchDownPosition;
+  TerminalSnapshot? _touchDownSnapshot;
+  TerminalCellPoint? _touchDownCell;
+  bool _suppressNextTerminalTap = false;
   double _touchScrollDistance = 0;
   final TerminalScrollAccumulator _scrollAccumulator =
       TerminalScrollAccumulator();
@@ -116,7 +122,14 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
   final Set<int> _terminalOverlayPointers = <int>{};
-  final Set<int> _terminalHyperlinkPointers = <int>{};
+  final Map<int, ({TerminalLinkMatch match, Offset downPosition})>
+  _terminalHyperlinkPointers =
+      <int, ({TerminalLinkMatch match, Offset downPosition})>{};
+  TerminalLinkMatch? _hoveredTerminalLink;
+  TerminalCellPoint? _terminalLinkHoverCell;
+  int? _terminalLinkHoverFrameId;
+  bool _terminalLinkMode = false;
+  late final bool Function(KeyEvent) _terminalLinkKeyboardHandler;
   int? _terminalContextMenuPointer;
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
   final GlobalKey _terminalSurfaceKey = GlobalKey(
@@ -141,6 +154,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   bool _initialized = false;
   bool _workerStarting = false;
   bool _workerNeedsColdResync = false;
+  bool _followLatestAfterResize = false;
+  bool _resizedSnapshotReadyForScrollSync = false;
   int _workerGeneration = 0;
   int _streamGeneration = 0;
   Object? _terminalError;
@@ -187,6 +202,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   void initState() {
     super.initState();
     _terminalScrollController.addListener(_onTerminalScrollPositionChanged);
+    _terminalLinkKeyboardHandler = _onTerminalLinkHardwareEvent;
+    HardwareKeyboard.instance.addHandler(_terminalLinkKeyboardHandler);
     _focusNode.addListener(_onFocusChanged);
     widget.keyboardInset.addListener(_syncKeyboardLift);
     _measureCell();
@@ -245,6 +262,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       );
       _invalidateStreamWork();
       if (!widget.active) {
+        _setTerminalLinkMode(false);
         _showSoftKeyboardOnFocus = false;
         _focusNode.unfocus();
         _closeTextInput();
@@ -290,6 +308,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _remoteByteBatcher.clear();
     _pendingTerminalInputs.clear();
     _terminalHyperlinkPointers.clear();
+    HardwareKeyboard.instance.removeHandler(_terminalLinkKeyboardHandler);
     _stopScrollInertia(resetVelocity: true);
     _terminalScrollController.removeListener(_onTerminalScrollPositionChanged);
     _terminalScrollController.dispose();
@@ -422,11 +441,17 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           onKeyEvent: _onKeyEvent,
           child: Scrollable(
             controller: _terminalScrollController,
-            axisDirection: AxisDirection.down,
+            // Reversed terminal coordinates: pixels == 0 is always the live
+            // bottom, so growing/shrinking scrollback cannot displace it.
+            axisDirection: AxisDirection.up,
             viewportBuilder: (context, position) => _TerminalScrollViewport(
               offset: position,
               maxScrollExtent: _terminalScrollMaxExtent,
               scrollIdentity: widget.ptyId,
+              // Do not publish pixels == 0 while the painter still owns the
+              // pre-resize history snapshot. Flip both to the new bottom in
+              // the same layout once that snapshot is ready.
+              pinToBottom: _resizedSnapshotReadyForScrollSync,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _onTerminalTap,
@@ -458,8 +483,16 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                     onPointerPanZoomEnd: _onPanZoomEnd,
                     child: LayoutBuilder(
                       builder: (context, constraints) {
+                        final viewportWidth = constraints.maxWidth;
                         final viewportHeight = constraints.maxHeight;
-                        _viewportWidth = constraints.maxWidth;
+                        final hadViewportSize =
+                            _viewportWidth > 0 && _viewportHeight > 0;
+                        final viewportSizeChanged =
+                            hadViewportSize &&
+                            ((_viewportWidth - viewportWidth).abs() >= 0.5 ||
+                                (_viewportHeight - viewportHeight).abs() >=
+                                    0.5);
+                        _viewportWidth = viewportWidth;
                         if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
                           _viewportHeight = viewportHeight;
                           _scheduleKeyboardLiftSync();
@@ -473,7 +506,12 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                         if (snapshot == null) {
                           return ColoredBox(color: widget.palette.background);
                         }
-                        if (_initialized) _handleResize(constraints);
+                        if (_initialized) {
+                          _handleResize(
+                            constraints,
+                            viewportSizeChanged: viewportSizeChanged,
+                          );
+                        }
                         final colorScheme = Theme.of(context).colorScheme;
                         final visualViewportOffset = _effectiveViewportOffset(
                           snapshot,
@@ -497,6 +535,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                                 selectionForeground: colorScheme.onPrimary,
                                 renderCache: _terminalRenderCache,
                                 preeditText: _composingText,
+                                linkSegments:
+                                    _hoveredTerminalLink?.segments ?? const [],
+                                linkUnderlineColor: colorScheme.primary,
                                 viewportOffsetRows: visualViewportOffset,
                                 scrollRowCache: _scrollRowCache,
                               ),
@@ -546,11 +587,13 @@ class _TerminalScrollViewport extends SingleChildRenderObjectWidget {
   final ViewportOffset offset;
   final double maxScrollExtent;
   final Object scrollIdentity;
+  final bool pinToBottom;
 
   const _TerminalScrollViewport({
     required this.offset,
     required this.maxScrollExtent,
     required this.scrollIdentity,
+    required this.pinToBottom,
     required super.child,
   });
 
@@ -560,6 +603,7 @@ class _TerminalScrollViewport extends SingleChildRenderObjectWidget {
       offset,
       maxScrollExtent,
       scrollIdentity,
+      pinToBottom,
     );
   }
 
@@ -571,7 +615,8 @@ class _TerminalScrollViewport extends SingleChildRenderObjectWidget {
     renderObject
       ..offset = offset
       ..maxScrollExtent = maxScrollExtent
-      ..scrollIdentity = scrollIdentity;
+      ..scrollIdentity = scrollIdentity
+      ..pinToBottom = pinToBottom;
   }
 }
 
@@ -580,6 +625,7 @@ class _RenderTerminalScrollViewport extends RenderProxyBox {
     this._offset,
     this._maxScrollExtent,
     this._scrollIdentity,
+    this._pinToBottom,
   );
 
   ViewportOffset _offset;
@@ -605,16 +651,27 @@ class _RenderTerminalScrollViewport extends RenderProxyBox {
     markNeedsLayout();
   }
 
+  bool _pinToBottom;
+  set pinToBottom(bool value) {
+    if (value == _pinToBottom) return;
+    _pinToBottom = value;
+    markNeedsLayout();
+  }
+
   @override
   void performLayout() {
     super.performLayout();
     _offset.applyViewportDimension(size.height);
-    // A terminal opens on its live screen. Anchor the ScrollPosition to the
-    // trailing extent as soon as history first becomes available, during the
-    // same layout that publishes the extent, so there is no top-first frame.
-    if (!_initialBottomApplied && _maxScrollExtent > 0 && _offset.hasPixels) {
-      _offset.correctBy(_maxScrollExtent - _offset.pixels);
-      _initialBottomApplied = true;
+    // ScrollPosition zero is the terminal's live bottom. Correct it during the
+    // same layout that publishes a resized extent so no stale pixel offset can
+    // be interpreted against the new range.
+    final applyInitialBottom = !_initialBottomApplied && _maxScrollExtent > 0;
+    if ((_pinToBottom || applyInitialBottom) && _offset.hasPixels) {
+      final correction = -_offset.pixels;
+      if (correction.abs() > precisionErrorTolerance) {
+        _offset.correctBy(correction);
+      }
+      if (_maxScrollExtent > 0) _initialBottomApplied = true;
     }
     _offset.applyContentDimensions(0, _maxScrollExtent);
   }

@@ -191,6 +191,7 @@ class TerminalWorkerClient {
     required int cellHeight,
     required int paddingLeft,
     required int paddingTop,
+    bool scrollToBottom = false,
   }) {
     _send({
       'type': 'resize',
@@ -202,6 +203,7 @@ class TerminalWorkerClient {
       'cellHeight': cellHeight,
       'paddingLeft': paddingLeft,
       'paddingTop': paddingTop,
+      'scrollToBottom': scrollToBottom,
     });
   }
 
@@ -724,6 +726,7 @@ class _TerminalWorker {
       command['cellWidth'] as int,
       command['cellHeight'] as int,
     );
+    if (command['scrollToBottom'] == true) terminal.scrollToBottom();
     _setMouseEncoderSize(command);
     if (!waitingForFirstFeed) {
       _scheduleSnapshot(force: true, delay: Duration.zero);

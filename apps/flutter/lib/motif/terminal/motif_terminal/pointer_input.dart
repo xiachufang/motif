@@ -60,9 +60,13 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       unawaited(_showDesktopTerminalContextMenu(e.position));
       return;
     }
-    if (_shouldActivateTerminalHyperlink(e)) {
-      _terminalHyperlinkPointers.add(e.pointer);
-      unawaited(_tryOpenTerminalHyperlinkAt(e.localPosition));
+    final terminalLink = _terminalLinkForDesktopActivation(e);
+    if (terminalLink != null) {
+      _suppressNextTerminalTap = true;
+      _terminalHyperlinkPointers[e.pointer] = (
+        match: terminalLink,
+        downPosition: e.localPosition,
+      );
       return;
     }
     if (_canStartMouseSelection(e)) {
@@ -80,6 +84,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (_touchScrollPointer == null && _shouldScrollDirectTouch(e.kind)) {
       _touchScrollPointer = e.pointer;
       _touchDownPosition = e.localPosition;
+      _touchDownSnapshot = _snapshot;
+      _touchDownCell = _terminalCellAt(e.localPosition);
       _touchScrollDistance = 0;
       _scrollAccumulator.reset();
       return;
@@ -97,7 +103,13 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
     if (_terminalOverlayPointers.remove(e.pointer)) return;
-    if (_terminalHyperlinkPointers.remove(e.pointer)) return;
+    final pressedLink = _terminalHyperlinkPointers.remove(e.pointer);
+    if (pressedLink != null) {
+      if ((e.localPosition - pressedLink.downPosition).distance < kTouchSlop) {
+        unawaited(_activateTerminalLink(pressedLink.match));
+      }
+      return;
+    }
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -116,9 +128,20 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       // A touch that never really moved is a tap; deliver it as a click
       // so mouse-tracking apps (vim, htop, ...) still see touches.
       final downPosition = _touchDownPosition;
+      final downSnapshot = _touchDownSnapshot;
+      final downCell = _touchDownCell;
       _touchDownPosition = null;
+      _touchDownSnapshot = null;
+      _touchDownCell = null;
       if (downPosition != null && _touchScrollDistance < kTouchSlop) {
-        unawaited(_openHyperlinkOrSendTouchClick(downPosition));
+        unawaited(
+          _openLinkOrSendTouchClick(
+            downPosition,
+            snapshot: downSnapshot,
+            point: downCell,
+            startedWithSelection: _tapStartedWithSelection,
+          ),
+        );
         return;
       }
       return;
@@ -135,7 +158,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerCancel(PointerCancelEvent e) {
     if (_terminalOverlayPointers.remove(e.pointer)) return;
-    if (_terminalHyperlinkPointers.remove(e.pointer)) return;
+    if (_terminalHyperlinkPointers.remove(e.pointer) != null) return;
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -152,6 +175,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (e.pointer != _touchScrollPointer) return;
     _touchScrollPointer = null;
     _touchDownPosition = null;
+    _touchDownSnapshot = null;
+    _touchDownCell = null;
     _stopScrollInertia(resetVelocity: true);
   }
 
@@ -159,7 +184,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
     if (_terminalOverlayPointers.contains(e.pointer)) return;
-    if (_terminalHyperlinkPointers.contains(e.pointer)) return;
+    if (_terminalHyperlinkPointers.containsKey(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) return;
     if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
@@ -201,54 +226,162 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   bool get _canSelectTerminalText => !(_snapshot?.mouseTrackingActive ?? false);
 
   MouseCursor get _terminalMouseCursor =>
-      _hasTerminalHyperlinkAt(_lastPointerPosition)
+      _terminalLinkMode && _hoveredTerminalLink != null
       ? SystemMouseCursors.click
       : SystemMouseCursors.text;
 
   void _onPointerHover(PointerHoverEvent e) {
-    final wasHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
     _lastPointerPosition = e.localPosition;
-    final isHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
-    if (wasHyperlink != isHyperlink && mounted) setState(() {});
+    final keyboard = HardwareKeyboard.instance;
+    _setTerminalLinkMode(
+      terminalLinkModifierPressed(
+        control: keyboard.isControlPressed,
+        meta: keyboard.isMetaPressed,
+      ),
+    );
+    _updateHoveredTerminalLink();
   }
 
   void _onPointerExit(PointerExitEvent _) {
-    final wasHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
+    final hadHover = _hoveredTerminalLink != null;
     _lastPointerPosition = null;
-    if (wasHyperlink && mounted) setState(() {});
+    _hoveredTerminalLink = null;
+    _terminalLinkHoverCell = null;
+    _terminalLinkHoverFrameId = null;
+    if (hadHover && mounted) setState(() {});
   }
 
-  bool _hasTerminalHyperlinkAt(Offset? localPosition) {
-    if (localPosition == null) return false;
-    return _snapshot?.hasHyperlinkAt(_terminalCellAt(localPosition)) ?? false;
+  void _setTerminalLinkMode(bool enabled) {
+    if (_terminalLinkMode == enabled) return;
+    _terminalLinkMode = enabled;
+    _terminalLinkHoverCell = null;
+    _terminalLinkHoverFrameId = null;
+    if (enabled) {
+      _updateHoveredTerminalLink(notify: false);
+    } else {
+      _hoveredTerminalLink = null;
+    }
+    if (mounted) setState(() {});
   }
 
-  bool _shouldActivateTerminalHyperlink(PointerDownEvent event) {
-    if (!_hasTerminalHyperlinkAt(event.localPosition)) return false;
-    final keyboard = HardwareKeyboard.instance;
-    return terminalHyperlinkShouldActivate(
-      buttons: event.buttons,
-      control: keyboard.isControlPressed,
-      meta: keyboard.isMetaPressed,
+  void _refreshTerminalLinkForSnapshot() {
+    if (!_terminalLinkMode) return;
+    _terminalLinkHoverCell = null;
+    _terminalLinkHoverFrameId = null;
+    _updateHoveredTerminalLink(notify: false);
+  }
+
+  void _updateHoveredTerminalLink({bool notify = true}) {
+    final snapshot = _snapshot;
+    final localPosition = _lastPointerPosition;
+    if (!_terminalLinkMode || snapshot == null || localPosition == null) {
+      final changed = _hoveredTerminalLink != null;
+      _hoveredTerminalLink = null;
+      _terminalLinkHoverCell = null;
+      _terminalLinkHoverFrameId = null;
+      if (changed && notify && mounted) setState(() {});
+      return;
+    }
+    final cell = _terminalCellAt(localPosition);
+    if (_terminalLinkHoverFrameId == snapshot.frameId &&
+        _terminalLinkHoverCell == cell) {
+      return;
+    }
+    _terminalLinkHoverFrameId = snapshot.frameId;
+    _terminalLinkHoverCell = cell;
+    final next = TerminalLinkMatcher.matchAt(snapshot, cell);
+    final changed = !_sameTerminalLink(next, _hoveredTerminalLink);
+    _hoveredTerminalLink = next;
+    if (changed && notify && mounted) setState(() {});
+  }
+
+  TerminalLinkMatch? _linkAtLocalPosition(Offset? localPosition) {
+    final snapshot = _snapshot;
+    if (snapshot == null || localPosition == null) return null;
+    return TerminalLinkMatcher.matchAt(
+      snapshot,
+      _terminalCellAt(localPosition),
     );
   }
 
-  Future<bool> _tryOpenTerminalHyperlinkAt(Offset localPosition) async {
-    _flushRemoteBytesToWorker();
-    final worker = _worker;
-    if (worker == null) return false;
-    final uri = await worker.hyperlinkAt(_terminalCellAt(localPosition));
-    if (uri == null) return false;
-    final opened = await openTerminalHyperlink(uri);
-    if (!opened && mounted) {
-      showMotifToast(context, 'Could not open this terminal link.');
+  bool _sameTerminalLink(TerminalLinkMatch? a, TerminalLinkMatch? b) {
+    if (a == null || b == null) return a == b;
+    if (a.snapshotId != b.snapshotId ||
+        a.kind != b.kind ||
+        a.target != b.target ||
+        a.segments.length != b.segments.length) {
+      return false;
+    }
+    for (var i = 0; i < a.segments.length; i++) {
+      final aa = a.segments[i];
+      final bb = b.segments[i];
+      if (aa.row != bb.row ||
+          aa.startCol != bb.startCol ||
+          aa.endCol != bb.endCol) {
+        return false;
+      }
     }
     return true;
   }
 
-  Future<void> _openHyperlinkOrSendTouchClick(Offset localPosition) async {
-    if (_hasTerminalHyperlinkAt(localPosition) &&
-        await _tryOpenTerminalHyperlinkAt(localPosition)) {
+  TerminalLinkMatch? _terminalLinkForDesktopActivation(PointerDownEvent event) {
+    final keyboard = HardwareKeyboard.instance;
+    if (!terminalHyperlinkShouldActivate(
+      buttons: event.buttons,
+      control: keyboard.isControlPressed,
+      meta: keyboard.isMetaPressed,
+    )) {
+      return null;
+    }
+    if (!_terminalLinkMode) _setTerminalLinkMode(true);
+    return _linkAtLocalPosition(event.localPosition);
+  }
+
+  Future<void> _activateTerminalLink(TerminalLinkMatch match) async {
+    TerminalFileTarget? file = match.file;
+    if (file == null && match.target.toLowerCase().startsWith('file:')) {
+      try {
+        file = TerminalFileTarget.fromFileUri(match.target);
+      } catch (_) {
+        file = null;
+      }
+    }
+    file ??= match.kind == TerminalLinkKind.osc8
+        ? TerminalFileTarget.tryParse(match.target)
+        : null;
+    if (file != null) {
+      final openFile = widget.onOpenFile;
+      if (openFile == null) {
+        if (mounted) showMotifToast(context, 'File preview is unavailable.');
+        return;
+      }
+      try {
+        await openFile(file);
+      } catch (error) {
+        if (mounted) showMotifToast(context, 'Could not open ${file.path}.');
+      }
+      return;
+    }
+
+    final opened = await openTerminalHyperlink(match.target);
+    if (!opened && mounted) {
+      showMotifToast(context, 'Could not open this terminal link.');
+    }
+  }
+
+  Future<void> _openLinkOrSendTouchClick(
+    Offset localPosition, {
+    required TerminalSnapshot? snapshot,
+    required TerminalCellPoint? point,
+    required bool startedWithSelection,
+  }) async {
+    if (startedWithSelection) return;
+    final link = snapshot == null || point == null
+        ? null
+        : TerminalLinkMatcher.matchAt(snapshot, point);
+    if (link != null) {
+      _suppressNextTerminalTap = true;
+      await _activateTerminalLink(link);
       return;
     }
     if (!mounted || !(_snapshot?.mouseTrackingActive ?? false)) return;
@@ -427,6 +560,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;
     _touchDownPosition = null;
+    _touchDownSnapshot = null;
+    _touchDownCell = null;
     _clearTerminalSelection();
     _touchSelectionPointer = selectionPointer;
     _touchSelectionGestureActive = true;
@@ -888,6 +1023,14 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         _cellHeight <= 0) {
       return;
     }
+    // During resize, Flutter first publishes the new content extent while its
+    // ScrollPosition still contains the old pixel offset. Treating that
+    // metrics correction as input moves a bottom-pinned terminal upward.
+    // The post-frame synchronizer below will replace it with the new bottom.
+    if (_followLatestAfterResize) {
+      _scheduleTerminalScrollPositionSync();
+      return;
+    }
     final snapshot = _snapshot;
     if (snapshot == null ||
         snapshot.mouseTrackingActive ||
@@ -899,7 +1042,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     final rawPixels = _terminalScrollController.position.pixels;
     final maxPixels = snapshot.maxViewportOffset * _cellHeight;
     final boundedPixels = rawPixels.clamp(0.0, maxPixels).toDouble();
-    final nextOverscrollRows = (rawPixels - boundedPixels) / _cellHeight;
+    final nextOverscrollRows = -(rawPixels - boundedPixels) / _cellHeight;
     final overscrollChanged =
         (nextOverscrollRows - _terminalOverscrollRows).abs() > 0.000001;
     _terminalOverscrollRows = nextOverscrollRows;
@@ -908,8 +1051,14 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       viewportOffset: snapshot.viewportOffset,
       maxOffset: snapshot.maxViewportOffset,
     );
-    final currentPixels = _smoothScrollPosition.viewportOffset * _cellHeight;
-    final delta = boundedPixels - currentPixels;
+    final targetViewportOffset = terminalViewportOffsetFromScrollPixels(
+      scrollPixels: boundedPixels,
+      maxOffset: snapshot.maxViewportOffset,
+      rowHeight: _cellHeight,
+    );
+    final delta =
+        (targetViewportOffset - _smoothScrollPosition.viewportOffset) *
+        _cellHeight;
     if (delta.abs() > 0.000001) {
       _scrollByPixels(delta);
     } else if (overscrollChanged && mounted) {
@@ -930,14 +1079,18 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       }
       final position = _terminalScrollController.position;
       if (!position.hasContentDimensions ||
-          position.isScrollingNotifier.value) {
+          (position.isScrollingNotifier.value &&
+              !_resizedSnapshotReadyForScrollSync)) {
         return;
       }
-      final target = (_smoothScrollPosition.viewportOffset * _cellHeight)
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
+      final target = terminalScrollPixelsFromViewportOffset(
+        viewportOffset: _smoothScrollPosition.viewportOffset,
+        maxOffset: _smoothScrollPosition.maxOffset,
+        rowHeight: _cellHeight,
+      ).clamp(position.minScrollExtent, position.maxScrollExtent).toDouble();
       if ((position.pixels - target).abs() <= 0.01 &&
           _terminalOverscrollRows == 0) {
+        _completeResizeScrollSync();
         return;
       }
       _syncingTerminalScrollPosition = true;
@@ -947,7 +1100,17 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       } finally {
         _syncingTerminalScrollPosition = false;
       }
+      _completeResizeScrollSync();
     });
+  }
+
+  void _completeResizeScrollSync() {
+    if (!_resizedSnapshotReadyForScrollSync) return;
+    _resizedSnapshotReadyForScrollSync = false;
+    _followLatestAfterResize = false;
+    // Rebuild once to release the RenderObject's layout-time bottom pin before
+    // the next user scroll begins.
+    if (mounted) setState(() {});
   }
 
   void _scrollByPixels(double pixels) {

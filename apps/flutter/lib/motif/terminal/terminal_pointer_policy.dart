@@ -41,3 +41,18 @@ bool terminalHyperlinkShouldActivate({
     TargetPlatform.iOS => false,
   };
 }
+
+/// Whether the platform's terminal-link modifier is currently pressed.
+///
+/// Command is conventional on macOS; Control is used on Linux and Windows.
+bool terminalLinkModifierPressed({
+  required bool control,
+  required bool meta,
+  TargetPlatform? platform,
+}) => switch (platform ?? defaultTargetPlatform) {
+  TargetPlatform.macOS => meta,
+  TargetPlatform.linux || TargetPlatform.windows => control,
+  TargetPlatform.android ||
+  TargetPlatform.fuchsia ||
+  TargetPlatform.iOS => false,
+};

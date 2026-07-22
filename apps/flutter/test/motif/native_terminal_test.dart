@@ -61,6 +61,7 @@ void main() {
       snapshot.hasHyperlinkAt(const TerminalCellPoint(row: 0, col: 4)),
       isFalse,
     );
+    expect(snapshot.lines.first.cells[3].hyperlinkUri, uri);
     expect(ts.hyperlinkUriAt(const TerminalCellPoint(row: 0, col: 3)), uri);
     expect(ts.hyperlinkUriAt(const TerminalCellPoint(row: 0, col: 4)), isNull);
 
@@ -432,6 +433,45 @@ void main() {
     expect(snapshot.viewportOffset, 2);
     expect(snapshot.visibleText, historyText);
     expect(snapshot.isAtLatest, isFalse);
+
+    ts.dispose();
+  });
+
+  test('PTY snapshot restore returns a scrolled viewport to latest', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(18, 3);
+    ts.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(12, (i) => 'old$i\r\n').join()),
+      ),
+    );
+    ts.updateRenderState();
+    ts.scrollToOffset(2);
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.isAtLatest, isFalse);
+
+    // This is the clear/reset portion emitted by motifd before the content of
+    // a self-contained cold or stale-cursor VT snapshot. Split it inside the
+    // 3J sequence because WebSocket/ring delivery boundaries are arbitrary.
+    final restoredLines = List.generate(14, (i) => 'restored$i\r\n').join();
+    ts.feedBytes(
+      Uint8List.fromList(utf8.encode('\x1b[!p\x1b[?1049l\x1b[H\x1b[2J\x1b[3')),
+    );
+    ts.feedBytes(Uint8List.fromList(utf8.encode('J\x1b[0m$restoredLines')));
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+
+    expect(snapshot.hasScrollback, isTrue);
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+    expect(snapshot.visibleText, contains('restored13'));
 
     ts.dispose();
   });

@@ -233,6 +233,42 @@ void main() {
     expect(snapshot.visibleText, '  a');
   });
 
+  test('binary rows preserve wrapping and OSC 8 URI metadata', () {
+    final encoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(cols: 4, rows: 1),
+    );
+    encoder.startRow(0, wrap: true, wrapContinuation: true)
+      ..addCell(
+        col: 0,
+        widthCells: 1,
+        textBytes: const [0x78],
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+        drawsBackground: false,
+        bold: false,
+        italic: false,
+        invisible: false,
+        hasHyperlink: true,
+        hyperlinkUri: 'https://example.com',
+      )
+      ..finish();
+
+    final snapshot = TerminalFrameUpdate.decode(
+      encoder.finish(0).bytes,
+    ).applyTo(null);
+
+    expect(snapshot.lines.single.wrap, isTrue);
+    expect(snapshot.lines.single.wrapContinuation, isTrue);
+    expect(snapshot.lines.single.cells.single.hasHyperlink, isTrue);
+    expect(
+      snapshot.lines.single.cells.single.hyperlinkUri,
+      'https://example.com',
+    );
+  });
+
   test('delta frame reuses unchanged row objects', () {
     final fullEncoder = TerminalFrameEncoder(
       frameId: 1,

@@ -4,6 +4,11 @@ part of '../motif_terminal_view.dart';
 
 extension _MotifTerminalTextInput on _MotifTerminalViewState {
   void _onTerminalTap() {
+    if (_suppressNextTerminalTap) {
+      _suppressNextTerminalTap = false;
+      _tapStartedWithSelection = false;
+      return;
+    }
     final selectionWasActive = _tapStartedWithSelection;
     _tapStartedWithSelection = false;
     if (!terminalTapRequestsFocus(selectionActive: selectionWasActive)) return;
@@ -11,6 +16,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   }
 
   void _onTerminalTapCancel() {
+    _suppressNextTerminalTap = false;
     _tapStartedWithSelection = false;
   }
 
@@ -62,6 +68,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     }
     if (!_focusNode.hasFocus) {
       _hostShortcutKeys.clear();
+      _setTerminalLinkMode(false);
     }
     _syncKeyboardLift();
     if (mounted) setState(() {});

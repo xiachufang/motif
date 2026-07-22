@@ -60,69 +60,6 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     ];
   }
 
-  List<SessionInfo> _sessionsForMenu(
-    MotifServer server,
-    Iterable<SessionInfo> sessions,
-  ) {
-    return _sessionsForServer(
-      server,
-      sessions,
-      currentServerId: widget.serverId,
-      currentSession: widget.session,
-    );
-  }
-
-  List<PopupMenuEntry<_SessionMenuAction>> _sessionMenuEntries(AppState app) {
-    final entries = <PopupMenuEntry<_SessionMenuAction>>[
-      const PopupMenuItem<_SessionMenuAction>(
-        value: _CloseSessionAction(),
-        child: Row(
-          children: [
-            Icon(Icons.close),
-            SizedBox(width: 12),
-            Text('Close all sessions'),
-          ],
-        ),
-      ),
-      const PopupMenuDivider(),
-    ];
-    for (final group in app.connectedServers) {
-      final server = group.profile;
-      final sessions = _sessionsForMenu(server, group.sessions.sessions);
-      if (sessions.isEmpty) continue;
-      entries.add(
-        PopupMenuItem<_SessionMenuAction>(
-          enabled: false,
-          child: Text(
-            server.name,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
-        ),
-      );
-      for (final session in sessions) {
-        final selected =
-            server.id == widget.serverId && session.name == widget.session;
-        entries.add(
-          PopupMenuItem<_SessionMenuAction>(
-            value: _SwitchSessionAction(server.id, session.name),
-            enabled: group.access.isReady,
-            child: Row(
-              children: [
-                Icon(selected ? Icons.check : Icons.terminal),
-                const SizedBox(width: 12),
-                Flexible(
-                  child: Text(session.name, overflow: TextOverflow.ellipsis),
-                ),
-              ],
-            ),
-          ),
-        );
-      }
-    }
-    return entries;
-  }
-
   /// "Close session" leaves *every* open session, not just the current one:
   /// detach all connected clients (one per connected server) and return to the
   /// list. Detach is non-destructive — the sessions keep running server-side.
@@ -173,77 +110,18 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     }
   }
 
-  Future<void> _onSessionMenuSelected(
+  Future<void> _switchSessionFromMobileDrawer(
     AppState app,
-    _SessionMenuAction action,
+    String serverId,
+    String session,
   ) async {
-    switch (action) {
-      case _CloseSessionAction():
-        await _closeSession();
-      case _SwitchSessionAction(:final serverId, :final name):
-        await _switchSession(app, serverId, name);
-    }
+    await _closeMobileDrawers();
+    if (mounted) await _switchSession(app, serverId, session);
   }
 
-  Future<void> _showSessionMenu(
-    AppState app,
-    BuildContext buttonContext,
-  ) async {
-    try {
-      await app.refreshConnectedSessions();
-    } catch (_) {
-      // Show the cached list if refresh races a transient connection loss.
-    }
-    if (!mounted || !buttonContext.mounted) return;
-
-    final button = buttonContext.findRenderObject() as RenderBox?;
-    final overlay =
-        Navigator.of(buttonContext).overlay?.context.findRenderObject()
-            as RenderBox?;
-    if (button == null || overlay == null) return;
-
-    final position = RelativeRect.fromRect(
-      Rect.fromPoints(
-        button.localToGlobal(Offset.zero, ancestor: overlay),
-        button.localToGlobal(
-          button.size.bottomRight(Offset.zero),
-          ancestor: overlay,
-        ),
-      ),
-      Offset.zero & overlay.size,
-    );
-    final action = await showMenu<_SessionMenuAction>(
-      context: buttonContext,
-      position: position,
-      items: _sessionMenuEntries(app),
-    );
-    if (!mounted || action == null) return;
-    await _onSessionMenuSelected(app, action);
-  }
-
-  Future<void> _showSessionMenuAtOverlay(AppState app) async {
-    try {
-      await app.refreshConnectedSessions();
-    } catch (_) {
-      // Show the cached list if refresh races a transient connection loss.
-    }
-    if (!mounted) return;
-    final overlay =
-        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
-    if (overlay == null) return;
-    final top = MediaQuery.of(context).padding.top + MotifSpacing.sm;
-    final action = await showMenu<_SessionMenuAction>(
-      context: context,
-      position: RelativeRect.fromLTRB(
-        MotifSpacing.sm,
-        top,
-        overlay.size.width - MotifSpacing.sm,
-        overlay.size.height - top,
-      ),
-      items: _sessionMenuEntries(app),
-    );
-    if (!mounted || action == null) return;
-    await _onSessionMenuSelected(app, action);
+  Future<void> _closeAllSessionsFromMobileDrawer() async {
+    await _closeMobileDrawers();
+    if (mounted) await _closeSession();
   }
 
   ButtonStyle? _sidebarButtonStyle(

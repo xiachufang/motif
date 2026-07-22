@@ -4,6 +4,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
   final AppState app;
   final String currentServerId;
   final String currentSession;
+  final VoidCallback? onCloseAll;
   final Future<void> Function(String serverId, String session)
   onSessionSelected;
 
@@ -11,6 +12,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
     required this.app,
     required this.currentServerId,
     required this.currentSession,
+    this.onCloseAll,
     required this.onSessionSelected,
   });
 
@@ -20,9 +22,18 @@ class _ConnectedSessionsPanel extends StatelessWidget {
     final groups = app.connectedServers;
     return Column(
       children: [
-        const _SidebarPanelHeader(
+        _SidebarPanelHeader(
           icon: Icons.list_alt_outlined,
           title: 'Sessions',
+          actions: [
+            if (onCloseAll != null)
+              IconButton(
+                key: const ValueKey('mobile-close-all-sessions'),
+                icon: const Icon(Icons.close),
+                tooltip: 'Close all sessions',
+                onPressed: onCloseAll,
+              ),
+          ],
         ),
         Expanded(
           child: ListView(
@@ -107,8 +118,13 @@ class _ConnectedSessionsPanel extends StatelessWidget {
 class _SidebarPanelHeader extends StatelessWidget {
   final IconData icon;
   final String title;
+  final List<Widget> actions;
 
-  const _SidebarPanelHeader({required this.icon, required this.title});
+  const _SidebarPanelHeader({
+    required this.icon,
+    required this.title,
+    this.actions = const [],
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -135,6 +151,7 @@ class _SidebarPanelHeader extends StatelessWidget {
               ),
             ),
           ),
+          ...actions,
         ],
       ),
     );

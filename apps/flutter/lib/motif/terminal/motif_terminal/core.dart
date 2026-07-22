@@ -207,17 +207,30 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     );
   }
 
-  void _handleResize(BoxConstraints constraints) {
+  void _handleResize(
+    BoxConstraints constraints, {
+    required bool viewportSizeChanged,
+  }) {
     if (!_initialized || _terminalError != null) return;
     final newCols = ((constraints.maxWidth - 2 * widget.padding) / _cellWidth)
         .floor();
     final newRows = ((constraints.maxHeight - 2 * widget.padding) / _cellHeight)
         .floor();
-    if (newCols > 0 && newRows > 0 && (newCols != _cols || newRows != _rows)) {
-      _cols = newCols;
-      _rows = newRows;
+    final gridSizeChanged = newCols != _cols || newRows != _rows;
+    if (newCols > 0 &&
+        newRows > 0 &&
+        (gridSizeChanged || viewportSizeChanged)) {
+      if (gridSizeChanged) {
+        _cols = newCols;
+        _rows = newRows;
+      }
+      // A resized viewport represents a new live window onto the PTY. Keep the
+      // follow request pending until a snapshot with the new grid arrives;
+      // an older in-flight frame must not consume it.
+      _followLatestAfterResize = true;
+      _resizedSnapshotReadyForScrollSync = false;
+      _stopScrollInertia(resetVelocity: true);
       _resetSmoothScroll(clearRows: true);
-      _discardTerminalSelectionState();
       _worker?.resize(
         cols: _cols,
         rows: _rows,
@@ -227,8 +240,12 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         cellHeight: _cellHeight.toInt(),
         paddingLeft: widget.padding.toInt(),
         paddingTop: widget.padding.toInt(),
+        scrollToBottom: true,
       );
-      _scheduleResizeAndMaybeOpen();
+      if (gridSizeChanged) {
+        _discardTerminalSelectionState();
+        _scheduleResizeAndMaybeOpen();
+      }
       _scheduleImeRectSync();
     }
   }
@@ -323,21 +340,47 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
                 .abs() <=
             0.0001 &&
         snapshot.isAtLatest;
+    // TerminalState deliberately moves a self-contained PTY restore snapshot
+    // to the live bottom. Mirror that authoritative transition in Flutter's
+    // fractional viewport instead of retaining its pre-restore history row.
+    final terminalMovedToLatest =
+        previousSnapshot != null &&
+        !previousSnapshot.isAtLatest &&
+        snapshot.isAtLatest;
+    final resizedSnapshot =
+        _followLatestAfterResize &&
+        snapshot.cols == _cols &&
+        snapshot.rows == _rows;
+    final followLatest =
+        wasFollowingLatest || terminalMovedToLatest || resizedSnapshot;
     if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
       _resetSmoothScroll(clearRows: true);
     } else {
-      if (wasFollowingLatest) _scrollRowCache.clear();
+      if (followLatest) {
+        _scrollRowCache.clear();
+      }
       _smoothScrollPosition.synchronize(
         viewportOffset: snapshot.viewportOffset,
         maxOffset: snapshot.maxViewportOffset,
-        followLatest: wasFollowingLatest,
+        followLatest: followLatest,
       );
       _scrollRowCache.ingest(snapshot);
+    }
+    if (resizedSnapshot) {
+      if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
+        _followLatestAfterResize = false;
+        _resizedSnapshotReadyForScrollSync = false;
+      } else {
+        // Keep ignoring the ScrollPosition's old pixel value until the new
+        // content extent has been laid out and jumpTo has reached the bottom.
+        _resizedSnapshotReadyForScrollSync = true;
+      }
     }
     final viewportChanged =
         previousSnapshot?.viewportOffset != snapshot.viewportOffset;
     final selectionChanged = _selection != snapshot.selection;
     _snapshot = snapshot;
+    _refreshTerminalLinkForSnapshot();
     _selection = snapshot.selection;
     _scrollbarVisibility.updateCanShow(
       snapshot.hasScrollback && !snapshot.alternateScreenActive,
@@ -449,7 +492,13 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _pendingTerminalInputs.clear();
+    _followLatestAfterResize = false;
+    _resizedSnapshotReadyForScrollSync = false;
     _terminalHyperlinkPointers.clear();
+    _terminalLinkMode = false;
+    _hoveredTerminalLink = null;
+    _terminalLinkHoverCell = null;
+    _terminalLinkHoverFrameId = null;
     _resetSmoothScroll(clearRows: true);
     _discardTerminalSelectionState();
     _scheduleTerminalRetry();
@@ -507,8 +556,14 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _workerNeedsColdResync = false;
+    _followLatestAfterResize = false;
+    _resizedSnapshotReadyForScrollSync = false;
     _pendingTerminalInputs.clear();
     _terminalHyperlinkPointers.clear();
+    _terminalLinkMode = false;
+    _hoveredTerminalLink = null;
+    _terminalLinkHoverCell = null;
+    _terminalLinkHoverFrameId = null;
     _snapshot = null;
     _resetSmoothScroll(clearRows: true);
     _pendingFrameSnapshot?.acknowledge();
