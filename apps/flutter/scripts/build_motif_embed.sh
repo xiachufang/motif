@@ -59,6 +59,13 @@ OUT="${OUT:-$PROJECT_DIR/build/native/motif/$os/$arch/$out_name}"
 if [[ "$os" == "windows" ]]; then
   cargo_features+=(--no-default-features)
 
+  # Flutter's native-assets runner may omit APPDATA and the Zig cache
+  # variables from the hook environment. libghostty-vt-sys invokes Zig from
+  # Cargo, which otherwise cannot resolve a global cache directory on Windows.
+  export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$REPO_ROOT/.zig-cache/global}"
+  export ZIG_LOCAL_CACHE_DIR="${ZIG_LOCAL_CACHE_DIR:-$REPO_ROOT/.zig-cache/local}"
+  mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+
   # motif-server links libghostty-vt through libghostty-rs, while Flutter's
   # renderer DLL is built from apps/flutter/ghostty. Force the Rust build to
   # the same checkout so motif_embed.dll and the DLL bundled by the native
