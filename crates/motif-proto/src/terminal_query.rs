@@ -64,7 +64,7 @@ pub enum QueryKind {
     // ── Shell-integration markers: scanner consumes, no canonical answer.
     //    The server's BlockState turns these into Event::Pty* broadcasts. ──
     /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
-    /// The host segment is ignored; path is URL-decoded.
+    /// The path is URL-decoded; on Windows a remote host becomes a UNC path.
     Osc7Cwd { path: std::path::PathBuf },
     /// `ESC ] 7777 ;A ST` — prompt about to render.
     Osc133PromptStart,
@@ -855,11 +855,20 @@ mod tests {
 
     #[test]
     fn osc7_cwd_with_host() {
-        // Real shells emit `file://hostname/path`; we ignore the host.
+        // Real shells emit `file://hostname/path`. Windows preserves the host
+        // as a UNC path; other platforms use the URI path directly.
         let r = scan_one(b"\x1b]7;file://laptop.local/home/me/repo\x07");
         assert!(r.passthrough.is_empty());
         match &r.queries[..] {
-            [QueryKind::Osc7Cwd { path }] => assert_eq!(path.as_os_str(), "/home/me/repo"),
+            [QueryKind::Osc7Cwd { path }] => {
+                #[cfg(windows)]
+                assert_eq!(
+                    path,
+                    &std::path::PathBuf::from(r"\\laptop.local\home\me\repo")
+                );
+                #[cfg(not(windows))]
+                assert_eq!(path.as_os_str(), "/home/me/repo");
+            }
             other => panic!("expected Osc7Cwd, got {other:?}"),
         }
     }
