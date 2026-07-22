@@ -51,6 +51,11 @@ final class WorkspaceApi {
         .toList();
   }
 
+  Future<FsStatResult> stat(String path) async {
+    final body = await transport.call('fs.stat', {'path': path});
+    return FsStatResult.fromJson(body);
+  }
+
   Future<FsReadResult> read(String path, {int? maxBytes}) async {
     final body = await transport.call('fs.read', {
       'path': path,

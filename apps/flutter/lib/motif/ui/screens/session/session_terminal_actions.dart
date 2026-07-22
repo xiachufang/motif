@@ -392,7 +392,37 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       }
       return;
     }
+    try {
+      final stat = await _workspaceApi.stat(path);
+      if (stat.type == FileType.dir) {
+        _openDirectoryInFiles(path);
+        return;
+      }
+    } catch (_) {
+      // Preserve the previous behavior for paths that disappear between
+      // matching and activation, or servers that do not expose fs.stat.
+    }
     await _openPreview(path);
+  }
+
+  void _openDirectoryInFiles(String path) {
+    if (!mounted) return;
+    if (_usesSidebarLayout) {
+      final sidebar = readObservationScope<AppState>(context).sessionSidebar;
+      setState(() {
+        _fileTreeRoot = path;
+        sidebar.showFileTree = true;
+      });
+      return;
+    }
+
+    setState(() {
+      _fileTreeRoot = path;
+      _mobileEndDrawerPanel = _MobileEndDrawerPanel.files;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scaffoldKey.currentState?.openEndDrawer();
+    });
   }
 
   Future<void> _pushDiffView({String? path, required bool staged}) async {

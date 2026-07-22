@@ -262,6 +262,7 @@ class _SessionScreenState extends State<_SessionPane>
   bool _micStarting = false;
   Future<void>? _autoCreatePtyFuture;
   String? _lastAppleInputDocumentId;
+  String? _fileTreeRoot;
   String _asrBase = '';
   String _lastAsrText = ''; // last value ASR wrote to the input bar
   String? _asrInputViewId;
@@ -586,9 +587,10 @@ class _SessionScreenState extends State<_SessionPane>
                       child: switch (_mobileEndDrawerPanel) {
                         _MobileEndDrawerPanel.files => FileTreePanel(
                           key: ValueKey(
-                            'mobile-drawer-files-${_workspaceApi.activeCwd()}',
+                            'mobile-drawer-files-${_fileTreeRoot ?? _workspaceApi.activeCwd()}',
                           ),
-                          root: _workspaceApi.activeCwd() ?? '~',
+                          root:
+                              _fileTreeRoot ?? _workspaceApi.activeCwd() ?? '~',
                           workspace: _workspaceApi,
                           embedded: true,
                           onOpen: _openPreviewFromMobileDrawer,
@@ -736,7 +738,7 @@ class _SessionScreenState extends State<_SessionPane>
                   showDiff: sidebarState.showGitDiff,
                   currentServerId: widget.serverId,
                   currentSession: widget.session,
-                  root: cwd ?? '~',
+                  root: _fileTreeRoot ?? cwd ?? '~',
                   cwd: cwd,
                   workspace: _workspaceApi,
                   onSessionSelected: (serverId, session) =>

@@ -23,6 +23,8 @@ import 'package:motif/motif/state/workspace/view/view_tabs_view_model.dart';
 import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/terminal/terminal_input.dart';
 import 'package:motif/motif/terminal/terminal_key.dart';
+import 'package:motif/motif/terminal/terminal_link.dart';
+import 'package:motif/motif/terminal/motif_terminal_view.dart';
 import 'package:motif/motif/terminal/terminal_session.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
@@ -137,6 +139,36 @@ class _GitDiffRouteWorkspaceConnectionController
               '+narrow route diff',
             ].join('\n'),
           };
+        }
+        return const {};
+      },
+      writeFileBytes: (_, _) async => '',
+    ),
+    activeCwd: () => '/work',
+  );
+
+  @override
+  WorkspaceApi get workspace => _fakeWorkspace;
+}
+
+class _DirectoryLinkWorkspaceConnectionController
+    extends _SessionMenuWorkspaceConnectionController {
+  final List<String> statPaths = [];
+  final List<String> treePaths = [];
+
+  late final WorkspaceApi _fakeWorkspace = WorkspaceApi(
+    content: WorkspaceContentViewModel(),
+    transport: WorkspaceApiTransport(
+      isAvailable: () => true,
+      call: (method, [params = const {}]) async {
+        final path = params['path']! as String;
+        if (method == 'fs.stat') {
+          statPaths.add(path);
+          return const {'type': 'dir', 'size': 0, 'mtime': 0};
+        }
+        if (method == 'fs.tree') {
+          treePaths.add(path);
+          return const {'entries': <Object?>[]};
         }
         return const {};
       },
@@ -1017,6 +1049,52 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(FileTreePanel), findsNothing);
     expect(find.byType(GitDiffPanel), findsNothing);
+  });
+
+  testWidgets('terminal directory links open that directory in desktop Files', (
+    tester,
+  ) async {
+    final motif = _DirectoryLinkWorkspaceConnectionController();
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+
+    final terminal = tester.widget<MotifTerminalView>(
+      find.byKey(const ValueKey('terminal-pty-1')),
+    );
+    await terminal.onOpenFile!(
+      const TerminalFileTarget(raw: 'docs', path: 'docs'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(motif.statPaths, ['/work/docs']);
+    expect(motif.treePaths, contains('/work/docs'));
+    expect(find.byType(FileTreePanel), findsOneWidget);
+    expect(
+      tester.widget<FileTreePanel>(find.byType(FileTreePanel)).root,
+      '/work/docs',
+    );
+  });
+
+  testWidgets('terminal directory links open that directory in mobile Files', (
+    tester,
+  ) async {
+    final motif = _DirectoryLinkWorkspaceConnectionController();
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+    final terminal = tester.widget<MotifTerminalView>(
+      find.byKey(const ValueKey('terminal-pty-1')),
+    );
+    await terminal.onOpenFile!(
+      const TerminalFileTarget(raw: './docs', path: './docs'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(motif.statPaths, ['/work/docs']);
+    expect(find.byKey(const ValueKey('mobile-files-drawer')), findsOneWidget);
+    expect(find.byType(FileTreePanel), findsOneWidget);
+    expect(
+      tester.widget<FileTreePanel>(find.byType(FileTreePanel)).root,
+      '/work/docs',
+    );
   });
 
   testWidgets('iPad sidebar stacks sessions files and git diff panels', (
