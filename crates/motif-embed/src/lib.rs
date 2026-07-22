@@ -30,6 +30,15 @@ use tokio::sync::Mutex;
 use config::MenuConfig;
 use motif_server::{LogRing, RunningServer};
 
+// A Windows cdylib does not get the executable CRT startup path that normally
+// pulls these companion libraries in through msvcrt.  Rust's standard library
+// still references UCRT functions and the MSVC unwind runtime, so make that
+// dependency explicit for the FFI DLL.
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
+#[link(name = "ucrt")]
+#[link(name = "vcruntime")]
+extern "C" {}
+
 /// Lifecycle of the embedded server. `Starting` exists because tsnet bring-up
 /// can block for a while on first-run login — start happens off the caller's
 /// thread and this reflects progress. Ported from `app_state::ServerState`.

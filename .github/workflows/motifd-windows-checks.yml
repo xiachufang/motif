@@ -36,9 +36,7 @@ env:
 
 jobs:
   test:
-    # Keep the MSVC v143 toolchain until the Zig-built libghostty archive is
-    # compatible with the Visual Studio 2026 CRT used by windows-latest.
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95
