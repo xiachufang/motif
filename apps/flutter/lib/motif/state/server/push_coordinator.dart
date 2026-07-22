@@ -11,7 +11,11 @@ import 'device_controller.dart';
 import 'push_runtime_state.dart';
 
 typedef PushSessionRequest =
-    void Function({required String serverId, required String session});
+    void Function({
+      required String serverId,
+      required String session,
+      String? viewId,
+    });
 typedef PushNotificationSink =
     void Function(String serverId, MotifNotification notification);
 typedef PushServerEndpoint = ({
@@ -59,7 +63,7 @@ final class _ServerRemoved extends _PushEvent {
 final class _HandlersWired extends _PushEvent {
   const _HandlersWired(this.pendingOpen);
 
-  final ({String? session, String? instanceId})? pendingOpen;
+  final ({String? session, String? instanceId, String? viewId})? pendingOpen;
 }
 
 final class _ServerRegistered extends _PushEvent {
@@ -88,10 +92,15 @@ final class _EncryptedPayloadReceived extends _PushEvent {
 }
 
 final class _NotificationOpenReceived extends _PushEvent {
-  const _NotificationOpenReceived({required this.session, this.instanceId});
+  const _NotificationOpenReceived({
+    required this.session,
+    this.instanceId,
+    this.viewId,
+  });
 
   final String? session;
   final String? instanceId;
+  final String? viewId;
 }
 
 final class _ForegroundNotificationDecoded extends _PushEvent {
@@ -507,9 +516,13 @@ final class PushCoordinator {
         service.onEncryptedPayload((e, n) {
           _machine.dispatch(_EncryptedPayloadReceived(e, n));
         });
-        service.onNotificationOpen(({session, instanceId}) {
+        service.onNotificationOpen(({session, instanceId, viewId}) {
           _machine.dispatch(
-            _NotificationOpenReceived(session: session, instanceId: instanceId),
+            _NotificationOpenReceived(
+              session: session,
+              instanceId: instanceId,
+              viewId: viewId,
+            ),
           );
         });
         final pending = await service.takePendingNotificationOpen();
@@ -575,6 +588,7 @@ final class PushCoordinator {
         final motif = (obj['motif'] as Map).cast<String, Object?>();
         final instanceId = motif['instance_id'] as String;
         final sessionId = motif['session_id'] as String?;
+        final viewId = motif['view_id'] as String?;
         if (settings.isMuted(sessionId ?? '')) return null;
         final serverId = serverIdsByInstanceId[instanceId];
         if (serverId == null) return null;
@@ -584,6 +598,7 @@ final class PushCoordinator {
             title: (obj['title'] as String?) ?? 'Motif',
             body: (obj['body'] as String?) ?? '',
             sessionId: sessionId,
+            viewId: viewId,
             kind: motif['kind'] as String,
           ),
         );
@@ -597,16 +612,22 @@ final class PushCoordinator {
     switch (transition.event) {
       case _ForegroundNotificationDecoded(:final serverId, :final notification):
         showNotification(serverId, notification);
-      case _NotificationOpenReceived(:final session, :final instanceId):
+      case _NotificationOpenReceived(
+        :final session,
+        :final instanceId,
+        :final viewId,
+      ):
         _openSessionFromNotification(
           session: session,
           instanceId: instanceId,
+          viewId: viewId,
           serverIdsByInstanceId: transition.current.serverIdsByInstanceId,
         );
       case _HandlersWired(:final pendingOpen) when pendingOpen != null:
         _openSessionFromNotification(
           session: pendingOpen.session,
           instanceId: pendingOpen.instanceId,
+          viewId: pendingOpen.viewId,
           serverIdsByInstanceId: transition.current.serverIdsByInstanceId,
         );
       default:
@@ -622,6 +643,7 @@ final class PushCoordinator {
   void _openSessionFromNotification({
     required String? session,
     required String? instanceId,
+    required String? viewId,
     required Map<String, String> serverIdsByInstanceId,
   }) {
     final sessionId = session?.trim();
@@ -638,7 +660,7 @@ final class PushCoordinator {
       serverId = persisted;
     }
     if (serverId == null || serverId.isEmpty) return;
-    requestOpenSession(serverId: serverId, session: sessionId);
+    requestOpenSession(serverId: serverId, session: sessionId, viewId: viewId);
   }
 
   String? _deviceToken(PushServerRegistrationState registration) =>

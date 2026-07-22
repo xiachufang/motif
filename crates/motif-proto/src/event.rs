@@ -91,6 +91,9 @@ pub enum Event {
         /// Originating session, if known — lets clients deep-link.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// Originating tab, if the hook fired inside a session PTY.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        view_id: Option<ViewId>,
         /// Coarse kind, e.g. `"needs_input"` (Claude needs attention) or
         /// `"finished"` (turn ended).
         kind: String,

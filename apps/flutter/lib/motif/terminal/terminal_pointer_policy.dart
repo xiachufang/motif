@@ -21,3 +21,23 @@ bool terminalContextMenuShouldOpen({
   };
   return desktop && (buttons & kSecondaryButton) != 0;
 }
+
+/// Whether a desktop primary press is the explicit OSC 8 activation gesture.
+///
+/// This mirrors common terminal behavior: Command-click on macOS and
+/// Control-click on Linux/Windows. Mobile links are activated by a plain tap.
+bool terminalHyperlinkShouldActivate({
+  required int buttons,
+  required bool control,
+  required bool meta,
+  TargetPlatform? platform,
+}) {
+  if ((buttons & kPrimaryButton) == 0) return false;
+  return switch (platform ?? defaultTargetPlatform) {
+    TargetPlatform.macOS => meta,
+    TargetPlatform.linux || TargetPlatform.windows => control,
+    TargetPlatform.android ||
+    TargetPlatform.fuchsia ||
+    TargetPlatform.iOS => false,
+  };
+}

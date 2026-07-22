@@ -355,6 +355,7 @@ impl RunningServer {
                     title: "Motif test push".to_string(),
                     body: "Push notifications are working.".to_string(),
                     session_id: None,
+                    view_id: None,
                     kind: "test_push".to_string(),
                 },
             )

@@ -286,6 +286,7 @@ void main() {
           'motif': {
             'instance_id': 'instance-2',
             'session_id': 'work',
+            'view_id': 'view-2',
             'kind': 'finished',
           },
         }),
@@ -296,6 +297,7 @@ void main() {
     final notification = app.currentNotification?.notification;
     expect(notification?.title, 'Ready');
     expect(notification?.sessionId, 'work');
+    expect(notification?.viewId, 'view-2');
     expect(notification?.kind, 'finished');
 
     app.dispose();
@@ -335,10 +337,12 @@ void main() {
     platformPush.emitNotificationOpen(
       session: 'work',
       instanceId: 'instance-2',
+      viewId: 'view-2',
     );
 
     expect(app.pendingSessionOpen?.serverId, 's2');
     expect(app.pendingSessionOpen?.session, 'work');
+    expect(app.pendingSessionOpen?.viewId, 'view-2');
     app.dispose();
   });
 
@@ -382,7 +386,11 @@ void main() {
       });
       final prefs = await SharedPreferences.getInstance();
       final platformPush = _FakePushService()
-        ..pendingOpen = (session: 'boot-session', instanceId: 'instance-1');
+        ..pendingOpen = (
+          session: 'boot-session',
+          instanceId: 'instance-1',
+          viewId: 'view-boot',
+        );
       final client = _PushServerFixture('instance-1');
       final app = AppState(
         servers: ServerStore(prefs),
@@ -401,6 +409,7 @@ void main() {
 
       expect(app.pendingSessionOpen?.serverId, 's1');
       expect(app.pendingSessionOpen?.session, 'boot-session');
+      expect(app.pendingSessionOpen?.viewId, 'view-boot');
       expect(platformPush.pendingOpen, isNull);
       app.dispose();
     },
@@ -416,7 +425,11 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     await PushSettingsStore(prefs).bindInstanceToServer('instance-2', 's2');
     final platformPush = _FakePushService()
-      ..pendingOpen = (session: 'nightly', instanceId: 'instance-2');
+      ..pendingOpen = (
+        session: 'nightly',
+        instanceId: 'instance-2',
+        viewId: null,
+      );
     final app = AppState(
       servers: ServerStore(prefs),
       terminalSettings: TerminalSettingsStore(prefs),
@@ -471,8 +484,9 @@ class _FakePushService implements PushService {
   int unregisterCount = 0;
   Completer<void>? registrationGate;
   void Function(String e, String n)? _handler;
-  void Function({required String? session, String? instanceId})? _openHandler;
-  ({String? session, String? instanceId})? pendingOpen;
+  void Function({required String? session, String? instanceId, String? viewId})?
+  _openHandler;
+  ({String? session, String? instanceId, String? viewId})? pendingOpen;
 
   @override
   bool get isSupported => true;
@@ -501,13 +515,18 @@ class _FakePushService implements PushService {
 
   @override
   void onNotificationOpen(
-    void Function({required String? session, String? instanceId}) handler,
+    void Function({
+      required String? session,
+      String? instanceId,
+      String? viewId,
+    })
+    handler,
   ) {
     _openHandler = handler;
   }
 
   @override
-  Future<({String? session, String? instanceId})?>
+  Future<({String? session, String? instanceId, String? viewId})?>
   takePendingNotificationOpen() async {
     final pending = pendingOpen;
     pendingOpen = null;
@@ -520,8 +539,16 @@ class _FakePushService implements PushService {
     await Future<void>.delayed(Duration.zero);
   }
 
-  void emitNotificationOpen({String? session, String? instanceId}) {
-    _openHandler?.call(session: session, instanceId: instanceId);
+  void emitNotificationOpen({
+    String? session,
+    String? instanceId,
+    String? viewId,
+  }) {
+    _openHandler?.call(
+      session: session,
+      instanceId: instanceId,
+      viewId: viewId,
+    );
   }
 }
 

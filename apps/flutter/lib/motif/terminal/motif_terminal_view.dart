@@ -32,6 +32,7 @@ import 'terminal_error_view.dart';
 import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
+import 'terminal_hyperlink.dart';
 import 'terminal_palette.dart';
 import 'terminal_pointer_policy.dart';
 import 'terminal_scroll_driver.dart';
@@ -115,6 +116,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
   final Set<int> _terminalOverlayPointers = <int>{};
+  final Set<int> _terminalHyperlinkPointers = <int>{};
   int? _terminalContextMenuPointer;
   final FocusNode _focusNode = FocusNode(debugLabel: 'Motif terminal');
   final GlobalKey _terminalSurfaceKey = GlobalKey(
@@ -287,6 +289,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _pendingFrameSnapshot = null;
     _remoteByteBatcher.clear();
     _pendingTerminalInputs.clear();
+    _terminalHyperlinkPointers.clear();
     _stopScrollInertia(resetVelocity: true);
     _terminalScrollController.removeListener(_onTerminalScrollPositionChanged);
     _terminalScrollController.dispose();
@@ -440,83 +443,88 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
                 onLongPressCancel: useTouchSelectionGestures
                     ? _onTerminalLongPressCancel
                     : null,
-                child: Listener(
-                  onPointerDown: _onPointerDown,
-                  onPointerUp: _onPointerUp,
-                  onPointerCancel: _onPointerCancel,
-                  onPointerMove: _onPointerMove,
-                  onPointerSignal: _onPointerSignal,
-                  onPointerPanZoomStart: _onPanZoomStart,
-                  onPointerPanZoomUpdate: _onPanZoomUpdate,
-                  onPointerPanZoomEnd: _onPanZoomEnd,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final viewportHeight = constraints.maxHeight;
-                      _viewportWidth = constraints.maxWidth;
-                      if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
-                        _viewportHeight = viewportHeight;
-                        _scheduleKeyboardLiftSync();
-                        _scheduleImeRectSync();
-                      }
-                      final font = _fontSpec;
-                      final snapshot = _snapshot;
-                      if (!_initialized) {
-                        _scheduleTerminalInit(constraints);
-                      }
-                      if (snapshot == null) {
-                        return ColoredBox(color: widget.palette.background);
-                      }
-                      if (_initialized) _handleResize(constraints);
-                      final colorScheme = Theme.of(context).colorScheme;
-                      final visualViewportOffset = _effectiveViewportOffset(
-                        snapshot,
-                      );
-                      return Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          CustomPaint(
-                            painter: TerminalSnapshotPainter(
-                              snapshot: snapshot,
-                              cellWidth: _cellWidth,
-                              cellHeight: _cellHeight,
-                              padding: widget.padding,
-                              fontFamily: font.family,
-                              fontFamilyFallback: font.fallback,
-                              fontSize: widget.fontSize,
-                              showCursor: _focusNode.hasFocus,
-                              selection: _selection,
-                              selectionBackground: colorScheme.primary
-                                  .withValues(alpha: 0.72),
-                              selectionForeground: colorScheme.onPrimary,
-                              renderCache: _terminalRenderCache,
-                              preeditText: _composingText,
-                              viewportOffsetRows: visualViewportOffset,
-                              scrollRowCache: _scrollRowCache,
+                child: MouseRegion(
+                  cursor: _terminalMouseCursor,
+                  onHover: _onPointerHover,
+                  onExit: _onPointerExit,
+                  child: Listener(
+                    onPointerDown: _onPointerDown,
+                    onPointerUp: _onPointerUp,
+                    onPointerCancel: _onPointerCancel,
+                    onPointerMove: _onPointerMove,
+                    onPointerSignal: _onPointerSignal,
+                    onPointerPanZoomStart: _onPanZoomStart,
+                    onPointerPanZoomUpdate: _onPanZoomUpdate,
+                    onPointerPanZoomEnd: _onPanZoomEnd,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final viewportHeight = constraints.maxHeight;
+                        _viewportWidth = constraints.maxWidth;
+                        if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
+                          _viewportHeight = viewportHeight;
+                          _scheduleKeyboardLiftSync();
+                          _scheduleImeRectSync();
+                        }
+                        final font = _fontSpec;
+                        final snapshot = _snapshot;
+                        if (!_initialized) {
+                          _scheduleTerminalInit(constraints);
+                        }
+                        if (snapshot == null) {
+                          return ColoredBox(color: widget.palette.background);
+                        }
+                        if (_initialized) _handleResize(constraints);
+                        final colorScheme = Theme.of(context).colorScheme;
+                        final visualViewportOffset = _effectiveViewportOffset(
+                          snapshot,
+                        );
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            CustomPaint(
+                              painter: TerminalSnapshotPainter(
+                                snapshot: snapshot,
+                                cellWidth: _cellWidth,
+                                cellHeight: _cellHeight,
+                                padding: widget.padding,
+                                fontFamily: font.family,
+                                fontFamilyFallback: font.fallback,
+                                fontSize: widget.fontSize,
+                                showCursor: _focusNode.hasFocus,
+                                selection: _selection,
+                                selectionBackground: colorScheme.primary
+                                    .withValues(alpha: 0.72),
+                                selectionForeground: colorScheme.onPrimary,
+                                renderCache: _terminalRenderCache,
+                                preeditText: _composingText,
+                                viewportOffsetRows: visualViewportOffset,
+                                scrollRowCache: _scrollRowCache,
+                              ),
+                              size: Size(
+                                constraints.maxWidth,
+                                constraints.maxHeight,
+                              ),
                             ),
-                            size: Size(
-                              constraints.maxWidth,
-                              constraints.maxHeight,
+                            TerminalScrollControls(
+                              totalRows: snapshot.scrollTotalRows,
+                              visibleRows: snapshot.scrollViewportRows,
+                              viewportOffset: visualViewportOffset.floor(),
+                              alternateScreenActive:
+                                  snapshot.alternateScreenActive,
+                              visibilityController: _scrollbarVisibility,
+                              buttonForegroundColor: colorScheme.onSurface,
+                              buttonBackgroundColor: colorScheme.surface
+                                  .withValues(alpha: 0.92),
+                              onReturnButtonHoverChanged:
+                                  _onReturnButtonHoverChanged,
+                              onReturnToCursorInteractionStart:
+                                  _onReturnToCursorInteractionStart,
+                              onReturnToCursor: _returnToCursor,
                             ),
-                          ),
-                          TerminalScrollControls(
-                            totalRows: snapshot.scrollTotalRows,
-                            visibleRows: snapshot.scrollViewportRows,
-                            viewportOffset: visualViewportOffset.floor(),
-                            alternateScreenActive:
-                                snapshot.alternateScreenActive,
-                            visibilityController: _scrollbarVisibility,
-                            buttonForegroundColor: colorScheme.onSurface,
-                            buttonBackgroundColor: colorScheme.surface
-                                .withValues(alpha: 0.92),
-                            onReturnButtonHoverChanged:
-                                _onReturnButtonHoverChanged,
-                            onReturnToCursorInteractionStart:
-                                _onReturnToCursorInteractionStart,
-                            onReturnToCursor: _returnToCursor,
-                          ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    ),
                   ),
                 ),
               ),

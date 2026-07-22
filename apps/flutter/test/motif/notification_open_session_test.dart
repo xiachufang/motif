@@ -119,11 +119,16 @@ void main() {
       );
       app.setViewMode(AppViewMode.server);
 
-      app.requestOpenSession(serverId: 'server-1', session: 'work');
+      app.requestOpenSession(
+        serverId: 'server-1',
+        session: 'work',
+        viewId: 'v2',
+      );
 
       expect(app.viewMode, AppViewMode.client);
       expect(app.pendingSessionOpen?.serverId, 'server-1');
       expect(app.pendingSessionOpen?.session, 'work');
+      expect(app.pendingSessionOpen?.viewId, 'v2');
       expect(app.takePendingSessionOpen()?.session, 'work');
       expect(app.pendingSessionOpen, isNull);
     },
@@ -131,8 +136,14 @@ void main() {
 
   testWidgets('banner tap opens the named session', (tester) async {
     final client = _NotifWorkspaceConnectionController()
-      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
-      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..ptys = const [
+        PtyInfo(id: 'pty-1', cols: 80, rows: 24),
+        PtyInfo(id: 'pty-2', cols: 80, rows: 24),
+      ]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'v2', spec: PtyViewSpec('pty-2')),
+      ]
       ..activeViewId = 'v1';
     final app = await _appWithClient(client);
     addTearDown(app.dispose);
@@ -149,6 +160,7 @@ void main() {
       title: 'Command finished',
       body: 'make test',
       sessionId: 'work',
+      viewId: 'v2',
       kind: 'finished',
     );
     await tester.pump();
@@ -163,6 +175,42 @@ void main() {
     final screen = tester.widget<SessionScreen>(find.byType(SessionScreen));
     expect(screen.serverId, 'server-1');
     expect(screen.session, 'work');
+    expect(client.viewsController.viewModel.activeViewId, 'v2');
+  });
+
+  testWidgets('banner tap switches tab in the visible session', (tester) async {
+    final client = _NotifWorkspaceConnectionController()
+      ..ptys = const [
+        PtyInfo(id: 'pty-1', cols: 80, rows: 24),
+        PtyInfo(id: 'pty-2', cols: 80, rows: 24),
+      ]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'v2', spec: PtyViewSpec('pty-2')),
+      ]
+      ..activeViewId = 'v1';
+    final app = await _appWithClient(client);
+    addTearDown(app.dispose);
+    final workspace = app.workspaceForSession('server-1', 'work');
+
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
+    await tester.pump();
+    app.requestOpenSession(serverId: 'server-1', session: 'work');
+    await tester.pumpAndSettle();
+
+    workspace.viewModel.presence.latestNotification = const MotifNotification(
+      title: 'Needs input',
+      body: 'Approve command?',
+      sessionId: 'work',
+      viewId: 'v2',
+      kind: 'needs_input',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Needs input'));
+    await tester.pump();
+
+    expect(find.byType(SessionScreen), findsOneWidget);
+    expect(client.viewsController.viewModel.activeViewId, 'v2');
   });
 
   testWidgets('banner tap without sessionId only dismisses', (tester) async {

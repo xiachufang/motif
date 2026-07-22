@@ -45,6 +45,7 @@ pub struct PushNotification {
     pub title: String,
     pub body: String,
     pub session_id: Option<String>,
+    pub view_id: Option<String>,
     /// Coarse kind, e.g. `"needs_input"` / `"finished"`.
     pub kind: String,
 }
@@ -54,6 +55,8 @@ struct EncMotif<'a> {
     instance_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    view_id: Option<&'a str>,
     kind: &'a str,
 }
 
@@ -218,6 +221,7 @@ fn plaintext_for(instance_id: &str, notif: &PushNotification) -> anyhow::Result<
         motif: EncMotif {
             instance_id,
             session_id: notif.session_id.as_deref(),
+            view_id: notif.view_id.as_deref(),
             kind: &notif.kind,
         },
     })?)
@@ -246,6 +250,24 @@ fn encrypt(key_b64: &str, plaintext: &[u8]) -> anyhow::Result<(String, String)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plaintext_includes_notification_view_id() {
+        let plain = plaintext_for(
+            "instance-1",
+            &PushNotification {
+                title: "Done".to_string(),
+                body: "Build finished".to_string(),
+                session_id: Some("work".to_string()),
+                view_id: Some("view-2".to_string()),
+                kind: "finished".to_string(),
+            },
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+
+        assert_eq!(value["motif"]["view_id"], "view-2");
+    }
 
     #[test]
     fn encrypt_roundtrips_with_aes_gcm() {

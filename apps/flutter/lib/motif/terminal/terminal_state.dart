@@ -326,6 +326,7 @@ class TerminalState {
     calloc.free(_stylePtr);
     calloc.free(_cellPtr);
     calloc.free(_cellWidePtr);
+    calloc.free(_cellHasHyperlinkPtr);
     calloc.free(_palettePtr);
     calloc.free(_rowIteratorPtr);
     calloc.free(_rowCellsPtr);
@@ -483,6 +484,7 @@ class TerminalState {
   // Pre-allocated cell handle + wide value for reuse
   late final Pointer<GhosttyCell> _cellPtr = calloc<GhosttyCell>();
   late final Pointer<Int32> _cellWidePtr = calloc<Int32>();
+  late final Pointer<Bool> _cellHasHyperlinkPtr = calloc<Bool>();
 
   /// The wide property of the current cell (narrow / wide / spacer).
   GhosttyCellWide get cellWide {
@@ -872,6 +874,46 @@ class TerminalState {
       calloc.free(outPtr);
       calloc.free(options);
       calloc.free(selection);
+    }
+  }
+
+  /// Return the OSC 8 URI attached to [screenPoint], if any.
+  String? hyperlinkUriAt(TerminalCellPoint screenPoint) {
+    final gridRef = calloc<GhosttyGridRef>();
+    final outLen = calloc<Size>();
+    Pointer<Uint8>? buffer;
+    try {
+      if (!_gridRefForPoint(
+        GhosttyPointTag.GHOSTTY_POINT_TAG_SCREEN,
+        screenPoint,
+        gridRef,
+      )) {
+        return null;
+      }
+
+      var result = ghostty_grid_ref_hyperlink_uri(gridRef, nullptr, 0, outLen);
+      if (result == GhosttyResult.GHOSTTY_SUCCESS) return null;
+      if (result != GhosttyResult.GHOSTTY_OUT_OF_SPACE || outLen.value <= 0) {
+        return null;
+      }
+
+      buffer = calloc<Uint8>(outLen.value);
+      result = ghostty_grid_ref_hyperlink_uri(
+        gridRef,
+        buffer,
+        outLen.value,
+        outLen,
+      );
+      if (result != GhosttyResult.GHOSTTY_SUCCESS || outLen.value <= 0) {
+        return null;
+      }
+      return utf8.decode(buffer.asTypedList(outLen.value));
+    } on FormatException {
+      return null;
+    } finally {
+      if (buffer != null) calloc.free(buffer);
+      calloc.free(outLen);
+      calloc.free(gridRef);
     }
   }
 
@@ -1313,7 +1355,8 @@ class TerminalState {
         if (style.faint) foreground = _withAlpha(foreground, 0x80);
         final drawsBackground = background != metadata.backgroundArgb;
         final textLength = _cellUtf8BufferPtr.ref.len;
-        if (textLength > 0 || drawsBackground) {
+        final hasHyperlink = _cellHasHyperlinkPtr.value;
+        if (textLength > 0 || drawsBackground || hasHyperlink) {
           encodedRow.addCell(
             col: colIndex,
             widthCells: wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_WIDE ? 2 : 1,
@@ -1324,6 +1367,7 @@ class TerminalState {
             bold: style.bold,
             italic: style.italic,
             invisible: style.invisible,
+            hasHyperlink: hasHyperlink,
           );
         }
         colIndex++;
@@ -1372,6 +1416,16 @@ class TerminalState {
     );
     if (wideResult != GhosttyResult.GHOSTTY_SUCCESS) {
       throw StateError('failed to read terminal cell width: $wideResult');
+    }
+    final hyperlinkResult = ghostty_cell_get(
+      _cellPtr.value,
+      GhosttyCellData.GHOSTTY_CELL_DATA_HAS_HYPERLINK,
+      _cellHasHyperlinkPtr.cast(),
+    );
+    if (hyperlinkResult != GhosttyResult.GHOSTTY_SUCCESS) {
+      throw StateError(
+        'failed to read terminal cell hyperlink: $hyperlinkResult',
+      );
     }
   }
 

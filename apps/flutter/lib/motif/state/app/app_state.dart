@@ -117,7 +117,11 @@ class AppState {
 
   /// Open [session] on [serverId] from a notification tap. Switches the
   /// desktop shell to the client pane when needed.
-  void requestOpenSession({required String serverId, required String session}) {
+  void requestOpenSession({
+    required String serverId,
+    required String session,
+    String? viewId,
+  }) {
     final trimmed = session.trim();
     if (serverId.isEmpty || trimmed.isEmpty) return;
     observationTransaction(() {
@@ -125,6 +129,7 @@ class AppState {
       shell.pendingSessionOpen = PendingSessionOpen(
         serverId: serverId,
         session: trimmed,
+        viewId: viewId?.trim().isNotEmpty == true ? viewId!.trim() : null,
       );
     });
   }

@@ -103,6 +103,57 @@ void main() {
     expect(hostWrites, contains(0x61));
   });
 
+  test('worker returns OSC 8 URI for a linked cell', () async {
+    const uri = 'https://example.com/worker-link';
+    final initialized = Completer<void>();
+    final linkedFrame = Completer<TerminalSnapshot>();
+    final worker = await TerminalWorkerClient.spawn(
+      onHostWrite: (_) {},
+      onSnapshot: (snapshot, acknowledge) {
+        acknowledge();
+        if (!linkedFrame.isCompleted &&
+            snapshot.hasHyperlinkAt(const TerminalCellPoint(row: 0, col: 0))) {
+          linkedFrame.complete(snapshot);
+        }
+      },
+      onInitialized: initialized.complete,
+      onError: (error) => fail('worker error: $error'),
+    );
+    addTearDown(worker.dispose);
+
+    worker.init(
+      cols: 20,
+      rows: 4,
+      screenWidth: 200,
+      screenHeight: 80,
+      cellWidth: 10,
+      cellHeight: 20,
+      paddingLeft: 0,
+      paddingTop: 0,
+      foregroundArgb: 0xffffffff,
+      backgroundArgb: 0xff000000,
+      waitForFirstFeed: true,
+    );
+    await initialized.future.timeout(const Duration(seconds: 2));
+    worker.feedBytes(
+      Uint8List.fromList(utf8.encode('\x1b]8;;$uri\x07link\x1b]8;;\x07')),
+    );
+    await linkedFrame.future.timeout(const Duration(seconds: 2));
+
+    expect(
+      await worker
+          .hyperlinkAt(const TerminalCellPoint(row: 0, col: 2))
+          .timeout(const Duration(seconds: 2)),
+      uri,
+    );
+    expect(
+      await worker
+          .hyperlinkAt(const TerminalCellPoint(row: 0, col: 4))
+          .timeout(const Duration(seconds: 2)),
+      isNull,
+    );
+  });
+
   test(
     'key encoding observes an immediately preceding terminal mode',
     () async {

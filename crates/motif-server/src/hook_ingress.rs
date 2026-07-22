@@ -40,6 +40,9 @@ use crate::session::manager::SessionManager;
 /// env as `MOTIF_SESSION_NAME` and forwarded by `motif-notify.sh`). Empty /
 /// absent when the hook didn't fire inside a motif PTY.
 const SESSION_HEADER: &str = "x-motif-session";
+/// Header carrying the PTY id inherited by the coding-agent process. The
+/// server resolves it to the stable ViewId exposed to clients.
+const PTY_HEADER: &str = "x-motif-pty";
 const TOKEN_HEADER: &str = "x-motif-hook-token";
 
 /// Bound hook ingress plus the environment values child PTYs need in order to
@@ -243,6 +246,12 @@ async fn handle(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty());
+    let pty_id = req
+        .headers()
+        .get(PTY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
 
     let body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
@@ -286,6 +295,11 @@ async fn handle(
         })
         .unwrap_or_else(|| default_title.to_string());
 
+    let view_id = session_name
+        .as_deref()
+        .zip(pty_id.as_deref())
+        .and_then(|(name, pty_id)| manager.get(name)?.view_id_of_pty(pty_id));
+
     // (i) Live channel: publish to the originating session's broadcast.
     if let Some(name) = &session_name {
         if let Some(session) = manager.get(name) {
@@ -297,6 +311,7 @@ async fn handle(
                 title,
                 body: body_text,
                 session_id: Some(name),
+                view_id: view_id.clone(),
                 kind,
                 seq,
             });
@@ -312,6 +327,7 @@ async fn handle(
                     title,
                     body: body_text,
                     session_id: session_name,
+                    view_id,
                     kind: kind.to_string(),
                 },
             )

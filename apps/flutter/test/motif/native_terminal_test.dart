@@ -39,6 +39,34 @@ void main() {
     },
   );
 
+  test('OSC 8 metadata survives into snapshots and URI lookup', () {
+    const uri = 'https://example.com/docs?q=osc8';
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(20, 3);
+
+    ts.feedBytes(
+      Uint8List.fromList(utf8.encode('\x1b]8;;$uri\x07open\x1b]8;;\x07 plain')),
+    );
+    ts.updateRenderState();
+
+    final snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(
+      snapshot.hasHyperlinkAt(const TerminalCellPoint(row: 0, col: 0)),
+      isTrue,
+    );
+    expect(
+      snapshot.hasHyperlinkAt(const TerminalCellPoint(row: 0, col: 4)),
+      isFalse,
+    );
+    expect(ts.hyperlinkUriAt(const TerminalCellPoint(row: 0, col: 3)), uri);
+    expect(ts.hyperlinkUriAt(const TerminalCellPoint(row: 0, col: 4)), isNull);
+
+    ts.dispose();
+  });
+
   test('encoded keystrokes are routed to onHostWrite (the network sink)', () {
     final out = <int>[];
     final ts = TerminalState(onHostWrite: (b) => out.addAll(b));

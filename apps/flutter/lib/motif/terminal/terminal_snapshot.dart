@@ -66,6 +66,17 @@ class TerminalSnapshot {
     return rows.join('\n');
   }
 
+  /// Whether [point] falls on a cell tagged by Ghostty as an OSC 8 link.
+  bool hasHyperlinkAt(TerminalCellPoint point) {
+    final viewportRow = point.row - viewportOffset;
+    if (viewportRow < 0 || viewportRow >= lines.length || cols <= 0) {
+      return false;
+    }
+    final row = lines[viewportRow];
+    final cellIndex = row.cellIndexForColumn(point.col);
+    return cellIndex != null && row.cells[cellIndex].hasHyperlink;
+  }
+
   String selectedText(TerminalSelection selection) {
     if (lines.isEmpty || cols <= 0) return '';
     final range = visibleSelection(selection);
@@ -287,6 +298,7 @@ class TerminalSnapshotCell {
   final bool bold;
   final bool italic;
   final bool invisible;
+  final bool hasHyperlink;
 
   const TerminalSnapshotCell({
     required this.col,
@@ -298,6 +310,7 @@ class TerminalSnapshotCell {
     required this.bold,
     required this.italic,
     required this.invisible,
+    this.hasHyperlink = false,
   });
 
   int get endCol => col + (widthCells <= 0 ? 1 : widthCells) - 1;
@@ -328,6 +341,7 @@ class TerminalRowRenderKey {
         bold: cell.bold,
         italic: cell.italic,
         invisible: cell.invisible,
+        hasHyperlink: cell.hasHyperlink,
       );
     }
     return hasher.finish(cells.length);
@@ -363,6 +377,7 @@ class TerminalRowRenderKeyHasher {
     required bool bold,
     required bool italic,
     required bool invisible,
+    bool hasHyperlink = false,
   }) {
     addUint32(col);
     addUint32(widthCells);
@@ -372,7 +387,8 @@ class TerminalRowRenderKeyHasher {
       (drawsBackground ? 1 : 0) |
           (bold ? 1 << 1 : 0) |
           (italic ? 1 << 2 : 0) |
-          (invisible ? 1 << 3 : 0),
+          (invisible ? 1 << 3 : 0) |
+          (hasHyperlink ? 1 << 4 : 0),
     );
     addUint32(textBytes.length);
     for (final byte in textBytes) {
@@ -595,6 +611,7 @@ class TerminalEncodedRowWriter {
     required bool bold,
     required bool italic,
     required bool invisible,
+    bool hasHyperlink = false,
   }) {
     if (_finished) throw StateError('terminal row is already finished');
     if (textBytes.length > 0xffff) {
@@ -604,7 +621,8 @@ class TerminalEncodedRowWriter {
         (drawsBackground ? 1 : 0) |
         (bold ? 1 << 1 : 0) |
         (italic ? 1 << 2 : 0) |
-        (invisible ? 1 << 3 : 0);
+        (invisible ? 1 << 3 : 0) |
+        (hasHyperlink ? 1 << 4 : 0);
     _writer
       ..writeUint16(col)
       ..writeUint8(widthCells)
@@ -623,6 +641,7 @@ class TerminalEncodedRowWriter {
       bold: bold,
       italic: italic,
       invisible: invisible,
+      hasHyperlink: hasHyperlink,
     );
     _cellCount++;
   }
@@ -814,6 +833,7 @@ List<TerminalSnapshotCell> _decodeTerminalSnapshotCells(Uint8List payload) {
         bold: flags & (1 << 1) != 0,
         italic: flags & (1 << 2) != 0,
         invisible: flags & (1 << 3) != 0,
+        hasHyperlink: flags & (1 << 4) != 0,
       ),
     );
   }

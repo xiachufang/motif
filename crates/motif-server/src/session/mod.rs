@@ -464,6 +464,14 @@ impl Session {
             })
     }
 
+    /// If `pty_id` is represented by a tab, return that tab's stable ViewId.
+    pub fn view_id_of_pty(&self, pty_id: &str) -> Option<ViewId> {
+        self.views.lock().iter().find_map(|view| match &view.spec {
+            ViewSpec::Pty { pty_id: candidate } if candidate == pty_id => Some(view.id.clone()),
+            _ => None,
+        })
+    }
+
     /// Append a view + broadcast. If `activate` is true, also update the
     /// session's active view (and broadcast that change).
     pub fn open_view(&self, spec: ViewSpec, activate: bool) -> ViewInfo {
@@ -870,6 +878,20 @@ mod tests {
         assert!(a.remove_remote_port(&second.id));
         assert_eq!(a.remote_ports(), vec![updated]);
         assert!(!a.remove_remote_port("missing"));
+    }
+
+    #[test]
+    fn resolves_pty_to_its_view_for_notification_deep_links() {
+        let session = Session::new("notification-view", PathBuf::from("/tmp"));
+        let view = session.open_view(
+            ViewSpec::Pty {
+                pty_id: "sh-2".to_string(),
+            },
+            false,
+        );
+
+        assert_eq!(session.view_id_of_pty("sh-2"), Some(view.id));
+        assert_eq!(session.view_id_of_pty("missing"), None);
     }
 
     /// A burst of distinct `view.active_changed` within the trailing window

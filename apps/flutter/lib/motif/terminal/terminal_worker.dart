@@ -73,6 +73,9 @@ class TerminalWorkerClient {
   int _nextCopyRequestId = 1;
   final Map<int, Completer<String?>> _copySelectionRequests =
       <int, Completer<String?>>{};
+  int _nextHyperlinkRequestId = 1;
+  final Map<int, Completer<String?>> _hyperlinkRequests =
+      <int, Completer<String?>>{};
   TerminalSnapshot? _lastSnapshot;
 
   static Future<TerminalWorkerClient> spawn({
@@ -319,6 +322,20 @@ class TerminalWorkerClient {
     return completer.future;
   }
 
+  Future<String?> hyperlinkAt(TerminalCellPoint screenPoint) {
+    if (_disposed) return Future<String?>.value(null);
+    final id = _nextHyperlinkRequestId++;
+    final completer = Completer<String?>();
+    _hyperlinkRequests[id] = completer;
+    _send({
+      'type': 'hyperlinkAt',
+      'id': id,
+      'row': screenPoint.row,
+      'col': screenPoint.col,
+    });
+    return completer.future;
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
@@ -328,6 +345,10 @@ class TerminalWorkerClient {
       if (!completer.isCompleted) completer.complete(null);
     }
     _copySelectionRequests.clear();
+    for (final completer in _hyperlinkRequests.values) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    _hyperlinkRequests.clear();
     await _eventsSub.cancel();
     _events.close();
     _isolate.kill(priority: Isolate.immediate);
@@ -434,6 +455,13 @@ class TerminalWorkerClient {
         if (completer != null && !completer.isCompleted) {
           final text = message['text'];
           completer.complete(text is String ? text : null);
+        }
+      case 'hyperlinkUri':
+        final id = message['id'];
+        final completer = id is int ? _hyperlinkRequests.remove(id) : null;
+        if (completer != null && !completer.isCompleted) {
+          final uri = message['uri'];
+          completer.complete(uri is String ? uri : null);
         }
       case 'error':
         _onError(message['error'] ?? 'terminal worker error');
@@ -620,6 +648,12 @@ class _TerminalWorker {
             'type': 'selectionText',
             'id': command['id'],
             'text': state?.formatTrackedSelection(),
+          });
+        case 'hyperlinkAt':
+          events.send({
+            'type': 'hyperlinkUri',
+            'id': command['id'],
+            'uri': state?.hyperlinkUriAt(_pointFromCommand(command)),
           });
         case 'dispose':
           _dispose();

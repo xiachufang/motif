@@ -83,10 +83,12 @@ typedef _WorkspaceKey = ({String serverId, String session});
 class SessionScreen extends StatefulWidget {
   final String serverId;
   final String session;
+  final String? initialViewId;
   const SessionScreen({
     super.key,
     required this.serverId,
     required this.session,
+    this.initialViewId,
   });
 
   @override
@@ -143,6 +145,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
         app,
         serverId: widget.serverId,
         session: widget.session,
+        initialViewId: widget.initialViewId,
       );
     }
     return Stack(
@@ -160,6 +163,11 @@ class _SessionScreenHostState extends State<SessionScreen> {
                   app,
                   serverId: workspace.serverId,
                   session: workspace.session,
+                  initialViewId:
+                      workspace.serverId == widget.serverId &&
+                          workspace.session == widget.session
+                      ? widget.initialViewId
+                      : null,
                   workspaceActive: workspace == _active,
                   onWorkspaceSelected: _selectWorkspace,
                 ),
@@ -174,6 +182,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
     AppState app, {
     required String serverId,
     required String session,
+    String? initialViewId,
     bool workspaceActive = true,
     void Function(String serverId, String session)? onWorkspaceSelected,
   }) {
@@ -188,6 +197,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
       child: _SessionPane(
         serverId: serverId,
         session: session,
+        initialViewId: initialViewId,
         workspaceActive: workspaceActive,
         onWorkspaceSelected: onWorkspaceSelected,
       ),
@@ -198,12 +208,14 @@ class _SessionScreenHostState extends State<SessionScreen> {
 class _SessionPane extends StatefulWidget {
   final String serverId;
   final String session;
+  final String? initialViewId;
   final bool workspaceActive;
   final void Function(String serverId, String session)? onWorkspaceSelected;
 
   const _SessionPane({
     required this.serverId,
     required this.session,
+    this.initialViewId,
     this.workspaceActive = true,
     this.onWorkspaceSelected,
   });
@@ -251,6 +263,7 @@ class _SessionScreenState extends State<_SessionPane>
   String _lastAsrText = ''; // last value ASR wrote to the input bar
   String? _asrInputViewId;
   bool _ignoreFinal = false; // set when the user bailed out of ASR by typing
+  bool _initialViewApplied = false;
 
   @override
   void initState() {
@@ -264,7 +277,10 @@ class _SessionScreenState extends State<_SessionPane>
     _fallbackInput = _createInputState('fallback');
     _connectionSub = observe(
       () => _attachment.connection.status,
-      onChange: (_) => unawaited(_ensurePtyOnOpen()),
+      onChange: (_) {
+        unawaited(_activateInitialView());
+        unawaited(_ensurePtyOnOpen());
+      },
       scheduler: ObservationSchedulers.immediate,
     );
     WidgetsBinding.instance.addObserver(this);
@@ -296,6 +312,7 @@ class _SessionScreenState extends State<_SessionPane>
       // background. Reclaim the foreground so it reactivates its view and
       // re-advertises the terminal palette.
       attachment.setForeground(true);
+      unawaited(_activateInitialView());
       // Entering a session with no terminal (e.g. all were closed) should still
       // land on a usable pane.
       unawaited(_ensurePtyOnOpen());
@@ -313,6 +330,7 @@ class _SessionScreenState extends State<_SessionPane>
         'open attach session=${widget.session} took=${sw.elapsedMilliseconds}ms',
         name: 'motif.ui',
       );
+      await _activateInitialView();
       // A freshly-attached session with no PTYs (brand-new, or every terminal
       // closed) would open an empty pane — auto-create one. _newPty handles its
       // own errors, so it won't trip the attach catch/pop below.
@@ -334,6 +352,27 @@ class _SessionScreenState extends State<_SessionPane>
       } else {
         _attachingSession = false;
       }
+    }
+  }
+
+  Future<void> _activateInitialView() async {
+    if (_initialViewApplied) return;
+    final viewId = widget.initialViewId;
+    if (viewId == null || viewId.isEmpty) {
+      _initialViewApplied = true;
+      return;
+    }
+    if (!_workspaceState.views.items.any((view) => view.id == viewId)) return;
+    _initialViewApplied = true;
+    try {
+      await _viewController.activate(viewId);
+    } catch (error, stackTrace) {
+      Log.w(
+        'notification tab activation failed view=$viewId',
+        name: 'motif.ui',
+        error: error,
+        stackTrace: stackTrace,
+      );
     }
   }
 

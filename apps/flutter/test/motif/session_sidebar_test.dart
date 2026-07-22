@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
@@ -612,6 +613,125 @@ void main() {
       44,
     );
     expect(find.text('test-session'), findsOneWidget);
+  });
+
+  testWidgets('mobile horizontal swipe scrolls tabs without a long press', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final motif = _ShortcutWorkspaceConnectionController()
+        ..ptys = const [PtyInfo(id: 'seed', cols: 80, rows: 24)]
+        ..views = const [
+          ViewInfo(id: 'v1', spec: OtherViewSpec('first-wide-tab')),
+          ViewInfo(id: 'v2', spec: OtherViewSpec('second-wide-tab')),
+          ViewInfo(id: 'v3', spec: OtherViewSpec('third-wide-tab')),
+          ViewInfo(id: 'v4', spec: OtherViewSpec('fourth-wide-tab')),
+          ViewInfo(id: 'v5', spec: OtherViewSpec('fifth-wide-tab')),
+        ]
+        ..activeViewId = 'v1';
+
+      await _pumpSession(tester, const Size(360, 768), motif: motif);
+
+      final tabList = find.byType(ReorderableListView);
+      final scrollable = find.descendant(
+        of: tabList,
+        matching: find.byType(Scrollable),
+      );
+      final position = tester.state<ScrollableState>(scrollable).position;
+      expect(position.pixels, 0);
+      expect(find.byType(ReorderableDelayedDragStartListener), findsWidgets);
+      expect(find.byType(ReorderableDragStartListener), findsNothing);
+
+      await tester.drag(
+        find.byKey(const ValueKey('tab-v1')),
+        const Offset(-220, 0),
+      );
+      await tester.pump();
+
+      expect(position.pixels, greaterThan(0));
+      expect(find.byKey(const ValueKey('tab-drag-feedback')), findsNothing);
+      expect(motif.views.map((view) => view.id), [
+        'v1',
+        'v2',
+        'v3',
+        'v4',
+        'v5',
+      ]);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('mobile long press starts tab reorder', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      final motif = _ShortcutWorkspaceConnectionController()
+        ..ptys = const [PtyInfo(id: 'seed', cols: 80, rows: 24)]
+        ..views = const [
+          ViewInfo(id: 'v1', spec: OtherViewSpec('first-tab')),
+          ViewInfo(id: 'v2', spec: OtherViewSpec('second-tab')),
+        ]
+        ..activeViewId = 'v1';
+
+      await _pumpSession(tester, const Size(700, 768), motif: motif);
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('first-tab')),
+      );
+      await tester.pump(kLongPressTimeout - const Duration(milliseconds: 50));
+      expect(find.byKey(const ValueKey('tab-drag-feedback')), findsNothing);
+
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 120));
+
+      final feedback = find.byKey(const ValueKey('tab-drag-feedback'));
+      expect(feedback, findsOneWidget);
+      expect(tester.widget<Material>(feedback).elevation, greaterThan(0));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(feedback, findsNothing);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('desktop pointer drag starts tab reorder immediately', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    try {
+      final motif = _ShortcutWorkspaceConnectionController()
+        ..ptys = const [PtyInfo(id: 'seed', cols: 80, rows: 24)]
+        ..views = const [
+          ViewInfo(id: 'v1', spec: OtherViewSpec('first-tab')),
+          ViewInfo(id: 'v2', spec: OtherViewSpec('second-tab')),
+        ]
+        ..activeViewId = 'v1';
+
+      await _pumpSession(tester, const Size(1024, 768), motif: motif);
+      expect(find.byType(ReorderableDragStartListener), findsWidgets);
+      expect(find.byType(ReorderableDelayedDragStartListener), findsNothing);
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('first-tab')),
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveBy(const Offset(24, 0));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 120));
+
+      final feedback = find.byKey(const ValueKey('tab-drag-feedback'));
+      expect(feedback, findsOneWidget);
+      expect(tester.widget<Material>(feedback).elevation, greaterThan(0));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(feedback, findsNothing);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
   });
 
   testWidgets('bottom input state is scoped to the active tab', (tester) async {

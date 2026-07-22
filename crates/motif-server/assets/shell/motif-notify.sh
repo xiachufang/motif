@@ -17,12 +17,14 @@ if [ -n "$MOTIF_HOOK_SOCK" ]; then
   cat | curl -s --max-time 3 \
     --unix-socket "$MOTIF_HOOK_SOCK" \
     -H "X-Motif-Session: ${MOTIF_SESSION_NAME:-}" \
+    -H "X-Motif-Pty: ${MOTIF_SESSION_ID:-}" \
     -H "Content-Type: application/json" \
     --data-binary @- \
     http://localhost/hook >/dev/null 2>&1
 elif [ -n "$MOTIF_HOOK_URL" ] && [ -n "$MOTIF_HOOK_TOKEN" ]; then
   cat | curl -s --max-time 3 \
     -H "X-Motif-Session: ${MOTIF_SESSION_NAME:-}" \
+    -H "X-Motif-Pty: ${MOTIF_SESSION_ID:-}" \
     -H "X-Motif-Hook-Token: $MOTIF_HOOK_TOKEN" \
     -H "Content-Type: application/json" \
     --data-binary @- \

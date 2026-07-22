@@ -493,12 +493,14 @@ class MotifNotification {
   final String title;
   final String body;
   final String? sessionId;
+  final String? viewId;
   final String kind;
 
   const MotifNotification({
     required this.title,
     required this.body,
     this.sessionId,
+    this.viewId,
     required this.kind,
   });
 
@@ -507,6 +509,7 @@ class MotifNotification {
         title: (j['title'] as String?) ?? '',
         body: (j['body'] as String?) ?? '',
         sessionId: _asString(j['session_id']),
+        viewId: _asString(j['view_id']),
         kind: (j['kind'] as String?) ?? '',
       );
 }

@@ -18,7 +18,8 @@ class ApnsPushService implements PushService {
   Future<String?>? _tokenRequest;
   String? _cachedToken;
   void Function(String e, String n)? _encryptedHandler;
-  void Function({required String? session, String? instanceId})? _openHandler;
+  void Function({required String? session, String? instanceId, String? viewId})?
+  _openHandler;
 
   @override
   bool get isSupported => Platform.isIOS || Platform.isMacOS;
@@ -91,6 +92,7 @@ class ApnsPushService implements PushService {
           _openHandler?.call(
             session: args['session'] as String?,
             instanceId: args['instance_id'] as String?,
+            viewId: args['view_id'] as String?,
           );
       }
       return null;
@@ -105,14 +107,19 @@ class ApnsPushService implements PushService {
 
   @override
   void onNotificationOpen(
-    void Function({required String? session, String? instanceId}) handler,
+    void Function({
+      required String? session,
+      String? instanceId,
+      String? viewId,
+    })
+    handler,
   ) {
     _openHandler = handler;
     _ensureChannelHandler();
   }
 
   @override
-  Future<({String? session, String? instanceId})?>
+  Future<({String? session, String? instanceId, String? viewId})?>
   takePendingNotificationOpen() async {
     if (!isSupported) return null;
     try {
@@ -123,11 +130,13 @@ class ApnsPushService implements PushService {
       final args = raw.cast<String, Object?>();
       final session = args['session'] as String?;
       final instanceId = args['instance_id'] as String?;
+      final viewId = args['view_id'] as String?;
       if ((session == null || session.isEmpty) &&
-          (instanceId == null || instanceId.isEmpty)) {
+          (instanceId == null || instanceId.isEmpty) &&
+          (viewId == null || viewId.isEmpty)) {
         return null;
       }
-      return (session: session, instanceId: instanceId);
+      return (session: session, instanceId: instanceId, viewId: viewId);
     } on MissingPluginException {
       return null;
     } on PlatformException {

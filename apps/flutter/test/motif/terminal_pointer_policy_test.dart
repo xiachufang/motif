@@ -50,4 +50,55 @@ void main() {
       isTrue,
     );
   });
+
+  test('OSC 8 activation uses platform terminal modifier', () {
+    expect(
+      terminalHyperlinkShouldActivate(
+        buttons: kPrimaryButton,
+        control: false,
+        meta: true,
+        platform: TargetPlatform.macOS,
+      ),
+      isTrue,
+    );
+    expect(
+      terminalHyperlinkShouldActivate(
+        buttons: kPrimaryButton,
+        control: true,
+        meta: false,
+        platform: TargetPlatform.linux,
+      ),
+      isTrue,
+    );
+    expect(
+      terminalHyperlinkShouldActivate(
+        buttons: kPrimaryButton,
+        control: true,
+        meta: false,
+        platform: TargetPlatform.windows,
+      ),
+      isTrue,
+    );
+  });
+
+  test('OSC 8 activation rejects plain desktop and mobile presses', () {
+    expect(
+      terminalHyperlinkShouldActivate(
+        buttons: kPrimaryButton,
+        control: false,
+        meta: false,
+        platform: TargetPlatform.macOS,
+      ),
+      isFalse,
+    );
+    expect(
+      terminalHyperlinkShouldActivate(
+        buttons: kPrimaryButton,
+        control: true,
+        meta: false,
+        platform: TargetPlatform.iOS,
+      ),
+      isFalse,
+    );
+  });
 }

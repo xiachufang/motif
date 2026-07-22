@@ -12,10 +12,15 @@ enum AppLifecyclePhase { foreground, background }
 
 /// Request to open a session from an in-app notification / push tap.
 final class PendingSessionOpen {
-  const PendingSessionOpen({required this.serverId, required this.session});
+  const PendingSessionOpen({
+    required this.serverId,
+    required this.session,
+    this.viewId,
+  });
 
   final String serverId;
   final String session;
+  final String? viewId;
 }
 
 @ObservableModel()

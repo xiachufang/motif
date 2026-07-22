@@ -60,6 +60,11 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       unawaited(_showDesktopTerminalContextMenu(e.position));
       return;
     }
+    if (_shouldActivateTerminalHyperlink(e)) {
+      _terminalHyperlinkPointers.add(e.pointer);
+      unawaited(_tryOpenTerminalHyperlinkAt(e.localPosition));
+      return;
+    }
     if (_canStartMouseSelection(e)) {
       _beginMouseSelection(e);
       return;
@@ -92,6 +97,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   void _onPointerUp(PointerUpEvent e) {
     if (!_initialized || _terminalError != null) return;
     if (_terminalOverlayPointers.remove(e.pointer)) return;
+    if (_terminalHyperlinkPointers.remove(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -111,24 +117,8 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       // so mouse-tracking apps (vim, htop, ...) still see touches.
       final downPosition = _touchDownPosition;
       _touchDownPosition = null;
-      if (downPosition != null &&
-          _touchScrollDistance < kTouchSlop &&
-          (_snapshot?.mouseTrackingActive ?? false)) {
-        _flushRemoteBytesToWorker();
-        _worker?.encodeMouse(
-          action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
-          button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
-          mods: 0,
-          x: downPosition.dx,
-          y: downPosition.dy,
-        );
-        _worker?.encodeMouse(
-          action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
-          button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
-          mods: 0,
-          x: downPosition.dx,
-          y: downPosition.dy,
-        );
+      if (downPosition != null && _touchScrollDistance < kTouchSlop) {
+        unawaited(_openHyperlinkOrSendTouchClick(downPosition));
         return;
       }
       return;
@@ -145,6 +135,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onPointerCancel(PointerCancelEvent e) {
     if (_terminalOverlayPointers.remove(e.pointer)) return;
+    if (_terminalHyperlinkPointers.remove(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) {
       _terminalContextMenuPointer = null;
       return;
@@ -168,6 +159,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (!_initialized || _terminalError != null) return;
     _lastPointerPosition = e.localPosition;
     if (_terminalOverlayPointers.contains(e.pointer)) return;
+    if (_terminalHyperlinkPointers.contains(e.pointer)) return;
     if (e.pointer == _terminalContextMenuPointer) return;
     if (_isMouseSelectionMove(e)) {
       _updateMouseSelection(e.localPosition);
@@ -207,6 +199,79 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   bool get _canSelectTerminalText => !(_snapshot?.mouseTrackingActive ?? false);
+
+  MouseCursor get _terminalMouseCursor =>
+      _hasTerminalHyperlinkAt(_lastPointerPosition)
+      ? SystemMouseCursors.click
+      : SystemMouseCursors.text;
+
+  void _onPointerHover(PointerHoverEvent e) {
+    final wasHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
+    _lastPointerPosition = e.localPosition;
+    final isHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
+    if (wasHyperlink != isHyperlink && mounted) setState(() {});
+  }
+
+  void _onPointerExit(PointerExitEvent _) {
+    final wasHyperlink = _hasTerminalHyperlinkAt(_lastPointerPosition);
+    _lastPointerPosition = null;
+    if (wasHyperlink && mounted) setState(() {});
+  }
+
+  bool _hasTerminalHyperlinkAt(Offset? localPosition) {
+    if (localPosition == null) return false;
+    return _snapshot?.hasHyperlinkAt(_terminalCellAt(localPosition)) ?? false;
+  }
+
+  bool _shouldActivateTerminalHyperlink(PointerDownEvent event) {
+    if (!_hasTerminalHyperlinkAt(event.localPosition)) return false;
+    final keyboard = HardwareKeyboard.instance;
+    return terminalHyperlinkShouldActivate(
+      buttons: event.buttons,
+      control: keyboard.isControlPressed,
+      meta: keyboard.isMetaPressed,
+    );
+  }
+
+  Future<bool> _tryOpenTerminalHyperlinkAt(Offset localPosition) async {
+    _flushRemoteBytesToWorker();
+    final worker = _worker;
+    if (worker == null) return false;
+    final uri = await worker.hyperlinkAt(_terminalCellAt(localPosition));
+    if (uri == null) return false;
+    final opened = await openTerminalHyperlink(uri);
+    if (!opened && mounted) {
+      showMotifToast(context, 'Could not open this terminal link.');
+    }
+    return true;
+  }
+
+  Future<void> _openHyperlinkOrSendTouchClick(Offset localPosition) async {
+    if (_hasTerminalHyperlinkAt(localPosition) &&
+        await _tryOpenTerminalHyperlinkAt(localPosition)) {
+      return;
+    }
+    if (!mounted || !(_snapshot?.mouseTrackingActive ?? false)) return;
+    _sendTouchClick(localPosition);
+  }
+
+  void _sendTouchClick(Offset localPosition) {
+    _flushRemoteBytesToWorker();
+    _worker?.encodeMouse(
+      action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
+      button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
+      mods: 0,
+      x: localPosition.dx,
+      y: localPosition.dy,
+    );
+    _worker?.encodeMouse(
+      action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
+      button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
+      mods: 0,
+      x: localPosition.dx,
+      y: localPosition.dy,
+    );
+  }
 
   bool _canStartMouseSelection(PointerDownEvent e) {
     if (!_canSelectTerminalText) return false;

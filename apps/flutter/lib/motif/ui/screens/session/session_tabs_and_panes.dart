@@ -35,9 +35,19 @@ class _TabBar extends StatelessWidget {
                 builder: (context, child) {
                   final lift = Curves.easeOut.transform(animation.value);
                   return Transform.scale(
-                    scale: 1 + lift * 0.02,
+                    scale: 1 + lift * 0.04,
                     child: Material(
-                      type: MaterialType.transparency,
+                      key: const ValueKey('tab-drag-feedback'),
+                      color: c.surfaceElevated,
+                      elevation: 8 * lift,
+                      shadowColor: c.shadow,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(MotifRadius.pill),
+                        side: BorderSide(
+                          color: c.accent.withValues(alpha: 0.75 * lift),
+                          width: 1.5,
+                        ),
+                      ),
                       child: child,
                     ),
                   );
@@ -160,6 +170,27 @@ class _SessionTabChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     final bg = active ? c.accentFill() : c.subtleFill;
+    final dragContent = Row(
+      children: [
+        Icon(icon, size: 14, color: active ? c.accent : c.textSecondary),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: MotifType.monoSmall.copyWith(
+            color: active ? c.accent : c.textSecondary,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+    final dragHandle = switch (Theme.of(context).platform) {
+      TargetPlatform.android ||
+      TargetPlatform.iOS => ReorderableDelayedDragStartListener(
+        index: dragIndex,
+        child: dragContent,
+      ),
+      _ => ReorderableDragStartListener(index: dragIndex, child: dragContent),
+    };
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -173,26 +204,7 @@ class _SessionTabChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ReorderableDragStartListener(
-                index: dragIndex,
-                child: Row(
-                  children: [
-                    Icon(
-                      icon,
-                      size: 14,
-                      color: active ? c.accent : c.textSecondary,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      label,
-                      style: MotifType.monoSmall.copyWith(
-                        color: active ? c.accent : c.textSecondary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              dragHandle,
               const SizedBox(width: 4),
               // No Tooltip here: this chip is a ReorderableListView item, and a
               // Tooltip's OverlayPortal reactivates during reorder (the list

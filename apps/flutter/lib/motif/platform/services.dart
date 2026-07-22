@@ -199,14 +199,19 @@ abstract interface class PushService {
   void onEncryptedPayload(void Function(String e, String n) handler);
 
   /// User tapped a system notification (background / cold start). [session]
-  /// and optional [instanceId] come from the NSE-decrypted `userInfo`.
+  /// and optional [instanceId]/[viewId] come from the NSE-decrypted `userInfo`.
   void onNotificationOpen(
-    void Function({required String? session, String? instanceId}) handler,
+    void Function({
+      required String? session,
+      String? instanceId,
+      String? viewId,
+    })
+    handler,
   );
 
   /// Drain a cold-start tap that arrived before Dart registered handlers.
   /// Returns `null` when none is pending.
-  Future<({String? session, String? instanceId})?>
+  Future<({String? session, String? instanceId, String? viewId})?>
   takePendingNotificationOpen();
 }
 
@@ -222,10 +227,15 @@ class NoopPushService implements PushService {
   void onEncryptedPayload(void Function(String e, String n) handler) {}
   @override
   void onNotificationOpen(
-    void Function({required String? session, String? instanceId}) handler,
+    void Function({
+      required String? session,
+      String? instanceId,
+      String? viewId,
+    })
+    handler,
   ) {}
   @override
-  Future<({String? session, String? instanceId})?>
+  Future<({String? session, String? instanceId, String? viewId})?>
   takePendingNotificationOpen() async => null;
 }
 

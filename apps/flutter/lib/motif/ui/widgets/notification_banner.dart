@@ -65,7 +65,11 @@ class NotificationBannerHost extends _$NotificationBannerHost {
     final sessionId = notification.sessionId?.trim();
     app.consumeNotification(key);
     if (sessionId != null && sessionId.isNotEmpty) {
-      app.requestOpenSession(serverId: key.serverId, session: sessionId);
+      app.requestOpenSession(
+        serverId: key.serverId,
+        session: sessionId,
+        viewId: notification.viewId,
+      );
     }
   }
 

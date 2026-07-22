@@ -439,9 +439,11 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
     coordinator.opening = true;
     try {
       final routeName = sessionRouteName(pending.serverId, pending.session);
-      if (_topRouteName(context) == routeName) return;
-
       if (app.serverById(pending.serverId) == null) return;
+      if (_topRouteName(context) == routeName) {
+        _activateNotificationView(app, pending);
+        return;
+      }
 
       if (app.servers.activeId != pending.serverId) {
         await app.servers.setActive(pending.serverId);
@@ -460,13 +462,19 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
       app.workspaceForSession(pending.serverId, pending.session);
       // The visible route may have changed while the connection was opening.
       final topRouteName = _topRouteName(context);
-      if (topRouteName == routeName) return;
+      if (topRouteName == routeName) {
+        _activateNotificationView(app, pending);
+        return;
+      }
 
       final nav = Navigator.of(context);
       final route = MaterialPageRoute<void>(
         settings: RouteSettings(name: routeName),
-        builder: (_) =>
-            SessionScreen(serverId: pending.serverId, session: pending.session),
+        builder: (_) => SessionScreen(
+          serverId: pending.serverId,
+          session: pending.session,
+          initialViewId: pending.viewId,
+        ),
       );
       if (topRouteName?.startsWith('session/') ?? false) {
         unawaited(nav.pushReplacement<void, void>(route));
@@ -479,6 +487,17 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
       // the latest request now instead of waiting for an unrelated app event.
       _scheduleOpen(context, coordinator);
     }
+  }
+
+  void _activateNotificationView(AppState app, PendingSessionOpen pending) {
+    final viewId = pending.viewId;
+    if (viewId == null || viewId.isEmpty) return;
+    final workspace = app.existingWorkspace(pending.serverId, pending.session);
+    if (workspace == null ||
+        !workspace.viewModel.views.items.any((view) => view.id == viewId)) {
+      return;
+    }
+    unawaited(workspace.views.activate(viewId).catchError((_) {}));
   }
 
   String? _topRouteName(BuildContext context) {

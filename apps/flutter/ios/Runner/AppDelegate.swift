@@ -138,6 +138,9 @@ import UserNotifications
     if let instanceId = userInfo["instance_id"] as? String, !instanceId.isEmpty {
       payload["instance_id"] = instanceId
     }
+    if let viewId = userInfo["view_id"] as? String, !viewId.isEmpty {
+      payload["view_id"] = viewId
+    }
     guard !payload.isEmpty else { return }
     if let channel = pushChannel {
       channel.invokeMethod("onNotificationOpen", arguments: payload)

@@ -53,6 +53,9 @@ final class NotificationService: UNNotificationServiceExtension {
     if let instanceId = motif?["instance_id"] as? String {
       content.userInfo["instance_id"] = instanceId
     }
+    if let viewId = motif?["view_id"] as? String {
+      content.userInfo["view_id"] = viewId
+    }
     contentHandler(content)
   }
 

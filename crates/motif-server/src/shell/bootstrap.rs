@@ -388,6 +388,11 @@ fi
         // Notify script materialized + executable.
         let notify = bs.dir.path().join("motif-notify.sh");
         assert!(notify.exists(), "motif-notify.sh should be materialized");
+        let notify_source = std::fs::read_to_string(&notify).unwrap();
+        assert!(
+            notify_source.contains("X-Motif-Pty: ${MOTIF_SESSION_ID:-}"),
+            "notify hook must forward its originating PTY"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

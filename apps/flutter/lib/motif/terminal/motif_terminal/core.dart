@@ -449,6 +449,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _pendingTerminalInputs.clear();
+    _terminalHyperlinkPointers.clear();
     _resetSmoothScroll(clearRows: true);
     _discardTerminalSelectionState();
     _scheduleTerminalRetry();
@@ -507,6 +508,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _workerStarting = false;
     _workerNeedsColdResync = false;
     _pendingTerminalInputs.clear();
+    _terminalHyperlinkPointers.clear();
     _snapshot = null;
     _resetSmoothScroll(clearRows: true);
     _pendingFrameSnapshot?.acknowledge();
