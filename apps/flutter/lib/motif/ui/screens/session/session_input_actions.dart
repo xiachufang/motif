@@ -135,8 +135,8 @@ extension _SessionScreenInputActions on _SessionScreenState {
           '/tmp/motif-${DateTime.now().microsecondsSinceEpoch}.$ext';
       await _workspaceApi.writeBytes(remotePath, bytes);
       // Insert the uploaded path without executing it. This uses the same
-      // paste envelope as the composer, but intentionally omits Enter.
-      await _sendBytes(bracketedPasteBytes(remotePath));
+      // Paste through the active Ghostty surface, but intentionally omit Enter.
+      await _sendPasteBytes(utf8.encode(remotePath));
     } catch (e) {
       if (mounted) {
         showMotifToast(context, 'Attach failed: $e');

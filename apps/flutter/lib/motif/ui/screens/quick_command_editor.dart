@@ -108,7 +108,9 @@ class QuickCommandEditor extends _$QuickCommandEditor {
         onReorderItem: (o, n) => store.moveItemIn(setId, o, n),
         itemBuilder: (context, i) {
           final cmd = cmds[i];
-          final editable = cmd.kind == QuickCommandKind.bytes;
+          final editable =
+              cmd.kind == QuickCommandKind.bytes ||
+              cmd.kind == QuickCommandKind.key;
           final first = i == 0;
           final last = i == cmds.length - 1;
           return DecoratedBox(
@@ -174,10 +176,16 @@ class QuickCommandEditor extends _$QuickCommandEditor {
     QuickCommandKind.alt ||
     QuickCommandKind.shift => Icons.keyboard_option_key,
     QuickCommandKind.cd => Icons.folder_outlined,
-    QuickCommandKind.bytes => Icons.keyboard,
+    QuickCommandKind.bytes || QuickCommandKind.key => Icons.keyboard,
   };
 
   String _describe(QuickCommand cmd) {
+    if (cmd.kind == QuickCommandKind.key) {
+      final mods = cmd.modifiers.glyphs;
+      final key = terminalKeyForId(cmd.keyId);
+      final name = key?.label ?? cmd.keyId ?? 'unknown key';
+      return mods.isEmpty ? 'key · $name' : 'key · $mods$name';
+    }
     if (cmd.kind != QuickCommandKind.bytes) {
       return switch (cmd.kind) {
         QuickCommandKind.paste => 'clipboard',
@@ -185,6 +193,7 @@ class QuickCommandEditor extends _$QuickCommandEditor {
         QuickCommandKind.alt ||
         QuickCommandKind.shift => 'sticky modifier',
         QuickCommandKind.cd => 'directory picker',
+        QuickCommandKind.key => '',
         QuickCommandKind.bytes => '',
       };
     }
@@ -261,10 +270,9 @@ class _EditDialogState extends State<_EditDialog> {
     _ctrl = widget.existing?.modifiers.ctrl ?? false;
     _alt = widget.existing?.modifiers.alt ?? false;
     _shift = widget.existing?.modifiers.shift ?? false;
-    // Existing payloads that match a known key open in key mode.
-    _key = widget.existing == null
-        ? null
-        : terminalKeyForBytes(widget.existing!.payload);
+    _key = widget.existing?.kind == QuickCommandKind.key
+        ? terminalKeyForId(widget.existing!.keyId)
+        : null;
     _mode = _key == null ? _PayloadMode.text : _PayloadMode.key;
   }
 
@@ -281,18 +289,30 @@ class _EditDialogState extends State<_EditDialog> {
     final isKey = _mode == _PayloadMode.key;
     Navigator.pop(
       context,
-      QuickCommand(
-        id: widget.existing?.id ?? newQuickCommandId(),
-        label: _label.text.trim(),
-        symbol: symbol.isEmpty ? null : symbol,
-        payload: isKey
-            ? Uint8List.fromList(_key!.bytes)
-            : _qcEncode(_text.text),
-        // Keys are escape sequences; inserting them into the composer is
-        // meaningless, so they always send.
-        sendImmediately: isKey || _sendImmediately,
-        modifiers: QuickCommandModifiers(ctrl: _ctrl, alt: _alt, shift: _shift),
-      ),
+      isKey
+          ? QuickCommand.key(
+              widget.existing?.id ?? newQuickCommandId(),
+              _label.text.trim(),
+              _key!.keyId,
+              symbol: symbol.isEmpty ? null : symbol,
+              modifiers: QuickCommandModifiers(
+                ctrl: _ctrl,
+                alt: _alt,
+                shift: _shift,
+              ),
+            )
+          : QuickCommand(
+              id: widget.existing?.id ?? newQuickCommandId(),
+              label: _label.text.trim(),
+              symbol: symbol.isEmpty ? null : symbol,
+              payload: _qcEncode(_text.text),
+              sendImmediately: _sendImmediately,
+              modifiers: QuickCommandModifiers(
+                ctrl: _ctrl,
+                alt: _alt,
+                shift: _shift,
+              ),
+            ),
     );
   }
 

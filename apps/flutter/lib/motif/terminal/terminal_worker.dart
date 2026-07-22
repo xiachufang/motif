@@ -210,6 +210,14 @@ class TerminalWorkerClient {
     });
   }
 
+  void encodePaste(Uint8List bytes) {
+    if (bytes.isEmpty) return;
+    _send({
+      'type': 'paste',
+      'bytes': TransferableTypedData.fromList([bytes]),
+    });
+  }
+
   void encodeKey({
     required GhosttyKey key,
     required GhosttyKeyAction action,
@@ -543,6 +551,12 @@ class _TerminalWorker {
           if (bytes != null) {
             _markLocalInput();
             state?.writeToPty(bytes);
+          }
+        case 'paste':
+          final bytes = _materializeBytes(command['bytes']);
+          if (bytes != null) {
+            _markLocalInput();
+            state?.encodePasteAndWrite(bytes);
           }
         case 'key':
           _key(command);

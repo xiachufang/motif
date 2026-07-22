@@ -66,10 +66,47 @@
       restoredMetrics.offset === currentMaxOffset &&
       resizedMetrics.len === 4 &&
       resizedMetrics.offset === resizedMetrics.total - resizedMetrics.len;
-    const pass = textOk && colorOk && cursorOk && scrollOk;
+    const inputTerm = window.GhosttyVt.newTerminal(80, 24);
+    const hex = bytes => Array.from(bytes, byte =>
+      byte.toString(16).padStart(2, '0')).join('');
+    const normalUp = hex(
+      window.GhosttyVt.encodeKey(inputTerm, 78, 1, 0, null, 0),
+    );
+    const unicodeText = hex(
+      window.GhosttyVt.encodeKey(inputTerm, 0, 1, 0, '中', 0),
+    );
+    window.GhosttyVt.write(
+      inputTerm,
+      new Uint8Array([0x1b, 0x5b, 0x3f, 0x31, 0x68]),
+    );
+    const applicationUp = hex(
+      window.GhosttyVt.encodeKey(inputTerm, 78, 1, 0, null, 0),
+    );
+    const plainPaste = hex(
+      window.GhosttyVt.encodePaste(
+        inputTerm,
+        new TextEncoder().encode('a\nb'),
+      ),
+    );
+    window.GhosttyVt.write(
+      inputTerm,
+      new Uint8Array([0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x30, 0x34, 0x68]),
+    );
+    const bracketedPaste = hex(
+      window.GhosttyVt.encodePaste(
+        inputTerm,
+        new TextEncoder().encode('a\nb'),
+      ),
+    );
+    const inputOk = normalUp === '1b5b41' &&
+      unicodeText === 'e4b8ad' &&
+      applicationUp === '1b4f41' &&
+      plainPaste === '610d62' &&
+      bracketedPaste === '1b5b3230307e610a621b5b3230317e';
+    const pass = textOk && colorOk && cursorOk && scrollOk && inputOk;
     out.textContent = (pass ? 'RESULT:PASS' : 'RESULT:FAIL') +
       '\ntextOk=' + textOk + ' colorOk=' + colorOk + ' cursorOk=' + cursorOk +
-      ' scrollOk=' + scrollOk +
+      ' scrollOk=' + scrollOk + ' inputOk=' + inputOk +
       ' cursor=' + JSON.stringify(cur) +
       ' redFg=' + (redRun ? JSON.stringify(redRun.f) : 'none') +
       ' scrollbar=' + JSON.stringify(resizedMetrics) +

@@ -25,6 +25,7 @@ import 'package:flutter/services.dart';
 import 'ghostty_bindings.g.dart';
 import 'key_map.dart';
 import 'terminal_input.dart';
+import 'terminal_key.dart';
 import 'terminal_painter.dart';
 import '../log/log.dart';
 import 'terminal_error_view.dart';
@@ -32,7 +33,6 @@ import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_palette.dart';
-import 'terminal_paste.dart';
 import 'terminal_pointer_policy.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_scrollbar.dart';
@@ -82,6 +82,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   static const Duration _terminalInitDelay = Duration(milliseconds: 32);
   static const Duration _remoteByteCoalesceDelay = Duration(milliseconds: 8);
   static const Duration _interactiveEchoWindow = Duration(milliseconds: 150);
+  static const int _maxPendingTerminalInputs = 256;
   static const _softKeyboardSeed = '\u200b';
   static const _softKeyboardValue = TextEditingValue(
     text: _softKeyboardSeed,
@@ -150,6 +151,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   _KeyboardLiftTrace? _lastKeyboardLiftTrace;
   DateTime? _lastKeyboardLiftLogAt;
   final TerminalByteBatcher _remoteByteBatcher = TerminalByteBatcher();
+  final List<TerminalInputEvent> _pendingTerminalInputs =
+      <TerminalInputEvent>[];
   DateTime? _lastHostWriteAt;
   TerminalSnapshot? _snapshot;
   ({int generation, TerminalSnapshot snapshot, void Function() acknowledge})?
@@ -190,6 +193,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       name: 'motif.terminal',
     );
     widget.motif.registerPtySink(widget.ptyId, _onRemoteBytes);
+    widget.motif.registerTerminalInputSink(widget.ptyId, _onTerminalInput);
     if (terminalAutofocusesOnTabSwitchByDefault()) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _requestFocusWithoutKeyboard(),
@@ -224,8 +228,13 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       _invalidateStreamWork();
       _restartWorkerForNewPty();
       widget.motif.unregisterPtySink(oldWidget.ptyId, _onRemoteBytes);
+      widget.motif.unregisterTerminalInputSink(
+        oldWidget.ptyId,
+        _onTerminalInput,
+      );
       unawaited(widget.motif.deactivatePtyStream(oldWidget.ptyId));
       widget.motif.registerPtySink(widget.ptyId, _onRemoteBytes);
+      widget.motif.registerTerminalInputSink(widget.ptyId, _onTerminalInput);
     }
     if (oldWidget.active != widget.active) {
       Log.i(
@@ -269,6 +278,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     // this dispose; an unconditional remove would clobber that live sink,
     // killing both the buffered replay and ongoing output for the new grid.
     widget.motif.unregisterPtySink(widget.ptyId, _onRemoteBytes);
+    widget.motif.unregisterTerminalInputSink(widget.ptyId, _onTerminalInput);
     _resizeTimer?.cancel();
     _terminalInitTimer?.cancel();
     _remoteByteFlushTimer?.cancel();
@@ -276,6 +286,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _pendingFrameSnapshot?.acknowledge();
     _pendingFrameSnapshot = null;
     _remoteByteBatcher.clear();
+    _pendingTerminalInputs.clear();
     _stopScrollInertia(resetVelocity: true);
     _terminalScrollController.removeListener(_onTerminalScrollPositionChanged);
     _terminalScrollController.dispose();

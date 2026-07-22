@@ -21,6 +21,8 @@ import 'package:motif/motif/state/workspace/view/view_controller.dart';
 import 'package:motif/motif/state/workspace/view/view_tabs_view_model.dart';
 import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/terminal/terminal_input.dart';
+import 'package:motif/motif/terminal/terminal_key.dart';
+import 'package:motif/motif/terminal/terminal_session.dart';
 import 'package:motif/motif/ui/screens/file_tree_panel.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
@@ -177,6 +179,14 @@ class _ShortcutWorkspaceConnectionController
   final List<String> closedViews = [];
   final List<String> writtenPtyIds = [];
   final List<List<int>> writtenPtyData = [];
+  final List<TerminalInputEvent> terminalInputs = [];
+
+  void recordTerminalInput([String ptyId = 'pty-1']) {
+    terminal.registerTerminalInputSink(ptyId, (event) {
+      terminalInputs.add(event);
+      return true;
+    });
+  }
 
   void simulateConnectionState(
     WorkspaceConnectionStatus state, {
@@ -656,37 +666,39 @@ void main() {
     expect(inputField().controller?.text, isEmpty);
   });
 
-  testWidgets('send button ends bracketed paste before enter', (tester) async {
+  testWidgets('send button routes paste then semantic Enter', (tester) async {
     final motif = _ShortcutWorkspaceConnectionController()
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'v1';
 
     await _pumpSession(tester, const Size(700, 768), motif: motif);
+    motif.recordTerminalInput();
 
     await tester.enterText(find.byType(TextField), 'echo hi');
     await tester.tap(find.byTooltip('Send'));
     await tester.pump();
 
-    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
-    expect(motif.writtenPtyData, [
-      [
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x30,
-        0x7e,
-        ...'echo hi'.codeUnits,
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x31,
-        0x7e,
-      ],
-      [0x0d],
-    ]);
+    expect(motif.writtenPtyIds, isEmpty);
+    expect(motif.terminalInputs, hasLength(3));
+    expect(
+      (motif.terminalInputs[0] as TerminalPasteInput).bytes,
+      'echo hi'.codeUnits,
+    );
+    expect(
+      motif.terminalInputs[1],
+      isA<TerminalKeyInput>()
+          .having((input) => input.keyId, 'keyId', TerminalKeyIds.enter)
+          .having((input) => input.action, 'action', TerminalKeyAction.press),
+    );
+    expect(
+      motif.terminalInputs[2],
+      isA<TerminalKeyInput>().having(
+        (input) => input.action,
+        'action',
+        TerminalKeyAction.release,
+      ),
+    );
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
       isEmpty,
@@ -736,7 +748,7 @@ void main() {
     expect(find.byTooltip('Second'), findsOneWidget);
   });
 
-  testWidgets('quick commands bracket text and preserve raw keys', (
+  testWidgets('quick commands route text semantically and preserve raw keys', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -767,29 +779,27 @@ void main() {
       ),
     );
     await tester.pump();
+    motif.recordTerminalInput();
 
     await tester.tap(find.byTooltip('Run'));
     await tester.pump();
 
-    expect(motif.writtenPtyIds, ['pty-1', 'pty-1']);
-    expect(motif.writtenPtyData, [
-      [
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x30,
-        0x7e,
-        ...'ls'.codeUnits,
-        0x1b,
-        0x5b,
-        0x32,
-        0x30,
-        0x31,
-        0x7e,
-      ],
-      [0x0d],
-    ]);
+    expect(motif.writtenPtyIds, isEmpty);
+    expect(motif.terminalInputs, hasLength(3));
+    expect(
+      (motif.terminalInputs.first as TerminalPasteInput).bytes,
+      'ls'.codeUnits,
+    );
+    expect(
+      motif.terminalInputs.skip(1),
+      everyElement(
+        isA<TerminalKeyInput>().having(
+          (input) => input.keyId,
+          'keyId',
+          TerminalKeyIds.enter,
+        ),
+      ),
+    );
 
     await tester.tap(find.byTooltip('Escape'));
     await tester.pump();

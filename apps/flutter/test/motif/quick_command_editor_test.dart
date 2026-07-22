@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
+import 'package:motif/motif/terminal/terminal_key.dart';
 import 'package:motif/motif/ui/screens/quick_command_editor.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
@@ -24,7 +26,7 @@ Future<AppState> _appState() async {
   );
 }
 
-Future<void> _pumpEditor(WidgetTester tester) async {
+Future<AppState> _pumpEditor(WidgetTester tester) async {
   final app = await _appState();
   await tester.pumpWidget(
     MotifScope(
@@ -36,6 +38,7 @@ Future<void> _pumpEditor(WidgetTester tester) async {
     ),
   );
   await tester.pump();
+  return app;
 }
 
 Future<void> _openNewCommand(WidgetTester tester) async {
@@ -74,6 +77,34 @@ void main() {
 
       expect(find.text('New command'), findsOneWidget);
       expect(find.byType(BottomSheet), findsOneWidget);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
+  testWidgets('key picker persists a semantic key instead of ANSI bytes', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    try {
+      final app = await _pumpEditor(tester);
+      await _openNewCommand(tester);
+
+      await tester.tap(find.text('Key'));
+      await tester.pump();
+      final chooseKey = find.text('Choose a key…');
+      await tester.ensureVisible(chooseKey);
+      await tester.pumpAndSettle();
+      await tester.tap(chooseKey);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ActionChip, '↑'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      final command = app.commands.commands.last;
+      expect(command.kind, QuickCommandKind.key);
+      expect(command.keyId, TerminalKeyIds.arrowUp);
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }

@@ -7,6 +7,8 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../terminal/terminal_key.dart';
+
 // ─────────────────────────── servers ───────────────────────────
 
 enum ServerKind {
@@ -304,7 +306,7 @@ class TerminalSettings {
 
 // ─────────────────────────── quick commands ───────────────────────────
 
-enum QuickCommandKind { bytes, paste, ctrl, alt, shift, cd }
+enum QuickCommandKind { bytes, key, paste, ctrl, alt, shift, cd }
 
 String newQuickCommandId([String prefix = 'cmd']) =>
     '$prefix-${DateTime.now().microsecondsSinceEpoch}';
@@ -366,6 +368,7 @@ class QuickCommand {
   final String label;
   final String? symbol;
   final Uint8List payload;
+  final String? keyId;
   final bool sendImmediately;
   final QuickCommandKind kind;
   final QuickCommandModifiers modifiers;
@@ -375,6 +378,7 @@ class QuickCommand {
     required this.label,
     this.symbol,
     Uint8List? payload,
+    this.keyId,
     this.sendImmediately = true,
     this.kind = QuickCommandKind.bytes,
     this.modifiers = QuickCommandModifiers.none,
@@ -409,6 +413,22 @@ class QuickCommand {
     symbol: symbol,
     payload: Uint8List.fromList(bytes),
     sendImmediately: sendImmediately,
+    modifiers: modifiers,
+  );
+
+  factory QuickCommand.key(
+    String id,
+    String label,
+    String keyId, {
+    String? symbol,
+    QuickCommandModifiers modifiers = QuickCommandModifiers.none,
+  }) => QuickCommand(
+    id: id,
+    label: label,
+    symbol: symbol,
+    payload: _legacyQuickKeyPayload(keyId, modifiers),
+    keyId: keyId,
+    kind: QuickCommandKind.key,
     modifiers: modifiers,
   );
 
@@ -453,6 +473,7 @@ class QuickCommand {
     String? label,
     String? symbol,
     Uint8List? payload,
+    String? keyId,
     bool? sendImmediately,
     QuickCommandKind? kind,
     QuickCommandModifiers? modifiers,
@@ -461,6 +482,7 @@ class QuickCommand {
     label: label ?? this.label,
     symbol: symbol ?? this.symbol,
     payload: payload ?? Uint8List.fromList(this.payload),
+    keyId: keyId ?? this.keyId,
     sendImmediately: sendImmediately ?? this.sendImmediately,
     kind: kind ?? this.kind,
     modifiers: modifiers ?? this.modifiers,
@@ -471,26 +493,113 @@ class QuickCommand {
     'label': label,
     'symbol': symbol,
     'payload_b64': base64Encode(payload),
+    'keyId': keyId,
     'sendImmediately': sendImmediately,
     'kind': kind.name,
     'modifiers': modifiers.toJson(),
   };
 
-  factory QuickCommand.fromJson(Map<String, Object?> j) => QuickCommand(
-    id: (j['id'] as String?) ?? '',
-    label: (j['label'] as String?) ?? '',
-    symbol: j['symbol'] as String?,
-    payload: _decodeQuickCommandPayload(j),
-    sendImmediately: (j['sendImmediately'] as bool?) ?? true,
-    kind: QuickCommandKind.values.firstWhere(
+  factory QuickCommand.fromJson(Map<String, Object?> j) {
+    final id = (j['id'] as String?) ?? '';
+    final label = (j['label'] as String?) ?? '';
+    final symbol = j['symbol'] as String?;
+    final payload = _decodeQuickCommandPayload(j);
+    final kind = QuickCommandKind.values.firstWhere(
       (k) => k.name == j['kind'],
       orElse: () => QuickCommandKind.bytes,
-    ),
-    modifiers: j['modifiers'] == null
+    );
+    final modifiers = j['modifiers'] == null
         ? QuickCommandModifiers.none
         : QuickCommandModifiers.fromJson(
             (j['modifiers'] as Map).cast<String, Object?>(),
-          ),
+          );
+    final migrated = kind == QuickCommandKind.bytes
+        ? _migrateLegacyQuickKey(
+            label: label,
+            symbol: symbol,
+            payload: payload,
+            modifiers: modifiers,
+          )
+        : null;
+    final requestedKeyId = migrated?.keyId ?? j['keyId'] as String?;
+    final keySpec = terminalKeySpecForId(requestedKeyId);
+    final semanticKey =
+        (migrated != null || kind == QuickCommandKind.key) && keySpec != null;
+    final effectiveModifiers = migrated?.modifiers ?? modifiers;
+    return QuickCommand(
+      id: id,
+      label: label,
+      symbol: symbol,
+      payload: semanticKey
+          ? _legacyQuickKeyPayload(requestedKeyId!, effectiveModifiers)
+          : payload,
+      keyId: semanticKey ? requestedKeyId : null,
+      sendImmediately: (j['sendImmediately'] as bool?) ?? true,
+      // A key id introduced by a newer app can still use its persisted legacy
+      // payload instead of becoming an inert chip on this version.
+      kind: semanticKey
+          ? QuickCommandKind.key
+          : kind == QuickCommandKind.key
+          ? QuickCommandKind.bytes
+          : kind,
+      modifiers: effectiveModifiers,
+    );
+  }
+}
+
+Uint8List _legacyQuickKeyPayload(
+  String keyId,
+  QuickCommandModifiers modifiers,
+) {
+  if (keyId == TerminalKeyIds.tab && modifiers.shift) {
+    return Uint8List.fromList(const [0x1b, 0x5b, 0x5a]);
+  }
+  return Uint8List.fromList(
+    terminalKeySpecForId(keyId)?.legacyBytes ?? const <int>[],
+  );
+}
+
+({String keyId, QuickCommandModifiers modifiers})? _migrateLegacyQuickKey({
+  required String label,
+  required String? symbol,
+  required Uint8List payload,
+  required QuickCommandModifiers modifiers,
+}) {
+  final match = legacyTerminalKeyForBytes(payload);
+  if (match == null) return null;
+
+  // Multi-byte payloads were emitted only by the old key picker. Single-byte
+  // payloads are ambiguous with text snippets, so migrate those only when a
+  // known key label/icon or explicit modifiers establish that they are keys.
+  // In particular, old seeded `|`, `/`, `-`, and `~` entries are snippets.
+  final keyLabel =
+      label == 'Tab' ||
+      label == 'Esc' ||
+      label == 'Enter' ||
+      label == '⏎' ||
+      label == 'Backspace' ||
+      label == 'Bksp' ||
+      label == '^C' ||
+      label == '^D';
+  final keySymbol =
+      symbol == 'arrow.up' ||
+      symbol == 'arrow.down' ||
+      symbol == 'arrow.left' ||
+      symbol == 'arrow.right' ||
+      symbol == 'arrow.right.to.line' ||
+      symbol == 'delete.left' ||
+      symbol == 'delete.right';
+  if (payload.length == 1 && !keyLabel && !keySymbol && modifiers.isEmpty) {
+    return null;
+  }
+
+  return (
+    keyId: match.keyId,
+    modifiers: QuickCommandModifiers(
+      ctrl: modifiers.ctrl || match.ctrl,
+      alt: modifiers.alt || match.alt,
+      shift: modifiers.shift || match.shift,
+    ),
   );
 }
 
@@ -530,7 +639,8 @@ class QuickCommandSet {
   );
 }
 
-/// ANSI escape sequences for the built-in key library used to seed defaults.
+/// Legacy byte sequences retained only for persisted-data migration and older
+/// callers. New key commands store a semantic [TerminalKeyIds] identifier.
 class QuickKeys {
   static const esc = [0x1b];
   static const tab = [0x09];
@@ -552,28 +662,53 @@ List<QuickCommand> defaultQuickCommands() {
   String nextId() => 'seed-${n++}';
   return [
     QuickCommand.ctrlModifier(nextId()),
-    QuickCommand.bytes(
+    QuickCommand.key(
       nextId(),
       'Tab',
-      QuickKeys.tab,
+      TerminalKeyIds.tab,
       symbol: 'arrow.right.to.line',
     ),
-    QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
-    QuickCommand.bytes(nextId(), '↑', QuickKeys.up, symbol: 'arrow.up'),
-    QuickCommand.bytes(nextId(), '↓', QuickKeys.down, symbol: 'arrow.down'),
-    QuickCommand.bytes(nextId(), '←', QuickKeys.left, symbol: 'arrow.left'),
-    QuickCommand.bytes(nextId(), '→', QuickKeys.right, symbol: 'arrow.right'),
-    QuickCommand.bytes(nextId(), '^C', QuickKeys.ctrlC),
+    QuickCommand.key(nextId(), 'Esc', TerminalKeyIds.escape),
+    QuickCommand.key(nextId(), '↑', TerminalKeyIds.arrowUp, symbol: 'arrow.up'),
+    QuickCommand.key(
+      nextId(),
+      '↓',
+      TerminalKeyIds.arrowDown,
+      symbol: 'arrow.down',
+    ),
+    QuickCommand.key(
+      nextId(),
+      '←',
+      TerminalKeyIds.arrowLeft,
+      symbol: 'arrow.left',
+    ),
+    QuickCommand.key(
+      nextId(),
+      '→',
+      TerminalKeyIds.arrowRight,
+      symbol: 'arrow.right',
+    ),
+    QuickCommand.key(
+      nextId(),
+      '^C',
+      TerminalKeyIds.character('c'),
+      modifiers: const QuickCommandModifiers(ctrl: true),
+    ),
     QuickCommand.cd(nextId()),
     QuickCommand.text(nextId(), 'ls', 'ls\n'),
     QuickCommand.paste(nextId()),
-    QuickCommand.bytes(
+    QuickCommand.key(
       nextId(),
       'Backspace',
-      QuickKeys.backspace,
+      TerminalKeyIds.backspace,
       symbol: 'delete.left',
     ),
-    QuickCommand.bytes(nextId(), '^D', QuickKeys.ctrlD),
+    QuickCommand.key(
+      nextId(),
+      '^D',
+      TerminalKeyIds.character('d'),
+      modifiers: const QuickCommandModifiers(ctrl: true),
+    ),
     QuickCommand.altModifier(nextId()),
     QuickCommand.shiftModifier(nextId()),
     QuickCommand.text(nextId(), '|', '|'),
@@ -620,12 +755,32 @@ QuickCommandSet _agentSet({
     matches: matches,
     commands: [
       for (final cmd in slash) QuickCommand.text(nextId(), cmd, '$cmd\n'),
-      QuickCommand.bytes(nextId(), '⇧Tab', QuickKeys.backTab),
-      QuickCommand.bytes(nextId(), 'Esc', QuickKeys.esc),
-      QuickCommand.bytes(nextId(), '↑', QuickKeys.up, symbol: 'arrow.up'),
-      QuickCommand.bytes(nextId(), '↓', QuickKeys.down, symbol: 'arrow.down'),
-      QuickCommand.bytes(nextId(), '⏎', QuickKeys.enter),
-      QuickCommand.bytes(nextId(), '^C', QuickKeys.ctrlC),
+      QuickCommand.key(
+        nextId(),
+        '⇧Tab',
+        TerminalKeyIds.tab,
+        modifiers: const QuickCommandModifiers(shift: true),
+      ),
+      QuickCommand.key(nextId(), 'Esc', TerminalKeyIds.escape),
+      QuickCommand.key(
+        nextId(),
+        '↑',
+        TerminalKeyIds.arrowUp,
+        symbol: 'arrow.up',
+      ),
+      QuickCommand.key(
+        nextId(),
+        '↓',
+        TerminalKeyIds.arrowDown,
+        symbol: 'arrow.down',
+      ),
+      QuickCommand.key(nextId(), '⏎', TerminalKeyIds.enter),
+      QuickCommand.key(
+        nextId(),
+        '^C',
+        TerminalKeyIds.character('c'),
+        modifiers: const QuickCommandModifiers(ctrl: true),
+      ),
       QuickCommand.paste(nextId()),
     ],
   );

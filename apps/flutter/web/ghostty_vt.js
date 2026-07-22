@@ -19,6 +19,7 @@
   const TERMINAL_DATA_SCROLLBAR = 9;
   const SCROLL_VIEWPORT_BOTTOM = 1;
   const SCROLL_VIEWPORT_DELTA = 2;
+  const MODE_BRACKETED_PASTE = 2004;
 
   let e = null; // wasm exports
   const dv = () => new DataView(e.memory.buffer);
@@ -26,10 +27,19 @@
   const alloc = (n) =>
     e.ghostty_wasm_alloc_u8_array ? e.ghostty_wasm_alloc_u8_array(n) : e.ghostty_alloc(0, n);
   const rdU32 = (p) => dv().getUint32(p, true);
+  const textEncoder = new TextEncoder();
 
   // Scratch slots (allocated once after load).
   let rsSlot, iterSlot, cellsSlot, lenSlot, gbuf;
   let terminalDataSlot, scrollbarSlot, scrollViewportSlot;
+  let keyEncoder, keyEvent, keyBuf, keyLenSlot, pasteModeSlot;
+  let keyTextBuf, keyTextCapacity;
+
+  const freeBytes = (ptr, len) => {
+    if (ptr && e.ghostty_wasm_free_u8_array) {
+      e.ghostty_wasm_free_u8_array(ptr, len);
+    }
+  };
 
   const readScrollbar = (term) => {
     e.ghostty_terminal_get(term, TERMINAL_DATA_SCROLLBAR, scrollbarSlot);
@@ -39,6 +49,11 @@
       offset: Number(d.getBigUint64(scrollbarSlot + 8, true)),
       len: Number(d.getBigUint64(scrollbarSlot + 16, true)),
     };
+  };
+
+  const readActiveScreen = (term) => {
+    e.ghostty_terminal_get(term, TERMINAL_DATA_ACTIVE_SCREEN, terminalDataSlot);
+    return rdU32(terminalDataSlot);
   };
 
   const scrollViewport = (term, tag, delta = 0) => {
@@ -63,7 +78,14 @@
       d.setUint32(opts + 4, 10000, true); // max_scrollback
       const slot = alloc(4);
       e.ghostty_terminal_new(0, slot, opts);
-      return rdU32(slot);
+      const terminal = rdU32(slot);
+      freeBytes(opts, 8);
+      freeBytes(slot, 4);
+      return terminal;
+    },
+
+    freeTerminal(term) {
+      if (term) e.ghostty_terminal_free(term);
     },
 
     resize(term, cols, rows, cw, ch) {
@@ -93,10 +115,89 @@
 
     // Feed bytes (Uint8Array) from the remote PTY into the engine.
     write(term, bytes) {
+      const viewportBefore = readScrollbar(term);
+      const maxOffsetBefore = Math.max(0, viewportBefore.total - viewportBefore.len);
+      const followLatest = viewportBefore.offset >= maxOffsetBefore;
+      const activeScreenBefore = readActiveScreen(term);
       const buf = alloc(bytes.length);
       u8().set(bytes, buf);
       e.ghostty_terminal_vt_write(term, buf, bytes.length);
       if (e.ghostty_wasm_free_u8_array) e.ghostty_wasm_free_u8_array(buf, bytes.length);
+      // Output at the live bottom follows new rows; reading history preserves
+      // its absolute viewport. Screen transitions keep Ghostty's own restore
+      // behavior (for example when entering or leaving an alternate screen).
+      if (activeScreenBefore === readActiveScreen(term)) {
+        if (followLatest) {
+          scrollViewport(term, SCROLL_VIEWPORT_BOTTOM);
+        } else {
+          const viewportAfter = readScrollbar(term);
+          const delta = viewportBefore.offset - viewportAfter.offset;
+          if (delta) scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
+        }
+      }
+    },
+
+    // Encode one semantic key event against the terminal's current modes.
+    // key/action/mods use the public Ghostty C API enum values.
+    encodeKey(term, key, action, mods, text, unshiftedCodepoint) {
+      e.ghostty_key_encoder_setopt_from_terminal(keyEncoder, term);
+      e.ghostty_key_event_set_key(keyEvent, key);
+      e.ghostty_key_event_set_action(keyEvent, action);
+      e.ghostty_key_event_set_mods(keyEvent, mods);
+      e.ghostty_key_event_set_unshifted_codepoint(keyEvent, unshiftedCodepoint);
+
+      let textLen = 0;
+      if (text) {
+        const encoded = textEncoder.encode(text);
+        textLen = encoded.length;
+        if (textLen > keyTextCapacity) {
+          freeBytes(keyTextBuf, keyTextCapacity);
+          keyTextCapacity = 1;
+          while (keyTextCapacity < textLen) keyTextCapacity *= 2;
+          keyTextBuf = alloc(keyTextCapacity);
+        }
+        if (textLen) u8().set(encoded, keyTextBuf);
+      }
+      e.ghostty_key_event_set_utf8(keyEvent, textLen ? keyTextBuf : 0, textLen);
+      const result = e.ghostty_key_encoder_encode(
+        keyEncoder,
+        keyEvent,
+        keyBuf,
+        256,
+        keyLenSlot,
+      );
+      const written = rdU32(keyLenSlot);
+      const output = result === 0 && written ? u8().slice(keyBuf, keyBuf + written) : new Uint8Array();
+      // The event doesn't own the text pointer; don't retain it between calls.
+      e.ghostty_key_event_set_utf8(keyEvent, 0, 0);
+      return output;
+    },
+
+    // Sanitize and encode a paste according to DEC mode 2004.
+    encodePaste(term, bytes) {
+      if (!bytes.length) return new Uint8Array();
+      u8()[pasteModeSlot] = 0;
+      const modeResult = e.ghostty_terminal_mode_get(term, MODE_BRACKETED_PASTE, pasteModeSlot);
+      const bracketed = modeResult === 0 && u8()[pasteModeSlot] !== 0;
+      const input = alloc(bytes.length);
+      u8().set(bytes, input);
+      const outputCapacity = bytes.length + 12;
+      const output = alloc(outputCapacity);
+      const result = e.ghostty_paste_encode(
+        input,
+        bytes.length,
+        bracketed,
+        output,
+        outputCapacity,
+        keyLenSlot,
+      );
+      const written = rdU32(keyLenSlot);
+      const encoded = result === 0 && written
+        ? u8().slice(output, output + written)
+        : new Uint8Array();
+      freeBytes(input, bytes.length);
+      freeBytes(output, outputCapacity);
+      return encoded;
     },
 
     // Extract the visible grid as text (one string per row, joined by \n).
@@ -181,8 +282,7 @@
         x: rsGet(CURSOR_X, 2),
         y: rsGet(CURSOR_Y, 2),
       };
-      e.ghostty_terminal_get(term, TERMINAL_DATA_ACTIVE_SCREEN, terminalDataSlot);
-      const alternateScreenActive = rdU32(terminalDataSlot) === 1;
+      const alternateScreenActive = readActiveScreen(term) === 1;
       return JSON.stringify({
         rows,
         cursor,
@@ -212,6 +312,17 @@
       terminalDataSlot = alloc(4);
       scrollbarSlot = alloc(24);
       scrollViewportSlot = alloc(24);
+      const keyEncoderSlot = alloc(4);
+      const keyEventSlot = alloc(4);
+      e.ghostty_key_encoder_new(0, keyEncoderSlot);
+      e.ghostty_key_event_new(0, keyEventSlot);
+      keyEncoder = rdU32(keyEncoderSlot);
+      keyEvent = rdU32(keyEventSlot);
+      keyBuf = alloc(256);
+      keyLenSlot = alloc(4);
+      pasteModeSlot = alloc(1);
+      keyTextCapacity = 64;
+      keyTextBuf = alloc(keyTextCapacity);
       return true;
     })
     .catch((err) => {

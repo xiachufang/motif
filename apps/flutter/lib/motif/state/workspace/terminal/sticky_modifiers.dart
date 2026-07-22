@@ -64,7 +64,10 @@ class StickyModifiers extends _$StickyModifiers {
   }
 }
 
-/// Apply Ctrl/Alt/Shift to a payload, mirroring the iOS `applyModifiers`.
+/// Apply Ctrl/Alt/Shift to an explicitly raw byte payload.
+///
+/// Semantic key commands bypass this helper and let Ghostty encode modifiers
+/// against the active terminal protocol and modes.
 ///
 /// - Shift maps a single US-ASCII printable key to its shifted form.
 /// - Ctrl maps a single ASCII char to its control code (`c & 0x1f`).

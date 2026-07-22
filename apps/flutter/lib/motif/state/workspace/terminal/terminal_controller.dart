@@ -5,6 +5,7 @@ import '../../../models/motif_proto.dart';
 import '../../../terminal/terminal_session.dart';
 import 'terminal_runtime_policy.dart';
 import 'terminal_stream_runtime.dart';
+import 'pty_input_router.dart';
 import 'pty_output_hub.dart';
 import 'terminal_view_model.dart';
 
@@ -100,6 +101,7 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   final TerminalRuntimePolicy runtime;
   final TerminalViewProjection viewProjection;
   final PtyOutputHub _output = PtyOutputHub();
+  final PtyInputRouter _input = PtyInputRouter();
   late final TerminalStreamRuntimeController? _streamRuntime;
 
   TerminalStreamRuntimeState get runtimeState =>
@@ -124,6 +126,18 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   @override
   void unregisterPtySink(String ptyId, [PtyByteSink? sink]) =>
       _output.unregisterSink(ptyId, sink);
+
+  @override
+  void registerTerminalInputSink(String ptyId, TerminalInputSink sink) =>
+      _input.register(ptyId, sink);
+
+  @override
+  void unregisterTerminalInputSink(String ptyId, [TerminalInputSink? sink]) =>
+      _input.unregister(ptyId, sink);
+
+  @override
+  bool dispatchTerminalInput(String ptyId, TerminalInputEvent event) =>
+      canInput && _input.dispatch(ptyId, event);
 
   @override
   Future<void> writePty(String ptyId, List<int> data) {
@@ -169,6 +183,9 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   Future<void> waitForPtyReplay(String ptyId) =>
       transport.waitForPtyReplay(ptyId);
 
+  Future<void> waitForPtySurfaceReplay(String ptyId) =>
+      _output.waitForReplayDelivery(ptyId);
+
   @override
   Future<void> activatePtyStream(String ptyId) =>
       _streamRuntime?.surfaceReady(ptyId) ??
@@ -203,6 +220,7 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   void markExited(String id) {
     updatePty(id, (pty) => pty.copyWith(alive: false));
     _output.clearPty(id);
+    _input.clearPty(id);
     viewModel.runningCommand.remove(id);
     viewModel.shellKind.remove(id);
     viewModel.shellContext.remove(id);
@@ -224,6 +242,7 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
     viewModel.shellKind.clear();
     viewModel.shellContext.clear();
     _output.clearAll();
+    _input.clearAll();
   }
 
   void onSessionAttached() {
@@ -249,5 +268,6 @@ final class TerminalController implements TerminalSession, TerminalRuntimeHost {
   void dispose() {
     _streamRuntime?.dispose();
     _output.dispose();
+    _input.clearAll();
   }
 }

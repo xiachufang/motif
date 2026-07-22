@@ -82,8 +82,8 @@ enum TerminalInputMode {
   /// keys.
   mobile,
 
-  /// No native worker / no `TextInput` client; a pure-Dart key encoder
-  /// (`web_key_encoder.dart`) is used instead.
+  /// No native worker / no `TextInput` client; the WebAssembly Ghostty encoder
+  /// owns key encoding using the same parsed terminal state as the renderer.
   web,
 }
 

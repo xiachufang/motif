@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/terminal/ghostty_bindings.g.dart';
 import 'package:motif/motif/terminal/terminal_snapshot.dart';
 import 'package:motif/motif/terminal/terminal_worker.dart';
 
@@ -101,6 +102,56 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(hostWrites, contains(0x61));
   });
+
+  test(
+    'key encoding observes an immediately preceding terminal mode',
+    () async {
+      final initialized = Completer<void>();
+      final hostWrite = Completer<Uint8List>();
+      final worker = await TerminalWorkerClient.spawn(
+        onHostWrite: (bytes) {
+          if (!hostWrite.isCompleted) hostWrite.complete(bytes);
+        },
+        onSnapshot: (_, acknowledge) => acknowledge(),
+        onInitialized: initialized.complete,
+        onError: (error) => fail('worker error: $error'),
+      );
+      addTearDown(worker.dispose);
+
+      worker.init(
+        cols: 20,
+        rows: 4,
+        screenWidth: 200,
+        screenHeight: 80,
+        cellWidth: 10,
+        cellHeight: 20,
+        paddingLeft: 0,
+        paddingTop: 0,
+        foregroundArgb: 0xffffffff,
+        backgroundArgb: 0xff000000,
+      );
+      await initialized.future.timeout(const Duration(seconds: 2));
+
+      // DECCKM is parsed before the following key command, even though both are
+      // enqueued without yielding back to the event loop.
+      worker.feedBytes(
+        Uint8List.fromList(const [0x1b, 0x5b, 0x3f, 0x31, 0x68]),
+      );
+      worker.encodeKey(
+        key: GhosttyKey.GHOSTTY_KEY_ARROW_UP,
+        action: GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+        mods: 0,
+        text: null,
+        unshiftedCodepoint: 0,
+      );
+
+      expect(await hostWrite.future.timeout(const Duration(seconds: 2)), [
+        0x1b,
+        0x4f,
+        0x41,
+      ]);
+    },
+  );
 
   test(
     'worker waits for frame acknowledgement before emitting another',

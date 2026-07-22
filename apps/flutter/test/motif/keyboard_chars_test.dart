@@ -1,7 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/keyboard_chars.dart';
-import 'package:motif/motif/terminal/web_key_encoder.dart';
 
 void main() {
   test('shifted physical keys resolve to printable text', () {
@@ -52,24 +51,5 @@ void main() {
     expect(isPrintableTerminalText(' '), isTrue);
     expect(isPrintableTerminalText('\n'), isFalse);
     expect(isPrintableTerminalText('\x7f'), isFalse);
-  });
-
-  test('web encoder accepts shifted unicode logical keys', () {
-    expect(
-      encodeKeyToBytes(
-        LogicalKeyboardKey.exclamation,
-        null,
-        const TerminalKeyMods(shift: true),
-      ),
-      '!'.codeUnits,
-    );
-    expect(
-      encodeKeyToBytes(
-        LogicalKeyboardKey.colon,
-        null,
-        const TerminalKeyMods(shift: true),
-      ),
-      ':'.codeUnits,
-    );
   });
 }

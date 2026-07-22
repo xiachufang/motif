@@ -6,6 +6,7 @@ import 'ghostty_bindings.g.dart';
 import 'terminal_snapshot.dart';
 
 class TerminalState {
+  static const int _bracketedPasteMode = 2004;
   late GhosttyTerminal _terminal;
   late GhosttyRenderState _renderState;
   late final Pointer<GhosttyRenderStateRowIterator> _rowIteratorPtr;
@@ -41,6 +42,11 @@ class TerminalState {
   int _feedBufCapacity = 16 * 1024;
   Pointer<Uint8> _keyTextBuf = calloc<Uint8>(64);
   int _keyTextBufCapacity = 64;
+  Pointer<Uint8> _pasteInputBuf = calloc<Uint8>(4096);
+  int _pasteInputCapacity = 4096;
+  Pointer<Uint8> _pasteOutputBuf = calloc<Uint8>(4096 + 12);
+  int _pasteOutputCapacity = 4096 + 12;
+  final Pointer<Bool> _pasteBracketedPtr = calloc<Bool>();
   final Pointer<Uint32> _graphemeBuf = calloc<Uint32>(32);
   final Pointer<Uint32> _graphemeLen = calloc<Uint32>();
   final Pointer<Int32> _dirtyPtr = calloc<Int32>();
@@ -237,6 +243,17 @@ class TerminalState {
   /// Feed bytes received from the remote PTY (network mode) into the engine.
   void feedBytes(Uint8List data) {
     if (data.isEmpty) return;
+    // Treat the viewport as an explicit user choice across output. A viewport
+    // at the live bottom follows new rows; a viewport in history stays at the
+    // same absolute offset. Ghostty currently behaves this way too, but doing
+    // it at the feed boundary makes the contract independent of renderer
+    // defaults and keeps burst/coalesced worker frames from changing it.
+    final wasAlternateScreen = alternateScreenActive;
+    final viewportBefore = scrollbarMetrics;
+    final maxOffsetBefore = viewportBefore.total > viewportBefore.length
+        ? viewportBefore.total - viewportBefore.length
+        : 0;
+    final followLatest = viewportBefore.offset >= maxOffsetBefore;
     if (data.length > _feedBufCapacity) {
       calloc.free(_feedBuf);
       _feedBufCapacity = _nextBufferCapacity(data.length);
@@ -244,6 +261,15 @@ class TerminalState {
     }
     _feedBuf.asTypedList(data.length).setAll(0, data);
     ghostty_terminal_vt_write(_terminal, _feedBuf, data.length);
+    // Let Ghostty own viewport restoration when the output itself switches
+    // between primary and alternate screens (for example entering/leaving
+    // vim). The follow/preserve rule applies while staying on one screen.
+    if (wasAlternateScreen != alternateScreenActive) return;
+    if (followLatest) {
+      scrollToBottom();
+    } else {
+      scrollToOffset(viewportBefore.offset);
+    }
   }
 
   void dispose() {
@@ -262,6 +288,9 @@ class TerminalState {
     calloc.free(_keyLen);
     calloc.free(_feedBuf);
     calloc.free(_keyTextBuf);
+    calloc.free(_pasteInputBuf);
+    calloc.free(_pasteOutputBuf);
+    calloc.free(_pasteBracketedPtr);
     calloc.free(_graphemeBuf);
     calloc.free(_graphemeLen);
     calloc.free(_dirtyPtr);
@@ -1061,6 +1090,43 @@ class TerminalState {
       if (result == GhosttyResult.GHOSTTY_SUCCESS && _keyLen.value > 0) {
         _writeOut(_keyBuf, _keyLen.value);
       }
+    }
+  }
+
+  /// Sanitize and encode paste data using the terminal's live bracketed-paste
+  /// mode. The C encoder also normalizes newlines when mode 2004 is disabled.
+  void encodePasteAndWrite(Uint8List data) {
+    if (data.isEmpty) return;
+    if (data.length > _pasteInputCapacity) {
+      calloc.free(_pasteInputBuf);
+      _pasteInputCapacity = _nextBufferCapacity(data.length);
+      _pasteInputBuf = calloc<Uint8>(_pasteInputCapacity);
+    }
+    final requiredOutput = data.length + 12;
+    if (requiredOutput > _pasteOutputCapacity) {
+      calloc.free(_pasteOutputBuf);
+      _pasteOutputCapacity = _nextBufferCapacity(requiredOutput);
+      _pasteOutputBuf = calloc<Uint8>(_pasteOutputCapacity);
+    }
+    _pasteInputBuf.asTypedList(data.length).setAll(0, data);
+    _pasteBracketedPtr.value = false;
+    final modeResult = ghostty_terminal_mode_get(
+      _terminal,
+      _bracketedPasteMode,
+      _pasteBracketedPtr,
+    );
+    final bracketed =
+        modeResult == GhosttyResult.GHOSTTY_SUCCESS && _pasteBracketedPtr.value;
+    final result = ghostty_paste_encode(
+      _pasteInputBuf.cast(),
+      data.length,
+      bracketed,
+      _pasteOutputBuf.cast(),
+      _pasteOutputCapacity,
+      _keyLen,
+    );
+    if (result == GhosttyResult.GHOSTTY_SUCCESS && _keyLen.value > 0) {
+      _writeOut(_pasteOutputBuf, _keyLen.value);
     }
   }
 

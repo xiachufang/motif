@@ -190,6 +190,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   void _writeSoftKeyboardText(String text) {
     if (!_initialized || _terminalError != null || text.isEmpty) return;
     if (!widget.motif.canInput) return;
+    _flushRemoteBytesToWorker();
     _clearTerminalSelection();
     _worker?.writeBytes(
       Uint8List.fromList(utf8.encode(text.replaceAll('\n', '\r'))),
@@ -199,6 +200,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
   void _writeSoftKeyboardBytes(List<int> bytes) {
     if (!_initialized || _terminalError != null || bytes.isEmpty) return;
     if (!widget.motif.canInput) return;
+    _flushRemoteBytesToWorker();
     _clearTerminalSelection();
     _worker?.writeBytes(Uint8List.fromList(bytes));
   }
@@ -210,7 +212,8 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text ?? '';
     if (text.isEmpty) return;
+    _flushRemoteBytesToWorker();
     _clearTerminalSelection();
-    _worker?.writeBytes(bracketedPasteBytes(text));
+    _worker?.encodePaste(Uint8List.fromList(utf8.encode(text)));
   }
 }

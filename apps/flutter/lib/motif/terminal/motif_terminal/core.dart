@@ -271,6 +271,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       unawaited(_coldResyncAfterWorkerStart(generation));
     } else {
       _flushRemoteBytesToWorker();
+      _flushPendingTerminalInputs();
     }
     _scheduleResizeAndMaybeOpen();
     _syncKeyboardLift();
@@ -385,6 +386,10 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         widget.ptyId,
         reason: 'terminal worker backlog overflow',
       );
+      if (_isCurrentWorker(generation)) {
+        _flushRemoteBytesToWorker();
+        _flushPendingTerminalInputs();
+      }
     } catch (error, stackTrace) {
       if (_isCurrentWorker(generation)) {
         _failTerminal(error, stackTrace);
@@ -443,6 +448,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (worker != null) unawaited(worker.dispose());
     _initialized = false;
     _workerStarting = false;
+    _pendingTerminalInputs.clear();
     _resetSmoothScroll(clearRows: true);
     _discardTerminalSelectionState();
     _scheduleTerminalRetry();
@@ -500,6 +506,7 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _workerNeedsColdResync = false;
+    _pendingTerminalInputs.clear();
     _snapshot = null;
     _resetSmoothScroll(clearRows: true);
     _pendingFrameSnapshot?.acknowledge();

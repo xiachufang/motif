@@ -17,14 +17,16 @@ import 'package:flutter/services.dart';
 
 import '../ui/theme/motif_theme.dart';
 import 'terminal_error_view.dart';
+import 'terminal_byte_batcher.dart';
 import 'terminal_focus_policy.dart';
 import 'terminal_fonts.dart';
 import 'terminal_input.dart';
+import 'terminal_key.dart';
+import 'keyboard_chars.dart';
 import 'terminal_palette.dart';
 import 'terminal_scroll_driver.dart';
 import 'terminal_scrollbar.dart';
 import 'terminal_session.dart';
-import 'web_key_encoder.dart';
 
 @JS('GhosttyVt')
 external _GhosttyVt? get _ghosttyVt;
@@ -32,6 +34,7 @@ external _GhosttyVt? get _ghosttyVt;
 extension type _GhosttyVt(JSObject _) implements JSObject {
   external JSPromise<JSBoolean> get ready;
   external int newTerminal(int cols, int rows);
+  external void freeTerminal(int term);
   external void write(int term, JSUint8Array bytes);
   external String gridText(int term);
   external String gridCellsJson(int term);
@@ -45,6 +48,15 @@ extension type _GhosttyVt(JSObject _) implements JSObject {
   external void scroll(int term, int delta);
   external void scrollToOffset(int term, int offset);
   external void scrollToBottom(int term);
+  external JSUint8Array encodeKey(
+    int term,
+    int key,
+    int action,
+    int mods,
+    String? text,
+    int unshiftedCodepoint,
+  );
+  external JSUint8Array encodePaste(int term, JSUint8Array bytes);
 }
 
 Widget buildWebTerminal({
@@ -95,6 +107,7 @@ class _WasmTerminalView extends StatefulWidget {
 
 class _WasmTerminalViewState extends State<_WasmTerminalView> {
   static const double _padding = MotifSpacing.sm;
+  static const int _maxPendingTerminalInputs = 256;
 
   int? _term;
   List<List<_Run>> _rows = const [];
@@ -111,6 +124,10 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   bool _failed = false;
   Object? _failure;
   final FocusNode _focusNode = FocusNode(debugLabel: 'Wasm terminal');
+  final Set<LogicalKeyboardKey> _hostShortcutKeys = <LogicalKeyboardKey>{};
+  final List<TerminalInputEvent> _pendingTerminalInputs =
+      <TerminalInputEvent>[];
+  final TerminalByteBatcher _pendingPtyBytes = TerminalByteBatcher();
   final TerminalScrollAccumulator _scrollAccumulator =
       TerminalScrollAccumulator();
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
@@ -122,6 +139,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     super.initState();
     _measureCell();
     widget.motif.registerPtySink(widget.ptyId, _onBytes);
+    widget.motif.registerTerminalInputSink(widget.ptyId, _onTerminalInput);
     _init();
     if (terminalAutofocusesOnTabSwitchByDefault()) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _requestFocus());
@@ -135,7 +153,10 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
         if (mounted) setState(() => _failed = true);
         return;
       }
+      if (!mounted) return;
       _term = _ghosttyVt!.newTerminal(80, 24);
+      _flushPendingPtyBytes();
+      _flushPendingTerminalInputs();
       unawaited(widget.motif.resizePty(widget.ptyId, 80, 24));
       if (widget.active) {
         unawaited(widget.motif.activatePtyStream(widget.ptyId));
@@ -154,6 +175,15 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   @override
   void didUpdateWidget(covariant _WasmTerminalView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.ptyId != widget.ptyId) {
+      oldWidget.motif.unregisterPtySink(oldWidget.ptyId, _onBytes);
+      oldWidget.motif.unregisterTerminalInputSink(
+        oldWidget.ptyId,
+        _onTerminalInput,
+      );
+      widget.motif.registerPtySink(widget.ptyId, _onBytes);
+      widget.motif.registerTerminalInputSink(widget.ptyId, _onTerminalInput);
+    }
     if (oldWidget.fontSize != widget.fontSize) {
       _measureCell();
       _cols = 0;
@@ -182,7 +212,15 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
 
   void _onBytes(Uint8List bytes) {
     final t = _term;
-    if (t == null) return;
+    if (t == null) {
+      if (!_pendingPtyBytes.add(bytes)) {
+        _failed = true;
+        _failure = StateError(
+          'Web terminal replay exceeded ${_pendingPtyBytes.maxPendingBytes} bytes',
+        );
+      }
+      return;
+    }
     _ghosttyVt!.write(t, bytes.toJS);
     // Debounce re-reads of the grid.
     _repaint ??= Timer(const Duration(milliseconds: 16), () {
@@ -190,6 +228,14 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       if (!mounted || _term == null) return;
       _refreshGrid();
     });
+  }
+
+  void _flushPendingPtyBytes() {
+    final term = _term;
+    if (term == null || _failed) return;
+    for (final bytes in _pendingPtyBytes.drain()) {
+      _ghosttyVt!.write(term, bytes.toJS);
+    }
   }
 
   void _refreshGrid() {
@@ -340,39 +386,150 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     _refreshGrid();
   }
 
+  bool _onTerminalInput(TerminalInputEvent input) {
+    final term = _term;
+    if (_failed || !widget.motif.canInput) return false;
+    if (input case TerminalPasteInput(:final bytes) when bytes.isEmpty) {
+      return false;
+    }
+    if (input case TerminalKeyInput(
+      :final keyId,
+    ) when terminalKeySpecForId(keyId) == null) {
+      return false;
+    }
+    if (term == null) {
+      if (_pendingTerminalInputs.length >= _maxPendingTerminalInputs) {
+        return false;
+      }
+      _pendingTerminalInputs.add(input);
+      return true;
+    }
+    _dispatchTerminalInput(term, input);
+    return true;
+  }
+
+  void _flushPendingTerminalInputs() {
+    final term = _term;
+    if (term == null || _failed) return;
+    final pending = List<TerminalInputEvent>.of(_pendingTerminalInputs);
+    _pendingTerminalInputs.clear();
+    _pendingPtyBytes.clear();
+    for (final input in pending) {
+      _dispatchTerminalInput(term, input);
+    }
+  }
+
+  void _dispatchTerminalInput(int term, TerminalInputEvent input) {
+    switch (input) {
+      case TerminalPasteInput(:final bytes):
+        if (bytes.isEmpty) return;
+        final encoded = _ghosttyVt!.encodePaste(term, bytes.toJS).toDart;
+        if (encoded.isNotEmpty) widget.motif.writePty(widget.ptyId, encoded);
+      case TerminalKeyInput():
+        final key = terminalKeySpecForId(input.keyId);
+        if (key == null) return;
+        _encodeAndWriteKey(
+          key,
+          action: input.action,
+          modifiers: input.modifiers,
+        );
+    }
+  }
+
+  void _encodeAndWriteKey(
+    TerminalKeySpec key, {
+    required TerminalKeyAction action,
+    required TerminalKeyModifiers modifiers,
+    String? eventCharacter,
+  }) {
+    final term = _term;
+    if (term == null) return;
+    final shift = modifiers.shift || key.implicitShift;
+    final effectiveModifiers = TerminalKeyModifiers(
+      shift: shift,
+      ctrl: modifiers.ctrl,
+      alt: modifiers.alt,
+      meta: modifiers.meta,
+    );
+    final text = action == TerminalKeyAction.release
+        ? null
+        : logicalKeyEventCharacter(
+            key.logicalKey,
+            eventCharacter ?? key.character,
+            shift: shift,
+          );
+    final encoded = _ghosttyVt!
+        .encodeKey(
+          term,
+          key.ghosttyKey,
+          action.ghosttyValue,
+          effectiveModifiers.ghosttyMask,
+          text,
+          key.unshiftedCodepoint,
+        )
+        .toDart;
+    if (encoded.isNotEmpty) widget.motif.writePty(widget.ptyId, encoded);
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+    if (!widget.motif.canInput || _term == null) {
       return KeyEventResult.ignored;
     }
     final hw = HardwareKeyboard.instance;
-    if (isTerminalHostShortcut(
+    final hostShortcut = isTerminalHostShortcut(
       logicalKey: event.logicalKey,
       shift: hw.isShiftPressed,
       control: hw.isControlPressed,
       alt: hw.isAltPressed,
       meta: hw.isMetaPressed,
-    )) {
+    );
+    if (event is KeyDownEvent || event is KeyRepeatEvent) {
+      if (hostShortcut) {
+        _hostShortcutKeys.add(event.logicalKey);
+        return KeyEventResult.ignored;
+      }
+    } else if (event is KeyUpEvent) {
+      final wasHostShortcut = _hostShortcutKeys.remove(event.logicalKey);
+      if (hostShortcut || wasHostShortcut) return KeyEventResult.ignored;
+    } else {
       return KeyEventResult.ignored;
     }
-    final bytes = encodeKeyToBytes(
+    final key = terminalKeySpecForLogicalKey(
       event.logicalKey,
-      event.character,
-      TerminalKeyMods(
+      character: event is KeyUpEvent ? null : event.character,
+    );
+    if (key == null) return KeyEventResult.ignored;
+    final action = switch (event) {
+      KeyDownEvent() => TerminalKeyAction.press,
+      KeyRepeatEvent() => TerminalKeyAction.repeat,
+      KeyUpEvent() => TerminalKeyAction.release,
+      _ => throw StateError('unreachable key event'),
+    };
+    _encodeAndWriteKey(
+      key,
+      action: action,
+      modifiers: TerminalKeyModifiers(
+        shift: hw.isShiftPressed,
         ctrl: hw.isControlPressed,
         alt: hw.isAltPressed,
-        shift: hw.isShiftPressed,
+        meta: hw.isMetaPressed,
       ),
+      eventCharacter: event is KeyUpEvent ? null : event.character,
     );
-    if (bytes == null || bytes.isEmpty) return KeyEventResult.ignored;
-    widget.motif.writePty(widget.ptyId, bytes);
     return KeyEventResult.handled;
   }
 
   @override
   void dispose() {
-    widget.motif.unregisterPtySink(widget.ptyId);
+    widget.motif.unregisterPtySink(widget.ptyId, _onBytes);
+    widget.motif.unregisterTerminalInputSink(widget.ptyId, _onTerminalInput);
     unawaited(widget.motif.deactivatePtyStream(widget.ptyId));
     _repaint?.cancel();
+    _pendingTerminalInputs.clear();
+    _pendingPtyBytes.clear();
+    final term = _term;
+    _term = null;
+    if (term != null) _ghosttyVt?.freeTerminal(term);
     _scrollbarVisibility.dispose();
     _focusNode.dispose();
     super.dispose();

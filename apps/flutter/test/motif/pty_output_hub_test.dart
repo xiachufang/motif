@@ -45,9 +45,26 @@ void main() {
       final received = <int>[];
       hub.registerSink('pty-1', (bytes) => received.addAll(bytes));
 
-      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await hub.waitForReplayDelivery('pty-1');
 
       expect(received, [10, 20, 30]);
+    });
+
+    test('replay waiter includes live bytes queued behind replay', () async {
+      final smallHub = PtyOutputHub(
+        replayCapacityBytes: 8,
+        replayBytesPerTick: 2,
+        replayInterval: const Duration(milliseconds: 5),
+      );
+      addTearDown(smallHub.dispose);
+      smallHub.handleOutput('pty-1', Uint8List.fromList([1, 2, 3, 4]));
+
+      final received = <int>[];
+      smallHub.registerSink('pty-1', received.addAll);
+      smallHub.handleOutput('pty-1', Uint8List.fromList([5, 6]));
+
+      await smallHub.waitForReplayDelivery('pty-1');
+      expect(received, [1, 2, 3, 4, 5, 6]);
     });
 
     test(

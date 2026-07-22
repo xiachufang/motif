@@ -20,6 +20,7 @@ class _PtyReplayDelivery {
   int offset = 0;
   int pendingBytes = 0;
   Timer? timer;
+  final Completer<void> completed = Completer<void>();
 
   void add(Uint8List bytes) {
     if (bytes.isEmpty) return;
@@ -30,6 +31,11 @@ class _PtyReplayDelivery {
   void cancel() {
     timer?.cancel();
     timer = null;
+    complete();
+  }
+
+  void complete() {
+    if (!completed.isCompleted) completed.complete();
   }
 }
 
@@ -174,6 +180,12 @@ class PtyOutputHub {
   int replayBacklogBytesFor(String ptyId) =>
       _deliveries[ptyId]?.pendingBytes ?? 0;
 
+  /// Completes after buffered and subsequently queued live bytes have reached
+  /// the currently registered sink. There is nothing to wait for when a PTY
+  /// has no in-flight replay delivery.
+  Future<void> waitForReplayDelivery(String ptyId) =>
+      _deliveries[ptyId]?.completed.future ?? Future<void>.value();
+
   /// Subscribe a terminal surface to a PTY's decoded output bytes.
   void registerSink(String ptyId, PtyByteSink sink) {
     final replacing = _sinks.containsKey(ptyId);
@@ -314,6 +326,7 @@ class PtyOutputHub {
         delivery.timer = Timer(_deliveryInterval, deliverBatch);
       } else if (_deliveries[ptyId] == delivery) {
         _deliveries.remove(ptyId);
+        delivery.complete();
       }
     }
 

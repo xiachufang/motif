@@ -36,8 +36,9 @@ import '../../terminal/native_terminal.dart';
 import '../../terminal/terminal_focus_policy.dart';
 import '../../terminal/terminal_error_view.dart';
 import '../../terminal/terminal_input.dart';
+import '../../terminal/terminal_key.dart';
 import '../../terminal/terminal_palette.dart';
-import '../../terminal/terminal_paste.dart';
+import '../../terminal/terminal_session.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/quick_command_row.dart';
@@ -750,6 +751,12 @@ class _SessionScreenState extends State<_SessionPane>
                                           commands: commands,
                                           modifiers: _modifiers,
                                           onSendBytes: (b) => _sendBytes(b),
+                                          onSendKey: (input) async {
+                                            await _dispatchTerminalInput(input);
+                                          },
+                                          onPaste: (bytes) async {
+                                            await _sendPasteBytes(bytes);
+                                          },
                                           onSendCommandBytes: (b) =>
                                               _sendCommandBytes(b),
                                           onInsertText: _insertText,

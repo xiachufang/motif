@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:motif/motif/terminal/ghostty_bindings.g.dart';
 import 'package:motif/motif/terminal/key_map.dart';
+import 'package:motif/motif/terminal/terminal_key.dart';
 import 'package:motif/motif/terminal/terminal_snapshot.dart';
 import 'package:motif/motif/terminal/terminal_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -84,6 +85,113 @@ void main() {
     ts.dispose();
   });
 
+  test('semantic key catalog matches the generated Ghostty C enum', () {
+    for (final key in terminalKeySpecs) {
+      expect(
+        mapFlutterKey(key.logicalKey)?.value,
+        key.ghosttyKey,
+        reason: '${key.id} has a stale Ghostty key value',
+      );
+    }
+  });
+
+  test('cursor keys follow normal and application terminal modes', () {
+    final out = <int>[];
+    final ts = TerminalState(onHostWrite: (bytes) => out.addAll(bytes));
+    ts.init(80, 24);
+
+    ts.encodeKeyAndWrite(
+      GhosttyKey.GHOSTTY_KEY_ARROW_UP,
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+      0,
+      null,
+    );
+    expect(out, [0x1b, 0x5b, 0x41]);
+
+    out.clear();
+    ts.feedBytes(Uint8List.fromList(const [0x1b, 0x5b, 0x3f, 0x31, 0x68]));
+    ts.encodeKeyAndWrite(
+      GhosttyKey.GHOSTTY_KEY_ARROW_UP,
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+      0,
+      null,
+    );
+    expect(out, [0x1b, 0x4f, 0x41]);
+
+    ts.dispose();
+  });
+
+  test('backspace follows DEC backarrow-key mode', () {
+    final out = <int>[];
+    final ts = TerminalState(onHostWrite: (bytes) => out.addAll(bytes));
+    ts.init(80, 24);
+
+    ts.encodeKeyAndWrite(
+      GhosttyKey.GHOSTTY_KEY_BACKSPACE,
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+      0,
+      null,
+    );
+    expect(out, [0x7f]);
+
+    out.clear();
+    ts.feedBytes(
+      Uint8List.fromList(const [0x1b, 0x5b, 0x3f, 0x36, 0x37, 0x68]),
+    );
+    ts.encodeKeyAndWrite(
+      GhosttyKey.GHOSTTY_KEY_BACKSPACE,
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+      0,
+      null,
+    );
+    expect(out, [0x08]);
+
+    ts.dispose();
+  });
+
+  test('paste encoding follows mode 2004 and sanitizes control bytes', () {
+    final out = <int>[];
+    final ts = TerminalState(onHostWrite: (bytes) => out.addAll(bytes));
+    ts.init(80, 24);
+
+    ts.encodePasteAndWrite(Uint8List.fromList(utf8.encode('a\nb')));
+    expect(out, utf8.encode('a\rb'));
+
+    out.clear();
+    ts.feedBytes(
+      Uint8List.fromList(const [
+        0x1b,
+        0x5b,
+        0x3f,
+        0x32,
+        0x30,
+        0x30,
+        0x34,
+        0x68,
+      ]),
+    );
+    ts.encodePasteAndWrite(
+      Uint8List.fromList([...utf8.encode('a'), 0x1b, ...utf8.encode('b')]),
+    );
+    expect(out, [
+      0x1b,
+      0x5b,
+      0x32,
+      0x30,
+      0x30,
+      0x7e,
+      ...utf8.encode('a b'),
+      0x1b,
+      0x5b,
+      0x32,
+      0x30,
+      0x31,
+      0x7e,
+    ]);
+
+    ts.dispose();
+  });
+
   test('shifted semicolon encodes colon', () {
     final out = <int>[];
     final ts = TerminalState(onHostWrite: (b) => out.addAll(b));
@@ -123,6 +231,23 @@ void main() {
     );
     expect(out, [0x01]);
 
+    ts.dispose();
+  });
+
+  test('Ghostty key events encode semantic Ctrl+C', () {
+    final out = <int>[];
+    final ts = TerminalState(onHostWrite: (bytes) => out.addAll(bytes));
+    ts.init(80, 24);
+
+    ts.encodeKeyAndWrite(
+      GhosttyKey.GHOSTTY_KEY_C,
+      GhosttyKeyAction.GHOSTTY_KEY_ACTION_PRESS,
+      1 << 1,
+      'c',
+      unshiftedCodepoint: 'c'.codeUnitAt(0),
+    );
+
+    expect(out, [0x03]);
     ts.dispose();
   });
 
@@ -231,6 +356,54 @@ void main() {
       defaultBackgroundArgb: 0xff000000,
     );
     expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.dispose();
+  });
+
+  test('new output follows the bottom but preserves a scrolled viewport', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(16, 3);
+    ts.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(10, (i) => 'line$i\r\n').join()),
+      ),
+    );
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+    final previousBottom = snapshot.maxViewportOffset;
+
+    ts.feedBytes(Uint8List.fromList(utf8.encode('bottom output\r\n')));
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.maxViewportOffset, greaterThan(previousBottom));
+    expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+
+    ts.scrollToOffset(2);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, 2);
+    final historyText = snapshot.visibleText;
+
+    ts.feedBytes(Uint8List.fromList(utf8.encode('background output\r\n')));
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportOffset, 2);
+    expect(snapshot.visibleText, historyText);
+    expect(snapshot.isAtLatest, isFalse);
 
     ts.dispose();
   });

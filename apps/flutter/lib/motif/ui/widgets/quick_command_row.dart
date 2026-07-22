@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_observation/flutter_observation.dart';
@@ -6,7 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../../models/settings.dart';
 import '../../state/workspace/terminal/sticky_modifiers.dart';
-import '../../terminal/terminal_paste.dart';
+import '../../terminal/terminal_session.dart';
 import '../theme/motif_theme.dart';
 
 part 'quick_command_row.g.dart';
@@ -20,6 +21,12 @@ class QuickCommandRow extends _$QuickCommandRow {
 
   /// Send raw bytes to the active PTY now.
   final void Function(Uint8List bytes) onSendBytes;
+
+  /// Send a semantic key event through the active Ghostty terminal surface.
+  final FutureOr<void> Function(TerminalKeyInput input) onSendKey;
+
+  /// Paste raw UTF-8 through Ghostty's mode-aware paste encoder.
+  final FutureOr<void> Function(Uint8List bytes) onPaste;
 
   /// Send an immediate quick-command payload.
   ///
@@ -41,6 +48,8 @@ class QuickCommandRow extends _$QuickCommandRow {
     required this.commands,
     required this.modifiers,
     required this.onSendBytes,
+    required this.onSendKey,
+    required this.onPaste,
     this.onSendCommandBytes,
     required this.onInsertText,
     this.onChangeDirectory,
@@ -168,6 +177,17 @@ class QuickCommandRow extends _$QuickCommandRow {
         key: ValueKey('quick-command-repeat-${cmd.id}'),
         repeatable: _canRepeat(cmd),
         onActivate: () => _handleTap(context, cmd),
+        onRepeatStart: _canRepeat(cmd)
+            ? () => _handleRepeatStart(context, cmd)
+            : null,
+        onRepeat: _canRepeat(cmd) ? () => _handleRepeat(context, cmd) : null,
+        onRepeatEnd: _canRepeat(cmd) && cmd.kind == QuickCommandKind.key
+            ? () => _sendKeyAction(
+                cmd,
+                TerminalKeyAction.release,
+                consumeModifiers: true,
+              )
+            : null,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
           alignment: Alignment.center,
@@ -196,7 +216,9 @@ class QuickCommandRow extends _$QuickCommandRow {
   }
 
   bool _canRepeat(QuickCommand cmd) {
-    if (cmd.kind != QuickCommandKind.bytes || !cmd.sendImmediately) {
+    if ((cmd.kind != QuickCommandKind.bytes &&
+            cmd.kind != QuickCommandKind.key) ||
+        !cmd.sendImmediately) {
       return false;
     }
     if (!cmd.modifiers.isEmpty) return false;
@@ -247,13 +269,21 @@ class QuickCommandRow extends _$QuickCommandRow {
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         final text = data?.text ?? '';
         if (text.isEmpty) return;
-        onSendBytes(bracketedPasteBytes(text));
+        await onPaste(Uint8List.fromList(utf8.encode(text)));
         modifiers.consumeArmed();
         return;
       case QuickCommandKind.ctrl:
       case QuickCommandKind.alt:
       case QuickCommandKind.shift:
         return; // handled by the modifier chips
+      case QuickCommandKind.key:
+        await _sendKeyAction(cmd, TerminalKeyAction.press);
+        await _sendKeyAction(
+          cmd,
+          TerminalKeyAction.release,
+          consumeModifiers: true,
+        );
+        return;
       case QuickCommandKind.bytes:
         if (cmd.sendImmediately) {
           final out = applyModifiers(
@@ -265,9 +295,40 @@ class QuickCommandRow extends _$QuickCommandRow {
           (onSendCommandBytes ?? onSendBytes)(out);
           modifiers.consumeArmed();
         } else {
-          onInsertText(String.fromCharCodes(cmd.payload));
+          onInsertText(utf8.decode(cmd.payload, allowMalformed: true));
         }
     }
+  }
+
+  Future<void> _handleRepeatStart(BuildContext context, QuickCommand cmd) =>
+      cmd.kind == QuickCommandKind.key
+      ? _sendKeyAction(cmd, TerminalKeyAction.press)
+      : _handleTap(context, cmd);
+
+  Future<void> _handleRepeat(BuildContext context, QuickCommand cmd) =>
+      cmd.kind == QuickCommandKind.key
+      ? _sendKeyAction(cmd, TerminalKeyAction.repeat)
+      : _handleTap(context, cmd);
+
+  Future<void> _sendKeyAction(
+    QuickCommand cmd,
+    TerminalKeyAction action, {
+    bool consumeModifiers = false,
+  }) async {
+    final keyId = cmd.keyId;
+    if (keyId == null || keyId.isEmpty) return;
+    await onSendKey(
+      TerminalKeyInput(
+        keyId: keyId,
+        action: action,
+        modifiers: TerminalKeyModifiers(
+          ctrl: modifiers.ctrlActive || cmd.modifiers.ctrl,
+          alt: modifiers.altActive || cmd.modifiers.alt,
+          shift: modifiers.shiftActive || cmd.modifiers.shift,
+        ),
+      ),
+    );
+    if (consumeModifiers) modifiers.consumeArmed();
   }
 }
 
@@ -286,11 +347,17 @@ final class _QuickCommandRepeatTimer {
 class _RepeatingQuickCommandChip extends _$_RepeatingQuickCommandChip {
   final bool repeatable;
   final Future<void> Function() onActivate;
+  final Future<void> Function()? onRepeatStart;
+  final Future<void> Function()? onRepeat;
+  final Future<void> Function()? onRepeatEnd;
   final Widget child;
 
   const _RepeatingQuickCommandChip({
     required this.repeatable,
     required this.onActivate,
+    this.onRepeatStart,
+    this.onRepeat,
+    this.onRepeatEnd,
     required this.child,
     super.key,
   });
@@ -305,7 +372,12 @@ class _RepeatingQuickCommandChip extends _$_RepeatingQuickCommandChip {
     covariant _RepeatingQuickCommandChip oldWidget, {
     required _QuickCommandRepeatTimer repeatTimer,
   }) {
-    if (!repeatable) repeatTimer.cancel();
+    if (!repeatable) oldWidget._finishRepeating(repeatTimer);
+  }
+
+  @override
+  void disposeStates({required _QuickCommandRepeatTimer repeatTimer}) {
+    _finishRepeating(repeatTimer);
   }
 
   void _activate() {
@@ -314,9 +386,18 @@ class _RepeatingQuickCommandChip extends _$_RepeatingQuickCommandChip {
 
   void _startRepeating(_QuickCommandRepeatTimer repeatTimer) {
     repeatTimer.cancel();
-    _activate();
+    unawaited((onRepeatStart ?? onActivate)());
     if (!repeatable) return;
-    repeatTimer.timer = Timer.periodic(_repeatInterval, (_) => _activate());
+    repeatTimer.timer = Timer.periodic(
+      _repeatInterval,
+      (_) => unawaited((onRepeat ?? onActivate)()),
+    );
+  }
+
+  void _finishRepeating(_QuickCommandRepeatTimer repeatTimer) {
+    final wasRepeating = repeatTimer.timer != null;
+    repeatTimer.cancel();
+    if (wasRepeating && onRepeatEnd != null) unawaited(onRepeatEnd!());
   }
 
   @override
@@ -327,8 +408,8 @@ class _RepeatingQuickCommandChip extends _$_RepeatingQuickCommandChip {
     return GestureDetector(
       onTap: _activate,
       onLongPressStart: (_) => _startRepeating(repeatTimer),
-      onLongPressEnd: (_) => repeatTimer.cancel(),
-      onLongPressCancel: repeatTimer.cancel,
+      onLongPressEnd: (_) => _finishRepeating(repeatTimer),
+      onLongPressCancel: () => _finishRepeating(repeatTimer),
       child: child,
     );
   }

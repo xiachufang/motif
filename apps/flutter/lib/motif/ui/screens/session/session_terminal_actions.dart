@@ -203,42 +203,79 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   Future<void> _sendBytes(List<int> bytes) async {
-    if (!_terminalController.canInput) return;
-    final ptyId = _activePtyId();
-    if (ptyId == null || bytes.isEmpty) return;
-    _focusTerminal();
-    await _terminalController.activatePtyStream(ptyId);
+    if (bytes.isEmpty) return;
+    final ptyId = await _prepareTerminalInput();
+    if (ptyId == null) return;
     await _terminalController.writePty(ptyId, bytes);
   }
 
-  Future<bool> _sendCommandBytes(List<int> bytes) async {
-    if (!_terminalController.canInput) return false;
-    final ptyId = _activePtyId();
-    if (ptyId == null || bytes.isEmpty) return false;
-    _focusTerminal();
-    await _terminalController.activatePtyStream(ptyId);
+  Future<bool> _dispatchTerminalInput(TerminalInputEvent event) async {
+    final ptyId = await _prepareTerminalInput(requireTerminalState: true);
+    if (ptyId == null) return false;
+    return _terminalController.dispatchTerminalInput(ptyId, event);
+  }
 
-    final split = _splitTrailingCommandEnter(bytes);
-    if (split == null) {
+  Future<bool> _sendPasteBytes(List<int> bytes) async {
+    if (bytes.isEmpty) return false;
+    final ptyId = await _prepareTerminalInput(requireTerminalState: true);
+    if (ptyId == null) return false;
+    return _terminalController.dispatchTerminalInput(
+      ptyId,
+      TerminalPasteInput(bytes),
+    );
+  }
+
+  Future<bool> _sendCommandBytes(List<int> bytes) async {
+    if (bytes.isEmpty) return false;
+    final ptyId = await _prepareTerminalInput(requireTerminalState: true);
+    if (ptyId == null) return false;
+
+    final content = _splitTrailingCommandEnter(bytes);
+    if (content == null) {
       await _terminalController.writePty(ptyId, bytes);
       return true;
     }
 
-    // Mark command content as a completed paste before sending Enter. This
-    // prevents burst-paste detection in TUIs such as Codex and Claude Code
-    // from turning the trailing Enter into another pasted newline. Raw key
-    // quick commands (which have no trailing Enter) stay on the branch above.
-    await _terminalController.writePty(
+    // Encode command content as a real paste using the active Ghostty terminal
+    // modes, then encode Enter as a semantic key. The local surface owns both
+    // operations because it is the only component with the current VT state.
+    final pasted = _terminalController.dispatchTerminalInput(
       ptyId,
-      bracketedPastePayloadBytes(split.content),
+      TerminalPasteInput(content),
     );
-    await _terminalController.writePty(ptyId, split.enter);
-    return true;
+    if (!pasted) return false;
+    final enter = TerminalKeyInput(
+      keyId: TerminalKeyIds.enter,
+      action: TerminalKeyAction.press,
+    );
+    final pressed = _terminalController.dispatchTerminalInput(ptyId, enter);
+    final released = _terminalController.dispatchTerminalInput(
+      ptyId,
+      enter.copyWith(action: TerminalKeyAction.release),
+    );
+    return pressed && released;
   }
 
-  ({List<int> content, List<int> enter})? _splitTrailingCommandEnter(
-    List<int> bytes,
-  ) {
+  Future<String?> _prepareTerminalInput({
+    bool requireTerminalState = false,
+  }) async {
+    if (!_terminalController.canInput) return null;
+    final ptyId = _activePtyId();
+    if (ptyId == null) return null;
+    _focusTerminal();
+    await _terminalController.activatePtyStream(ptyId);
+    if (!requireTerminalState) {
+      return _terminalController.canInput ? ptyId : null;
+    }
+    // A reconnect can replay mode-setting output (DECCKM, DECBKM, mode 2004,
+    // and keyboard protocol state). Wait for the transport replay; the
+    // surface-side input barrier then flushes every delivered byte to Ghostty.
+    await _terminalController.waitForPtyReplay(ptyId);
+    await _terminalController.waitForPtySurfaceReplay(ptyId);
+    return _terminalController.canInput ? ptyId : null;
+  }
+
+  List<int>? _splitTrailingCommandEnter(List<int> bytes) {
     var end = bytes.length;
     if (end == 0) return null;
 
@@ -253,10 +290,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     }
 
     if (end == 0) return null;
-    return (
-      content: List<int>.from(bytes.take(end)),
-      enter: _terminalBytes('', enter: true),
-    );
+    return List<int>.from(bytes.take(end));
   }
 
   void _insertText(String text) {

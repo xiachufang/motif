@@ -79,6 +79,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _scrollAccumulator.reset();
       return;
     }
+    _flushRemoteBytesToWorker();
     _worker?.encodeMouse(
       action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
       button: _mapButton(e.buttons),
@@ -113,6 +114,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       if (downPosition != null &&
           _touchScrollDistance < kTouchSlop &&
           (_snapshot?.mouseTrackingActive ?? false)) {
+        _flushRemoteBytesToWorker();
         _worker?.encodeMouse(
           action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
           button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
@@ -131,6 +133,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       }
       return;
     }
+    _flushRemoteBytesToWorker();
     _worker?.encodeMouse(
       action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_RELEASE,
       button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_LEFT,
@@ -176,6 +179,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _touchScrollDistance += e.delta.distance;
       return;
     }
+    _flushRemoteBytesToWorker();
     _worker?.encodeMouse(
       action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_MOTION,
       button: GhosttyMouseButton.GHOSTTY_MOUSE_BUTTON_UNKNOWN,
@@ -964,6 +968,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
           widget.padding + _cellWidth * _cols / 2,
           widget.padding + _cellHeight * _rows / 2,
         );
+    _flushRemoteBytesToWorker();
     for (var i = rows.abs(); i > 0; i--) {
       _worker?.encodeMouse(
         action: GhosttyMouseAction.GHOSTTY_MOUSE_ACTION_PRESS,
@@ -979,6 +984,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     final key = rows < 0
         ? GhosttyKey.GHOSTTY_KEY_ARROW_UP
         : GhosttyKey.GHOSTTY_KEY_ARROW_DOWN;
+    _flushRemoteBytesToWorker();
     for (var i = rows.abs(); i > 0; i--) {
       _worker?.encodeKey(
         key: key,

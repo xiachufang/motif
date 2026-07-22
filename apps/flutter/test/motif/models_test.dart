@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
+import 'package:motif/motif/terminal/terminal_key.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -193,6 +196,72 @@ void main() {
       final back = QuickCommand.fromJson(ctrl.toJson());
       expect(back.kind, QuickCommandKind.ctrl);
       expect(back.label, 'Ctrl');
+      final up = cmds.firstWhere((command) => command.label == '↑');
+      expect(up.kind, QuickCommandKind.key);
+      expect(up.keyId, TerminalKeyIds.arrowUp);
+      final upBack = QuickCommand.fromJson(up.toJson());
+      expect(upBack.kind, QuickCommandKind.key);
+      expect(upBack.keyId, TerminalKeyIds.arrowUp);
+    });
+
+    test('legacy special-key bytes migrate to semantic keys', () {
+      final up = QuickCommand.fromJson({
+        'id': 'custom-up',
+        'label': 'Up',
+        'payload_b64': base64Encode(QuickKeys.up),
+        'kind': 'bytes',
+      });
+      expect(up.kind, QuickCommandKind.key);
+      expect(up.keyId, TerminalKeyIds.arrowUp);
+
+      final ctrlC = QuickCommand.fromJson({
+        'id': 'seed-7',
+        'label': '^C',
+        'payload_b64': base64Encode(QuickKeys.ctrlC),
+        'kind': 'bytes',
+      });
+      expect(ctrlC.kind, QuickCommandKind.key);
+      expect(ctrlC.keyId, TerminalKeyIds.character('c'));
+      expect(ctrlC.modifiers.ctrl, isTrue);
+    });
+
+    test('ambiguous custom single-byte payload stays raw', () {
+      final raw = QuickCommand.fromJson({
+        'id': 'custom-a',
+        'label': 'literal a',
+        'payload_b64': base64Encode(const [0x61]),
+        'kind': 'bytes',
+      });
+      expect(raw.kind, QuickCommandKind.bytes);
+      expect(raw.keyId, isNull);
+      expect(raw.payload, [0x61]);
+    });
+
+    test('legacy seeded text snippets stay text instead of becoming keys', () {
+      final snippet = QuickCommand.fromJson({
+        'id': 'seed-15',
+        'label': '|',
+        'payload_b64': base64Encode(const [0x7c]),
+        'kind': 'bytes',
+      });
+
+      expect(snippet.kind, QuickCommandKind.bytes);
+      expect(snippet.keyId, isNull);
+      expect(snippet.payload, [0x7c]);
+    });
+
+    test('unknown semantic key falls back to its legacy payload', () {
+      final command = QuickCommand.fromJson({
+        'id': 'future-key',
+        'label': 'Future key',
+        'payload_b64': base64Encode(const [0x1b, 0x5b, 0x39, 0x39, 0x7e]),
+        'keyId': 'future-key-id',
+        'kind': 'key',
+      });
+
+      expect(command.kind, QuickCommandKind.bytes);
+      expect(command.keyId, isNull);
+      expect(command.payload, [0x1b, 0x5b, 0x39, 0x39, 0x7e]);
     });
 
     test('default command sets seed claude and codex presets', () {
@@ -215,6 +284,12 @@ void main() {
           set.commands.where((command) => command.label == '/resume'),
           hasLength(1),
         );
+        final backTab = set.commands.singleWhere(
+          (command) => command.label == '⇧Tab',
+        );
+        expect(backTab.kind, QuickCommandKind.key);
+        expect(backTab.keyId, TerminalKeyIds.tab);
+        expect(backTab.payload, QuickKeys.backTab);
       }
     });
 
