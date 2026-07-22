@@ -92,12 +92,20 @@ void main() {
 
   test('file targets resolve relative paths against terminal cwd', () {
     final target = TerminalFileTarget.tryParse('./lib/main.dart:12');
+    final escaped = TerminalFileTarget.tryParse(r'./docs/My\ File.md:8');
 
     expect(
       target?.resolveAgainst('/workspace/app'),
       '/workspace/app/lib/main.dart',
     );
     expect(target?.line, 12);
+    expect(escaped?.raw, r'./docs/My\ File.md:8');
+    expect(escaped?.path, './docs/My File.md');
+    expect(escaped?.line, 8);
+    expect(
+      escaped?.resolveAgainst('/workspace/app'),
+      '/workspace/app/docs/My File.md',
+    );
     expect(
       TerminalFileTarget.tryParse('https://example.com/file.dart'),
       isNull,
@@ -162,7 +170,7 @@ void main() {
     }
   });
 
-  test('matches Ghostty rooted and relative path cases', () {
+  test('matches rooted and relative path cases', () {
     const cases = <({String input, String expected})>[
       (
         input: '/Users/ghostty.user/code/../example.py hello world',
@@ -176,11 +184,18 @@ void main() {
         input: '[link](/home/user/ghostty.user/example)',
         expected: '/home/user/ghostty.user/example',
       ),
-      (input: './space middle', expected: './space middle'),
-      (input: '../test folder/file.txt', expected: '../test folder/file.txt'),
+      (input: r'./space\ middle', expected: r'./space\ middle'),
       (
-        input: '/tmp/test folder/file.txt',
-        expected: '/tmp/test folder/file.txt',
+        input: r'../test\ folder/file.txt',
+        expected: r'../test\ folder/file.txt',
+      ),
+      (
+        input: r'/tmp/test\ folder/file.txt',
+        expected: r'/tmp/test\ folder/file.txt',
+      ),
+      (
+        input: r'project\ files/readme.md',
+        expected: r'project\ files/readme.md',
       ),
       (input: '/tmp/test  folder/file.txt', expected: '/tmp/test'),
       (input: '/tmp/foo /tmp/bar', expected: '/tmp/foo'),
@@ -210,7 +225,7 @@ void main() {
       (input: '../some/where', expected: '../some/where'),
       (input: 'foo.local/share', expected: 'foo.local/share'),
       (input: '2024/report.txt', expected: '2024/report.txt'),
-      (input: './foo bar,baz', expected: './foo bar'),
+      (input: './foo bar,baz', expected: './foo'),
       (input: './Downloads: Operation not permitted', expected: './Downloads'),
     ];
 
@@ -223,7 +238,7 @@ void main() {
     }
   });
 
-  test('rejects Ghostty path bad cases and ambiguous dotted tokens', () {
+  test('rejects bad path cases and ambiguous dotted tokens', () {
     const cases = <String>[
       'input/output',
       'foo/bar',
@@ -254,6 +269,15 @@ void main() {
     expect(_targets('/README.md'), contains('/README.md'));
     expect(_targets('/.config'), contains('/.config'));
     expect(_targets('/source.dart:42:7'), contains('/source.dart:42:7'));
+  });
+
+  test('unescaped spaces terminate paths', () {
+    expect(_targets('~/Developer/AiTalker/backend main ➜'), [
+      '~/Developer/AiTalker/backend',
+    ]);
+    expect(_targets('./space middle'), contains('./space'));
+    expect(_targets('../test folder/file.txt'), contains('../test'));
+    expect(_targets('/tmp/test folder/file.txt'), contains('/tmp/test'));
   });
 }
 

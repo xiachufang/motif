@@ -69,6 +69,7 @@ class TerminalFileTarget {
         }
       }
     }
+    path = path.replaceAll(r'\ ', ' ');
     if (!_looksLikePath(path)) return null;
     return TerminalFileTarget(raw: raw, path: path, line: line, column: column);
   }
@@ -186,7 +187,7 @@ class TerminalLinkIndex {
 class TerminalLinkMatcher {
   static const int maxLogicalLine = 16 * 1024;
 
-  // Keep these components aligned with Ghostty's `src/config/url.zig`.
+  // Keep the URL components aligned with Ghostty's `src/config/url.zig`.
   // Dart's RegExp does not support Oniguruma's variable-length lookbehind, so
   // the `$<digits>` guard is expressed as fixed `$` and word guards below.
   static const String _urlSchemes =
@@ -205,23 +206,24 @@ class TerminalLinkMatcher {
     unicode: true,
   );
 
+  // Unlike Ghostty's default matcher, Motif treats unescaped spaces as path
+  // boundaries. This avoids consuming adjacent prompt segments such as a Git
+  // branch. Shell-style escaped spaces remain part of the path and are
+  // unescaped by [TerminalFileTarget.tryParse].
   static const String _pathChars = r'[\w\-.~:/?#@!$&*+;=%]';
-  static const String _dottedPathLookahead = r'(?=[\w\-.~:/?#@!$&*+;=%]*\.)';
-  static const String _nonDottedPathLookahead = r'(?![\w\-.~:/?#@!$&*+;=%]*\.)';
-  static const String _dottedPathSpaceSegments =
-      r'(?:(?<!:) (?!\w+://)(?!\.{0,2}/)(?!~/)[\w\-.~:/?#@!$&*+;=%]*[/.])*';
-  static const String _anyPathSpaceSegments =
-      r'(?:(?<!:) (?!\w+://)(?!\.{0,2}/)(?!~/)[\w\-.~:/?#@!$&*+;=%]+)*';
+  static const String _escapedPathSpace = r'\\ ';
+  static final String _pathAtom = '(?:$_pathChars|$_escapedPathSpace)';
+  static final String _dottedPathLookahead = '(?=$_pathAtom*\\.)';
   static const String _noTrailingColon = r'(?<!:)';
-  static const String _trailingSpacesAtEol = r'(?: +(?= *$))?';
   static const String _rootedOrRelativePathPrefix =
       r'(?:\.\./|\./|(?<!\w)~/|(?:[\w][\w\-.]*/)*(?<!\w)\$[A-Za-z_]\w*/|\.[\w][\w\-.]*/|(?<![\w~/])/(?!/))';
-  static const String _bareRelativePathPrefix = r'(?<!\$)(?<!\w)[\w][\w\-.]*/';
+  static final String _bareRelativePathPrefix =
+      r'(?<!\$)(?<!\w)[\w](?:[\w\-.]|' + _escapedPathSpace + r')*/';
 
   static final String _rootedOrRelativePathBranch =
-      '''$_rootedOrRelativePathPrefix(?:$_dottedPathLookahead$_pathChars+$_dottedPathSpaceSegments$_noTrailingColon$_trailingSpacesAtEol|$_nonDottedPathLookahead$_pathChars+$_anyPathSpaceSegments$_noTrailingColon$_trailingSpacesAtEol)''';
+      '''$_rootedOrRelativePathPrefix$_pathAtom+$_noTrailingColon''';
   static final String _bareRelativePathBranch =
-      '''$_dottedPathLookahead$_bareRelativePathPrefix$_pathChars+$_noTrailingColon$_trailingSpacesAtEol''';
+      '''$_dottedPathLookahead$_bareRelativePathPrefix$_pathAtom+$_noTrailingColon''';
 
   static final RegExp _pathPattern = RegExp(
     '$_rootedOrRelativePathBranch|$_bareRelativePathBranch',
