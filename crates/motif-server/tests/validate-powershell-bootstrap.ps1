@@ -47,4 +47,9 @@ if ((__MotifLastExitCode -Succeeded $false) -ne 23) {
     throw 'The native application exit code was not preserved.'
 }
 
+# GitHub Actions' PowerShell wrapper exits with the final $LASTEXITCODE when
+# the variable exists. Do not let the deliberately injected test value make a
+# successful validation step report failure.
+$global:LASTEXITCODE = 0
+
 Write-Output 'PowerShell bootstrap validation passed.'
