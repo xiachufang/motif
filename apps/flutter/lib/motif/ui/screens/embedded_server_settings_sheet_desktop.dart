@@ -65,6 +65,7 @@ class _EmbeddedServerSettingsSheetState
   bool _restartPromptShowing = false;
   bool _restartPromptDeferred = false;
   bool _restartPromptPendingOnBlur = false;
+  bool _rzvJwtObscured = true;
   _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
   int _pushRelayHealthCheckId = 0;
 
@@ -799,7 +800,8 @@ class _EmbeddedServerSettingsSheetState
             _rzvJwt,
             'Relay owner JWT',
             'Stored in the system credential vault',
-            obscure: true,
+            obscure: _rzvJwtObscured,
+            suffix: _rzvJwtActions(),
             onChanged: () => _save(
               cfg.copyWith(rzvJwt: _rzvJwt.text.trim()),
               restartRequired: true,
@@ -808,6 +810,41 @@ class _EmbeddedServerSettingsSheetState
             onFocusLost: _showPendingRestartPrompt,
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _rzvJwtActions() {
+    final hasJwt = _rzvJwt.text.trim().isNotEmpty;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: _rzvJwtObscured
+              ? 'Show Relay owner JWT'
+              : 'Hide Relay owner JWT',
+          visualDensity: VisualDensity.compact,
+          onPressed: () => setState(() => _rzvJwtObscured = !_rzvJwtObscured),
+          icon: Icon(
+            _rzvJwtObscured ? Icons.visibility_outlined : Icons.visibility_off,
+            size: 18,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Copy Relay owner JWT',
+          visualDensity: VisualDensity.compact,
+          onPressed: hasJwt
+              ? () async {
+                  await Clipboard.setData(
+                    ClipboardData(text: _rzvJwt.text.trim()),
+                  );
+                  if (mounted) {
+                    showMotifToast(context, 'Relay owner JWT copied');
+                  }
+                }
+              : null,
+          icon: const Icon(Icons.copy_outlined, size: 18),
+        ),
       ],
     );
   }

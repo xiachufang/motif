@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/state/embedded/embedded_server_service.dart';
 import 'package:motif/motif/ui/screens/embedded_server_settings_sheet_desktop.dart';
@@ -231,6 +232,48 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Reach it without direct connectivity'), findsNothing);
+  });
+
+  testWidgets('reveals and copies the Relay owner JWT', (tester) async {
+    const jwt = 'header.payload.signature';
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(rzvEnabled: true, rzvJwt: jwt),
+      status: const EmbeddedServerStatus(),
+    );
+    String? clipboardText;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboardText =
+                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          }
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    await _pumpSettings(tester, service);
+
+    final jwtFieldFinder = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          widget.decoration?.labelText == 'Relay owner JWT',
+    );
+    expect(tester.widget<TextField>(jwtFieldFinder).obscureText, isTrue);
+
+    await tester.tap(find.byTooltip('Show Relay owner JWT'));
+    await tester.pump();
+
+    expect(tester.widget<TextField>(jwtFieldFinder).obscureText, isFalse);
+    expect(find.byTooltip('Hide Relay owner JWT'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Copy Relay owner JWT'));
+    await tester.pump();
+
+    expect(clipboardText, jwt);
+    expect(find.text('Relay owner JWT copied'), findsOneWidget);
   });
 
   testWidgets('shows connection failure in the relay row', (tester) async {
