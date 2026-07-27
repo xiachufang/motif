@@ -442,6 +442,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           onKeyEvent: _onKeyEvent,
           child: Scrollable(
             controller: _terminalScrollController,
+            physics: const TerminalScrollAnchorPhysics(),
             // Reversed terminal coordinates: pixels == 0 is always the live
             // bottom, so growing/shrinking scrollback cannot displace it.
             axisDirection: AxisDirection.up,

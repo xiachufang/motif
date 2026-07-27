@@ -1035,12 +1035,19 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (snapshot == null ||
         snapshot.mouseTrackingActive ||
         snapshot.alternateScreenActive ||
-        !snapshot.hasScrollback) {
+        !snapshot.hasScrollback ||
+        !_terminalScrollController.position.hasContentDimensions) {
       return;
     }
 
-    final rawPixels = _terminalScrollController.position.pixels;
-    final maxPixels = snapshot.maxViewportOffset * _cellHeight;
+    final position = _terminalScrollController.position;
+    final rawPixels = position.pixels;
+    // A worker frame becomes current just before Flutter lays out its new
+    // scroll extent. A drag/ballistic tick can run in that small interval. Map
+    // that tick against the extent which is actually backing [rawPixels], not
+    // the newer snapshot extent, or new output is mistaken for user movement.
+    final laidOutMaxOffset = (position.maxScrollExtent / _cellHeight).round();
+    final maxPixels = position.maxScrollExtent;
     final boundedPixels = rawPixels.clamp(0.0, maxPixels).toDouble();
     final nextOverscrollRows = -(rawPixels - boundedPixels) / _cellHeight;
     final overscrollChanged =
@@ -1053,7 +1060,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
     final targetViewportOffset = terminalViewportOffsetFromScrollPixels(
       scrollPixels: boundedPixels,
-      maxOffset: snapshot.maxViewportOffset,
+      maxOffset: laidOutMaxOffset,
       rowHeight: _cellHeight,
     );
     final delta =

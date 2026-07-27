@@ -1,6 +1,59 @@
 import 'dart:math' as math;
 
+import 'package:flutter/widgets.dart';
+
 import 'terminal_snapshot.dart';
+
+/// Keeps a terminal history row visually anchored when the reversed scroll
+/// extent changes.
+///
+/// Pixel zero represents the live bottom. When output adds rows, a viewport in
+/// history therefore needs to move forward by the same amount as the maximum
+/// extent. Doing this as a dimensions correction preserves an active drag or
+/// ballistic scroll; a post-frame [ScrollController.jumpTo] would cancel it.
+class TerminalScrollAnchorPhysics extends ScrollPhysics {
+  static const double _extentTolerance = 1e-10;
+
+  const TerminalScrollAnchorPhysics({super.parent});
+
+  @override
+  TerminalScrollAnchorPhysics applyTo(ScrollPhysics? ancestor) {
+    return TerminalScrollAnchorPhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  double adjustPositionForNewDimensions({
+    required ScrollMetrics oldPosition,
+    required ScrollMetrics newPosition,
+    required bool isScrolling,
+    required double velocity,
+  }) {
+    final fallback = super.adjustPositionForNewDimensions(
+      oldPosition: oldPosition,
+      newPosition: newPosition,
+      isScrolling: isScrolling,
+      velocity: velocity,
+    );
+    final maxExtentDelta =
+        newPosition.maxScrollExtent - oldPosition.maxScrollExtent;
+    final currentPixels = newPosition.pixels;
+    if (maxExtentDelta.abs() <= _extentTolerance ||
+        currentPixels <= newPosition.minScrollExtent + _extentTolerance) {
+      // Stay pinned to the live bottom, including during bottom overscroll.
+      return fallback;
+    }
+
+    if (currentPixels > oldPosition.maxScrollExtent) {
+      // Preserve top-edge overscroll relative to the moving maximum.
+      return newPosition.maxScrollExtent +
+          (currentPixels - oldPosition.maxScrollExtent);
+    }
+
+    return (currentPixels + maxExtentDelta)
+        .clamp(newPosition.minScrollExtent, newPosition.maxScrollExtent)
+        .toDouble();
+  }
+}
 
 class TerminalScrollAccumulator {
   double _pixelRemainder = 0;

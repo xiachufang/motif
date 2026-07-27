@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_scroll_driver.dart';
 import 'package:motif/motif/terminal/terminal_snapshot.dart';
@@ -54,6 +55,78 @@ void main() {
         rowHeight: 20,
       ),
       0,
+    );
+  });
+
+  test('anchors history while output grows during an active scroll', () {
+    const physics = TerminalScrollAnchorPhysics();
+    final oldPosition = _metrics(pixels: 120, maxScrollExtent: 400);
+    final newPosition = _metrics(pixels: 120, maxScrollExtent: 460);
+
+    expect(
+      physics.adjustPositionForNewDimensions(
+        oldPosition: oldPosition,
+        newPosition: newPosition,
+        isScrolling: true,
+        velocity: 800,
+      ),
+      180,
+    );
+  });
+
+  test('combines a concurrent drag tick with output growth', () {
+    const physics = TerminalScrollAnchorPhysics();
+
+    expect(
+      physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 120, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 135, maxScrollExtent: 460),
+        isScrolling: true,
+        velocity: 0,
+      ),
+      195,
+    );
+  });
+
+  test('keeps the live bottom pinned while output grows', () {
+    const physics = TerminalScrollAnchorPhysics();
+
+    expect(
+      physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 0, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 0, maxScrollExtent: 460),
+        isScrolling: true,
+        velocity: 0,
+      ),
+      0,
+    );
+  });
+
+  test('respects a simultaneous correction back to the live bottom', () {
+    const physics = TerminalScrollAnchorPhysics();
+
+    expect(
+      physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 120, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 0, maxScrollExtent: 460),
+        isScrolling: false,
+        velocity: 0,
+      ),
+      0,
+    );
+  });
+
+  test('preserves top overscroll relative to a growing extent', () {
+    const physics = TerminalScrollAnchorPhysics();
+
+    expect(
+      physics.adjustPositionForNewDimensions(
+        oldPosition: _metrics(pixels: 420, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 420, maxScrollExtent: 460),
+        isScrolling: true,
+        velocity: 0,
+      ),
+      480,
     );
   });
 
@@ -132,6 +205,20 @@ void main() {
         (first: 10, last: 14),
       );
     },
+  );
+}
+
+FixedScrollMetrics _metrics({
+  required double pixels,
+  required double maxScrollExtent,
+}) {
+  return FixedScrollMetrics(
+    minScrollExtent: 0,
+    maxScrollExtent: maxScrollExtent,
+    pixels: pixels,
+    viewportDimension: 300,
+    axisDirection: AxisDirection.up,
+    devicePixelRatio: 1,
   );
 }
 
