@@ -68,6 +68,7 @@ extension _MotifTerminalTextInput on _MotifTerminalViewState {
     }
     if (!_focusNode.hasFocus) {
       _hostShortcutKeys.clear();
+      _textInputOwnedKeys.clear();
       _setTerminalLinkMode(false);
     }
     _syncKeyboardLift();

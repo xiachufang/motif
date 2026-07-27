@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_input.dart';
 
@@ -219,6 +220,55 @@ void main() {
   });
 
   group('classifyTerminalKey', () {
+    test('deferred IME keys bypass ancestor shortcuts but reach platform', () {
+      expect(
+        terminalImmediateKeyEventResult(TerminalKeyRouteKind.deferToTextInput),
+        KeyEventResult.skipRemainingHandlers,
+      );
+      expect(
+        terminalImmediateKeyEventResult(TerminalKeyRouteKind.ignore),
+        KeyEventResult.ignored,
+      );
+      expect(
+        terminalImmediateKeyEventResult(TerminalKeyRouteKind.sendBytes),
+        isNull,
+      );
+    });
+
+    testWidgets('deferred arrow bypasses an ancestor shortcut', (tester) async {
+      final terminalFocus = FocusNode();
+      addTearDown(terminalFocus.dispose);
+      var ancestorInvoked = false;
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.arrowDown): () {
+                ancestorInvoked = true;
+              },
+            },
+            child: Focus(
+              focusNode: terminalFocus,
+              onKeyEvent: (_, _) => terminalImmediateKeyEventResult(
+                TerminalKeyRouteKind.deferToTextInput,
+              )!,
+              child: const SizedBox(),
+            ),
+          ),
+        ),
+      );
+      terminalFocus.requestFocus();
+      await tester.pump();
+
+      final handledByFlutter = await tester.sendKeyEvent(
+        LogicalKeyboardKey.arrowDown,
+      );
+
+      expect(ancestorInvoked, isFalse);
+      expect(handledByFlutter, isFalse);
+    });
+
     test('plain printable text is owned by the IME when attached', () {
       final r = _classify(
         key: LogicalKeyboardKey.keyA,

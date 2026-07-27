@@ -82,6 +82,13 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    // Keep both halves of a physical key press on the same path. A keydown can
+    // commit/cancel composition before its keyup arrives; consulting only the
+    // latest composing range would otherwise leak an unmatched release to the
+    // terminal (observable with Kitty keyboard event reporting).
+    if (event is KeyUpEvent && _textInputOwnedKeys.remove(event.physicalKey)) {
+      return KeyEventResult.skipRemainingHandlers;
+    }
     if (!_initialized || _terminalError != null) {
       return KeyEventResult.ignored;
     }
@@ -165,8 +172,12 @@ extension _MotifTerminalKeyEvents on _MotifTerminalViewState {
     );
     switch (route.kind) {
       case TerminalKeyRouteKind.deferToTextInput:
+        if (event is KeyDownEvent || event is KeyRepeatEvent) {
+          _textInputOwnedKeys.add(event.physicalKey);
+        }
+        return terminalImmediateKeyEventResult(route.kind)!;
       case TerminalKeyRouteKind.ignore:
-        return KeyEventResult.ignored;
+        return terminalImmediateKeyEventResult(route.kind)!;
       case TerminalKeyRouteKind.sendBytes:
         _flushRemoteBytesToWorker();
         _clearTerminalSelection();

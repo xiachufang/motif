@@ -98,6 +98,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   Timer? _terminalInitTimer;
   Timer? _remoteByteFlushTimer;
   final Set<LogicalKeyboardKey> _hostShortcutKeys = <LogicalKeyboardKey>{};
+  final Set<PhysicalKeyboardKey> _textInputOwnedKeys = <PhysicalKeyboardKey>{};
   final ScrollController _terminalScrollController = ScrollController(
     debugLabel: 'Motif terminal scroll position',
     keepScrollOffset: false,

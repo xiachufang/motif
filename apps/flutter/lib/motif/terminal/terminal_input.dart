@@ -3,6 +3,7 @@ import 'dart:ui' show Locale;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show KeyEventResult;
 
 import 'keyboard_chars.dart';
 
@@ -183,8 +184,9 @@ int? _chromeTabIndexForShortcutKey(LogicalKeyboardKey key) {
 
 /// What the hardware-key path should do with one key event.
 enum TerminalKeyRouteKind {
-  /// Let the attached `TextInput`/IME own this input — the key path returns
-  /// `KeyEventResult.ignored` so it isn't also emitted (the double-input bug).
+  /// Let the attached `TextInput`/IME own this input. The key path stops
+  /// Flutter's ancestor shortcut propagation without marking the platform
+  /// event handled, so the native text client still receives it.
   deferToTextInput,
 
   /// Write [TerminalKeyRoute.bytes] straight to the PTY.
@@ -196,6 +198,22 @@ enum TerminalKeyRouteKind {
 
   /// Nothing to do; the key path returns `KeyEventResult.ignored`.
   ignore,
+}
+
+/// The immediate Flutter result for routes that don't emit terminal input.
+///
+/// Deferred text input must use [KeyEventResult.skipRemainingHandlers], not
+/// [KeyEventResult.ignored]. `ignored` keeps walking ancestor shortcut maps,
+/// where Flutter's desktop defaults claim navigation keys before the platform
+/// IME can use them to move through candidates.
+KeyEventResult? terminalImmediateKeyEventResult(TerminalKeyRouteKind kind) {
+  return switch (kind) {
+    TerminalKeyRouteKind.deferToTextInput =>
+      KeyEventResult.skipRemainingHandlers,
+    TerminalKeyRouteKind.ignore => KeyEventResult.ignored,
+    TerminalKeyRouteKind.sendBytes ||
+    TerminalKeyRouteKind.encodeViaGhostty => null,
+  };
 }
 
 class TerminalKeyRoute {
