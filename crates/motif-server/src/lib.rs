@@ -1,6 +1,7 @@
 //! Motif core server library.
 
 pub mod auth;
+pub mod capture;
 pub mod config;
 pub mod conn_registry;
 pub mod devices;
@@ -463,6 +464,7 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         auth: Arc::new(token_store),
         conns: conn_registry::ConnRegistry::new(),
         devices: device_state.clone(),
+        capture: capture::CaptureService::system(cfg.allow_screen_capture),
         rzv_direct: cfg.rzv_direct.clone(),
     };
     let app = ws::router(state);

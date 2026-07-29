@@ -7,6 +7,10 @@ and keeps `motifd`'s default Tailscale support enabled. Use it for your own
 server, VPS, workstation, or LAN deployment. Do not use it as the disposable App
 Review sandbox.
 
+The container build intentionally omits the screen-capture backend because it
+does not have access to the host graphical session. Use a native `motifd` build
+on the workstation when remote screenshots are required.
+
 ## Image
 
 CI publishes the `linux/amd64` image to GHCR:

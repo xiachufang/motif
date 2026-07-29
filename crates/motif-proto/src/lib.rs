@@ -2,6 +2,7 @@
 //!
 //! Wire format: JSON-RPC 2.0 over WebSocket. See `docs/prd.md` §5.
 
+pub mod capture;
 pub mod common;
 pub mod device;
 pub mod envelope;

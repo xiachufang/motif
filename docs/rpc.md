@@ -57,7 +57,7 @@ query-string token。
 
 | 通道 | 入站 | 出站 |
 | --- | --- | --- |
-| `/rpc/<method>` | HTTP body = `params` JSON 对象（或空 → `null`）。JSON-RPC 信封由服务端合成 `{ jsonrpc, id: 0, method, params }`（`http_rpc.rs:62-81`）。 | 成功：`200 OK`，body 是裸 `result` JSON。失败：HTTP 4xx/5xx，body 是 JSON-RPC `error` 对象 `{ code, message, data? }`（`http_rpc.rs:319+`）。 |
+| `/rpc/<method>` | HTTP body = `params` JSON 对象（或空 → `null`）。JSON-RPC 信封由服务端合成 `{ jsonrpc, id: 0, method, params }`（`http_rpc.rs`）。 | 通常成功为 `200 OK` + 裸 `result` JSON；`capture.take` 是同一路由下的二进制特例，成功返回 `image/png`。失败统一为 HTTP 4xx/5xx + JSON-RPC `error` 对象 `{ code, message, data? }`。 |
 | `/events` | 客户端 WS 帧一律忽略，仅用作存活信号。 | text 帧：JSON-RPC Notification `{ jsonrpc, method, params }`（无 `id`）。`?bin=1` 时改发 binary 帧，载荷是 msgpack 直接编码的 `Event` 枚举（adjacent-tagged，仍是 `{method, params}` 结构，参见 `ws.rs::encode_event`）。 |
 | `/pty/<id>` | binary 帧 = 原始 stdin 字节，写到 PTY 主端。 | 默认 binary 帧 = master 输出原始字节；不包任何 envelope。客户端可带 `pty_frame=v1&pty_compress=zlib` opt-in framed mode；若第一帧 Text meta 确认，后续每个服务端 → 客户端 Binary frame 都以 1 字节 flags 开头（bit0=zlib 压缩，bits1-7 保留为 0），payload 解码后才是 PTY bytes。Replay/live 同一规则，close code 见 §1.6。 |
 
@@ -81,6 +81,11 @@ query-string token。
 | `NotAttached` | 409 | 包括 `X-Motif-Session` 缺失或失效 |
 | `AlreadyExists` | 409 | |
 | `FileTooLarge` | 413 | |
+| `CaptureUnavailable` | 503 | 服务未启用或当前无可用图形会话 |
+| `CapturePermissionDenied` | 403 | OS 拒绝屏幕录制权限 |
+| `CaptureTargetNotFound` | 404 | 窗口/显示器 id 已失效，客户端应刷新 target |
+| `CaptureBusy` | 429 | 已有截图正在执行 |
+| `CaptureTooLarge` | 413 | 超过 50 MP 或编码后 32 MiB |
 | 其他（含 `Conflict`、`NotAGitRepo`、`PtyLimitReached`、`BlockNotFound`、`Internal`） | 500 | 当前未单独映射；body 仍是 JSON-RPC error 对象，业务码以 `code` 字段为准 |
 
 ### 1.6 顺序、回放、心跳
@@ -245,6 +250,11 @@ JSON-RPC 保留 `-32700..-32000`。motif 在保留区里定义自己的码
 | `-32009` | `NotAttached` | 需要 attach 状态的方法在未 attach 的 conn 上调用（含 `X-Motif-Session` 缺失 / 过期） |
 | `-32010` | `PtyLimitReached` | `pty.create` 超过 session 级 PTY 上限 |
 | `-32016` | `BlockNotFound` | 保留码位；当前没有 RPC 触发它（block 解析在客户端） |
+| `-32017` | `CaptureUnavailable` | 截图未启用、构建无后端或图形会话不可用 |
+| `-32018` | `CapturePermissionDenied` | 操作系统未授予屏幕录制权限 |
+| `-32019` | `CaptureTargetNotFound` | target id 已过期或窗口已关闭 |
+| `-32020` | `CaptureBusy` | 同一服务端已有截图正在执行 |
+| `-32021` | `CaptureTooLarge` | 截图超过服务端像素或字节上限 |
 | `-32099` | `Internal` | 内部分类不下来的错误 |
 
 `error.data` 是可选 `serde_json::Value`，目前未约定结构，仅做诊断用途。
@@ -577,7 +587,76 @@ detach 时 watcher 自动销毁，零订阅期间 session 不为 fswatch 付任�
 
 ---
 
-### 5.5 `git.*`
+### 5.5 `capture.*`
+
+远程截图是显式 opt-in 能力。独立服务端必须用
+`--allow-screen-capture` / `MOTIFD_ALLOW_SCREEN_CAPTURE=true` 启用；桌面 embedded
+server 对应 **Allow remote screenshots** 设置。未启用时 `/ping` 不声明能力；启用
+且当前构建包含平台后端时，`/ping.capabilities` 包含 `screen_capture_v1`。
+
+所有截图方法都要求 Bearer 鉴权和有效的 `X-Motif-Session`。target id 是短期、不透明
+值；窗口关闭、显示器拓扑变化后可能失效。
+
+#### `capture.targets`
+
+- **params**: `{}`
+- **result**:
+
+  ```jsonc
+  {
+    "available": true,
+    "reason": null,
+    "app_icons_png_b64": {
+      "Editor": "<base64 PNG>"
+    },
+    "displays": [{
+      "id": "display:7", "name": "Built-in Display",
+      "width": 2560, "height": 1600, "x": 0, "y": 0,
+      "scale_factor_milli": 2000, "primary": true
+    }],
+    "windows": [{
+      "id": "window:42", "app_name": "Editor", "title": "main.dart",
+      "pid": 1234, "width": 1200, "height": 800, "x": 80, "y": 60,
+      "focused": true
+    }]
+  }
+  ```
+
+`app_icons_png_b64` 按 `windows[].app_name` 去重；client 用对应 PNG 作为窗口行左侧
+App 图标。系统无法解析某个进程图标时，该 App 不出现在 map 中。
+
+窗口枚举覆盖系统允许后台访问的全部桌面/工作区：macOS 使用当前登录会话的所有
+Space，并过滤非普通窗口层、`Window Server` 和 Control Center surface；Windows
+保留由 Shell cloaked 的其他虚拟桌面窗口；Linux/X11 的 EWMH client list 覆盖所有
+workspace。Wayland 不允许无交互地枚举所有原生窗口，因此只列出 XWayland 窗口并在
+`reason` 中返回部分能力提示；物理显示器仍会全部列出。
+
+无后端、未启用或没有可捕获目标时，返回 `available: false`、人类可读的 `reason`
+以及空数组，便于 client 展示设置/权限提示。
+
+#### `capture.take`
+
+- **params**:
+
+  ```jsonc
+  {
+    "target": { "kind": "display" | "window", "id": "<opaque id>" },
+    "include_cursor": false
+  }
+  ```
+
+- **success**: `200 OK`, `Content-Type: image/png`, `Cache-Control: no-store`，body
+  是原始 PNG 字节，不是 JSON，也不做 base64。
+- **errors**: 仍使用普通 RPC 的 JSON error body；v1 对
+  `include_cursor: true` 返回 `InvalidParams`。
+
+这里没有额外的 `POST /capture`：发现与截取都使用统一的
+`POST /rpc/<method>` 鉴权、session header 和错误模型；仅 `capture.take` 的成功 body
+因图片体积而采用二进制。
+
+---
+
+### 5.6 `git.*`
 
 `cwd` 字段可选，默认用 session.workdir；客户端在文件树跟着活跃 PTY cwd 漂移
 出 workdir 时传它。
@@ -614,7 +693,7 @@ detach 时 watcher 自动销毁，零订阅期间 session 不为 fswatch 付任�
 - **params**: 同 `git.diff`
 - **result**: `{ "files": [{ "path": "<string>", "additions": <u32>, "deletions": <u32> }, ...] }`
 
-### 5.6 `device.*`
+### 5.7 `device.*`
 
 推送通知的设备注册（**全局方法，无需 attach**）。类型定义在
 `crates/motif-proto/src/device.rs`，处理在 `rpc.rs::handle_device_*`，存储在

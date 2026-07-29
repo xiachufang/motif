@@ -32,6 +32,8 @@ pub struct AppState {
     /// Push-notification state: device-token store + optional relay client.
     /// Carried so `device.register`/`device.unregister` RPCs can reach it.
     pub devices: crate::relay::DeviceState,
+    /// Opt-in one-shot screen capture policy + platform backend.
+    pub capture: Arc<crate::capture::CaptureService>,
     /// LAN-direct advertisement, set only when a rendezvous server also opened a
     /// plaintext, non-loopback, tokenless `--listen` (see `main.rs`). `/ping`
     /// echoes it so a same-LAN rendezvous client can probe and upgrade off the
@@ -90,7 +92,13 @@ async fn ping(
     axum::Json(motif_proto::ping::PingInfo {
         service: motif_proto::ping::PING_SERVICE.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        capabilities: vec![WS_PROBE_CAPABILITY.to_string()],
+        capabilities: {
+            let mut capabilities = vec![WS_PROBE_CAPABILITY.to_string()];
+            if state.capture.is_advertised() {
+                capabilities.push(SCREEN_CAPTURE_CAPABILITY.to_string());
+            }
+            capabilities
+        },
         rzv_direct_port,
         rzv_direct_addrs,
     })
@@ -100,6 +108,7 @@ async fn ping(
 /// WebSocket liveness probe. Browser clients cannot emit RFC 6455 Ping control
 /// frames, so `/events` and `/pty/<id>` echo this small text-frame probe.
 pub const WS_PROBE_CAPABILITY: &str = "ws_probe_v1";
+pub const SCREEN_CAPTURE_CAPABILITY: &str = "screen_capture_v1";
 const WS_PROBE_REQUEST: &str = "motif.probe.v1";
 const WS_PROBE_ACK: &str = "motif.probe_ack.v1";
 const WS_PROBE_MAX_ID_BYTES: usize = 64;

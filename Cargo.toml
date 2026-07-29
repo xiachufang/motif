@@ -7,7 +7,7 @@ resolver = "2"
 
 [workspace.package]
 edition      = "2021"
-rust-version = "1.78"
+rust-version = "1.88"
 version      = "0.1.0"
 license      = "MIT OR Apache-2.0"
 authors      = ["Motif contributors"]
@@ -115,6 +115,10 @@ notify-debouncer-full = "0.7"
 rust-embed         = "8"
 tempfile           = "3"
 windows-sys         = "0.61"
+xcap                = "0.9.7"
+file_icon_provider  = "1.0.1"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
 
 [profile.release]
 lto           = "thin"

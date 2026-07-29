@@ -6,6 +6,9 @@
 /// `motif-proto` crate.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 // ─────────────────────────── small helpers ───────────────────────────
 
 int? _asInt(Object? v) => v == null ? null : (v as num).toInt();
@@ -103,6 +106,8 @@ class PingInfo {
   bool get isMotifServer => service == 'motif-server';
 
   bool get supportsWsProbe => capabilities.contains('ws_probe_v1');
+
+  bool get supportsScreenCapture => capabilities.contains('screen_capture_v1');
 }
 
 class SessionInfo {
@@ -303,6 +308,123 @@ class ViewInfo {
     spec: ViewSpec.fromJson((j['spec'] as Map?)?.cast<String, Object?>() ?? {}),
     createdAt: _asInt(j['created_at']),
   );
+}
+
+// ─────────────────────────── screen capture ───────────────────────────
+
+enum CaptureTargetKind {
+  display,
+  window;
+
+  static CaptureTargetKind fromWire(Object? value) => switch (value) {
+    'window' => CaptureTargetKind.window,
+    _ => CaptureTargetKind.display,
+  };
+}
+
+class CaptureTarget {
+  final CaptureTargetKind kind;
+  final String id;
+  final String name;
+  final String? appName;
+  final String? title;
+  final Uint8List? appIconPng;
+  final int width;
+  final int height;
+  final bool primary;
+  final bool focused;
+
+  const CaptureTarget({
+    required this.kind,
+    required this.id,
+    required this.name,
+    this.appName,
+    this.title,
+    this.appIconPng,
+    required this.width,
+    required this.height,
+    this.primary = false,
+    this.focused = false,
+  });
+
+  factory CaptureTarget.displayFromJson(Map<String, Object?> json) {
+    final name = (json['name'] as String?)?.trim();
+    return CaptureTarget(
+      kind: CaptureTargetKind.display,
+      id: (json['id'] as String?) ?? '',
+      name: name == null || name.isEmpty ? 'Display' : name,
+      width: _asInt(json['width']) ?? 0,
+      height: _asInt(json['height']) ?? 0,
+      primary: json['primary'] == true,
+    );
+  }
+
+  factory CaptureTarget.windowFromJson(
+    Map<String, Object?> json,
+    Map<String, Uint8List> appIcons,
+  ) {
+    final appName = (json['app_name'] as String?)?.trim() ?? '';
+    final title = (json['title'] as String?)?.trim() ?? '';
+    final label = appName.isNotEmpty ? appName : 'Unknown app';
+    return CaptureTarget(
+      kind: CaptureTargetKind.window,
+      id: (json['id'] as String?) ?? '',
+      name: label,
+      appName: appName.isEmpty ? null : appName,
+      title: title.isEmpty ? null : title,
+      appIconPng: appIcons[appName],
+      width: _asInt(json['width']) ?? 0,
+      height: _asInt(json['height']) ?? 0,
+      focused: json['focused'] == true,
+    );
+  }
+
+  Map<String, Object?> toRequestJson() => {'kind': kind.name, 'id': id};
+}
+
+class CaptureTargetsResult {
+  final bool available;
+  final String? reason;
+  final List<CaptureTarget> displays;
+  final List<CaptureTarget> windows;
+
+  const CaptureTargetsResult({
+    required this.available,
+    this.reason,
+    this.displays = const [],
+    this.windows = const [],
+  });
+
+  factory CaptureTargetsResult.fromJson(Map<String, Object?> json) {
+    final encodedIcons = (json['app_icons_png_b64'] as Map)
+        .cast<String, String>();
+    final appIcons = {
+      for (final entry in encodedIcons.entries)
+        entry.key: Uint8List.fromList(base64Decode(entry.value)),
+    };
+    return CaptureTargetsResult(
+      available: json['available'] == true,
+      reason: _asString(json['reason']),
+      displays: ((json['displays'] as List?) ?? const [])
+          .whereType<Map>()
+          .map(
+            (item) =>
+                CaptureTarget.displayFromJson(item.cast<String, Object?>()),
+          )
+          .where((target) => target.id.isNotEmpty)
+          .toList(growable: false),
+      windows: ((json['windows'] as List?) ?? const [])
+          .whereType<Map>()
+          .map(
+            (item) => CaptureTarget.windowFromJson(
+              item.cast<String, Object?>(),
+              appIcons,
+            ),
+          )
+          .where((target) => target.id.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
 }
 
 // ─────────────────────────── filesystem / git ───────────────────────────

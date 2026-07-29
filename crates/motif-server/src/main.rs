@@ -113,6 +113,12 @@ struct Args {
     /// disable. Env: MOTIFD_RPC_LOG.
     #[arg(long, env = "MOTIFD_RPC_LOG")]
     rpc_log: Option<PathBuf>,
+
+    /// Allow attached, authenticated clients to enumerate displays/windows and
+    /// request one-shot screenshots. Disabled by default because screenshots
+    /// may expose content outside the current Motif session.
+    #[arg(long, env = "MOTIFD_ALLOW_SCREEN_CAPTURE", default_value_t = false)]
+    allow_screen_capture: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -305,6 +311,7 @@ async fn run() -> anyhow::Result<()> {
         rzv_direct,
         token,
         push_relay_url: args.push_relay_url,
+        allow_screen_capture: args.allow_screen_capture,
     };
     motif_server::serve(cfg).await
 }

@@ -90,6 +90,7 @@ pub fn dispatch_concurrent(
     conns: &ConnRegistry,
     conn: &ConnSnapshot,
     devices: &crate::relay::DeviceState,
+    capture: &crate::capture::CaptureService,
     req: Request,
 ) -> Response {
     let id = req.id.clone();
@@ -118,6 +119,20 @@ pub fn dispatch_concurrent(
                 s.set_theme(p.theme);
                 Ok(ses::SetPaletteResult::default())
             },
+        ),
+
+        // capture.* — target enumeration is JSON RPC. `capture.take` is
+        // intercepted by the HTTP transport because its success body is PNG.
+        "capture.targets" => attached(
+            manager,
+            conn,
+            id,
+            req.params,
+            |_s, _: motif_proto::capture::TargetsParams| capture.targets(),
+        ),
+        "capture.take" => Response::err(
+            id,
+            RpcError::internal("capture.take routed through JSON dispatcher"),
         ),
 
         // pty.*

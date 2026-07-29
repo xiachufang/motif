@@ -11,6 +11,7 @@ import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
 import 'package:motif/motif/ui/screens/session_name_generator.dart';
+import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/top_toast.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
@@ -142,7 +143,7 @@ Future<AppState> _appState(_CreatingServerFixture motif) async {
   return _appStateFor({'server-1': motif});
 }
 
-Future<void> _pumpSessionList(
+Future<AppState> _pumpSessionList(
   WidgetTester tester,
   _CreatingServerFixture motif,
 ) async {
@@ -157,11 +158,25 @@ Future<void> _pumpSessionList(
     ),
   );
   await tester.pump();
+  return app;
 }
 
 Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
   (widget) => widget is TextField && widget.decoration?.labelText == label,
 );
+
+Future<void> _pumpUntilSessionScreen(WidgetTester tester) async {
+  for (var attempt = 0; attempt < 20; attempt++) {
+    await tester.pump(const Duration(milliseconds: 50));
+    if (find.byType(SessionScreen).evaluate().isNotEmpty) return;
+  }
+}
+
+Future<void> _disposeSessionScreen(WidgetTester tester, AppState app) async {
+  await tester.pumpWidget(const SizedBox.shrink());
+  app.dispose();
+  await tester.pump(const Duration(seconds: 1));
+}
 
 void main() {
   testWidgets('async connection replaces the connect empty state', (
@@ -194,13 +209,11 @@ void main() {
     expect(motif.refreshes, 1);
   });
 
-  testWidgets('non-empty session list includes create session action', (
-    tester,
-  ) async {
+  testWidgets('creating a session enters it immediately', (tester) async {
     final motif = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
-    await _pumpSessionList(tester, motif);
+    final app = await _pumpSessionList(tester, motif);
 
     expect(find.text('Create session'), findsOneWidget);
     expect(find.text('dev'), findsOneWidget);
@@ -212,10 +225,14 @@ void main() {
     await tester.enterText(_fieldWithLabel('Name'), 'build');
     await tester.enterText(_fieldWithLabel('Working directory'), '~/build');
     await tester.tap(find.text('Create'));
-    await tester.pumpAndSettle();
+    await _pumpUntilSessionScreen(tester);
 
     expect(motif.created, [('build', '~/build')]);
-    expect(find.text('build'), findsOneWidget);
+    expect(find.byType(SessionScreen), findsOneWidget);
+    final screen = tester.widget<SessionScreen>(find.byType(SessionScreen));
+    expect(screen.serverId, 'server-1');
+    expect(screen.session, 'build');
+    await _disposeSessionScreen(tester, app);
   });
 
   testWidgets('create session dialog pre-fills adjective fruit name', (
@@ -224,7 +241,7 @@ void main() {
     final motif = _CreatingServerFixture()
       ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
 
-    await _pumpSessionList(tester, motif);
+    final app = await _pumpSessionList(tester, motif);
 
     await tester.tap(find.text('Create session'));
     await tester.pumpAndSettle();
@@ -237,9 +254,11 @@ void main() {
     expect(sessionNameFruits, contains(parts[1]));
 
     await tester.tap(find.text('Create'));
-    await tester.pumpAndSettle();
+    await _pumpUntilSessionScreen(tester);
 
     expect(motif.created, [(generated, '~')]);
+    expect(find.byType(SessionScreen), findsOneWidget);
+    await _disposeSessionScreen(tester, app);
   });
 
   testWidgets('swipe destroy alert cancel keeps the session', (tester) async {

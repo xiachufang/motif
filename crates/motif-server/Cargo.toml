@@ -18,9 +18,16 @@ path = "src/main.rs"
 #   tailscale          : compile the tsnet transport + status API (stub, no Go).
 #   tailscale-bundled  : link the real Go libtailscale (needs Go on the builder).
 # All tailscale-touching code in motif-server is `#[cfg(feature = "tailscale")]`.
-default            = ["tailscale-bundled"]
+default            = ["tailscale-bundled", "screen-capture"]
 tailscale          = ["motif-net/tailscale"]
 tailscale-bundled  = ["tailscale", "motif-net/tailscale-bundled"]
+screen-capture     = [
+  "dep:xcap",
+  "dep:file_icon_provider",
+  "dep:objc2-app-kit",
+  "dep:objc2-core-foundation",
+  "dep:objc2-core-graphics",
+]
 
 [dependencies]
 motif-proto        = { path = "../motif-proto" }
@@ -79,6 +86,7 @@ tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 time               = { workspace = true }
 dirs               = { workspace = true }
+xcap               = { workspace = true, optional = true }
 
 # Shell integration: bootstrap scripts embedded at compile time + per-PTY
 # tmpdir for the live rcfile copy.
@@ -91,13 +99,25 @@ libc = { workspace = true }
 [target.'cfg(not(windows))'.dependencies]
 libghostty-vt = { workspace = true }
 
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+file_icon_provider = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSRunningApplication", "NSWorkspace", "libc"], optional = true }
+objc2-core-foundation = { workspace = true, optional = true }
+objc2-core-graphics = { workspace = true, optional = true }
+
 [target.'cfg(windows)'.dependencies]
 libghostty-vt = { workspace = true, features = ["link-dynamic"] }
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
   "Win32_Security",
+  "Win32_Storage_Xps",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]

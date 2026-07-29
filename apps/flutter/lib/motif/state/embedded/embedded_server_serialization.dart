@@ -36,6 +36,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
     'push_relay_url': pushRelayUrl,
     'autostart': autostart,
+    'allow_screen_capture': allowScreenCapture,
   };
 
   /// Full in-memory configuration passed directly to the embedded Rust server.
@@ -51,6 +52,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
     'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay, 'jwt': rzvJwt},
     'push_relay_url': pushRelayUrl,
     'autostart': autostart,
+    'allow_screen_capture': allowScreenCapture,
   };
 }
 
@@ -73,6 +75,10 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> json) {
     rzvJwt: _jsonString(rendezvous['jwt'], defaults.rzvJwt),
     pushRelayUrl: _jsonString(json['push_relay_url'], defaults.pushRelayUrl),
     autostart: _jsonBool(json['autostart'], defaults.autostart),
+    allowScreenCapture: _jsonBool(
+      json['allow_screen_capture'],
+      defaults.allowScreenCapture,
+    ),
   );
 }
 

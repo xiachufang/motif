@@ -87,6 +87,9 @@ pub struct MenuConfig {
     /// Start the embedded server automatically when the app launches. The
     /// host (Flutter) acts on this; the embed crate just round-trips it.
     pub autostart: bool,
+    /// Explicit consent for clients to capture this desktop's displays/windows.
+    #[serde(default)]
+    pub allow_screen_capture: bool,
 }
 
 fn default_port() -> u16 {
@@ -106,6 +109,7 @@ impl Default for MenuConfig {
             rzv: RzvConfig::default(),
             push_relay_url: default_push_relay_url(),
             autostart: true,
+            allow_screen_capture: false,
         }
     }
 }
@@ -248,6 +252,7 @@ impl MenuConfig {
                 rzv_direct,
                 token,
                 push_relay_url: normalize_push_relay_url(&self.push_relay_url),
+                allow_screen_capture: self.allow_screen_capture,
             },
             pairing_uri,
         })
@@ -360,7 +365,8 @@ mod tests {
             },
             "rzv": { "enabled": false, "relay": "" },
             "push_relay_url": "motif-push-relay.slothease.com",
-            "autostart": true
+            "autostart": true,
+            "allow_screen_capture": true
         }"#;
         let c: MenuConfig = serde_json::from_str(json).expect("parse host json");
         assert_eq!(c.port, 9001);
@@ -369,6 +375,13 @@ mod tests {
         assert_eq!(c.tailscale.hostname, "my-dev");
         assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
         assert!(c.autostart);
+        assert!(c.allow_screen_capture);
+        assert!(
+            c.to_server_config(&tsnet())
+                .expect("capture opt-in should map")
+                .server
+                .allow_screen_capture
+        );
     }
 
     #[test]

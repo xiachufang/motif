@@ -40,6 +40,47 @@ Future<bool> _hasCargo() async {
   }
 }
 
+/// Register the local Rust dependency graph as hook inputs.
+///
+/// Cargo already knows how to rebuild motif-embed, but the Dart native-assets
+/// runner can skip this hook entirely unless its previous output declares the
+/// Rust sources as dependencies. Without these entries, `flutter run` may keep
+/// bundling an old dylib after motif-server changes.
+void _addMotifEmbedSourceDependencies(
+  BuildInput input,
+  BuildOutputBuilder output,
+) {
+  final workspace = Directory.fromUri(input.packageRoot.resolve('../../'));
+  for (final relative in ['Cargo.toml', 'Cargo.lock']) {
+    final file = File.fromUri(workspace.uri.resolve(relative));
+    if (file.existsSync()) output.dependencies.add(file.uri);
+  }
+
+  const crateNames = [
+    'motif-embed',
+    'motif-server',
+    'motif-proto',
+    'motif-net',
+    'motif-tailscale',
+    'motif-rendezvous',
+  ];
+  for (final crateName in crateNames) {
+    final crate = Directory.fromUri(
+      workspace.uri.resolve('crates/$crateName/'),
+    );
+    if (!crate.existsSync()) continue;
+    for (final relative in ['Cargo.toml', 'build.rs']) {
+      final file = File.fromUri(crate.uri.resolve(relative));
+      if (file.existsSync()) output.dependencies.add(file.uri);
+    }
+    final source = Directory.fromUri(crate.uri.resolve('src/'));
+    if (!source.existsSync()) continue;
+    for (final entity in source.listSync(recursive: true, followLinks: false)) {
+      if (entity is File) output.dependencies.add(entity.uri);
+    }
+  }
+}
+
 /// Resolve a bash to run the build scripts with.
 ///
 /// On Windows, a bare `bash` is a trap: Dart's Process.start uses CreateProcess,
@@ -165,6 +206,7 @@ Future<void> _addOrBuildBundledMotifEmbedDynamic(
   String? buildTarget,
   Map<String, String>? environment,
 }) async {
+  _addMotifEmbedSourceDependencies(input, output);
   final usePrebuilt = _envFlagEnabled('MOTIF_EMBED_USE_PREBUILT');
   var lib = usePrebuilt ? _findRelativeFile(input, relativeCandidates) : null;
 

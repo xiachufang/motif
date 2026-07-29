@@ -28,6 +28,8 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Motif needs microphone access to recognize your voice commands.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Motif needs Automation access so terminal commands can control Finder and other apps when you ask them to.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

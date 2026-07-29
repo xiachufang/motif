@@ -76,6 +76,11 @@ cargo build -p motif-server --release
 从源码构建 `motifd` 需要 Zig 0.15.x；默认启用嵌入式 Tailscale 时还需要 Go。
 完整构建要求见根目录 [`README.md`](../README.md#build)。
 
+如需让 client 查看这台机器的显示器或单个窗口，在有图形桌面会话的原生主机上
+启动时显式加 `--allow-screen-capture`（或设置
+`MOTIFD_ALLOW_SCREEN_CAPTURE=true`）。此能力默认关闭；Docker 镜像不包含截图
+后端，因为容器通常无法访问宿主机图形会话。
+
 ### 2.3 准入与加密（无需手动 token）
 
 不再需要手动管理 bearer token。**网络可达的监听（非 loopback `--listen` 或
@@ -207,6 +212,9 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 2. 切到顶部的 **Server** 页，或从系统托盘打开 **Open Server**。
 3. 在 **Server** 区域点 **Start**。
 4. **Start server on launch** 默认开启，App 启动后会自动 serve；如不需要可手动关闭。
+5. 如需让已连接的 client 截图，打开 **Allow remote screenshots**；运行中的
+   embedded server 会提示重启后生效。macOS 首次使用时还需在系统设置中允许
+   Motif 进行屏幕录制。
 
 关闭桌面窗口不会自动停止 server；桌面 App 会留在托盘。选择 Quit Motif 时会尽量
 先停止 embedded server。

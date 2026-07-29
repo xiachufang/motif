@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 enum MacosPermission {
-  fullDiskAccess('fullDiskAccess'),
+  homeDirectory('homeDirectory'),
   screenRecording('screenRecording'),
   accessibility('accessibility'),
   automation('automation');

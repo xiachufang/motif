@@ -56,6 +56,17 @@ via **Zig 0.15.2** (pinned by ghostty; 0.16 is rejected). Put a matching `zig` o
 - Offline/CI: set `GHOSTTY_SOURCE_DIR` / `GHOSTTY_ZIG_SYSTEM_DIR` to vendor the
   ghostty source and Zig packages.
 
+The default `motifd` build also includes the optional screen-capture backend.
+On Debian/Ubuntu install its native build dependencies with:
+
+```bash
+sudo apt-get install pkg-config libclang-dev libxcb1-dev libxrandr-dev \
+  libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
+```
+
+Use `--no-default-features` for a backend-free build, or explicitly select the
+features needed by the deployment.
+
 ```bash
 # Flutter Web — built separately, then embedded by motif-server's build.rs.
 cd apps/flutter
@@ -123,6 +134,9 @@ for image tags, configuration, and GHCR details.
 ```bash
 # Local dev: a loopback listener is plaintext + unauthenticated.
 ./target/release/motifd --listen 127.0.0.1:7777
+
+# Explicitly allow authenticated, attached clients to take one-shot screenshots.
+./target/release/motifd --listen 127.0.0.1:7777 --allow-screen-capture
 
 # Browser — open http://localhost:7777; the embedded Flutter Web client
 # auto-configures itself to the motifd origin on first launch.

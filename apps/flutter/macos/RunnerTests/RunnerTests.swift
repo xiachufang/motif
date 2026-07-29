@@ -20,18 +20,13 @@ class RunnerTests: XCTestCase {
   func testPermissionStatusesHaveStableShape() {
     let statuses = MacosPermissionsController.statuses()
     XCTAssertEqual(Set(statuses.keys), Set(MacosPermissionKind.allCases.map(\.rawValue)))
-    XCTAssertEqual(
-      statuses[MacosPermissionKind.fullDiskAccess.rawValue],
-      MacosPermissionState.managedExternally.rawValue)
     for value in statuses.values {
       XCTAssertNotNil(MacosPermissionState(rawValue: value))
     }
   }
 
   func testModernPermissionSettingsURLs() {
-    XCTAssertEqual(
-      MacosPermissionsController.settingsURL(for: .fullDiskAccess, modern: true)?.absoluteString,
-      "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
+    XCTAssertNil(MacosPermissionsController.settingsURL(for: .homeDirectory, modern: true))
     XCTAssertEqual(
       MacosPermissionsController.settingsURL(for: .screenRecording, modern: true)?.absoluteString,
       "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture")
@@ -44,9 +39,7 @@ class RunnerTests: XCTestCase {
   }
 
   func testLegacyPermissionSettingsURLs() {
-    XCTAssertEqual(
-      MacosPermissionsController.settingsURL(for: .fullDiskAccess, modern: false)?.absoluteString,
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+    XCTAssertNil(MacosPermissionsController.settingsURL(for: .homeDirectory, modern: false))
     XCTAssertEqual(
       MacosPermissionsController.privacySettingsURL(modern: false)?.absoluteString,
       "x-apple.systempreferences:com.apple.preference.security?Privacy")

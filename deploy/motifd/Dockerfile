@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 #
 # Production/self-hosted motifd image. Unlike deploy/review/Dockerfile, this
-# image embeds the Flutter Web client and keeps motif-server's default
-# Tailscale support enabled. It is meant for your own server/VPS/workstation,
+# image embeds the Flutter Web client and keeps motif-server's embedded
+# Tailscale support enabled. Screen capture is omitted because the container
+# has no host graphical session. It is meant for your own server/VPS/workstation,
 # not for handing a stranger a disposable sandbox.
 #
 # Build: docker build --platform linux/amd64 -f deploy/motifd/Dockerfile -t motifd .
@@ -91,7 +92,7 @@ RUN sed -i 's#, *"apps/\*"##' Cargo.toml && ! grep -q '"apps/\*"' Cargo.toml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \
-    LIBGHOSTTY_VT_SYS_OPTIMIZE="${LIBGHOSTTY_VT_SYS_OPTIMIZE}" cargo build --release -p motif-server --bin motifd; \
+    LIBGHOSTTY_VT_SYS_OPTIMIZE="${LIBGHOSTTY_VT_SYS_OPTIMIZE}" cargo build --release -p motif-server --bin motifd --no-default-features --features tailscale-bundled; \
     cp /src/target/release/motifd /usr/local/bin/motifd; \
     strip /usr/local/bin/motifd || true
 

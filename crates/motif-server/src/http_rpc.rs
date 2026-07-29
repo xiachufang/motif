@@ -90,6 +90,12 @@ pub async fn rpc_dispatch(
         return fs_write_binary(state, &headers, peer, q, body, req_recv_at).await;
     }
 
+    // `capture.take` shares the authenticated `/rpc/<method>` request surface
+    // but deliberately returns raw PNG bytes instead of a JSON/base64 envelope.
+    if method == "capture.take" {
+        return capture_take_binary(state, &headers, peer, body, req_recv_at).await;
+    }
+
     // Body is just the params object; the JSON-RPC envelope is
     // synthesized server-side so we keep the existing dispatch
     // functions unchanged. Empty body → params = null (allowed by the
@@ -242,6 +248,106 @@ async fn fs_write_binary(
     }
 }
 
+/// One-shot screenshot response. The JSON request names a short-lived target;
+/// success is `image/png`, while errors retain the normal RpcError JSON shape.
+async fn capture_take_binary(
+    state: AppState,
+    headers: &HeaderMap,
+    peer: PeerAddr,
+    body: Bytes,
+    req_recv_at: Instant,
+) -> Response {
+    let params: motif_proto::capture::TakeParams = match serde_json::from_slice(&body) {
+        Ok(params) => params,
+        Err(error) => {
+            return err_response(
+                RpcError::invalid_params(format!("capture.take body: {error}")),
+                req_recv_at,
+                "capture.take",
+                None,
+                peer,
+            )
+        }
+    };
+    if params.include_cursor {
+        return err_response(
+            RpcError::invalid_params("capture.take include_cursor is not supported in v1"),
+            req_recv_at,
+            "capture.take",
+            None,
+            peer,
+        );
+    }
+
+    let Some(session_id) = header_session(headers) else {
+        return err_response(
+            RpcError::new(ErrorCode::NotAttached, "must session.attach first"),
+            req_recv_at,
+            "capture.take",
+            None,
+            peer,
+        );
+    };
+    let Some(entry) = state.conns.get(&session_id) else {
+        return err_response(
+            RpcError::new(ErrorCode::NotAttached, "unknown or expired session_id"),
+            req_recv_at,
+            "capture.take",
+            None,
+            peer,
+        );
+    };
+    let snap = entry.state.lock().snapshot();
+    if rpc::current_session(&state.manager, &snap).is_none() {
+        return err_response(
+            RpcError::new(ErrorCode::NotAttached, "must session.attach first"),
+            req_recv_at,
+            "capture.take",
+            None,
+            peer,
+        );
+    }
+
+    let capture = Arc::clone(&state.capture);
+    let result = tokio::task::spawn_blocking(move || capture.capture(&params.target))
+        .await
+        .unwrap_or_else(|error| {
+            Err(RpcError::internal(format!(
+                "capture.take task panicked: {error}"
+            )))
+        });
+
+    match result {
+        Ok(image) => {
+            let body_len = image.png.len();
+            tracing::info!(
+                target: TIMING_TARGET,
+                peer = %peer,
+                method = "capture.take",
+                resp_size = body_len,
+                width = image.width,
+                height = image.height,
+                total_ms = us_to_ms(req_recv_at.elapsed().as_micros() as u64),
+                error = false,
+                transport = "http-bin",
+                "rpc done",
+            );
+            let mut response = (StatusCode::OK, image.png).into_response();
+            response
+                .headers_mut()
+                .insert("content-type", HeaderValue::from_static("image/png"));
+            response
+                .headers_mut()
+                .insert("cache-control", HeaderValue::from_static("no-store"));
+            if let Ok(value) = HeaderValue::from_str(&session_id) {
+                response.headers_mut().insert(SESSION_HEADER, value);
+            }
+            response
+        }
+        Err(error) => err_response(error, req_recv_at, "capture.take", Some(&session_id), peer),
+    }
+}
+
 /// Run an immutable method on the blocking pool. Returns the dispatch
 /// `Response`, plus optionally a session_id that was created or
 /// removed (always None on this path).
@@ -277,8 +383,9 @@ async fn dispatch_concurrent_http(
     let manager = Arc::clone(&state.manager);
     let conns = Arc::clone(&state.conns);
     let devices = state.devices.clone();
+    let capture = Arc::clone(&state.capture);
     let resp = tokio::task::spawn_blocking(move || {
-        rpc::dispatch_concurrent(&manager, &conns, &snap, &devices, req)
+        rpc::dispatch_concurrent(&manager, &conns, &snap, &devices, &capture, req)
     })
     .await
     .unwrap_or_else(|e| {
@@ -447,6 +554,11 @@ fn err_response(
         c if c == ErrorCode::AlreadyExists as i32 => StatusCode::CONFLICT,
         c if c == ErrorCode::PtyNotFound as i32 => StatusCode::NOT_FOUND,
         c if c == ErrorCode::FileTooLarge as i32 => StatusCode::PAYLOAD_TOO_LARGE,
+        c if c == ErrorCode::CaptureUnavailable as i32 => StatusCode::SERVICE_UNAVAILABLE,
+        c if c == ErrorCode::CapturePermissionDenied as i32 => StatusCode::FORBIDDEN,
+        c if c == ErrorCode::CaptureTargetNotFound as i32 => StatusCode::NOT_FOUND,
+        c if c == ErrorCode::CaptureBusy as i32 => StatusCode::TOO_MANY_REQUESTS,
+        c if c == ErrorCode::CaptureTooLarge as i32 => StatusCode::PAYLOAD_TOO_LARGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     tracing::info!(

@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/net/rpc_client.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -93,6 +94,51 @@ void main() {
     await rpc.close();
     await eventSub.cancel();
   });
+
+  test(
+    'captureImage sends the tagged target and returns raw PNG bytes',
+    () async {
+      RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+        if (request.url.path == '/rpc/session.attach') {
+          return http.Response(
+            jsonEncode({'client_id': 'client-1', 'last_seq': 0}),
+            200,
+            headers: {'x-motif-session': 'sid-1'},
+          );
+        }
+        expect(request.url.path, '/rpc/capture.take');
+        expect(request.headers['authorization'], 'Bearer token');
+        expect(request.headers['x-motif-session'], 'sid-1');
+        expect(request.headers['accept'], 'image/png');
+        expect(jsonDecode(request.body), {
+          'target': {'kind': 'window', 'id': 'window:42'},
+          'include_cursor': false,
+        });
+        return http.Response.bytes(
+          <int>[0x89, 0x50, 0x4e, 0x47],
+          200,
+          headers: {'content-type': 'image/png'},
+        );
+      });
+      RpcClient.debugWebSocketFactory = (_) => _FakeWebSocketChannel((_) {});
+
+      final rpc = RpcClient()
+        ..connect(host: 'localhost', port: 7777, token: 'token');
+      await rpc.call('session.attach', {'name': 'dev'});
+      final bytes = await rpc.captureImage(
+        const CaptureTarget(
+          kind: CaptureTargetKind.window,
+          id: 'window:42',
+          name: 'Editor',
+          width: 800,
+          height: 600,
+        ),
+      );
+
+      expect(bytes, <int>[0x89, 0x50, 0x4e, 0x47]);
+      await rpc.close();
+    },
+  );
 }
 
 enum _PathKind { unknown, events, pty }

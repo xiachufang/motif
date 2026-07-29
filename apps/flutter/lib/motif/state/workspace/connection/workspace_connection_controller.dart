@@ -178,6 +178,12 @@ class WorkspaceConnectionController implements SessionAttachment {
         },
         writeFileBytes: (path, data) =>
             _rpc?.writeFileBinary(path, data) ?? Future<String>.value(''),
+        captureImage: (target) {
+          final rpc = _rpc;
+          if (rpc == null) throw const RpcException('not connected');
+          return rpc.captureImage(target);
+        },
+        supportsScreenCapture: () => lastPing?.supportsScreenCapture ?? false,
       ),
       activeCwd: _resolveActiveCwd,
     );

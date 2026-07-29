@@ -15,11 +15,12 @@ crate-type = ["cdylib", "rlib"]
 # Passthrough of motif-server's tailscale features. Default keeps the embedded
 # tsnet (Go libtailscale); `--no-default-features` builds a desktop host with no
 # Tailscale at all. The status surface in src/lib.rs is `#[cfg]`-gated to match.
-default            = ["tailscale-bundled"]
+default            = ["tailscale-bundled", "screen-capture"]
 # `motif-net` is pulled in (stub mode is enough) so we can name its
 # `motif_tailscale::{extract_auth_url, host_of}` helpers for the log-ring scrape.
 tailscale          = ["motif-server/tailscale", "dep:motif-net", "motif-net/tailscale"]
 tailscale-bundled  = ["tailscale", "motif-server/tailscale-bundled"]
+screen-capture     = ["motif-server/screen-capture"]
 # Build-time-only feature for the Flutter macOS native-asset prebuild. It keeps
 # motifd's normal release builds static, while letting libmotif_embed.dylib link
 # against the already-arch-specific bundled libghostty-vt.dylib.

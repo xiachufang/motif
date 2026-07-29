@@ -53,11 +53,10 @@ esac
 arch="${TARGET##*-}"
 OUT="${OUT:-$PROJECT_DIR/build/native/motif/$os/$arch/$out_name}"
 
-# The Windows App does not expose embedded Tailscale. Build motif-embed without
-# its default tailscale-bundled feature so the DLL rejects that configuration
-# explicitly and remains independent of Go.
+# The Windows App does not expose embedded Tailscale. Keep the independent
+# screen-capture feature while omitting tailscale-bundled and its Go toolchain.
 if [[ "$os" == "windows" ]]; then
-  cargo_features+=(--no-default-features)
+  cargo_features+=(--no-default-features --features screen-capture)
 
   # Flutter's native-assets runner may omit APPDATA and the Zig cache
   # variables from the hook environment. libghostty-vt-sys invokes Zig from

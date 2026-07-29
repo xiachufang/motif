@@ -50,6 +50,7 @@ import 'git_diff_panel.dart';
 import 'preview_pane.dart';
 import 'quick_command_editor.dart';
 import 'remote_port_mapping_sheet.dart';
+import 'screen_capture_flow.dart';
 import 'terminal_settings_sheet.dart';
 
 part 'session/session_helpers.dart';
@@ -718,6 +719,18 @@ class _SessionScreenState extends State<_SessionPane>
                         ? () => _showRemotePortMappings(_remotePortController)
                         : null,
                   ),
+                ),
+                ObservationSelect(
+                  selector: () => _workspaceState.connection.isAttached,
+                  builder: (context, attached, _) =>
+                      attached && _workspaceApi.canCaptureScreen
+                      ? IconButton(
+                          key: const ValueKey('screen-capture-button'),
+                          icon: const Icon(Icons.screenshot_monitor_outlined),
+                          tooltip: 'Capture server screen',
+                          onPressed: _showScreenCapture,
+                        )
+                      : const SizedBox.shrink(),
                 ),
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),

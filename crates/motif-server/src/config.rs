@@ -39,6 +39,9 @@ pub struct ServerConfig {
     /// delivery. `None` disables push entirely. motifd never holds the APNs
     /// signing key — only this relay URL.
     pub push_relay_url: Option<String>,
+    /// Explicit opt-in for authenticated clients to enumerate displays/windows
+    /// and request one-shot PNG screenshots from this graphical login session.
+    pub allow_screen_capture: bool,
 }
 
 // rustls::ServerConfig isn't Debug; render listen_tls as a presence flag.
@@ -52,6 +55,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("rzv_direct", &self.rzv_direct)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("push_relay_url", &self.push_relay_url)
+            .field("allow_screen_capture", &self.allow_screen_capture)
             .finish()
     }
 }

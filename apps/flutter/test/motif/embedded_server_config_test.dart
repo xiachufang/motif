@@ -14,6 +14,7 @@ void main() {
     const config = EmbeddedServerConfig();
 
     expect(config.autostart, isTrue);
+    expect(config.allowScreenCapture, isFalse);
   });
 
   test('loads legacy config with a missing push relay field', () {
@@ -37,6 +38,7 @@ void main() {
     expect(config.rzvRelay, 'us.allsunday.io:8765');
     expect(config.autostart, isTrue);
     expect(config.pushRelayUrl, kDefaultPushRelayAddress);
+    expect(config.allowScreenCapture, isFalse);
   });
 
   test('uses defaults for missing or malformed values', () {
@@ -58,12 +60,26 @@ void main() {
     expect(config.rzvRelay, defaults.rzvRelay);
     expect(config.pushRelayUrl, defaults.pushRelayUrl);
     expect(config.autostart, defaults.autostart);
+    expect(config.allowScreenCapture, defaults.allowScreenCapture);
   });
 
   test('preserves an explicitly disabled autostart setting', () {
     final config = embeddedServerConfigFromJson({'autostart': false});
 
     expect(config.autostart, isFalse);
+  });
+
+  test('persists remote screenshot opt-in for the embedded server', () {
+    const config = EmbeddedServerConfig(allowScreenCapture: true);
+
+    expect(config.toPersistedJson()['allow_screen_capture'], isTrue);
+    expect(config.toRuntimeJson()['allow_screen_capture'], isTrue);
+    expect(
+      embeddedServerConfigFromJson({
+        'allow_screen_capture': true,
+      }).allowScreenCapture,
+      isTrue,
+    );
   });
 
   test('persisted embedded config excludes the relay JWT', () {

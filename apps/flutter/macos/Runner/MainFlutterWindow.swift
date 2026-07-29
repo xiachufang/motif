@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import CoreServices
 import FlutterMacOS
 import ObjectiveC.runtime
 
@@ -18,6 +19,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var stashedTrayHandle: Int?
 
   override func awakeFromNib() {
+    MacosPermissionsController.restoreHomeDirectoryAccess()
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController
@@ -194,7 +196,7 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
 }
 
 enum MacosPermissionKind: String, CaseIterable {
-  case fullDiskAccess
+  case homeDirectory
   case screenRecording
   case accessibility
   case automation
@@ -220,6 +222,12 @@ enum MacosPermissionsController {
           details: nil))
         return
       }
+      if permission == .homeDirectory {
+        requestHomeDirectory { state in
+          result(state.rawValue)
+        }
+        return
+      }
       result(request(permission).rawValue)
     case "openSystemSettings":
       guard let permission = permission(from: call.arguments) else {
@@ -227,6 +235,10 @@ enum MacosPermissionsController {
           code: "bad_args",
           message: "openSystemSettings requires a valid permission",
           details: nil))
+        return
+      }
+      if permission == .homeDirectory {
+        requestHomeDirectory { _ in result(nil) }
         return
       }
       if openSystemSettings(for: permission) {
@@ -252,47 +264,43 @@ enum MacosPermissionsController {
 
   static func statuses() -> [String: String] {
     [
-      MacosPermissionKind.fullDiskAccess.rawValue:
-        MacosPermissionState.managedExternally.rawValue,
+      MacosPermissionKind.homeDirectory.rawValue:
+        state(for: .homeDirectory).rawValue,
       MacosPermissionKind.screenRecording.rawValue:
         state(for: .screenRecording).rawValue,
       MacosPermissionKind.accessibility.rawValue:
         state(for: .accessibility).rawValue,
       MacosPermissionKind.automation.rawValue:
-        MacosPermissionState.managedExternally.rawValue,
+        state(for: .automation).rawValue,
     ]
   }
 
   static func state(for permission: MacosPermissionKind) -> MacosPermissionState {
     switch permission {
-    case .fullDiskAccess:
-      return .managedExternally
+    case .homeDirectory:
+      return hasHomeDirectoryBookmark() ? .granted : .notGranted
     case .screenRecording:
       return CGPreflightScreenCaptureAccess() ? .granted : .notGranted
     case .accessibility:
       return AXIsProcessTrusted() ? .granted : .notGranted
     case .automation:
-      return .managedExternally
+      return automationState(askUserIfNeeded: false)
     }
   }
 
   static func request(_ permission: MacosPermissionKind) -> MacosPermissionState {
     switch permission {
-    case .fullDiskAccess, .automation:
-      _ = openSystemSettings(for: permission)
-      return .managedExternally
+    case .homeDirectory:
+      // Handled asynchronously by `handle` so the Open panel can stay live.
+      return state(for: permission)
+    case .automation:
+      return automationState(askUserIfNeeded: true)
     case .screenRecording:
       let granted = CGRequestScreenCaptureAccess()
-      if !granted {
-        _ = openSystemSettings(for: permission)
-      }
       return granted ? .granted : .notGranted
     case .accessibility:
       let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
       let granted = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
-      if !granted {
-        _ = openSystemSettings(for: permission)
-      }
       return granted ? .granted : .notGranted
     }
   }
@@ -314,8 +322,8 @@ enum MacosPermissionsController {
   ) -> URL? {
     let anchor: String
     switch permission {
-    case .fullDiskAccess:
-      anchor = "Privacy_AllFiles"
+    case .homeDirectory:
+      return nil
     case .screenRecording:
       anchor = "Privacy_ScreenCapture"
     case .accessibility:
@@ -334,6 +342,109 @@ enum MacosPermissionsController {
       ? "com.apple.settings.PrivacySecurity.extension"
       : "com.apple.preference.security"
     return URL(string: "x-apple.systempreferences:\(pane)?Privacy")
+  }
+
+  static let homeDirectoryBookmarkKey = "motif.permissions.homeDirectoryBookmark.v1"
+  private static let automationTargetBundleIdentifier = "com.apple.finder"
+  private static var homeDirectoryAccessURL: URL?
+
+  static func automationState(askUserIfNeeded: Bool) -> MacosPermissionState {
+    guard #available(macOS 10.14, *) else { return .unavailable }
+    let target = NSAppleEventDescriptor(
+      bundleIdentifier: automationTargetBundleIdentifier)
+    let status = AEDeterminePermissionToAutomateTarget(
+      target.aeDesc,
+      AEEventClass(kAECoreSuite),
+      AEEventID(kAEGetData),
+      askUserIfNeeded)
+    switch status {
+    case noErr:
+      return .granted
+    case OSStatus(errAEEventNotPermitted), OSStatus(errAEEventWouldRequireUserConsent):
+      return .notGranted
+    default:
+      return .unavailable
+    }
+  }
+
+  static func requestHomeDirectory(
+    completion: @escaping (MacosPermissionState) -> Void
+  ) {
+    let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+    let panel = NSOpenPanel()
+    panel.title = "Allow Home Directory Access"
+    panel.message = "Choose your Home folder so Motif can use projects and shells stored there."
+    panel.prompt = "Allow Access"
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = false
+    panel.directoryURL = home
+    panel.begin { response in
+      guard response == .OK, let selected = panel.url?.standardizedFileURL else {
+        completion(.notGranted)
+        return
+      }
+      guard selected == home else {
+        completion(.notGranted)
+        return
+      }
+      do {
+        let bookmark = try selected.bookmarkData(
+          options: .withSecurityScope,
+          includingResourceValuesForKeys: nil,
+          relativeTo: nil)
+        UserDefaults.standard.set(bookmark, forKey: homeDirectoryBookmarkKey)
+        activateHomeDirectoryAccess(selected)
+        completion(.granted)
+      } catch {
+        completion(.unavailable)
+      }
+    }
+  }
+
+  static func restoreHomeDirectoryAccess() {
+    guard let bookmark = UserDefaults.standard.data(forKey: homeDirectoryBookmarkKey),
+          let resolved = resolveHomeDirectoryBookmark(bookmark) else {
+      return
+    }
+    activateHomeDirectoryAccess(resolved)
+  }
+
+  static func hasHomeDirectoryBookmark() -> Bool {
+    guard let bookmark = UserDefaults.standard.data(forKey: homeDirectoryBookmarkKey),
+          let resolved = resolveHomeDirectoryBookmark(bookmark) else {
+      return false
+    }
+    return resolved.standardizedFileURL ==
+      FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+  }
+
+  private static func resolveHomeDirectoryBookmark(_ bookmark: Data) -> URL? {
+    var stale = false
+    guard let resolved = try? URL(
+      resolvingBookmarkData: bookmark,
+      options: [.withSecurityScope, .withoutUI],
+      relativeTo: nil,
+      bookmarkDataIsStale: &stale),
+      resolved.standardizedFileURL ==
+        FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL else {
+      return nil
+    }
+    if stale,
+       let refreshed = try? resolved.bookmarkData(
+         options: .withSecurityScope,
+         includingResourceValuesForKeys: nil,
+         relativeTo: nil) {
+      UserDefaults.standard.set(refreshed, forKey: homeDirectoryBookmarkKey)
+    }
+    return resolved
+  }
+
+  private static func activateHomeDirectoryAccess(_ url: URL) {
+    guard homeDirectoryAccessURL == nil else { return }
+    _ = url.startAccessingSecurityScopedResource()
+    homeDirectoryAccessURL = url
   }
 }
 

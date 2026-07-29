@@ -23,6 +23,17 @@ pub enum ErrorCode {
     /// Block id was not found in the PTY's ring buffer (rolled out, or
     /// never existed). Returned by `pty.get_block_output`.
     BlockNotFound = -32016,
+    /// Screen capture is disabled, unavailable in this build, or the process
+    /// has no usable graphical session.
+    CaptureUnavailable = -32017,
+    /// The OS denied screen-recording/screenshot permission.
+    CapturePermissionDenied = -32018,
+    /// The selected display/window disappeared before capture began.
+    CaptureTargetNotFound = -32019,
+    /// Another screenshot is already in progress.
+    CaptureBusy = -32020,
+    /// The captured image exceeded the server's pixel/encoded-byte limit.
+    CaptureTooLarge = -32021,
     /// Catch-all for unrecognized internal errors.
     Internal = -32099,
 }
@@ -48,6 +59,11 @@ impl TryFrom<i32> for ErrorCode {
             -32009 => Self::NotAttached,
             -32010 => Self::PtyLimitReached,
             -32016 => Self::BlockNotFound,
+            -32017 => Self::CaptureUnavailable,
+            -32018 => Self::CapturePermissionDenied,
+            -32019 => Self::CaptureTargetNotFound,
+            -32020 => Self::CaptureBusy,
+            -32021 => Self::CaptureTooLarge,
             -32099 => Self::Internal,
             other => return Err(other),
         })

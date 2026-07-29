@@ -14,11 +14,15 @@ final class WorkspaceApiTransport {
     required this.isAvailable,
     required this.call,
     required this.writeFileBytes,
+    this.captureImage,
+    this.supportsScreenCapture,
   });
 
   final bool Function() isAvailable;
   final WorkspaceRpcCall call;
   final Future<String> Function(String path, Uint8List data) writeFileBytes;
+  final Future<Uint8List> Function(CaptureTarget target)? captureImage;
+  final bool Function()? supportsScreenCapture;
 }
 
 /// Filesystem and Git capability for one attached workspace.
@@ -81,6 +85,24 @@ final class WorkspaceApi {
 
   Future<String> writeBytes(String path, Uint8List data) =>
       transport.writeFileBytes(path, data);
+
+  bool get canCaptureScreen =>
+      transport.isAvailable() &&
+      (transport.supportsScreenCapture?.call() ??
+          transport.captureImage != null);
+
+  Future<CaptureTargetsResult> captureTargets() async {
+    final body = await transport.call('capture.targets');
+    return CaptureTargetsResult.fromJson(body);
+  }
+
+  Future<Uint8List> capture(CaptureTarget target) {
+    final capture = transport.captureImage;
+    if (capture == null) {
+      throw StateError('screen capture is unavailable on this transport');
+    }
+    return capture(target);
+  }
 
   Future<void> mkdir(String path) async {
     if (!transport.isAvailable()) return;

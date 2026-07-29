@@ -53,6 +53,10 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn start() -> Self {
+        Self::start_with_capture(motif_server::capture::CaptureService::disabled()).await
+    }
+
+    pub async fn start_with_capture(capture: Arc<motif_server::capture::CaptureService>) -> Self {
         let token = format!("test-{}", ulid::Ulid::new());
         let manager = motif_server::session::manager::SessionManager::new();
         let conns = motif_server::conn_registry::ConnRegistry::new();
@@ -64,6 +68,7 @@ impl TestServer {
                 store: motif_server::devices::DeviceStore::new(),
                 relay: None,
             },
+            capture,
             rzv_direct: None,
         };
         let app = motif_server::ws::router(state);
@@ -411,6 +416,21 @@ impl TestClient {
         let headers = with_session(&self.token, &self.session_id);
         let (status, _, body) = http_request(self.addr, "POST", &path, &headers, body).await?;
         Ok((status, body))
+    }
+
+    /// Call the binary `capture.take` method and retain response headers.
+    pub async fn capture_raw<P: Serialize>(
+        &self,
+        params: P,
+    ) -> Result<(http::StatusCode, http::HeaderMap, Vec<u8>)> {
+        http_request(
+            self.addr,
+            "POST",
+            "/rpc/capture.take",
+            &with_session(&self.token, &self.session_id),
+            to_body(&params),
+        )
+        .await
     }
 
     /// Wait up to EVENT_TIMEOUT for an event matching `pred`. Skipped events

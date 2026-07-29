@@ -11,6 +11,7 @@ mod common;
 use std::io::Read;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -18,6 +19,9 @@ use common::{b64_decode, b64_encode, init_git_repo, TestClient, TestServer};
 use flate2::read::ZlibDecoder;
 use futures_util::{SinkExt, StreamExt};
 use http::HeaderValue;
+use motif_proto::capture::{
+    CaptureDisplay, CaptureTarget, CaptureTargetKind, TakeParams, TargetsResult,
+};
 use motif_proto::event::Event;
 use motif_proto::{fs as pfs, git as pgit, pty as ppty, session as ses, view as pview};
 use serde_json::json;
@@ -56,6 +60,94 @@ fn shell_line(unix: &str, windows: &str) -> Vec<u8> {
     } else {
         format!("{unix}\n").into_bytes()
     }
+}
+
+#[derive(Debug)]
+struct FakeCaptureBackend;
+
+impl motif_server::capture::CaptureBackend for FakeCaptureBackend {
+    fn supported_in_build(&self) -> bool {
+        true
+    }
+
+    fn targets(&self) -> Result<TargetsResult, motif_proto::error::RpcError> {
+        Ok(TargetsResult {
+            available: true,
+            reason: None,
+            displays: vec![CaptureDisplay {
+                id: "display:7".into(),
+                name: "Test display".into(),
+                width: 1280,
+                height: 720,
+                x: 0,
+                y: 0,
+                scale_factor_milli: 1000,
+                primary: true,
+            }],
+            windows: vec![],
+            app_icons_png_b64: Default::default(),
+        })
+    }
+
+    fn capture(
+        &self,
+        target: &CaptureTarget,
+    ) -> Result<motif_server::capture::CapturedImage, motif_proto::error::RpcError> {
+        assert_eq!(target.kind, CaptureTargetKind::Display);
+        assert_eq!(target.id, "display:7");
+        Ok(motif_server::capture::CapturedImage {
+            png: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+            width: 1280,
+            height: 720,
+        })
+    }
+}
+
+#[tokio::test]
+async fn screen_capture_is_advertised_and_returns_raw_png() {
+    let capture = Arc::new(motif_server::capture::CaptureService::new(
+        true,
+        Arc::new(FakeCaptureBackend),
+    ));
+    let server = TestServer::start_with_capture(capture).await;
+    let ping = server.ping().await.unwrap();
+    assert!(ping
+        .capabilities
+        .iter()
+        .any(|value| value == "screen_capture_v1"));
+
+    let dir = TempDir::new().unwrap();
+    let client = TestClient::connect_no_events(&server, "capture", dir.path())
+        .await
+        .unwrap();
+    let targets: TargetsResult = client.call("capture.targets", json!({})).await.unwrap();
+    assert!(targets.available);
+    assert_eq!(targets.displays[0].id, "display:7");
+
+    let (status, headers, body) = client
+        .capture_raw(TakeParams {
+            target: CaptureTarget {
+                kind: CaptureTargetKind::Display,
+                id: "display:7".into(),
+            },
+            include_cursor: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(status, http::StatusCode::OK);
+    assert_eq!(headers[http::header::CONTENT_TYPE], "image/png");
+    assert_eq!(headers[http::header::CACHE_CONTROL], "no-store");
+    assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[tokio::test]
+async fn disabled_screen_capture_is_not_advertised() {
+    let server = TestServer::start().await;
+    let ping = server.ping().await.unwrap();
+    assert!(!ping
+        .capabilities
+        .iter()
+        .any(|value| value == "screen_capture_v1"));
 }
 
 #[tokio::test]

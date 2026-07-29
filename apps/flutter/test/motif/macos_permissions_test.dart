@@ -23,7 +23,7 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async {
             expect(call.method, 'getStatuses');
             return <String, String>{
-              'fullDiskAccess': 'managedExternally',
+              'homeDirectory': 'notGranted',
               'screenRecording': 'granted',
               'accessibility': 'futureStatus',
             };
@@ -32,8 +32,8 @@ void main() {
       final statuses = await permissions.getStatuses();
 
       expect(
-        statuses[MacosPermission.fullDiskAccess],
-        MacosPermissionStatus.managedExternally,
+        statuses[MacosPermission.homeDirectory],
+        MacosPermissionStatus.notGranted,
       );
       expect(
         statuses[MacosPermission.screenRecording],
@@ -61,14 +61,14 @@ void main() {
           });
 
       final status = await permissions.request(MacosPermission.screenRecording);
-      await permissions.openSystemSettings(MacosPermission.fullDiskAccess);
+      await permissions.openSystemSettings(MacosPermission.homeDirectory);
 
       expect(status, MacosPermissionStatus.notGranted);
       expect(calls, hasLength(2));
       expect(calls[0].method, 'request');
       expect(calls[0].arguments, {'permission': 'screenRecording'});
       expect(calls[1].method, 'openSystemSettings');
-      expect(calls[1].arguments, {'permission': 'fullDiskAccess'});
+      expect(calls[1].arguments, {'permission': 'homeDirectory'});
     },
   );
 
@@ -82,7 +82,7 @@ void main() {
     final requested = await unsupported.request(
       MacosPermission.screenRecording,
     );
-    await unsupported.openSystemSettings(MacosPermission.fullDiskAccess);
+    await unsupported.openSystemSettings(MacosPermission.homeDirectory);
 
     expect(statuses.values, everyElement(MacosPermissionStatus.unavailable));
     expect(requested, MacosPermissionStatus.unavailable);

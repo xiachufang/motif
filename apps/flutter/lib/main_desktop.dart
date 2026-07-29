@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import 'motif/bootstrap.dart';
 import 'motif/platform/desktop_window.dart';
 import 'motif/platform/desktop_window_desktop.dart';
+import 'motif/platform/macos_first_launch_permissions.dart';
 import 'motif/platform/secret_store.dart';
 import 'motif/platform/tray_service_desktop.dart' as desktop_tray;
 import 'motif/platform/window_title_desktop.dart';
@@ -30,13 +31,22 @@ Future<void> main() async {
   installDesktopWindowDelegate();
   installDesktopWindowTitleDelegate();
   final updates = DesktopUpdateService();
+  final initialPermissions = MacosFirstLaunchPermissions();
   await runMotif(
     embeddedServerFactory: createDesktopEmbeddedServerService,
     terminalRuntime: const DesktopTerminalRuntimePolicy(),
     workspaceRetentionPolicy: const DesktopWorkspaceRetentionPolicy(),
     embeddedServerPageFactory: () => const desktop_server.EmbeddedServerPage(),
     desktopUpdateService: updates,
-    afterFirstFrame: (appState) {
+    afterFirstFrame: (appState) async {
+      if (desktop_tray.TrayService.isSupported &&
+          (appState.embeddedServer?.available ?? false)) {
+        unawaited(desktop_tray.TrayService(appState).start());
+        await DesktopWindow.showAtLaunch();
+      }
+      if (Platform.isMacOS) {
+        await initialPermissions.requestIfNeeded();
+      }
       updates.start(
         onUpdateAvailable: (update) async {
           final context = motifNavigatorKey.currentContext;
@@ -48,11 +58,6 @@ Future<void> main() async {
           );
         },
       );
-      if (desktop_tray.TrayService.isSupported &&
-          (appState.embeddedServer?.available ?? false)) {
-        unawaited(desktop_tray.TrayService(appState).start());
-        unawaited(DesktopWindow.showAtLaunch());
-      }
     },
   );
 }

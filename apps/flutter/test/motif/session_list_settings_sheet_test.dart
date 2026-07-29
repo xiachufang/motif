@@ -11,6 +11,8 @@ import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  tearDown(() => debugDefaultTargetPlatformOverride = null);
+
   testWidgets('shows push notifications and log export settings', (
     tester,
   ) async {
@@ -42,19 +44,19 @@ void main() {
   testWidgets('shows and operates macOS permissions', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     final permissions = _FakeMacosPermissions({
-      MacosPermission.fullDiskAccess: MacosPermissionStatus.managedExternally,
+      MacosPermission.homeDirectory: MacosPermissionStatus.notGranted,
       MacosPermission.screenRecording: MacosPermissionStatus.notGranted,
       MacosPermission.accessibility: MacosPermissionStatus.granted,
+      MacosPermission.automation: MacosPermissionStatus.notGranted,
     });
     final app = await _pumpSettings(tester, macosPermissions: permissions);
     addTearDown(app.dispose);
 
-    expect(find.text('Full Disk Access'), findsOneWidget);
+    expect(find.text('Home Directory'), findsOneWidget);
     expect(find.text('Screen Recording'), findsOneWidget);
     expect(find.text('Accessibility'), findsOneWidget);
     expect(find.text('Automation'), findsOneWidget);
-    expect(find.text('Managed in System Settings'), findsNWidgets(2));
-    expect(find.text('Not allowed'), findsOneWidget);
+    expect(find.text('Not allowed'), findsNWidgets(3));
     expect(find.text('Allowed'), findsOneWidget);
 
     await tester.tap(
@@ -65,17 +67,22 @@ void main() {
     expect(find.text('Allowed'), findsNWidgets(2));
 
     await tester.tap(
-      find.byKey(const ValueKey('macos-permission-fullDiskAccess')),
+      find.byKey(const ValueKey('macos-permission-homeDirectory')),
     );
     await tester.pump();
-    expect(permissions.opened, [MacosPermission.fullDiskAccess]);
+    expect(permissions.requested, [
+      MacosPermission.screenRecording,
+      MacosPermission.homeDirectory,
+    ]);
 
     await tester.tap(find.byKey(const ValueKey('macos-permission-automation')));
     await tester.pump();
-    expect(permissions.opened, [
-      MacosPermission.fullDiskAccess,
+    expect(permissions.requested, [
+      MacosPermission.screenRecording,
+      MacosPermission.homeDirectory,
       MacosPermission.automation,
     ]);
+    expect(permissions.opened, isEmpty);
     debugDefaultTargetPlatformOverride = null;
   });
 
@@ -84,9 +91,10 @@ void main() {
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     final permissions = _FakeMacosPermissions({
-      MacosPermission.fullDiskAccess: MacosPermissionStatus.managedExternally,
+      MacosPermission.homeDirectory: MacosPermissionStatus.notGranted,
       MacosPermission.screenRecording: MacosPermissionStatus.notGranted,
       MacosPermission.accessibility: MacosPermissionStatus.notGranted,
+      MacosPermission.automation: MacosPermissionStatus.notGranted,
     });
     final app = await _pumpSettings(tester, macosPermissions: permissions);
     addTearDown(app.dispose);
@@ -108,7 +116,7 @@ void main() {
     final app = await _pumpSettings(tester, macosPermissions: permissions);
     addTearDown(app.dispose);
 
-    expect(find.text('Full Disk Access'), findsNothing);
+    expect(find.text('Home Directory'), findsNothing);
     expect(find.text('Screen Recording'), findsNothing);
     expect(find.text('Accessibility'), findsNothing);
     expect(find.text('Automation'), findsNothing);
@@ -127,8 +135,7 @@ void main() {
     expect(find.textContaining('Could not load macOS permissions'), findsOne);
     expect(find.text('Push notifications'), findsOneWidget);
     expect(find.text('Export logs'), findsOneWidget);
-    expect(find.text('Unavailable'), findsNWidgets(2));
-    expect(find.text('Managed in System Settings'), findsNWidgets(2));
+    expect(find.text('Unavailable'), findsNWidgets(4));
     await tester.pump(const Duration(seconds: 3));
     debugDefaultTargetPlatformOverride = null;
   });

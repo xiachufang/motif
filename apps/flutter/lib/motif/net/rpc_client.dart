@@ -435,6 +435,53 @@ class RpcClient {
     return (jsonDecode(resp.body) as Map)['sha256'] as String;
   }
 
+  /// Binary `capture.take`: JSON target request, raw image/png success body.
+  /// It intentionally bypasses [call], whose successful response contract is
+  /// a JSON object, while retaining the exact same auth/session/proxy route.
+  Future<Uint8List> captureImage(CaptureTarget target) async {
+    if (_sessionId == null) {
+      throw const RpcException('must attach a session before capturing');
+    }
+    final uri = _uri('/rpc/capture.take');
+    final resp = await _http
+        .post(
+          uri,
+          headers: {
+            ..._authHeaders,
+            'Content-Type': 'application/json',
+            'Accept': 'image/png',
+          },
+          body: jsonEncode({
+            'target': target.toRequestJson(),
+            'include_cursor': false,
+          }),
+        )
+        .timeout(const Duration(seconds: 30));
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      try {
+        final error = jsonDecode(resp.body) as Map<String, Object?>;
+        throw RpcException(
+          (error['message'] as String?) ?? 'capture failed',
+          code: (error['code'] as num?)?.toInt(),
+        );
+      } on RpcException {
+        rethrow;
+      } catch (_) {
+        throw RpcException('capture failed: HTTP ${resp.statusCode}');
+      }
+    }
+    final contentType = resp.headers['content-type'] ?? '';
+    if (!contentType.toLowerCase().startsWith('image/png')) {
+      throw RpcException(
+        'capture returned unexpected content type: $contentType',
+      );
+    }
+    if (resp.bodyBytes.isEmpty) {
+      throw const RpcException('capture returned an empty image');
+    }
+    return resp.bodyBytes;
+  }
+
   // ─────────────────────────── /events ───────────────────────────
 
   String _wsAuthQuery() => 'token=${Uri.encodeQueryComponent(_token)}';

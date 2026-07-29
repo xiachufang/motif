@@ -33,6 +33,7 @@ class EmbeddedServerConfig {
   final String rzvJwt;
   final String pushRelayUrl;
   final bool autostart;
+  final bool allowScreenCapture;
 
   const EmbeddedServerConfig({
     this.listenMode = EmbeddedListenMode.loopback,
@@ -46,6 +47,7 @@ class EmbeddedServerConfig {
     this.rzvJwt = '',
     this.pushRelayUrl = kDefaultPushRelayAddress,
     this.autostart = true,
+    this.allowScreenCapture = false,
   });
 
   EmbeddedServerConfig copyWith({
@@ -60,6 +62,7 @@ class EmbeddedServerConfig {
     String? rzvJwt,
     String? pushRelayUrl,
     bool? autostart,
+    bool? allowScreenCapture,
   }) => EmbeddedServerConfig(
     listenMode: listenMode ?? this.listenMode,
     port: port ?? this.port,
@@ -72,6 +75,7 @@ class EmbeddedServerConfig {
     rzvJwt: rzvJwt ?? this.rzvJwt,
     pushRelayUrl: pushRelayUrl ?? this.pushRelayUrl,
     autostart: autostart ?? this.autostart,
+    allowScreenCapture: allowScreenCapture ?? this.allowScreenCapture,
   );
 }
 

@@ -290,9 +290,7 @@ class _ServerSessionSection extends _$_ServerSessionSection {
       ),
       children: [
         _CreateSessionRow(
-          onPressed: isLive
-              ? () => createSessionWithDialog(context, sessions, workspace)
-              : null,
+          onPressed: isLive ? () => unawaited(_createAndAttach(context)) : null,
         ),
         if (server.sessions.sessions.isEmpty)
           const MotifSectionRow(
@@ -310,6 +308,12 @@ class _ServerSessionSection extends _$_ServerSessionSection {
             ),
       ],
     );
+  }
+
+  Future<void> _createAndAttach(BuildContext context) async {
+    final session = await createSessionWithDialog(context, sessions, workspace);
+    if (session == null || !context.mounted) return;
+    onAttach(session.name);
   }
 }
 

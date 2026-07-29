@@ -131,7 +131,8 @@ class _EmbeddedServerSettingsSheetState
         previous.rzvEnabled != next.rzvEnabled ||
         previous.rzvRelay != next.rzvRelay ||
         previous.rzvJwt != next.rzvJwt ||
-        previous.pushRelayUrl != next.pushRelayUrl;
+        previous.pushRelayUrl != next.pushRelayUrl ||
+        previous.allowScreenCapture != next.allowScreenCapture;
   }
 
   bool _serverIsActive(EmbeddedServerService svc) {
@@ -260,6 +261,24 @@ class _EmbeddedServerSettingsSheetState
         MotifSection(
           title: 'App',
           children: [
+            MotifSectionRow(
+              leading: Icon(Icons.screenshot_monitor_outlined, color: c.accent),
+              title: 'Allow remote screenshots',
+              subtitle: cfg.allowScreenCapture
+                  ? 'Attached clients may capture this desktop or a window'
+                  : 'Remote screen capture is disabled',
+              onTap: () => _save(
+                cfg.copyWith(allowScreenCapture: !cfg.allowScreenCapture),
+                restartRequired: true,
+              ),
+              trailing: Switch(
+                value: cfg.allowScreenCapture,
+                onChanged: (value) => _save(
+                  cfg.copyWith(allowScreenCapture: value),
+                  restartRequired: true,
+                ),
+              ),
+            ),
             MotifSectionRow(
               leading: Icon(Icons.rocket_launch_outlined, color: c.accent),
               title: 'Start server on launch',

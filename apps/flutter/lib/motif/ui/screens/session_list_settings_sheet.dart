@@ -82,12 +82,8 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
   Future<void> _requestPermission(MacosPermission permission) async {
     setState(() => _requestingPermissions.add(permission));
     try {
-      final status =
-          permission == MacosPermission.fullDiskAccess ||
-              permission == MacosPermission.automation
-          ? await _openPermissionSettings(permission)
-          : await widget.macosPermissions.request(permission);
-      if (!mounted || status == null) return;
+      final status = await widget.macosPermissions.request(permission);
+      if (!mounted) return;
       setState(
         () =>
             _permissionStatuses = {..._permissionStatuses, permission: status},
@@ -100,14 +96,6 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
         setState(() => _requestingPermissions.remove(permission));
       }
     }
-  }
-
-  Future<MacosPermissionStatus?> _openPermissionSettings(
-    MacosPermission permission,
-  ) async {
-    await widget.macosPermissions.openSystemSettings(permission);
-    return _permissionStatuses[permission] ??
-        MacosPermissionStatus.managedExternally;
   }
 
   Future<void> _exportLogs() async {
@@ -289,9 +277,9 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
       ),
       children: [
         _permissionRow(
-          permission: MacosPermission.fullDiskAccess,
+          permission: MacosPermission.homeDirectory,
           icon: Icons.folder_outlined,
-          title: 'Full Disk Access',
+          title: 'Home Directory',
         ),
         _permissionRow(
           permission: MacosPermission.screenRecording,
@@ -319,13 +307,7 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
   }) {
     final c = context.motif;
     final status =
-        _permissionStatuses[permission] ??
-        (_loadingPermissions
-            ? MacosPermissionStatus.unavailable
-            : permission == MacosPermission.fullDiskAccess ||
-                  permission == MacosPermission.automation
-            ? MacosPermissionStatus.managedExternally
-            : MacosPermissionStatus.unavailable);
+        _permissionStatuses[permission] ?? MacosPermissionStatus.unavailable;
     final requesting = _requestingPermissions.contains(permission);
     final statusText = switch (status) {
       MacosPermissionStatus.granted => 'Allowed',
@@ -334,9 +316,12 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
       MacosPermissionStatus.unavailable =>
         _loadingPermissions ? 'Checking…' : 'Unavailable',
     };
-    final actionText = status == MacosPermissionStatus.notGranted
-        ? 'Allow'
-        : 'Open Settings';
+    final actionText = switch (status) {
+      MacosPermissionStatus.notGranted => 'Allow',
+      MacosPermissionStatus.managedExternally => 'Open Settings',
+      MacosPermissionStatus.unavailable => 'Retry',
+      MacosPermissionStatus.granted => '',
+    };
 
     return MotifSectionRow(
       leading: Icon(icon, color: c.accent),

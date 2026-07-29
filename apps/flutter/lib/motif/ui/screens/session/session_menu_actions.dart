@@ -23,6 +23,10 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     await showRemotePortMappingsSheet(context, controller);
   }
 
+  Future<void> _showScreenCapture() async {
+    await showScreenCaptureFlow(context, _workspaceApi);
+  }
+
   bool _remotePortWebViewSupported() {
     if (kIsWeb) return false;
     return defaultTargetPlatform == TargetPlatform.android ||
