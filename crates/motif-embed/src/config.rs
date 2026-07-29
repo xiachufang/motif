@@ -376,8 +376,16 @@ mod tests {
         assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
         assert!(c.autostart);
         assert!(c.allow_screen_capture);
+
+        // Keep this host-contract test valid for the Windows no-feature CI
+        // build too. Tailscale availability is covered separately; here we
+        // only need a feature-independent config to verify the new field maps.
+        let mut mapped = c.clone();
+        mapped.listen_mode = ListenMode::Loopback;
+        mapped.tailscale.enabled = false;
         assert!(
-            c.to_server_config(&tsnet())
+            mapped
+                .to_server_config(&tsnet())
                 .expect("capture opt-in should map")
                 .server
                 .allow_screen_capture

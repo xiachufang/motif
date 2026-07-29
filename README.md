@@ -61,7 +61,7 @@ On Debian/Ubuntu install its native build dependencies with:
 
 ```bash
 sudo apt-get install pkg-config libclang-dev libxcb1-dev libxrandr-dev \
-  libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
+  libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
 ```
 
 Use `--no-default-features` for a backend-free build, or explicitly select the

@@ -31,7 +31,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # xcap's PipeWire 0.10 bindings need SPA headers newer than the
+          # 0.3.48 headers shipped by Ubuntu 22.04.
+          - os: ubuntu-24.04
             target: release-motifd-linux
             artifact: motifd-linux-x86_64
             verify_run: true
@@ -67,7 +69,7 @@ jobs:
           sudo apt-get install -y \
             clang cmake make pkg-config libclang-dev libxcb1-dev \
             libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
-            libwayland-dev libegl-dev
+            libwayland-dev libegl-dev libgbm-dev
 
       - name: Install make (Windows)
         if: runner.os == 'Windows'
