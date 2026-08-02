@@ -91,15 +91,6 @@ jobs:
         shell: bash
         run: cargo check --locked -p motif-server --features screen-capture
 
-      - name: Verify motifd starts
-        if: matrix.verify_run
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin="$(find dist/release/motifd -type f \( -name 'motifd' -o -name 'motifd.exe' \) -print -quit)"
-          test -n "$bin"
-          "$bin" --version
-
       - name: Verify Linux motifd is static and headless
         if: runner.os == 'Linux'
         shell: bash
@@ -125,6 +116,15 @@ jobs:
             echo "standalone motifd unexpectedly requires glibc symbols" >&2
             exit 1
           fi
+
+      - name: Verify motifd starts
+        if: matrix.verify_run
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$(find dist/release/motifd -type f \( -name 'motifd' -o -name 'motifd.exe' \) -print -quit)"
+          test -n "$bin"
+          "$bin" --version
 
       - uses: actions/upload-artifact@v4
         with:
