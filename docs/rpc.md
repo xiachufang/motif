@@ -589,10 +589,11 @@ detach 时 watcher 自动销毁，零订阅期间 session 不为 fswatch 付任�
 
 ### 5.5 `capture.*`
 
-远程截图是显式 opt-in 能力。独立服务端必须用
-`--allow-screen-capture` / `MOTIFD_ALLOW_SCREEN_CAPTURE=true` 启用；桌面 embedded
-server 对应 **Allow remote screenshots** 设置。未启用时 `/ping` 不声明能力；启用
-且当前构建包含平台后端时，`/ping.capabilities` 包含 `screen_capture_v1`。
+远程截图是显式 opt-in 能力。独立服务端必须以 `--features screen-capture`
+编译，再用 `--allow-screen-capture` / `MOTIFD_ALLOW_SCREEN_CAPTURE=true` 启用；
+桌面 embedded server 默认包含该 feature，对应 **Allow remote screenshots**
+设置。未启用时 `/ping` 不声明能力；启用且当前构建包含平台后端时，
+`/ping.capabilities` 包含 `screen_capture_v1`。
 
 所有截图方法都要求 Bearer 鉴权和有效的 `X-Motif-Session`。target id 是短期、不透明
 值；窗口关闭、显示器拓扑变化后可能失效。

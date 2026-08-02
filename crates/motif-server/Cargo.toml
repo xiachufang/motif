@@ -11,14 +11,16 @@ name = "motifd"
 path = "src/main.rs"
 
 [features]
-# Tailscale is opt-out. `default` keeps the historical behaviour (motifd ships
-# with the real embedded tsnet), but a build that doesn't want it — or can't
-# provide a Go toolchain (e.g. the hardened review image) — uses
-# `--no-default-features` and pulls in NO motif-tailscale at all.
+# Tailscale is opt-out. `default` keeps the standalone motifd binary headless
+# while shipping the real embedded tsnet. Screen capture is opt-in here; the
+# Flutter desktop host enables it through motif-embed's default features.
+# A build that doesn't want Tailscale — or can't provide a Go toolchain (e.g.
+# the hardened review image) — uses `--no-default-features` and pulls in NO
+# motif-tailscale at all.
 #   tailscale          : compile the tsnet transport + status API (stub, no Go).
 #   tailscale-bundled  : link the real Go libtailscale (needs Go on the builder).
 # All tailscale-touching code in motif-server is `#[cfg(feature = "tailscale")]`.
-default            = ["tailscale-bundled", "screen-capture"]
+default            = ["tailscale-bundled"]
 tailscale          = ["motif-net/tailscale"]
 tailscale-bundled  = ["tailscale", "motif-net/tailscale-bundled"]
 screen-capture     = [

@@ -76,10 +76,12 @@ cargo build -p motif-server --release
 从源码构建 `motifd` 需要 Zig 0.15.x；默认启用嵌入式 Tailscale 时还需要 Go。
 完整构建要求见根目录 [`README.md`](../README.md#build)。
 
-如需让 client 查看这台机器的显示器或单个窗口，在有图形桌面会话的原生主机上
-启动时显式加 `--allow-screen-capture`（或设置
-`MOTIFD_ALLOW_SCREEN_CAPTURE=true`）。此能力默认关闭；Docker 镜像不包含截图
-后端，因为容器通常无法访问宿主机图形会话。
+如需让 client 查看这台机器的显示器或单个窗口，独立 `motifd` 需要以
+`--features screen-capture` 编译，并在有图形桌面会话的原生主机上启动时显式加
+`--allow-screen-capture`（或设置 `MOTIFD_ALLOW_SCREEN_CAPTURE=true`）。Flutter
+桌面版内嵌的 `motif-embed` 默认包含截图后端，但仍需打开 **Allow remote
+screenshots**。此能力默认关闭；Docker 镜像不包含截图后端，因为容器通常无法
+访问宿主机图形会话。
 
 ### 2.3 准入与加密（无需手动 token）
 

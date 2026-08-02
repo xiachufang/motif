@@ -56,16 +56,19 @@ via **Zig 0.15.2** (pinned by ghostty; 0.16 is rejected). Put a matching `zig` o
 - Offline/CI: set `GHOSTTY_SOURCE_DIR` / `GHOSTTY_ZIG_SYSTEM_DIR` to vendor the
   ghostty source and Zig packages.
 
-The default `motifd` build also includes the optional screen-capture backend.
-On Debian/Ubuntu install its native build dependencies with:
+The standalone `motifd` build is headless by default. Flutter desktop enables
+the optional screen-capture backend through `motif-embed`; to include the same
+backend in a standalone build, pass `--features screen-capture`. On
+Debian/Ubuntu install its native build dependencies with:
 
 ```bash
 sudo apt-get install pkg-config libclang-dev libxcb1-dev libxrandr-dev \
   libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
 ```
 
-Use `--no-default-features` for a backend-free build, or explicitly select the
-features needed by the deployment.
+The runtime package corresponding to `libgbm-dev` is `libgbm1`; headless
+standalone builds do not link it. Use `--no-default-features` to also omit
+Tailscale, or explicitly select the features needed by the deployment.
 
 ```bash
 # Flutter Web — built separately, then embedded by motif-server's build.rs.
@@ -135,7 +138,8 @@ for image tags, configuration, and GHCR details.
 # Local dev: a loopback listener is plaintext + unauthenticated.
 ./target/release/motifd --listen 127.0.0.1:7777
 
-# Explicitly allow authenticated, attached clients to take one-shot screenshots.
+# A standalone build also needs `--features screen-capture`; then explicitly
+# allow authenticated, attached clients to take one-shot screenshots.
 ./target/release/motifd --listen 127.0.0.1:7777 --allow-screen-capture
 
 # Browser — open http://localhost:7777; the embedded Flutter Web client

@@ -79,6 +79,13 @@ jobs:
         shell: bash
         run: make ${{ matrix.target }}
 
+      # Standalone motifd is headless by default, but keep the optional desktop
+      # backend compiling on every supported platform for explicit opt-in builds
+      # and Flutter's motif-embed feature forwarding.
+      - name: Check optional screen-capture backend
+        shell: bash
+        run: cargo check --locked -p motif-server --features screen-capture
+
       - name: Verify motifd starts
         if: matrix.verify_run
         shell: bash
@@ -87,6 +94,18 @@ jobs:
           bin="$(find dist/release/motifd -type f \( -name 'motifd' -o -name 'motifd.exe' \) -print -quit)"
           test -n "$bin"
           "$bin" --version
+
+      - name: Verify Linux motifd is headless
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$(find dist/release/motifd -type f -name motifd -print -quit)"
+          test -n "$bin"
+          if ldd "$bin" | grep -q 'libgbm\.so'; then
+            echo "standalone motifd unexpectedly links libgbm" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
