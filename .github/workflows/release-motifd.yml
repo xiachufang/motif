@@ -67,7 +67,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang cmake make pkg-config libclang-dev libxcb1-dev \
+            binutils clang cmake file make musl-tools pkg-config libclang-dev libxcb1-dev \
             libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
             libwayland-dev libegl-dev libgbm-dev
 
@@ -95,15 +95,29 @@ jobs:
           test -n "$bin"
           "$bin" --version
 
-      - name: Verify Linux motifd is headless
+      - name: Verify Linux motifd is static and headless
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
           bin="$(find dist/release/motifd -type f -name motifd -print -quit)"
           test -n "$bin"
-          if ldd "$bin" | grep -q 'libgbm\.so'; then
-            echo "standalone motifd unexpectedly links libgbm" >&2
+          file "$bin"
+
+          program_headers="$(readelf --program-headers --wide "$bin")"
+          dynamic_section="$(readelf --dynamic --wide "$bin")"
+          version_info="$(readelf --version-info --wide "$bin")"
+
+          if grep -q ' INTERP ' <<<"$program_headers"; then
+            echo "standalone motifd unexpectedly has a dynamic interpreter" >&2
+            exit 1
+          fi
+          if grep -q '(NEEDED)' <<<"$dynamic_section"; then
+            echo "standalone motifd unexpectedly has dynamic library dependencies" >&2
+            exit 1
+          fi
+          if grep -q 'GLIBC_' <<<"$version_info"; then
+            echo "standalone motifd unexpectedly requires glibc symbols" >&2
             exit 1
           fi
 

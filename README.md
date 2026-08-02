@@ -70,6 +70,11 @@ The runtime package corresponding to `libgbm-dev` is `libgbm1`; headless
 standalone builds do not link it. Use `--no-default-features` to also omit
 Tailscale, or explicitly select the features needed by the deployment.
 
+Published standalone Linux x86_64 archives are built for
+`x86_64-unknown-linux-musl` and have no glibc or shared-library runtime
+dependency. To produce the same artifact locally, install `musl-tools`; the
+`release-motifd-linux` target installs the Rust musl target automatically.
+
 ```bash
 # Flutter Web — built separately, then embedded by motif-server's build.rs.
 cd apps/flutter
@@ -96,6 +101,7 @@ make release-flutter-web
 make release-macos       # Rust + Flutter macOS artifacts
 make release-linux       # Rust + Flutter Linux artifacts
 make release-windows     # Rust + Flutter Windows artifacts
+make release-motifd-linux   # Standalone static-musl motifd (on Linux x86_64)
 make release-motifd-windows # Standalone motifd.exe (on a Windows host)
 ```
 

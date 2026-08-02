@@ -52,7 +52,10 @@ RUST_RELEASE_PACKAGES := motif-server motif-cast motif-push-relay
 RUST_RELEASE_BINS := motifd motif-cast motif-push-relay
 MOTIFD_RELEASE_PACKAGE := motif-server
 MOTIFD_RELEASE_BIN := motifd
-MOTIFD_LINUX_TARGET := x86_64-unknown-linux-gnu
+# Keep the downloadable Linux daemon independent of the builder/host glibc.
+# The archive name remains linux-x86_64 so existing bootstrap clients continue
+# to discover the same release asset.
+MOTIFD_LINUX_TARGET ?= x86_64-unknown-linux-musl
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
 
 # Signed macOS release settings. Local builds use login-Keychain credentials;

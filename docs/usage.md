@@ -76,6 +76,11 @@ cargo build -p motif-server --release
 从源码构建 `motifd` 需要 Zig 0.15.x；默认启用嵌入式 Tailscale 时还需要 Go。
 完整构建要求见根目录 [`README.md`](../README.md#build)。
 
+GitHub Release 和 SSH 自动安装使用的 Linux x86_64 独立包是静态 musl 产物，
+运行时不依赖目标机器的 glibc，也不需要 `libgbm.so.1`。在 Linux x86_64 上从源码
+生成同类产物时，安装 `musl-tools` 后运行 `make release-motifd-linux`；普通的
+`cargo build` 仍会沿用本机默认的 GNU/glibc target。
+
 如需让 client 查看这台机器的显示器或单个窗口，独立 `motifd` 需要以
 `--features screen-capture` 编译，并在有图形桌面会话的原生主机上启动时显式加
 `--allow-screen-capture`（或设置 `MOTIFD_ALLOW_SCREEN_CAPTURE=true`）。Flutter
