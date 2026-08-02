@@ -18,6 +18,9 @@ permissions:
 
 env:
   LIBGHOSTTY_VT_SYS_OPTIMIZE: ReleaseFast
+  CC_x86_64_unknown_linux_musl: musl-gcc
+  CXX_x86_64_unknown_linux_musl: musl-gcc
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
 
 jobs:
   # Gate: on tag pushes, fail fast if the tag and pubspec version disagree
@@ -57,7 +60,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # Go 1.26's runtime/cgo fails against musl's clearenv declaration
+          # because its unused compatibility parameter is compiled with -Werror.
+          go-version: '1.25.5'
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
