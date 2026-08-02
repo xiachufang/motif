@@ -72,9 +72,22 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            binutils clang cmake file make musl-tools pkg-config libclang-dev libxcb1-dev \
+            binutils clang cmake file make musl-tools patch pkg-config libclang-dev libxcb1-dev \
             libxrandr-dev libdbus-1-dev libpipewire-0.3-dev \
             libwayland-dev libegl-dev libgbm-dev
+
+      # Go's c-archive startup currently assumes glibc's non-standard
+      # .init_array argc/argv extension. musl passes no arguments, so patch the
+      # pinned toolchain with the narrowly scoped runtime fix used by motifd.
+      # Upstream tracking: https://go.dev/issue/13492
+      - name: Patch Go c-archive startup for musl
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          goroot="$(go env GOROOT)"
+          patch --batch --forward -p1 -d "$goroot" \
+            < scripts/patches/go1.25.5-musl-c-archive.patch
 
       - name: Install make (Windows)
         if: runner.os == 'Windows'

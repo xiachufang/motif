@@ -1,0 +1,129 @@
+diff --git a/src/runtime/os_linux.go b/src/runtime/os_linux.go
+index 1ca4a97..7816507 100644
+--- a/src/runtime/os_linux.go
++++ b/src/runtime/os_linux.go
+@@ -238,6 +238,13 @@ func mincore(addr unsafe.Pointer, n uintptr, dst *byte) int32
+ var auxvreadbuf [128]uintptr
+ 
+ func sysargs(argc int32, argv **byte) {
++	if isarchive {
++		// musl follows the ELF ABI and does not pass argc/argv to
++		// .init_array functions. The c-archive entry point therefore
++		// receives garbage here; discover auxv through procfs instead.
++		sysargsFromProc()
++		return
++	}
+ 	n := argc + 1
+ 
+ 	// skip over argv, envp to get to auxv
+@@ -258,6 +265,12 @@ func sysargs(argc int32, argv **byte) {
+ 	// In some situations we don't get a loader-provided
+ 	// auxv, such as when loaded as a library on Android.
+ 	// Fall back to /proc/self/auxv.
++	sysargsFromProc()
++}
++
++// sysargsFromProc reads auxiliary vector data from /proc/self/auxv. It is
++// also used for musl c-archives, where argv from .init_array is not valid.
++func sysargsFromProc() {
+ 	fd := open(&procAuxv[0], 0 /* O_RDONLY */, 0)
+ 	if fd < 0 {
+ 		// On Android, /proc/self/auxv might be unreadable (issue 9229), so we fallback to
+@@ -283,7 +297,7 @@ func sysargs(argc int32, argv **byte) {
+ 		return
+ 	}
+ 
+-	n = read(fd, noescape(unsafe.Pointer(&auxvreadbuf[0])), int32(unsafe.Sizeof(auxvreadbuf)))
++	n := read(fd, noescape(unsafe.Pointer(&auxvreadbuf[0])), int32(unsafe.Sizeof(auxvreadbuf)))
+ 	closefd(fd)
+ 	if n < 0 {
+ 		return
+@@ -372,9 +386,55 @@ func readRandom(r []byte) int {
+ }
+ 
+ func goenvs() {
++	if isarchive {
++		// argv is invalid for a musl c-archive, so it cannot be walked to
++		// locate envp. Read the process environment directly instead.
++		goenvsArchive()
++		return
++	}
+ 	goenvs_unix()
+ }
+ 
++var procEnviron = []byte("/proc/self/environ\x00")
++
++func goenvsArchive() {
++	// /proc/self/environ contains NUL-separated KEY=VALUE pairs. Keep this
++	// fixed-size buffer on the system stack because the runtime is still in
++	// its early initialization sequence.
++	const bufSize = 8 << 10
++	var buf [bufSize]byte
++
++	fd := open(&procEnviron[0], 0 /* O_RDONLY */, 0)
++	if fd < 0 {
++		envs = make([]string, 0)
++		return
++	}
++	n := read(fd, noescape(unsafe.Pointer(&buf[0])), int32(bufSize))
++	closefd(fd)
++	if n <= 0 {
++		envs = make([]string, 0)
++		return
++	}
++
++	count := 0
++	for i := int32(0); i < n; i++ {
++		if buf[i] == 0 {
++			count++
++		}
++	}
++
++	envs = make([]string, 0, count)
++	start := 0
++	for i := int32(0); i < n; i++ {
++		if buf[i] == 0 {
++			if i > int32(start) {
++				envs = append(envs, gostring(&buf[start]))
++			}
++			start = int(i) + 1
++		}
++	}
++}
++
+ // Called to do synchronous initialization of Go code built with
+ // -buildmode=c-archive or -buildmode=c-shared.
+ // None of the Go runtime is initialized.
+diff --git a/src/runtime/proc.go b/src/runtime/proc.go
+index e3a9fa6..0bb2432 100644
+--- a/src/runtime/proc.go
++++ b/src/runtime/proc.go
+@@ -799,6 +799,11 @@ func getGodebugEarly() (string, bool) {
+ 		// Similar to goenv_unix but extracts the environment value for
+ 		// GODEBUG directly.
+ 		// TODO(moehrmann): remove when general goenvs() can be called before cpuinit()
++		if isarchive && GOOS == "linux" {
++			// argv from a musl .init_array callback is not valid. GODEBUG
++			// will be available after goenvsArchive runs later in startup.
++			return "", false
++		}
+ 		n := int32(0)
+ 		for argv_index(argv, argc+1+n) != nil {
+ 			n++
+diff --git a/src/runtime/runtime1.go b/src/runtime/runtime1.go
+index a9ce93a..97af742 100644
+--- a/src/runtime/runtime1.go
++++ b/src/runtime/runtime1.go
+@@ -73,6 +73,12 @@ func goargs() {
+ 	if GOOS == "windows" {
+ 		return
+ 	}
++	if isarchive {
++		// A c-archive does not own the host process arguments, and musl does
++		// not pass them to the archive's .init_array callback.
++		argslice = make([]string, 0)
++		return
++	}
+ 	argslice = make([]string, argc)
+ 	for i := int32(0); i < argc; i++ {
+ 		argslice[i] = gostringnocopy(argv_index(argv, i))

@@ -56,8 +56,9 @@ MOTIFD_RELEASE_BIN := motifd
 # The archive name remains linux-x86_64 so existing bootstrap clients continue
 # to discover the same release asset.
 MOTIFD_LINUX_TARGET ?= x86_64-unknown-linux-musl
-# Go c-archives embedded by Tailscale crash during startup when the Rust host is
-# linked as static PIE. A non-PIE static executable remains glibc-independent.
+# Keep the musl executable non-PIE. The embedded Go c-archive also needs the
+# Go runtime patch applied by release-motifd.yml because musl does not pass
+# argc/argv to .init_array callbacks (https://go.dev/issue/13492).
 MOTIFD_LINUX_RUSTFLAGS ?= -C relocation-model=static
 FLUTTER_WEB_BUILD := $(FLUTTER_DIR)/build/web
 
