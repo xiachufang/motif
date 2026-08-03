@@ -68,6 +68,9 @@ class _EmbeddedServerSettingsSheetState
   bool _rzvJwtObscured = true;
   _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
   int _pushRelayHealthCheckId = 0;
+  CodingAgentHooksStatus? _codingAgentHooks;
+  bool _codingAgentHooksBusy = false;
+  String? _codingAgentHooksError;
 
   EmbeddedServerService get _svc =>
       readObservationScope<EmbeddedServerService>(context);
@@ -87,6 +90,7 @@ class _EmbeddedServerSettingsSheetState
         ? _TsControl.official
         : _TsControl.custom;
     _tsAuth = c.tsAuthkey.trim().isEmpty ? _TsAuth.browser : _TsAuth.authKey;
+    unawaited(_refreshCodingAgentHooks());
   }
 
   @override
@@ -928,6 +932,95 @@ class _EmbeddedServerSettingsSheetState
 
   // ── Push notifications ──
 
+  Future<void> _refreshCodingAgentHooks() async {
+    try {
+      final status = await _svc.codingAgentHooksStatus();
+      if (!mounted) return;
+      setState(() {
+        _codingAgentHooks = status;
+        _codingAgentHooksError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _codingAgentHooksError = _friendlyError(error));
+    }
+  }
+
+  Future<void> _setCodingAgentHooks({required bool install}) async {
+    if (_codingAgentHooksBusy) return;
+    setState(() {
+      _codingAgentHooksBusy = true;
+      _codingAgentHooksError = null;
+    });
+    try {
+      final status = install
+          ? await _svc.installCodingAgentHooks()
+          : await _svc.uninstallCodingAgentHooks();
+      if (!mounted) return;
+      setState(() => _codingAgentHooks = status);
+      showMotifToast(
+        context,
+        install ? 'Coding-agent hooks installed' : 'Coding-agent hooks removed',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final message = _friendlyError(error);
+      setState(() => _codingAgentHooksError = message);
+      showMotifToast(context, message, duration: const Duration(seconds: 4));
+    } finally {
+      if (mounted) setState(() => _codingAgentHooksBusy = false);
+    }
+  }
+
+  String _codingAgentHooksSubtitle() {
+    final error = _codingAgentHooksError;
+    if (error != null) return error;
+    final status = _codingAgentHooks;
+    if (status == null) return 'Checking Claude Code and Codex…';
+    final claude = status.claudeInstalled
+        ? 'installed'
+        : status.claudeConfigured
+        ? 'needs repair'
+        : 'not installed';
+    final codex = status.codexInstalled
+        ? 'installed'
+        : status.codexConfigured
+        ? 'needs repair'
+        : 'not installed';
+    return 'Claude Code: $claude · Codex: $codex';
+  }
+
+  Widget _codingAgentHookActions(MotifColors c) {
+    if (_codingAgentHooksBusy) {
+      return SizedBox(
+        width: 18,
+        height: 18,
+        child: CircularProgressIndicator(strokeWidth: 2, color: c.accent),
+      );
+    }
+    final status = _codingAgentHooks;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextButton(
+          key: const ValueKey('install-coding-agent-hooks'),
+          onPressed: status?.allInstalled == true
+              ? null
+              : () => unawaited(_setCodingAgentHooks(install: true)),
+          child: const Text('Install'),
+        ),
+        TextButton(
+          key: const ValueKey('remove-coding-agent-hooks'),
+          onPressed: status?.anyConfigured == true
+              ? () => unawaited(_setCodingAgentHooks(install: false))
+              : null,
+          style: TextButton.styleFrom(foregroundColor: c.danger),
+          child: const Text('Remove'),
+        ),
+      ],
+    );
+  }
+
   Widget _notificationsSection(
     EmbeddedServerConfig cfg,
     EmbeddedServerStatus status,
@@ -935,7 +1028,8 @@ class _EmbeddedServerSettingsSheetState
   ) {
     return MotifSection(
       title: 'Notifications',
-      footer: 'Leave blank to disable background push.',
+      footer:
+          'Installed hooks are inert outside Motif terminals. Codex may ask you to review the hook once in /hooks.',
       children: [
         _field(
           _pushRelayUrl,
@@ -965,6 +1059,17 @@ class _EmbeddedServerSettingsSheetState
               : 'Start the server to inspect registered tokens',
           onTap: status.running ? () => unawaited(_showPushTokens()) : null,
           showChevron: status.running,
+        ),
+        MotifSectionRow(
+          leading: Icon(
+            Icons.integration_instructions_outlined,
+            color: c.accent,
+          ),
+          title: 'Claude Code and Codex hooks',
+          subtitle: _codingAgentHooksSubtitle(),
+          subtitleColor: _codingAgentHooksError == null ? null : c.danger,
+          trailing: _codingAgentHookActions(c),
+          minHeight: 64,
         ),
       ],
     );

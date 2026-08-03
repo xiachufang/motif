@@ -115,21 +115,3 @@ function global:PSConsoleHostReadLine {
     [Console]::Write((__MotifMarker 'C'))
     return $line
 }
-
-if ($env:MOTIF_HOOK_URL -and $env:MOTIF_CLAUDE_SETTINGS) {
-    function global:claude {
-        $app = Get-Command claude -CommandType Application -ErrorAction Stop |
-            Select-Object -First 1
-        & $app.Source --settings $env:MOTIF_CLAUDE_SETTINGS @args
-    }
-}
-
-if ($env:MOTIF_HOOK_URL -and $env:MOTIF_CODEX_NOTIFY) {
-    function global:codex {
-        $app = Get-Command codex -CommandType Application -ErrorAction Stop |
-            Select-Object -First 1
-        $escaped = $env:MOTIF_CODEX_NOTIFY.Replace('\\', '\\\\').Replace('"', '\"')
-        $hookConfig = 'hooks.Stop=[{hooks=[{type="command",command="' + $escaped + '"}]}]'
-        & $app.Source -c $hookConfig @args
-    }
-}

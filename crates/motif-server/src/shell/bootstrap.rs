@@ -1,6 +1,7 @@
 //! Materializes embedded shell bootstrap scripts to a per-PTY tmpdir
-//! and injects the right command-line flags / env vars so the shell
-//! sources them on startup.
+//! and injects the right command-line flags / env vars so the shell sources
+//! them on startup. Coding-agent hooks are managed separately by
+//! [`crate::agent_hooks`] and only consume the Motif environment set here.
 //!
 //! Scripts are baked into the binary via `rust-embed` and written out
 //! when each PTY is created. The tmpdir is owned by `Bootstrap` and
@@ -57,16 +58,6 @@ pub struct Bootstrap {
     /// Original ZDOTDIR (zsh-only) so the wrapped rcfile can reach the
     /// user's real ~/.zshrc instead of recursing into our tmpdir.
     user_zdotdir: Option<PathBuf>,
-    /// Generated Claude Code `--settings` file wiring the notify hook. The
-    /// `claude` wrapper in each shell script passes this via `--settings` so
-    /// the Notification/Stop hooks are provisioned without touching the user's
-    /// `~/.claude/settings.json`.
-    settings_path: PathBuf,
-    /// Executable hook command stored in Claude/Codex's ephemeral settings.
-    /// Unix can execute the script directly; Windows must explicitly invoke
-    /// PowerShell so execution-policy and file-association differences do not
-    /// affect delivery.
-    notify_command: String,
 }
 
 impl Bootstrap {
@@ -111,38 +102,12 @@ impl Bootstrap {
         };
         let user_zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
 
-        // Materialize the Claude Code notify hook + a settings file that wires
-        // it. The settings file references the notify script by absolute path,
-        // so it's generated per-PTY rather than embedded.
-        let notify = if matches!(kind, ShellKind::PowerShell) {
-            write_asset(dir.path(), "motif-notify.ps1")?;
-            dir.path().join("motif-notify.ps1")
-        } else {
-            write_asset_executable(dir.path(), "motif-notify.sh")?;
-            dir.path().join("motif-notify.sh")
-        };
-        let notify_command = notify_command(kind, &notify);
-        let settings_path = dir.path().join("settings.json");
-        let settings = serde_json::json!({
-            "hooks": {
-                "Notification": [
-                    { "hooks": [ { "type": "command", "command": &notify_command } ] }
-                ],
-                "Stop": [
-                    { "hooks": [ { "type": "command", "command": &notify_command } ] }
-                ]
-            }
-        });
-        std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings).ok()?).ok()?;
-
         Some(Self {
             kind,
             session_id: session_id.into(),
             dir,
             entry,
             user_zdotdir,
-            settings_path,
-            notify_command,
         })
     }
 
@@ -153,16 +118,6 @@ impl Bootstrap {
         cb.env("MOTIF_SHELL", shell_kind_str(self.kind));
         cb.env("MOTIF_SESSION_ID", &self.session_id);
         cb.env("MOTIF_BOOTSTRAP_DIR", self.dir.path().as_os_str());
-        // The `claude` wrapper (defined in each shell script) only kicks in
-        // when MOTIF_HOOK_SOCK is also present (i.e. push is enabled); see the
-        // wrapper guards. We always set this so the wrapper has the path ready.
-        cb.env("MOTIF_CLAUDE_SETTINGS", self.settings_path.as_os_str());
-        // Codex CLI reuses the same notify script (it's agent-agnostic: reads
-        // stdin, POSTs to the hook socket). The `codex` wrapper injects it via
-        // `-c hooks.Stop=...` so nothing is written to the user's ~/.codex.
-        // Same guard convention as above (gated on MOTIF_HOOK_SOCK).
-        cb.env("MOTIF_CODEX_NOTIFY", &self.notify_command);
-
         match self.kind {
             ShellKind::Bash => {
                 // --rcfile must be a separate arg from the path on bash 5+.
@@ -205,15 +160,6 @@ fn shell_kind_str(k: ShellKind) -> &'static str {
     }
 }
 
-fn notify_command(kind: ShellKind, path: &Path) -> String {
-    if matches!(kind, ShellKind::PowerShell) {
-        let escaped = path.to_string_lossy().replace('"', "\\\"");
-        format!("powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"{escaped}\"")
-    } else {
-        path.to_string_lossy().into_owned()
-    }
-}
-
 fn write_asset(dir: &Path, name: &str) -> Option<()> {
     let bytes = ShellAssets::get(name)?.data;
     std::fs::write(dir.join(name), bytes).ok()?;
@@ -236,18 +182,6 @@ ZDOTDIR=$__motif_bootstrap_zdotdir
 "#
     );
     std::fs::write(dir.join(name), wrapper).ok()?;
-    Some(())
-}
-
-/// Like [`write_asset`] but marks the file executable (0700) on Unix — used
-/// for `motif-notify.sh`, which Claude Code execs as a hook command.
-fn write_asset_executable(dir: &Path, name: &str) -> Option<()> {
-    write_asset(dir, name)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o700));
-    }
     Some(())
 }
 
@@ -378,50 +312,11 @@ fi
     }
 
     #[test]
-    fn prepare_generates_claude_notify_settings() {
-        // Don't touch MOTIF_SHELL_INTEGRATION here — `prepare_skipped_when_env_disabled`
-        // toggles it and tests share the process env. If a concurrent test has
-        // it disabled at this instant, prepare returns None; just skip then.
-        let Some(bs) = Bootstrap::prepare(ShellKind::Bash, "sh-1") else {
-            return;
-        };
-        // Notify script materialized + executable.
-        let notify = bs.dir.path().join("motif-notify.sh");
-        assert!(notify.exists(), "motif-notify.sh should be materialized");
-        let notify_source = std::fs::read_to_string(&notify).unwrap();
-        assert!(
-            notify_source.contains("X-Motif-Pty: ${MOTIF_SESSION_ID:-}"),
-            "notify hook must forward its originating PTY"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&notify).unwrap().permissions().mode();
-            assert!(mode & 0o100 != 0, "notify script should be executable");
-        }
-        // Settings file wires both hooks at the notify script.
-        let raw = std::fs::read_to_string(&bs.settings_path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        for ev in ["Notification", "Stop"] {
-            let cmd = v["hooks"][ev][0]["hooks"][0]["command"]
-                .as_str()
-                .unwrap_or_default();
-            assert!(
-                cmd.ends_with("motif-notify.sh"),
-                "{ev} hook command should point at the notify script, got {cmd:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn powershell_prepare_uses_ps1_bootstrap_and_hook_runner() {
+    fn powershell_prepare_uses_ps1_bootstrap() {
         let Some(bs) = Bootstrap::prepare(ShellKind::PowerShell, "ps-1") else {
             return;
         };
         assert!(bs.entry.ends_with("powershell.ps1"));
-        assert!(bs.dir.path().join("motif-notify.ps1").exists());
-        assert!(bs.notify_command.starts_with("powershell.exe "));
-        assert!(bs.notify_command.contains("motif-notify.ps1"));
 
         let mut command = CommandBuilder::new("powershell.exe");
         bs.apply_to(&mut command);

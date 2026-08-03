@@ -97,23 +97,3 @@ bind 'set enable-bracketed-paste on' 2>/dev/null
 source "$MOTIF_BOOTSTRAP_DIR/bash-preexec.sh"
 preexec_functions+=(__motif_preexec)
 precmd_functions+=(__motif_precmd)
-
-# ── Motif: provision Claude Code notify hooks (push only) ────────────
-# When motifd has push enabled (MOTIF_HOOK_SOCK set) and generated a
-# settings file, transparently pass it to `claude` so Notification/Stop
-# hooks fire — without touching the user's ~/.claude/settings.json.
-# `command claude` skips this function, so there's no recursion.
-if [[ -n "${MOTIF_HOOK_SOCK:-}${MOTIF_HOOK_URL:-}" && -n "$MOTIF_CLAUDE_SETTINGS" ]]; then
-    claude() { command claude --settings "$MOTIF_CLAUDE_SETTINGS" "$@"; }
-fi
-
-# ── Motif: provision Codex CLI notify hook (push only) ───────────────
-# Same idea for Codex: inject a Stop hook via `-c` (ephemeral SessionFlags
-# layer) pointing at the shared notify script — without touching the user's
-# ~/.codex/config.toml. Codex's own "Hooks need review" UI handles trust.
-# `command codex` skips this function, so there's no recursion.
-if [[ -n "${MOTIF_HOOK_SOCK:-}${MOTIF_HOOK_URL:-}" && -n "$MOTIF_CODEX_NOTIFY" ]]; then
-    codex() {
-        command codex -c "hooks.Stop=[{hooks=[{type=\"command\",command=\"$MOTIF_CODEX_NOTIFY\"}]}]" "$@"
-    }
-fi

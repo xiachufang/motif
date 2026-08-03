@@ -20,6 +20,25 @@ typedef EmbeddedServerFactory =
       SecretStore secrets,
     );
 
+@immutable
+class CodingAgentHooksStatus {
+  final bool claudeInstalled;
+  final bool codexInstalled;
+  final bool claudeConfigured;
+  final bool codexConfigured;
+
+  const CodingAgentHooksStatus({
+    this.claudeInstalled = false,
+    this.codexInstalled = false,
+    bool? claudeConfigured,
+    bool? codexConfigured,
+  }) : claudeConfigured = claudeConfigured ?? claudeInstalled,
+       codexConfigured = codexConfigured ?? codexInstalled;
+
+  bool get allInstalled => claudeInstalled && codexInstalled;
+  bool get anyConfigured => claudeConfigured || codexConfigured;
+}
+
 Future<EmbeddedServerService> createNoopEmbeddedServerService(
   SharedPreferences prefs,
   SecretStore secrets,
@@ -91,6 +110,12 @@ abstract class EmbeddedServerService {
   Future<void> stop();
   Future<List<RegisteredPushToken>> registeredPushTokens();
   Future<PushTestResult> sendTestPush(String deviceToken);
+  Future<CodingAgentHooksStatus> codingAgentHooksStatus() async =>
+      const CodingAgentHooksStatus();
+  Future<CodingAgentHooksStatus> installCodingAgentHooks() async =>
+      const CodingAgentHooksStatus();
+  Future<CodingAgentHooksStatus> uninstallCodingAgentHooks() async =>
+      const CodingAgentHooksStatus();
   List<String> tailLogs([int n = 200]);
 
   void dispose() {}

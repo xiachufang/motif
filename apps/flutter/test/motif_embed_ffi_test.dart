@@ -52,6 +52,12 @@ void main() {
     expect(s['starting'], false);
   });
 
+  test('coding-agent hook status ABI returns JSON', () {
+    final status = jsonDecode(lib.agentHooksStatusJson());
+    expect(status, isA<Map<String, Object?>>());
+    expect((status as Map<String, Object?>).containsKey('error'), true);
+  });
+
   test('start → running → stop on loopback', () async {
     final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final port = probe.port;

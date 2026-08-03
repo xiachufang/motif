@@ -516,6 +516,39 @@ pub extern "C" fn motif_embed_push_devices_json() -> *mut c_char {
     into_c_string(rt().block_on(do_push_devices_json()))
 }
 
+fn agent_hooks_json<E: std::fmt::Display>(
+    result: Result<motif_server::agent_hooks::AgentHooksStatus, E>,
+) -> String {
+    match result {
+        Ok(status) => serde_json::to_string(&serde_json::json!({
+            "claude": status.claude,
+            "codex": status.codex,
+            "runnerPath": status.runner_path,
+            "error": null
+        }))
+        .unwrap_or_else(|_| "{\"error\":\"serialize hook status failed\"}".to_string()),
+        Err(error) => serde_json::json!({ "error": error.to_string() }).to_string(),
+    }
+}
+
+/// Inspect the user-level Claude Code and Codex Motif notification hooks.
+#[no_mangle]
+pub extern "C" fn motif_embed_agent_hooks_status_json() -> *mut c_char {
+    into_c_string(agent_hooks_json(motif_server::agent_hooks::status()))
+}
+
+/// Install or repair Motif's user-level Claude Code and Codex hooks.
+#[no_mangle]
+pub extern "C" fn motif_embed_install_agent_hooks_json() -> *mut c_char {
+    into_c_string(agent_hooks_json(motif_server::agent_hooks::install()))
+}
+
+/// Remove only Motif-managed Claude Code and Codex hook handlers.
+#[no_mangle]
+pub extern "C" fn motif_embed_uninstall_agent_hooks_json() -> *mut c_char {
+    into_c_string(agent_hooks_json(motif_server::agent_hooks::uninstall()))
+}
+
 /// Send an encrypted test push to one registered token. Returns
 /// `{"sent":bool,"pruned":bool,"error":null|string}`.
 ///

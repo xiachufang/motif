@@ -50,6 +50,18 @@ class LibMotifEmbed {
   );
   late final _StrOut _pushDevicesJson = _lib
       .lookupFunction<_StrOutNative, _StrOut>('motif_embed_push_devices_json');
+  late final _StrOut _agentHooksStatusJson = _lib
+      .lookupFunction<_StrOutNative, _StrOut>(
+        'motif_embed_agent_hooks_status_json',
+      );
+  late final _StrOut _installAgentHooksJson = _lib
+      .lookupFunction<_StrOutNative, _StrOut>(
+        'motif_embed_install_agent_hooks_json',
+      );
+  late final _StrOut _uninstallAgentHooksJson = _lib
+      .lookupFunction<_StrOutNative, _StrOut>(
+        'motif_embed_uninstall_agent_hooks_json',
+      );
   late final _StrInOut _sendTestPush = _lib
       .lookupFunction<_StrInOutNative, _StrInOut>('motif_embed_send_test_push');
   late final _Tail _tailLogs = _lib.lookupFunction<_TailNative, _Tail>(
@@ -84,6 +96,15 @@ class LibMotifEmbed {
 
   /// Registered push token diagnostics as JSON.
   String pushDevicesJson() => _consume(_pushDevicesJson());
+
+  /// Installed-state diagnostics for Claude Code and Codex hooks.
+  String agentHooksStatusJson() => _consume(_agentHooksStatusJson());
+
+  /// Install or repair both coding-agent hooks and return their new status.
+  String installAgentHooksJson() => _consume(_installAgentHooksJson());
+
+  /// Remove Motif's coding-agent hooks and return their new status.
+  String uninstallAgentHooksJson() => _consume(_uninstallAgentHooksJson());
 
   /// Send an encrypted test push to one registered token. Returns JSON.
   String sendTestPush(String deviceToken) =>

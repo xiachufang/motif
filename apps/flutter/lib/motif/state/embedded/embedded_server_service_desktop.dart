@@ -233,6 +233,50 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     );
   }
 
+  CodingAgentHooksStatus _decodeAgentHooksStatus(String raw) {
+    final map = jsonDecodeMap(raw);
+    if (map == null) {
+      throw StateError('invalid coding-agent hook response');
+    }
+    final error = map['error'] as String?;
+    if (error != null && error.isNotEmpty) {
+      throw StateError(error);
+    }
+    final claude = map['claude'];
+    final codex = map['codex'];
+    return CodingAgentHooksStatus(
+      claudeInstalled: claude is Map && claude['installed'] == true,
+      codexInstalled: codex is Map && codex['installed'] == true,
+      claudeConfigured: claude is Map && claude['configured'] == true,
+      codexConfigured: codex is Map && codex['configured'] == true,
+    );
+  }
+
+  @override
+  Future<CodingAgentHooksStatus> codingAgentHooksStatus() async {
+    final lib = _lib;
+    if (lib == null) return const CodingAgentHooksStatus();
+    return _decodeAgentHooksStatus(lib.agentHooksStatusJson());
+  }
+
+  @override
+  Future<CodingAgentHooksStatus> installCodingAgentHooks() async {
+    final lib = _lib;
+    if (lib == null) {
+      throw StateError('embedded server is unavailable');
+    }
+    return _decodeAgentHooksStatus(lib.installAgentHooksJson());
+  }
+
+  @override
+  Future<CodingAgentHooksStatus> uninstallCodingAgentHooks() async {
+    final lib = _lib;
+    if (lib == null) {
+      throw StateError('embedded server is unavailable');
+    }
+    return _decodeAgentHooksStatus(lib.uninstallAgentHooksJson());
+  }
+
   String _lastRaw = '';
 
   Future<EmbeddedServerStatus?> _probeStatus(

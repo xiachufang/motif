@@ -96,6 +96,42 @@ void main() {
     expect(controller.offset, closeTo(beforePoll, 0.1));
   });
 
+  testWidgets('installs and removes coding-agent hooks from notifications', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(),
+      status: const EmbeddedServerStatus(running: true),
+    );
+    await _pumpSettings(tester, service);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Claude Code: not installed · Codex: not installed'),
+      findsOneWidget,
+    );
+    final install = find.byKey(const ValueKey('install-coding-agent-hooks'));
+    await tester.ensureVisible(install);
+    await tester.tap(install);
+    await tester.pumpAndSettle();
+
+    expect(service.installAgentHooksCount, 1);
+    expect(
+      find.text('Claude Code: installed · Codex: installed'),
+      findsOneWidget,
+    );
+
+    final remove = find.byKey(const ValueKey('remove-coding-agent-hooks'));
+    await tester.tap(remove);
+    await tester.pumpAndSettle();
+
+    expect(service.uninstallAgentHooksCount, 1);
+    expect(
+      find.text('Claude Code: not installed · Codex: not installed'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('prompts to restart immediately for option changes', (
     tester,
   ) async {
@@ -460,6 +496,9 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   int stopCount = 0;
   int pushTokenListCount = 0;
   final List<String> testedTokens = [];
+  CodingAgentHooksStatus agentHooksStatus = const CodingAgentHooksStatus();
+  int installAgentHooksCount = 0;
+  int uninstallAgentHooksCount = 0;
 
   _FakeEmbeddedServerService({
     required super.config,
@@ -495,6 +534,25 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   Future<PushTestResult> sendTestPush(String deviceToken) async {
     testedTokens.add(deviceToken);
     return const PushTestResult(sent: true);
+  }
+
+  @override
+  Future<CodingAgentHooksStatus> codingAgentHooksStatus() async =>
+      agentHooksStatus;
+
+  @override
+  Future<CodingAgentHooksStatus> installCodingAgentHooks() async {
+    installAgentHooksCount += 1;
+    return agentHooksStatus = const CodingAgentHooksStatus(
+      claudeInstalled: true,
+      codexInstalled: true,
+    );
+  }
+
+  @override
+  Future<CodingAgentHooksStatus> uninstallCodingAgentHooks() async {
+    uninstallAgentHooksCount += 1;
+    return agentHooksStatus = const CodingAgentHooksStatus();
   }
 
   @override

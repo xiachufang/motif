@@ -1,5 +1,6 @@
 //! Motif core server library.
 
+pub mod agent_hooks;
 pub mod auth;
 pub mod capture;
 pub mod config;

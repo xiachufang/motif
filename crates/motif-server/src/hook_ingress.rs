@@ -1,11 +1,10 @@
 //! Local listener that receives coding-agent hook notifications.
 //!
-//! Both Claude Code and Codex CLI are wired here: a `Notification`/`Stop` hook
-//! (provisioned with zero user config by the shell bootstrap — see
-//! `crate::shell`; Claude via `--settings`, Codex via `-c hooks.Stop=...`) runs
-//! `motif-notify.sh`, which POSTs the hook's stdin JSON to this socket. Both
-//! agents use the same stdin-JSON contract (`hook_event_name`,
-//! `last_assistant_message`, …), so this ingress is agent-agnostic. We
+//! Both Claude Code and Codex CLI are wired here: an explicitly installed
+//! user-level `Notification`/`Stop` hook runs Motif's environment-gated notify
+//! script, which POSTs the hook's stdin JSON to this socket. Both agents use
+//! the same stdin-JSON contract (`hook_event_name`,
+//! `last_assistant_message`, …), so this ingress is agent-agnostic.
 //! Unix uses a 0600 Unix-domain socket. Windows uses an ephemeral loopback TCP
 //! listener protected by a random capability token inherited only by child
 //! PTYs; this avoids exposing the main motifd bearer to coding-agent hooks.

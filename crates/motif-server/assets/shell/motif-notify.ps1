@@ -1,9 +1,11 @@
-# Motif coding-agent notification hook for native Windows PowerShell sessions.
-# Always exits successfully so notification delivery can never disrupt the
-# parent Claude Code or Codex CLI process.
+# Motif coding-agent notification hook, installed explicitly from the desktop
+# app. It is globally discoverable by the agents but inert outside Motif PTYs.
 
 try {
-    if ([string]::IsNullOrWhiteSpace($env:MOTIF_HOOK_URL) -or
+    if ($env:MOTIF_BOOTSTRAPPED -ne '1' -or
+        $env:TERM_PROGRAM -ne 'motif' -or
+        [string]::IsNullOrWhiteSpace($env:MOTIF_SESSION_ID) -or
+        [string]::IsNullOrWhiteSpace($env:MOTIF_HOOK_URL) -or
         [string]::IsNullOrWhiteSpace($env:MOTIF_HOOK_TOKEN)) {
         exit 0
     }
