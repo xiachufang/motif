@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'coding_agent_hooks_controller.dart';
 import 'device_controller.dart';
 import 'server_access_controller.dart';
 import 'server_transport.dart';
@@ -15,6 +16,7 @@ final class ServerInstance {
     required this.access,
     required this.sessions,
     required this.device,
+    required this.codingAgentHooks,
     required this.workspace,
   });
 
@@ -23,6 +25,7 @@ final class ServerInstance {
   final ServerAccessController access;
   final SessionCatalogController sessions;
   final DeviceController device;
+  final CodingAgentHooksController codingAgentHooks;
 
   /// Unattached filesystem capability used only by server-level flows such as
   /// choosing a working directory while creating a Session.

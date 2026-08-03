@@ -8,6 +8,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{bail, Context};
 use serde::Serialize;
@@ -15,6 +16,7 @@ use serde_json::{json, Map, Value};
 
 const CLAUDE_EVENTS: &[&str] = &["Notification", "Stop"];
 const CODEX_EVENTS: &[&str] = &["Stop"];
+static AGENT_HOOKS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[cfg(windows)]
 const RUNNER_FILE: &str = "motif-notify.ps1";
@@ -42,6 +44,13 @@ pub struct AgentHooksStatus {
     pub claude: AgentHookState,
     pub codex: AgentHookState,
     pub runner_path: String,
+}
+
+/// Coding agent whose Motif notification hook should be changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodingAgent {
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Clone)]
@@ -75,21 +84,43 @@ fn non_empty_env(name: &str) -> Option<OsString> {
     std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
+fn operation_guard() -> MutexGuard<'static, ()> {
+    AGENT_HOOKS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Inspect both user-level hook files without modifying them.
 pub fn status() -> anyhow::Result<AgentHooksStatus> {
+    let _guard = operation_guard();
     status_at(&Locations::discover()?)
 }
 
 /// Install or repair the Motif hook in Claude Code and Codex user config.
 /// Existing settings and unrelated hooks are preserved.
 pub fn install() -> anyhow::Result<AgentHooksStatus> {
+    let _guard = operation_guard();
     install_at(&Locations::discover()?)
 }
 
 /// Remove only Motif-managed hook handlers from both agents. Existing settings
 /// and unrelated hooks are preserved.
 pub fn uninstall() -> anyhow::Result<AgentHooksStatus> {
+    let _guard = operation_guard();
     uninstall_at(&Locations::discover()?)
+}
+
+/// Install or repair only the selected coding agent's Motif hook.
+pub fn install_agent(agent: CodingAgent) -> anyhow::Result<AgentHooksStatus> {
+    let _guard = operation_guard();
+    install_agent_at(&Locations::discover()?, agent)
+}
+
+/// Remove only the selected coding agent's Motif hook.
+pub fn uninstall_agent(agent: CodingAgent) -> anyhow::Result<AgentHooksStatus> {
+    let _guard = operation_guard();
+    uninstall_agent_at(&Locations::discover()?, agent)
 }
 
 fn status_at(locations: &Locations) -> anyhow::Result<AgentHooksStatus> {
@@ -137,6 +168,56 @@ fn uninstall_at(locations: &Locations) -> anyhow::Result<AgentHooksStatus> {
     }
     let status = status_from_roots(locations, &command, &claude, &codex)?;
     if !status.claude.installed && !status.codex.installed {
+        match std::fs::remove_file(&locations.runner) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("remove hook runner {}", locations.runner.display()));
+            }
+        }
+    }
+    Ok(status)
+}
+
+fn install_agent_at(locations: &Locations, agent: CodingAgent) -> anyhow::Result<AgentHooksStatus> {
+    let command = hook_command(&locations.runner);
+    let mut claude = read_json_object(&locations.claude_config)?;
+    let mut codex = read_json_object(&locations.codex_config)?;
+
+    let (root, events, path) = match agent {
+        CodingAgent::Claude => (&mut claude, CLAUDE_EVENTS, &locations.claude_config),
+        CodingAgent::Codex => (&mut codex, CODEX_EVENTS, &locations.codex_config),
+    };
+    validate_events(root, events, path)?;
+    install_runner(&locations.runner)?;
+    for event in events {
+        add_handler(root, event, &command)?;
+    }
+    write_json_object(path, root)?;
+
+    status_from_roots(locations, &command, &claude, &codex)
+}
+
+fn uninstall_agent_at(
+    locations: &Locations,
+    agent: CodingAgent,
+) -> anyhow::Result<AgentHooksStatus> {
+    let command = hook_command(&locations.runner);
+    let mut claude = read_json_object(&locations.claude_config)?;
+    let mut codex = read_json_object(&locations.codex_config)?;
+
+    let (root, events, path) = match agent {
+        CodingAgent::Claude => (&mut claude, CLAUDE_EVENTS, &locations.claude_config),
+        CodingAgent::Codex => (&mut codex, CODEX_EVENTS, &locations.codex_config),
+    };
+    validate_events(root, events, path)?;
+    if remove_handlers(root, events, &command)? {
+        write_json_object(path, root)?;
+    }
+
+    let status = status_from_roots(locations, &command, &claude, &codex)?;
+    if !status.claude.configured && !status.codex.configured {
         match std::fs::remove_file(&locations.runner) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -493,5 +574,31 @@ mod tests {
         );
         assert!(!locations.runner.exists());
         assert!(!locations.codex_config.exists());
+    }
+
+    #[test]
+    fn individual_agent_changes_do_not_touch_the_other_config() {
+        let root = tempfile::tempdir().unwrap();
+        let locations = locations(root.path());
+
+        let claude_only = install_agent_at(&locations, CodingAgent::Claude).unwrap();
+        assert!(claude_only.claude.configured);
+        assert!(!claude_only.codex.configured);
+        assert!(locations.claude_config.is_file());
+        assert!(!locations.codex_config.exists());
+
+        let both = install_agent_at(&locations, CodingAgent::Codex).unwrap();
+        assert!(both.claude.configured);
+        assert!(both.codex.configured);
+
+        let claude_removed = uninstall_agent_at(&locations, CodingAgent::Claude).unwrap();
+        assert!(!claude_removed.claude.configured);
+        assert!(claude_removed.codex.configured);
+        assert!(locations.runner.is_file());
+
+        let all_removed = uninstall_agent_at(&locations, CodingAgent::Codex).unwrap();
+        assert!(!all_removed.claude.configured);
+        assert!(!all_removed.codex.configured);
+        assert!(!locations.runner.exists());
     }
 }

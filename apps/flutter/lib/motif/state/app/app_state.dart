@@ -26,6 +26,7 @@ import 'app_ui_state.dart';
 import 'app_view_model.dart';
 import '../connection/connection_state.dart';
 import '../server/device_controller.dart';
+import '../server/coding_agent_hooks_controller.dart';
 import '../server/device_registration_view_model.dart';
 import '../embedded/embedded_server_service.dart';
 import '../embedded/embedded_web_server.dart';
@@ -446,6 +447,7 @@ class AppState {
       access: access,
       sessions: sessions,
       device: device,
+      codingAgentHooks: CodingAgentHooksController(transport),
       workspace: workspace,
     );
     _serverInstances[serverId] = instance;

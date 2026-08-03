@@ -7,37 +7,20 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../models/coding_agent_hooks.dart';
 import '../../platform/secret_store.dart';
 import 'embedded_server_models.dart';
 import 'embedded_server_runtime_state.dart';
 import 'embedded_server_view_model.dart';
 
 export 'embedded_server_models.dart';
+export '../../models/coding_agent_hooks.dart';
 
 typedef EmbeddedServerFactory =
     Future<EmbeddedServerService> Function(
       SharedPreferences prefs,
       SecretStore secrets,
     );
-
-@immutable
-class CodingAgentHooksStatus {
-  final bool claudeInstalled;
-  final bool codexInstalled;
-  final bool claudeConfigured;
-  final bool codexConfigured;
-
-  const CodingAgentHooksStatus({
-    this.claudeInstalled = false,
-    this.codexInstalled = false,
-    bool? claudeConfigured,
-    bool? codexConfigured,
-  }) : claudeConfigured = claudeConfigured ?? claudeInstalled,
-       codexConfigured = codexConfigured ?? codexInstalled;
-
-  bool get allInstalled => claudeInstalled && codexInstalled;
-  bool get anyConfigured => claudeConfigured || codexConfigured;
-}
 
 Future<EmbeddedServerService> createNoopEmbeddedServerService(
   SharedPreferences prefs,

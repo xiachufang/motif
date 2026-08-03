@@ -12,6 +12,7 @@ import 'package:flutter_observation/flutter_observation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/settings.dart';
+import '../../models/coding_agent_hooks.dart';
 import '../../platform/secret_store.dart';
 import 'serialization.dart';
 import 'store_view_models.dart';
@@ -20,6 +21,7 @@ abstract final class _Keys {
   static const servers = 'motif.servers.v1';
   static const activeServer = 'activeServerID';
   static const terminalSettings = 'motif.terminalSettings.v1';
+  static const codingAgentHookPrompts = 'motif.codingAgentHookPrompts.v1';
   static const quickCommands = 'motif.quickCommands.v1';
   static const quickCommandSets = 'motif.quickCommands.sets.v1';
   static const pushEnabled = 'motif.push.enabled';
@@ -294,11 +296,15 @@ class ServerStore {
 class TerminalSettingsStore {
   final SharedPreferences _prefs;
   final TerminalPreferencesViewModel _state;
+  final Set<String> _codingAgentHookPrompts;
 
   TerminalSettingsStore(this._prefs)
     : _state = TerminalPreferencesViewModel(
         settings: _load(_prefs.getString(_Keys.terminalSettings)),
-      );
+      ),
+      _codingAgentHookPrompts = {
+        ...?_prefs.getStringList(_Keys.codingAgentHookPrompts),
+      };
 
   static TerminalSettings _load(String? raw) {
     if (raw == null) return const TerminalSettings();
@@ -326,6 +332,27 @@ class TerminalSettingsStore {
       update(_state.settings.copyWith(fontSize: v));
   Future<void> setTheme(TerminalThemeSetting t) =>
       update(_state.settings.copyWith(theme: t));
+
+  String _codingAgentHookPromptKey(String serverId, CodingAgent agent) =>
+      '$serverId/${agent.name}';
+
+  bool codingAgentHookPromptShown(String serverId, CodingAgent agent) =>
+      _codingAgentHookPrompts.contains(
+        _codingAgentHookPromptKey(serverId, agent),
+      );
+
+  Future<void> markCodingAgentHookPromptShown(
+    String serverId,
+    CodingAgent agent,
+  ) async {
+    if (!_codingAgentHookPrompts.add(
+      _codingAgentHookPromptKey(serverId, agent),
+    )) {
+      return;
+    }
+    final prompts = _codingAgentHookPrompts.toList()..sort();
+    await _prefs.setStringList(_Keys.codingAgentHookPrompts, prompts);
+  }
 }
 
 /// Global + per-program quick command lists.

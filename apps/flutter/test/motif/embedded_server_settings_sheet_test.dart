@@ -96,7 +96,7 @@ void main() {
     expect(controller.offset, closeTo(beforePoll, 0.1));
   });
 
-  testWidgets('installs and removes coding-agent hooks from notifications', (
+  testWidgets('does not expose coding-agent hooks in notifications', (
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
@@ -106,29 +106,14 @@ void main() {
     await _pumpSettings(tester, service);
     await tester.pumpAndSettle();
 
+    expect(find.text('Claude Code and Codex hooks'), findsNothing);
     expect(
-      find.text('Claude Code: not installed · Codex: not installed'),
-      findsOneWidget,
+      find.byKey(const ValueKey('install-coding-agent-hooks')),
+      findsNothing,
     );
-    final install = find.byKey(const ValueKey('install-coding-agent-hooks'));
-    await tester.ensureVisible(install);
-    await tester.tap(install);
-    await tester.pumpAndSettle();
-
-    expect(service.installAgentHooksCount, 1);
     expect(
-      find.text('Claude Code: installed · Codex: installed'),
-      findsOneWidget,
-    );
-
-    final remove = find.byKey(const ValueKey('remove-coding-agent-hooks'));
-    await tester.tap(remove);
-    await tester.pumpAndSettle();
-
-    expect(service.uninstallAgentHooksCount, 1);
-    expect(
-      find.text('Claude Code: not installed · Codex: not installed'),
-      findsOneWidget,
+      find.byKey(const ValueKey('remove-coding-agent-hooks')),
+      findsNothing,
     );
   });
 

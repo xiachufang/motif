@@ -17,6 +17,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../../log/log.dart';
+import '../../models/coding_agent_hooks.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
@@ -24,6 +25,8 @@ import '../../platform/apple_input_document.dart';
 import '../../platform/window_title.dart';
 import '../../state/app/app_state.dart';
 import '../../state/app/motif_scope.dart';
+import '../../state/server/coding_agent_hooks_controller.dart';
+import '../../state/server/coding_agent_hook_prompt.dart';
 import '../../state/workspace/remote_port/remote_port_controller.dart';
 import '../../state/workspace/session_attachment.dart';
 import '../../state/workspace/terminal/sticky_modifiers.dart';
@@ -79,6 +82,13 @@ String sessionRouteName(String serverId, String session) =>
     'session/$serverId/$session';
 
 typedef _WorkspaceKey = ({String serverId, String session});
+
+CodingAgent? codingAgentForCommand(String? command) =>
+    switch (programKey(command)) {
+      'claude' => CodingAgent.claude,
+      'codex' => CodingAgent.codex,
+      _ => null,
+    };
 
 /// The main terminal interface: tab bar of views + active pane + input bar.
 /// Mirrors SessionView. PTY panes use the libghostty-backed renderer.
@@ -247,6 +257,7 @@ class _SessionScreenState extends State<_SessionPane>
   late final RemotePortController _remotePortController;
   late final _TabInputState _fallbackInput;
   late final ObservationSubscription<WorkspaceConnectionStatus> _connectionSub;
+  late final ObservationSubscription<List<String>> _runningCommandsSub;
   final ValueNotifier<double> _keyboardInset = ValueNotifier(0);
   final ValueNotifier<double> _bottomBarContentHeight = ValueNotifier(
     _bottomBarCollapsedContentHeight,
@@ -259,6 +270,7 @@ class _SessionScreenState extends State<_SessionPane>
   bool _shortcutRegistered = false;
   bool _switchingSession = false;
   bool _attachingSession = false;
+  bool _codingAgentHookCheckInFlight = false;
   bool _recording = false;
   bool _micStarting = false;
   Future<void>? _autoCreatePtyFuture;
@@ -289,8 +301,16 @@ class _SessionScreenState extends State<_SessionPane>
       },
       scheduler: ObservationSchedulers.immediate,
     );
+    _runningCommandsSub = observe(
+      () => _terminalController.viewModel.runningCommand.values.toList(
+        growable: false,
+      ),
+      onChange: (_) => _scheduleCodingAgentHookCheck(),
+      scheduler: ObservationSchedulers.immediate,
+    );
     WidgetsBinding.instance.addObserver(this);
     _scheduleKeyboardInsetSync();
+    _scheduleCodingAgentHookCheck();
     if (widget.workspaceActive) {
       _registerShortcutHandler();
       _syncWindowTitle();
@@ -396,6 +416,7 @@ class _SessionScreenState extends State<_SessionPane>
         _registerShortcutHandler();
         _syncWindowTitle();
         unawaited(_ensurePtyOnOpen());
+        _scheduleCodingAgentHookCheck();
       } else {
         _unregisterShortcutHandler();
       }
@@ -419,6 +440,7 @@ class _SessionScreenState extends State<_SessionPane>
   @override
   void dispose() {
     _connectionSub.dispose();
+    _runningCommandsSub.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _keyboardInset.dispose();
     _bottomBarContentHeight.dispose();
@@ -434,6 +456,113 @@ class _SessionScreenState extends State<_SessionPane>
     _tabInputs.clear();
     if (_wakelockApplies) WakelockPlus.disable().ignore();
     super.dispose();
+  }
+
+  void _scheduleCodingAgentHookCheck() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _checkCodingAgentHookPrompt();
+    });
+  }
+
+  void _checkCodingAgentHookPrompt() {
+    if (_codingAgentHookCheckInFlight || !widget.workspaceActive) return;
+    final app = readObservationScope<AppState>(context);
+    final server = app.existingServerInstance(widget.serverId);
+    if (server == null || !server.isLive) return;
+    final controller = server.codingAgentHooks;
+    for (final command in _terminalController.viewModel.runningCommand.values) {
+      final agent = codingAgentForCommand(command);
+      if (agent == null ||
+          app.terminalSettings.codingAgentHookPromptShown(
+            widget.serverId,
+            agent,
+          )) {
+        continue;
+      }
+      unawaited(_maybePromptCodingAgentHook(controller, agent));
+      return;
+    }
+  }
+
+  bool _isCodingAgentRunning(CodingAgent agent) => _terminalController
+      .viewModel
+      .runningCommand
+      .values
+      .any((command) => codingAgentForCommand(command) == agent);
+
+  Future<void> _maybePromptCodingAgentHook(
+    CodingAgentHooksController controller,
+    CodingAgent agent,
+  ) async {
+    if (_codingAgentHookCheckInFlight) return;
+    _codingAgentHookCheckInFlight = true;
+    var installRequested = false;
+    try {
+      final promptStore = readObservationScope<AppState>(
+        context,
+      ).terminalSettings;
+      if (!await claimCodingAgentHookPrompt(
+        controller: controller,
+        promptStore: promptStore,
+        serverId: widget.serverId,
+        agent: agent,
+      )) {
+        return;
+      }
+      if (!mounted ||
+          !widget.workspaceActive ||
+          !_isCodingAgentRunning(agent)) {
+        return;
+      }
+
+      final install = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          key: ValueKey('${agent.name}-hook-install-prompt'),
+          title: Text('Install the ${agent.label} hook?'),
+          content: Text(
+            'Motif can notify you when ${agent.label} finishes or needs '
+            'attention. The hook only sends notifications from Motif '
+            'terminals.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              key: ValueKey('install-${agent.name}-hook-from-prompt'),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Install'),
+            ),
+          ],
+        ),
+      );
+      if (install != true || !mounted) return;
+
+      installRequested = true;
+      final installed = await controller.install(agent);
+      if (!installed.configured(agent)) {
+        throw StateError('${agent.label} hook was not added to its config');
+      }
+      if (mounted) showMotifToast(context, '${agent.label} hook installed');
+    } catch (error, stackTrace) {
+      Log.w(
+        'coding-agent hook prompt failed agent=${agent.name}',
+        name: 'motif.hooks',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (mounted && installRequested) {
+        showMotifToast(
+          context,
+          'Could not install the ${agent.label} hook: $error',
+          duration: const Duration(seconds: 4),
+        );
+      }
+    } finally {
+      _codingAgentHookCheckInFlight = false;
+    }
   }
 
   /// Ensure the visible terminal page never settles on an attached workspace
@@ -735,7 +864,10 @@ class _SessionScreenState extends State<_SessionPane>
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),
                   tooltip: 'Terminal settings',
-                  onPressed: () => showTerminalSettingsSheet(context),
+                  onPressed: () => showTerminalSettingsSheet(
+                    context,
+                    serverId: widget.serverId,
+                  ),
                 ),
               ],
             ),

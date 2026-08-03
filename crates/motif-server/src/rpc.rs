@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use motif_proto::agent_hooks as pagent;
 use motif_proto::envelope::{Id, Request, Response};
 use motif_proto::error::{ErrorCode, RpcError};
 use motif_proto::remote_port as premote;
@@ -99,6 +100,11 @@ pub fn dispatch_concurrent(
         "session.list" => handle_list(manager, id, req.params),
         "session.create" => handle_create(manager, id, req.params),
         "session.destroy" => handle_destroy(manager, conns, id, req.params),
+
+        // agent_hooks.* (server-global user configuration; no attach needed)
+        "agent_hooks.status" => handle_agent_hooks_status(id, req.params),
+        "agent_hooks.install" => handle_agent_hooks_change(id, req.params, true),
+        "agent_hooks.uninstall" => handle_agent_hooks_change(id, req.params, false),
 
         // device.* (push-notification registration; global, no attach needed)
         "device.register" => handle_device_register(devices, id, req.params),
@@ -280,6 +286,49 @@ pub fn dispatch_concurrent(
 
 fn parse<P: DeserializeOwned>(v: Value) -> Result<P, RpcError> {
     serde_json::from_value(v).map_err(|e| RpcError::invalid_params(e.to_string()))
+}
+
+fn agent_hooks_status_result(status: crate::agent_hooks::AgentHooksStatus) -> pagent::StatusResult {
+    pagent::StatusResult {
+        claude: pagent::AgentHookState {
+            installed: status.claude.installed,
+            configured: status.claude.configured,
+        },
+        codex: pagent::AgentHookState {
+            installed: status.codex.installed,
+            configured: status.codex.configured,
+        },
+    }
+}
+
+fn handle_agent_hooks_status(id: Id, params: Value) -> Response {
+    if let Err(error) = parse::<pagent::StatusParams>(params) {
+        return Response::err(id, error);
+    }
+    match crate::agent_hooks::status() {
+        Ok(status) => Response::ok(id, agent_hooks_status_result(status)),
+        Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+    }
+}
+
+fn handle_agent_hooks_change(id: Id, params: Value, install: bool) -> Response {
+    let params = match parse::<pagent::ChangeParams>(params) {
+        Ok(params) => params,
+        Err(error) => return Response::err(id, error),
+    };
+    let agent = match params.agent {
+        pagent::CodingAgent::Claude => crate::agent_hooks::CodingAgent::Claude,
+        pagent::CodingAgent::Codex => crate::agent_hooks::CodingAgent::Codex,
+    };
+    let result = if install {
+        crate::agent_hooks::install_agent(agent)
+    } else {
+        crate::agent_hooks::uninstall_agent(agent)
+    };
+    match result {
+        Ok(status) => Response::ok(id, agent_hooks_status_result(status)),
+        Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+    }
 }
 
 fn handle_list(mgr: &Arc<SessionManager>, id: Id, _params: Value) -> Response {

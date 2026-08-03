@@ -10,6 +10,7 @@ import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/models/coding_agent_hooks.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
@@ -328,6 +329,7 @@ class _SuspendedWorkspaceConnectionController
 
 Future<AppState> _appStateWith(
   Map<String, WorkspaceConnectionController> clients, {
+  TestServerCall? serverCall,
   WorkspaceRetentionPolicy? workspaceRetentionPolicy,
   WorkspaceConnectionController Function(MotifServer server, String session)?
   workspaceConnectionFactory,
@@ -352,7 +354,16 @@ Future<AppState> _appStateWith(
       return TestServerTransport(
         live: true,
         onCall: (method, [params = const {}]) async {
-          if (method != 'session.list') return const {};
+          if (method != 'session.list') {
+            if (serverCall != null) return serverCall(method, params);
+            if (method == 'agent_hooks.status') {
+              return const {
+                'claude': {'installed': true, 'configured': true},
+                'codex': {'installed': true, 'configured': true},
+              };
+            }
+            return const {};
+          }
           return {
             'sessions': [
               for (final session in sessions)
@@ -468,7 +479,79 @@ Future<void> _sendControlShortcut(
   await tester.pump();
 }
 
+class _SessionHookRpcBackend {
+  final List<String> installed = [];
+
+  Future<Map<String, Object?>> call(
+    String method, [
+    Map<String, Object?> params = const {},
+  ]) async {
+    final agent = params['agent'] as String?;
+    if (method == 'agent_hooks.install' && agent != null) {
+      installed.add(agent);
+    }
+    final codexConfigured = installed.contains('codex');
+    return {
+      'claude': {'installed': false, 'configured': false},
+      'codex': {'installed': codexConfigured, 'configured': codexConfigured},
+    };
+  }
+}
+
 void main() {
+  test('recognizes Claude and Codex foreground commands', () {
+    expect(codingAgentForCommand('claude --resume')?.name, 'claude');
+    expect(codingAgentForCommand('/opt/bin/codex')?.name, 'codex');
+    expect(codingAgentForCommand('npm run dev'), isNull);
+  });
+
+  testWidgets('offers the corresponding hook through the connected server', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1024, 768);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final motif = _RecordingWorkspaceConnectionController()
+      ..runningCommand['pty-1'] = 'codex --search';
+    final hooks = _SessionHookRpcBackend();
+    final app = await _appStateWith({
+      'server-1': motif,
+    }, serverCall: hooks.call);
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const SessionScreen(
+            serverId: 'server-1',
+            session: 'test-session',
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Install the Codex hook?'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('install-codex-hook-from-prompt')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(hooks.installed, ['codex']);
+    expect(
+      app.terminalSettings.codingAgentHookPromptShown(
+        'server-1',
+        CodingAgent.codex,
+      ),
+      isTrue,
+    );
+    await tester.pump(const Duration(seconds: 3));
+  });
+
   testWidgets('large screen puts terminal tabs in the title bar', (
     tester,
   ) async {
