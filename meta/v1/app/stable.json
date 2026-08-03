@@ -10,6 +10,16 @@
       "url": "https://github.com/xiachufang/motif/releases/download/v1.0.54/Motif-flutter-1.0.54-37-linux-x86_64.tar.gz",
       "version": "1.0.54"
     },
+    "macos-arm64": {
+      "file": "Motif-v1.0.54-notarized.dmg",
+      "publishedAt": "2026-08-03T06:05:20Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.54",
+      "sha256": "eaf09064baeaf7ac868c671fe7f210ed5dd0089c450fb7eb9ea9a6a2df1de617",
+      "size": 39424223,
+      "tag": "v1.0.54",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.54/Motif-v1.0.54-notarized.dmg",
+      "version": "1.0.54"
+    },
     "windows-x86_64": {
       "file": "Motif-flutter-1.0.54-37-windows-x86_64.tar.gz",
       "publishedAt": "2026-08-03T06:02:32Z",
@@ -24,5 +34,5 @@
   "channel": "stable",
   "product": "app",
   "schema": 1,
-  "updatedAt": "2026-08-03T06:02:34Z"
+  "updatedAt": "2026-08-03T06:05:21Z"
 }
