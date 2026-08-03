@@ -32,6 +32,7 @@ docs/                    architecture + protocol
 ├─ shell-integration.md  prompt / command block markers (OSC 133 + 777)
 ├─ tailscale.md          tsnet wiring
 ├─ ssh-tunnel.md         `motif-tui --via ssh://…`
+├─ release-metadata.md   per-platform stable App/motifd release pointers
 └─ review-server.md      hardened no-tailscale motifd for App Review (image + VPS deploy)
 
 deploy/

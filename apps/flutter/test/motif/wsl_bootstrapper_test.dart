@@ -45,7 +45,10 @@ void main() {
         ),
       );
       expect(capturedScript, contains(r'${XDG_DATA_HOME'));
-      expect(capturedScript, contains('/releases/latest'));
+      expect(
+        capturedScript,
+        contains('/meta/v1/motifd/stable.json'),
+      );
       expect(capturedScript, contains(r'nohup "$BIN" --listen "$LISTEN"'));
     },
   );

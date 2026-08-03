@@ -13,9 +13,10 @@ void main() {
   }) {
     return DesktopUpdateChecker(
       installedVersion: () async => installedVersion,
+      releasePlatform: () => 'linux-x86_64',
       client: MockClient((request) async {
-        expect(request.url.toString(), contains('/releases/latest'));
-        expect(request.headers['accept'], 'application/vnd.github+json');
+        expect(request.url.toString(), contains('/meta/v1/app/stable.json'));
+        expect(request.headers['accept'], 'application/json');
         return http.Response(response, 200);
       }),
     );
@@ -26,9 +27,19 @@ void main() {
       installedVersion: '1.0.35',
       response: '''
         {
-          "tag_name": "v1.0.36",
-          "name": "Motif 1.0.36",
-          "html_url": "https://github.com/xiachufang/motif/releases/tag/v1.0.36"
+          "schema": 1,
+          "channel": "stable",
+          "product": "app",
+          "assets": {
+            "linux-x86_64": {
+              "version": "1.0.36",
+              "tag": "v1.0.36",
+              "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.36",
+              "url": "https://github.com/xiachufang/motif/releases/download/v1.0.36/Motif-linux.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 123
+            }
+          }
         }
       ''',
     ).check();
@@ -46,8 +57,19 @@ void main() {
       installedVersion: '1.0.36',
       response: '''
         {
-          "tag_name": "v1.0.35",
-          "html_url": "https://github.com/xiachufang/motif/releases/tag/v1.0.35"
+          "schema": 1,
+          "channel": "stable",
+          "product": "app",
+          "assets": {
+            "linux-x86_64": {
+              "version": "1.0.35",
+              "tag": "v1.0.35",
+              "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.35",
+              "url": "https://github.com/xiachufang/motif/releases/download/v1.0.35/Motif-linux.tar.gz",
+              "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "size": 123
+            }
+          }
         }
       ''',
     ).check();
@@ -61,14 +83,50 @@ void main() {
       installedVersion: '1.0.35',
       response: '''
         {
-          "tag_name": "v1.0.36-rc.1",
-          "html_url": "https://github.com/xiachufang/motif/releases/tag/v1.0.36-rc.1",
-          "prerelease": false
+          "schema": 1,
+          "channel": "stable",
+          "product": "app",
+          "assets": {
+            "linux-x86_64": {
+              "version": "1.0.36-rc.1",
+              "tag": "v1.0.36-rc.1",
+              "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.36-rc.1",
+              "url": "https://github.com/xiachufang/motif/releases/download/v1.0.36-rc.1/Motif-linux.tar.gz",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "size": 123
+            }
+          }
         }
       ''',
     ).check();
 
     expect(result.status, DesktopUpdateCheckStatus.upToDate);
+  });
+
+  test('does not use another platform stable pointer', () async {
+    final result = await checkerFor(
+      installedVersion: '1.0.35',
+      response: '''
+        {
+          "schema": 1,
+          "channel": "stable",
+          "product": "app",
+          "assets": {
+            "macos-arm64": {
+              "version": "1.0.99",
+              "tag": "v1.0.99",
+              "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.99",
+              "url": "https://github.com/xiachufang/motif/releases/download/v1.0.99/Motif.dmg",
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "size": 123
+            }
+          }
+        }
+      ''',
+    ).check();
+
+    expect(result.status, DesktopUpdateCheckStatus.unavailable);
+    expect(result.update, isNull);
   });
 
   test('allows only one update presentation at a time', () async {

@@ -1,11 +1,12 @@
-/// Lightweight desktop release checking backed by the public GitHub Releases
-/// API. This deliberately only discovers a new version; it never downloads or
-/// changes the installed application.
+/// Lightweight desktop release checking backed by the per-platform stable
+/// manifest on GitHub Pages. This deliberately only discovers a new version;
+/// it never downloads or changes the installed application.
 library;
 
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -13,7 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../log/log.dart';
 
 const _defaultReleaseUrl =
-    'https://api.github.com/repos/xiachufang/motif/releases/latest';
+    'https://xiachufang.github.io/motif/meta/v1/app/stable.json';
 const _skippedVersionKey = 'motif.update.skippedVersion';
 
 /// A published desktop release that is newer than the running application.
@@ -48,42 +49,57 @@ class DesktopUpdateCheckResult {
 }
 
 typedef InstalledVersionProvider = Future<String> Function();
+typedef ReleasePlatformProvider = String? Function();
 
-/// Queries the release feed and compares its tag with the installed app
+/// Queries the stable release feed and compares its version with the installed app
 /// version. Supplying dependencies makes the network and version logic easy to
 /// test without a running desktop shell.
 class DesktopUpdateChecker {
   DesktopUpdateChecker({
     this.client,
     InstalledVersionProvider? installedVersion,
+    ReleasePlatformProvider? releasePlatform,
     Uri? releaseUrl,
   }) : _installedVersion = installedVersion ?? _platformVersion,
+       _releasePlatform = releasePlatform ?? _defaultReleasePlatform,
        _releaseUrl = releaseUrl ?? Uri.parse(_defaultReleaseUrl);
 
   final http.Client? client;
   final InstalledVersionProvider _installedVersion;
+  final ReleasePlatformProvider _releasePlatform;
   final Uri _releaseUrl;
 
   static Future<String> _platformVersion() async =>
       (await PackageInfo.fromPlatform()).version;
+
+  static String? _defaultReleasePlatform() => switch (defaultTargetPlatform) {
+    TargetPlatform.linux => 'linux-x86_64',
+    TargetPlatform.macOS => 'macos-arm64',
+    TargetPlatform.windows => 'windows-x86_64',
+    _ => null,
+  };
 
   Future<DesktopUpdateCheckResult> check() async {
     final requestClient = client ?? http.Client();
     final ownsClient = client == null;
     try {
       final installed = await _installedVersion();
+      final platform = _releasePlatform();
+      if (platform == null) {
+        return const DesktopUpdateCheckResult.unavailable();
+      }
       final response = await requestClient
           .get(
             _releaseUrl,
             headers: <String, String>{
-              'Accept': 'application/vnd.github+json',
+              'Accept': 'application/json',
               'User-Agent': 'Motif/$installed',
             },
           )
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         Log.w(
-          'GitHub release check returned HTTP ${response.statusCode}',
+          'Stable app metadata returned HTTP ${response.statusCode}',
           name: 'motif.update',
         );
         return const DesktopUpdateCheckResult.unavailable();
@@ -91,44 +107,63 @@ class DesktopUpdateChecker {
 
       final decoded = jsonDecode(response.body);
       if (decoded is! Map<String, Object?>) {
+        Log.w('Stable app metadata was not an object', name: 'motif.update');
+        return const DesktopUpdateCheckResult.unavailable();
+      }
+
+      final assets = decoded['assets'];
+      final asset = assets is Map<String, Object?> ? assets[platform] : null;
+      if (decoded['schema'] != 1 ||
+          decoded['channel'] != 'stable' ||
+          decoded['product'] != 'app' ||
+          asset is! Map<String, Object?>) {
         Log.w(
-          'GitHub release response was not an object',
+          'Stable app metadata has no valid $platform asset',
           name: 'motif.update',
         );
         return const DesktopUpdateCheckResult.unavailable();
       }
 
-      // `/releases/latest` should already exclude these, but never offer a
-      // draft or prerelease if the endpoint response is unexpected.
-      if (decoded['draft'] == true || decoded['prerelease'] == true) {
-        return const DesktopUpdateCheckResult.upToDate();
-      }
-
-      final tag = decoded['tag_name'];
-      final releasePage = decoded['html_url'];
-      if (tag is! String || releasePage is! String) {
+      final version = asset['version'];
+      final tag = asset['tag'];
+      final releasePage = asset['releasePage'];
+      final downloadUrl = asset['url'];
+      final checksum = asset['sha256'];
+      final size = asset['size'];
+      if (version is! String ||
+          tag is! String ||
+          releasePage is! String ||
+          downloadUrl is! String ||
+          checksum is! String ||
+          size is! int ||
+          size <= 0 ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(checksum)) {
         Log.w(
-          'GitHub release response is missing tag or URL',
+          'Stable app metadata has an incomplete $platform asset',
           name: 'motif.update',
         );
         return const DesktopUpdateCheckResult.unavailable();
       }
       final installedVersion = _ReleaseVersion.tryParse(installed);
-      final latestVersion = _ReleaseVersion.tryParse(tag);
+      final latestVersion = _ReleaseVersion.tryParse(version);
       final releaseUri = Uri.tryParse(releasePage);
+      final downloadUri = Uri.tryParse(downloadUrl);
       if (installedVersion == null ||
           latestVersion == null ||
           releaseUri == null ||
           releaseUri.scheme != 'https' ||
-          releaseUri.host != 'github.com') {
+          releaseUri.host != 'github.com' ||
+          downloadUri == null ||
+          downloadUri.scheme != 'https' ||
+          downloadUri.host != 'github.com') {
         Log.w(
-          'Unable to compare or open GitHub release metadata',
+          'Unable to compare or open stable app metadata',
           name: 'motif.update',
         );
         return const DesktopUpdateCheckResult.unavailable();
       }
-      // Release workflows can publish a suffixed tag without setting GitHub's
-      // prerelease flag. Never offer those builds to the stable client.
+      // The publisher only advances stable pointers, but reject a malformed
+      // suffixed version defensively.
       if (latestVersion.prerelease != null) {
         return const DesktopUpdateCheckResult.upToDate();
       }
@@ -136,17 +171,16 @@ class DesktopUpdateChecker {
         return const DesktopUpdateCheckResult.upToDate();
       }
 
-      final title = decoded['name'];
       return DesktopUpdateCheckResult.updateAvailable(
         DesktopUpdate(
           version: latestVersion.display,
           releaseUrl: releaseUri,
-          title: title is String && title.trim().isNotEmpty ? title : tag,
+          title: tag,
         ),
       );
     } on TimeoutException catch (error, stackTrace) {
       Log.w(
-        'GitHub release check timed out',
+        'Stable app metadata check timed out',
         name: 'motif.update',
         error: error,
         stackTrace: stackTrace,
@@ -154,7 +188,7 @@ class DesktopUpdateChecker {
       return const DesktopUpdateCheckResult.unavailable();
     } catch (error, stackTrace) {
       Log.w(
-        'GitHub release check failed',
+        'Stable app metadata check failed',
         name: 'motif.update',
         error: error,
         stackTrace: stackTrace,

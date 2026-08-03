@@ -39,8 +39,12 @@ jobs:
         include:
           - os: ubuntu-24.04   # need GLib >= 2.74 (G_APPLICATION_DEFAULT_FLAGS in cnativeapi); 22.04 ships 2.72
             target: release-flutter-linux
+            platform: linux-x86_64
+            asset_pattern: Motif-flutter-*-linux-x86_64.tar.gz
           - os: windows-latest
             target: release-flutter-windows
+            platform: windows-x86_64
+            asset_pattern: Motif-flutter-*-windows-x86_64.tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -103,3 +107,22 @@ jobs:
             dist/release/*.tar.gz
             dist/release/MANIFEST.txt
           fail_on_unmatched_files: true
+
+      # Advance only this platform's stable pointer. Concurrent platform jobs
+      # merge through optimistic GitHub Contents API updates, so a failed build
+      # leaves its previous pointer untouched without blocking other platforms.
+      - name: Publish stable app metadata
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          artifact="$(find dist/release -maxdepth 1 -type f -name '${{ matrix.asset_pattern }}' -print -quit)"
+          test -n "$artifact"
+          python_cmd=python3
+          command -v "$python_cmd" >/dev/null 2>&1 || python_cmd=python
+          "$python_cmd" scripts/publish_release_metadata.py \
+            --product app \
+            --platform '${{ matrix.platform }}' \
+            --artifact "$artifact"

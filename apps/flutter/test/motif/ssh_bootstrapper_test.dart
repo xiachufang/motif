@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/net/ssh/ssh_bootstrapper.dart';
 
@@ -87,8 +90,128 @@ void main() {
 
       expect(script, contains(r'checking motifd on $LISTEN'));
       expect(script, contains(r'remote platform: $platform-$arch'));
-      expect(script, contains(r'downloading release metadata from $api'));
+      expect(
+        script,
+        contains(r'downloading stable motifd metadata from $METADATA_URL'),
+      );
       expect(script, contains(r'starting motifd on $LISTEN'));
+      expect(script, contains('MOTIFD_REMOTE_DOWNLOAD_FAILED'));
+      expect(script, contains(r'"$platform" "$arch" "$upload_path"'));
+      expect(script, contains('verify_sha256'));
+    });
+
+    test('installs an archive uploaded by the SSH client', () {
+      final script = SshBootstrapper.buildScript(
+        repository: 'xiachufang/motif',
+        remoteHost: '127.0.0.1',
+        remotePort: 7777,
+        token: '',
+        uploadedArchive: "/home/fei/motif's upload.tar.gz",
+      );
+
+      expect(
+        script,
+        contains("UPLOADED_ARCHIVE='/home/fei/motif'\"'\"'s upload.tar.gz'"),
+      );
+      expect(script, contains('installing motifd asset uploaded over SSH'));
+      expect(script, contains(r'rm -f "$UPLOADED_ARCHIVE"'));
+    });
+
+    test('is valid POSIX shell syntax', () async {
+      if (Platform.isWindows) return;
+      final script = SshBootstrapper.buildScript(
+        repository: 'xiachufang/motif',
+        remoteHost: '127.0.0.1',
+        remotePort: 7777,
+        token: '',
+      );
+      final process = await Process.start('sh', const <String>['-n']);
+      final stdout = process.stdout.transform(utf8.decoder).join();
+      final stderr = process.stderr.transform(utf8.decoder).join();
+      process.stdin.write(script);
+      await process.stdin.close();
+
+      expect(await process.exitCode, 0, reason: await stderr);
+      expect(await stdout, isEmpty);
+    });
+  });
+
+  group('SshBootstrapper local download fallback', () {
+    test('recognizes an explicit remote download failure marker', () {
+      expect(
+        SshBootstrapper.shouldUseLocalDownloadFallback(
+          stdout: 'remote platform: linux-x86_64',
+          stderr:
+              'curl failed\n'
+              'MOTIFD_REMOTE_DOWNLOAD_FAILED platform=linux arch=x86_64 '
+              'upload=/home/fei/.local/share/motif/bin/'
+              'motifd-linux-x86_64-upload.tar.gz',
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not retry unrelated remote bootstrap failures', () {
+      expect(
+        SshBootstrapper.shouldUseLocalDownloadFallback(
+          stdout: 'starting motifd',
+          stderr: 'bind: address already in use',
+        ),
+        isFalse,
+      );
+    });
+
+    test('selects the matching motifd release archive', () {
+      final asset = SshBootstrapper.releaseAsset(
+        <String, Object?>{
+          'schema': 1,
+          'channel': 'stable',
+          'product': 'motifd',
+          'assets': <String, Object?>{
+            'linux-x86_64': <String, Object?>{
+              'file': 'motifd-1.2.3-linux-x86_64.tar.gz',
+              'url':
+                  'https://github.com/xiachufang/motif/releases/download/'
+                  'v1.2.3/motifd-1.2.3-linux-x86_64.tar.gz',
+              'sha256': List.filled(64, 'a').join(),
+              'size': 123,
+            },
+          },
+        },
+        platform: 'linux',
+        arch: 'x86_64',
+      );
+
+      expect(
+        asset?.url.toString(),
+        'https://github.com/xiachufang/motif/releases/download/'
+        'v1.2.3/motifd-1.2.3-linux-x86_64.tar.gz',
+      );
+      expect(asset?.sha256, List.filled(64, 'a').join());
+      expect(asset?.size, 123);
+    });
+
+    test('rejects non-HTTPS release asset URLs', () {
+      expect(
+        SshBootstrapper.releaseAsset(
+          <String, Object?>{
+            'schema': 1,
+            'channel': 'stable',
+            'product': 'motifd',
+            'assets': <String, Object?>{
+              'linux-x86_64': <String, Object?>{
+                'file': 'motifd-1.2.3-linux-x86_64.tar.gz',
+                'url': 'http://example.com/motifd.tar.gz',
+                'sha256': List.filled(64, 'a').join(),
+                'size': 123,
+              },
+            },
+          },
+          platform: 'linux',
+          arch: 'x86_64',
+        ),
+        isNull,
+      );
     });
   });
 }

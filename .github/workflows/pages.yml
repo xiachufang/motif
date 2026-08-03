@@ -7,6 +7,15 @@ on:
     paths:
       - docs/site/**
       - .github/workflows/pages.yml
+  # Release workflows update stable pointers on the release-metadata branch.
+  # Deploy from the default branch after they finish so Pages always uses the
+  # current site workflow rather than the branch snapshot created earlier.
+  workflow_run:
+    workflows:
+      - release-desktop
+      - release-macos-signed
+      - release-motifd
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +36,28 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: main
+          path: source
+
+      # The metadata branch is created on the first successful tagged release.
+      # Until then, continue deploying the existing site without /meta files.
+      - name: Check out stable release metadata
+        id: metadata
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: release-metadata
+          path: release-metadata
+
+      - name: Merge stable metadata into site
+        if: steps.metadata.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if [ -d release-metadata/meta ]; then
+            mkdir -p source/docs/site/meta
+            cp -R release-metadata/meta/. source/docs/site/meta/
+          fi
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
@@ -34,7 +65,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: docs/site
+          path: source/docs/site
 
       - name: Deploy to GitHub Pages
         id: deployment
