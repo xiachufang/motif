@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 pub const PING_SERVICE: &str = "motif-server";
 
 /// Body of `GET /ping`. `service` is always [`PING_SERVICE`]; `version`
-/// carries the server build's `CARGO_PKG_VERSION` for diagnostics only.
+/// carries the server's user-facing release version for diagnostics and
+/// managed SSH updates.
 ///
 /// The `rzv_direct_*` fields are an optional LAN-direct hint: when a
 /// rendezvous-mode server also exposes a plaintext, non-loopback `--listen`

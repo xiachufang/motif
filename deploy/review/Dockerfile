@@ -62,7 +62,9 @@ RUN sed -i 's#, *"apps/\*"##' Cargo.toml \
 # RPC/WS protocol directly.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p motif-server --bin motifd --no-default-features \
+    MOTIF_VERSION="$(sed -n 's/^version:[[:space:]]*\([^+[:space:]]*\).*$/\1/p' apps/flutter/pubspec.yaml)" \
+ && test -n "${MOTIF_VERSION}" \
+ && MOTIF_VERSION="${MOTIF_VERSION}" cargo build --release -p motif-server --bin motifd --no-default-features \
  && cp /src/target/release/motifd /usr/local/bin/motifd \
  && strip /usr/local/bin/motifd || true
 

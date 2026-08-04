@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/coding_agent_hooks.dart';
 import 'package:motif/motif/models/settings.dart';
+import 'package:motif/motif/net/ssh/ssh_bootstrapper.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
@@ -122,9 +123,97 @@ void main() {
 
     expect(find.byKey(const ValueKey('remove-codex-hook')), findsOneWidget);
   });
+
+  testWidgets('shows and updates motifd for an SSH terminal', (tester) async {
+    var serverVersion = '1.0.54';
+    var updateCalls = 0;
+    final app = await _appWithHookBackend(
+      _HookRpcBackend(),
+      server: const MotifServer(
+        id: 'server-1',
+        name: 'SSH Remote',
+        host: '127.0.0.1',
+        kind: ServerKind.ssh,
+        sshHost: 'devbox.example.com',
+        sshUsername: 'fei',
+        sshPassword: 'secret',
+      ),
+    );
+    addTearDown(app.dispose);
+    Future<SshMotifdVersionInfo> loadVersion(MotifServer _) async =>
+        SshMotifdVersionInfo.evaluate(
+          serverVersion: serverVersion,
+          localVersion: '1.0.55',
+          availableVersion: '1.0.55',
+        );
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: MotifToastHost(
+            child: Scaffold(
+              body: TerminalSettingsSheet(
+                serverId: 'server-1',
+                sshMotifdVersionLoader: loadVersion,
+                sshMotifdUpdater: (_) async {
+                  updateCalls += 1;
+                  serverVersion = '1.0.55';
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('REMOTE MOTIFD'), findsOneWidget);
+    expect(find.text('Server 1.0.54 · Local 1.0.55'), findsOneWidget);
+    expect(find.byKey(const ValueKey('update-ssh-motifd')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('update-ssh-motifd')));
+    await tester.pumpAndSettle();
+    expect(find.text('Update remote motifd?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Update'));
+    await tester.pumpAndSettle();
+
+    expect(updateCalls, 1);
+    expect(find.text('Server 1.0.55 · Local 1.0.55'), findsOneWidget);
+    expect(find.byKey(const ValueKey('update-ssh-motifd')), findsNothing);
+  });
+
+  testWidgets('hides motifd updates for a non-SSH terminal', (tester) async {
+    final app = await _appWithHookBackend(_HookRpcBackend());
+    addTearDown(app.dispose);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: const Scaffold(
+            body: TerminalSettingsSheet(serverId: 'server-1'),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('REMOTE MOTIFD'), findsNothing);
+    expect(find.byKey(const ValueKey('update-ssh-motifd')), findsNothing);
+  });
 }
 
-Future<AppState> _appWithHookBackend(_HookRpcBackend backend) async {
+Future<AppState> _appWithHookBackend(
+  _HookRpcBackend backend, {
+  MotifServer server = const MotifServer(
+    id: 'server-1',
+    name: 'Remote',
+    host: 'remote.example.com',
+  ),
+}) async {
   SharedPreferences.setMockInitialValues({});
   final prefs = await SharedPreferences.getInstance();
   final transport = TestServerTransport(live: true, onCall: backend.call);
@@ -136,13 +225,7 @@ Future<AppState> _appWithHookBackend(_HookRpcBackend backend) async {
     platform: PlatformServices.defaults(),
     serverTransportFactory: (_) => transport,
   );
-  await app.servers.add(
-    const MotifServer(
-      id: 'server-1',
-      name: 'Remote',
-      host: 'remote.example.com',
-    ),
-  );
+  await app.servers.add(server);
   app.serverInstance('server-1');
   return app;
 }

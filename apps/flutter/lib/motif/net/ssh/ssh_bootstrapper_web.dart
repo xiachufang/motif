@@ -10,6 +10,26 @@ class SshBootstrapper {
 
   Future<void> ensureMotifd() async =>
       throw UnsupportedError('SSH transport is not available on web');
+
+  Future<SshMotifdVersionInfo> checkForUpdate() async =>
+      throw UnsupportedError('SSH transport is not available on web');
+
+  Future<void> upgradeMotifd() async =>
+      throw UnsupportedError('SSH transport is not available on web');
+}
+
+class SshMotifdVersionInfo {
+  const SshMotifdVersionInfo({
+    required this.serverVersion,
+    required this.localVersion,
+    required this.availableVersion,
+    required this.updateAvailable,
+  });
+
+  final String? serverVersion;
+  final String localVersion;
+  final String availableVersion;
+  final bool updateAvailable;
 }
 
 class SshBootstrapException implements Exception {

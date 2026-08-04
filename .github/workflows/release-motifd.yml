@@ -137,7 +137,10 @@ jobs:
           set -euo pipefail
           bin="$(find dist/release/motifd -type f \( -name 'motifd' -o -name 'motifd.exe' \) -print -quit)"
           test -n "$bin"
-          "$bin" --version
+          expected="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]; exit}' apps/flutter/pubspec.yaml)"
+          actual="$("$bin" --version)"
+          echo "$actual"
+          grep -F "$expected" <<<"$actual"
 
       - uses: actions/upload-artifact@v4
         with:

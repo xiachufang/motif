@@ -1,5 +1,13 @@
 //! Motif core server library.
 
+/// User-facing motifd build version. Release builds inject the shared Motif
+/// version from `apps/flutter/pubspec.yaml`; local Cargo builds fall back to
+/// the crate version.
+pub const VERSION: &str = match option_env!("MOTIF_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub mod agent_hooks;
 pub mod auth;
 pub mod capture;

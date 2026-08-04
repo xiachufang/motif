@@ -91,7 +91,7 @@ async fn ping(
     };
     axum::Json(motif_proto::ping::PingInfo {
         service: motif_proto::ping::PING_SERVICE.to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: crate::VERSION.to_string(),
         capabilities: {
             let mut capabilities = vec![WS_PROBE_CAPABILITY.to_string()];
             if state.capture.is_advertised() {

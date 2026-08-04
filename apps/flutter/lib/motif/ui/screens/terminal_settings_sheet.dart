@@ -5,6 +5,7 @@ import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/coding_agent_hooks.dart';
 import '../../models/settings.dart';
+import '../../net/ssh/ssh_bootstrapper.dart';
 import '../../state/app/app_state.dart';
 import '../../state/persistence/stores.dart';
 import '../../state/server/coding_agent_hooks_controller.dart';
@@ -15,18 +16,30 @@ import '../widgets/top_toast.dart';
 
 part 'terminal_settings_sheet.g.dart';
 
+typedef SshMotifdVersionLoader =
+    Future<SshMotifdVersionInfo> Function(MotifServer server);
+typedef SshMotifdUpdater = Future<void> Function(MotifServer server);
+
 /// Font size + theme controls (mirrors TerminalSettingsSheet).
 @ObservationWidget()
 class TerminalSettingsSheet extends _$TerminalSettingsSheet {
-  const TerminalSettingsSheet({required this.serverId, super.key});
+  const TerminalSettingsSheet({
+    required this.serverId,
+    this.sshMotifdVersionLoader,
+    this.sshMotifdUpdater,
+    super.key,
+  });
 
   final String serverId;
+  final SshMotifdVersionLoader? sshMotifdVersionLoader;
+  final SshMotifdUpdater? sshMotifdUpdater;
 
   @override
   Widget build(BuildContext context) {
     final app = ObservationScope.of<AppState>(context);
     final store = app.terminalSettings;
     final s = store.settings;
+    final server = app.serverById(serverId);
     final hooks = app.existingServerInstance(serverId)?.codingAgentHooks;
     final c = context.motif;
     return Column(
@@ -87,6 +100,14 @@ class TerminalSettingsSheet extends _$TerminalSettingsSheet {
             ),
           ],
         ),
+        if (server?.kind == ServerKind.ssh) ...[
+          const SizedBox(height: MotifSpacing.md),
+          _SshMotifdUpdateSection(
+            server: server!,
+            versionLoader: sshMotifdVersionLoader,
+            updater: sshMotifdUpdater,
+          ),
+        ],
         if (hooks != null) ...[
           const SizedBox(height: MotifSpacing.md),
           _CodingAgentHooksSection(
@@ -95,6 +116,193 @@ class TerminalSettingsSheet extends _$TerminalSettingsSheet {
             serverId: serverId,
           ),
         ],
+      ],
+    );
+  }
+}
+
+class _SshMotifdUpdateSection extends StatefulWidget {
+  const _SshMotifdUpdateSection({
+    required this.server,
+    this.versionLoader,
+    this.updater,
+  });
+
+  final MotifServer server;
+  final SshMotifdVersionLoader? versionLoader;
+  final SshMotifdUpdater? updater;
+
+  @override
+  State<_SshMotifdUpdateSection> createState() =>
+      _SshMotifdUpdateSectionState();
+}
+
+class _SshMotifdUpdateSectionState extends State<_SshMotifdUpdateSection> {
+  SshMotifdVersionInfo? _version;
+  String? _error;
+  bool _checking = false;
+  bool _updating = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_check());
+  }
+
+  @override
+  void didUpdateWidget(covariant _SshMotifdUpdateSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.server != widget.server) unawaited(_check());
+  }
+
+  Future<SshMotifdVersionInfo> _loadVersion() {
+    final loader = widget.versionLoader;
+    return loader == null
+        ? SshBootstrapper(server: widget.server).checkForUpdate()
+        : loader(widget.server);
+  }
+
+  Future<void> _check() async {
+    if (_checking || _updating) return;
+    setState(() {
+      _checking = true;
+      _error = null;
+    });
+    try {
+      final version = await _loadVersion();
+      if (!mounted) return;
+      setState(() {
+        _version = version;
+        _checking = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _error = _friendlyVersionError(error);
+      });
+    }
+  }
+
+  Future<void> _update() async {
+    final version = _version;
+    if (version == null || !version.updateAvailable || _updating) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Update remote motifd?'),
+        content: Text(
+          'The SSH server will update to motifd '
+          '${version.availableVersion} and restart. Current remote terminal '
+          'connections may be interrupted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _updating = true;
+      _error = null;
+    });
+    try {
+      final updater = widget.updater;
+      if (updater == null) {
+        await SshBootstrapper(server: widget.server).upgradeMotifd();
+      } else {
+        await updater(widget.server);
+      }
+      final refreshed = await _loadVersion();
+      if (!mounted) return;
+      setState(() {
+        _version = refreshed;
+        _updating = false;
+      });
+      showMotifToast(
+        context,
+        'motifd ${refreshed.serverVersion ?? refreshed.availableVersion} updated',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      final message = _friendlyVersionError(error);
+      setState(() {
+        _updating = false;
+        _error = message;
+      });
+      showMotifToast(context, message, duration: const Duration(seconds: 4));
+    }
+  }
+
+  static String _friendlyVersionError(Object error) {
+    final firstLine = '$error'.trim().split('\n').first;
+    return firstLine.isEmpty ? 'Version check failed' : firstLine;
+  }
+
+  String get _subtitle {
+    if (_updating) {
+      return 'Downloading, verifying, and restarting remote motifd…';
+    }
+    if (_checking) return 'Checking server and local versions…';
+    if (_error != null) return _error!;
+    final version = _version;
+    if (version == null) return 'Version has not been checked.';
+    final parts = <String>[
+      'Server ${version.serverVersion ?? 'not installed'}',
+      'Local ${version.localVersion}',
+    ];
+    if (version.availableVersion != version.localVersion) {
+      parts.add('Available ${version.availableVersion}');
+    }
+    return parts.join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final version = _version;
+    final busy = _checking || _updating;
+    final Widget trailing;
+    if (busy) {
+      trailing = SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2, color: c.accent),
+      );
+    } else if (version?.updateAvailable ?? false) {
+      trailing = TextButton(
+        key: const ValueKey('update-ssh-motifd'),
+        onPressed: _update,
+        child: Text(version!.serverVersion == null ? 'Install' : 'Update'),
+      );
+    } else {
+      trailing = IconButton(
+        key: const ValueKey('check-ssh-motifd'),
+        tooltip: 'Check motifd version',
+        onPressed: _check,
+        icon: const Icon(Icons.refresh, size: 18),
+      );
+    }
+    return MotifSection(
+      title: 'Remote motifd',
+      footer:
+          'Available only for SSH terminals. Updates use the verified stable release for the server platform.',
+      children: [
+        MotifSectionRow(
+          leading: const Icon(Icons.system_update_alt_outlined, size: 18),
+          title: 'motifd version',
+          subtitle: _subtitle,
+          subtitleColor: _error == null ? null : c.danger,
+          trailing: trailing,
+          minHeight: 64,
+        ),
       ],
     );
   }

@@ -7,7 +7,11 @@ use base64::Engine;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "motifd", version, about = "motif remote dev agent — server")]
+#[command(
+    name = "motifd",
+    version = motif_server::VERSION,
+    about = "motif remote dev agent — server"
+)]
 struct Args {
     /// TCP listen address. Omit to run tailscale-/rzv-only. A non-loopback
     /// address is automatically encrypted (self-signed TLS, client pins the

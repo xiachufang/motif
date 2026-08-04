@@ -76,6 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          EXPECTED=$(awk '/^version:/ {split($2, parts, "+"); print parts[1]; exit}' apps/flutter/pubspec.yaml)
+          docker run --rm --entrypoint motifd "$TAG" --version | grep -F "$EXPECTED"
           # A network --listen (0.0.0.0:8080) now auto-encrypts (self-signed TLS,
           # client pins the cert) and authenticates with a psk-derived bearer —
           # the token-file path is gone. Pass a fixed psk and derive the same

@@ -63,6 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
+          EXPECTED=$(awk '/^version:/ {split($2, parts, "+"); print parts[1]; exit}' apps/flutter/pubspec.yaml)
+          docker run --rm --entrypoint motifd "$TAG" --version | grep -F "$EXPECTED"
           # A non-loopback --listen (0.0.0.0:7777 here) auto-enables self-signed
           # TLS + a psk-derived bearer; the plaintext/token path is gone. Derive
           # the same bearer a client would (HKDF-SHA256, byte-identical with

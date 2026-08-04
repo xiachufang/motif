@@ -92,7 +92,9 @@ RUN sed -i 's#, *"apps/\*"##' Cargo.toml && ! grep -q '"apps/\*"' Cargo.toml
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \
-    LIBGHOSTTY_VT_SYS_OPTIMIZE="${LIBGHOSTTY_VT_SYS_OPTIMIZE}" cargo build --release -p motif-server --bin motifd --no-default-features --features tailscale-bundled; \
+    MOTIF_VERSION="$(sed -n 's/^version:[[:space:]]*\([^+[:space:]]*\).*$/\1/p' apps/flutter/pubspec.yaml)"; \
+    test -n "${MOTIF_VERSION}"; \
+    MOTIF_VERSION="${MOTIF_VERSION}" LIBGHOSTTY_VT_SYS_OPTIMIZE="${LIBGHOSTTY_VT_SYS_OPTIMIZE}" cargo build --release -p motif-server --bin motifd --no-default-features --features tailscale-bundled; \
     cp /src/target/release/motifd /usr/local/bin/motifd; \
     strip /usr/local/bin/motifd || true
 

@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../models/settings.dart';
 
@@ -108,6 +109,98 @@ class SshBootstrapper {
     }
   }
 
+  /// Compares the installed SSH-hosted motifd with the release available to
+  /// this client. A running server's `/ping` version is preferred; managed
+  /// release metadata and `motifd --version` cover stopped and older installs.
+  Future<SshMotifdVersionInfo> checkForUpdate() async {
+    final remote = await _inspectRemoteMotifd();
+    final asset = await _releaseAssetFor(
+      platform: remote.platform,
+      arch: remote.arch,
+    );
+    final localVersion = (await PackageInfo.fromPlatform()).version;
+    return SshMotifdVersionInfo.evaluate(
+      serverVersion: remote.version,
+      localVersion: localVersion,
+      availableVersion: asset.version,
+    );
+  }
+
+  /// Replaces the user-local remote binary with the current stable asset and
+  /// restarts the nohup-managed process. Existing motifd connections drop as
+  /// part of the restart.
+  Future<void> upgradeMotifd() async {
+    final socket = await _connect();
+    final List<SSHKeyPair>? identities;
+    try {
+      identities = _identities();
+    } catch (e) {
+      socket.destroy();
+      throw _failure(
+        'preparing SSH credentials',
+        'SSH private key could not be parsed. Check that the key and '
+            'passphrase are correct.',
+        cause: e,
+      );
+    }
+    final client = SSHClient(
+      socket,
+      username: server.sshUsername.trim(),
+      identities: identities,
+      onPasswordRequest: _usesPassword ? () => server.sshPassword : null,
+      onUserInfoRequest: _usesPassword
+          ? (dynamic request) {
+              final prompts = request.prompts as List<Object?>;
+              return List<String>.filled(prompts.length, server.sshPassword);
+            }
+          : null,
+    );
+    try {
+      await client.ping().timeout(connectTimeout);
+      final result = await _runBootstrapScript(client, forceInstall: true);
+      final stdout = _decode(result.stdout);
+      if (bootstrapReady(exitCode: result.exitCode, stdout: stdout)) return;
+
+      final stderr = _decode(result.stderr);
+      final localUpload = _localUploadRequest(stdout: stdout, stderr: stderr);
+      if (localUpload != null) {
+        await _retryWithLocalDownload(
+          client,
+          localUpload,
+          forceInstall: true,
+          initialResult: result,
+          initialStdout: stdout,
+          initialStderr: stderr,
+        );
+        return;
+      }
+      throw _failure(
+        'updating remote motifd',
+        'Remote update failed before motifd became ready.',
+        exitCode: result.exitCode,
+        exitSignal: result.exitSignal?.toString(),
+        stdout: stdout,
+        stderr: stderr,
+      );
+    } on SshBootstrapException {
+      rethrow;
+    } on TimeoutException catch (e) {
+      throw _failure(
+        'updating remote motifd',
+        'SSH update timed out after ${_formatDuration(runTimeout)}.',
+        cause: e,
+      );
+    } catch (e) {
+      throw _failure(
+        'updating remote motifd',
+        'SSH update could not be completed.',
+        cause: e,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
   Future<SSHSocket> _connect() async {
     try {
       return await SSHSocket.connect(
@@ -129,6 +222,8 @@ class SshBootstrapper {
   Future<SSHRunResult> _runBootstrapScript(
     SSHClient client, {
     String uploadedArchive = '',
+    String uploadedVersion = '',
+    bool forceInstall = false,
   }) async {
     try {
       return await client
@@ -140,6 +235,8 @@ class SshBootstrapper {
               token: server.token,
               metadataUrl: metadataUrl.toString(),
               uploadedArchive: uploadedArchive,
+              uploadedVersion: uploadedVersion,
+              forceInstall: forceInstall,
             ),
           )
           .timeout(runTimeout);
@@ -161,11 +258,12 @@ class SshBootstrapper {
   Future<void> _retryWithLocalDownload(
     SSHClient client,
     _LocalUploadRequest request, {
+    bool forceInstall = false,
     required SSHRunResult initialResult,
     required String initialStdout,
     required String initialStderr,
   }) async {
-    final Uint8List archive;
+    final _DownloadedReleaseArchive archive;
     try {
       archive = await _downloadReleaseArchive(
         platform: request.platform,
@@ -185,7 +283,7 @@ class SshBootstrapper {
     }
 
     try {
-      await _uploadReleaseArchive(client, request.uploadPath, archive);
+      await _uploadReleaseArchive(client, request.uploadPath, archive.bytes);
     } catch (e) {
       throw _failure(
         'uploading motifd over SSH',
@@ -202,6 +300,8 @@ class SshBootstrapper {
     final retry = await _runBootstrapScript(
       client,
       uploadedArchive: request.uploadPath,
+      uploadedVersion: archive.version,
+      forceInstall: forceInstall,
     );
     final retryStdout = _decode(retry.stdout);
     if (bootstrapReady(exitCode: retry.exitCode, stdout: retryStdout)) return;
@@ -217,7 +317,7 @@ class SshBootstrapper {
     );
   }
 
-  Future<Uint8List> _downloadReleaseArchive({
+  Future<_DownloadedReleaseArchive> _downloadReleaseArchive({
     required String platform,
     required String arch,
   }) async {
@@ -265,9 +365,125 @@ class SshBootstrapper {
       if (actualSha256 != asset.sha256) {
         throw StateError('motifd release asset SHA-256 mismatch');
       }
-      return response.bodyBytes;
+      return _DownloadedReleaseArchive(
+        bytes: response.bodyBytes,
+        version: asset.version,
+      );
     } finally {
       if (ownsClient) client.close();
+    }
+  }
+
+  Future<MotifdReleaseAsset> _releaseAssetFor({
+    required String platform,
+    required String arch,
+  }) async {
+    final client = httpClient ?? http.Client();
+    final ownsClient = httpClient == null;
+    try {
+      final response = await client
+          .get(metadataUrl, headers: _metadataHeaders)
+          .timeout(connectTimeout);
+      if (response.statusCode != 200) {
+        throw StateError(
+          'Stable motifd metadata returned HTTP ${response.statusCode}',
+        );
+      }
+      final asset = releaseAsset(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+        platform: platform,
+        arch: arch,
+      );
+      if (asset == null) {
+        throw StateError(
+          'Stable metadata has no motifd asset for $platform-$arch',
+        );
+      }
+      return asset;
+    } finally {
+      if (ownsClient) client.close();
+    }
+  }
+
+  Future<_RemoteMotifdInfo> _inspectRemoteMotifd() async {
+    final socket = await _connect();
+    final List<SSHKeyPair>? identities;
+    try {
+      identities = _identities();
+    } catch (e) {
+      socket.destroy();
+      throw _failure(
+        'preparing SSH credentials',
+        'SSH private key could not be parsed. Check that the key and '
+            'passphrase are correct.',
+        cause: e,
+      );
+    }
+    final client = SSHClient(
+      socket,
+      username: server.sshUsername.trim(),
+      identities: identities,
+      onPasswordRequest: _usesPassword ? () => server.sshPassword : null,
+      onUserInfoRequest: _usesPassword
+          ? (dynamic request) {
+              final prompts = request.prompts as List<Object?>;
+              return List<String>.filled(prompts.length, server.sshPassword);
+            }
+          : null,
+    );
+    try {
+      await client.ping().timeout(connectTimeout);
+      final result = await client
+          .runWithResult(
+            buildVersionInspectionScript(
+              remoteHost: server.host.trim(),
+              remotePort: server.port,
+            ),
+          )
+          .timeout(connectTimeout);
+      final stdout = _decode(result.stdout);
+      if (result.exitCode != 0 && result.exitCode != null) {
+        throw _failure(
+          'checking remote motifd version',
+          'The remote version check failed.',
+          exitCode: result.exitCode,
+          exitSignal: result.exitSignal?.toString(),
+          stdout: stdout,
+          stderr: _decode(result.stderr),
+        );
+      }
+      final platform = _inspectionValue(stdout, 'MOTIFD_PLATFORM');
+      final arch = _inspectionValue(stdout, 'MOTIFD_ARCH');
+      final rawVersion = _inspectionValue(stdout, 'MOTIFD_VERSION');
+      if (platform == null || arch == null) {
+        throw _failure(
+          'checking remote motifd version',
+          'The remote host did not report a supported platform.',
+          stdout: stdout,
+          stderr: _decode(result.stderr),
+        );
+      }
+      return _RemoteMotifdInfo(
+        platform: platform,
+        arch: arch,
+        version: _ReleaseVersion.tryParse(rawVersion ?? '')?.display,
+      );
+    } on SshBootstrapException {
+      rethrow;
+    } on TimeoutException catch (e) {
+      throw _failure(
+        'checking remote motifd version',
+        'The version check timed out after ${_formatDuration(connectTimeout)}.',
+        cause: e,
+      );
+    } catch (e) {
+      throw _failure(
+        'checking remote motifd version',
+        'The remote version could not be checked.',
+        cause: e,
+      );
+    } finally {
+      client.close();
     }
   }
 
@@ -411,10 +627,13 @@ class SshBootstrapper {
     if (asset is! Map) return null;
     final suffix = '-$platform-$arch.tar.gz';
     final name = asset['file'];
+    final version = asset['version'];
     final downloadUrl = asset['url'];
     final checksum = asset['sha256'];
     final size = asset['size'];
     if (name is! String ||
+        version is! String ||
+        _ReleaseVersion.tryParse(version) == null ||
         downloadUrl is! String ||
         checksum is! String ||
         size is! int ||
@@ -428,7 +647,12 @@ class SshBootstrapper {
     if (uri == null || uri.scheme != 'https' || uri.host != 'github.com') {
       return null;
     }
-    return MotifdReleaseAsset(url: uri, sha256: checksum, size: size);
+    return MotifdReleaseAsset(
+      version: _ReleaseVersion.tryParse(version)!.display,
+      url: uri,
+      sha256: checksum,
+      size: size,
+    );
   }
 
   static Uri stableMetadataUrl(String repository) {
@@ -449,6 +673,8 @@ class SshBootstrapper {
     required String token,
     String metadataUrl = '',
     String uploadedArchive = '',
+    String uploadedVersion = '',
+    bool forceInstall = false,
   }) {
     final qRepository = _shQuote(repository);
     final qHost = _shQuote(remoteHost);
@@ -459,6 +685,7 @@ class SshBootstrapper {
         : metadataUrl;
     final qMetadataUrl = _shQuote(resolvedMetadataUrl);
     final qUploadedArchive = _shQuote(uploadedArchive);
+    final qUploadedVersion = _shQuote(uploadedVersion);
     return '''
 set -eu
 
@@ -468,6 +695,8 @@ REMOTE_PORT=$qPort
 TOKEN_VALUE=$qToken
 METADATA_URL=$qMetadataUrl
 UPLOADED_ARCHIVE=$qUploadedArchive
+UPLOADED_VERSION=$qUploadedVersion
+FORCE_INSTALL=${forceInstall ? 1 : 0}
 
 DATA_HOME=\${XDG_DATA_HOME:-"\$HOME/.local/share"}
 STATE_HOME=\${XDG_STATE_HOME:-"\$HOME/.local/state"}
@@ -475,10 +704,21 @@ DATA_DIR="\$DATA_HOME/motif"
 STATE_DIR="\$STATE_HOME/motif"
 BIN_DIR="\$DATA_DIR/bin"
 BIN="\$BIN_DIR/motifd"
+VERSION_FILE="\$BIN_DIR/motifd.version"
 TOKEN_FILE="\$DATA_DIR/motifd/token"
 PID_FILE="\$STATE_DIR/motifd.pid"
 LOG_FILE="\$STATE_DIR/motifd.log"
 LISTEN="\$REMOTE_HOST:\$REMOTE_PORT"
+installed_asset_version=""
+
+record_installed_version() {
+  if [ -z "\$installed_asset_version" ]; then
+    return 0
+  fi
+  version_tmp="\$VERSION_FILE.new.\$\$"
+  printf '%s\\n' "\$installed_asset_version" > "\$version_tmp"
+  mv -f "\$version_tmp" "\$VERSION_FILE"
+}
 
 download_to() {
   url="\$1"
@@ -567,8 +807,13 @@ install_motifd() {
       echo "SSH-uploaded motifd archive is missing: \$UPLOADED_ARCHIVE" >&2
       exit 28
     fi
+    if [ -z "\$UPLOADED_VERSION" ]; then
+      echo "SSH-uploaded motifd archive has no release version" >&2
+      exit 35
+    fi
     echo "installing motifd asset uploaded over SSH"
     cp "\$UPLOADED_ARCHIVE" "\$tmp/motifd.tar.gz"
+    asset_version="\$UPLOADED_VERSION"
   else
     echo "downloading stable motifd metadata from \$METADATA_URL"
     if ! download_to "\$METADATA_URL" "\$tmp/release.json" 30; then
@@ -586,7 +831,11 @@ install_motifd() {
       printf '%s\\n' "\$asset_block" |
         sed -n 's|.*"sha256"[[:space:]]*:[[:space:]]*"\\([0-9a-f]*\\)".*|\\1|p'
     )
-    if [ -z "\$asset_url" ] || [ "\${#asset_sha}" -ne 64 ]; then
+    asset_version=\$(
+      printf '%s\\n' "\$asset_block" |
+        sed -n 's|.*"version"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*|\\1|p'
+    )
+    if [ -z "\$asset_url" ] || [ "\${#asset_sha}" -ne 64 ] || [ -z "\$asset_version" ]; then
       echo "stable metadata has no valid motifd asset for \$platform-\$arch" >&2
       exit 22
     fi
@@ -607,8 +856,16 @@ install_motifd() {
     echo "downloaded motifd archive did not contain motifd" >&2
     exit 23
   fi
-  cp "\$found" "\$BIN"
-  chmod 0755 "\$BIN"
+  candidate="\$BIN.new.\$\$"
+  cp "\$found" "\$candidate"
+  chmod 0755 "\$candidate"
+  if ! "\$candidate" --version >/dev/null 2>&1; then
+    echo "downloaded motifd failed version check" >&2
+    rm -f "\$candidate"
+    exit 31
+  fi
+  mv -f "\$candidate" "\$BIN"
+  installed_asset_version="\$asset_version"
   if [ -n "\$UPLOADED_ARCHIVE" ]; then
     rm -f "\$UPLOADED_ARCHIVE"
   fi
@@ -616,7 +873,7 @@ install_motifd() {
 }
 
 echo "checking motifd on \$LISTEN"
-if ping_motifd; then
+if [ "\$FORCE_INSTALL" -ne 1 ] && ping_motifd; then
   echo "motifd already running on \$LISTEN"
   exit 0
 fi
@@ -625,7 +882,7 @@ mkdir -p "\$BIN_DIR" "\$STATE_DIR" "\$(dirname "\$TOKEN_FILE")"
 
 version_check_err="\$STATE_DIR/motifd-version-check.err"
 needs_install=0
-if [ ! -x "\$BIN" ]; then
+if [ "\$FORCE_INSTALL" -eq 1 ] || [ ! -x "\$BIN" ]; then
   needs_install=1
 elif "\$BIN" --version >/dev/null 2>"\$version_check_err"; then
   rm -f "\$version_check_err"
@@ -637,6 +894,37 @@ fi
 
 if [ "\$needs_install" -eq 1 ]; then
   install_motifd
+fi
+
+if [ "\$FORCE_INSTALL" -eq 1 ]; then
+  old_pid=\$(cat "\$PID_FILE" 2>/dev/null || true)
+  if [ -n "\$old_pid" ] && kill -0 "\$old_pid" 2>/dev/null; then
+    old_command=\$(ps -p "\$old_pid" -o command= 2>/dev/null || true)
+    case "\$old_command" in
+      *motifd*)
+        echo "stopping motifd process \$old_pid for update"
+        kill "\$old_pid"
+        i=0
+        while kill -0 "\$old_pid" 2>/dev/null && [ "\$i" -lt 15 ]; do
+          i=\$((i + 1))
+          sleep 1
+        done
+        if kill -0 "\$old_pid" 2>/dev/null; then
+          echo "motifd process \$old_pid did not stop" >&2
+          exit 32
+        fi
+        ;;
+      *)
+        echo "refusing to stop PID \$old_pid because it is not motifd" >&2
+        exit 33
+        ;;
+    esac
+  fi
+  rm -f "\$PID_FILE"
+  if ping_motifd; then
+    echo "a motifd not managed by this SSH connection is still listening on \$LISTEN" >&2
+    exit 34
+  fi
 fi
 
 if [ -f "\$PID_FILE" ]; then
@@ -663,6 +951,7 @@ printf '%s\\n' "\$pid" > "\$PID_FILE"
 if ! can_ping_motifd; then
   sleep 2
   if kill -0 "\$pid" 2>/dev/null; then
+    record_installed_version
     echo "motifd started on \$LISTEN"
     exit 0
   fi
@@ -674,6 +963,7 @@ fi
 i=0
 while [ "\$i" -lt 30 ]; do
   if ping_motifd; then
+    record_installed_version
     echo "motifd started on \$LISTEN"
     exit 0
   fi
@@ -698,6 +988,14 @@ exit 25
   static String _decode(List<int> bytes) =>
       utf8.decode(bytes, allowMalformed: true).trim();
 
+  static String? _inspectionValue(String output, String key) {
+    final prefix = '$key=';
+    for (final line in const LineSplitter().convert(output)) {
+      if (line.startsWith(prefix)) return line.substring(prefix.length).trim();
+    }
+    return null;
+  }
+
   static String _formatDuration(Duration duration) {
     if (duration.inMinutes >= 1 && duration.inSeconds % 60 == 0) {
       return '${duration.inMinutes}m';
@@ -720,18 +1018,174 @@ exit 25
     r'MOTIFD_REMOTE_DOWNLOAD_FAILED platform=(linux|macos) '
     r'arch=(x86_64|arm64) upload=([^\r\n]+)',
   );
+
+  static String buildVersionInspectionScript({
+    required String remoteHost,
+    required int remotePort,
+  }) =>
+      '''
+set -eu
+
+REMOTE_HOST=${_shQuote(remoteHost)}
+REMOTE_PORT=${_shQuote('$remotePort')}
+DATA_HOME=\${XDG_DATA_HOME:-"\$HOME/.local/share"}
+DATA_DIR="\$DATA_HOME/motif"
+BIN="\$DATA_DIR/bin/motifd"
+VERSION_FILE="\$DATA_DIR/bin/motifd.version"
+
+os=\$(uname -s | tr '[:upper:]' '[:lower:]')
+case "\$os" in
+  linux) platform=linux ;;
+  darwin) platform=macos ;;
+  *) echo "unsupported remote OS: \$os" >&2; exit 20 ;;
+esac
+machine=\$(uname -m)
+case "\$machine" in
+  x86_64|amd64) arch=x86_64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "unsupported remote arch: \$machine" >&2; exit 21 ;;
+esac
+
+installed_version=""
+ping_body=""
+if command -v curl >/dev/null 2>&1; then
+  ping_body=\$(curl -fsS --max-time 3 "http://\$REMOTE_HOST:\$REMOTE_PORT/ping" 2>/dev/null || true)
+elif command -v wget >/dev/null 2>&1; then
+  ping_body=\$(wget -qO- -T 3 "http://\$REMOTE_HOST:\$REMOTE_PORT/ping" 2>/dev/null || true)
+fi
+case "\$ping_body" in
+*'"service":"motif-server"'*)
+  installed_version=\$(
+    printf '%s\\n' "\$ping_body" |
+      sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' |
+      sed -n '1p'
+  )
+  ;;
+esac
+if [ -z "\$installed_version" ] && [ -s "\$VERSION_FILE" ]; then
+  installed_version=\$(sed -n '1p' "\$VERSION_FILE")
+elif [ -z "\$installed_version" ] && [ -x "\$BIN" ]; then
+  installed_version=\$(
+    "\$BIN" --version 2>/dev/null |
+      sed -n 's/^[^0-9]*\\([0-9][0-9A-Za-z.+-]*\\).*\$/\\1/p' |
+      sed -n '1p'
+  )
+fi
+
+printf 'MOTIFD_PLATFORM=%s\\n' "\$platform"
+printf 'MOTIFD_ARCH=%s\\n' "\$arch"
+printf 'MOTIFD_VERSION=%s\\n' "\$installed_version"
+''';
 }
 
 class MotifdReleaseAsset {
   const MotifdReleaseAsset({
+    required this.version,
     required this.url,
     required this.sha256,
     required this.size,
   });
 
+  final String version;
   final Uri url;
   final String sha256;
   final int size;
+}
+
+class SshMotifdVersionInfo {
+  const SshMotifdVersionInfo({
+    required this.serverVersion,
+    required this.localVersion,
+    required this.availableVersion,
+    required this.updateAvailable,
+  });
+
+  factory SshMotifdVersionInfo.evaluate({
+    required String? serverVersion,
+    required String localVersion,
+    required String availableVersion,
+  }) {
+    final server = _ReleaseVersion.tryParse(serverVersion ?? '');
+    final local = _ReleaseVersion.tryParse(localVersion);
+    final available = _ReleaseVersion.tryParse(availableVersion);
+    if (available == null) {
+      throw FormatException(
+        'Invalid available motifd version: $availableVersion',
+      );
+    }
+    return SshMotifdVersionInfo(
+      serverVersion: server?.display,
+      localVersion: local?.display ?? localVersion.trim(),
+      availableVersion: available.display,
+      updateAvailable: server == null || available.compareTo(server) > 0,
+    );
+  }
+
+  final String? serverVersion;
+  final String localVersion;
+  final String availableVersion;
+  final bool updateAvailable;
+}
+
+class _DownloadedReleaseArchive {
+  const _DownloadedReleaseArchive({required this.bytes, required this.version});
+
+  final Uint8List bytes;
+  final String version;
+}
+
+class _RemoteMotifdInfo {
+  const _RemoteMotifdInfo({
+    required this.platform,
+    required this.arch,
+    required this.version,
+  });
+
+  final String platform;
+  final String arch;
+  final String? version;
+}
+
+class _ReleaseVersion implements Comparable<_ReleaseVersion> {
+  const _ReleaseVersion(this.major, this.minor, this.patch, this.prerelease);
+
+  final int major;
+  final int minor;
+  final int patch;
+  final String? prerelease;
+
+  String get display =>
+      '$major.$minor.$patch${prerelease == null ? '' : '-$prerelease'}';
+
+  static final RegExp _pattern = RegExp(
+    r'^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$',
+  );
+
+  static _ReleaseVersion? tryParse(String value) {
+    final match = _pattern.firstMatch(value.trim());
+    if (match == null) return null;
+    return _ReleaseVersion(
+      int.parse(match.group(1)!),
+      int.parse(match.group(2)!),
+      int.parse(match.group(3)!),
+      match.group(4),
+    );
+  }
+
+  @override
+  int compareTo(_ReleaseVersion other) {
+    for (final pair in <(int, int)>[
+      (major, other.major),
+      (minor, other.minor),
+      (patch, other.patch),
+    ]) {
+      final comparison = pair.$1.compareTo(pair.$2);
+      if (comparison != 0) return comparison;
+    }
+    if (prerelease == null && other.prerelease != null) return 1;
+    if (prerelease != null && other.prerelease == null) return -1;
+    return (prerelease ?? '').compareTo(other.prerelease ?? '');
+  }
 }
 
 class _LocalUploadRequest {

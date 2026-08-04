@@ -100,6 +100,20 @@ void main() {
       expect(script, contains('verify_sha256'));
     });
 
+    test('force install script restarts the managed remote process', () {
+      final script = SshBootstrapper.buildScript(
+        repository: 'xiachufang/motif',
+        remoteHost: '127.0.0.1',
+        remotePort: 7777,
+        token: '',
+        forceInstall: true,
+      );
+
+      expect(script, contains('FORCE_INSTALL=1'));
+      expect(script, contains(r'stopping motifd process $old_pid for update'));
+      expect(script, contains(r'mv -f "$version_tmp" "$VERSION_FILE"'));
+    });
+
     test('installs an archive uploaded by the SSH client', () {
       final script = SshBootstrapper.buildScript(
         repository: 'xiachufang/motif',
@@ -107,6 +121,7 @@ void main() {
         remotePort: 7777,
         token: '',
         uploadedArchive: "/home/fei/motif's upload.tar.gz",
+        uploadedVersion: '1.2.3',
       );
 
       expect(
@@ -133,6 +148,23 @@ void main() {
 
       expect(await process.exitCode, 0, reason: await stderr);
       expect(await stdout, isEmpty);
+    });
+
+    test('version inspection script is valid POSIX shell syntax', () async {
+      if (Platform.isWindows) return;
+      final script = SshBootstrapper.buildVersionInspectionScript(
+        remoteHost: "host's-loopback",
+        remotePort: 7777,
+      );
+      final process = await Process.start('sh', const <String>['-n']);
+      final stdout = process.stdout.transform(utf8.decoder).join();
+      final stderr = process.stderr.transform(utf8.decoder).join();
+      process.stdin.write(script);
+      await process.stdin.close();
+
+      expect(await process.exitCode, 0, reason: await stderr);
+      expect(await stdout, isEmpty);
+      expect(script, contains('http://\$REMOTE_HOST:\$REMOTE_PORT/ping'));
     });
   });
 
@@ -169,6 +201,7 @@ void main() {
           'product': 'motifd',
           'assets': <String, Object?>{
             'linux-x86_64': <String, Object?>{
+              'version': '1.2.3',
               'file': 'motifd-1.2.3-linux-x86_64.tar.gz',
               'url':
                   'https://github.com/xiachufang/motif/releases/download/'
@@ -189,6 +222,7 @@ void main() {
       );
       expect(asset?.sha256, List.filled(64, 'a').join());
       expect(asset?.size, 123);
+      expect(asset?.version, '1.2.3');
     });
 
     test('rejects non-HTTPS release asset URLs', () {
@@ -200,6 +234,7 @@ void main() {
             'product': 'motifd',
             'assets': <String, Object?>{
               'linux-x86_64': <String, Object?>{
+                'version': '1.2.3',
                 'file': 'motifd-1.2.3-linux-x86_64.tar.gz',
                 'url': 'http://example.com/motifd.tar.gz',
                 'sha256': List.filled(64, 'a').join(),
@@ -212,6 +247,31 @@ void main() {
         ),
         isNull,
       );
+    });
+  });
+
+  group('SshMotifdVersionInfo', () {
+    test('offers an update when the stable remote asset is newer', () {
+      final info = SshMotifdVersionInfo.evaluate(
+        serverVersion: '1.0.54',
+        localVersion: '1.0.55+38',
+        availableVersion: '1.0.55',
+      );
+
+      expect(info.serverVersion, '1.0.54');
+      expect(info.localVersion, '1.0.55');
+      expect(info.availableVersion, '1.0.55');
+      expect(info.updateAvailable, isTrue);
+    });
+
+    test('does not offer an update when the server is current', () {
+      final info = SshMotifdVersionInfo.evaluate(
+        serverVersion: '1.0.55',
+        localVersion: '1.0.55',
+        availableVersion: '1.0.55',
+      );
+
+      expect(info.updateAvailable, isFalse);
     });
   });
 }

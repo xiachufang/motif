@@ -264,7 +264,7 @@ release-windows: release-rust-windows release-flutter-windows ## Build all Windo
 
 release-rust-macos: check-cargo check-zig deps-rust build-flutter-web ## Build Rust binaries for macOS.
 	$(call require_host,macos)
-	@$(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
+	@MOTIF_VERSION="$(VERSION)" $(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
 	@rm -rf "$(RELEASE_DIR)/rust/macos-$(UNAME_M)"
 	@mkdir -p "$(RELEASE_DIR)/rust/macos-$(UNAME_M)/bin"
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin)" "$(RELEASE_DIR)/rust/macos-$(UNAME_M)/bin/$(bin)";)
@@ -273,7 +273,7 @@ release-rust-macos: check-cargo check-zig deps-rust build-flutter-web ## Build R
 
 release-rust-linux: check-cargo check-zig deps-rust build-flutter-web ## Build Rust binaries for Linux.
 	$(call require_host,linux)
-	@$(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
+	@MOTIF_VERSION="$(VERSION)" $(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
 	@rm -rf "$(RELEASE_DIR)/rust/linux-$(UNAME_M)"
 	@mkdir -p "$(RELEASE_DIR)/rust/linux-$(UNAME_M)/bin"
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin)" "$(RELEASE_DIR)/rust/linux-$(UNAME_M)/bin/$(bin)";)
@@ -282,7 +282,7 @@ release-rust-linux: check-cargo check-zig deps-rust build-flutter-web ## Build R
 
 release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build Rust binaries for Windows.
 	$(call require_host,windows)
-	@$(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
+	@MOTIF_VERSION="$(VERSION)" $(CARGO) build --release $(CARGO_LOCKED) $(foreach pkg,$(RUST_RELEASE_PACKAGES),-p $(pkg))
 	@rm -rf "$(RELEASE_DIR)/rust/windows-$(UNAME_M)"
 	@mkdir -p "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin"
 	@$(foreach bin,$(RUST_RELEASE_BINS),install -m 0755 "target/release/$(bin).exe" "$(RELEASE_DIR)/rust/windows-$(UNAME_M)/bin/$(bin).exe";)
@@ -294,7 +294,7 @@ release-rust-windows: check-cargo check-zig deps-rust build-flutter-web ## Build
 
 release-motifd-macos: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for macOS.
 	$(call require_host,macos)
-	@$(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@MOTIF_VERSION="$(VERSION)" $(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
 	@rm -rf "$(RELEASE_DIR)/motifd/macos-$(RELEASE_ARCH)"
 	@mkdir -p "$(RELEASE_DIR)/motifd/macos-$(RELEASE_ARCH)"
 	@install -m 0755 "target/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/macos-$(RELEASE_ARCH)/$(MOTIFD_RELEASE_BIN)"
@@ -304,7 +304,7 @@ release-motifd-macos: check-cargo check-zig deps-rust build-flutter-web ## Build
 release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for Linux.
 	$(call require_host,linux)
 	@rustup target add $(MOTIFD_LINUX_TARGET)
-	@RUSTFLAGS="$(MOTIFD_LINUX_RUSTFLAGS)" $(CARGO) build --release $(CARGO_LOCKED) --target $(MOTIFD_LINUX_TARGET) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@MOTIF_VERSION="$(VERSION)" RUSTFLAGS="$(MOTIFD_LINUX_RUSTFLAGS)" $(CARGO) build --release $(CARGO_LOCKED) --target $(MOTIFD_LINUX_TARGET) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
 	@rm -rf "$(RELEASE_DIR)/motifd/linux-x86_64"
 	@mkdir -p "$(RELEASE_DIR)/motifd/linux-x86_64"
 	@install -m 0755 "target/$(MOTIFD_LINUX_TARGET)/release/$(MOTIFD_RELEASE_BIN)" "$(RELEASE_DIR)/motifd/linux-x86_64/$(MOTIFD_RELEASE_BIN)"
@@ -313,7 +313,7 @@ release-motifd-linux: check-cargo check-zig deps-rust build-flutter-web ## Build
 
 release-motifd-windows: check-cargo check-zig deps-rust build-flutter-web ## Build and archive the standalone motifd binary for Windows.
 	$(call require_host,windows)
-	@$(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
+	@MOTIF_VERSION="$(VERSION)" $(CARGO) build --release $(CARGO_LOCKED) -p $(MOTIFD_RELEASE_PACKAGE) --bin $(MOTIFD_RELEASE_BIN)
 	@rm -rf "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)"
 	@mkdir -p "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)"
 	@install -m 0755 "target/release/$(MOTIFD_RELEASE_BIN).exe" "$(RELEASE_DIR)/motifd/windows-$(RELEASE_ARCH)/$(MOTIFD_RELEASE_BIN).exe"
