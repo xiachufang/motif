@@ -73,7 +73,7 @@ cargo build -p motif-server --release
 如果只想先验证服务端协议，`cargo build -p motif-server --release` 也能成功，
 但没有 Flutter Web 产物时 `motifd` 只会内嵌一个提示页。
 
-从源码构建 `motifd` 需要 Zig 0.15.x；默认启用嵌入式 Tailscale 时还需要 Go。
+从源码构建 `motifd` 需要 Zig 0.16.0；默认启用嵌入式 Tailscale 时还需要 Go。
 完整构建要求见根目录 [`README.md`](../README.md#build)。
 
 GitHub Release 和 SSH 自动安装使用的 Linux x86_64 独立包是静态 musl 产物，

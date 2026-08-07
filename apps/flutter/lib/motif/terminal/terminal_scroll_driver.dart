@@ -153,6 +153,21 @@ class TerminalSmoothScrollPosition {
       _requestedOffset = viewportOffset.clamp(0, _maxOffset);
       return;
     }
+    final authoritativeOffset = viewportOffset.clamp(0, _maxOffset);
+    final previousRequested = _requestedOffset;
+    if (previousRequested != null && authoritativeOffset != previousRequested) {
+      // Ghostty rebases offsets when it prunes complete pages. Preserve the
+      // fractional position within the anchored row while accepting that
+      // authoritative integer shift; retaining the old number displays a
+      // different historical row after the head of scrollback moves.
+      _viewportOffset =
+          (_viewportOffset! + authoritativeOffset - previousRequested).clamp(
+            0.0,
+            _maxOffset.toDouble(),
+          );
+      _requestedOffset = authoritativeOffset;
+      return;
+    }
     _viewportOffset = _viewportOffset!.clamp(0.0, _maxOffset.toDouble());
     _requestedOffset = (_requestedOffset ?? viewportOffset).clamp(
       0,

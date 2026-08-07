@@ -11,19 +11,26 @@ const _tailscaleAssetName = 'motif/platform/tailscale_ffi.dart';
 // The embedded-server cdylib (a C ABI over motif-server). Desktop only — the
 // app runs an in-process motifd from the tray, like the Tauri menu-bar app.
 const _motifEmbedAssetName = 'motif/platform/motif_embed_ffi.dart';
-const _homebrewZig = '/opt/homebrew/opt/zig@0.15/bin/zig';
+const _homebrewZig = '/opt/homebrew/opt/zig/bin/zig';
 
 bool _envFlagEnabled(String name) {
   final value = Platform.environment[name]?.toLowerCase();
   return value == '1' || value == 'true' || value == 'yes';
 }
 
-/// Whether the Zig toolchain is discoverable on PATH.
-Future<bool> _hasZig() async {
-  for (final candidate in ['zig', _homebrewZig]) {
+/// Whether the Zig toolchain pinned by the vendored Ghostty is available.
+Future<bool> _hasSupportedZig() async {
+  final override = Platform.environment['ZIG'];
+  for (final candidate in [
+    if (override != null && override.isNotEmpty) override,
+    _homebrewZig,
+    'zig',
+  ]) {
     try {
       final result = await Process.run(candidate, ['version']);
-      if (result.exitCode == 0) return true;
+      if (result.exitCode == 0 && result.stdout.toString().trim() == '0.16.0') {
+        return true;
+      }
     } catch (_) {
       // Try the next candidate.
     }
@@ -627,10 +634,10 @@ Future<void> main(List<String> args) async {
     final codeConfig = input.config.code;
     final targetOS = codeConfig.targetOS;
 
-    if (!await _hasZig()) {
+    if (!await _hasSupportedZig()) {
       throw StateError(
-        'Zig 0.15 is required to build libghostty-vt. Expected `zig` on PATH '
-        'or at $_homebrewZig.',
+        'Zig 0.16.0 is required to build libghostty-vt. Expected `ZIG`, '
+        '`zig` on PATH, or $_homebrewZig to resolve to Zig 0.16.0.',
       );
     }
 

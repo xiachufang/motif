@@ -52,9 +52,8 @@ jobs:
           submodules: recursive
 
       # Flutter + Rust + Go + Zig are all needed at build time: the flutter
-      # build hook compiles the motif-embed cdylib (Rust) and libtailscale (Go)
-      # via bash scripts, and cargo builds motif-server which links
-      # libghostty-vt (built from source by Zig).
+      # The build hook compiles libghostty-vt with Zig, motif-embed with Rust,
+      # and libtailscale with Go.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -64,7 +63,7 @@ jobs:
           go-version: stable
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2                        # Cargo.toml pins libghostty-vt to Zig 0.15.2
+          version: 0.16.0                        # apps/flutter/ghostty minimum
 
       # Linux system libraries: Flutter desktop (GTK/cmake/ninja), tray
       # (appindicator), and secret-service (flutter_secure_storage). `make` is

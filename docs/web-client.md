@@ -47,17 +47,18 @@ apps/flutter/
 ## Build And Embed
 
 ```bash
-cd apps/flutter
-flutter pub get
-flutter build web --no-wasm-dry-run
-cd ../..
+make build-flutter-web
 
 cargo build -p motif-server --release
 ```
 
+The Make target first compiles `ghostty-vt.wasm` from the repository's
+`apps/flutter/ghostty` submodule with Zig 0.16.0. The generated WASM file is
+ignored by Git and must not be reused across Ghostty C ABI upgrades.
+
 If `apps/flutter/build/web` is missing, `build.rs` still lets Rust compile and
 embeds a small placeholder page that tells the operator to run
-`flutter build web --no-wasm-dry-run`.
+`make build-flutter-web`.
 
 ## Runtime Behavior
 
@@ -92,7 +93,7 @@ flutter run -d web-server --web-hostname 0.0.0.0 --web-port 5173
 
 Run `motifd` separately on `127.0.0.1:7777`, then add that address as a direct
 server in the Flutter UI. For the real embedded release path, use
-`Procfile.dev` or run `flutter build web --no-wasm-dry-run` followed by
+`Procfile.dev` or run `make build-flutter-web` followed by
 `cargo run -p motif-server --bin motifd`.
 
 ## Server Routes

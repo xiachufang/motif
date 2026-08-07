@@ -98,16 +98,13 @@ vt100              = "0.16"
 tui-term           = "0.3"
 # Headless VT engine (same libghostty the iOS client renders with) for
 # server-side screen+scrollback VT snapshots on PTY replay. Builds
-# libghostty-vt from source via Zig 0.15.2 — see the zig-ghostty-build-tahoe
-# memory for local macOS (Tahoe) builds; Linux uses zig 0.15.x natively.
+# libghostty-vt from source via Zig 0.16.0.
 #
-# Pinned to our fork of uzaaft/libghostty-rs at master HEAD instead of the
-# crates.io 0.1.1 release: the published crate is frozen at a March-2026
-# snapshot whose bundled ghostty predates the PageList column-reflow fixes
-# (ghostty #10297 / #10337), so shrinking a PTY's columns with large
-# scrollback aborts the process. This rev's build.rs pins ghostty bfe633a9.
-libghostty-vt      = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543" }
-libghostty-vt-sys  = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "20edad15d7984c727acc4f4facdadf045609f543" }
+# Vendored from uzaaft/libghostty-rs commit 72ac98f (0.2.1). The sys crate
+# builds against apps/flutter/ghostty so Rust and Flutter share one Ghostty
+# checkout and one C ABI revision.
+libghostty-vt      = { path = "crates/libghostty-vt" }
+libghostty-vt-sys  = { path = "crates/libghostty-vt-sys" }
 notify             = "8"
 notify-debouncer-full = "0.7"
 

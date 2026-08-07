@@ -67,7 +67,7 @@ Reference implementation: [ghostling](https://github.com/ghostty-org/ghostling) 
 
 ### Prerequisites
 
-- **Zig 0.15.2** (required by ghostty's build system)
+- **Zig 0.16.0** (required by ghostty's build system)
 - **cmake** (for building the PTY helper)
 
 ---
@@ -116,7 +116,7 @@ Reference implementation: [ghostling](https://github.com/ghostty-org/ghostling) 
 ffigen will auto-generate all of the following from the C headers:
 
 - **Opaque handle types** — `GhosttyTerminal`, `GhosttyRenderState`, `GhosttyKeyEncoder`, etc. as typed `Pointer<>` wrappers
-- **Structs** — `GhosttyTerminalOptions`, `GhosttyColorRgb`, `GhosttyStyle`, `GhosttyRenderStateColors`, `GhosttyMouseEncoderSize`, `GhosttyMousePosition`, `GhosttyTerminalScrollbar`, `GhosttyTerminalScrollViewport`, `GhosttyStyleColor`, etc.
+- **Structs** — `GhosttyTerminalModeConfig`, `GhosttyColorRgb`, `GhosttyStyle`, `GhosttyRenderStateColors`, `GhosttyMouseEncoderSize`, `GhosttyMousePosition`, `GhosttyTerminalScrollbar`, `GhosttyTerminalScrollViewport`, `GhosttyStyleColor`, etc.
 - **Enums** — `GhosttyResult`, `GhosttyKey` (~140 values), `GhosttyKeyAction`, `GhosttyRenderStateData`, `GhosttyRenderStateDirty`, `GhosttyCellContentTag`, `GhosttyCellData`, `GhosttyMouseAction`, `GhosttyMouseButton`, `GhosttyFocusEvent`, and all others
 - **Constants** — `GHOSTTY_MODS_SHIFT`, `GHOSTTY_MODS_CTRL`, `GHOSTTY_MODS_ALT`, `GHOSTTY_KITTY_KEY_*`, etc.
 - **All ~40 C functions** — terminal lifecycle, render state, row/cell iteration, key/mouse encoding, focus encoding, cell/row queries
@@ -411,8 +411,8 @@ for a 60fps timer — each read drains the kernel buffer (typically <4KB) in mic
 ## Build & Run
 
 ```bash
-# 1. Build libghostty-vt (requires zig 0.15.2)
-cd ghostty && zig build lib-vt && cd ..
+# 1. Build libghostty-vt (requires Zig 0.16.0)
+cd ghostty && zig build -Demit-lib-vt=true && cd ..
 
 # 2. Generate FFI bindings (only needed when C headers change)
 dart run ffigen

@@ -53,6 +53,6 @@ single-shot per run anyway) and destroy the box after review.
   the `tailscale` stub (compiles without Go). If upstream changes that line and
   the build then needs Go, install `golang` in the builder stage and drop the
   `sed`.
-- Zig is pinned to 0.15.2 (`ZIG_VERSION` build arg) to match ghostty.
+- Zig is pinned to 0.16.0 (`ZIG_VERSION` build arg) to match ghostty.
 - The demo workspace (`/home/demo/work`) is a seeded git repo on tmpfs — wiped
   on exit. Nothing the reviewer types persists.

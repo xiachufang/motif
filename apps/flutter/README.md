@@ -12,7 +12,7 @@ six platforms. All code here is written by AI.
 ## Requirements
 
 - **Flutter SDK**
-- **Zig 0.15.2** — required to build the libghostty native/WASM engine
+- **Zig 0.16.0** — required to build the libghostty native/WASM engine
 - **Xcode Command Line Tools** — for macOS/iOS builds
 - Platform SDKs as needed (Android NDK 28 + JDK 17 for Android; a Linux/Windows
   host for those desktop builds)
@@ -32,9 +32,9 @@ If already cloned without `--recursive`:
 git submodule update --init --recursive
 ```
 
-### 2. Install Zig 0.15.2
+### 2. Install Zig 0.16.0
 
-Install Zig `0.15.2` and ensure it is on your `PATH`. (Without Zig, pure-Dart
+Install Zig `0.16.0` and ensure it is on your `PATH`. (Without Zig, pure-Dart
 code still analyzes/tests; the terminal just won't render until native assets
 are built.)
 
@@ -95,14 +95,14 @@ only renders bytes relayed from `motifd`.
 
 ## Platform build matrix
 
-Requires **Zig 0.15.2** on `PATH` for the libghostty native asset.
+Requires **Zig 0.16.0** on `PATH` for the libghostty native asset.
 
 | Platform | Build | Native engine | Notes |
 |---|---|---|---|
 | macOS | `flutter build macos -t lib/main_desktop.dart` | libghostty dylib | ✅ builds + runs |
 | iOS | `flutter build ios --simulator` | libghostty dylib/framework | sim ✅; device needs signing |
 | Android | `flutter build apk` | libghostty `.so` | ✅ bundles `lib*/libghostty-vt.so`; needs NDK 28 + JDK 17 |
-| Web | `flutter build web --no-wasm-dry-run` | libghostty WASM | ✅ builds (`web/ghostty-vt.wasm` + `web/ghostty_vt.js`) |
+| Web | `make build-flutter-web` (from repo root) | libghostty WASM | ✅ rebuilds `web/ghostty-vt.wasm` from the shared submodule first |
 | Linux | `flutter build linux -t lib/main_desktop.dart` (on a Linux host) | libghostty `.so` (cross-builds from macOS) | app assembly needs a Linux host/CI |
 | Windows | `flutter build windows -t lib/main_desktop.dart` (on a Windows host) | libghostty `.dll` (cross-builds from macOS) | app assembly needs a Windows host/CI |
 

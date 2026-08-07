@@ -86,7 +86,7 @@ macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set --
 	check-ios-release-signing check-macos-release-credentials \
 	check-macos-release-entitlements \
 	deps deps-rust deps-flutter deps-web deps-android \
-	deps-ios clean-flutter-ephemeral build-flutter-web release-flutter-web \
+	deps-ios clean-flutter-ephemeral build-ghostty-wasm build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
 	release-rust-macos release-rust-linux release-rust-windows \
 	release-motifd-macos release-motifd-linux release-motifd-windows \
@@ -167,9 +167,9 @@ check-cargo: ## Check Cargo is available.
 check-flutter: ## Check Flutter is available.
 	@command -v "$(FLUTTER)" >/dev/null || { echo "Missing flutter. Install Flutter first."; exit 1; }
 
-check-zig: ## Check Zig 0.15.x for libghostty-vt builds.
-	@command -v zig >/dev/null || { echo "Missing zig. motifd/libghostty-vt requires Zig 0.15.x."; exit 1; }
-	@case "$$(zig version)" in 0.15.*) ;; *) echo "Zig $$(zig version) found, but libghostty-vt requires Zig 0.15.x."; exit 1 ;; esac
+check-zig: ## Check Zig 0.16.0 for libghostty-vt builds.
+	@command -v zig >/dev/null || { echo "Missing zig. libghostty-vt requires Zig 0.16.0."; exit 1; }
+	@[ "$$(zig version)" = "0.16.0" ] || { echo "Zig $$(zig version) found, but libghostty-vt requires Zig 0.16.0."; exit 1; }
 
 check-macos-tools: ## Check macOS app packaging tools.
 	@[ "$(UNAME_S)" = "Darwin" ] || { echo "This target must run on macOS."; exit 1; }
@@ -246,7 +246,10 @@ deps-ios: check-ios-tools deps-flutter ## Fetch iOS Flutter/CocoaPods dependenci
 	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" precache --ios
 	@cd "$(FLUTTER_DIR)/ios" && pod install
 
-build-flutter-web: deps-web ## Build Flutter Web for motifd embedding.
+build-ghostty-wasm: check-zig ## Build WebAssembly from the shared Ghostty checkout.
+	@cd "$(FLUTTER_DIR)" && ./scripts/build_ghostty_wasm.sh
+
+build-flutter-web: deps-web build-ghostty-wasm ## Build Flutter Web for motifd embedding.
 	@cd "$(FLUTTER_DIR)" && "$(FLUTTER)" build web $(FLUTTER_WEB_FLAGS) --no-pub
 
 release-flutter-web: build-flutter-web ## Copy and archive the standalone Flutter Web build.

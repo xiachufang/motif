@@ -19,9 +19,9 @@ apps/flutter/macos
 apps/flutter/windows
 apps/flutter/integration_test
 apps/flutter/test
-apps/flutter/ghostty
 apps/flutter/tool
-apps/flutter/scripts
+apps/flutter/scripts/*
+!apps/flutter/scripts/build_ghostty_wasm.sh
 apps/flutter/MOTIF_FLUTTER_PLAN.md
 apps/flutter/PLAN.md
 apps/flutter/devtools_options.yaml

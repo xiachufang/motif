@@ -53,6 +53,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c880a97d28a3681c0267bd29cff89621202715b065127cd445fa0f0fe0aa2880"
+
+[[package]]
 name = "annotate-snippets"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,6 +362,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -2038,19 +2046,24 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libghostty-vt"
-version = "0.1.1"
-source = "git+https://github.com/Uzaaft/libghostty-rs?rev=20edad15d7984c727acc4f4facdadf045609f543#20edad15d7984c727acc4f4facdadf045609f543"
+version = "0.2.1"
 dependencies = [
+ "allocator-api2",
  "bitflags 2.11.1",
  "int-enum",
  "libghostty-vt-sys",
+ "log",
+ "png",
+ "tracing",
 ]
 
 [[package]]
 name = "libghostty-vt-sys"
-version = "0.1.1"
-source = "git+https://github.com/Uzaaft/libghostty-rs?rev=20edad15d7984c727acc4f4facdadf045609f543#20edad15d7984c727acc4f4facdadf045609f543"
+version = "0.2.1"
 dependencies = [
+ "bindgen",
+ "heck 0.5.0",
+ "libc",
  "pkg-config",
 ]
 

@@ -153,6 +153,20 @@ void main() {
     },
   );
 
+  test('rebases a fractional viewport when Ghostty prunes history', () {
+    final scroll = TerminalSmoothScrollPosition()
+      ..synchronize(viewportOffset: 80, maxOffset: 100);
+    final fractional = scroll.applyPixelDelta(5, 20);
+    expect(fractional.viewportOffset, 80.25);
+    expect(fractional.requestedOffset, 81);
+
+    // The requested row moved from 81 to 61 when Ghostty removed 20 rows at
+    // the head. The same fractional content anchor must move by 20 as well.
+    scroll.synchronize(viewportOffset: 61, maxOffset: 100);
+    expect(scroll.viewportOffset, 60.25);
+    expect(scroll.requestedOffset, 61);
+  });
+
   test('detects when a half-row viewport has both clipped edges cached', () {
     final cache = TerminalViewportRowCache();
     final first = _snapshot(viewportOffset: 0, rows: [_row('A'), _row('B')]);

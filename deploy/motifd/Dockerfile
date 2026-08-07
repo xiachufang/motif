@@ -14,14 +14,25 @@ FROM debian:bookworm-slim AS web-builder
 
 ARG TARGETARCH
 ARG FLUTTER_VERSION=stable
-ENV PATH="/opt/flutter/bin:${PATH}"
+ARG ZIG_VERSION=0.16.0
+ENV PATH="/opt/flutter/bin:/opt/zig:${PATH}"
 
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) ZIG_ARCH=x86_64 ;; \
+        arm64) ZIG_ARCH=aarch64 ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
       ca-certificates curl git unzip xz-utils zip; \
     rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
+    mkdir -p /opt/zig; \
+    tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
+    rm /tmp/zig.tar.xz; \
     git clone --depth 1 --branch "${FLUTTER_VERSION}" https://github.com/flutter/flutter.git /opt/flutter; \
+    zig version; \
     flutter --version; \
     flutter config --enable-web; \
     flutter precache --web
@@ -31,18 +42,21 @@ COPY apps/flutter/pubspec.yaml apps/flutter/pubspec.lock ./apps/flutter/
 COPY apps/flutter/web ./apps/flutter/web
 COPY apps/flutter/lib ./apps/flutter/lib
 COPY apps/flutter/hook ./apps/flutter/hook
+COPY apps/flutter/ghostty ./apps/flutter/ghostty
+COPY apps/flutter/scripts/build_ghostty_wasm.sh ./apps/flutter/scripts/build_ghostty_wasm.sh
 COPY apps/flutter/analysis_options.yaml ./apps/flutter/
 
 WORKDIR /src/apps/flutter
 RUN --mount=type=cache,target=/root/.pub-cache \
     flutter pub get && \
+    ./scripts/build_ghostty_wasm.sh && \
     flutter build web --no-wasm-dry-run
 
 ############################  rust builder  ############################
 FROM rust:1-bookworm AS builder
 
 ARG TARGETARCH
-ARG ZIG_VERSION=0.15.2
+ARG ZIG_VERSION=0.16.0
 ARG ZIG_BUILD_SEED=1
 ARG GO_VERSION=1.25.5
 ARG LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast

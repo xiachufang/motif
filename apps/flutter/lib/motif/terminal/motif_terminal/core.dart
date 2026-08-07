@@ -356,7 +356,11 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
       _resetSmoothScroll(clearRows: true);
     } else {
-      if (followLatest) {
+      final viewportRebased =
+          _smoothScrollPosition.initialized &&
+          !followLatest &&
+          snapshot.viewportOffset != _smoothScrollPosition.requestedOffset;
+      if (followLatest || viewportRebased) {
         _scrollRowCache.clear();
       }
       _smoothScrollPosition.synchronize(

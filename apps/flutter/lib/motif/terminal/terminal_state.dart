@@ -47,7 +47,8 @@ class TerminalState {
   int _pasteInputCapacity = 4096;
   Pointer<Uint8> _pasteOutputBuf = calloc<Uint8>(4096 + 12);
   int _pasteOutputCapacity = 4096 + 12;
-  final Pointer<Bool> _pasteBracketedPtr = calloc<Bool>();
+  final Pointer<GhosttyTerminalModeConfig> _pasteModeConfigPtr =
+      calloc<GhosttyTerminalModeConfig>();
   final Pointer<Uint32> _graphemeBuf = calloc<Uint32>(32);
   final Pointer<Uint32> _graphemeLen = calloc<Uint32>();
   final Pointer<Int32> _dirtyPtr = calloc<Int32>();
@@ -107,14 +108,37 @@ class TerminalState {
 
     // Create terminal
     final termPtr = calloc<GhosttyTerminal>();
-    final opts = calloc<GhosttyTerminalOptions>();
-    opts.ref.cols = cols;
-    opts.ref.rows = rows;
-    opts.ref.max_scrollback = 10000;
-    ghostty_terminal_new(nullptr, termPtr, opts.ref);
+    final newResult = ghostty_terminal_new(nullptr, termPtr, cols, rows);
+    if (newResult != GhosttyResult.GHOSTTY_SUCCESS) {
+      calloc.free(termPtr);
+      throw StateError('failed to create Ghostty terminal: $newResult');
+    }
     _terminal = termPtr.value;
-    calloc.free(opts);
     calloc.free(termPtr);
+
+    // New Ghostty releases expose independent byte and physical-line limits.
+    // Remove the constructor's conservative byte default so it cannot prune
+    // first, then retain approximately 10,000 physical scrollback lines.
+    final scrollbackLines = calloc<Size>()..value = 10000;
+    final byteLimitResult = ghostty_terminal_set(
+      _terminal,
+      GhosttyTerminalOption.GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+      nullptr,
+    );
+    final lineLimitResult = ghostty_terminal_set(
+      _terminal,
+      GhosttyTerminalOption.GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+      scrollbackLines.cast(),
+    );
+    calloc.free(scrollbackLines);
+    if (byteLimitResult != GhosttyResult.GHOSTTY_SUCCESS ||
+        lineLimitResult != GhosttyResult.GHOSTTY_SUCCESS) {
+      ghostty_terminal_free(_terminal);
+      throw StateError(
+        'failed to configure Ghostty scrollback: '
+        'bytes=$byteLimitResult, lines=$lineLimitResult',
+      );
+    }
 
     // Register effect callbacks so the terminal can answer query sequences.
     // isolateLocal (not listener) because they fire synchronously inside
@@ -257,10 +281,9 @@ class TerminalState {
     if (data.isEmpty) return;
     final restoresTerminalSnapshot = _consumeRestoreSnapshotPrelude(data);
     // Treat the viewport as an explicit user choice across output. A viewport
-    // at the live bottom follows new rows; a viewport in history stays at the
-    // same absolute offset. Ghostty currently behaves this way too, but doing
-    // it at the feed boundary makes the contract independent of renderer
-    // defaults and keeps burst/coalesced worker frames from changing it.
+    // at the live bottom follows new rows. For a viewport in history, Ghostty
+    // owns the content anchor: when old pages are pruned its numeric offset
+    // must move even though the visible content stays unchanged.
     final wasAlternateScreen = alternateScreenActive;
     final viewportBefore = scrollbarMetrics;
     final maxOffsetBefore = viewportBefore.total > viewportBefore.length
@@ -283,11 +306,7 @@ class TerminalState {
     // That is a new live baseline, not ordinary background output: preserving
     // an old absolute history offset here leaves a restored PTY visibly stuck
     // above its cursor.
-    if (restoresTerminalSnapshot || followLatest) {
-      scrollToBottom();
-    } else {
-      scrollToOffset(viewportBefore.offset);
-    }
+    if (restoresTerminalSnapshot || followLatest) scrollToBottom();
   }
 
   static const List<int> _restoreSnapshotClearSequence = <int>[
@@ -360,7 +379,7 @@ class TerminalState {
     calloc.free(_keyTextBuf);
     calloc.free(_pasteInputBuf);
     calloc.free(_pasteOutputBuf);
-    calloc.free(_pasteBracketedPtr);
+    calloc.free(_pasteModeConfigPtr);
     calloc.free(_graphemeBuf);
     calloc.free(_graphemeLen);
     calloc.free(_dirtyPtr);
@@ -1228,14 +1247,16 @@ class TerminalState {
       _pasteOutputBuf = calloc<Uint8>(_pasteOutputCapacity);
     }
     _pasteInputBuf.asTypedList(data.length).setAll(0, data);
-    _pasteBracketedPtr.value = false;
-    final modeResult = ghostty_terminal_mode_get(
+    _pasteModeConfigPtr.ref.mode = _bracketedPasteMode;
+    _pasteModeConfigPtr.ref.value = false;
+    final modeResult = ghostty_terminal_get(
       _terminal,
-      _bracketedPasteMode,
-      _pasteBracketedPtr,
+      GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_MODE,
+      _pasteModeConfigPtr.cast(),
     );
     final bracketed =
-        modeResult == GhosttyResult.GHOSTTY_SUCCESS && _pasteBracketedPtr.value;
+        modeResult == GhosttyResult.GHOSTTY_SUCCESS &&
+        _pasteModeConfigPtr.ref.value;
     final result = ghostty_paste_encode(
       _pasteInputBuf.cast(),
       data.length,

@@ -21,13 +21,12 @@
 ############################  builder  ############################
 FROM rust:1-bookworm AS builder
 
-# Zig 0.15.2 — pinned by ghostty; libghostty-vt's build.rs compiles the VT
-# engine from source with it. On Linux the official tarball links fine (the
-# Tahoe libSystem problem is macOS-only). Note the 0.15 naming order: <arch>-<os>.
+# Zig 0.16.0 — pinned by ghostty; libghostty-vt's build.rs compiles the VT
+# engine from source with it.
 # TARGETARCH (amd64/arm64, provided by BuildKit) -> zig arch (x86_64/aarch64) so
 # the image builds natively on both an x86_64 VPS and an Apple-Silicon laptop.
 ARG TARGETARCH
-ARG ZIG_VERSION=0.15.2
+ARG ZIG_VERSION=0.16.0
 RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) ZIG_ARCH=x86_64 ;; \

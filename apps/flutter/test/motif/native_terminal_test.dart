@@ -437,6 +437,63 @@ void main() {
     ts.dispose();
   });
 
+  test(
+    'line-limited pruning preserves the content under a scrolled viewport',
+    () {
+      final ts = TerminalState(onHostWrite: (_) {});
+      ts.init(20, 4);
+      ts.feedBytes(
+        Uint8List.fromList(
+          utf8.encode(
+            List.generate(
+              12000,
+              (i) => 'line-${i.toString().padLeft(5, '0')}\r\n',
+            ).join(),
+          ),
+        ),
+      );
+      ts.updateRenderState();
+
+      var snapshot = ts.snapshot(
+        defaultForegroundArgb: 0xffffffff,
+        defaultBackgroundArgb: 0xff000000,
+      );
+      // This distinguishes the new physical-line limit from the old 10,000-byte
+      // behavior, which retained only hundreds of simple rows.
+      expect(snapshot.scrollTotalRows, greaterThan(9000));
+
+      ts.scrollToOffset(snapshot.maxViewportOffset - 1200);
+      ts.updateRenderState();
+      snapshot = ts.snapshot(
+        defaultForegroundArgb: 0xffffffff,
+        defaultBackgroundArgb: 0xff000000,
+      );
+      final historyText = snapshot.visibleText;
+      final historyOffset = snapshot.viewportOffset;
+
+      ts.feedBytes(
+        Uint8List.fromList(
+          utf8.encode(
+            List.generate(
+              600,
+              (i) => 'later-${i.toString().padLeft(4, '0')}\r\n',
+            ).join(),
+          ),
+        ),
+      );
+      ts.updateRenderState();
+      snapshot = ts.snapshot(
+        defaultForegroundArgb: 0xffffffff,
+        defaultBackgroundArgb: 0xff000000,
+      );
+
+      expect(snapshot.visibleText, historyText);
+      expect(snapshot.viewportOffset, lessThan(historyOffset));
+
+      ts.dispose();
+    },
+  );
+
   test('PTY snapshot restore returns a scrolled viewport to latest', () {
     final ts = TerminalState(onHostWrite: (_) {});
     ts.init(18, 3);

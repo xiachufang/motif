@@ -17,6 +17,9 @@
   const CURSOR_Y = 16;
   const TERMINAL_DATA_ACTIVE_SCREEN = 6;
   const TERMINAL_DATA_SCROLLBAR = 9;
+  const TERMINAL_DATA_MODE = 37;
+  const TERMINAL_OPT_SCROLLBACK_MAX_BYTES = 27;
+  const TERMINAL_OPT_SCROLLBACK_MAX_LINES = 28;
   const SCROLL_VIEWPORT_BOTTOM = 1;
   const SCROLL_VIEWPORT_DELTA = 2;
   const MODE_BRACKETED_PASTE = 2004;
@@ -71,16 +74,18 @@
 
     // Create a terminal of the given grid size; returns an opaque handle.
     newTerminal(cols, rows) {
-      const opts = alloc(8);
-      const d = dv();
-      d.setUint16(opts, cols, true);
-      d.setUint16(opts + 2, rows, true);
-      d.setUint32(opts + 4, 10000, true); // max_scrollback
       const slot = alloc(4);
-      e.ghostty_terminal_new(0, slot, opts);
+      e.ghostty_terminal_new(0, slot, cols, rows);
       const terminal = rdU32(slot);
-      freeBytes(opts, 8);
       freeBytes(slot, 4);
+
+      // Use Ghostty's physical-line limit. The constructor also installs a
+      // small byte limit, so remove it before enabling the 10,000-line cap.
+      e.ghostty_terminal_set(terminal, TERMINAL_OPT_SCROLLBACK_MAX_BYTES, 0);
+      const lineLimit = alloc(4); // wasm32 size_t
+      dv().setUint32(lineLimit, 10000, true);
+      e.ghostty_terminal_set(terminal, TERMINAL_OPT_SCROLLBACK_MAX_LINES, lineLimit);
+      freeBytes(lineLimit, 4);
       return terminal;
     },
 
@@ -123,16 +128,12 @@
       u8().set(bytes, buf);
       e.ghostty_terminal_vt_write(term, buf, bytes.length);
       if (e.ghostty_wasm_free_u8_array) e.ghostty_wasm_free_u8_array(buf, bytes.length);
-      // Output at the live bottom follows new rows; reading history preserves
-      // its absolute viewport. Screen transitions keep Ghostty's own restore
-      // behavior (for example when entering or leaving an alternate screen).
+      // Output at the live bottom follows new rows. While reading history,
+      // leave Ghostty's content anchor untouched so pruning may legitimately
+      // change its numeric offset. Screen transitions also remain Ghostty's.
       if (activeScreenBefore === readActiveScreen(term)) {
         if (followLatest) {
           scrollViewport(term, SCROLL_VIEWPORT_BOTTOM);
-        } else {
-          const viewportAfter = readScrollbar(term);
-          const delta = viewportBefore.offset - viewportAfter.offset;
-          if (delta) scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
         }
       }
     },
@@ -176,9 +177,11 @@
     // Sanitize and encode a paste according to DEC mode 2004.
     encodePaste(term, bytes) {
       if (!bytes.length) return new Uint8Array();
-      u8()[pasteModeSlot] = 0;
-      const modeResult = e.ghostty_terminal_mode_get(term, MODE_BRACKETED_PASTE, pasteModeSlot);
-      const bracketed = modeResult === 0 && u8()[pasteModeSlot] !== 0;
+      const d = dv();
+      d.setUint16(pasteModeSlot, MODE_BRACKETED_PASTE, true);
+      d.setUint8(pasteModeSlot + 2, 0);
+      const modeResult = e.ghostty_terminal_get(term, TERMINAL_DATA_MODE, pasteModeSlot);
+      const bracketed = modeResult === 0 && d.getUint8(pasteModeSlot + 2) !== 0;
       const input = alloc(bytes.length);
       u8().set(bytes, input);
       const outputCapacity = bytes.length + 12;
@@ -320,7 +323,7 @@
       keyEvent = rdU32(keyEventSlot);
       keyBuf = alloc(256);
       keyLenSlot = alloc(4);
-      pasteModeSlot = alloc(1);
+      pasteModeSlot = alloc(4); // GhosttyTerminalModeConfig
       keyTextCapacity = 64;
       keyTextBuf = alloc(keyTextCapacity);
       return true;

@@ -29,8 +29,8 @@ esac
 
 if [[ -n "${ZIG:-}" && -x "$ZIG" ]]; then
   export PATH="$(dirname "$ZIG"):$PATH"
-elif [[ -x "/opt/homebrew/opt/zig@0.15/bin/zig" ]]; then
-  export PATH="/opt/homebrew/opt/zig@0.15/bin:$PATH"
+elif [[ -x "/opt/homebrew/opt/zig/bin/zig" ]]; then
+  export PATH="/opt/homebrew/opt/zig/bin:$PATH"
 fi
 
 print_usage() {
@@ -166,6 +166,10 @@ require_command() {
 }
 
 require_command zig
+if [[ "$(zig version)" != "0.16.0" ]]; then
+  echo "error: Ghostty requires Zig 0.16.0; found $(zig version)" >&2
+  exit 1
+fi
 # xcrun is macOS-only. The Linux/Windows/Android paths drive Zig directly and
 # never shell out to it, so requiring it there would wrongly fail the build
 # (e.g. on CI Linux/Windows runners with no Xcode).
@@ -173,11 +177,9 @@ if [[ "$TARGET_OS" == "macos" || "$TARGET_OS" == "ios" ]]; then
   require_command xcrun
 fi
 
-# Zig 0.15.2's self-hosted Mach-O linker can't parse libSystem.tbd from very new
-# macOS SDKs (e.g. 26.x), which makes even the build runner fail to link. If the
-# active SDK is unparseable and an older CLT SDK (15.x) is present, shim `xcrun`
-# so Zig auto-detects the older macOS SDK. iOS SDK queries pass through. This is
-# a no-op on machines whose default SDK Zig already handles.
+# If Zig can't parse libSystem.tbd from the active macOS SDK, fall back to an
+# installed 15.x CLT SDK. iOS SDK queries pass through. This remains a no-op on
+# machines whose default SDK Zig already handles.
 maybe_pin_macos_sdk() {
   # Probe: can zig link a trivial native program?
   local probe="${TMPDIR:-/tmp}/zig_sdk_probe_$$"
@@ -212,7 +214,7 @@ exec "\$real" "\$@"
 EOF
   chmod +x "$shimdir/xcrun"
   export PATH="$shimdir:$PATH"
-  echo "[native] pinned macOS SDK for Zig → $fallback (active SDK unparseable by Zig 0.15.2)"
+  echo "[native] pinned macOS SDK for Zig → $fallback (active SDK unparseable)"
 }
 # Only relevant to macOS/iOS builds (the shim probes the macOS SDK via xcrun).
 if [[ "$TARGET_OS" == "macos" || "$TARGET_OS" == "ios" ]]; then

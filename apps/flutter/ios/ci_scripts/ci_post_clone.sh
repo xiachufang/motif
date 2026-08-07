@@ -47,7 +47,7 @@ fi
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
 
-retry brew install zig@0.15 go
+retry brew install zig@0.16 go
 
 # The default execution directory of this script is the ci_scripts directory.
 # Xcode Cloud checks out the primary repository, but submodules are not
@@ -62,8 +62,8 @@ cd "$CI_PRIMARY_REPOSITORY_PATH/apps/flutter" # change working directory to the 
 # Install Flutter using git. rm -rf first so a retry after a partial clone starts
 # clean (git clone refuses a non-empty target).
 retry sh -c 'rm -rf "$HOME/flutter" && git clone https://github.com/flutter/flutter.git --depth 1 -b stable "$HOME/flutter"'
-export PATH="$PATH:$HOME/flutter/bin:/opt/homebrew/opt/zig@0.15/bin"
-export LDFLAGS="-L/opt/homebrew/opt/zig@0.15/lib"
+export PATH="/opt/homebrew/opt/zig/bin:$PATH:$HOME/flutter/bin"
+export LDFLAGS="-L/opt/homebrew/opt/zig/lib"
 
 # Install Flutter artifacts for iOS.
 retry flutter precache --ios
