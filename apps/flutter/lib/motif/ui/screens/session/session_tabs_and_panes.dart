@@ -395,6 +395,7 @@ class _PaneStack extends StatelessWidget {
                 child: _PaneForView(
                   view: view,
                   active: workspaceActive && view.id == active.id,
+                  tabActive: view.id == active.id,
                   terminal: terminal,
                   workspace: workspace,
                   fontSize: fontSize,
@@ -414,6 +415,7 @@ class _PaneStack extends StatelessWidget {
 class _PaneForView extends StatelessWidget {
   final ViewInfo view;
   final bool active;
+  final bool tabActive;
   final TerminalController terminal;
   final WorkspaceApi workspace;
   final double fontSize;
@@ -425,6 +427,7 @@ class _PaneForView extends StatelessWidget {
   const _PaneForView({
     required this.view,
     required this.active,
+    required this.tabActive,
     required this.terminal,
     required this.workspace,
     required this.fontSize,
@@ -446,6 +449,7 @@ class _PaneForView extends StatelessWidget {
                 ptyId: ptyId,
                 fontSize: fontSize,
                 active: active,
+                tabActive: tabActive,
                 focusSerial: focusSerial,
                 palette: palette,
                 keyboardInset: keyboardInset,
@@ -460,6 +464,7 @@ class _PaneForView extends StatelessWidget {
         key: ValueKey('preview-$path'),
         path: path,
         workspace: workspace,
+        tabActive: tabActive,
       ),
       DiffViewSpec(:final staged, :final path) => GitDiffView(
         key: ValueKey('diff-$staged-$path'),
@@ -468,11 +473,13 @@ class _PaneForView extends StatelessWidget {
         path: path,
         workspace: workspace,
         embedded: true,
+        tabActive: tabActive,
       ),
       ImageViewSpec(:final path) => PreviewPane(
         key: ValueKey('image-$path'),
         path: path,
         workspace: workspace,
+        tabActive: tabActive,
       ),
       OtherViewSpec(:final typeName) => Center(
         child: Text(

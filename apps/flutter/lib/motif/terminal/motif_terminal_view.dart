@@ -57,6 +57,7 @@ class MotifTerminalView extends StatefulWidget {
   final String? fontFamily;
   final double padding;
   final bool active;
+  final bool tabActive;
   final int focusSerial;
   final TerminalPalette palette;
   final ValueListenable<double> keyboardInset;
@@ -70,6 +71,7 @@ class MotifTerminalView extends StatefulWidget {
     this.fontFamily,
     this.padding = 4.0,
     required this.active,
+    required this.tabActive,
     required this.focusSerial,
     required this.palette,
     required this.keyboardInset,
@@ -269,6 +271,9 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
         _closeTextInput();
       }
       _syncKeyboardLift();
+    }
+    if (oldWidget.tabActive && !widget.tabActive) {
+      _clearTerminalSelection();
     }
     if ((!oldWidget.active && widget.active) &&
         terminalAutofocusesOnTabSwitchByDefault()) {

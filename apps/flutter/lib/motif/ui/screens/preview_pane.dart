@@ -6,13 +6,20 @@ import 'package:flutter/material.dart';
 import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/syntax_highlight.dart';
+import '../widgets/tab_selection_area.dart';
 import '../widgets/top_toast.dart';
 
 /// Read-only file preview with an edit/save toggle (mirrors PreviewPane).
 class PreviewPane extends StatefulWidget {
   final String path;
   final WorkspaceApi workspace;
-  const PreviewPane({super.key, required this.path, required this.workspace});
+  final bool tabActive;
+  const PreviewPane({
+    super.key,
+    required this.path,
+    required this.workspace,
+    this.tabActive = true,
+  });
 
   @override
   State<PreviewPane> createState() => _PreviewPaneState();
@@ -47,6 +54,19 @@ class _PreviewPaneState extends State<PreviewPane> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant PreviewPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tabActive && !widget.tabActive) {
+      final selection = _editor.selection;
+      if (selection.isValid && !selection.isCollapsed) {
+        _editor.selection = TextSelection.collapsed(
+          offset: selection.extentOffset.clamp(0, _editor.text.length),
+        );
+      }
+    }
   }
 
   @override
@@ -250,7 +270,8 @@ class _PreviewPaneState extends State<PreviewPane> {
                             border: InputBorder.none,
                           ),
                         )
-                      : SelectionArea(
+                      : TabSelectionArea(
+                          tabActive: widget.tabActive,
                           child: SizedBox.expand(
                             child: Scrollbar(
                               key: const ValueKey('preview-scrollbar'),

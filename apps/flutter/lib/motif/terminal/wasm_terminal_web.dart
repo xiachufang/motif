@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../ui/theme/motif_theme.dart';
+import '../ui/widgets/tab_selection_area.dart';
 import 'terminal_error_view.dart';
 import 'terminal_byte_batcher.dart';
 import 'terminal_focus_policy.dart';
@@ -64,6 +65,7 @@ Widget buildWebTerminal({
   required String ptyId,
   required double fontSize,
   required bool active,
+  required bool tabActive,
   required int focusSerial,
   required TerminalPalette palette,
 }) {
@@ -79,6 +81,7 @@ Widget buildWebTerminal({
     ptyId: ptyId,
     fontSize: fontSize,
     active: active,
+    tabActive: tabActive,
     focusSerial: focusSerial,
     palette: palette,
   );
@@ -89,6 +92,7 @@ class _WasmTerminalView extends StatefulWidget {
   final String ptyId;
   final double fontSize;
   final bool active;
+  final bool tabActive;
   final int focusSerial;
   final TerminalPalette palette;
   const _WasmTerminalView({
@@ -97,6 +101,7 @@ class _WasmTerminalView extends StatefulWidget {
     required this.ptyId,
     required this.fontSize,
     required this.active,
+    required this.tabActive,
     required this.focusSerial,
     required this.palette,
   });
@@ -581,7 +586,8 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.all(_padding),
-                      child: SelectionArea(
+                      child: TabSelectionArea(
+                        tabActive: widget.tabActive,
                         child: ListView.builder(
                           primary: false,
                           physics: const NeverScrollableScrollPhysics(),

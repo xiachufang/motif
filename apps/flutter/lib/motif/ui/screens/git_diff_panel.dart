@@ -7,6 +7,7 @@ import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_panel_header.dart';
 import '../widgets/observation_select.dart';
+import '../widgets/tab_selection_area.dart';
 
 typedef OpenDiffView =
     Future<void> Function({String? path, required bool staged});
@@ -202,6 +203,7 @@ class GitDiffView extends StatefulWidget {
   final String? path;
   final WorkspaceApi workspace;
   final bool embedded;
+  final bool tabActive;
 
   const GitDiffView({
     super.key,
@@ -210,6 +212,7 @@ class GitDiffView extends StatefulWidget {
     this.path,
     required this.workspace,
     this.embedded = false,
+    this.tabActive = true,
   });
 
   @override
@@ -304,6 +307,7 @@ class _GitDiffViewState extends State<GitDiffView> {
                   fallbackPath: widget.path,
                   collapsedPaths: _collapsedPaths,
                   onToggleSection: _toggleSection,
+                  tabActive: widget.tabActive,
                 ),
               ),
             ],
@@ -346,6 +350,7 @@ class _PatchBody extends StatelessWidget {
   final String? fallbackPath;
   final Set<String> collapsedPaths;
   final ValueChanged<String> onToggleSection;
+  final bool tabActive;
 
   const _PatchBody({
     required this.patch,
@@ -353,6 +358,7 @@ class _PatchBody extends StatelessWidget {
     required this.fallbackPath,
     required this.collapsedPaths,
     required this.onToggleSection,
+    required this.tabActive,
   });
 
   @override
@@ -387,6 +393,7 @@ class _PatchBody extends StatelessWidget {
                   child: _DiffSectionBody(
                     lines: sections[i].lines,
                     last: i == sections.length - 1,
+                    tabActive: tabActive,
                   ),
                 ),
             ],
@@ -518,8 +525,13 @@ class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
 class _DiffSectionBody extends StatelessWidget {
   final List<String> lines;
   final bool last;
+  final bool tabActive;
 
-  const _DiffSectionBody({required this.lines, required this.last});
+  const _DiffSectionBody({
+    required this.lines,
+    required this.last,
+    required this.tabActive,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -531,7 +543,7 @@ class _DiffSectionBody extends StatelessWidget {
           color: c.surface,
           border: Border(bottom: BorderSide(color: c.border)),
         ),
-        child: _DiffText(lines: lines),
+        child: _DiffText(lines: lines, tabActive: tabActive),
       ),
     );
   }
@@ -1202,7 +1214,8 @@ class _FileHeader extends StatelessWidget {
 
 class _DiffText extends StatelessWidget {
   final List<String> lines;
-  const _DiffText({required this.lines});
+  final bool tabActive;
+  const _DiffText({required this.lines, required this.tabActive});
 
   @override
   Widget build(BuildContext context) {
@@ -1217,7 +1230,8 @@ class _DiffText extends StatelessWidget {
           constraints.maxWidth,
           longestLine * fontSize * 0.62 + 72,
         );
-        return SelectionArea(
+        return TabSelectionArea(
+          tabActive: tabActive,
           child: SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: SizedBox(
