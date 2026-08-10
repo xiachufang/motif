@@ -39,6 +39,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@1.95
       - uses: mlugg/setup-zig@v2
         with:

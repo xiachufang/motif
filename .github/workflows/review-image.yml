@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # The Dockerfile is self-contained (Rust + Zig + ghostty all build inside
       # it), so the runner only needs Docker/buildx — no flutter/go/zig here.
