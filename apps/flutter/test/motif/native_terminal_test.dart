@@ -68,6 +68,26 @@ void main() {
     ts.dispose();
   });
 
+  test('snapshot preserves background-only cells produced by erase', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(6, 2);
+
+    ts.feedBytes(Uint8List.fromList(utf8.encode('\x1b[48;2;10;20;30m\x1b[2K')));
+    ts.updateRenderState();
+
+    final snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    final cells = snapshot.lines.first.cells;
+    expect(cells, hasLength(6));
+    expect(cells.every((cell) => cell.text.isEmpty), isTrue);
+    expect(cells.every((cell) => cell.drawsBackground), isTrue);
+    expect(cells.every((cell) => cell.backgroundArgb == 0xff0a141e), isTrue);
+
+    ts.dispose();
+  });
+
   test('encoded keystrokes are routed to onHostWrite (the network sink)', () {
     final out = <int>[];
     final ts = TerminalState(onHostWrite: (b) => out.addAll(b));

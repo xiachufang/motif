@@ -76,6 +76,7 @@ class TerminalState {
   final Pointer<GhosttyMouseEncoderSize> _mouseEncoderSizePtr =
       calloc<GhosttyMouseEncoderSize>();
   final Pointer<GhosttyBuffer> _cellUtf8BufferPtr = calloc<GhosttyBuffer>();
+  final Pointer<GhosttyColorRgb> _cellBackgroundPtr = calloc<GhosttyColorRgb>();
   Pointer<Uint8> _cellUtf8Bytes = calloc<Uint8>(64);
   int _cellUtf8Capacity = 64;
   final Pointer<GhosttyPoint> _hyperlinkPointPtr = calloc<GhosttyPoint>();
@@ -215,8 +216,8 @@ class TerminalState {
     _rowGetValues[1] = _rowCellsPtr.cast();
     _rowGetValues[2] = _rowRawPtr.cast();
 
-    _cellGetKeys = calloc<UnsignedInt>(3);
-    _cellGetValues = calloc<Pointer<Void>>(3);
+    _cellGetKeys = calloc<UnsignedInt>(4);
+    _cellGetValues = calloc<Pointer<Void>>(4);
     _cellGetKeys[0] = GhosttyRenderStateRowCellsData
         .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW
         .value;
@@ -226,9 +227,13 @@ class TerminalState {
     _cellGetKeys[2] = GhosttyRenderStateRowCellsData
         .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8
         .value;
+    _cellGetKeys[3] = GhosttyRenderStateRowCellsData
+        .GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR
+        .value;
     _cellGetValues[0] = _cellPtr.cast();
     _cellGetValues[1] = _stylePtr.cast();
     _cellGetValues[2] = _cellUtf8BufferPtr.cast();
+    _cellGetValues[3] = _cellBackgroundPtr.cast();
     _cellUtf8BufferPtr.ref
       ..ptr = _cellUtf8Bytes
       ..cap = _cellUtf8Capacity
@@ -403,6 +408,7 @@ class TerminalState {
     calloc.free(_mousePositionPtr);
     calloc.free(_mouseEncoderSizePtr);
     calloc.free(_cellUtf8BufferPtr);
+    calloc.free(_cellBackgroundPtr);
     calloc.free(_cellUtf8Bytes);
     calloc.free(_hyperlinkPointPtr);
     calloc.free(_hyperlinkGridRefPtr);
@@ -1448,7 +1454,7 @@ class TerminalState {
       );
       var colIndex = 0;
       while (rowCellsNext()) {
-        _readCurrentCellIntoScratch();
+        final hasResolvedBackground = _readCurrentCellIntoScratch();
         final wide = GhosttyCellWide.fromValue(_cellWidePtr.value);
         if (wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
           colIndex++;
@@ -1460,10 +1466,13 @@ class TerminalState {
           style.fg_color,
           metadata.foregroundArgb,
         );
-        var background = _resolveSnapshotColor(
-          style.bg_color,
-          metadata.backgroundArgb,
-        );
+        var background = hasResolvedBackground
+            ? _rgbArgb(
+                _cellBackgroundPtr.ref.r,
+                _cellBackgroundPtr.ref.g,
+                _cellBackgroundPtr.ref.b,
+              )
+            : _resolveSnapshotColor(style.bg_color, metadata.backgroundArgb);
         if (style.inverse) {
           final swap = foreground;
           foreground = background;
@@ -1507,18 +1516,28 @@ class TerminalState {
     return encoder.finish(metadata.viewportOffset);
   }
 
-  void _readCurrentCellIntoScratch() {
+  bool _readCurrentCellIntoScratch() {
+    var hasResolvedBackground = false;
     while (true) {
       _stylePtr.ref.size = sizeOf<GhosttyStyle>();
       _cellUtf8BufferPtr.ref.len = 0;
       final result = ghostty_render_state_row_cells_get_multi(
         _rowCellsPtr.value,
-        3,
+        4,
         _cellGetKeys,
         _cellGetValues,
         _multiWrittenPtr,
       );
-      if (result == GhosttyResult.GHOSTTY_SUCCESS) break;
+      if (result == GhosttyResult.GHOSTTY_SUCCESS) {
+        hasResolvedBackground = true;
+        break;
+      }
+      // BG_COLOR is the last batch item and intentionally has no value for a
+      // default-background cell. The raw cell, style, and text are still valid.
+      if (result == GhosttyResult.GHOSTTY_INVALID_VALUE &&
+          _multiWrittenPtr.value == 3) {
+        break;
+      }
       if (result != GhosttyResult.GHOSTTY_OUT_OF_SPACE) {
         throw StateError('failed to read terminal cell: $result');
       }
@@ -1533,6 +1552,7 @@ class TerminalState {
         ..ptr = _cellUtf8Bytes
         ..cap = _cellUtf8Capacity;
     }
+
     final wideResult = ghostty_cell_get(
       _cellPtr.value,
       GhosttyCellData.GHOSTTY_CELL_DATA_WIDE,
@@ -1551,6 +1571,7 @@ class TerminalState {
         'failed to read terminal cell hyperlink: $hyperlinkResult',
       );
     }
+    return hasResolvedBackground;
   }
 
   String? _hyperlinkUriForScreenCell({required int row, required int col}) {
