@@ -151,6 +151,9 @@ extension _SessionScreenInputActions on _SessionScreenState {
   }
 
   void _syncWindowTitle() {
-    unawaited(MotifWindowTitle.set(widget.session).catchError((_) {}));
+    final app = readObservationScope<AppState>(context);
+    final title = _sessionDisplayName(app, widget.serverId, widget.session);
+    _lastWindowTitle = title;
+    unawaited(MotifWindowTitle.set(title).catchError((_) {}));
   }
 }

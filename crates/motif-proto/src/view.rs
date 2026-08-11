@@ -37,6 +37,10 @@ pub enum ViewSpec {
 pub struct ViewInfo {
     pub id: ViewId,
     pub spec: ViewSpec,
+    /// Optional user-facing title. When absent, clients derive a title from
+    /// the command, cwd, or file path as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
     pub created_at: UnixMs,
 }
 
@@ -94,3 +98,17 @@ pub struct MoveParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MoveResult {}
+
+// ────────────────────────────────────── view.rename
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameParams {
+    pub view_id: ViewId,
+    /// New user-facing title. `None` clears the override and restores the
+    /// automatically-derived title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RenameResult {}

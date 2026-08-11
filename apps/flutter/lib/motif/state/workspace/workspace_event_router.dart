@@ -15,6 +15,7 @@ final class WorkspaceEventRouter {
     required this.content,
     required this.presence,
     required this.onSequence,
+    this.onSessionRenamed,
   });
 
   final TerminalController terminal;
@@ -22,6 +23,7 @@ final class WorkspaceEventRouter {
   final WorkspaceContentViewModel content;
   final WorkspacePresenceViewModel presence;
   final void Function(int sequence) onSequence;
+  final void Function(String? customName)? onSessionRenamed;
 
   void handle(MotifEvent event) {
     final params = event.params;
@@ -97,12 +99,19 @@ final class WorkspaceEventRouter {
         views.handleMoved(
           ((params['order'] as List?) ?? []).map((entry) => '$entry'),
         );
+      case 'view.renamed':
+        views.handleRenamed(
+          params['view_id'] as String?,
+          params['custom_name'] as String?,
+        );
       case 'tree.changed':
         content.invalidateTree();
       case 'git.changed':
         content.invalidateGit();
       case 'session.theme_changed':
         presence.sessionTheme = params['theme'] as String?;
+      case 'session.renamed':
+        onSessionRenamed?.call(params['custom_name'] as String?);
       case 'client.joined':
         final client = ClientInfo.fromJson(params);
         final index = presence.clients.indexWhere(

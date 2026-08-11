@@ -730,6 +730,7 @@ fn to_body<P: Serialize>(p: &P) -> Vec<u8> {
 fn dummy_attach_result() -> ses::AttachResult {
     ses::AttachResult {
         session: ses::SessionInfo {
+            custom_name: None,
             id: String::new(),
             name: String::new(),
             workdir: std::path::PathBuf::new(),

@@ -236,6 +236,37 @@ final class ViewController {
     }
   }
 
+  Future<void> rename(String viewId, String? customName) async {
+    final index = viewModel.items.indexWhere((view) => view.id == viewId);
+    if (index < 0) return;
+    final normalized = customName?.trim();
+    final previous = viewModel.items[index];
+    final optimistic = previous.copyWith(
+      customName: normalized,
+      clearCustomName: normalized == null || normalized.isEmpty,
+    );
+    viewModel.items[index] = optimistic;
+    callbacks.onTabsChanged();
+    if (!transport.isAvailable()) return;
+    try {
+      await transport.call('view.rename', {
+        'view_id': viewId,
+        if (normalized != null && normalized.isNotEmpty)
+          'custom_name': normalized,
+      });
+    } catch (_) {
+      final currentIndex = viewModel.items.indexWhere(
+        (view) => view.id == viewId,
+      );
+      if (currentIndex >= 0 &&
+          viewModel.items[currentIndex].customName == optimistic.customName) {
+        viewModel.items[currentIndex] = previous;
+        callbacks.onTabsChanged();
+      }
+      rethrow;
+    }
+  }
+
   void selectLocally(String viewId) {
     if (!viewModel.items.any((view) => view.id == viewId)) return;
     viewModel.activeViewId = viewId;
@@ -286,6 +317,16 @@ final class ViewController {
       for (final id in order)
         if (byId[id] != null) byId[id]!,
     ]);
+  }
+
+  void handleRenamed(String? id, String? customName) {
+    final index = viewModel.items.indexWhere((view) => view.id == id);
+    if (index < 0) return;
+    viewModel.items[index] = viewModel.items[index].copyWith(
+      customName: customName,
+      clearCustomName: customName == null || customName.isEmpty,
+    );
+    callbacks.onTabsChanged();
   }
 
   void replaceSnapshot(Iterable<ViewInfo> items, String? activeViewId) {

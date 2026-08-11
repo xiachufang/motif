@@ -509,6 +509,8 @@ class AppState {
 
   WorkspaceInstance _createWorkspace(MotifServer profile, WorkspaceKey key) {
     final connection = _workspaceConnectionFactory(profile, key.session);
+    connection.onSessionRenamed = (customName) =>
+        _applySessionCustomName(key.serverId, key.session, customName);
     final resolver = TransportResolver(platform);
     final lifecycle = WorkspaceLifecycleController(
       serverId: profile.id,
@@ -524,6 +526,22 @@ class AppState {
     );
     _applyTerminalPaletteTo(connection);
     return instance;
+  }
+
+  void _applySessionCustomName(
+    String serverId,
+    String sessionName,
+    String? customName,
+  ) {
+    final sessions =
+        serverRegistryViewModel.entries[serverId]?.sessions.sessions;
+    if (sessions == null) return;
+    final index = sessions.indexWhere((session) => session.name == sessionName);
+    if (index < 0) return;
+    sessions[index] = sessions[index].copyWith(
+      customName: customName,
+      clearCustomName: customName == null || customName.isEmpty,
+    );
   }
 
   void _pruneWarmWorkspaces() {

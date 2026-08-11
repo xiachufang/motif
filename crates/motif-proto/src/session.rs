@@ -12,6 +12,10 @@ use crate::view::{ViewId, ViewInfo};
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,
+    /// Optional user-facing name. `name` remains the stable session identity
+    /// used by attach, PTY environment variables, and notification deep links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
     pub workdir: PathBuf,
     pub created_at: UnixMs,
     pub client_count: u32,
@@ -43,6 +47,22 @@ pub struct CreateParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateResult {
+    pub session: SessionInfo,
+}
+
+// ────────────────────────────────────────────────────── session.rename
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameParams {
+    /// Stable session identity to update.
+    pub name: String,
+    /// New user-facing name. `None` clears the override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameResult {
     pub session: SessionInfo,
 }
 

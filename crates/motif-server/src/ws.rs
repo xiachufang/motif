@@ -239,6 +239,8 @@ pub fn event_tag(ev: &Event) -> &'static str {
         Event::ViewClosed { .. } => "evt:view.closed",
         Event::ViewActiveChanged { .. } => "evt:view.active_changed",
         Event::ViewMoved { .. } => "evt:view.moved",
+        Event::ViewRenamed { .. } => "evt:view.renamed",
+        Event::SessionRenamed { .. } => "evt:session.renamed",
         Event::SessionThemeChanged { .. } => "evt:session.theme_changed",
         Event::Notification { .. } => "evt:notification",
     }

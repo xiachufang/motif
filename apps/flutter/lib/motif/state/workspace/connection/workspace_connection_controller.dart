@@ -53,6 +53,7 @@ class WorkspaceConnectionController implements SessionAttachment {
   /// Feature state stays in the focused ViewModels; lifecycle decisions are
   /// driven by the parent machine rather than Observation side effects.
   VoidCallback? onRuntimeStatusChanged;
+  void Function(String? customName)? onSessionRenamed;
 
   @protected
   void updateConnectionState(WorkspaceConnectionStatus value, {bool? live}) {
@@ -195,6 +196,7 @@ class WorkspaceConnectionController implements SessionAttachment {
       onSequence: (sequence) {
         if (sequence > lastSeq) lastSeq = sequence;
       },
+      onSessionRenamed: (customName) => onSessionRenamed?.call(customName),
     );
   }
 

@@ -87,6 +87,8 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       enabled: group.access.isReady,
                       onTap: () =>
                           onSessionSelected(group.profile.id, session.name),
+                      onRename: () =>
+                          _renameSession(context, group.profile.id, session),
                     ),
                   if (_sessionsForServer(
                     group.profile,
@@ -112,6 +114,31 @@ class _ConnectedSessionsPanel extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _renameSession(
+    BuildContext context,
+    String serverId,
+    SessionInfo session,
+  ) async {
+    final name = await showRenameDialog(
+      context,
+      title: 'Rename session',
+      initialValue: session.displayName,
+      helperText: 'Leave empty to use the original name.',
+      fieldKey: const ValueKey('rename-sidebar-session-field'),
+      saveKey: const ValueKey('rename-sidebar-session-save'),
+    );
+    if (name == null || !context.mounted) return;
+    try {
+      final server = app.existingServerInstance(serverId);
+      if (server == null) throw StateError('server is not connected');
+      await server.sessions.rename(session.name, name);
+    } catch (error) {
+      if (context.mounted) {
+        showMotifToast(context, 'Rename session failed: $error');
+      }
+    }
   }
 }
 
@@ -164,6 +191,7 @@ class _SidebarSessionRow extends StatelessWidget {
   final bool selected;
   final bool enabled;
   final VoidCallback onTap;
+  final VoidCallback onRename;
 
   const _SidebarSessionRow({
     required this.serverId,
@@ -171,6 +199,7 @@ class _SidebarSessionRow extends StatelessWidget {
     required this.selected,
     required this.enabled,
     required this.onTap,
+    required this.onRename,
   });
 
   @override
@@ -200,12 +229,27 @@ class _SidebarSessionRow extends StatelessWidget {
               const SizedBox(width: MotifSpacing.sm),
               Expanded(
                 child: Text(
-                  session.name,
+                  session.displayName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: MotifType.subhead.copyWith(
                     color: enabled ? fg : c.textTertiary,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                key: ValueKey(
+                  'rename-sidebar-session-$serverId-${session.name}',
+                ),
+                behavior: HitTestBehavior.opaque,
+                onTap: enabled ? onRename : null,
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: 16,
+                    color: enabled ? c.textSecondary : c.textTertiary,
                   ),
                 ),
               ),

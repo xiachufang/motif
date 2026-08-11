@@ -139,6 +139,9 @@ class _TabBarState extends State<_TabBar> {
                               widget.views.selectLocally(v.id);
                             }
                           },
+                          onRename: () =>
+                              unawaited(_renameTab(context, v, label)),
+                          renameKey: ValueKey('rename-tab-${v.id}'),
                           onClose: () => unawaited(
                             _closeViewWithConfirmation(
                               context,
@@ -212,7 +215,7 @@ class _TabBarState extends State<_TabBar> {
   }
 
   (IconData, String) _describe(ViewInfo v) {
-    return switch (v.spec) {
+    final (icon, automaticName) = switch (v.spec) {
       PtyViewSpec(:final ptyId) => (
         Icons.terminal,
         widget.terminal.viewModel.runningCommand[ptyId] ??
@@ -240,6 +243,28 @@ class _TabBarState extends State<_TabBar> {
       ),
       OtherViewSpec(:final typeName) => (Icons.tab, typeName),
     };
+    return (icon, v.customName ?? automaticName);
+  }
+
+  Future<void> _renameTab(
+    BuildContext context,
+    ViewInfo view,
+    String currentLabel,
+  ) async {
+    final name = await showRenameDialog(
+      context,
+      title: 'Rename tab',
+      initialValue: view.customName ?? currentLabel,
+      helperText: 'Leave empty to use the automatic name.',
+      fieldKey: const ValueKey('rename-tab-field'),
+      saveKey: const ValueKey('rename-tab-save'),
+    );
+    if (name == null || !mounted) return;
+    try {
+      await widget.views.rename(view.id, name);
+    } catch (error) {
+      if (context.mounted) showMotifToast(context, 'Rename tab failed: $error');
+    }
   }
 }
 
@@ -249,6 +274,8 @@ class _SessionTabChip extends StatelessWidget {
   final String label;
   final int dragIndex;
   final VoidCallback onTap;
+  final VoidCallback onRename;
+  final Key renameKey;
   final VoidCallback onClose;
   final Key closeKey;
 
@@ -258,6 +285,8 @@ class _SessionTabChip extends StatelessWidget {
     required this.label,
     required this.dragIndex,
     required this.onTap,
+    required this.onRename,
+    required this.renameKey,
     required this.onClose,
     required this.closeKey,
   });
@@ -290,6 +319,7 @@ class _SessionTabChip extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
+      onSecondaryTap: onRename,
       child: MouseRegion(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
@@ -302,6 +332,19 @@ class _SessionTabChip extends StatelessWidget {
             children: [
               dragHandle,
               const SizedBox(width: 4),
+              GestureDetector(
+                key: renameKey,
+                behavior: HitTestBehavior.opaque,
+                onTap: onRename,
+                child: Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: Icon(
+                    Icons.edit_outlined,
+                    size: 12,
+                    color: active ? c.accent : c.textTertiary,
+                  ),
+                ),
+              ),
               // No Tooltip here: this chip is a ReorderableListView item, and a
               // Tooltip's OverlayPortal reactivates during reorder (the list
               // rebuilds inside its own layout callback), which mutates the

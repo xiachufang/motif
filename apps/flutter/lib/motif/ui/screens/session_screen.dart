@@ -46,6 +46,7 @@ import '../../terminal/terminal_session.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/quick_command_row.dart';
+import '../widgets/rename_dialog.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
 import 'file_tree_panel.dart';
@@ -276,6 +277,7 @@ class _SessionScreenState extends State<_SessionPane>
   Future<void>? _autoCreatePtyFuture;
   String? _lastAppleInputDocumentId;
   String? _fileTreeRoot;
+  String? _lastWindowTitle;
   String _asrBase = '';
   String _lastAsrText = ''; // last value ASR wrote to the input bar
   String? _asrInputViewId;
@@ -620,6 +622,15 @@ class _SessionScreenState extends State<_SessionPane>
       _scheduleKeyboardInsetSync();
     }
     final app = ObservationScope.of<AppState>(context);
+    final sessionDisplayName = _sessionDisplayName(
+      app,
+      widget.serverId,
+      widget.session,
+    );
+    if (widget.workspaceActive && _lastWindowTitle != sessionDisplayName) {
+      _lastWindowTitle = sessionDisplayName;
+      unawaited(MotifWindowTitle.set(sessionDisplayName).catchError((_) {}));
+    }
     final c = context.motif;
     final fontSize = app.terminalSettings.settings.fontSize;
     final workspaceConnection = _workspaceState.connection;
@@ -669,7 +680,7 @@ class _SessionScreenState extends State<_SessionPane>
             .clamp(_sidebarMinWidth, sidebarMaxWidth)
             .toDouble();
         return Title(
-          title: widget.session,
+          title: sessionDisplayName,
           color: c.accent,
           child: Scaffold(
             key: _scaffoldKey,
@@ -749,7 +760,7 @@ class _SessionScreenState extends State<_SessionPane>
                         inTitleBar: true,
                       ),
                     )
-                  : Text(widget.session),
+                  : Text(sessionDisplayName),
               titleSpacing: usesSidebar ? 0 : null,
               toolbarHeight: usesSidebar ? 52 : null,
               leadingWidth: usesSidebar ? 104 : null,

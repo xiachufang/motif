@@ -286,6 +286,7 @@ dispatch 表见 `crates/motif-server/src/rpc.rs`：`dispatch_mut` 处理
 {
   "id":           "<SessionId>",
   "name":         "<string>",
+  "custom_name":  "<string>" | null, // 可修改显示名；name 仍是稳定身份
   "workdir":      "<absolute path>",
   "created_at":   <UnixMs>,
   "client_count": <u32>
@@ -343,6 +344,16 @@ dispatch 表见 `crates/motif-server/src/rpc.rs`：`dispatch_mut` 处理
 - **errors**: `SessionNotFound`
 
 `ClientInfo`：`{ "id": "<ClientId>", "since": <UnixMs> }`
+
+#### `session.rename`
+
+修改 session 的用户显示名，不改变 attach、PTY 环境变量和通知深链使用的稳定
+`name`。空值清除自定义名并恢复显示原始 `name`。
+
+- **params**: `{ "name": "<stable name>", "custom_name": "<string>" | null }`
+- **result**: `{ "session": SessionInfo }`
+- **events**: `session.renamed`
+- **errors**: `SessionNotFound`
 
 #### `session.detach`
 
@@ -444,7 +455,7 @@ Tab 抽象：session 维护一个有序 view 列表 + 单一 active view id。�
 { "kind": "image",   "path":   "<string>" }
 ```
 
-`ViewInfo`：`{ "id": "<ViewId>", "spec": ViewSpec, "created_at": <UnixMs> }`
+`ViewInfo`：`{ "id": "<ViewId>", "spec": ViewSpec, "custom_name": "<string>" | null, "created_at": <UnixMs> }`
 
 #### `view.open`
 
@@ -479,6 +490,15 @@ Tab 抽象：session 维护一个有序 view 列表 + 单一 active view id。�
 - **params**: `{ "view_id": "<ViewId>", "to_index": <usize> }`
 - **result**: `{}`
 - **events**: `view.moved`（载荷是 reorder 后完整顺序）
+
+#### `view.rename`
+
+设置 tab 的自定义显示名。空值清除自定义名，客户端重新按命令、cwd 或文件路径
+生成标题。
+
+- **params**: `{ "view_id": "<ViewId>", "custom_name": "<string>" | null }`
+- **result**: `{}`
+- **events**: `view.renamed`
 
 ---
 
@@ -794,7 +814,7 @@ OSC 协议、各段语义和中断边界（重绘 / SIGINT 等）参见
 （无 `id`）；msgpack 模式（`?bin=1`）下结构相同，只是 codec 不一样。所有事件
 `params` 都包含 `seq: <Seq>`，下面省略不写。事件按 method 字符串区分。
 
-类型定义在 `crates/motif-proto/src/event.rs`。共 **13 条** 事件,客户端按 method
+类型定义在 `crates/motif-proto/src/event.rs`。共 **15 条** 事件,客户端按 method
 字符串严格匹配——**未知 method 视为协议错误**(不再保留 Unknown fallback)。
 shell-integration 派生通知（prompt / command / cwd / shell context 等）不在这里:
 客户端从 `/pty/<id>` 字节流自己解析 OSC（见 §6 与 `shell-integration.md`）。
@@ -829,6 +849,7 @@ PTY 输出字节、cwd 变化、shell-integration 事件**都不在这里**；�
 - `view.closed`         — `{ view_id }`
 - `view.active_changed` — `{ view_id: <ViewId> | null }`
 - `view.moved`          — `{ order: ViewId[] }`（重排后完整顺序）
+- `view.renamed`        — `{ view_id, custom_name: string | null }`
 
 ### 7.5 Session 外观
 
@@ -837,6 +858,8 @@ PTY 输出字节、cwd 变化、shell-integration 事件**都不在这里**；�
   变化时广播；所有客户端据此渲染整个 UI，使共享 session 外观一致、且 PTY 输出
   颜色与渲染背景匹配。`session.set_palette` 的 `term_fg`/`term_bg` 仍用于代答 shell
   的 OSC 10/11（`theme` 给客户端渲染，`term_*` 给 shell 探测，见 `shell-integration.md`）。
+- `session.renamed` — `{ custom_name: string | null }`。只改变用户显示名；稳定
+  session `name` 不变。
 
 ### 7.6 通知（notification）
 

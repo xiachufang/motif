@@ -252,6 +252,33 @@ async fn session_lifecycle() {
     // present without filtering out self).
     assert_eq!(client_a.attach_result.clients.len(), 0);
 
+    // A user-facing rename keeps the stable attach identity intact and is
+    // broadcast to clients currently attached to the session.
+    let renamed: ses::RenameResult = client_a
+        .call(
+            "session.rename",
+            ses::RenameParams {
+                name: "A".into(),
+                custom_name: Some("Alpha workspace".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.session.name, "A");
+    assert_eq!(
+        renamed.session.custom_name.as_deref(),
+        Some("Alpha workspace")
+    );
+    client_a
+        .expect_event("session.renamed", |event| {
+            matches!(
+                event,
+                Event::SessionRenamed { custom_name: Some(name), .. }
+                    if name == "Alpha workspace"
+            )
+        })
+        .await;
+
     let listed: ses::ListResult = server
         .call("session.list", ses::ListParams::default())
         .await
@@ -813,6 +840,26 @@ async fn view_operations_and_events() {
         assert_eq!(order.first(), Some(&v2));
         assert!(order.contains(&v1));
     }
+
+    // Rename v2 without changing its stable id or spec.
+    let _: pview::RenameResult = c
+        .call(
+            "view.rename",
+            pview::RenameParams {
+                view_id: v2.clone(),
+                custom_name: Some("Working diff".into()),
+            },
+        )
+        .await
+        .unwrap();
+    c.expect_event("view.renamed", |event| {
+        matches!(
+            event,
+            Event::ViewRenamed { view_id, custom_name: Some(name), .. }
+                if view_id == &v2 && name == "Working diff"
+        )
+    })
+    .await;
 
     // Activate v2.
     let _: pview::ActivateResult = c

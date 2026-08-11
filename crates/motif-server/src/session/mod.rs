@@ -54,6 +54,7 @@ struct Pending {
 pub struct Session {
     pub id: SessionId,
     pub name: String,
+    custom_name: Mutex<Option<String>>,
     pub workdir: PathBuf,
     pub created_at: UnixMs,
 
@@ -137,6 +138,7 @@ impl Session {
         let s = Arc::new(Self {
             id: ulid::Ulid::new().to_string(),
             name: name.into(),
+            custom_name: Mutex::new(None),
             workdir,
             created_at: now_ms(),
             publish: Mutex::new(PublishState {
@@ -170,10 +172,24 @@ impl Session {
         SessionInfo {
             id: self.id.clone(),
             name: self.name.clone(),
+            custom_name: self.custom_name.lock().clone(),
             workdir: self.workdir.clone(),
             created_at: self.created_at,
             client_count: self.clients.lock().len() as u32,
         }
+    }
+
+    /// Set the user-facing session name without changing its stable identity.
+    pub fn set_custom_name(&self, custom_name: Option<String>) {
+        let custom_name = normalize_custom_name(custom_name);
+        {
+            let mut current = self.custom_name.lock();
+            if *current == custom_name {
+                return;
+            }
+            *current = custom_name.clone();
+        }
+        self.publish_event(|seq| Event::SessionRenamed { custom_name, seq });
     }
 
     pub fn list_clients(&self) -> Vec<ClientInfo> {
@@ -478,6 +494,7 @@ impl Session {
         let info = ViewInfo {
             id: ulid::Ulid::new().to_string(),
             spec,
+            custom_name: None,
             created_at: now_ms(),
         };
         self.views.lock().push(info.clone());
@@ -577,6 +594,29 @@ impl Session {
             views.iter().map(|v| v.id.clone()).collect::<Vec<_>>()
         };
         self.publish_event(|seq| Event::ViewMoved { order, seq });
+        true
+    }
+
+    /// Update a tab's user-facing name and broadcast the change to every
+    /// attached client. Returns false when the view no longer exists.
+    pub fn rename_view(&self, view_id: &str, custom_name: Option<String>) -> bool {
+        let custom_name = normalize_custom_name(custom_name);
+        {
+            let mut views = self.views.lock();
+            let Some(view) = views.iter_mut().find(|view| view.id == view_id) else {
+                return false;
+            };
+            if view.custom_name == custom_name {
+                return true;
+            }
+            view.custom_name = custom_name.clone();
+        }
+        let view_id = view_id.to_string();
+        self.publish_event(|seq| Event::ViewRenamed {
+            view_id,
+            custom_name,
+            seq,
+        });
         true
     }
 
@@ -735,6 +775,13 @@ impl Session {
         *guard = Some(tokio::spawn(coalesce_flush_loop(weak, wake)));
         true
     }
+}
+
+fn normalize_custom_name(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 impl Drop for Session {

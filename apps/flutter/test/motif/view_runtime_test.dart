@@ -98,6 +98,38 @@ void main() {
     expect(controller.viewModel.activeViewId, 'v1');
     expect(controller.runtimeState.activation, isA<ViewActivationFailed>());
   });
+
+  test(
+    'rename is optimistic and remote events update the custom name',
+    () async {
+      String? method;
+      Map<String, Object?>? params;
+      final controller = ViewController(
+        viewModel: _tabs(),
+        transport: ViewTransport(
+          isAvailable: () => true,
+          call: (nextMethod, [nextParams = const {}]) async {
+            method = nextMethod;
+            params = nextParams;
+            return const {};
+          },
+        ),
+        callbacks: const ViewProjectionCallbacks(
+          onTabsChanged: _noop,
+          onActiveChanged: _noop,
+        ),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.rename('v1', '  Logs  ');
+      expect(method, 'view.rename');
+      expect(params, {'view_id': 'v1', 'custom_name': 'Logs'});
+      expect(controller.viewModel.items.first.customName, 'Logs');
+
+      controller.handleRenamed('v1', null);
+      expect(controller.viewModel.items.first.customName, isNull);
+    },
+  );
 }
 
 ViewTabsViewModel _tabs() => ViewTabsViewModel(

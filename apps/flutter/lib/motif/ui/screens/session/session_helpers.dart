@@ -180,6 +180,16 @@ bool get _usesCommandShortcuts =>
     defaultTargetPlatform == TargetPlatform.macOS ||
     defaultTargetPlatform == TargetPlatform.iOS;
 
+String _sessionDisplayName(AppState app, String serverId, String sessionName) {
+  for (final server in app.connectedServers) {
+    if (server.id != serverId) continue;
+    for (final session in server.sessions.sessions) {
+      if (session.name == sessionName) return session.displayName;
+    }
+  }
+  return sessionName;
+}
+
 List<int> _terminalBytes(String text, {bool enter = false}) => [
   ...utf8.encode(text),
   if (enter) 0x0d,
@@ -195,19 +205,22 @@ String _primaryShortcutLabel(String key, {bool shift = false}) {
 _tabBarSelectKey(WorkspaceViewModel workspace) {
   final labels = <String>[];
   for (final view in workspace.views.items) {
-    labels.add(switch (view.spec) {
-      PtyViewSpec(:final ptyId) =>
-        workspace.terminal.runningCommand[ptyId] ??
-            workspace.terminal.ptys
-                .where((p) => p.id == ptyId)
-                .map((p) => p.cwd?.split('/').last)
-                .firstOrNull ??
-            'shell',
-      PreviewViewSpec(:final path) => path.split('/').last,
-      DiffViewSpec(:final path) => path?.split('/').last ?? 'diff',
-      ImageViewSpec(:final path) => path.split('/').last,
-      OtherViewSpec(:final typeName) => typeName,
-    });
+    labels.add(
+      view.customName ??
+          switch (view.spec) {
+            PtyViewSpec(:final ptyId) =>
+              workspace.terminal.runningCommand[ptyId] ??
+                  workspace.terminal.ptys
+                      .where((p) => p.id == ptyId)
+                      .map((p) => p.cwd?.split('/').last)
+                      .firstOrNull ??
+                  'shell',
+            PreviewViewSpec(:final path) => path.split('/').last,
+            DiffViewSpec(:final path) => path?.split('/').last ?? 'diff',
+            ImageViewSpec(:final path) => path.split('/').last,
+            OtherViewSpec(:final typeName) => typeName,
+          },
+    );
   }
   return (
     views: workspace.views.items.map((v) => v.id).join(','),
@@ -270,7 +283,10 @@ _tabBarSelectKey(WorkspaceViewModel workspace) {
       for (final g in groups)
         {
           'server': g.profile.id,
-          'sessions': [for (final s in g.sessions.sessions) s.name],
+          'sessions': [
+            for (final s in g.sessions.sessions)
+              {'name': s.name, 'customName': s.customName},
+          ],
         },
     ]),
   );

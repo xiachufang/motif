@@ -18,6 +18,7 @@ import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/motif_status_badge.dart';
 import '../widgets/observation_select.dart';
+import '../widgets/rename_dialog.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
@@ -304,6 +305,8 @@ class _ServerSessionSection extends _$_ServerSessionSection {
               serverId: server.id,
               session: session,
               onAttach: () => onAttach(session.name),
+              onRename: (customName) =>
+                  sessions.rename(session.name, customName),
               onDestroy: () => onDestroy(session.name),
             ),
       ],
@@ -321,12 +324,14 @@ class _SessionRow extends StatelessWidget {
   final String serverId;
   final SessionInfo session;
   final VoidCallback onAttach;
+  final Future<void> Function(String? customName) onRename;
   final Future<void> Function() onDestroy;
 
   const _SessionRow({
     required this.serverId,
     required this.session,
     required this.onAttach,
+    required this.onRename,
     required this.onDestroy,
   });
 
@@ -343,7 +348,7 @@ class _SessionRow extends StatelessWidget {
         padding: const EdgeInsets.only(right: MotifSpacing.lg),
         child: const Icon(Icons.delete, color: Colors.white),
       ),
-      confirmDismiss: (_) => _confirmDestroy(context, session.name),
+      confirmDismiss: (_) => _confirmDestroy(context, session.displayName),
       onDismissed: (_) => unawaited(_destroySession(context)),
       child: InkWell(
         onTap: onAttach,
@@ -359,7 +364,7 @@ class _SessionRow extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      session.name,
+                      session.displayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: MotifType.body.copyWith(
@@ -418,12 +423,38 @@ class _SessionRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: MotifSpacing.sm),
+              IconButton(
+                key: ValueKey('rename-session-$serverId-${session.name}'),
+                tooltip: 'Rename session',
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                color: c.textSecondary,
+                onPressed: () => unawaited(_renameSession(context)),
+              ),
               Icon(Icons.chevron_right, color: c.textTertiary, size: 20),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _renameSession(BuildContext context) async {
+    final name = await showRenameDialog(
+      context,
+      title: 'Rename session',
+      initialValue: session.displayName,
+      helperText: 'Leave empty to use the original name.',
+      fieldKey: const ValueKey('rename-session-field'),
+      saveKey: const ValueKey('rename-session-save'),
+    );
+    if (name == null || !context.mounted) return;
+    try {
+      await onRename(name);
+    } catch (error) {
+      if (context.mounted) {
+        showMotifToast(context, 'Rename session failed: $error');
+      }
+    }
   }
 
   Future<bool> _confirmDestroy(BuildContext context, String name) async {

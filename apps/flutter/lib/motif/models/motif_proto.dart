@@ -112,25 +112,38 @@ class PingInfo {
 
 class SessionInfo {
   final String name;
+  final String? customName;
   final String? workdir;
   final int? createdAt;
   final int? clientCount;
 
   const SessionInfo({
     required this.name,
+    this.customName,
     this.workdir,
     this.createdAt,
     this.clientCount,
   });
 
   String get id => name;
+  String get displayName => customName ?? name;
 
   factory SessionInfo.fromJson(Map<String, Object?> j) => SessionInfo(
     name: (j['name'] as String?) ?? '',
+    customName: _asString(j['custom_name']),
     workdir: _asString(j['workdir']),
     createdAt: _asInt(j['created_at']),
     clientCount: _asInt(j['client_count']),
   );
+
+  SessionInfo copyWith({String? customName, bool clearCustomName = false}) =>
+      SessionInfo(
+        name: name,
+        customName: clearCustomName ? null : customName ?? this.customName,
+        workdir: workdir,
+        createdAt: createdAt,
+        clientCount: clientCount,
+      );
 }
 
 class ClientInfo {
@@ -299,15 +312,30 @@ class OtherViewSpec extends ViewSpec {
 class ViewInfo {
   final String id;
   final ViewSpec spec;
+  final String? customName;
   final int? createdAt;
 
-  const ViewInfo({required this.id, required this.spec, this.createdAt});
+  const ViewInfo({
+    required this.id,
+    required this.spec,
+    this.customName,
+    this.createdAt,
+  });
 
   factory ViewInfo.fromJson(Map<String, Object?> j) => ViewInfo(
     id: (j['id'] as String?) ?? '',
     spec: ViewSpec.fromJson((j['spec'] as Map?)?.cast<String, Object?>() ?? {}),
+    customName: _asString(j['custom_name']),
     createdAt: _asInt(j['created_at']),
   );
+
+  ViewInfo copyWith({String? customName, bool clearCustomName = false}) =>
+      ViewInfo(
+        id: id,
+        spec: spec,
+        customName: clearCustomName ? null : customName ?? this.customName,
+        createdAt: createdAt,
+      );
 }
 
 // ─────────────────────────── screen capture ───────────────────────────

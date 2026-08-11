@@ -23,6 +23,7 @@ class _CreatingServerFixture {
   _CreatingServerFixture({this.live = true, this.onConnect});
 
   final List<(String, String)> created = [];
+  final List<(String, String?)> renamed = [];
   final bool live;
   final TestServerConnect? onConnect;
   List<SessionInfo> _sessions = [];
@@ -53,8 +54,30 @@ class _CreatingServerFixture {
         return {
           'sessions': [
             for (final session in sessions)
-              {'name': session.name, 'workdir': session.workdir},
+              {
+                'name': session.name,
+                'custom_name': session.customName,
+                'workdir': session.workdir,
+              },
           ],
+        };
+      case 'session.rename':
+        final name = params['name']! as String;
+        final customName = params['custom_name'] as String?;
+        renamed.add((name, customName));
+        final index = sessions.indexWhere((session) => session.name == name);
+        final current = sessions[index];
+        final updated = current.copyWith(
+          customName: customName,
+          clearCustomName: customName == null,
+        );
+        sessions[index] = updated;
+        return {
+          'session': {
+            'name': updated.name,
+            'custom_name': updated.customName,
+            'workdir': updated.workdir,
+          },
         };
       case 'session.destroy':
         await destroyServerSession(params['name']! as String);
@@ -259,6 +282,29 @@ void main() {
     expect(motif.created, [(generated, '~')]);
     expect(find.byType(SessionScreen), findsOneWidget);
     await _disposeSessionScreen(tester, app);
+  });
+
+  testWidgets('session display name can be changed without changing identity', (
+    tester,
+  ) async {
+    final motif = _CreatingServerFixture()
+      ..sessions = const [SessionInfo(name: 'dev', workdir: '~/dev')];
+
+    await _pumpSessionList(tester, motif);
+    await tester.tap(find.byKey(const ValueKey('rename-session-server-1-dev')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Rename session'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('rename-session-field')),
+      'Frontend work',
+    );
+    await tester.tap(find.byKey(const ValueKey('rename-session-save')));
+    await tester.pumpAndSettle();
+
+    expect(motif.renamed, [('dev', 'Frontend work')]);
+    expect(find.text('Frontend work'), findsOneWidget);
+    expect(find.text('dev'), findsNothing);
   });
 
   testWidgets('swipe destroy alert cancel keeps the session', (tester) async {

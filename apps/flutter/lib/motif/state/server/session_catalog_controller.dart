@@ -79,6 +79,23 @@ final class SessionCatalogController {
     );
   }
 
+  Future<SessionInfo> rename(String name, String? customName) async {
+    final normalized = customName?.trim();
+    final body = await transport.call('session.rename', {
+      'name': name,
+      if (normalized != null && normalized.isNotEmpty)
+        'custom_name': normalized,
+    });
+    final renamed = SessionInfo.fromJson(
+      (body['session'] as Map?)?.cast<String, Object?>() ?? {'name': name},
+    );
+    final index = viewModel.sessions.indexWhere(
+      (session) => session.name == name,
+    );
+    if (index >= 0) viewModel.sessions[index] = renamed;
+    return renamed;
+  }
+
   RemovedSession removeOptimistically(String name) {
     final index = viewModel.sessions.indexWhere(
       (session) => session.name == name,

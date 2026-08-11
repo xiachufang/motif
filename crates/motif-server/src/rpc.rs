@@ -99,6 +99,7 @@ pub fn dispatch_concurrent(
         // session.*
         "session.list" => handle_list(manager, id, req.params),
         "session.create" => handle_create(manager, id, req.params),
+        "session.rename" => handle_session_rename(manager, id, req.params),
         "session.destroy" => handle_destroy(manager, conns, id, req.params),
 
         // agent_hooks.* (server-global user configuration; no attach needed)
@@ -155,6 +156,7 @@ pub fn dispatch_concurrent(
         "view.close" => handle_view_close(manager, conn, id, req.params),
         "view.activate" => handle_view_activate(manager, conn, id, req.params),
         "view.move" => handle_view_move(manager, conn, id, req.params),
+        "view.rename" => handle_view_rename(manager, conn, id, req.params),
 
         // remote_port.* (session-scoped remote loopback shortcuts)
         "remote_port.list" => attached(
@@ -356,6 +358,29 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         ),
         Err(e) => Response::err(id, RpcError::internal(e.to_string())),
     }
+}
+
+fn handle_session_rename(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
+    let p: ses::RenameParams = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    let Some(session) = mgr.get(&p.name) else {
+        return Response::err(
+            id,
+            RpcError::new(
+                ErrorCode::SessionNotFound,
+                format!("session '{}' not found", p.name),
+            ),
+        );
+    };
+    session.set_custom_name(p.custom_name);
+    Response::ok(
+        id,
+        ses::RenameResult {
+            session: session.info(),
+        },
+    )
 }
 
 // ─────────────────────────── device handlers ───────────────────────────
@@ -725,6 +750,28 @@ fn handle_view_move(
     };
     s.move_view(&p.view_id, p.to_index);
     Response::ok(id, pview::MoveResult::default())
+}
+
+fn handle_view_rename(
+    mgr: &Arc<SessionManager>,
+    conn: &ConnSnapshot,
+    id: Id,
+    params: Value,
+) -> Response {
+    let Some(s) = current_session(mgr, conn) else {
+        return Response::err(
+            id,
+            RpcError::new(ErrorCode::NotAttached, "must session.attach first"),
+        );
+    };
+    let p: pview::RenameParams = match parse(params) {
+        Ok(p) => p,
+        Err(e) => return Response::err(id, e),
+    };
+    if !s.rename_view(&p.view_id, p.custom_name) {
+        return Response::err(id, RpcError::invalid_params("view not found"));
+    }
+    Response::ok(id, pview::RenameResult::default())
 }
 
 fn validate_remote_port(

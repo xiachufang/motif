@@ -369,6 +369,7 @@ Future<AppState> _appStateWith(
               for (final session in sessions)
                 {
                   'name': session.name,
+                  'custom_name': session.customName,
                   'workdir': session.workdir,
                   'created_at': session.createdAt,
                   'client_count': session.clientCount,
@@ -582,6 +583,46 @@ void main() {
     expect(
       find.byWidgetPredicate(
         (widget) => widget is Title && widget.title == 'test-session',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tab can be given a custom name', (tester) async {
+    final motif = _ShortcutWorkspaceConnectionController()
+      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+      ..views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))]
+      ..activeViewId = 'v1';
+
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+    await tester.tap(find.byKey(const ValueKey('rename-tab-v1')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Rename tab'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('rename-tab-field')),
+      'API logs',
+    );
+    await tester.tap(find.byKey(const ValueKey('rename-tab-save')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('API logs'), findsOneWidget);
+    expect(motif.viewsController.viewModel.items.single.customName, 'API logs');
+  });
+
+  testWidgets('session custom name is used as the page title', (tester) async {
+    final motif = _SessionMenuWorkspaceConnectionController()
+      ..sessions = const [
+        SessionInfo(name: 'test-session', customName: 'Frontend work'),
+      ];
+
+    await _pumpSession(tester, const Size(700, 768), motif: motif);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Frontend work'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Title && widget.title == 'Frontend work',
       ),
       findsOneWidget,
     );

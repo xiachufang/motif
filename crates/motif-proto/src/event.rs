@@ -71,6 +71,22 @@ pub enum Event {
     #[serde(rename = "view.moved")]
     ViewMoved { order: Vec<ViewId>, seq: Seq },
 
+    /// A tab's user-facing title changed. `None` restores its automatic title.
+    #[serde(rename = "view.renamed")]
+    ViewRenamed {
+        view_id: ViewId,
+        custom_name: Option<String>,
+        seq: Seq,
+    },
+
+    /// The session's user-facing name changed. Its stable identity is
+    /// intentionally unchanged.
+    #[serde(rename = "session.renamed")]
+    SessionRenamed {
+        custom_name: Option<String>,
+        seq: Seq,
+    },
+
     /// The session's effective light/dark theme changed (set by whichever
     /// client is currently driving — focused / foreground). All clients adopt
     /// it for the whole UI so a shared session looks identical everywhere and
@@ -116,6 +132,8 @@ impl Event {
             Self::ViewClosed { seq, .. } => *seq,
             Self::ViewActiveChanged { seq, .. } => *seq,
             Self::ViewMoved { seq, .. } => *seq,
+            Self::ViewRenamed { seq, .. } => *seq,
+            Self::SessionRenamed { seq, .. } => *seq,
             Self::SessionThemeChanged { seq, .. } => *seq,
             Self::Notification { seq, .. } => *seq,
         }
