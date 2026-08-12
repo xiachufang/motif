@@ -169,8 +169,10 @@ void main() {
       await rpc.activatePty('pty-1');
       await Future<void>.delayed(Duration.zero);
 
-      sockets.singleWhere((socket) => socket.pathKind == _PathKind.events)
-        ..respondToProbe = false;
+      final eventsSocket = sockets.singleWhere(
+        (socket) => socket.pathKind == _PathKind.events,
+      );
+      eventsSocket.respondToProbe = false;
       final failedProbe = await rpc.probeSessionStreams(
         timeout: const Duration(milliseconds: 20),
       );
