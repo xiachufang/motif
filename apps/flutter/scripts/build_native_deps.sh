@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
+GHOSTTY_BUILD="$REPO_ROOT/scripts/build_ghostty.sh"
 
 TARGET_OS="macos"
 TARGET_ARCH=""
@@ -170,6 +172,7 @@ if [[ "$(zig version)" != "0.16.0" ]]; then
   echo "error: Ghostty requires Zig 0.16.0; found $(zig version)" >&2
   exit 1
 fi
+
 # xcrun is macOS-only. The Linux/Windows/Android paths drive Zig directly and
 # never shell out to it, so requiring it there would wrongly fail the build
 # (e.g. on CI Linux/Windows runners with no Xcode).
@@ -255,7 +258,8 @@ if [[ "$TARGET_OS" == "android" ]]; then
     export ANDROID_NDK_HOME
   fi
   echo "[native] Building libghostty-vt.so for $ztriple (NDK=${ANDROID_NDK_HOME:-<unset>})"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
+  "$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+    -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE"
   so_src="$(ls -t "$PROJECT_DIR/ghostty/zig-out/lib"/libghostty-vt.so.*.*.* 2>/dev/null | head -n1)"
   if [[ -z "$so_src" || ! -f "$so_src" ]]; then
     echo "error: missing libghostty-vt.so for $ztriple" >&2; exit 1
@@ -274,7 +278,8 @@ if [[ "$TARGET_OS" == "windows" ]]; then
   ztriple="$zarch-windows-gnu"
 
   echo "[native] Building ghostty-vt.dll for $ztriple"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
+  "$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+    -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE"
   dll_src="$PROJECT_DIR/ghostty/zig-out/bin/ghostty-vt.dll"
   if [[ ! -f "$dll_src" ]]; then
     echo "error: missing ghostty-vt.dll for $ztriple" >&2; exit 1
@@ -296,7 +301,8 @@ if [[ "$TARGET_OS" == "linux" ]]; then
   ztriple="$zarch-linux-gnu"
 
   echo "[native] Building libghostty-vt.so for $ztriple"
-  ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE" )
+  "$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+    -Demit-lib-vt=true -Dtarget="$ztriple" -Doptimize="$GHOSTTY_OPTIMIZE"
   so_src="$(ls -t "$PROJECT_DIR/ghostty/zig-out/lib"/libghostty-vt.so.*.*.* 2>/dev/null | head -n1)"
   if [[ -z "$so_src" || ! -f "$so_src" ]]; then
     echo "error: missing libghostty-vt.so for $ztriple" >&2; exit 1
@@ -333,11 +339,13 @@ if [[ "$TARGET_OS" == "ios" ]]; then
   #   - x86_64 simulator: build the archive directly (no xcframework slice).
   if [[ "$TARGET_ARCH" == "x64" ]]; then
     echo "[native] Building libghostty-vt archive for x86_64-ios-simulator"
-    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Dtarget=x86_64-ios-simulator -Doptimize="$GHOSTTY_OPTIMIZE" )
+    "$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+      -Demit-lib-vt=true -Dtarget=x86_64-ios-simulator -Doptimize="$GHOSTTY_OPTIMIZE"
     slice_lib="$PROJECT_DIR/ghostty/zig-out/lib/libghostty-vt.a"
   else
     echo "[native] Building libghostty-vt xcframework via zig (for arm64 iOS slice)"
-    ( cd "$PROJECT_DIR/ghostty" && zig build -Demit-lib-vt=true -Demit-xcframework=true -Doptimize="$GHOSTTY_OPTIMIZE" )
+    "$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+      -Demit-lib-vt=true -Demit-xcframework=true -Doptimize="$GHOSTTY_OPTIMIZE"
     xcf="$PROJECT_DIR/ghostty/zig-out/lib/ghostty-vt.xcframework"
     slice_dir="$(if [[ "$IOS_SDK" == "iphonesimulator" ]]; then echo "$xcf/ios-arm64-simulator"; else echo "$xcf/ios-arm64"; fi)"
     slice_lib="$(ls "$slice_dir"/libghostty-vt*.a 2>/dev/null | head -n1)"
@@ -377,10 +385,8 @@ if [[ -z "$macos_sdk_path" || ! -d "$macos_sdk_path" ]]; then
 fi
 
 echo "[native] Building libghostty-vt via zig (target=$ghostty_target, optimize=$GHOSTTY_OPTIMIZE)"
-(
-  cd "$PROJECT_DIR/ghostty"
-  zig build -Demit-lib-vt=true -Dtarget="$ghostty_target" -Doptimize="$GHOSTTY_OPTIMIZE"
-)
+"$GHOSTTY_BUILD" --source "$PROJECT_DIR/ghostty" -- \
+  -Demit-lib-vt=true -Dtarget="$ghostty_target" -Doptimize="$GHOSTTY_OPTIMIZE"
 
 ghostty_lib_dir="$PROJECT_DIR/ghostty/zig-out/lib"
 ghostty_versioned_name="$(basename "$(ls -t "$ghostty_lib_dir"/libghostty-vt.*.*.*.dylib 2>/dev/null | head -n1)")"

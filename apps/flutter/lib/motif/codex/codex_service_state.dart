@@ -143,6 +143,13 @@ class CodexConversationState extends ChangeNotifier {
   bool _catalogLoadedOnce = false;
   String? _preferredModelId;
   ValueChanged<String?>? _onModelSelected;
+  String? _preferredReasoningEffort;
+  ValueChanged<String?>? _onReasoningEffortSelected;
+  VoidCallback? _onReasoningEffortPreferenceInvalidated;
+  bool _hasPermissionPreference = false;
+  String? _preferredPermissionId;
+  ValueChanged<String?>? _onPermissionSelected;
+  VoidCallback? _onPermissionPreferenceInvalidated;
   String? _failedReadThreadId;
   String? _viewModelThreadId;
   Object? _catalogFingerprint;
@@ -506,6 +513,8 @@ class CodexConversationState extends ChangeNotifier {
     selectedModelId = modelId;
     final model = selectedModel;
     selectedReasoningEffort = model?.defaultReasoningEffort.value;
+    _preferredReasoningEffort = selectedReasoningEffort;
+    _onReasoningEffortSelected?.call(selectedReasoningEffort);
     _notify();
   }
 
@@ -521,17 +530,64 @@ class CodexConversationState extends ChangeNotifier {
   }
 
   void selectReasoningEffort(String effort) {
-    if (selectedReasoningEffort == effort) return;
+    final normalized = effort.trim();
+    if (normalized.isEmpty) return;
     _effortSelectionTouched = true;
-    selectedReasoningEffort = effort;
+    _preferredReasoningEffort = normalized;
+    _onReasoningEffortSelected?.call(normalized);
+    if (selectedReasoningEffort == normalized) return;
+    selectedReasoningEffort = normalized;
     _notify();
   }
 
+  void configureReasoningEffortPreference({
+    String? preferredReasoningEffort,
+    ValueChanged<String?>? onSelected,
+    VoidCallback? onInvalidated,
+  }) {
+    final normalized = preferredReasoningEffort?.trim();
+    _preferredReasoningEffort = normalized == null || normalized.isEmpty
+        ? null
+        : normalized;
+    _onReasoningEffortSelected = onSelected;
+    _onReasoningEffortPreferenceInvalidated = onInvalidated;
+    if (models.isNotEmpty) _applyPreferredReasoningEffort();
+  }
+
   void selectPermissionProfile(String? profileId) {
-    if (selectedPermissionId == profileId) return;
+    final normalized = profileId?.trim();
+    final value = normalized == null || normalized.isEmpty ? null : normalized;
     _permissionSelectionTouched = true;
-    selectedPermissionId = profileId;
+    _hasPermissionPreference = true;
+    _preferredPermissionId = value;
+    _onPermissionSelected?.call(value);
+    if (selectedPermissionId == value) return;
+    selectedPermissionId = value;
     _notify();
+  }
+
+  void configurePermissionPreference({
+    required bool hasPreference,
+    String? preferredPermissionId,
+    ValueChanged<String?>? onSelected,
+    VoidCallback? onInvalidated,
+  }) {
+    final normalized = preferredPermissionId?.trim();
+    _hasPermissionPreference = hasPreference;
+    _preferredPermissionId = normalized == null || normalized.isEmpty
+        ? null
+        : normalized;
+    _onPermissionSelected = onSelected;
+    _onPermissionPreferenceInvalidated = onInvalidated;
+    if (hasPreference) {
+      // Apply the persisted id optimistically so a project can create its
+      // first thread before a cwd-scoped permission list has been loaded.
+      _permissionSelectionTouched = true;
+      selectedPermissionId = _preferredPermissionId;
+    }
+    if (hasPreference && permissionProfiles.isNotEmpty) {
+      _applyPreferredPermission(permissionProfiles);
+    }
   }
 
   void setGoalMode(bool enabled) {
@@ -696,6 +752,7 @@ class CodexConversationState extends ChangeNotifier {
         selectedModelId = model?.id;
         selectedReasoningEffort = model?.defaultReasoningEffort.value;
       }
+      _applyPreferredReasoningEffort();
       configurationError = null;
       _notify();
     } catch (error) {
@@ -722,6 +779,22 @@ class CodexConversationState extends ChangeNotifier {
     selectedReasoningEffort = preferred.defaultReasoningEffort.value;
   }
 
+  void _applyPreferredReasoningEffort() {
+    final preferred = _preferredReasoningEffort;
+    final model = selectedModel;
+    if (preferred == null || model == null) return;
+    if (model.supportedReasoningEfforts.any(
+      (option) => option.reasoningEffort.value == preferred,
+    )) {
+      _effortSelectionTouched = true;
+      selectedReasoningEffort = preferred;
+      return;
+    }
+    _preferredReasoningEffort = null;
+    selectedReasoningEffort = model.defaultReasoningEffort.value;
+    _onReasoningEffortPreferenceInvalidated?.call();
+  }
+
   Future<void> _loadPermissionProfiles(CodexThread thread) async {
     final loaded = <CodexPermissionProfileSummary>[];
     final cursors = <String>{};
@@ -743,7 +816,9 @@ class CodexConversationState extends ChangeNotifier {
       }
       if (_closed || selectedThread?.id != thread.id) return;
       permissionProfiles = List.unmodifiable(loaded);
-      if (selectedPermissionId != null &&
+      if (_hasPermissionPreference) {
+        _applyPreferredPermission(loaded);
+      } else if (selectedPermissionId != null &&
           !loaded.any(
             (profile) => profile.id == selectedPermissionId && profile.allowed,
           )) {
@@ -756,6 +831,26 @@ class CodexConversationState extends ChangeNotifier {
       configurationError = 'Could not load permission profiles: $error';
       _notify();
     }
+  }
+
+  void _applyPreferredPermission(List<CodexPermissionProfileSummary> loaded) {
+    if (!_hasPermissionPreference) return;
+    final preferredId = _preferredPermissionId;
+    if (preferredId == null) {
+      _permissionSelectionTouched = true;
+      selectedPermissionId = null;
+      return;
+    }
+    if (loaded.any((profile) => profile.id == preferredId && profile.allowed)) {
+      _permissionSelectionTouched = true;
+      selectedPermissionId = preferredId;
+      return;
+    }
+    _hasPermissionPreference = false;
+    _preferredPermissionId = null;
+    _permissionSelectionTouched = false;
+    selectedPermissionId = null;
+    _onPermissionPreferenceInvalidated?.call();
   }
 
   Future<void> _loadGoal(String threadId) async {

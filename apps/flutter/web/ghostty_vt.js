@@ -17,11 +17,13 @@
   const CURSOR_Y = 16;
   const TERMINAL_DATA_ACTIVE_SCREEN = 6;
   const TERMINAL_DATA_SCROLLBAR = 9;
+  const TERMINAL_DATA_VIEWPORT_ACTIVE = 32;
   const TERMINAL_DATA_MODE = 37;
   const TERMINAL_OPT_SCROLLBACK_MAX_BYTES = 27;
   const TERMINAL_OPT_SCROLLBACK_MAX_LINES = 28;
   const SCROLL_VIEWPORT_BOTTOM = 1;
-  const SCROLL_VIEWPORT_DELTA = 2;
+  const SCROLL_VIEWPORT_ROW = 3;
+  const RENDER_STATE_OPTION_VERTICAL_OVERSCAN = 1;
   const MODE_BRACKETED_PASTE = 2004;
 
   let e = null; // wasm exports
@@ -59,13 +61,20 @@
     return rdU32(terminalDataSlot);
   };
 
-  const scrollViewport = (term, tag, delta = 0) => {
+  const readViewportActive = (term) => {
+    e.ghostty_terminal_get(term, TERMINAL_DATA_VIEWPORT_ACTIVE, terminalDataSlot);
+    return dv().getUint8(terminalDataSlot) !== 0;
+  };
+
+  const scrollViewport = (term, tag, value = 0) => {
     // GhosttyTerminalScrollViewport is a 4-byte tag followed by an 8-byte
     // aligned, 16-byte union. intptr_t is 32-bit for wasm32.
     u8().fill(0, scrollViewportSlot, scrollViewportSlot + 24);
     const d = dv();
     d.setUint32(scrollViewportSlot, tag, true);
-    d.setInt32(scrollViewportSlot + 8, delta, true);
+    if (tag === SCROLL_VIEWPORT_ROW) {
+      d.setUint32(scrollViewportSlot + 8, Math.max(0, Math.trunc(value)), true);
+    }
     e.ghostty_terminal_scroll_viewport(term, scrollViewportSlot);
   };
 
@@ -97,17 +106,8 @@
       if (e.ghostty_terminal_resize) e.ghostty_terminal_resize(term, cols, rows, cw, ch);
     },
 
-    scroll(term, delta) {
-      if (!delta) return;
-      scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
-    },
-
     scrollToOffset(term, offset) {
-      const metrics = readScrollbar(term);
-      const maxOffset = Math.max(0, metrics.total - metrics.len);
-      const target = Math.max(0, Math.min(maxOffset, Math.trunc(offset)));
-      const delta = target - metrics.offset;
-      if (delta) scrollViewport(term, SCROLL_VIEWPORT_DELTA, delta);
+      scrollViewport(term, SCROLL_VIEWPORT_ROW, offset);
     },
 
     scrollToBottom(term) {
@@ -120,22 +120,11 @@
 
     // Feed bytes (Uint8Array) from the remote PTY into the engine.
     write(term, bytes) {
-      const viewportBefore = readScrollbar(term);
-      const maxOffsetBefore = Math.max(0, viewportBefore.total - viewportBefore.len);
-      const followLatest = viewportBefore.offset >= maxOffsetBefore;
-      const activeScreenBefore = readActiveScreen(term);
       const buf = alloc(bytes.length);
       u8().set(bytes, buf);
       e.ghostty_terminal_vt_write(term, buf, bytes.length);
       if (e.ghostty_wasm_free_u8_array) e.ghostty_wasm_free_u8_array(buf, bytes.length);
-      // Output at the live bottom follows new rows. While reading history,
-      // leave Ghostty's content anchor untouched so pruning may legitimately
-      // change its numeric offset. Screen transitions also remain Ghostty's.
-      if (activeScreenBefore === readActiveScreen(term)) {
-        if (followLatest) {
-          scrollViewport(term, SCROLL_VIEWPORT_BOTTOM);
-        }
-      }
+      // Ghostty owns viewport following and history anchoring across writes.
     },
 
     // Encode one semantic key event against the terminal's current modes.
@@ -291,6 +280,7 @@
         cursor,
         scrollbar: readScrollbar(term),
         alternateScreenActive,
+        viewportActive: readViewportActive(term),
       });
     },
   };
@@ -306,6 +296,14 @@
       const rsSlotPtr = alloc(4);
       e.ghostty_render_state_new(0, rsSlotPtr);
       rsSlot = { rs: rdU32(rsSlotPtr) };
+      const verticalOverscan = alloc(1);
+      dv().setUint8(verticalOverscan, 1);
+      e.ghostty_render_state_set(
+        rsSlot.rs,
+        RENDER_STATE_OPTION_VERTICAL_OVERSCAN,
+        verticalOverscan,
+      );
+      freeBytes(verticalOverscan, 1);
       iterSlot = alloc(4);
       e.ghostty_render_state_row_iterator_new(0, iterSlot);
       cellsSlot = alloc(4);

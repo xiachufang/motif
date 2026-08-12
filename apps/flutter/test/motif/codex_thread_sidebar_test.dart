@@ -51,6 +51,28 @@ void main() {
     expect(cleared.selectedModelId('server-2'), 'gpt-5.6');
   });
 
+  test('CodexState persists permission choices per server', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final state = CodexState(preferences: preferences);
+
+    state
+      ..setSelectedPermissionId('server-1', 'full-access')
+      ..setSelectedPermissionId('server-2', null);
+    await state.flushSelectedPermissionPreferences();
+
+    final restored = CodexState(preferences: preferences);
+    expect(restored.hasSelectedPermissionPreference('server-1'), isTrue);
+    expect(restored.selectedPermissionId('server-1'), 'full-access');
+    expect(restored.hasSelectedPermissionPreference('server-2'), isTrue);
+    expect(restored.selectedPermissionId('server-2'), isNull);
+
+    restored.clearSelectedPermissionId('server-2');
+    await restored.flushSelectedPermissionPreferences();
+    final cleared = CodexState(preferences: preferences);
+    expect(cleared.hasSelectedPermissionPreference('server-2'), isFalse);
+  });
+
   testWidgets('project hierarchy expands independently and switches timeline', (
     tester,
   ) async {

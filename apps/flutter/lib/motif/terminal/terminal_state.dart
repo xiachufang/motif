@@ -17,6 +17,7 @@ class TerminalState {
   late GhosttyMouseEvent _mouseEvent;
   GhosttyTrackedGridRef? _selectionStartRef;
   GhosttyTrackedGridRef? _selectionEndRef;
+  int _lastEncodedRenderRows = 0;
 
   // Effect callbacks. The terminal invokes these synchronously during
   // ghostty_terminal_vt_write() to handle sequences that require a response
@@ -67,6 +68,7 @@ class TerminalState {
   final Pointer<GhosttyColorRgb> _cursorColorPtr = calloc<GhosttyColorRgb>();
   final Pointer<Bool> _mouseTrackingPtr = calloc<Bool>();
   final Pointer<Int32> _activeScreenPtr = calloc<Int32>();
+  final Pointer<Bool> _viewportActivePtr = calloc<Bool>();
   final Pointer<GhosttyTerminalScrollbar> _scrollbarPtr =
       calloc<GhosttyTerminalScrollbar>();
   final Pointer<GhosttyTerminalScrollViewport> _scrollViewportPtr =
@@ -170,6 +172,18 @@ class TerminalState {
     ghostty_render_state_new(nullptr, rsPtr);
     _renderState = rsPtr.value;
     calloc.free(rsPtr);
+    final verticalOverscan = calloc<Bool>()..value = true;
+    final verticalOverscanResult = ghostty_render_state_set(
+      _renderState,
+      GhosttyRenderStateOption.GHOSTTY_RENDER_STATE_OPTION_VERTICAL_OVERSCAN,
+      verticalOverscan.cast(),
+    );
+    calloc.free(verticalOverscan);
+    if (verticalOverscanResult != GhosttyResult.GHOSTTY_SUCCESS) {
+      throw StateError(
+        'failed to enable Ghostty vertical overscan: $verticalOverscanResult',
+      );
+    }
 
     // Create row iterator
     _rowIteratorPtr = calloc<GhosttyRenderStateRowIterator>();
@@ -268,33 +282,27 @@ class TerminalState {
     _cursorPositionValues[0] = _cursorXPtr.cast();
     _cursorPositionValues[1] = _cursorYPtr.cast();
 
-    _terminalGetKeys = calloc<UnsignedInt>(3);
-    _terminalGetValues = calloc<Pointer<Void>>(3);
+    _terminalGetKeys = calloc<UnsignedInt>(4);
+    _terminalGetValues = calloc<Pointer<Void>>(4);
     _terminalGetKeys[0] =
         GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING.value;
     _terminalGetKeys[1] =
         GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN.value;
     _terminalGetKeys[2] =
         GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_SCROLLBAR.value;
+    _terminalGetKeys[3] =
+        GhosttyTerminalData.GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE.value;
     _terminalGetValues[0] = _mouseTrackingPtr.cast();
     _terminalGetValues[1] = _activeScreenPtr.cast();
     _terminalGetValues[2] = _scrollbarPtr.cast();
+    _terminalGetValues[3] = _viewportActivePtr.cast();
   }
 
   /// Feed bytes received from the remote PTY (network mode) into the engine.
   void feedBytes(Uint8List data) {
     if (data.isEmpty) return;
     final restoresTerminalSnapshot = _consumeRestoreSnapshotPrelude(data);
-    // Treat the viewport as an explicit user choice across output. A viewport
-    // at the live bottom follows new rows. For a viewport in history, Ghostty
-    // owns the content anchor: when old pages are pruned its numeric offset
-    // must move even though the visible content stays unchanged.
     final wasAlternateScreen = alternateScreenActive;
-    final viewportBefore = scrollbarMetrics;
-    final maxOffsetBefore = viewportBefore.total > viewportBefore.length
-        ? viewportBefore.total - viewportBefore.length
-        : 0;
-    final followLatest = viewportBefore.offset >= maxOffsetBefore;
     if (data.length > _feedBufCapacity) {
       calloc.free(_feedBuf);
       _feedBufCapacity = _nextBufferCapacity(data.length);
@@ -302,16 +310,16 @@ class TerminalState {
     }
     _feedBuf.asTypedList(data.length).setAll(0, data);
     ghostty_terminal_vt_write(_terminal, _feedBuf, data.length);
-    // Let Ghostty own viewport restoration when the output itself switches
-    // between primary and alternate screens (for example entering/leaving
-    // vim). The follow/preserve rule applies while staying on one screen.
+    // Let Ghostty own viewport following and history anchoring. Its explicit
+    // viewport-active state survives writes and is more precise than inferring
+    // "at latest" from scrollbar offsets.
     if (wasAlternateScreen != alternateScreenActive) return;
     // motifd's self-contained PTY restore starts by clearing the screen and
     // scrollback with this prelude before replaying its current VT snapshot.
     // That is a new live baseline, not ordinary background output: preserving
     // an old absolute history offset here leaves a restored PTY visibly stuck
     // above its cursor.
-    if (restoresTerminalSnapshot || followLatest) scrollToBottom();
+    if (restoresTerminalSnapshot) scrollToBottom();
   }
 
   static const List<int> _restoreSnapshotClearSequence = <int>[
@@ -403,6 +411,7 @@ class TerminalState {
     calloc.free(_cursorColorPtr);
     calloc.free(_mouseTrackingPtr);
     calloc.free(_activeScreenPtr);
+    calloc.free(_viewportActivePtr);
     calloc.free(_scrollbarPtr);
     calloc.free(_scrollViewportPtr);
     calloc.free(_mousePositionPtr);
@@ -794,7 +803,7 @@ class TerminalState {
   }) {
     final result = ghostty_terminal_get_multi(
       _terminal,
-      3,
+      4,
       _terminalGetKeys,
       _terminalGetValues,
       _multiWrittenPtr,
@@ -820,6 +829,7 @@ class TerminalState {
       alternateScreenActive:
           _activeScreenPtr.value ==
           GhosttyTerminalScreen.GHOSTTY_TERMINAL_SCREEN_ALTERNATE.value,
+      viewportActive: _viewportActivePtr.value,
       selection: selection,
     );
   }
@@ -1321,13 +1331,6 @@ class TerminalState {
   }
 
   // Scroll
-  void scroll(int delta) {
-    _scrollViewportPtr.ref.tagAsInt =
-        GhosttyTerminalScrollViewportTag.GHOSTTY_SCROLL_VIEWPORT_DELTA.value;
-    _scrollViewportPtr.ref.value.delta = delta;
-    ghostty_terminal_scroll_viewport(_terminal, _scrollViewportPtr.ref);
-  }
-
   void scrollToBottom() {
     _scrollViewportPtr.ref.tagAsInt =
         GhosttyTerminalScrollViewportTag.GHOSTTY_SCROLL_VIEWPORT_BOTTOM.value;
@@ -1335,13 +1338,10 @@ class TerminalState {
   }
 
   void scrollToOffset(int offset) {
-    final metrics = scrollbarMetrics;
-    final maxOffset = metrics.total > metrics.length
-        ? metrics.total - metrics.length
-        : 0;
-    final target = offset.clamp(0, maxOffset).toInt();
-    final delta = target - metrics.offset;
-    if (delta != 0) scroll(delta);
+    _scrollViewportPtr.ref.tagAsInt =
+        GhosttyTerminalScrollViewportTag.GHOSTTY_SCROLL_VIEWPORT_ROW.value;
+    _scrollViewportPtr.ref.value.row = offset < 0 ? 0 : offset;
+    ghostty_terminal_scroll_viewport(_terminal, _scrollViewportPtr.ref);
   }
 
   // Update mouse encoder size
@@ -1415,6 +1415,9 @@ class TerminalState {
       metadata: metadata,
     );
     populateRowIterator();
+    final renderOriginOffset = metadata.viewportOffset > 0
+        ? metadata.viewportOffset - 1
+        : metadata.viewportOffset;
     var rowIndex = 0;
     while (rowIteratorNext()) {
       final rowResult = ghostty_render_state_row_get_multi(
@@ -1427,7 +1430,7 @@ class TerminalState {
       if (rowResult != GhosttyResult.GHOSTTY_SUCCESS) {
         throw StateError('failed to read terminal row: $rowResult');
       }
-      if (!full && !_rowDirtyPtr.value) {
+      if (!full && !_rowDirtyPtr.value && rowIndex < _lastEncodedRenderRows) {
         rowIndex++;
         continue;
       }
@@ -1484,7 +1487,7 @@ class TerminalState {
         final hasHyperlink = _cellHasHyperlinkPtr.value;
         final hyperlinkUri = hasHyperlink
             ? _hyperlinkUriForScreenCell(
-                row: metadata.viewportOffset + rowIndex,
+                row: renderOriginOffset + rowIndex,
                 col: colIndex,
               )
             : null;
@@ -1509,11 +1512,16 @@ class TerminalState {
       setRowDirty(false);
       rowIndex++;
     }
-    if (rowIndex != rows) {
+    if (rowIndex < rows || rowIndex > rows + 2) {
       throw StateError('terminal frame row count changed during encoding');
     }
     setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);
-    return encoder.finish(metadata.viewportOffset);
+    final result = encoder.finish(
+      metadata.viewportOffset,
+      renderRows: rowIndex,
+    );
+    _lastEncodedRenderRows = rowIndex;
+    return result;
   }
 
   bool _readCurrentCellIntoScratch() {

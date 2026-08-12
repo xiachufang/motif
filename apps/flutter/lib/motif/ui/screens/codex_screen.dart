@@ -427,38 +427,12 @@ class _CodexAppBarTitle extends StatelessWidget {
     if (thread == null) return const Text('Codex');
 
     final c = context.motif;
-    final cwd = thread.cwd.value.trim();
-    return Row(
+    return Text(
       key: const ValueKey('codex-thread-appbar-title'),
-      children: [
-        Icon(
-          Icons.folder_outlined,
-          size: MotifIconSize.sm,
-          color: c.textSecondary,
-        ),
-        const SizedBox(width: MotifSpacing.sm),
-        Expanded(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                codexThreadTitle(thread),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: MotifType.headline.copyWith(color: c.textPrimary),
-              ),
-              if (cwd.isNotEmpty)
-                Text(
-                  cwd,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: MotifType.caption.copyWith(color: c.textTertiary),
-                ),
-            ],
-          ),
-        ),
-      ],
+      codexThreadTitle(thread),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: MotifType.headline.copyWith(color: c.textPrimary),
     );
   }
 }

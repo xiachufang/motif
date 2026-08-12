@@ -46,7 +46,6 @@ extension type _GhosttyVt(JSObject _) implements JSObject {
     int cellWidth,
     int cellHeight,
   );
-  external void scroll(int term, int delta);
   external void scrollToOffset(int term, int offset);
   external void scrollToBottom(int term);
   external JSUint8Array encodeKey(
@@ -121,6 +120,8 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   int _scrollViewportRows = 0;
   int _viewportOffset = 0;
   bool _alternateScreenActive = false;
+  bool _viewportActive = true;
+  double _viewportRowFraction = 0;
   int _cols = 80;
   int _gridRows = 24;
   double _cellWidth = 0;
@@ -133,8 +134,6 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
   final List<TerminalInputEvent> _pendingTerminalInputs =
       <TerminalInputEvent>[];
   final TerminalByteBatcher _pendingPtyBytes = TerminalByteBatcher();
-  final TerminalScrollAccumulator _scrollAccumulator =
-      TerminalScrollAccumulator();
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
   Timer? _repaint;
@@ -266,6 +265,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       _scrollViewportRows =
           (scrollbar?['len'] as num?)?.toInt() ?? _rows.length;
       _alternateScreenActive = obj['alternateScreenActive'] as bool? ?? false;
+      _viewportActive = obj['viewportActive'] as bool? ?? true;
       final hasScrollback =
           _scrollViewportRows > 0 &&
           _scrollTotalRows > _scrollViewportRows &&
@@ -274,9 +274,9 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       if (_isAtLatest || _alternateScreenActive) {
         _scrollbarVisibility.setReturnButtonHovered(false);
       }
-      final rows = (obj['rows'] as List?) ?? const [];
-      return [
-        for (final row in rows)
+      final sourceRows = (obj['rows'] as List?) ?? const [];
+      final rows = [
+        for (final row in sourceRows)
           [
             for (final r in (row as List))
               _Run(
@@ -286,6 +286,12 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
               ),
           ],
       ];
+      if (_viewportActive ||
+          _alternateScreenActive ||
+          rows.length <= _scrollViewportRows) {
+        _viewportRowFraction = 0;
+      }
+      return rows;
     } catch (_) {
       return const [];
     }
@@ -301,13 +307,10 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     );
   }
 
-  bool get _isAtLatest {
-    final maxOffset = (_scrollTotalRows - _scrollViewportRows).clamp(
-      0,
-      _scrollTotalRows,
-    );
-    return _viewportOffset >= maxOffset;
-  }
+  bool get _isAtLatest => _viewportActive;
+
+  int get _topOverscanRows =>
+      _viewportOffset > 0 && _rows.length > _scrollViewportRows ? 1 : 0;
 
   bool get _usesMobileDirectTouchScroll =>
       defaultTargetPlatform == TargetPlatform.iOS ||
@@ -364,12 +367,33 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     if (_scrollTotalRows > _scrollViewportRows && !_alternateScreenActive) {
       _scrollbarVisibility.showTemporarily();
     }
-    final rows = _scrollAccumulator.applyPixelDelta(pixels, _cellHeight);
-    if (rows == 0 || _alternateScreenActive) return;
+    if (pixels == 0 || _alternateScreenActive || _cellHeight <= 0) return;
     final term = _term;
     if (term == null) return;
-    _ghosttyVt!.scroll(term, rows);
-    _refreshGrid();
+    final maxOffset = (_scrollTotalRows - _scrollViewportRows).clamp(
+      0,
+      _scrollTotalRows,
+    );
+    final target = terminalViewportPositionFromScrollPixels(
+      scrollPixels:
+          (_viewportOffset + _viewportRowFraction) * _cellHeight + pixels,
+      maxOffset: maxOffset,
+      rowHeight: _cellHeight,
+    );
+    final anchorChanged = target.viewportOffset != _viewportOffset;
+    final fractionChanged =
+        (_viewportRowFraction - target.pixelRemainder / _cellHeight).abs() >
+        1e-6;
+    _viewportRowFraction = target.pixelRemainder / _cellHeight;
+    if (target.viewportOffset == maxOffset && target.pixelRemainder == 0) {
+      _ghosttyVt!.scrollToBottom(term);
+      _refreshGrid();
+    } else if (anchorChanged) {
+      _ghosttyVt!.scrollToOffset(term, target.viewportOffset);
+      _refreshGrid();
+    } else if (fractionChanged && mounted) {
+      setState(() {});
+    }
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
@@ -382,10 +406,14 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
     _scrollbarVisibility.setReturnButtonHovered(hovered);
   }
 
+  void _prepareReturnToCursor() {
+    _viewportRowFraction = 0;
+  }
+
   void _returnToCursor() {
     final term = _term;
     if (term == null) return;
-    _scrollAccumulator.reset();
+    _prepareReturnToCursor();
     _scrollbarVisibility.showTemporarily();
     _ghosttyVt!.scrollToBottom(term);
     _refreshGrid();
@@ -569,6 +597,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           _scheduleResize(constraints);
+          final topOverscanRows = _topOverscanRows;
           return Listener(
             onPointerSignal: _onPointerSignal,
             child: GestureDetector(
@@ -588,18 +617,35 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
                       padding: const EdgeInsets.all(_padding),
                       child: TabSelectionArea(
                         tabActive: widget.tabActive,
-                        child: ListView.builder(
-                          primary: false,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemExtent: _cellHeight > 0 ? _cellHeight : null,
-                          itemCount: _rows.length,
-                          itemBuilder: (_, i) => Text.rich(
-                            _buildRow(
-                              _rows[i],
-                              i == _curY ? _curX : -1,
-                              base,
-                              c,
-                              widget.palette,
+                        child: ClipRect(
+                          child: Transform.translate(
+                            offset: Offset(
+                              0,
+                              -_viewportRowFraction * _cellHeight,
+                            ),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              clipBehavior: Clip.none,
+                              children: [
+                                for (var i = 0; i < _rows.length; i++)
+                                  Positioned(
+                                    top: (i - topOverscanRows) * _cellHeight,
+                                    left: 0,
+                                    right: 0,
+                                    height: _cellHeight,
+                                    child: Text.rich(
+                                      _buildRow(
+                                        _rows[i],
+                                        i == _curY + topOverscanRows
+                                            ? _curX
+                                            : -1,
+                                        base,
+                                        c,
+                                        widget.palette,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
@@ -608,7 +654,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
                     TerminalScrollControls(
                       totalRows: _scrollTotalRows,
                       visibleRows: _scrollViewportRows,
-                      viewportOffset: _viewportOffset,
+                      isAtLatest: _isAtLatest,
                       alternateScreenActive: _alternateScreenActive,
                       visibilityController: _scrollbarVisibility,
                       buttonForegroundColor: Theme.of(
@@ -618,8 +664,7 @@ class _WasmTerminalViewState extends State<_WasmTerminalView> {
                         context,
                       ).colorScheme.surface.withValues(alpha: 0.92),
                       onReturnButtonHoverChanged: _onReturnButtonHoverChanged,
-                      onReturnToCursorInteractionStart:
-                          _scrollAccumulator.reset,
+                      onReturnToCursorInteractionStart: _prepareReturnToCursor,
                       onReturnToCursor: _returnToCursor,
                     ),
                   ],

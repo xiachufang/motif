@@ -29,6 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use dashmap::DashMap;
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::{Terminal, TerminalOptions};
 use motif_proto::common::{ClientId, PtyId, UnixMs};
@@ -97,6 +98,22 @@ const EMU_CHANNEL_CAPACITY: usize = 256;
 /// before we cut them off.
 const PTY_BROADCAST_CAPACITY: usize = 256;
 
+/// Conservative terminal identity shared by the child environment and
+/// Ghostty's XTGETTCAP `TN` response.
+const TERMINAL_TERMINFO_NAME: &str = "xterm-256color";
+const DEFAULT_TERM_FG: RgbColor = RgbColor {
+    r: 0xe6,
+    g: 0xe6,
+    b: 0xe6,
+};
+const DEFAULT_TERM_BG: RgbColor = RgbColor {
+    r: 0x0a,
+    g: 0x0a,
+    b: 0x0a,
+};
+
+type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 pub struct Pty {
     pub id: PtyId,
     pub cmd: String,
@@ -106,7 +123,7 @@ pub struct Pty {
     pub pid: Option<u32>,
 
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: PtyWriter,
     killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
     #[cfg(windows)]
     process_job: Option<crate::windows_job::ProcessJob>,
@@ -165,6 +182,17 @@ impl PtyRing {
 enum EmuCmd {
     /// A chunk of master output: feed the emulator, append the ring, broadcast.
     Feed(Bytes),
+    /// A terminal capability query: feed only the server-side Ghostty terminal.
+    /// Its `write_pty` effect writes Ghostty's response back to the child; the
+    /// query itself is deliberately excluded from replay and live fan-out so a
+    /// downstream terminal cannot answer it a second time.
+    Query(Bytes),
+    /// Update Ghostty's default colors from the active client's palette.
+    /// OSC 10/11 query formatting remains entirely inside Ghostty.
+    SetColors {
+        fg: Option<RgbColor>,
+        bg: Option<RgbColor>,
+    },
     /// The effective grid changed; resize the headless terminal to match.
     Resize { cols: u16, rows: u16 },
     /// A `/pty/<id>` client wants to (re)attach. The reply carries the bytes to
@@ -174,11 +202,6 @@ enum EmuCmd {
         since: Option<u64>,
         reply: oneshot::Sender<SubscribeReply>,
     },
-    /// CPR (`ESC [ 6 n`) answer. Read the headless terminal's real cursor
-    /// position and reply with `ESC [ row ; col R`. Routed through this
-    /// ordered channel so it's processed *after* every preceding `Feed`,
-    /// i.e. the cursor reflects exactly the bytes seen before the query.
-    AnswerCpr { reply: oneshot::Sender<Vec<u8>> },
 }
 
 /// Reply to [`EmuCmd::Subscribe`]. The client adopts `start` as its byte
@@ -287,25 +310,6 @@ impl Pty {
         w.flush()
     }
 
-    /// CPR (`ESC [ 6 n`) response bytes, answered from the headless emulator's
-    /// real cursor position rather than a fixed sentinel. Synchronously asks
-    /// the emulator thread (ordered behind every prior `Feed`, so the cursor
-    /// is as of the bytes seen before this query). Falls back to the static
-    /// `ESC [ 1 ; 1 R` if the emulator thread is gone or doesn't reply — same
-    /// behaviour as before this fix.
-    fn cpr_response(&self) -> Vec<u8> {
-        let fallback = || {
-            QueryKind::Cpr
-                .canonical_response()
-                .unwrap_or_else(|| b"\x1b[1;1R".to_vec())
-        };
-        let (tx, rx) = oneshot::channel();
-        if self.emu_tx.send(EmuCmd::AnswerCpr { reply: tx }).is_err() {
-            return fallback();
-        }
-        rx.blocking_recv().unwrap_or_else(|_| fallback())
-    }
-
     /// Returns Some(actually-applied size) if it changed.
     pub fn set_client_size(&self, client: ClientId, cols: u16, rows: u16) -> Option<(u16, u16)> {
         let mut s = self.state.lock();
@@ -368,6 +372,45 @@ impl Pty {
     fn feed(&self, data: &[u8]) {
         let _ = self.emu_tx.send(EmuCmd::Feed(Bytes::copy_from_slice(data)));
     }
+
+    /// Route a terminal query to the server-side Ghostty terminal without
+    /// exposing it to replay buffers or downstream terminal clients.
+    fn query(&self, data: &[u8]) {
+        let _ = self
+            .emu_tx
+            .send(EmuCmd::Query(Bytes::copy_from_slice(data)));
+    }
+
+    pub(crate) fn set_terminal_palette(&self, fg: Option<&str>, bg: Option<&str>) {
+        let fg = fg.map(|value| parse_osc_rgb(value).unwrap_or(DEFAULT_TERM_FG));
+        let bg = bg.map(|value| parse_osc_rgb(value).unwrap_or(DEFAULT_TERM_BG));
+        if fg.is_some() || bg.is_some() {
+            let _ = self.emu_tx.send(EmuCmd::SetColors { fg, bg });
+        }
+    }
+}
+
+/// Parse the `rgb:` payload reported by OSC 10/11 into Ghostty's 8-bit RGB.
+/// X11 allows one to four hex digits per component, so scale rather than
+/// assuming the common repeated-byte `rrrr/gggg/bbbb` form.
+fn parse_osc_rgb(value: &str) -> Option<RgbColor> {
+    fn component(value: &str) -> Option<u8> {
+        if value.is_empty() || value.len() > 4 {
+            return None;
+        }
+        let raw = u32::from_str_radix(value, 16).ok()?;
+        let max = (1u32 << (value.len() * 4)) - 1;
+        Some(((raw * 255 + max / 2) / max) as u8)
+    }
+
+    let value = value.strip_prefix("rgb:").unwrap_or(value);
+    let mut parts = value.split('/');
+    let color = RgbColor {
+        r: component(parts.next()?)?,
+        g: component(parts.next()?)?,
+        b: component(parts.next()?)?,
+    };
+    parts.next().is_none().then_some(color)
 }
 
 /// Pick the master size: the currently-active client's reported size, or
@@ -455,6 +498,12 @@ impl PtyPool {
         self.ptys.get(id).map(|r| r.clone())
     }
 
+    pub(crate) fn set_terminal_palette(&self, fg: Option<&str>, bg: Option<&str>) {
+        for pty in &self.ptys {
+            pty.set_terminal_palette(fg, bg);
+        }
+    }
+
     pub fn count(&self) -> usize {
         self.ptys.len()
     }
@@ -510,12 +559,11 @@ impl PtyPool {
             cb.arg("-l");
         }
         cb.cwd(&cwd);
-        // Ensure terminfo-based tools (`clear`, `tput`, `less`, ncurses)
-        // have something sensible to look up. portable-pty inherits the
-        // server process env on Unix, but motifd may have been launched
-        // from a non-interactive context (CI, launchd) where TERM isn't
-        // set. xterm.js advertises xterm-256color compatibility.
-        cb.env("TERM", "xterm-256color");
+        // Use the widely-installed xterm-256color database rather than require
+        // a bundled xterm-ghostty entry. Drop any private TERMINFO inherited by
+        // motifd; an explicit per-PTY env below may still intentionally set it.
+        cb.env("TERM", TERMINAL_TERMINFO_NAME);
+        cb.env_remove("TERMINFO");
         cb.env("COLORTERM", "truecolor");
         cb.env("TERM_PROGRAM", "motif");
         for (k, v) in &params.env {
@@ -559,6 +607,7 @@ impl PtyPool {
             .master
             .take_writer()
             .map_err(|e| PtyError::OpenFailed(e.to_string()))?;
+        let writer: PtyWriter = Arc::new(Mutex::new(writer));
         let reader = pair
             .master
             .try_clone_reader()
@@ -572,9 +621,10 @@ impl PtyPool {
         let (emu_tx, emu_rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
         {
             let emu_pty_id = id.clone();
+            let response_writer = Arc::clone(&writer);
             std::thread::Builder::new()
                 .name(format!("motif-emu-{}", emu_pty_id))
-                .spawn(move || emulator_loop(emu_rx, cols, rows))
+                .spawn(move || emulator_loop(emu_rx, cols, rows, Some(response_writer)))
                 .map_err(|e| PtyError::OpenFailed(e.to_string()))?;
         }
 
@@ -585,7 +635,7 @@ impl PtyPool {
             created_at: now_ms(),
             pid,
             master: Mutex::new(Some(pair.master)),
-            writer: Mutex::new(writer),
+            writer,
             killer: Mutex::new(Some(killer)),
             #[cfg(windows)]
             process_job,
@@ -603,6 +653,13 @@ impl PtyPool {
         });
 
         self.ptys.insert(id.clone(), pty.clone());
+
+        // Insert before reading the cached palette: a concurrent palette
+        // update then either lands through the pool iteration or is observed
+        // here, so a newly-created PTY cannot miss the latest colors.
+        if let Some(session) = self.session() {
+            session.apply_terminal_palette(&pty);
+        }
 
         // Reader thread.
         let pty_for_reader = Arc::clone(&pty);
@@ -719,13 +776,13 @@ fn reader_loop(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
-    // Strip terminal capability queries (DA1, OSC 11, CPR, …) from the
-    // stream before they reach clients, AND answer them locally by writing
-    // the canonical response back to the PTY master. Doing both on the
-    // server side ensures:
-    //   * xterm.js in the web client never sees the query and so won't
-    //     auto-answer late (a late answer leaks into fish's line editor
-    //     as fake keystrokes — `^[]11;…` typed into the prompt);
+    // Strip terminal capability queries (DA1, OSC 11, CPR, …) before they
+    // reach clients, and route their original bytes to the server-side
+    // Ghostty terminal. Ghostty writes its own response back to the PTY,
+    // ordered with every preceding output chunk. Keeping this server-side
+    // ensures:
+    //   * a downstream terminal never sees the query and cannot auto-answer
+    //     late (a late answer leaks into fish's line editor as fake input);
     //   * fish gets its DA1 reply at I/O speed instead of after a network
     //     round trip, so its 10s "Primary Device Attribute" timeout never
     //     fires even when no client is attached.
@@ -775,30 +832,12 @@ fn reader_loop(
                                     }
                                 }
                                 pty.feed(&raw);
-                            } else if matches!(kind, QueryKind::Cpr) {
-                                // Cursor Position Report must reflect the real
-                                // cursor, not a fixed sentinel: full-screen TUIs
-                                // (claude/Ink) use CPR for cursor tracking and
-                                // width probing, so a constant 1;1 mangles their
-                                // layout. Answer from the headless emulator's
-                                // live position (ordered behind the bytes fed
-                                // above). Bytes stay server-side, same as the
-                                // other capability queries.
-                                let _ = pty.write_bytes(&pty.cpr_response());
                             } else {
-                                // Capability query — write canonical or
-                                // client-palette response back to the
-                                // PTY master. Bytes stay server-side so
-                                // late xterm.js auto-answers don't leak
-                                // into fish's line editor as fake input.
-                                let answer: Option<Vec<u8>> = live_session
-                                    .as_ref()
-                                    .and_then(|s| s.osc_palette_response(&kind))
-                                    .map(Some)
-                                    .unwrap_or_else(|| kind.canonical_response());
-                                if let Some(bytes) = answer {
-                                    let _ = pty.write_bytes(&bytes);
-                                }
+                                // Capability query — preserve the exact bytes
+                                // and let Ghostty parse and answer it. Query and
+                                // prior output share one ordered channel, so CPR
+                                // observes the correct live cursor position.
+                                pty.query(&raw);
                             }
                         }
                         ScanItem::Bytes(bytes) => {
@@ -863,36 +902,78 @@ fn reader_loop(
 /// it and the live receiver it returns begins right after — nothing falls
 /// between the snapshot/delta and the live stream. Exits when every sender
 /// (the `Pty` and its reader thread) has dropped.
-/// Build a headless emulator terminal as a passive observer: it never writes
-/// query responses back into the PTY (the reader's QueryScanner already answers
-/// capability queries). Returns `None` if libghostty can't allocate it — the
-/// caller then degrades to byte-delta replay only (no cold-attach snapshot).
-fn new_emulator_terminal(cols: u16, rows: u16) -> Option<Terminal<'static, 'static>> {
-    // Deliberately register NO effect handlers. libghostty-vt's `on_*`
-    // registration hands the C side a pointer to `self.vtable` (a field inside
-    // this `Terminal`) as the callback userdata — but we move the `Terminal`
-    // out of here, into `emulator_loop`'s local, and again on every resize
-    // rebuild (`term = fresh`). Each move relocates `vtable`, leaving the C
-    // side holding a dangling userdata pointer. A query that triggers a pty
-    // write (e.g. DECRQM `ESC[?…$p` → sendModeReport) would then dereference
-    // it inside `vt_write` and SIGBUS. We don't need the callback anyway: the
-    // reader's QueryScanner answers capability queries server-side, and
-    // unhandled pty-write effects are silently ignored (which is what we want).
-    Terminal::new(TerminalOptions {
+/// Build the server-side Ghostty terminal. In addition to maintaining the VT
+/// snapshot, it is the authoritative terminal for capability queries: when a
+/// response writer is supplied, Ghostty's `write_pty` effect writes replies
+/// directly back to the child PTY.
+///
+/// Returns `None` if libghostty can't allocate or configure the terminal. The
+/// caller still serves raw byte deltas, but query responses and cold snapshots
+/// are unavailable for that PTY.
+fn new_emulator_terminal(
+    cols: u16,
+    rows: u16,
+    response_sink: Option<(PtyWriter, Arc<AtomicBool>)>,
+) -> Option<Terminal<'static, 'static>> {
+    let mut term = Terminal::new(TerminalOptions {
         cols,
         rows,
         max_scrollback: MAX_SCROLLBACK,
     })
-    .ok()
+    .ok()?;
+
+    term.set_terminfo_name(Some(TERMINAL_TERMINFO_NAME))
+        .ok()?
+        .set_default_fg_color(Some(DEFAULT_TERM_FG))
+        .ok()?
+        .set_default_bg_color(Some(DEFAULT_TERM_BG))
+        .ok()?
+        .on_xtversion(|_| Some("ghostty"))
+        .ok()?;
+
+    if let Some((response_writer, response_enabled)) = response_sink {
+        term.on_pty_write(move |_, bytes| {
+            // `Feed` may contain an unrecognized response-producing protocol
+            // (for example a Kitty graphics command). That data is forwarded
+            // to the downstream Ghostty terminal, which owns its response.
+            // Only scanner-classified `Query` commands are answered here.
+            if !response_enabled.load(Ordering::Relaxed) {
+                return;
+            }
+            let result = {
+                let mut writer = response_writer.lock();
+                writer.write_all(bytes).and_then(|()| writer.flush())
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, "failed to write Ghostty terminal response to PTY");
+            }
+        })
+        .ok()?;
+    }
+
+    Some(term)
 }
 
-fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
+fn emulator_loop(
+    rx: MpscReceiver<EmuCmd>,
+    cols: u16,
+    rows: u16,
+    response_writer: Option<PtyWriter>,
+) {
     let (output_tx, _) = broadcast::channel::<Bytes>(PTY_BROADCAST_CAPACITY);
     let mut ring = PtyRing::new();
     let mut cur_cols = cols;
+    let mut default_fg = DEFAULT_TERM_FG;
+    let mut default_bg = DEFAULT_TERM_BG;
+    let response_enabled = Arc::new(AtomicBool::new(false));
     // If the headless terminal can't be created we still serve byte deltas;
     // only the cold-attach VT snapshot degrades (to empty).
-    let mut term = new_emulator_terminal(cols, rows);
+    let response_sink = || {
+        response_writer
+            .as_ref()
+            .map(|writer| (Arc::clone(writer), Arc::clone(&response_enabled)))
+    };
+    let mut term = new_emulator_terminal(cols, rows, response_sink());
 
     // Carry-over slot for one command pulled off the channel during resize
     // coalescing (see the `Resize` arm). std's mpsc can't un-receive, so the
@@ -915,6 +996,30 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                 ring.append(&bytes);
                 let _ = output_tx.send(bytes);
             }
+            EmuCmd::Query(bytes) => {
+                if let Some(t) = term.as_mut() {
+                    // Ghostty invokes write_pty synchronously during vt_write.
+                    // Gate the callback so normal Feed/replay processing cannot
+                    // produce a second response alongside the downstream terminal.
+                    response_enabled.store(true, Ordering::Relaxed);
+                    t.vt_write(&bytes);
+                    response_enabled.store(false, Ordering::Relaxed);
+                }
+            }
+            EmuCmd::SetColors { fg, bg } => {
+                if let Some(fg) = fg {
+                    default_fg = fg;
+                    if let Some(t) = term.as_mut() {
+                        let _ = t.set_default_fg_color(Some(fg));
+                    }
+                }
+                if let Some(bg) = bg {
+                    default_bg = bg;
+                    if let Some(t) = term.as_mut() {
+                        let _ = t.set_default_bg_color(Some(bg));
+                    }
+                }
+            }
             EmuCmd::Resize { mut cols, mut rows } => {
                 // Coalesce a burst of resizes. A web client dragging the window
                 // edge emits a `Resize` per character-cell the grid crosses;
@@ -926,7 +1031,7 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                 // target, so a drag does a single rebuild at the final size. The
                 // first non-`Resize` we peek is stashed in `pending` (we can't
                 // un-receive it) and handled next, preserving the ordering
-                // `Feed`/`Subscribe`/`AnswerCpr` depend on.
+                // `Feed`/`Query`/`Subscribe` depend on.
                 while let Ok(next) = rx.try_recv() {
                     match next {
                         EmuCmd::Resize { cols: c, rows: r } => {
@@ -952,8 +1057,11 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                     // rebuilding the terminal at the new width and replaying the
                     // ring — laying content out by feeding is overflow-proof and
                     // reflows scrollback to the new width correctly.
-                    let mut fresh = new_emulator_terminal(cols, rows);
+                    let mut fresh = new_emulator_terminal(cols, rows, response_sink());
                     if let Some(t) = fresh.as_mut() {
+                        let _ = t
+                            .set_default_fg_color(Some(default_fg))
+                            .and_then(|t| t.set_default_bg_color(Some(default_bg)));
                         let bytes: Vec<u8> = ring.bytes.iter().copied().collect();
                         t.vt_write(&bytes);
                     }
@@ -1008,21 +1116,6 @@ fn emulator_loop(rx: MpscReceiver<EmuCmd>, cols: u16, rows: u16) {
                     replay,
                     rx: output_tx.subscribe(),
                 });
-            }
-            EmuCmd::AnswerCpr { reply } => {
-                // CPR is 1-indexed active-area coords; cursor_x/cursor_y are
-                // 0-indexed (same convention the snapshot postlude uses to
-                // re-issue `ESC[H`). Fall back to home if the terminal failed
-                // to build or the C API errors.
-                let bytes = match term.as_ref() {
-                    Some(t) => {
-                        let cx = t.cursor_x().unwrap_or(0);
-                        let cy = t.cursor_y().unwrap_or(0);
-                        format!("\x1b[{};{}R", cy + 1, cx + 1).into_bytes()
-                    }
-                    None => b"\x1b[1;1R".to_vec(),
-                };
-                let _ = reply.send(bytes);
             }
         }
     }
@@ -1212,10 +1305,32 @@ mod tests {
     use super::*;
     use tokio::sync::broadcast::error::TryRecvError;
 
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     fn spawn_emu(cols: u16, rows: u16) -> SyncSender<EmuCmd> {
         let (tx, rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
-        std::thread::spawn(move || emulator_loop(rx, cols, rows));
+        std::thread::spawn(move || emulator_loop(rx, cols, rows, None));
         tx
+    }
+
+    fn spawn_emu_with_responses(cols: u16, rows: u16) -> (SyncSender<EmuCmd>, Arc<Mutex<Vec<u8>>>) {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer: PtyWriter =
+            Arc::new(Mutex::new(Box::new(CaptureWriter(Arc::clone(&captured)))));
+        let (tx, rx) = sync_channel::<EmuCmd>(EMU_CHANNEL_CAPACITY);
+        std::thread::spawn(move || emulator_loop(rx, cols, rows, Some(writer)));
+        (tx, captured)
     }
 
     #[test]
@@ -1233,8 +1348,33 @@ mod tests {
         assert_eq!(argv.last().map(String::as_str), Some("echo motif command"));
     }
 
+    #[test]
+    fn parses_x11_rgb_components_for_ghostty() {
+        assert_eq!(
+            parse_osc_rgb("rgb:ffff/8080/0000"),
+            Some(RgbColor {
+                r: 0xff,
+                g: 0x80,
+                b: 0x00
+            })
+        );
+        assert_eq!(
+            parse_osc_rgb("f/8/0"),
+            Some(RgbColor {
+                r: 0xff,
+                g: 0x88,
+                b: 0x00
+            })
+        );
+        assert_eq!(parse_osc_rgb("invalid"), None);
+    }
+
     fn feed(tx: &SyncSender<EmuCmd>, b: &[u8]) {
         tx.send(EmuCmd::Feed(Bytes::copy_from_slice(b))).unwrap();
+    }
+
+    fn query(tx: &SyncSender<EmuCmd>, b: &[u8]) {
+        tx.send(EmuCmd::Query(Bytes::copy_from_slice(b))).unwrap();
     }
 
     /// Blocking subscribe for tests. Feed and Subscribe share one ordered
@@ -1250,6 +1390,11 @@ mod tests {
     /// broadcast by the emulator thread.
     fn flush(tx: &SyncSender<EmuCmd>) {
         let _ = subscribe(tx, Some(0));
+    }
+
+    fn take_responses(tx: &SyncSender<EmuCmd>, captured: &Mutex<Vec<u8>>) -> Vec<u8> {
+        flush(tx);
+        std::mem::take(&mut *captured.lock())
     }
 
     fn find(haystack: &[u8], needle: &[u8]) -> bool {
@@ -1427,7 +1572,7 @@ mod tests {
         // renders relative to the cursor (claude/Ink) drew its next keystroke on
         // the wrong row. `formatter_vt_snapshot` re-pads those rows; a faithful
         // snapshot must round-trip to the SAME scrollback depth and cursor row.
-        let mut term = new_emulator_terminal(54, 35).unwrap();
+        let mut term = new_emulator_terminal(54, 35, None).unwrap();
         for i in 0..200u32 {
             term.vt_write(format!("line{i}\r\n").as_bytes()); // overflow → scrollback
         }
@@ -1439,7 +1584,7 @@ mod tests {
         assert!(orig_sb > 0, "test needs content to have scrolled");
 
         let snap = formatter_vt_snapshot(&term);
-        let mut echo = new_emulator_terminal(54, 35).unwrap();
+        let mut echo = new_emulator_terminal(54, 35, None).unwrap();
         echo.vt_write(&snap);
 
         // Without the re-pad, the trimmed blank rows make `echo` scroll fewer
@@ -1456,14 +1601,6 @@ mod tests {
         );
     }
 
-    /// Blocking CPR query for tests. Ordered behind every prior Feed, so the
-    /// reply reflects the cursor as of the bytes fed before this call.
-    fn answer_cpr(tx: &SyncSender<EmuCmd>) -> Vec<u8> {
-        let (rtx, rrx) = oneshot::channel();
-        tx.send(EmuCmd::AnswerCpr { reply: rtx }).unwrap();
-        rrx.blocking_recv().unwrap()
-    }
-
     #[test]
     fn snapshot_roundtrip_is_faithful_with_trailing_blank_rows() {
         // Tall content that scrolls, then cursor parked mid-screen with BLANK
@@ -1473,19 +1610,21 @@ mod tests {
         // round-tripping: feed the snapshot into a fresh emulator of the same
         // size; a faithful snapshot reproduces the same state (same cursor, same
         // re-snapshot bytes).
-        let orig = spawn_emu(20, 8);
+        let (orig, orig_responses) = spawn_emu_with_responses(20, 8);
         for i in 0..20u32 {
             feed(&orig, format!("line{i:02}\r\n").as_bytes());
         }
         feed(&orig, b"\x1b[3;5H\x1b[J"); // cursor row3 col5, erase to end of screen
         let snap = subscribe(&orig, None).replay;
 
-        let echo = spawn_emu(20, 8);
+        let (echo, echo_responses) = spawn_emu_with_responses(20, 8);
         feed(&echo, &snap);
 
+        query(&orig, b"\x1b[6n");
+        query(&echo, b"\x1b[6n");
         assert_eq!(
-            answer_cpr(&echo),
-            answer_cpr(&orig),
+            take_responses(&echo, &echo_responses),
+            take_responses(&orig, &orig_responses),
             "cursor drifted after replaying the snapshot"
         );
         assert_eq!(
@@ -1497,33 +1636,67 @@ mod tests {
 
     #[test]
     fn cpr_reports_real_cursor_position() {
-        let tx = spawn_emu(80, 24);
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
         // CUP to row 5, col 10 (1-indexed), then query CPR. The emulator
         // tracks the cursor, so the reply must echo that position — not the
         // old fixed 1;1 sentinel.
         feed(&tx, b"\x1b[5;10H");
-        assert_eq!(answer_cpr(&tx), b"\x1b[5;10R");
+        query(&tx, b"\x1b[6n");
+        assert_eq!(take_responses(&tx, &responses), b"\x1b[5;10R");
     }
 
     #[test]
     fn cpr_on_fresh_terminal_is_home() {
-        let tx = spawn_emu(80, 24);
-        assert_eq!(answer_cpr(&tx), b"\x1b[1;1R");
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
+        query(&tx, b"\x1b[6n");
+        assert_eq!(take_responses(&tx, &responses), b"\x1b[1;1R");
     }
 
     #[test]
-    fn decrqm_query_does_not_crash_emulator() {
-        // DECRQM (`ESC[?2026$p`, sync-output mode probe) drives libghostty's
-        // sendModeReport → pty-write effect. With an `on_pty_write` handler
-        // registered on a moved `Terminal`, that path dereferenced a dangling
-        // vtable userdata pointer and SIGBUS'd the emulator thread. We now
-        // register no handlers, so the report is silently ignored. Feeding it
-        // then getting a live subscribe reply proves the thread survived.
-        let tx = spawn_emu(80, 24);
-        feed(&tx, b"\x1b[?2026$p");
+    fn ghostty_reports_the_advertised_terminfo_name() {
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
+        query(&tx, b"\x1bP+q544E\x1b\\"); // XTGETTCAP TN
+        assert_eq!(
+            take_responses(&tx, &responses),
+            b"\x1bP1+r544E=787465726D2D323536636F6C6F72\x1b\\"
+        );
+    }
+
+    #[test]
+    fn ghostty_uses_the_client_palette_for_color_queries() {
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
+        tx.send(EmuCmd::SetColors {
+            fg: parse_osc_rgb("1212/3434/5656"),
+            bg: parse_osc_rgb("0101/0202/0303"),
+        })
+        .unwrap();
+        query(&tx, b"\x1b]10;?\x1b\\");
+        query(&tx, b"\x1b]11;?\x1b\\");
+        assert_eq!(
+            take_responses(&tx, &responses),
+            b"\x1b]10;rgb:1212/3434/5656\x1b\\\x1b]11;rgb:0101/0202/0303\x1b\\"
+        );
+    }
+
+    #[test]
+    fn ghostty_answers_queries_without_broadcasting_them() {
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
+        query(&tx, b"\x1b[?7$p");
         feed(&tx, b"hello");
         let r = subscribe(&tx, None);
+        assert_eq!(take_responses(&tx, &responses), b"\x1b[?7;1$y");
         assert!(find(&r.replay, b"hello"));
+        assert!(!find(&r.replay, b"\x1b[?7$p"));
+    }
+
+    #[test]
+    fn passthrough_protocols_are_left_for_downstream_ghostty() {
+        let (tx, responses) = spawn_emu_with_responses(80, 24);
+        feed(&tx, b"\x1b[?7$p");
+        let r = subscribe(&tx, Some(RING_ORIGIN_BASE));
+
+        assert_eq!(take_responses(&tx, &responses), b"");
+        assert_eq!(r.replay, b"\x1b[?7$p");
     }
 
     #[test]

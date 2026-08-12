@@ -92,7 +92,9 @@ retry flutter build ios --config-only --no-codesign --release
 # `zig build -Demit-lib-vt=true` (see scripts/build_native_deps.sh), so this
 # caches exactly the dep set it will need. Successfully-fetched deps are cached,
 # so a retry only refetches the ones that hit a flaky handshake.
-retry sh -c 'cd ghostty && zig build -Demit-lib-vt=true --fetch'
+retry "$CI_PRIMARY_REPOSITORY_PATH/scripts/build_ghostty.sh" \
+  --source "$CI_PRIMARY_REPOSITORY_PATH/apps/flutter/ghostty" -- \
+  -Demit-lib-vt=true --fetch
 
 # Prebuild libtailscale for iOS device (Go c-archive wrapped into a dylib). The
 # hook otherwise clones tailscale/libtailscale and runs `make` in the sandboxed

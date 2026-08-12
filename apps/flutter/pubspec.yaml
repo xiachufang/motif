@@ -40,7 +40,7 @@ dependencies:
   package_info_plus: ^10.2.0
   web: ^1.1.1
   web_socket_channel: ^3.0.3
-  archive: ^3.6.1
+  archive: ^4.0.9
   file_selector: ^1.1.0
   flutter_markdown_plus: ^1.0.9
   markdown: ^7.3.1
@@ -64,8 +64,7 @@ dependencies:
   share_plus: ^13.1.0
   url_launcher: ^6.3.2
   wakelock_plus: ^1.2.8
-  flutter_secure_storage: ^10.3.1
-  flutter_observation: ^0.2.0-dev.2
+  flutter_observation: ^0.2.0
 dependency_overrides:
   flutter_observation:
     git:
@@ -102,7 +101,7 @@ dev_dependencies:
     sdk: flutter
   stream_channel: ^2.1.4
   flutter_lints: ^6.0.0
-  ffigen: ^20.1.1
+  ffigen: ^21.0.0
   flutter_driver:
     sdk: flutter
   integration_test:

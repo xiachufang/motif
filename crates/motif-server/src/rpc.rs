@@ -545,9 +545,9 @@ fn handle_attach(
     // Stash the client-supplied cursor (default 0 = "give me everything")
     // for the ws layer to drain after this response goes out.
     conn.pending_replay_since = Some(p.last_seq.unwrap_or(0));
-    // Update the cached terminal palette so OSC 10/11 queries from the
-    // shell get answered with the user's actual terminal colours, and adopt
-    // this client's theme as the session theme (broadcast if it changed).
+    // Mirror the client palette into the server-side Ghostty terminals so
+    // their OSC 10/11 replies use the user's actual colours, and adopt this
+    // client's theme as the session theme (broadcast if it changed).
     s.set_terminal_palette(p.term_fg.clone(), p.term_bg.clone());
     s.set_theme(p.theme.clone());
 

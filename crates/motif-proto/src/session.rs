@@ -78,14 +78,13 @@ pub struct AttachParams {
     pub last_seq: Option<Seq>,
 
     /// Optional: the client terminal's foreground colour, in the rgb portion
-    /// of an OSC 10 reply (e.g. `"e6e6/e6e6/e6e6"`). When supplied, server
-    /// answers OSC 10 queries from the shell with this value rather than a
-    /// hardcoded default — so theme-aware prompts (starship, oh-my-posh)
-    /// pick a colour scheme that actually matches the user's terminal.
+    /// of an OSC 10 reply (e.g. `"e6e6/e6e6/e6e6"`). When supplied, the
+    /// server applies it to its Ghostty terminal so OSC 10 queries reflect the
+    /// actual client colors and theme-aware prompts choose the right scheme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_fg: Option<String>,
     /// Optional: the client terminal's background colour, same encoding as
-    /// `term_fg`. Used to answer OSC 11 queries.
+    /// `term_fg`. Applied to Ghostty's OSC 11 query state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub term_bg: Option<String>,
     /// Optional: the client's resolved light/dark theme (`"light"` / `"dark"`).

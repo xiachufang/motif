@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'ghostty_bindings.g.dart';
 import 'terminal_link.dart';
-import 'terminal_scroll_driver.dart';
 import 'terminal_snapshot.dart';
 import 'terminal_state.dart';
 
@@ -254,6 +253,7 @@ class TerminalPainter extends CustomPainter {
 
 class TerminalSnapshotPainter extends CustomPainter {
   final TerminalSnapshot snapshot;
+  final double viewportPixelOffset;
   final double cellWidth;
   final double cellHeight;
   final double padding;
@@ -265,8 +265,6 @@ class TerminalSnapshotPainter extends CustomPainter {
   final Color selectionBackground;
   final Color selectionForeground;
   final TerminalRenderCache? renderCache;
-  final double viewportOffsetRows;
-  final TerminalViewportRowCache? scrollRowCache;
   final List<TerminalLinkSegment> linkSegments;
   final Color linkUnderlineColor;
 
@@ -277,6 +275,7 @@ class TerminalSnapshotPainter extends CustomPainter {
 
   TerminalSnapshotPainter({
     required this.snapshot,
+    this.viewportPixelOffset = 0,
     required this.cellWidth,
     required this.cellHeight,
     this.padding = 4.0,
@@ -291,10 +290,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.preeditText,
     this.linkSegments = const [],
     this.linkUnderlineColor = const Color(0xff6ea8fe),
-    double? viewportOffsetRows,
-    this.scrollRowCache,
-  }) : viewportOffsetRows =
-           viewportOffsetRows ?? snapshot.viewportOffset.toDouble();
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -342,8 +338,7 @@ class TerminalSnapshotPainter extends CustomPainter {
         snapshot.cursorY >= 0) {
       final cursorSpan = snapshot.cursorCellSpan;
       final cx = padding + cursorSpan.col * cellWidth;
-      final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
-      final cy = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
+      final cy = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
       final cursorWidth = cursorSpan.widthCells * cellWidth;
       final cursorColor = Color(snapshot.cursorArgb);
       switch (GhosttyRenderStateCursorVisualStyle.fromValue(
@@ -394,24 +389,15 @@ class TerminalSnapshotPainter extends CustomPainter {
   }
 
   Iterable<_TerminalPaintRow> _paintRows() sync* {
-    final range = terminalFractionalViewportRowRange(
-      viewportOffset: viewportOffsetRows,
-      visibleRows: snapshot.rows,
-      totalRows: snapshot.scrollTotalRows,
-    );
-    for (var screenRow = range.first; screenRow <= range.last; screenRow++) {
-      var row = scrollRowCache?.rowAt(screenRow);
-      if (row == null) {
-        final snapshotIndex = screenRow - snapshot.viewportOffset;
-        if (snapshotIndex >= 0 && snapshotIndex < snapshot.lines.length) {
-          row = snapshot.lines[snapshotIndex];
-        }
-      }
-      if (row == null) continue;
+    for (var index = 0; index < snapshot.lines.length; index++) {
+      final screenRow = snapshot.screenRowForRenderIndex(index);
       yield _TerminalPaintRow(
         screenRow: screenRow,
-        row: row,
-        y: padding + (screenRow - viewportOffsetRows) * cellHeight,
+        row: snapshot.lines[index],
+        y:
+            padding +
+            (screenRow - snapshot.viewportOffset) * cellHeight -
+            viewportPixelOffset,
       );
     }
   }
@@ -421,8 +407,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     if (cell == null || cell.invisible || cell.text.isEmpty) return;
     final preferred = Color(cell.backgroundArgb);
     final x = padding + cell.col * cellWidth;
-    final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
-    final y = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
+    final y = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
     final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(x, y, widthCells * cellWidth, cellHeight));
@@ -455,8 +440,7 @@ class TerminalSnapshotPainter extends CustomPainter {
       return;
     }
 
-    final cursorScreenRow = snapshot.viewportOffset + snapshot.cursorY;
-    final y = padding + (cursorScreenRow - viewportOffsetRows) * cellHeight;
+    final y = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
     final startX = padding + snapshot.cursorX * cellWidth;
     // The preedit must never paint left of the cursor — content there is
     // already-committed terminal output. This is the hard left boundary.
@@ -683,8 +667,8 @@ class TerminalSnapshotPainter extends CustomPainter {
   void _drawLinkUnderlines(Canvas canvas) {
     if (linkSegments.isEmpty || cellWidth <= 0 || cellHeight <= 0) return;
     final paint = Paint()..color = linkUnderlineColor;
-    final firstVisibleRow = viewportOffsetRows.floor() - 1;
-    final lastVisibleRow = (viewportOffsetRows + snapshot.rows).ceil();
+    final firstVisibleRow = snapshot.renderOriginOffset;
+    final lastVisibleRow = firstVisibleRow + snapshot.lines.length - 1;
     final thickness = (cellHeight / 18).clamp(1.0, 2.0).toDouble();
     for (final segment in linkSegments) {
       if (segment.row < firstVisibleRow || segment.row > lastVisibleRow) {
@@ -693,7 +677,8 @@ class TerminalSnapshotPainter extends CustomPainter {
       final x = padding + segment.startCol * cellWidth;
       final y =
           padding +
-          (segment.row - viewportOffsetRows + 1) * cellHeight -
+          (segment.row - snapshot.viewportOffset + 1) * cellHeight -
+          viewportPixelOffset -
           thickness;
       final width = (segment.endCol - segment.startCol + 1) * cellWidth;
       if (width <= 0) continue;
@@ -704,6 +689,7 @@ class TerminalSnapshotPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant TerminalSnapshotPainter oldDelegate) =>
       oldDelegate.snapshot != snapshot ||
+      oldDelegate.viewportPixelOffset != viewportPixelOffset ||
       oldDelegate.cellWidth != cellWidth ||
       oldDelegate.cellHeight != cellHeight ||
       oldDelegate.padding != padding ||
@@ -716,9 +702,7 @@ class TerminalSnapshotPainter extends CustomPainter {
       oldDelegate.renderCache != renderCache ||
       oldDelegate.preeditText != preeditText ||
       oldDelegate.linkSegments != linkSegments ||
-      oldDelegate.linkUnderlineColor != linkUnderlineColor ||
-      oldDelegate.viewportOffsetRows != viewportOffsetRows ||
-      oldDelegate.scrollRowCache != scrollRowCache;
+      oldDelegate.linkUnderlineColor != linkUnderlineColor;
 }
 
 class _TerminalPaintRow {

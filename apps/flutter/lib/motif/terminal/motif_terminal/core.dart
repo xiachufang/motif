@@ -224,13 +224,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         _cols = newCols;
         _rows = newRows;
       }
-      // A resized viewport represents a new live window onto the PTY. Keep the
-      // follow request pending until a snapshot with the new grid arrives;
-      // an older in-flight frame must not consume it.
-      _followLatestAfterResize = true;
-      _resizedSnapshotReadyForScrollSync = false;
-      _stopScrollInertia(resetVelocity: true);
-      _resetSmoothScroll(clearRows: true);
       _worker?.resize(
         cols: _cols,
         rows: _rows,
@@ -240,7 +233,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         cellHeight: _cellHeight.toInt(),
         paddingLeft: widget.padding.toInt(),
         paddingTop: widget.padding.toInt(),
-        scrollToBottom: true,
+        // Ghostty preserves either its active-area pin or its tracked history
+        // anchor across reflow. Do not replace that state during a resize.
+        scrollToBottom: false,
       );
       if (gridSizeChanged) {
         _discardTerminalSelectionState();
@@ -332,53 +327,42 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   void _applyWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
     if (!_isCurrentWorker(generation)) return;
     final previousSnapshot = _snapshot;
-    final wasFollowingLatest =
-        previousSnapshot != null &&
-        _smoothScrollPosition.initialized &&
-        (_smoothScrollPosition.viewportOffset -
-                    previousSnapshot.maxViewportOffset)
-                .abs() <=
-            0.0001 &&
-        snapshot.isAtLatest;
-    // TerminalState deliberately moves a self-contained PTY restore snapshot
-    // to the live bottom. Mirror that authoritative transition in Flutter's
-    // fractional viewport instead of retaining its pre-restore history row.
-    final terminalMovedToLatest =
-        previousSnapshot != null &&
-        !previousSnapshot.isAtLatest &&
-        snapshot.isAtLatest;
-    final resizedSnapshot =
-        _followLatestAfterResize &&
-        snapshot.cols == _cols &&
-        snapshot.rows == _rows;
-    final followLatest =
-        wasFollowingLatest || terminalMovedToLatest || resizedSnapshot;
-    if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
-      _resetSmoothScroll(clearRows: true);
-    } else {
-      final viewportRebased =
-          _smoothScrollPosition.initialized &&
-          !followLatest &&
-          snapshot.viewportOffset != _smoothScrollPosition.requestedOffset;
-      if (followLatest || viewportRebased) {
-        _scrollRowCache.clear();
-      }
-      _smoothScrollPosition.synchronize(
-        viewportOffset: snapshot.viewportOffset,
-        maxOffset: snapshot.maxViewportOffset,
-        followLatest: followLatest,
+    final requestedOffset = _requestedViewportOffset;
+    final scrollRelevantSnapshot =
+        requestedOffset != null ||
+        _waitingForLatestViewport ||
+        previousSnapshot?.viewportOffset != snapshot.viewportOffset ||
+        previousSnapshot?.viewportActive != snapshot.viewportActive ||
+        previousSnapshot?.hasTopOverscan != snapshot.hasTopOverscan ||
+        previousSnapshot?.hasBottomOverscan != snapshot.hasBottomOverscan;
+    if (scrollRelevantSnapshot) {
+      _logScrollDiagnostic(
+        'snapshot-received',
+        detail:
+            'next=${snapshot.viewportOffset}/${snapshot.maxViewportOffset} '
+            'active=${snapshot.viewportActive} '
+            'renderRows=${snapshot.lines.length} viewportRows=${snapshot.rows} '
+            'overscan=${snapshot.topOverscanRows}/${snapshot.bottomOverscanRows}',
+        force: true,
       );
-      _scrollRowCache.ingest(snapshot);
     }
-    if (resizedSnapshot) {
-      if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
-        _followLatestAfterResize = false;
-        _resizedSnapshotReadyForScrollSync = false;
-      } else {
-        // Keep ignoring the ScrollPosition's old pixel value until the new
-        // content extent has been laid out and jumpTo has reached the bottom.
-        _resizedSnapshotReadyForScrollSync = true;
-      }
+    if (_waitingForLatestViewport && snapshot.viewportActive) {
+      _waitingForLatestViewport = false;
+      _viewportRowFraction = 0;
+    }
+    if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
+      _requestedViewportOffset = null;
+      _waitingForLatestViewport = false;
+      _viewportRowFraction = 0;
+    } else if (requestedOffset != null &&
+        snapshot.viewportOffset ==
+            requestedOffset.clamp(0, snapshot.maxViewportOffset)) {
+      _requestedViewportOffset = null;
+    }
+    if (_requestedViewportOffset == null &&
+        !_waitingForLatestViewport &&
+        !snapshot.hasBottomOverscan) {
+      _viewportRowFraction = 0;
     }
     final viewportChanged =
         previousSnapshot?.viewportOffset != snapshot.viewportOffset;
@@ -395,7 +379,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     final cursorSnapshot = _readCursorSnapshot();
     final cursorChanged = cursorSnapshot != _lastCursorSnapshot;
     _lastCursorSnapshot = cursorSnapshot;
-    _prefetchMissingSmoothScrollRows(snapshot);
     if (cursorChanged) {
       _syncKeyboardLift();
       _scheduleImeRectSync();
@@ -496,14 +479,14 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _pendingTerminalInputs.clear();
-    _followLatestAfterResize = false;
-    _resizedSnapshotReadyForScrollSync = false;
+    _requestedViewportOffset = null;
+    _waitingForLatestViewport = false;
+    _viewportRowFraction = 0;
     _terminalHyperlinkPointers.clear();
     _terminalLinkMode = false;
     _hoveredTerminalLink = null;
     _terminalLinkHoverCell = null;
     _terminalLinkHoverFrameId = null;
-    _resetSmoothScroll(clearRows: true);
     _discardTerminalSelectionState();
     _scheduleTerminalRetry();
     if (mounted) setState(() {});
@@ -560,8 +543,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _workerNeedsColdResync = false;
-    _followLatestAfterResize = false;
-    _resizedSnapshotReadyForScrollSync = false;
+    _requestedViewportOffset = null;
+    _waitingForLatestViewport = false;
+    _viewportRowFraction = 0;
     _pendingTerminalInputs.clear();
     _terminalHyperlinkPointers.clear();
     _terminalLinkMode = false;
@@ -569,7 +553,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _terminalLinkHoverCell = null;
     _terminalLinkHoverFrameId = null;
     _snapshot = null;
-    _resetSmoothScroll(clearRows: true);
     _pendingFrameSnapshot?.acknowledge();
     _pendingFrameSnapshot = null;
     _discardTerminalSelectionState();

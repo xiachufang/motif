@@ -176,7 +176,7 @@ void main() {
             child: TerminalScrollControls(
               totalRows: 100,
               visibleRows: 20,
-              viewportOffset: viewportOffset,
+              isAtLatest: viewportOffset >= 80,
               alternateScreenActive: alternate,
               visibilityController: controller,
               buttonForegroundColor: Colors.white,

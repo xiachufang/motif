@@ -200,6 +200,71 @@ void main() {
     await state.close();
   });
 
+  test('restores and records a permission preference', () async {
+    final existing = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [existing]),
+      },
+      permissionProfiles: const [
+        CodexPermissionProfileSummary(
+          allowed: true,
+          description: 'Full access',
+          id: 'full-access',
+        ),
+      ],
+    );
+    final recorded = <String?>[];
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configurePermissionPreference(
+        hasPreference: true,
+        preferredPermissionId: 'full-access',
+        onSelected: recorded.add,
+      );
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    await waitFor(() => state.permissionProfiles.isNotEmpty);
+    expect(state.selectedPermissionId, 'full-access');
+    expect(recorded, isEmpty);
+
+    state.selectPermissionProfile(null);
+    expect(recorded, [isNull]);
+    expect(state.selectedPermissionId, isNull);
+    await state.close();
+  });
+
+  test('clears a permission preference that is no longer available', () async {
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [thread('thread')]),
+      },
+      permissionProfiles: const [
+        CodexPermissionProfileSummary(
+          allowed: true,
+          description: 'Default access',
+          id: 'default-access',
+        ),
+      ],
+    );
+    var invalidated = 0;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configurePermissionPreference(
+        hasPreference: true,
+        preferredPermissionId: 'removed-access',
+        onInvalidated: () => invalidated++,
+      );
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    await waitFor(() => state.permissionProfiles.isNotEmpty);
+    expect(state.selectedPermissionId, isNull);
+    expect(invalidated, 1);
+    await state.close();
+  });
+
   test(
     'thread clicks switch highlight immediately and latest read wins',
     () async {
@@ -421,7 +486,10 @@ void main() {
         ),
       ]
       ..selectedModelId = 'codex-test'
-      ..selectedPermissionId = 'full-access';
+      ..configurePermissionPreference(
+        hasPreference: true,
+        preferredPermissionId: 'full-access',
+      );
 
     expect(
       await state.createThreadForProject(state.catalog.projects.single.project),
@@ -845,11 +913,13 @@ final class FakeCodexClient extends ChangeNotifier
     required this.pages,
     this.globalState,
     this.models = const [],
+    this.permissionProfiles = const [],
   });
 
   final Map<String?, CodexThreadListResponse> pages;
   String? globalState;
   final List<CodexModel> models;
+  final List<CodexPermissionProfileSummary> permissionProfiles;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
@@ -1033,7 +1103,7 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexPermissionProfileListResponse> listPermissionProfiles(
     CodexPermissionProfileListParams params,
-  ) async => const CodexPermissionProfileListResponse(data: []);
+  ) async => CodexPermissionProfileListResponse(data: permissionProfiles);
 
   @override
   Future<CodexCollaborationModeListResponse> listCollaborationModes() async =>

@@ -8,5 +8,5 @@ PlatformServices makePlatformServices() => PlatformServices(
   tailscale: NoopTailscaleService(),
   speech: NoopSpeechService(),
   push: NoopPushService(),
-  secrets: FlutterSecureSecretStore(),
+  secrets: PreferencesSecretStore(),
 );

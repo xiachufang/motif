@@ -10,6 +10,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
+import 'observation_select.dart';
 
 part 'codex_turn_activity.g.dart';
 
@@ -27,6 +28,8 @@ class CodexTurnActivityGroup extends StatelessWidget {
   const CodexTurnActivityGroup({
     required this.state,
     required this.items,
+    this.showLatestItemTitle = false,
+    this.processingLatestItem = false,
     this.boundedDetails = true,
     this.onOpenFile,
     this.onOpenImage,
@@ -36,6 +39,8 @@ class CodexTurnActivityGroup extends StatelessWidget {
 
   final CodexConversationState state;
   final List<CodexThreadItem> items;
+  final bool showLatestItemTitle;
+  final bool processingLatestItem;
   final bool boundedDetails;
   final CodexOpenFile? onOpenFile;
   final CodexOpenImage? onOpenImage;
@@ -63,11 +68,12 @@ class CodexTurnActivityGroup extends StatelessWidget {
                 size: MotifIconSize.sm,
                 color: c.textTertiary,
               ),
-        title: Text(
-          _groupTitle(items),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: MotifType.subhead.copyWith(color: c.textSecondary),
+        title: CodexActivityTitle(
+          state: state,
+          item: items.last,
+          groupTitle: _groupTitle(items),
+          showLatestItemTitle: showLatestItemTitle,
+          processingLatestItem: processingLatestItem,
         ),
         children: [
           if (boundedDetails)
@@ -108,54 +114,115 @@ class CodexTurnActivityGroup extends StatelessWidget {
   }
 }
 
-/// The single transient progress slot shown only for an in-progress turn.
-@ObservationWidget()
-class CodexTurnProgress extends _$CodexTurnProgress {
-  const CodexTurnProgress({
+class CodexActivityTitle extends StatelessWidget {
+  const CodexActivityTitle({
     required this.state,
-    required this.reasoning,
+    required this.item,
+    required this.groupTitle,
+    required this.showLatestItemTitle,
+    required this.processingLatestItem,
     super.key,
   });
 
   final CodexConversationState state;
-  final CodexReasoningThreadItem? reasoning;
+  final CodexThreadItem item;
+  final String groupTitle;
+  final bool showLatestItemTitle;
+  final bool processingLatestItem;
 
   @override
   Widget build(BuildContext context) {
-    final initial = reasoning;
-    final model = initial == null ? null : state.observedItemViewModel(initial);
-    final live = model?.item;
-    return _buildProgress(
-      context,
-      live is CodexReasoningThreadItem ? live : initial,
-      streaming: model?.streaming ?? false,
+    return ObservationSelect<CodexThreadItem>(
+      // Ensure the title is attached to the stable item-scoped model even
+      // when the protocol first inserts an empty reasoning shell. Subsequent
+      // summaryTextDelta/textDelta notifications update this same model.
+      selector: () => state.itemViewModel(item).item,
+      builder: (context, liveItem, _) {
+        final c = context.motif;
+        final style = MotifType.subhead.copyWith(color: c.textSecondary);
+        final latestTitle = _activityTitle(liveItem);
+        if (processingLatestItem && latestTitle.isNotEmpty) {
+          return _ProcessingSweepText(latestTitle, style: style);
+        }
+        return Text(
+          showLatestItemTitle ? latestTitle : groupTitle,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: style,
+        );
+      },
     );
   }
+}
 
-  Widget _buildProgress(
-    BuildContext context,
-    CodexReasoningThreadItem? reasoning, {
-    required bool streaming,
-  }) {
+class _ProcessingSweepText extends StatefulWidget {
+  const _ProcessingSweepText(this.text, {required this.style});
+
+  final String text;
+  final TextStyle style;
+
+  @override
+  State<_ProcessingSweepText> createState() => _ProcessingSweepTextState();
+}
+
+class _ProcessingSweepTextState extends State<_ProcessingSweepText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final c = context.motif;
-    final text = _reasoningText(reasoning) ?? 'Codex is working…';
-    final style = MotifType.subhead.copyWith(color: c.textTertiary);
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return Text(
+        widget.text,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: widget.style,
+      );
+    }
     return Row(
-      key: const ValueKey('codex-turn-progress'),
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 3),
-          child: SizedBox.square(
-            dimension: 14,
-            child: CircularProgressIndicator(strokeWidth: 2, color: c.accent),
+        Flexible(
+          child: RepaintBoundary(
+            child: AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) => ShaderMask(
+                blendMode: BlendMode.srcIn,
+                shaderCallback: (bounds) {
+                  final bandWidth = bounds.width.clamp(72.0, 140.0).toDouble();
+                  final left =
+                      -bandWidth +
+                      _controller.value * (bounds.width + bandWidth);
+                  final base = widget.style.color ?? c.textSecondary;
+                  final highlight = Color.lerp(base, Colors.white, 0.78)!;
+                  return LinearGradient(
+                    colors: [base, highlight, base],
+                    stops: const [0, 0.5, 1],
+                    tileMode: TileMode.clamp,
+                  ).createShader(
+                    Rect.fromLTWH(left, 0, bandWidth, bounds.height),
+                  );
+                },
+                child: child,
+              ),
+              child: Text(
+                widget.text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: widget.style,
+              ),
+            ),
           ),
-        ),
-        const SizedBox(width: MotifSpacing.sm),
-        Expanded(
-          child: streaming
-              ? CodexStreamingText(text, style: style)
-              : CodexMarkdown(text, style: style),
         ),
       ],
     );
@@ -390,6 +457,7 @@ class _ActivityItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => switch (item) {
+    CodexReasoningThreadItem() => const SizedBox.shrink(),
     CodexCommandExecutionThreadItem value => _CommandActivity(
       key: ValueKey('codex-command-activity-${value.id}'),
       state: state,
@@ -484,10 +552,6 @@ class _CommandActivity extends _$_CommandActivity {
     CodexCommandExecutionThreadItem item, {
     required bool streaming,
   }) {
-    final suffix = <String>[
-      if (item.durationMs != null) 'in ${_duration(item.durationMs!)}',
-      if (item.exitCode != null) 'exit ${item.exitCode}',
-    ].join(' · ');
     final output = item.aggregatedOutput?.trim() ?? '';
     final detail = [
       if (item.cwd.value.trim().isNotEmpty) '`cwd: ${item.cwd.value}`',
@@ -498,7 +562,7 @@ class _CommandActivity extends _$_CommandActivity {
     ].join('\n\n');
     return _DetailActivity(
       icon: Icons.terminal_rounded,
-      title: '${_commandTitle(item)}${suffix.isEmpty ? '' : ' · $suffix'}',
+      title: _commandActivityTitle(item),
       running: item.status == CodexCommandExecutionStatus.inProgress,
       detail: streaming ? null : detail,
       child: streaming
@@ -1154,6 +1218,25 @@ String _groupTitle(List<CodexThreadItem> items) {
   return '${sentence[0].toUpperCase()}${sentence.substring(1)}${labels.length > visible.length ? ', and more' : ''}';
 }
 
+String _activityTitle(CodexThreadItem item) => switch (item) {
+  CodexReasoningThreadItem value => _reasoningText(value) ?? '',
+  CodexCommandExecutionThreadItem value => _commandActivityTitle(value),
+  CodexFileChangeThreadItem value =>
+    '${value.status == CodexPatchApplyStatus.inProgress ? 'Editing' : 'Edited'} '
+        '${value.changes.length} ${value.changes.length == 1 ? 'file' : 'files'}',
+  CodexWebSearchThreadItem value => 'Searched for ${value.query}',
+  CodexImageViewThreadItem value => 'Viewed ${_leaf(value.path.value)}',
+  CodexMcpToolCallThreadItem value => 'Used ${value.server} · ${value.tool}',
+  CodexDynamicToolCallThreadItem value =>
+    'Used ${value.namespace == null ? '' : '${value.namespace} · '}${value.tool}',
+  CodexCollabAgentToolCallThreadItem value =>
+    'Agent collaboration · ${value.tool.toJson()}',
+  CodexSubAgentActivityThreadItem value => 'Sub-agent ${value.kind.toJson()}',
+  CodexImageGenerationThreadItem() => 'Generated an image',
+  CodexSleepThreadItem value => 'Waited ${_duration(value.durationMs)}',
+  _ => _itemType(item),
+};
+
 IconData _groupIcon(List<CodexThreadItem> items) {
   if (items.every((item) => item is CodexFileChangeThreadItem)) {
     return Icons.edit_outlined;
@@ -1219,6 +1302,14 @@ String _commandTitle(CodexCommandExecutionThreadItem value) {
   return value.status == CodexCommandExecutionStatus.inProgress
       ? 'Running ${first ?? 'command'}'
       : 'Ran ${first ?? 'command'}';
+}
+
+String _commandActivityTitle(CodexCommandExecutionThreadItem value) {
+  final suffix = <String>[
+    if (value.durationMs != null) 'in ${_duration(value.durationMs!)}',
+    if (value.exitCode != null) 'exit ${value.exitCode}',
+  ].join(' · ');
+  return '${_commandTitle(value)}${suffix.isEmpty ? '' : ' · $suffix'}';
 }
 
 String _duration(int milliseconds) {

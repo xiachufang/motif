@@ -21,12 +21,7 @@ void main() {
         (path) => File(path).existsSync(),
       );
       final p = makePlatformServices();
-      expect(
-        p.secrets,
-        Platform.isMacOS
-            ? isA<MigratingSecretStore>()
-            : isA<FlutterSecureSecretStore>(),
-      );
+      expect(p.secrets, isA<PreferencesSecretStore>());
       if (present) {
         expect(
           p.tailscale,

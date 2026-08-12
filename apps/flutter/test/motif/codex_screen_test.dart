@@ -131,6 +131,46 @@ void main() {
     app.dispose();
   });
 
+  testWidgets('restores and records the server permission preference', (
+    tester,
+  ) async {
+    final app = await appState();
+    final codex = CodexState()
+      ..setSelectedPermissionId('server', 'full-access');
+    final serviceState = readyServiceState()
+      ..permissionProfiles = const [
+        CodexPermissionProfileSummary(
+          allowed: true,
+          description: 'Full access',
+          id: 'full-access',
+        ),
+      ];
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: codex,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(serviceState.selectedPermissionId, 'full-access');
+    serviceState.selectPermissionProfile(null);
+    expect(codex.hasSelectedPermissionPreference('server'), isTrue);
+    expect(codex.selectedPermissionId('server'), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
   testWidgets('mobile welcome opens the sidebar by button or edge drag', (
     tester,
   ) async {
@@ -223,13 +263,14 @@ void main() {
     expect(find.byKey(const ValueKey('codex-thread-detail')), findsNothing);
     final appBarTitle = find.byKey(const ValueKey('codex-thread-appbar-title'));
     expect(appBarTitle, findsOneWidget);
+    expect(tester.widget<Text>(appBarTitle).data, 'Thread');
+    expect(find.text('/work/motif'), findsNothing);
     expect(
-      find.descendant(of: appBarTitle, matching: find.text('Thread')),
-      findsOneWidget,
-    );
-    expect(
-      find.descendant(of: appBarTitle, matching: find.text('/work/motif')),
-      findsOneWidget,
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.byIcon(Icons.folder_outlined),
+      ),
+      findsNothing,
     );
     expect(
       tester

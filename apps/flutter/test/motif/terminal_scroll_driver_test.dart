@@ -1,7 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_scroll_driver.dart';
-import 'package:motif/motif/terminal/terminal_snapshot.dart';
 
 void main() {
   test('accumulates logical pixels into terminal rows', () {
@@ -23,58 +22,71 @@ void main() {
     expect(touchMoveDeltaToScrollPixels(0), 0);
   });
 
-  test('reversed scroll position uses zero for the live bottom', () {
+  test('discrete mouse wheel uses Ghostty whole-row multiplier', () {
+    expect(terminalRowsFromDiscreteWheel(-1), -3);
+    expect(terminalRowsFromDiscreteWheel(1), 3);
+    expect(terminalRowsFromDiscreteWheel(-120), -3);
+    expect(terminalRowsFromDiscreteWheel(0), 0);
+  });
+
+  test('Flutter and Ghostty use the same forward row axis', () {
     expect(
-      terminalScrollPixelsFromViewportOffset(
-        viewportOffset: 30,
-        maxOffset: 30,
-        rowHeight: 20,
-      ),
+      terminalScrollPixelsFromViewportOffset(viewportOffset: 0, rowHeight: 20),
       0,
     );
     expect(
-      terminalScrollPixelsFromViewportOffset(
-        viewportOffset: 0,
-        maxOffset: 30,
-        rowHeight: 20,
-      ),
+      terminalScrollPixelsFromViewportOffset(viewportOffset: 30, rowHeight: 20),
       600,
     );
     expect(
       terminalViewportOffsetFromScrollPixels(
-        scrollPixels: 0,
+        scrollPixels: 209,
         maxOffset: 30,
         rowHeight: 20,
       ),
-      30,
+      10,
     );
     expect(
       terminalViewportOffsetFromScrollPixels(
+        scrollPixels: 211,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      10,
+    );
+    expect(
+      terminalViewportPositionFromScrollPixels(
+        scrollPixels: 211,
+        maxOffset: 30,
+        rowHeight: 20,
+      ),
+      (viewportOffset: 10, pixelRemainder: 11),
+    );
+    expect(
+      terminalViewportPositionFromScrollPixels(
         scrollPixels: 600,
         maxOffset: 30,
         rowHeight: 20,
       ),
-      0,
+      (viewportOffset: 30, pixelRemainder: 0),
     );
   });
 
-  test('anchors history while output grows during an active scroll', () {
+  test('history keeps its absolute row while output grows', () {
     const physics = TerminalScrollAnchorPhysics();
-    final oldPosition = _metrics(pixels: 120, maxScrollExtent: 400);
-    final newPosition = _metrics(pixels: 120, maxScrollExtent: 460);
 
     expect(
       physics.adjustPositionForNewDimensions(
-        oldPosition: oldPosition,
-        newPosition: newPosition,
+        oldPosition: _metrics(pixels: 120, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 120, maxScrollExtent: 460),
         isScrolling: true,
         velocity: 800,
       ),
-      180,
+      120,
     );
   });
 
-  test('combines a concurrent drag tick with output growth', () {
+  test('history preserves a concurrent drag tick while output grows', () {
     const physics = TerminalScrollAnchorPhysics();
 
     expect(
@@ -84,39 +96,56 @@ void main() {
         isScrolling: true,
         velocity: 0,
       ),
-      195,
+      135,
     );
   });
 
-  test('keeps the live bottom pinned while output grows', () {
+  test('active area follows a growing maximum extent', () {
     const physics = TerminalScrollAnchorPhysics();
 
     expect(
       physics.adjustPositionForNewDimensions(
-        oldPosition: _metrics(pixels: 0, maxScrollExtent: 400),
-        newPosition: _metrics(pixels: 0, maxScrollExtent: 460),
+        oldPosition: _metrics(pixels: 400, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 400, maxScrollExtent: 460),
         isScrolling: true,
         velocity: 0,
       ),
-      0,
+      460,
     );
   });
 
-  test('respects a simultaneous correction back to the live bottom', () {
+  test(
+    'Ghostty history state wins even when its offset equals the maximum',
+    () {
+      const physics = TerminalScrollAnchorPhysics(followLatest: false);
+
+      expect(
+        physics.adjustPositionForNewDimensions(
+          oldPosition: _metrics(pixels: 400, maxScrollExtent: 400),
+          newPosition: _metrics(pixels: 400, maxScrollExtent: 460),
+          isScrolling: false,
+          velocity: 0,
+        ),
+        400,
+      );
+    },
+  );
+
+  test('active area combines a concurrent upward drag with growth', () {
     const physics = TerminalScrollAnchorPhysics();
 
     expect(
       physics.adjustPositionForNewDimensions(
-        oldPosition: _metrics(pixels: 120, maxScrollExtent: 400),
-        newPosition: _metrics(pixels: 0, maxScrollExtent: 460),
-        isScrolling: false,
+        oldPosition: _metrics(pixels: 400, maxScrollExtent: 400),
+        newPosition: _metrics(pixels: 385, maxScrollExtent: 460),
+        isScrolling: true,
         velocity: 0,
       ),
-      0,
+      445,
     );
   });
 
-  test('preserves top overscroll relative to a growing extent', () {
+  test('preserves bottom overscroll relative to a growing extent', () {
     const physics = TerminalScrollAnchorPhysics();
 
     expect(
@@ -129,97 +158,6 @@ void main() {
       480,
     );
   });
-
-  test(
-    'keeps a fractional viewport while requesting adjacent integer rows',
-    () {
-      final scroll = TerminalSmoothScrollPosition()
-        ..synchronize(viewportOffset: 10, maxOffset: 30);
-
-      final upward = scroll.applyPixelDelta(-10, 20);
-      expect(upward.viewportOffset, 9.5);
-      expect(upward.requestedOffset, 9);
-      expect(upward.rowDelta, -1);
-
-      final reverse = scroll.applyPixelDelta(5, 20);
-      expect(reverse.viewportOffset, 9.75);
-      expect(reverse.requestedOffset, 10);
-      expect(reverse.rowDelta, 1);
-
-      final boundary = scroll.applyPixelDelta(-1000, 20);
-      expect(boundary.viewportOffset, 0);
-      expect(boundary.requestedOffset, 0);
-      expect(boundary.rowDelta, -10);
-    },
-  );
-
-  test('rebases a fractional viewport when Ghostty prunes history', () {
-    final scroll = TerminalSmoothScrollPosition()
-      ..synchronize(viewportOffset: 80, maxOffset: 100);
-    final fractional = scroll.applyPixelDelta(5, 20);
-    expect(fractional.viewportOffset, 80.25);
-    expect(fractional.requestedOffset, 81);
-
-    // The requested row moved from 81 to 61 when Ghostty removed 20 rows at
-    // the head. The same fractional content anchor must move by 20 as well.
-    scroll.synchronize(viewportOffset: 61, maxOffset: 100);
-    expect(scroll.viewportOffset, 60.25);
-    expect(scroll.requestedOffset, 61);
-  });
-
-  test('detects when a half-row viewport has both clipped edges cached', () {
-    final cache = TerminalViewportRowCache();
-    final first = _snapshot(viewportOffset: 0, rows: [_row('A'), _row('B')]);
-    cache.ingest(first);
-
-    expect(cache.covers(0.5, first.rows), isFalse);
-
-    final adjacent = _snapshot(viewportOffset: 1, rows: [_row('B'), _row('C')]);
-    cache.ingest(adjacent);
-    expect(cache.covers(0.5, adjacent.rows), isTrue);
-  });
-
-  test('prefetches a missing bottom row from the adjacent viewport', () {
-    final cache = TerminalViewportRowCache()
-      ..ingest(
-        _snapshot(
-          viewportOffset: 10,
-          scrollTotalRows: 100,
-          rows: [_row('A'), _row('B'), _row('C')],
-        ),
-      );
-
-    expect(
-      cache.prefetchOffset(viewportOffset: 10.5, visibleRows: 3, maxOffset: 97),
-      11,
-    );
-
-    cache.ingest(
-      _snapshot(
-        viewportOffset: 11,
-        scrollTotalRows: 100,
-        rows: [_row('B'), _row('C'), _row('D')],
-      ),
-    );
-    expect(
-      cache.prefetchOffset(viewportOffset: 10.5, visibleRows: 3, maxOffset: 97),
-      12,
-    );
-  });
-
-  test(
-    'fractional row range floors the top and overscans through bottom ceil',
-    () {
-      expect(
-        terminalFractionalViewportRowRange(
-          viewportOffset: 10.5,
-          visibleRows: 3,
-          totalRows: 100,
-        ),
-        (first: 10, last: 14),
-      );
-    },
-  );
 }
 
 FixedScrollMetrics _metrics({
@@ -231,50 +169,7 @@ FixedScrollMetrics _metrics({
     maxScrollExtent: maxScrollExtent,
     pixels: pixels,
     viewportDimension: 300,
-    axisDirection: AxisDirection.up,
+    axisDirection: AxisDirection.down,
     devicePixelRatio: 1,
-  );
-}
-
-TerminalSnapshot _snapshot({
-  required int viewportOffset,
-  required List<TerminalSnapshotRow> rows,
-  int scrollTotalRows = 3,
-}) {
-  return TerminalSnapshot(
-    cols: 1,
-    rows: rows.length,
-    viewportOffset: viewportOffset,
-    scrollTotalRows: scrollTotalRows,
-    scrollViewportRows: rows.length,
-    backgroundArgb: 0xff000000,
-    foregroundArgb: 0xffffffff,
-    cursorArgb: 0xffffffff,
-    cursorVisible: false,
-    cursorInViewport: false,
-    cursorX: -1,
-    cursorY: -1,
-    cursorStyle: 0,
-    mouseTrackingActive: false,
-    alternateScreenActive: false,
-    lines: rows,
-  );
-}
-
-TerminalSnapshotRow _row(String text) {
-  return TerminalSnapshotRow(
-    cells: [
-      TerminalSnapshotCell(
-        col: 0,
-        widthCells: 1,
-        text: text,
-        foregroundArgb: 0xffffffff,
-        backgroundArgb: 0xff000000,
-        drawsBackground: false,
-        bold: false,
-        italic: false,
-        invisible: false,
-      ),
-    ],
   );
 }

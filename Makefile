@@ -358,7 +358,7 @@ release-flutter-macos: check-macos-tools check-zig check-macos-release-credentia
 # Prebuild native dependencies outside Xcode's sandbox. The subsequent archive
 # build can then run without downloading Rust, Go, or Zig dependencies.
 prepare-flutter-macos-release: deps-flutter
-	@cd "$(FLUTTER_DIR)/ghostty" && zig build -Demit-lib-vt=true --fetch
+	@./scripts/build_ghostty.sh --source "$(FLUTTER_DIR)/ghostty" -- -Demit-lib-vt=true --fetch
 	@cd "$(FLUTTER_DIR)" && bash scripts/build_motif_embed.sh --target macos-$(MACOS_ARCH)
 	@cd "$(FLUTTER_DIR)" && bash scripts/build_tailscale.sh --target macos-$(MACOS_ARCH)
 
@@ -453,11 +453,11 @@ verify-flutter-macos-launch: sign-flutter-macos-release
 		if ! kill -0 "$$pid" 2>/dev/null; then \
 			status=0; wait "$$pid" || status=$$?; \
 			if [ "$$status" -ne 0 ] || ! grep -q 'Motif macOS release probe passed.' "$$launch_log"; then \
-				echo "Signed macOS app failed its Keychain launch probe (status $$status)." >&2; \
+				echo "Signed macOS app failed its persistence launch probe (status $$status)." >&2; \
 				sed -n '1,200p' "$$launch_log" >&2; \
 				exit 1; \
 			fi; \
-			echo "Signed macOS app Keychain launch probe passed."; \
+			echo "Signed macOS app persistence launch probe passed."; \
 			exit 0; \
 		fi; \
 		attempt=$$((attempt + 1)); \
@@ -465,7 +465,7 @@ verify-flutter-macos-launch: sign-flutter-macos-release
 	done; \
 	kill "$$pid" 2>/dev/null || true; \
 	wait "$$pid" 2>/dev/null || true; \
-	echo "Signed macOS app Keychain launch probe timed out." >&2; \
+	echo "Signed macOS app persistence launch probe timed out." >&2; \
 	sed -n '1,200p' "$$launch_log" >&2; \
 	exit 1
 

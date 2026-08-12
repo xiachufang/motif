@@ -389,6 +389,7 @@ void main() {
     expect(snapshot.scrollViewportRows, 3);
     expect(snapshot.scrollTotalRows, greaterThan(snapshot.scrollViewportRows));
     expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+    expect(snapshot.viewportActive, isTrue);
 
     ts.scrollToOffset(0);
     ts.updateRenderState();
@@ -397,6 +398,7 @@ void main() {
       defaultBackgroundArgb: 0xff000000,
     );
     expect(snapshot.viewportOffset, 0);
+    expect(snapshot.viewportActive, isFalse);
 
     ts.scrollToOffset(snapshot.maxViewportOffset);
     ts.updateRenderState();
@@ -405,6 +407,7 @@ void main() {
       defaultBackgroundArgb: 0xff000000,
     );
     expect(snapshot.viewportOffset, snapshot.maxViewportOffset);
+    expect(snapshot.viewportActive, isTrue);
 
     ts.dispose();
   });
@@ -442,6 +445,7 @@ void main() {
       defaultBackgroundArgb: 0xff000000,
     );
     expect(snapshot.viewportOffset, 2);
+    expect(snapshot.viewportActive, isFalse);
     final historyText = snapshot.visibleText;
 
     ts.feedBytes(Uint8List.fromList(utf8.encode('background output\r\n')));
@@ -453,6 +457,50 @@ void main() {
     expect(snapshot.viewportOffset, 2);
     expect(snapshot.visibleText, historyText);
     expect(snapshot.isAtLatest, isFalse);
+
+    ts.dispose();
+  });
+
+  test('vertical overscan supplies only rows that exist at each edge', () {
+    final ts = TerminalState(onHostWrite: (_) {});
+    ts.init(16, 3);
+    ts.feedBytes(
+      Uint8List.fromList(
+        utf8.encode(List.generate(10, (i) => 'line$i\r\n').join()),
+      ),
+    );
+    ts.updateRenderState();
+
+    var snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportActive, isTrue);
+    expect(snapshot.lines, hasLength(snapshot.rows + 1));
+    expect(snapshot.hasTopOverscan, isTrue);
+    expect(snapshot.hasBottomOverscan, isFalse);
+
+    ts.scrollToOffset(1);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportActive, isFalse);
+    expect(snapshot.lines, hasLength(snapshot.rows + 2));
+    expect(snapshot.hasTopOverscan, isTrue);
+    expect(snapshot.hasBottomOverscan, isTrue);
+
+    ts.scrollToOffset(0);
+    ts.updateRenderState();
+    snapshot = ts.snapshot(
+      defaultForegroundArgb: 0xffffffff,
+      defaultBackgroundArgb: 0xff000000,
+    );
+    expect(snapshot.viewportActive, isFalse);
+    expect(snapshot.lines, hasLength(snapshot.rows + 1));
+    expect(snapshot.hasTopOverscan, isFalse);
+    expect(snapshot.hasBottomOverscan, isTrue);
 
     ts.dispose();
   });

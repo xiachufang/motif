@@ -35,6 +35,13 @@ final class SideChatCollectionController extends ChangeNotifier {
     required this.connection,
     this.preferredModelId,
     this.onModelSelected,
+    this.preferredReasoningEffort,
+    this.onReasoningEffortSelected,
+    this.onReasoningEffortPreferenceInvalidated,
+    this.hasPermissionPreference = false,
+    this.preferredPermissionId,
+    this.onPermissionSelected,
+    this.onPermissionPreferenceInvalidated,
   }) {
     _wasConnected = connection.state.phase == CodexConnectionPhase.connected;
     connection.addListener(_onConnectionChanged);
@@ -45,6 +52,13 @@ final class SideChatCollectionController extends ChangeNotifier {
   final CodexAppServerClient connection;
   final String? preferredModelId;
   final ValueChanged<String?>? onModelSelected;
+  String? preferredReasoningEffort;
+  final ValueChanged<String?>? onReasoningEffortSelected;
+  final VoidCallback? onReasoningEffortPreferenceInvalidated;
+  final ValueChanged<String?>? onPermissionSelected;
+  final VoidCallback? onPermissionPreferenceInvalidated;
+  bool hasPermissionPreference;
+  String? preferredPermissionId;
 
   final List<SideChatEntry> _entries = [];
   final Map<String, VoidCallback> _conversationListeners = {};
@@ -117,6 +131,31 @@ final class SideChatCollectionController extends ChangeNotifier {
             ..configureModelPreference(
               preferredModelId: preferredModelId,
               onSelected: onModelSelected,
+            )
+            ..configureReasoningEffortPreference(
+              preferredReasoningEffort: preferredReasoningEffort,
+              onSelected: (effort) {
+                preferredReasoningEffort = effort;
+                onReasoningEffortSelected?.call(effort);
+              },
+              onInvalidated: () {
+                preferredReasoningEffort = null;
+                onReasoningEffortPreferenceInvalidated?.call();
+              },
+            )
+            ..configurePermissionPreference(
+              hasPreference: hasPermissionPreference,
+              preferredPermissionId: preferredPermissionId,
+              onSelected: (permissionId) {
+                hasPermissionPreference = true;
+                preferredPermissionId = permissionId;
+                onPermissionSelected?.call(permissionId);
+              },
+              onInvalidated: () {
+                hasPermissionPreference = false;
+                preferredPermissionId = null;
+                onPermissionPreferenceInvalidated?.call();
+              },
             )
             ..openSubscribedConversation(response);
       final entry = SideChatEntry(

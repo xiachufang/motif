@@ -71,6 +71,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_OPTIMIZE");
     println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
     println!("cargo:rerun-if-env-changed=GHOSTTY_ZIG_SYSTEM_DIR");
+    println!("cargo:rerun-if-env-changed=MOTIF_BASH");
+    println!("cargo:rerun-if-env-changed=ZIG");
     println!("cargo:rerun-if-env-changed=TARGET");
     println!("cargo:rerun-if-env-changed=HOST");
     println!("cargo:rerun-if-env-changed=DEBUG");
@@ -149,9 +151,8 @@ fn build_vendored(link_mode: LinkMode) {
 
     let optimize = zig_optimize_mode();
 
-    let mut build = Command::new("zig");
+    let mut build = motif_ghostty_build_command(&ghostty_dir);
     build
-        .arg("build")
         .arg("-Demit-lib-vt=true")
         .arg(format!("-Doptimize={optimize}"))
         .arg("-Demit-xcframework=false")
@@ -159,8 +160,7 @@ fn build_vendored(link_mode: LinkMode) {
         .arg("--prefix")
         .arg(&install_prefix)
         .arg("--cache-dir")
-        .arg(&zig_cache_dir)
-        .current_dir(&ghostty_dir);
+        .arg(&zig_cache_dir);
 
     // Package managers can provide Ghostty's Zig package cache ahead of time
     // and ask Zig to resolve packages from that immutable store path instead
@@ -232,6 +232,72 @@ fn build_vendored(link_mode: LinkMode) {
         LinkMode::Static => println!("cargo:rustc-link-lib=static=ghostty-vt"),
     }
     emit_include_metadata(&[include_dir]);
+}
+
+/// Build command shared with Flutter and Web. The wrapper applies Motif's
+/// Ghostty patches before delegating to `zig build`.
+fn motif_ghostty_build_command(ghostty_dir: &Path) -> Command {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let build_script = repo_root.join("scripts/build_ghostty.sh");
+    let patch_script = repo_root.join("scripts/apply_ghostty_patches.sh");
+    let patch_dir = repo_root.join("patches/ghostty");
+    assert!(
+        build_script.is_file(),
+        "missing Ghostty build script: {}",
+        build_script.display()
+    );
+    assert!(
+        patch_script.is_file(),
+        "missing Ghostty patch script: {}",
+        patch_script.display()
+    );
+    assert!(
+        patch_dir.is_dir(),
+        "missing Ghostty patch directory: {}",
+        patch_dir.display()
+    );
+
+    println!("cargo:rerun-if-changed={}", build_script.display());
+    println!("cargo:rerun-if-changed={}", patch_script.display());
+    println!("cargo:rerun-if-changed={}", patch_dir.display());
+
+    let shell_path = |path: &Path| {
+        let value = path.to_string_lossy();
+        if cfg!(windows) {
+            value.replace('\\', "/")
+        } else {
+            value.into_owned()
+        }
+    };
+    let mut command = Command::new(motif_bash_executable());
+    command
+        .arg(shell_path(&build_script))
+        .arg("--source")
+        .arg(shell_path(ghostty_dir))
+        .arg("--");
+    command
+}
+
+/// Git Bash is required by the shared build wrapper on Windows. Avoid the
+/// System32 WSL launcher, which is also named `bash.exe`.
+fn motif_bash_executable() -> PathBuf {
+    if let Some(path) = env::var_os("MOTIF_BASH") {
+        if !path.is_empty() {
+            return path.into();
+        }
+    }
+    if cfg!(windows) {
+        for candidate in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.is_file() {
+                return path;
+            }
+        }
+    }
+    PathBuf::from("bash")
 }
 
 fn warn_unused_xcframework(lib_dir: &Path) {

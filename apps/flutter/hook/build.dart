@@ -88,6 +88,26 @@ void _addMotifEmbedSourceDependencies(
   }
 }
 
+/// Make patch/script changes invalidate Flutter's cached native asset build.
+void _addGhosttyPatchDependencies(BuildInput input, BuildOutputBuilder output) {
+  final workspace = Directory.fromUri(input.packageRoot.resolve('../../'));
+  for (final relative in [
+    'scripts/build_ghostty.sh',
+    'scripts/apply_ghostty_patches.sh',
+  ]) {
+    final script = File.fromUri(workspace.uri.resolve(relative));
+    if (script.existsSync()) output.dependencies.add(script.uri);
+  }
+
+  final patches = Directory.fromUri(workspace.uri.resolve('patches/ghostty/'));
+  if (!patches.existsSync()) return;
+  for (final entity in patches.listSync(followLinks: false)) {
+    if (entity is File && entity.path.endsWith('.patch')) {
+      output.dependencies.add(entity.uri);
+    }
+  }
+}
+
 /// Resolve a bash to run the build scripts with.
 ///
 /// On Windows, a bare `bash` is a trap: Dart's Process.start uses CreateProcess,
@@ -630,6 +650,8 @@ Future<void> main(List<String> args) async {
       output.dependencies.add(skipNativeAssets.uri);
       return;
     }
+
+    _addGhosttyPatchDependencies(input, output);
 
     final codeConfig = input.config.code;
     final targetOS = codeConfig.targetOS;

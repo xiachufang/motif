@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('push encryption key is created in secure storage', () async {
+  test('push encryption key is created in secret storage', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     final secrets = MemorySecretStore();
@@ -38,30 +38,25 @@ void main() {
     expect(store.servers, isEmpty);
   });
 
-  test(
-    'plaintext preferences secret store persists and deletes values',
-    () async {
-      SharedPreferences.setMockInitialValues({});
-      final prefs = await SharedPreferences.getInstance();
-      final secrets = PlaintextPreferencesSecretStore(
-        preferences: Future.value(prefs),
-      );
+  test('preferences secret store persists and deletes values', () async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final secrets = PreferencesSecretStore(preferences: Future.value(prefs));
 
-      await secrets.write('server-token', 'plaintext-secret');
+    await secrets.write('server-token', 'plaintext-secret');
 
-      expect(await secrets.read('server-token'), 'plaintext-secret');
-      expect(
-        prefs.getString('motif.insecureSecret.server-token'),
-        'plaintext-secret',
-      );
+    expect(await secrets.read('server-token'), 'plaintext-secret');
+    expect(
+      prefs.getString('motif.insecureSecret.server-token'),
+      'plaintext-secret',
+    );
 
-      await secrets.delete('server-token');
-      expect(await secrets.read('server-token'), isNull);
-    },
-  );
+    await secrets.delete('server-token');
+    expect(await secrets.read('server-token'), isNull);
+  });
 
   test(
-    'migrating secret store moves legacy values into secure storage',
+    'migrating secret store moves legacy values into primary storage',
     () async {
       final primary = MemorySecretStore();
       final legacy = MemorySecretStore();

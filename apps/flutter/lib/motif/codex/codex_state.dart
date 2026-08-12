@@ -64,6 +64,9 @@ final class CodexProjectSidebarPreferences {
 class CodexState extends _$CodexState {
   static const _projectSidebarKey = 'motif.codex.projectSidebar.v1';
   static const _selectedModelsKey = 'motif.codex.selectedModels.v1';
+  static const _selectedReasoningEffortsKey =
+      'motif.codex.selectedReasoningEfforts.v1';
+  static const _selectedPermissionsKey = 'motif.codex.selectedPermissions.v1';
 
   CodexState({
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
@@ -72,12 +75,18 @@ class CodexState extends _$CodexState {
     @ObservationIgnored() @ObservationReadOnly() SharedPreferences? preferences,
   }) : _projectSidebars = _loadProjectSidebars(preferences),
        _selectedModels = _loadSelectedModels(preferences),
+       _selectedReasoningEfforts = _loadSelectedReasoningEfforts(preferences),
+       _selectedPermissions = _loadSelectedPermissions(preferences),
        super(sidebarMode, desktopSidebarVisible, sidebarWidth, preferences);
 
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
   final Map<String, String> _selectedModels;
+  final Map<String, String> _selectedReasoningEfforts;
+  final Map<String, String?> _selectedPermissions;
   Future<void> _persistProjectSidebars = Future.value();
   Future<void> _persistSelectedModels = Future.value();
+  Future<void> _persistSelectedReasoningEfforts = Future.value();
+  Future<void> _persistSelectedPermissions = Future.value();
 
   static Future<CodexState> load() async =>
       CodexState(preferences: await SharedPreferences.getInstance());
@@ -109,6 +118,74 @@ class CodexState extends _$CodexState {
   }
 
   Future<void> flushSelectedModelPreferences() => _persistSelectedModels;
+
+  String? selectedReasoningEffort(String serverId) =>
+      _selectedReasoningEfforts[serverId];
+
+  void setSelectedReasoningEffort(String serverId, String? effort) {
+    if (serverId.isEmpty) return;
+    final normalized = effort?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      if (_selectedReasoningEfforts.remove(serverId) == null) return;
+    } else {
+      if (_selectedReasoningEfforts[serverId] == normalized) return;
+      _selectedReasoningEfforts[serverId] = normalized;
+    }
+    final store = preferences;
+    if (store == null) return;
+    final payload = jsonEncode(_selectedReasoningEfforts);
+    unawaited(
+      _persistSelectedReasoningEfforts = _persistSelectedReasoningEfforts.then((
+        _,
+      ) async {
+        await store.setString(_selectedReasoningEffortsKey, payload);
+      }),
+    );
+  }
+
+  void clearSelectedReasoningEffort(String serverId) =>
+      setSelectedReasoningEffort(serverId, null);
+
+  Future<void> flushSelectedReasoningEffortPreferences() =>
+      _persistSelectedReasoningEfforts;
+
+  bool hasSelectedPermissionPreference(String serverId) =>
+      _selectedPermissions.containsKey(serverId);
+
+  String? selectedPermissionId(String serverId) =>
+      _selectedPermissions[serverId];
+
+  void setSelectedPermissionId(String serverId, String? permissionId) {
+    if (serverId.isEmpty) return;
+    final normalized = permissionId?.trim();
+    final value = normalized == null || normalized.isEmpty ? null : normalized;
+    if (_selectedPermissions.containsKey(serverId) &&
+        _selectedPermissions[serverId] == value) {
+      return;
+    }
+    _selectedPermissions[serverId] = value;
+    _persistPermissionPreferences();
+  }
+
+  void clearSelectedPermissionId(String serverId) {
+    if (!_selectedPermissions.containsKey(serverId)) return;
+    _selectedPermissions.remove(serverId);
+    _persistPermissionPreferences();
+  }
+
+  Future<void> flushSelectedPermissionPreferences() =>
+      _persistSelectedPermissions;
+
+  void _persistPermissionPreferences() {
+    final store = preferences;
+    if (store == null) return;
+    final payload = jsonEncode(_selectedPermissions);
+    unawaited(
+      _persistSelectedPermissions = _persistSelectedPermissions.then((_) async {
+        await store.setString(_selectedPermissionsKey, payload);
+      }),
+    );
+  }
 
   void setShowAllProjects(String serverId, bool value) {
     _updateProjectSidebar(
@@ -180,6 +257,48 @@ class CodexState extends _$CodexState {
     SharedPreferences? preferences,
   ) {
     final raw = preferences?.getString(_selectedModelsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return {};
+      return {
+        for (final entry in json.entries)
+          if (entry.key is String &&
+              entry.value is String &&
+              (entry.key as String).isNotEmpty &&
+              (entry.value as String).isNotEmpty)
+            entry.key as String: entry.value as String,
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Map<String, String?> _loadSelectedPermissions(
+    SharedPreferences? preferences,
+  ) {
+    final raw = preferences?.getString(_selectedPermissionsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return {};
+      return {
+        for (final entry in json.entries)
+          if (entry.key is String &&
+              (entry.key as String).isNotEmpty &&
+              (entry.value == null || entry.value is String) &&
+              (entry.value == null || (entry.value as String).isNotEmpty))
+            entry.key as String: entry.value as String?,
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Map<String, String> _loadSelectedReasoningEfforts(
+    SharedPreferences? preferences,
+  ) {
+    final raw = preferences?.getString(_selectedReasoningEffortsKey);
     if (raw == null || raw.isEmpty) return {};
     try {
       final json = jsonDecode(raw);

@@ -2,20 +2,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/terminal/terminal_snapshot.dart';
 
 void main() {
-  test('isAtLatest compares the viewport with the live bottom', () {
+  test('isAtLatest uses Ghostty viewport-active state', () {
     final history = _snapshot(
-      [_row(const [])],
-      cols: 8,
-      viewportOffset: 3,
-      scrollTotalRows: 12,
-      scrollViewportRows: 3,
-    );
-    final latest = _snapshot(
       [_row(const [])],
       cols: 8,
       viewportOffset: 9,
       scrollTotalRows: 12,
       scrollViewportRows: 3,
+      viewportActive: false,
+    );
+    final latest = _snapshot(
+      [_row(const [])],
+      cols: 8,
+      viewportOffset: 3,
+      scrollTotalRows: 12,
+      scrollViewportRows: 3,
+      viewportActive: true,
     );
 
     expect(history.isAtLatest, isFalse);
@@ -309,25 +311,160 @@ void main() {
     expect(identical(second.lines[1], first.lines[1]), isFalse);
     expect(second.lines[1].cells.single.text, 'b');
   });
+
+  test('frame keeps bottom overscan separate at the history top', () {
+    final encoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    for (var row = 0; row < 3; row++) {
+      encoder.startRow(row)
+        ..addCell(
+          col: 0,
+          widthCells: 1,
+          textBytes: [0x61 + row],
+          foregroundArgb: 0xffffffff,
+          backgroundArgb: 0xff000000,
+          drawsBackground: false,
+          bold: false,
+          italic: false,
+          invisible: false,
+        )
+        ..finish();
+    }
+
+    final snapshot = TerminalFrameUpdate.decode(
+      encoder.finish(0, renderRows: 3).bytes,
+    ).applyTo(null);
+
+    expect(snapshot.rows, 2);
+    expect(snapshot.lines, hasLength(3));
+    expect(snapshot.hasTopOverscan, isFalse);
+    expect(snapshot.hasBottomOverscan, isTrue);
+    expect(snapshot.visibleText, 'a\nb');
+    expect(snapshot.lines.last.cells.single.text, 'c');
+  });
+
+  test('frame maps both overscan rows around the logical viewport', () {
+    final encoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(
+        cols: 4,
+        rows: 2,
+        viewportOffset: 2,
+        scrollTotalRows: 6,
+        cursorX: 0,
+        cursorY: 0,
+      ),
+    );
+    for (var row = 0; row < 4; row++) {
+      encoder.startRow(row)
+        ..addCell(
+          col: 0,
+          widthCells: 1,
+          textBytes: [0x61 + row],
+          foregroundArgb: 0xffffffff,
+          backgroundArgb: 0xff000000,
+          drawsBackground: false,
+          bold: false,
+          italic: false,
+          invisible: false,
+        )
+        ..finish();
+    }
+
+    final snapshot = TerminalFrameUpdate.decode(
+      encoder.finish(0, renderRows: 4).bytes,
+    ).applyTo(null);
+
+    expect(snapshot.lines, hasLength(4));
+    expect(snapshot.hasTopOverscan, isTrue);
+    expect(snapshot.hasBottomOverscan, isTrue);
+    expect(snapshot.renderOriginOffset, 1);
+    expect(snapshot.visibleText, 'b\nc');
+    expect(snapshot.cursorCell?.text, 'b');
+    expect(snapshot.screenRowForRenderIndex(0), 1);
+    expect(snapshot.screenRowForRenderIndex(3), 4);
+    expect(
+      snapshot.selectedText(
+        const TerminalSelection(
+          base: TerminalCellPoint(row: 2, col: 0),
+          extent: TerminalCellPoint(row: 3, col: 0),
+        ),
+      ),
+      'b\nc',
+    );
+  });
+
+  test('delta frame can add and remove the bottom overscan row', () {
+    final fullEncoder = TerminalFrameEncoder(
+      frameId: 1,
+      baseFrameId: 0,
+      full: true,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    fullEncoder.startRow(0).finish();
+    fullEncoder.startRow(1).finish();
+    final first = TerminalFrameUpdate.decode(
+      fullEncoder.finish(0).bytes,
+    ).applyTo(null);
+
+    final addEncoder = TerminalFrameEncoder(
+      frameId: 2,
+      baseFrameId: 1,
+      full: false,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    addEncoder.startRow(2).finish();
+    final withOverscan = TerminalFrameUpdate.decode(
+      addEncoder.finish(0, renderRows: 3).bytes,
+    ).applyTo(first);
+    expect(withOverscan.lines, hasLength(3));
+    expect(identical(withOverscan.lines[0], first.lines[0]), isTrue);
+
+    final removeEncoder = TerminalFrameEncoder(
+      frameId: 3,
+      baseFrameId: 2,
+      full: false,
+      metadata: _metadata(cols: 4, rows: 2),
+    );
+    final withoutOverscan = TerminalFrameUpdate.decode(
+      removeEncoder.finish(0).bytes,
+    ).applyTo(withOverscan);
+    expect(withoutOverscan.lines, hasLength(2));
+    expect(withoutOverscan.hasBottomOverscan, isFalse);
+  });
 }
 
-TerminalFrameMetadata _metadata({required int cols, required int rows}) {
+TerminalFrameMetadata _metadata({
+  required int cols,
+  required int rows,
+  int viewportOffset = 0,
+  int? scrollTotalRows,
+  int? cursorX,
+  int? cursorY,
+}) {
   return TerminalFrameMetadata(
     cols: cols,
     rows: rows,
-    viewportOffset: 0,
-    scrollTotalRows: rows,
+    viewportOffset: viewportOffset,
+    scrollTotalRows: scrollTotalRows ?? rows,
     scrollViewportRows: rows,
     backgroundArgb: 0xff000000,
     foregroundArgb: 0xffffffff,
     cursorArgb: 0xffffffff,
-    cursorVisible: false,
-    cursorInViewport: false,
-    cursorX: -1,
-    cursorY: -1,
+    cursorVisible: cursorX != null,
+    cursorInViewport: cursorX != null,
+    cursorX: cursorX ?? -1,
+    cursorY: cursorY ?? -1,
     cursorStyle: 0,
     mouseTrackingActive: false,
     alternateScreenActive: false,
+    viewportActive: true,
   );
 }
 
@@ -338,6 +475,7 @@ TerminalSnapshot _snapshot(
   int viewportOffset = 0,
   int scrollTotalRows = 0,
   int scrollViewportRows = 0,
+  bool? viewportActive,
 }) {
   return TerminalSnapshot(
     cols: cols,
@@ -355,6 +493,10 @@ TerminalSnapshot _snapshot(
     cursorStyle: 0,
     mouseTrackingActive: false,
     alternateScreenActive: false,
+    viewportActive:
+        viewportActive ??
+        (scrollTotalRows <= scrollViewportRows ||
+            viewportOffset >= scrollTotalRows - scrollViewportRows),
     lines: rows,
   );
 }

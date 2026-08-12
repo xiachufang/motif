@@ -2238,6 +2238,107 @@ const _: () = {
 pub type TerminalBellFn = ::std::option::Option<
     unsafe extern "C" fn(terminal: Terminal, userdata: *mut ::std::os::raw::c_void),
 >;
+pub mod TerminalUnknownSequenceTag {
+    #[doc = " Unsupported terminal sequence tags.\n\n Only APC sequences are currently reported. Additional sequence types may\n be added without changing the callback shape.\n"]
+    pub type Type = ::std::os::raw::c_uint;
+    #[doc = " Application Program Command (APC)."]
+    pub const GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_APC: Type = 0;
+    #[doc = " Application Program Command (APC)."]
+    pub const GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_MAX_VALUE: Type = 2147483647;
+}
+#[doc = " An unsupported string terminal sequence.\n\n The content is borrowed and valid only for the callback duration. It\n contains the bytes between the sequence introducer and terminator, may\n contain arbitrary binary data, and is not null-terminated.\n"]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct TerminalUnknownStringSequence {
+    #[doc = " Whether content was shortened by the byte limit or allocation failure."]
+    pub truncated: bool,
+    #[doc = " Retained sequence content."]
+    pub content: String,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of TerminalUnknownStringSequence"]
+        [::std::mem::size_of::<TerminalUnknownStringSequence>() - 24usize];
+    ["Alignment of TerminalUnknownStringSequence"]
+        [::std::mem::align_of::<TerminalUnknownStringSequence>() - 8usize];
+    ["Offset of field: TerminalUnknownStringSequence::truncated"]
+        [::std::mem::offset_of!(TerminalUnknownStringSequence, truncated) - 0usize];
+    ["Offset of field: TerminalUnknownStringSequence::content"]
+        [::std::mem::offset_of!(TerminalUnknownStringSequence, content) - 8usize];
+};
+impl Default for TerminalUnknownStringSequence {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[doc = " Unsupported terminal sequence value.\n"]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union TerminalUnknownSequenceValue {
+    #[doc = " Application Program Command (APC)."]
+    pub apc: TerminalUnknownStringSequence,
+    #[doc = " Padding for ABI compatibility. Do not use.\n\n 128 bytes leaves room for future structured sequence payloads, such as\n CSI with borrowed parameter, separator, and intermediate arrays, without\n changing the tagged union's ABI."]
+    pub _padding: [u64; 16usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of TerminalUnknownSequenceValue"]
+        [::std::mem::size_of::<TerminalUnknownSequenceValue>() - 128usize];
+    ["Alignment of TerminalUnknownSequenceValue"]
+        [::std::mem::align_of::<TerminalUnknownSequenceValue>() - 8usize];
+    ["Offset of field: TerminalUnknownSequenceValue::apc"]
+        [::std::mem::offset_of!(TerminalUnknownSequenceValue, apc) - 0usize];
+    ["Offset of field: TerminalUnknownSequenceValue::_padding"]
+        [::std::mem::offset_of!(TerminalUnknownSequenceValue, _padding) - 0usize];
+};
+impl Default for TerminalUnknownSequenceValue {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[doc = " An unsupported terminal sequence.\n"]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TerminalUnknownSequence {
+    pub tag: TerminalUnknownSequenceTag::Type,
+    pub value: TerminalUnknownSequenceValue,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of TerminalUnknownSequence"]
+        [::std::mem::size_of::<TerminalUnknownSequence>() - 136usize];
+    ["Alignment of TerminalUnknownSequence"]
+        [::std::mem::align_of::<TerminalUnknownSequence>() - 8usize];
+    ["Offset of field: TerminalUnknownSequence::tag"]
+        [::std::mem::offset_of!(TerminalUnknownSequence, tag) - 0usize];
+    ["Offset of field: TerminalUnknownSequence::value"]
+        [::std::mem::offset_of!(TerminalUnknownSequence, value) - 8usize];
+};
+impl Default for TerminalUnknownSequence {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[doc = " Callback function type for unsupported terminal sequences.\n\n Called synchronously for normally terminated sequences whose identifier is\n not supported by the active terminal handler. Aborted sequences, malformed\n recognized commands, and explicitly disabled known protocols are ignored.\n\n Capture must also be enabled with a nonzero\n GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES value. Installing this callback alone\n does not retain sequence content or allocate memory.\n\n"]
+pub type TerminalUnknownSequenceFn = ::std::option::Option<
+    unsafe extern "C" fn(
+        terminal: Terminal,
+        userdata: *mut ::std::os::raw::c_void,
+        sequence: *const TerminalUnknownSequence,
+    ),
+>;
 pub mod ClipboardLocation {
     #[doc = " Clipboard destination for a clipboard write.\n\n Protocol-specific destination identifiers are normalized to these values\n before the clipboard write callback is invoked.\n"]
     pub type Type = ::std::os::raw::c_uint;
@@ -2575,7 +2676,13 @@ pub mod TerminalOption {
     pub const MODE_DEFAULT: Type = 33;
     #[doc = " Set the current value of a terminal mode.\n\n This does not change the value restored by a full terminal reset (RIS).\n A NULL value pointer or unknown mode returns GHOSTTY_INVALID_VALUE.\n\n Input type: GhosttyTerminalModeConfig*"]
     pub const MODE: Type = 34;
-    #[doc = " Set the current value of a terminal mode.\n\n This does not change the value restored by a full terminal reset (RIS).\n A NULL value pointer or unknown mode returns GHOSTTY_INVALID_VALUE.\n\n Input type: GhosttyTerminalModeConfig*"]
+    #[doc = " Callback invoked for unsupported terminal sequence identifiers. Set to\n NULL to ignore unsupported sequences. Capture must also be enabled with\n GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES.\n\n Input type: GhosttyTerminalUnknownSequenceFn"]
+    pub const UNKNOWN_SEQUENCE: Type = 35;
+    #[doc = " Set the maximum content bytes retained for each unsupported terminal\n sequence. A NULL value pointer or zero disables capture and prevents\n unknown-sequence callbacks.\n\n When this limit is hit, the unknown sequence callback will still\n be invoked but `truncated` will be set to true.\n\n Input type: size_t*"]
+    pub const UNKNOWN_MAX_BYTES: Type = 36;
+    #[doc = " Set the name of the terminfo entry this terminal runs as, reported\n in response to an XTGETTCAP query for \"TN\" (e.g. \"xterm-256color\").\n\n The string data is copied into the terminal. A NULL value pointer\n clears the name (equivalent to setting an empty string). A name\n longer than 128 bytes returns GHOSTTY_INVALID_VALUE.\n\n If this is unset then we don't report anything for an XTGETTCAP\n TN query, because we don't know what the embedding terminal around\n libghostty is advertising itself as.\n\n Input type: GhosttyString*"]
+    pub const TERMINFO_NAME: Type = 37;
+    #[doc = " Set the name of the terminfo entry this terminal runs as, reported\n in response to an XTGETTCAP query for \"TN\" (e.g. \"xterm-256color\").\n\n The string data is copied into the terminal. A NULL value pointer\n clears the name (equivalent to setting an empty string). A name\n longer than 128 bytes returns GHOSTTY_INVALID_VALUE.\n\n If this is unset then we don't report anything for an XTGETTCAP\n TN query, because we don't know what the embedding terminal around\n libghostty is advertising itself as.\n\n Input type: GhosttyString*"]
     pub const MAX_VALUE: Type = 2147483647;
 }
 pub mod TerminalData {
@@ -2977,7 +3084,7 @@ pub mod RenderStateData {
     pub const ROWS: Type = 2;
     #[doc = " Current dirty state (GhosttyRenderStateDirty)."]
     pub const DIRTY: Type = 3;
-    #[doc = " Populate a pre-allocated GhosttyRenderStateRowIterator with row data\n  from the render state (GhosttyRenderStateRowIterator). Row data is\n  only valid as long as the underlying render state is not updated.\n  It is unsafe to use row data after updating the render state."]
+    #[doc = " Populate a pre-allocated GhosttyRenderStateRowIterator with row data\n  from the render state (GhosttyRenderStateRowIterator). Row data is\n  only valid as long as the underlying render state is not updated.\n  It is unsafe to use row data after updating the render state.\n  When vertical overscan is enabled, the iterator may yield one additional\n  row immediately above and below the viewport when those rows exist."]
     pub const ROW_ITERATOR: Type = 4;
     #[doc = " Default/current background color (GhosttyColorRgb)."]
     pub const COLOR_BACKGROUND: Type = 5;
@@ -3013,7 +3120,9 @@ pub mod RenderStateOption {
     pub type Type = ::std::os::raw::c_uint;
     #[doc = " Set dirty state (GhosttyRenderStateDirty)."]
     pub const DIRTY: Type = 0;
-    #[doc = " Set dirty state (GhosttyRenderStateDirty)."]
+    #[doc = " Include one row above and below the viewport when available (bool). This\n  does not change GHOSTTY_RENDER_STATE_DATA_ROWS or cursor viewport\n  coordinates."]
+    pub const VERTICAL_OVERSCAN: Type = 1;
+    #[doc = " Include one row above and below the viewport when available (bool). This\n  does not change GHOSTTY_RENDER_STATE_DATA_ROWS or cursor viewport\n  coordinates."]
     pub const MAX_VALUE: Type = 2147483647;
 }
 pub mod RenderStateRowData {
@@ -3869,7 +3978,7 @@ pub mod Key {
 unsafe extern "C" {
     #[doc = " Create a new key event instance.\n\n Creates a new key event with default values. The event must be freed using\n ghostty_key_event_free() when no longer needed.\n\n"]
     pub fn ghostty_key_event_new(allocator: *const Allocator, event: *mut KeyEvent)
-    -> Result::Type;
+        -> Result::Type;
 }
 unsafe extern "C" {
     #[doc = " Free a key event instance.\n\n Releases all resources associated with the key event. After this call,\n the event handle becomes invalid and must not be used.\n\n"]
@@ -4286,7 +4395,7 @@ pub mod SnapshotDecoderData {
     pub const HISTORY_ROWS_ALTERNATE: Type = 4;
     #[doc = " Screen associated with the most recently decoded history page.\n\n This value is available only after ghostty_snapshot_decoder_next()\n returns GHOSTTY_SUCCESS. A later call to next replaces it or clears it\n when FINISH is reached or an error occurs.\n\n Output type: GhosttyTerminalScreen *"]
     pub const PROGRESS_SCREEN: Type = 5;
-    #[doc = " Rows prepended by the most recently decoded history page.\n\n Zero means the page was consumed and authenticated but could not be\n applied to the live terminal.\n\n Output type: size_t *"]
+    #[doc = " Rows prepended by the most recently decoded history page.\n\n Zero means the page was consumed and validated but could not be\n applied to the live terminal.\n\n Output type: size_t *"]
     pub const PROGRESS_ROWS: Type = 6;
     #[doc = " Page records remaining in the same screen's HISTORY sequence.\n\n This is not a count of all pages remaining in the snapshot.\n\n Output type: uint32_t *"]
     pub const PROGRESS_REMAINING: Type = 7;
@@ -4294,7 +4403,7 @@ pub mod SnapshotDecoderData {
     pub const MAX_VALUE: Type = 2147483647;
 }
 unsafe extern "C" {
-    #[doc = " Encode a complete terminal snapshot to a writer.\n\n The terminal's persistent VT stream supplies the continuation bytes needed\n to reconstruct unfinished parser state. The caller must prevent concurrent\n writes or other terminal mutation for the duration of this call. The writer\n callback must not call terminal APIs with the same terminal handle.\n A terminal can be encoded with tracking disabled when its VT parser and\n UTF-8 decoder are both at ground. If either is unfinished, tracking must\n have been enabled before the input that produced that state was written;\n otherwise this returns GHOSTTY_INVALID_VALUE.\n\n Encoding begins at the writer's current position. If an error occurs, the\n writer may contain a partial snapshot without a valid FINISH checkpoint.\n Calls to the writer are synchronous; this function does not flush or make\n the caller's destination durable.\n\n         output, GHOSTTY_LIMIT_EXCEEDED if output accounting overflows, or\n         another error code on failure\n"]
+    #[doc = " Encode a complete terminal snapshot to a writer.\n\n The terminal's persistent VT stream supplies the continuation bytes needed\n to reconstruct unfinished parser state. The caller must prevent concurrent\n writes or other terminal mutation for the duration of this call. The writer\n callback must not call terminal APIs with the same terminal handle.\n A terminal can be encoded with tracking disabled when its VT parser and\n UTF-8 decoder are both at ground. If either is unfinished, tracking must\n have been enabled before the input that produced that state was written;\n otherwise this returns GHOSTTY_INVALID_VALUE.\n\n Encoding begins at the writer's current position. If an error occurs, the\n writer may contain a partial snapshot without a valid FINISH marker.\n Calls to the writer are synchronous; this function does not flush or make\n the caller's destination durable.\n\n         output, GHOSTTY_LIMIT_EXCEEDED if output accounting overflows, or\n         another error code on failure\n"]
     pub fn ghostty_snapshot_encode(terminal: Terminal, writer: Writer) -> Result::Type;
 }
 unsafe extern "C" {
@@ -4316,7 +4425,7 @@ unsafe extern "C" {
     ) -> Result::Type;
 }
 unsafe extern "C" {
-    #[doc = " Create a snapshot decoder that reads from a caller-provided reader.\n\n The decoder stores a copy of reader. Its read callback must not be NULL, and\n both the callback and its caller-owned context must remain valid until\n FINISH is reached or the decoder is freed. Reads are synchronous and occur\n only during ready, next, or decode calls. A zero-byte successful read is\n permanent end-of-file, not temporary starvation; nonblocking sources must\n wait outside the decoder or block in their callback. The read callback must\n not call APIs, including ghostty_snapshot_decoder_free(), on the decoder\n that owns it. Returning false reports GHOSTTY_IO_ERROR; returning true with\n zero bytes before a required checkpoint reports truncated snapshot data as\n GHOSTTY_INVALID_VALUE.\n\n                  for the default allocator\n"]
+    #[doc = " Create a snapshot decoder that reads from a caller-provided reader.\n\n The decoder stores a copy of reader. Its read callback must not be NULL, and\n both the callback and its caller-owned context must remain valid until\n FINISH is reached or the decoder is freed. Reads are synchronous and occur\n only during ready, next, or decode calls. A zero-byte successful read is\n permanent end-of-file, not temporary starvation; nonblocking sources must\n wait outside the decoder or block in their callback. The read callback must\n not call APIs, including ghostty_snapshot_decoder_free(), on the decoder\n that owns it. Returning false reports GHOSTTY_IO_ERROR; returning true with\n zero bytes before a required marker reports truncated snapshot data as\n GHOSTTY_INVALID_VALUE.\n\n                  for the default allocator\n"]
     pub fn ghostty_snapshot_decoder_new(
         allocator: *const Allocator,
         decoder: *mut SnapshotDecoder,
@@ -4345,18 +4454,18 @@ unsafe extern "C" {
     ) -> Result::Type;
 }
 unsafe extern "C" {
-    #[doc = " Decode and authenticate the renderable snapshot prefix through READY.\n\n On success, terminal receives a caller-owned terminal with its persistent\n VT stream already restored from the snapshot continuation. The terminal is\n immediately usable for rendering and live input. Older scrollback remains\n to be restored with ghostty_snapshot_decoder_next().\n\n The restored parser state may be unfinished, but terminal continuation\n tracking is disabled; GHOSTTY_TERMINAL_DATA_CONTINUATION_MAX_BYTES returns\n zero. The decoder's continuation option is an input limit, not terminal\n runtime policy.\n\n The caller must keep the returned terminal alive until FINISH validates or\n the decoder is freed. The decoder borrows this terminal handle while it\n restores history; ghostty_snapshot_decoder_next() uses it automatically.\n\n This operation may only be called once and only before decoding starts.\n terminal is set to NULL on every error. A decoding, I/O, or allocation\n error after input consumption begins poisons the decoder, after which it\n must be freed. An invalid argument or lifecycle error detected before the\n operation consumes input does not poison it.\n\n"]
+    #[doc = " Decode and validate the renderable snapshot prefix through READY.\n\n On success, terminal receives a caller-owned terminal with its persistent\n VT stream already restored from the snapshot continuation. The terminal is\n immediately usable for rendering and live input. Older scrollback remains\n to be restored with ghostty_snapshot_decoder_next().\n\n The restored parser state may be unfinished, but terminal continuation\n tracking is disabled; GHOSTTY_TERMINAL_DATA_CONTINUATION_MAX_BYTES returns\n zero. The decoder's continuation option is an input limit, not terminal\n runtime policy.\n\n The caller must keep the returned terminal alive until FINISH validates or\n the decoder is freed. The decoder borrows this terminal handle while it\n restores history; ghostty_snapshot_decoder_next() uses it automatically.\n\n This operation may only be called once and only before decoding starts.\n terminal is set to NULL on every error. A decoding, I/O, or allocation\n error after input consumption begins poisons the decoder, after which it\n must be freed. An invalid argument or lifecycle error detected before the\n operation consumes input does not poison it.\n\n"]
     pub fn ghostty_snapshot_decoder_ready(
         decoder: SnapshotDecoder,
         terminal: *mut Terminal,
     ) -> Result::Type;
 }
 unsafe extern "C" {
-    #[doc = " Decode one history page into the terminal returned by READY.\n\n Each GHOSTTY_SUCCESS consumes and authenticates one PAGE record. Query the\n GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_* values before calling next again.\n GHOSTTY_NO_VALUE means FINISH was validated; repeated calls after FINISH\n also return GHOSTTY_NO_VALUE.\n\n The terminal may be rendered, resized, and fed live PTY input between calls.\n If a history page can no longer be applied safely, it is still consumed and\n authenticated and progress reports zero rows. The decoder applies history\n to the caller-owned terminal produced by its READY operation.\n\n A decoding error invalidates the decoder's source position. The terminal\n remains caller-owned and usable with its already-restored history, but only\n ghostty_snapshot_decoder_free() may subsequently be called on the decoder.\n\n         error code on failure\n"]
+    #[doc = " Decode one history page into the terminal returned by READY.\n\n Each GHOSTTY_SUCCESS consumes and validates one PAGE record. Query the\n GHOSTTY_SNAPSHOT_DECODER_DATA_PROGRESS_* values before calling next again.\n GHOSTTY_NO_VALUE means FINISH was validated; repeated calls after FINISH\n also return GHOSTTY_NO_VALUE.\n\n The terminal may be rendered, resized, and fed live PTY input between calls.\n If a history page can no longer be applied safely, it is still consumed and\n validated and progress reports zero rows. The decoder applies history\n to the caller-owned terminal produced by its READY operation.\n\n A decoding error invalidates the decoder's source position. The terminal\n remains caller-owned and usable with its already-restored history, but only\n ghostty_snapshot_decoder_free() may subsequently be called on the decoder.\n\n         error code on failure\n"]
     pub fn ghostty_snapshot_decoder_next(decoder: SnapshotDecoder) -> Result::Type;
 }
 unsafe extern "C" {
-    #[doc = " Decode and authenticate one complete snapshot.\n\n This is the one-shot form of READY followed by all history pages through\n FINISH. It may only be called before decoding starts. Bytes following FINISH\n are left unread. On success terminal receives a caller-owned terminal with\n its persistent VT stream restored. Continuation tracking on the returned\n terminal is disabled and GHOSTTY_TERMINAL_DATA_CONTINUATION_MAX_BYTES\n returns zero. terminal is set to NULL on every error.\n A decoding, I/O, or allocation error after input consumption begins poisons\n the decoder, after which it must be freed. An invalid argument or\n lifecycle error detected before the operation consumes input does not\n poison it.\n\n"]
+    #[doc = " Decode and validate one complete snapshot.\n\n This is the one-shot form of READY followed by all history pages through\n FINISH. It may only be called before decoding starts. Bytes following FINISH\n are left unread. On success terminal receives a caller-owned terminal with\n its persistent VT stream restored. Continuation tracking on the returned\n terminal is disabled and GHOSTTY_TERMINAL_DATA_CONTINUATION_MAX_BYTES\n returns zero. terminal is set to NULL on every error.\n A decoding, I/O, or allocation error after input consumption begins poisons\n the decoder, after which it must be freed. An invalid argument or\n lifecycle error detected before the operation consumes input does not\n poison it.\n\n"]
     pub fn ghostty_snapshot_decoder_decode(
         decoder: SnapshotDecoder,
         terminal: *mut Terminal,

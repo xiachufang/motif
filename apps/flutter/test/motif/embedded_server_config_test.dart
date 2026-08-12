@@ -103,7 +103,7 @@ void main() {
     expect(config.toRuntimeJson().containsKey('shell'), isFalse);
   });
 
-  test('migrates a legacy plaintext relay JWT into secure storage', () async {
+  test('migrates a legacy plaintext relay JWT into secret storage', () async {
     SharedPreferences.setMockInitialValues({
       'motif.embedded.v1': jsonEncode({
         'listen_mode': 'loopback',
@@ -136,7 +136,7 @@ void main() {
     expect((persisted['rzv'] as Map).containsKey('jwt'), isFalse);
   });
 
-  test('writes and deletes the relay JWT only in secure storage', () async {
+  test('writes and deletes the relay JWT only in secret storage', () async {
     SharedPreferences.setMockInitialValues({
       'motif.embedded.v1': jsonEncode({'autostart': false}),
     });

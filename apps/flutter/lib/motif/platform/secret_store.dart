@@ -1,4 +1,3 @@
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Minimal secret persistence boundary used by app stores.
@@ -9,41 +8,13 @@ abstract interface class SecretStore {
   Future<void> delete(String key);
 }
 
-/// Keychain/Keystore/Credential Manager backed implementation.
-class FlutterSecureSecretStore implements SecretStore {
-  FlutterSecureSecretStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
-
-  /// Uses the standard per-user macOS Keychain. The data-protection Keychain
-  /// selected by flutter_secure_storage's default macOS options requires
-  /// restricted entitlements that are unavailable to our provisioning-free
-  /// Developer ID distribution.
-  FlutterSecureSecretStore.macos()
-    : _storage = const FlutterSecureStorage(
-        mOptions: MacOsOptions(usesDataProtectionKeychain: false),
-      );
-
-  final FlutterSecureStorage _storage;
-
-  @override
-  bool get isAvailable => true;
-
-  @override
-  Future<String?> read(String key) => _storage.read(key: key);
-
-  @override
-  Future<void> write(String key, String value) =>
-      _storage.write(key: key, value: value);
-
-  @override
-  Future<void> delete(String key) => _storage.delete(key: key);
-}
-
-/// Legacy plaintext store used only to migrate credentials written by builds
-/// that could not use macOS Keychain. Values are namespaced but are NOT
-/// encrypted at rest, so this must never be selected as the primary store.
-class PlaintextPreferencesSecretStore implements SecretStore {
-  PlaintextPreferencesSecretStore({Future<SharedPreferences>? preferences})
+/// Preferences-backed secret persistence.
+///
+/// Values are namespaced but are not encrypted at rest. The prefix is retained
+/// for compatibility with builds that previously used preferences as a
+/// fallback when the primary persistence backend was unavailable.
+class PreferencesSecretStore implements SecretStore {
+  PreferencesSecretStore({Future<SharedPreferences>? preferences})
     : _preferences = preferences ?? SharedPreferences.getInstance();
 
   static const _prefix = 'motif.insecureSecret.';

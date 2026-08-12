@@ -245,10 +245,10 @@ class TerminalLinkMatcher {
     TerminalSnapshot snapshot,
     TerminalCellPoint point,
   ) {
-    final viewportRow = point.row - snapshot.viewportOffset;
-    if (viewportRow < 0 || viewportRow >= snapshot.lines.length) return null;
-    final start = _logicalLineStart(snapshot, viewportRow);
-    final end = _logicalLineEnd(snapshot, viewportRow);
+    final renderIndex = snapshot.renderIndexForScreenRow(point.row);
+    if (renderIndex == null) return null;
+    final start = _logicalLineStart(snapshot, renderIndex);
+    final end = _logicalLineEnd(snapshot, renderIndex);
     for (final match in _matchesForRows(snapshot, start, end)) {
       if (match.contains(point)) return match;
     }
@@ -447,7 +447,7 @@ class _MappedLogicalLine {
 
     for (var viewportRow = startRow; viewportRow <= endRow; viewportRow++) {
       final row = snapshot.lines[viewportRow];
-      final screenRow = snapshot.viewportOffset + viewportRow;
+      final screenRow = snapshot.screenRowForRenderIndex(viewportRow);
       var col = 0;
       for (final cell in row.cells) {
         while (col < cell.col) {

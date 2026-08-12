@@ -64,18 +64,20 @@ Future<void> main() async {
 
 Future<void> _runMacosReleaseProbe() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final secrets = FlutterSecureSecretStore.macos();
-  const key = 'motif.release.keychainProbe';
+  final secrets = PreferencesSecretStore();
+  const key = 'motif.release.persistenceProbe';
   final value = '${DateTime.now().microsecondsSinceEpoch}-$pid';
 
   try {
     await secrets.write(key, value);
     if (await secrets.read(key) != value) {
-      throw StateError('Keychain read did not return the value just written');
+      throw StateError(
+        'Persistence read did not return the value just written',
+      );
     }
     await secrets.delete(key);
     if (await secrets.read(key) != null) {
-      throw StateError('Keychain value remained after deletion');
+      throw StateError('Persistence value remained after deletion');
     }
     stdout.writeln('Motif macOS release probe passed.');
     await stdout.flush();

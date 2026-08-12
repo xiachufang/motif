@@ -19,15 +19,7 @@ PlatformServices makePlatformServices() {
     push: (Platform.isIOS || Platform.isMacOS)
         ? ApnsPushService()
         : NoopPushService(),
-    // macOS uses the app's default Keychain without a shared access group.
-    // Migrate credentials written by the temporary plaintext fallback on first
-    // access, then erase them from preferences.
-    secrets: Platform.isMacOS
-        ? MigratingSecretStore(
-            primary: FlutterSecureSecretStore.macos(),
-            legacy: PlaintextPreferencesSecretStore(),
-          )
-        : FlutterSecureSecretStore(),
+    secrets: PreferencesSecretStore(),
   );
 }
 

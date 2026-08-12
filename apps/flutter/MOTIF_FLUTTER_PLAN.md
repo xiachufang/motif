@@ -55,7 +55,7 @@ lib/
       theme/                # MotifTheme tokens + button widgets
       screens/              # welcome, connection, session list, session, settings
       widgets/              # bottom input bar, quick command row, tab bar, panels
-    platform/               # platform-channel plugins (tailscale, asr, push, secure storage)
+    platform/               # platform services (tailscale, asr, push, secret persistence)
     app.dart                # MaterialApp / routing root
   main_motif.dart           # Motif entrypoint (separate from main.dart demo)
 ```
@@ -151,7 +151,7 @@ State machine: unknown →A→ atPrompt →B→ composing →C→ running →D�
   `motif` (MotifClient), `terminalSettings`, UI flags (`isShowingConnection/Settings`),
   `pendingDeepLink`, `nativeReloadKey`.
 - **MotifServer**`{id:UUID, name, host, port=7777, token, kind: direct|tailscale|rendezvous|ssh}` →
-  stored in **secure storage** (was Keychain `io.allsunday.motif.servers` / `list.v1`); active id in prefs `activeServerID`.
+  stored in namespaced preferences (was Keychain `io.allsunday.motif.servers` / `list.v1`); active id in prefs `activeServerID`.
 - **TerminalSettings**`{fontSize 8–28 (def 10), theme: system|light|dark}` → prefs `motif.terminalSettings.v1`.
   Resolves to OSC 10/11 fg/bg + light/dark color scheme broadcast on attach.
 - **QuickCommand**`{id, label, symbol?, payload:bytes, sendImmediately, kind: bytes|paste|ctrl|alt|shift|cd, modifiers:{ctrl,alt,shift}}`;
@@ -200,7 +200,7 @@ composer + mic + send + photo attach). Grid-settling "OneShotGate" before first 
 | **Tailscale** | TailscaleKit | TailscaleKit | tsnet/Go via JNI | tsnet/Go | tsnet/Go | none → require user VPN / direct only |
 | **ASR** | DoubaoASR XCFramework | platform speech | Android STT / cloud | cloud/SAPI | cloud | Web Speech API |
 | **Push (E2E)** | APNs + NSE AES-GCM | APNs + NSE | FCM + decrypt | WNS/none | none | Web Push |
-| **Secure storage** | Keychain | Keychain | Keystore | DPAPI | libsecret | IndexedDB (best-effort) |
+| **Secret persistence** | Preferences | Preferences | Preferences | Preferences | Preferences | Local storage |
 
 Abstractions: `TerminalEngine`, `TailscaleService`, `SpeechService`, `PushService`, `SecureStore` —
 each an interface with `direct/no-op` fallbacks so the app runs on every platform from day one and
@@ -208,7 +208,7 @@ gains native capability incrementally. **Direct (non-Tailscale) servers + keyboa
 6 platforms first**; Tailscale/ASR/push are additive.
 
 E2E push scheme: per-device **AES-256-GCM** key (32 random bytes), base64 → `device.register.enc_key`.
-Server encrypts payload; platform notification-service decrypts using key from secure storage
+Server encrypts payload; platform notification-service decrypts using the persisted app key
 (shared app-group on iOS). Deep link payload carries session name + instance_id.
 
 ---

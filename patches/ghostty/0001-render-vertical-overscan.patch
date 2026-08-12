@@ -1,0 +1,299 @@
+diff --git a/include/ghostty/vt/render.h b/include/ghostty/vt/render.h
+index 2e3f2f71e..76e8b1225 100644
+--- a/include/ghostty/vt/render.h
++++ b/include/ghostty/vt/render.h
+@@ -152,6 +152,8 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    *  from the render state (GhosttyRenderStateRowIterator). Row data is
+    *  only valid as long as the underlying render state is not updated.
+    *  It is unsafe to use row data after updating the render state.
++   *  When vertical overscan is enabled, the iterator may yield one additional
++   *  row immediately above and below the viewport when those rows exist.
+    *  */
+   GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR = 4,
+ 
+@@ -210,6 +212,11 @@ typedef enum GHOSTTY_ENUM_TYPED {
+ typedef enum GHOSTTY_ENUM_TYPED {
+   /** Set dirty state (GhosttyRenderStateDirty). */
+   GHOSTTY_RENDER_STATE_OPTION_DIRTY = 0,
++
++  /** Include one row above and below the viewport when available (bool). This
++   *  does not change GHOSTTY_RENDER_STATE_DATA_ROWS or cursor viewport
++   *  coordinates. */
++  GHOSTTY_RENDER_STATE_OPTION_VERTICAL_OVERSCAN = 1,
+   GHOSTTY_RENDER_STATE_OPTION_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyRenderStateOption;
+ 
+diff --git a/src/terminal/c/render.zig b/src/terminal/c/render.zig
+index e70e7a4b7..b29572b66 100644
+--- a/src/terminal/c/render.zig
++++ b/src/terminal/c/render.zig
+@@ -129,11 +129,13 @@ pub const Data = enum(c_int) {
+ /// C: GhosttyRenderStateOption
+ pub const SetOption = enum(c_int) {
+     dirty = 0,
++    vertical_overscan = 1,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: SetOption) type {
+         return switch (self) {
+             .dirty => Dirty,
++            .vertical_overscan => bool,
+         };
+     }
+ };
+@@ -333,6 +335,7 @@ fn setTyped(
+     const state = state_ orelse return .invalid_value;
+     switch (option) {
+         .dirty => state.state.dirty = value.*,
++        .vertical_overscan => state.state.vertical_overscan = value.*,
+     }
+ 
+     return .success;
+@@ -426,9 +429,9 @@ pub fn row_iterator_free(iterator_: RowIterator) callconv(lib.calling_conv) void
+ 
+ pub fn row_iterator_next(iterator_: RowIterator) callconv(lib.calling_conv) bool {
+     const it = iterator_ orelse return false;
+-    const next_y: size.CellCountInt = if (it.y) |y| y + 1 else 0;
++    const next_y: usize = if (it.y) |y| @as(usize, y) + 1 else 0;
+     if (next_y >= it.raws.len) return false;
+-    it.y = next_y;
++    it.y = @intCast(next_y);
+     return true;
+ }
+ 
+@@ -920,6 +923,14 @@ test "render: get/set dirty" {
+     try testing.expectEqual(Result.success, set(state, .dirty, @ptrCast(&dirty_full)));
+     try testing.expectEqual(Result.success, get(state, .dirty, @ptrCast(&dirty)));
+     try testing.expectEqual(Dirty.full, dirty);
++
++    const vertical_overscan = true;
++    try testing.expectEqual(Result.success, set(
++        state,
++        .vertical_overscan,
++        @ptrCast(&vertical_overscan),
++    ));
++    try testing.expect(state.?.state.vertical_overscan);
+ }
+ 
+ test "render: set null value" {
+diff --git a/src/terminal/render.zig b/src/terminal/render.zig
+index 867cd6224..3e15b4218 100644
+--- a/src/terminal/render.zig
++++ b/src/terminal/render.zig
+@@ -88,7 +88,9 @@ pub const RenderState = struct {
+     /// Cursor state within the viewport.
+     cursor: Cursor,
+ 
+-    /// The rows (y=0 is top) of the viewport. Guaranteed to be `rows` length.
++    /// The rows (y=0 is top) to render. This is `rows` length by default and
++    /// may include one additional row above and below the viewport when
++    /// `vertical_overscan` is enabled and those rows exist.
+     ///
+     /// This is a MultiArrayList because only the update cares about
+     /// the allocators. Callers care about all the other properties, and
+@@ -96,6 +98,11 @@ pub const RenderState = struct {
+     /// use cases.
+     row_data: std.MultiArrayList(Row),
+ 
++    /// Include one row immediately above and below the viewport in `row_data`
++    /// when they exist. The viewport dimensions and cursor viewport
++    /// coordinates are unaffected.
++    vertical_overscan: bool,
++
+     /// The dirty state of the render state. This is set by the update method.
+     /// The renderer/caller should set this to false when it has handled
+     /// the dirty state.
+@@ -145,6 +152,7 @@ pub const RenderState = struct {
+             .blinking = false,
+         },
+         .row_data = .empty,
++        .vertical_overscan = false,
+         .dirty = .false,
+         .screen = .primary,
+     };
+@@ -360,6 +368,19 @@ pub const RenderState = struct {
+     ) Allocator.Error!void {
+         const s: *Screen = t.screens.active;
+         const viewport_pin = s.pages.getTopLeft(.viewport);
++        const top_overscan: usize = @intFromBool(
++            self.vertical_overscan and viewport_pin.up(1) != null,
++        );
++        const bottom_overscan: usize = @intFromBool(
++            self.vertical_overscan and
++                viewport_pin.down(@as(usize, s.pages.rows)) != null,
++        );
++        const render_pin = if (top_overscan > 0)
++            viewport_pin.up(1).?
++        else
++            viewport_pin;
++        const render_rows: usize = @as(usize, s.pages.rows) +
++            top_overscan + bottom_overscan;
+         const redraw = redraw: {
+             // If our screen key changed, we need to do a full rebuild
+             // because our render state is viewport-specific.
+@@ -388,6 +409,10 @@ pub const RenderState = struct {
+                 break :redraw true;
+             }
+ 
++            // Changing overscan, or moving close enough to either edge that
++            // an overscan row appears/disappears, changes row_data.
++            if (self.row_data.len != render_rows) break :redraw true;
++
+             // If our viewport pin changed, we do a full rebuild.
+             if (self.viewport_pin) |old| {
+                 if (!old.eql(viewport_pin)) break :redraw true;
+@@ -439,22 +464,22 @@ pub const RenderState = struct {
+             }
+         }
+ 
+-        // Ensure our row length is exactly our height, freeing or allocating
+-        // data as necessary. In most cases we'll have a perfectly matching
+-        // size.
+-        if (self.row_data.len != self.rows) {
++        // Ensure our row length is exactly the number of rows to render,
++        // freeing or allocating data as necessary. In most cases this is the
++        // viewport height, with optional extra rows above and below it.
++        if (self.row_data.len != render_rows) {
+             @branchHint(.unlikely);
+ 
+-            if (self.row_data.len < self.rows) {
++            if (self.row_data.len < render_rows) {
+                 // Resize our rows to the desired length, marking any added
+                 // values undefined.
+                 const old_len = self.row_data.len;
+-                try self.row_data.resize(alloc, self.rows);
++                try self.row_data.resize(alloc, render_rows);
+ 
+                 // Initialize all our values. Its faster to use slice() + set()
+                 // because appendAssumeCapacity does this multiple times.
+                 var row_data = self.row_data.slice();
+-                for (old_len..self.rows) |y| {
++                for (old_len..render_rows) |y| {
+                     row_data.set(y, .{
+                         .arena = .{},
+                         .pin = undefined,
+@@ -469,14 +494,14 @@ pub const RenderState = struct {
+             } else {
+                 const row_data = self.row_data.slice();
+                 for (
+-                    row_data.items(.arena)[self.rows..],
+-                    row_data.items(.cells)[self.rows..],
++                    row_data.items(.arena)[render_rows..],
++                    row_data.items(.cells)[render_rows..],
+                 ) |state, *cell| {
+                     var arena: ArenaAllocator = state.promote(alloc);
+                     arena.deinit();
+                     cell.deinit(alloc);
+                 }
+-                self.row_data.shrinkRetainingCapacity(self.rows);
++                self.row_data.shrinkRetainingCapacity(render_rows);
+             }
+         }
+ 
+@@ -515,19 +540,19 @@ pub const RenderState = struct {
+         };
+         var y: usize = 0;
+         var any_dirty: bool = false;
+-        var page_it = viewport_pin.pageIterator(.right_down, null);
+-        while (y < self.rows) {
++        var page_it = render_pin.pageIterator(.right_down, null);
++        while (y < render_rows) {
+             const chunk = page_it.next() orelse break;
+             const node = chunk.node;
+             const node_serial = node.serial;
+             const p: *page.Page = node.page();
+ 
+             // The number of rows we consume from this chunk. The chunk
+-            // may extend beyond the viewport (the viewport is always
+-            // exactly `rows` tall) so we clamp.
++            // may extend beyond the rows requested by the render state, so
++            // we clamp.
+             const take: usize = @min(
+                 @as(usize, chunk.end - chunk.start),
+-                self.rows - y,
++                render_rows - y,
+             );
+ 
+             // Find our cursor if we haven't found it yet. We do this even
+@@ -536,10 +561,14 @@ pub const RenderState = struct {
+             if (self.cursor.viewport == null and
+                 node == s.cursor.page_pin.node)
+             cursor: {
+-                const cy = s.cursor.page_pin.y;
+-                if (cy < chunk.start or cy >= chunk.start + take) break :cursor;
++                const cy: usize = s.cursor.page_pin.y;
++                const chunk_start: usize = chunk.start;
++                if (cy < chunk_start or cy >= chunk_start + take) break :cursor;
++                const render_y = y + (cy - chunk_start);
++                if (render_y < top_overscan or
++                    render_y >= top_overscan + @as(usize, self.rows)) break :cursor;
+                 self.cursor.viewport = .{
+-                    .y = @intCast(y + (cy - chunk.start)),
++                    .y = @intCast(render_y - top_overscan),
+                     .x = s.cursor.x,
+ 
+                     // Future: we should use our own state here to look this
+@@ -628,7 +657,7 @@ pub const RenderState = struct {
+ 
+             y += take;
+         }
+-        assert(y == self.rows);
++        assert(y == render_rows);
+ 
+         // If our screen has a selection, then mark the rows with the
+         // selection. We do this outside of the loop above because its unlikely
+@@ -1770,6 +1799,54 @@ test "cursor state out of viewport" {
+     try testing.expect(state.cursor.viewport == null);
+ }
+ 
++test "vertical overscan rows" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++
++    var t = try Terminal.init(io, alloc, .{
++        .cols = 10,
++        .rows = 2,
++    });
++    defer t.deinit(alloc);
++
++    var s = t.vtStream();
++    defer s.deinit();
++    s.nextSlice("A\r\nB\r\nC\r\nD\r\n");
++
++    var state: RenderState = .empty;
++    defer state.deinit(alloc);
++
++    // By default the render state contains exactly the viewport rows.
++    try state.update(alloc, &t);
++    try testing.expectEqual(@as(usize, 2), state.row_data.len);
++
++    // Move one row above the active area. Enabling overscan without any
++    // other terminal change must add the surrounding rows.
++    t.scrollViewport(.{ .delta = -1 });
++    try state.update(alloc, &t);
++    const viewport_pin = state.row_data.items(.pin)[0];
++    const expected_top_pin = viewport_pin.up(1).?;
++    const expected_bottom_pin = viewport_pin.down(2).?;
++
++    state.vertical_overscan = true;
++    try state.update(alloc, &t);
++    try testing.expectEqual(@as(usize, 4), state.row_data.len);
++    try testing.expect(expected_top_pin.eql(state.row_data.items(.pin)[0]));
++    try testing.expect(viewport_pin.eql(state.row_data.items(.pin)[1]));
++    try testing.expect(expected_bottom_pin.eql(state.row_data.items(.pin)[3]));
++
++    // The cursor is in the bottom overscan row, not the viewport itself.
++    try testing.expect(state.cursor.viewport == null);
++
++    // At the active area only the top overscan row exists. The cursor remains
++    // in the viewport and its coordinate does not include the overscan row.
++    t.scrollViewport(.bottom);
++    try state.update(alloc, &t);
++    try testing.expectEqual(@as(usize, 3), state.row_data.len);
++    try testing.expectEqual(@as(size.CellCountInt, 1), state.cursor.viewport.?.y);
++}
++
+ test "dirty state" {
+     const testing = std.testing;
+     const alloc = testing.allocator;

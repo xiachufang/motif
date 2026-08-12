@@ -5,22 +5,19 @@
 //!
 //! Two consumer patterns:
 //!
-//! * **Capability queries** (`canonical_response()` returns `Some(...)`):
-//!   the shell expects "the terminal" to answer by writing response bytes
-//!   back to its stdin. In motif's split topology there is no monolithic
-//!   terminal at the shell's stdin — the client emulators (vt100 in TUI,
-//!   xterm.js in web) are downstream of a network hop and may answer late
-//!   or not at all. The server runs this scanner, *strips* the query from
-//!   the broadcast stream, and writes the canonical response back to the
-//!   PTY master immediately.
+//! * **Capability queries**: the shell expects "the terminal" to answer by
+//!   writing response bytes back to its stdin. The server runs this scanner,
+//!   *strips* the query from the broadcast stream, and routes the original
+//!   bytes to its authoritative Ghostty terminal. Ghostty parses the query and
+//!   writes its response back to the PTY master immediately.
 //!
-//! * **Shell-integration markers** (`canonical_response()` returns `None`):
+//! * **Shell-integration markers**:
 //!   motif's bootstrap script emits a VS Code-style private protocol under
 //!   `OSC 7777;A/B/C/D/E/P` (block boundaries, explicit command text, and
 //!   properties such as cwd/context). The scanner also accepts the standard
 //!   `OSC 133` and `OSC 7` forms emitted natively by other shells (e.g.
 //!   fish 4.x) so their integration keeps working. Shell-integration markers
-//!   are consumed and never reach client emulators.
+//!   are parsed by the server and also passed through to client emulators.
 //!
 //! Anything not matched falls through `passthrough` byte-for-byte so
 //! unrelated OSC / CSI / DCS sequences (alt-screen, OSC 9, OSC 1337, …)
@@ -57,12 +54,11 @@ pub enum QueryKind {
     /// fish 4.x's "terminal feature detection" leans on this.
     XtVersion,
     /// `ESC P + q <hex> ESC \` — XTGETTCAP termcap entry query. `hex_name`
-    /// is the raw hex bytes the requester sent; the canonical "not
-    /// recognized" reply echoes them back so the requester can correlate.
+    /// is the raw hex bytes the requester sent.
     XtGetTcap { hex_name: Vec<u8> },
 
-    // ── Shell-integration markers: scanner consumes, no canonical answer.
-    //    The server's BlockState turns these into Event::Pty* broadcasts. ──
+    // ── Shell-integration markers: scanner parses and passes through.
+    //    The server also uses them to track command/cwd state. ──
     /// `ESC ] 7 ; file://<host>/<path> ST` — cwd update from precmd hook.
     /// The path is URL-decoded; on Windows a remote host becomes a UNC path.
     Osc7Cwd { path: std::path::PathBuf },
@@ -88,54 +84,6 @@ pub enum QueryKind {
 }
 
 impl QueryKind {
-    /// Bytes the shell expects on its stdin in response. `Some(...)` for
-    /// capability queries (server should write back to the PTY master);
-    /// `None` for shell-integration markers (no response — the BlockState
-    /// state machine consumes them instead).
-    pub fn canonical_response(&self) -> Option<Vec<u8>> {
-        Some(match self {
-            // VT102 — minimal, accepted by every consumer we tested.
-            Self::Da1 => b"\x1b[?6c".to_vec(),
-            Self::Da2 => b"\x1b[>0;0;0c".to_vec(),
-            Self::Dsr5 => b"\x1b[0n".to_vec(),
-            // Fallback only. The real CPR answer is produced in motif-server's
-            // emulator thread from the live cursor position (see
-            // `Pty::cpr_response`) — full-screen TUIs (claude/Ink) use CPR for
-            // cursor tracking and width probing, so a fixed sentinel mangles
-            // their layout. This (1,1) is used only when the emulator is
-            // unavailable, or by consumers (e.g. tests) without an emulator.
-            Self::Cpr => b"\x1b[1;1R".to_vec(),
-            // Match the dark theme used by the web UI's xterm.js so prompt
-            // frameworks pick a colour scheme consistent with the visible
-            // background.
-            Self::Osc10 => b"\x1b]10;rgb:e6e6/e6e6/e6e6\x1b\\".to_vec(),
-            Self::Osc11 => b"\x1b]11;rgb:0a0a/0a0a/0a0a\x1b\\".to_vec(),
-            // No Kitty keyboard protocol features enabled.
-            Self::KittyKeyboard => b"\x1b[?0u".to_vec(),
-            // XTVERSION reply: `DCS > | <name> ST`. The exact name doesn't
-            // matter to fish — it just needs *some* answer to stop waiting.
-            Self::XtVersion => b"\x1bP>|motif\x1b\\".to_vec(),
-            // XTGETTCAP "not recognized": `DCS 0 + r <hex> ST`. (DCS 1 + r
-            // would mean "found, here's the value"; we always say not
-            // found so the client moves on rather than caching a guess.)
-            Self::XtGetTcap { hex_name } => {
-                let mut v = Vec::with_capacity(8 + hex_name.len());
-                v.extend_from_slice(b"\x1bP0+r");
-                v.extend_from_slice(hex_name);
-                v.extend_from_slice(b"\x1b\\");
-                v
-            }
-            // Shell-integration markers: server consumes, no reply.
-            Self::Osc7Cwd { .. }
-            | Self::Osc133PromptStart
-            | Self::Osc133PromptEnd
-            | Self::Osc133CmdStart { .. }
-            | Self::Osc133CmdEnd { .. }
-            | Self::Osc7770Cmd { .. }
-            | Self::Osc7771Context { .. } => return None,
-        })
-    }
-
     /// True if this is a v2 shell-integration marker (rather than a
     /// capability query). Convenience for `pty.rs` reader-loop routing.
     pub fn is_shell_integration(&self) -> bool {
@@ -440,10 +388,9 @@ impl QueryScanner {
         }
     }
 
-    /// XTGETTCAP request comes in as `ESC P + q <hex> ESC \\`. We don't
-    /// attempt to actually answer any termcap entry — just acknowledging
-    /// "not recognized" with the canonical `DCS 0 + r <hex> ST` reply
-    /// stops the requester from blocking on it.
+    /// XTGETTCAP request comes in as `ESC P + q <hex> ESC \\`. We preserve
+    /// the complete request so the server-side Ghostty terminal can
+    /// answer it from Ghostty's own terminfo capability map.
     fn try_close_dcs(&self) -> Decision {
         let p = &self.pending;
         if p.len() < 4 {
@@ -655,13 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn osc11_response_is_well_formed() {
-        let bytes = QueryKind::Osc11.canonical_response().unwrap();
-        assert!(bytes.starts_with(b"\x1b]11;rgb:"));
-        assert!(bytes.ends_with(b"\x1b\\"));
-    }
-
-    #[test]
     fn recognizes_kitty_keyboard_query() {
         let r = scan_one(b"\x1b[?u");
         assert!(r.passthrough.is_empty());
@@ -688,23 +628,6 @@ mod tests {
             }
             _ => panic!("expected XtGetTcap, got {:?}", r.queries),
         }
-    }
-
-    #[test]
-    fn xtgettcap_canonical_echoes_hex_back() {
-        // The "not recognized" reply must echo the same hex bytes the
-        // requester sent so they can correlate the answer to their query.
-        let q = QueryKind::XtGetTcap {
-            hex_name: b"abc123".to_vec(),
-        };
-        assert_eq!(q.canonical_response().unwrap(), b"\x1bP0+rabc123\x1b\\");
-    }
-
-    #[test]
-    fn xtversion_canonical_is_dcs_framed() {
-        let bytes = QueryKind::XtVersion.canonical_response().unwrap();
-        assert!(bytes.starts_with(b"\x1bP>|"));
-        assert!(bytes.ends_with(b"\x1b\\"));
     }
 
     // ── shell-integration markers ──
@@ -903,10 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_integration_markers_have_no_response() {
-        // Spec invariant: shell-integration markers must NOT generate
-        // capability-style responses (otherwise we'd be writing OSC echoes
-        // back to the shell stdin and confusing readline).
+    fn shell_integration_markers_are_flagged_for_passthrough() {
         for kind in [
             QueryKind::Osc133PromptStart,
             QueryKind::Osc133PromptEnd,
@@ -921,11 +841,6 @@ mod tests {
                 ctx: crate::pty::ShellContext::default(),
             },
         ] {
-            assert!(
-                kind.canonical_response().is_none(),
-                "{:?} leaked a response",
-                kind
-            );
             assert!(
                 kind.is_shell_integration(),
                 "{:?} not flagged as shell-integration",

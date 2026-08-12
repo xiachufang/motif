@@ -261,11 +261,6 @@ class TerminalWorkerClient {
     _send({'type': 'focus', 'gained': gained});
   }
 
-  void scroll(int rows) {
-    if (rows == 0) return;
-    _send({'type': 'scroll', 'rows': rows});
-  }
-
   void scrollToBottom() {
     _send({'type': 'scrollToBottom'});
   }
@@ -613,19 +608,23 @@ class _TerminalWorker {
           _mouse(command);
         case 'focus':
           state?.encodeFocusAndWrite(command['gained'] == true);
-        case 'scroll':
-          framePacing.noteInteraction();
-          state?.scroll(command['rows'] as int);
-          // Frame acknowledgement already provides backpressure. Queue scroll
-          // snapshots immediately so ProMotion displays are not capped by the
-          // ordinary 16 ms interaction delay while chasing a fast flick.
-          _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'scrollToBottom':
           framePacing.noteInteraction();
+          events.send({
+            'type': 'diagnostic',
+            'info': true,
+            'message': 'scroll command received type=bottom',
+          });
           state?.scrollToBottom();
           _scheduleSnapshot(force: true);
         case 'scrollToOffset':
           framePacing.noteInteraction();
+          events.send({
+            'type': 'diagnostic',
+            'info': true,
+            'message':
+                'scroll command received type=row offset=${command['offset']}',
+          });
           state?.scrollToOffset(command['offset'] as int);
           _scheduleSnapshot(force: true, delay: Duration.zero);
         case 'selectionBegin':

@@ -79,6 +79,29 @@ void main() {
     );
   });
 
+  test('top overscan does not shift absolute link row coordinates', () {
+    final snapshot = _snapshot(
+      [
+        _row('top overscan'),
+        _row('https://example.com'),
+        _row('visible row'),
+        _row('bottom overscan'),
+      ],
+      cols: 24,
+      viewportOffset: 20,
+      viewportRows: 2,
+      scrollTotalRows: 30,
+    );
+
+    final match = TerminalLinkMatcher.matchAt(
+      snapshot,
+      const TerminalCellPoint(row: 20, col: 8),
+    );
+
+    expect(match?.target, 'https://example.com');
+    expect(match?.segments.single.row, 20);
+  });
+
   test('hard line breaks do not join path fragments', () {
     final snapshot = _snapshot([_row('lib/long_'), _row('name.dart')]);
 
@@ -289,6 +312,8 @@ TerminalSnapshot _snapshot(
   List<TerminalSnapshotRow> lines, {
   int? cols,
   int viewportOffset = 0,
+  int? viewportRows,
+  int? scrollTotalRows,
 }) {
   final width =
       cols ??
@@ -296,13 +321,14 @@ TerminalSnapshot _snapshot(
         1,
         (result, row) => row.cells.length > result ? row.cells.length : result,
       );
+  final logicalRows = viewportRows ?? lines.length;
   return TerminalSnapshot(
     frameId: 7,
     cols: width,
-    rows: lines.length,
+    rows: logicalRows,
     viewportOffset: viewportOffset,
-    scrollTotalRows: viewportOffset + lines.length,
-    scrollViewportRows: lines.length,
+    scrollTotalRows: scrollTotalRows ?? viewportOffset + logicalRows,
+    scrollViewportRows: logicalRows,
     backgroundArgb: 0xff000000,
     foregroundArgb: 0xffffffff,
     cursorArgb: 0xffffffff,
@@ -313,6 +339,7 @@ TerminalSnapshot _snapshot(
     cursorStyle: 0,
     mouseTrackingActive: false,
     alternateScreenActive: false,
+    viewportActive: true,
     lines: lines,
   );
 }

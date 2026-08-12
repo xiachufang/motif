@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
 GHOSTTY_DIR="$PROJECT_DIR/ghostty"
 OUT_DIR="${GHOSTTY_WASM_OUT_DIR:-$PROJECT_DIR/build/ghostty-wasm}"
 ZIG_BIN="${ZIG:-zig}"
@@ -25,14 +26,11 @@ fi
 
 mkdir -p "$OUT_DIR"
 echo "[web] Building Ghostty WASM from $GHOSTTY_DIR"
-(
-  cd "$GHOSTTY_DIR"
-  "$ZIG_BIN" build \
-    -Demit-lib-vt=true \
-    -Dtarget=wasm32-freestanding \
-    -Doptimize=ReleaseSmall \
-    --prefix "$OUT_DIR"
-)
+"$REPO_ROOT/scripts/build_ghostty.sh" --source "$GHOSTTY_DIR" -- \
+  -Demit-lib-vt=true \
+  -Dtarget=wasm32-freestanding \
+  -Doptimize=ReleaseSmall \
+  --prefix "$OUT_DIR"
 
 wasm="$OUT_DIR/bin/ghostty-vt.wasm"
 if [[ ! -f "$wasm" ]]; then

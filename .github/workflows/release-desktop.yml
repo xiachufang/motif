@@ -65,16 +65,15 @@ jobs:
         with:
           version: 0.16.0                        # apps/flutter/ghostty minimum
 
-      # Linux system libraries: Flutter desktop (GTK/cmake/ninja), tray
-      # (appindicator), and secret-service (flutter_secure_storage). `make` is
-      # preinstalled on ubuntu but listed for clarity.
+      # Linux system libraries: Flutter desktop (GTK/cmake/ninja) and tray
+      # (appindicator). `make` is preinstalled on ubuntu but listed for clarity.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             clang cmake ninja-build pkg-config make \
-            libgtk-3-dev liblzma-dev libsecret-1-dev libayatana-appindicator3-dev \
+            libgtk-3-dev liblzma-dev libayatana-appindicator3-dev \
             libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev \
             libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
 

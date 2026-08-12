@@ -18,6 +18,7 @@ class TerminalSnapshot {
   final int cursorStyle;
   final bool mouseTrackingActive;
   final bool alternateScreenActive;
+  final bool viewportActive;
   final TerminalSelection? selection;
   final List<TerminalSnapshotRow> lines;
 
@@ -38,6 +39,7 @@ class TerminalSnapshot {
     required this.cursorStyle,
     required this.mouseTrackingActive,
     required this.alternateScreenActive,
+    required this.viewportActive,
     this.selection,
     required this.lines,
   });
@@ -47,32 +49,61 @@ class TerminalSnapshot {
     return maxOffset > 0 ? maxOffset : 0;
   }
 
-  bool get isAtLatest => viewportOffset >= maxViewportOffset;
+  bool get isAtLatest => viewportActive;
 
   bool get hasScrollback =>
       scrollViewportRows > 0 && scrollTotalRows > scrollViewportRows;
 
+  /// Number of render rows Ghostty supplied immediately above the viewport.
+  ///
+  /// Vertical overscan is bounded to one row on each edge. The top row exists
+  /// whenever the viewport is not at the oldest retained row and the iterator
+  /// returned more than the logical viewport height.
+  int get topOverscanRows => viewportOffset > 0 && lines.length > rows ? 1 : 0;
+
+  /// Number of render rows Ghostty supplied immediately below the viewport.
+  int get bottomOverscanRows {
+    final count = lines.length - rows - topOverscanRows;
+    return count > 0 ? 1 : 0;
+  }
+
+  bool get hasTopOverscan => topOverscanRows != 0;
+
+  bool get hasBottomOverscan => bottomOverscanRows != 0;
+
+  bool get hasVerticalOverscan => hasTopOverscan || hasBottomOverscan;
+
+  /// Absolute screen row represented by `lines[0]`.
+  int get renderOriginOffset => viewportOffset - topOverscanRows;
+
+  int screenRowForRenderIndex(int index) => renderOriginOffset + index;
+
+  int? renderIndexForScreenRow(int screenRow) {
+    final index = screenRow - renderOriginOffset;
+    return index >= 0 && index < lines.length ? index : null;
+  }
+
   String get visibleText {
     if (cols <= 0) return '';
-    final rows = lines
+    final visibleRows = lines
+        .skip(topOverscanRows)
+        .take(rows)
         .map(
           (line) =>
               line.textForColumns(startCol: 0, endCol: cols - 1).trimRight(),
         )
         .toList();
-    while (rows.isNotEmpty && rows.last.isEmpty) {
-      rows.removeLast();
+    while (visibleRows.isNotEmpty && visibleRows.last.isEmpty) {
+      visibleRows.removeLast();
     }
-    return rows.join('\n');
+    return visibleRows.join('\n');
   }
 
   /// Whether [point] falls on a cell tagged by Ghostty as an OSC 8 link.
   bool hasHyperlinkAt(TerminalCellPoint point) {
-    final viewportRow = point.row - viewportOffset;
-    if (viewportRow < 0 || viewportRow >= lines.length || cols <= 0) {
-      return false;
-    }
-    final row = lines[viewportRow];
+    final renderIndex = renderIndexForScreenRow(point.row);
+    if (renderIndex == null || cols <= 0) return false;
+    final row = lines[renderIndex];
     final cellIndex = row.cellIndexForColumn(point.col);
     return cellIndex != null && row.cells[cellIndex].hasHyperlink;
   }
@@ -82,8 +113,8 @@ class TerminalSnapshot {
     final range = visibleSelection(selection);
     if (range == null) return '';
     final maxRow = lines.length - 1;
-    var startRow = _clampInt(range.base.row - viewportOffset, 0, maxRow);
-    var endRow = _clampInt(range.extent.row - viewportOffset, 0, maxRow);
+    var startRow = _clampInt(range.base.row - renderOriginOffset, 0, maxRow);
+    var endRow = _clampInt(range.extent.row - renderOriginOffset, 0, maxRow);
     if (endRow < startRow) {
       final tmp = startRow;
       startRow = endRow;
@@ -108,11 +139,9 @@ class TerminalSnapshot {
   }
 
   TerminalSelection? wordSelectionAt(TerminalCellPoint point) {
-    final viewportRow = point.row - viewportOffset;
-    if (viewportRow < 0 || viewportRow >= lines.length || cols <= 0) {
-      return null;
-    }
-    final row = lines[viewportRow];
+    final renderIndex = renderIndexForScreenRow(point.row);
+    if (renderIndex == null || cols <= 0) return null;
+    final row = lines[renderIndex];
     final hitIndex = row.cellIndexForColumn(point.col);
     if (hitIndex == null) return null;
     final hit = row.cells[hitIndex];
@@ -139,11 +168,11 @@ class TerminalSnapshot {
 
     return TerminalSelection(
       base: TerminalCellPoint(
-        row: viewportOffset + viewportRow,
+        row: screenRowForRenderIndex(renderIndex),
         col: _clampInt(startCol, 0, cols - 1),
       ),
       extent: TerminalCellPoint(
-        row: viewportOffset + viewportRow,
+        row: screenRowForRenderIndex(renderIndex),
         col: _clampInt(endCol, 0, cols - 1),
       ),
     );
@@ -152,8 +181,8 @@ class TerminalSnapshot {
   TerminalSelection? visibleSelection(TerminalSelection selection) {
     if (lines.isEmpty || cols <= 0) return null;
     final range = selection.normalized;
-    final firstVisibleRow = viewportOffset;
-    final lastVisibleRow = viewportOffset + lines.length - 1;
+    final firstVisibleRow = renderOriginOffset;
+    final lastVisibleRow = renderOriginOffset + lines.length - 1;
     if (range.extent.row < firstVisibleRow || range.base.row > lastVisibleRow) {
       return null;
     }
@@ -201,10 +230,14 @@ class TerminalSnapshot {
   /// The rendered cell under the cursor, including the lead cell when the
   /// cursor is positioned on a wide character's spacer tail.
   TerminalSnapshotCell? get cursorCell {
-    if (!cursorInViewport || cursorY < 0 || cursorY >= lines.length) {
+    final renderIndex = cursorY + topOverscanRows;
+    if (!cursorInViewport ||
+        cursorY < 0 ||
+        cursorY >= rows ||
+        renderIndex >= lines.length) {
       return null;
     }
-    final row = lines[cursorY];
+    final row = lines[renderIndex];
     final cellIndex = row.cellIndexForColumn(cursorX);
     return cellIndex == null ? null : row.cells[cellIndex];
   }
@@ -213,9 +246,9 @@ class TerminalSnapshot {
     TerminalCellPoint point, {
     required bool leadingEdge,
   }) {
-    final viewportRow = point.row - viewportOffset;
-    if (viewportRow < 0 || viewportRow >= lines.length) return point;
-    final row = lines[viewportRow];
+    final renderIndex = renderIndexForScreenRow(point.row);
+    if (renderIndex == null) return point;
+    final row = lines[renderIndex];
     final cellIndex = row.cellIndexForColumn(point.col);
     if (cellIndex == null) return point;
     final cell = row.cells[cellIndex];
@@ -443,6 +476,7 @@ class TerminalFrameMetadata {
   final int cursorStyle;
   final bool mouseTrackingActive;
   final bool alternateScreenActive;
+  final bool viewportActive;
   final TerminalSelection? selection;
 
   const TerminalFrameMetadata({
@@ -461,6 +495,7 @@ class TerminalFrameMetadata {
     required this.cursorStyle,
     required this.mouseTrackingActive,
     required this.alternateScreenActive,
+    required this.viewportActive,
     this.selection,
   });
 
@@ -484,6 +519,7 @@ class TerminalFrameMetadata {
     cursorStyle: cursorStyle,
     mouseTrackingActive: mouseTrackingActive,
     alternateScreenActive: alternateScreenActive,
+    viewportActive: viewportActive,
     selection: selection,
     lines: lines,
   );
@@ -505,12 +541,14 @@ class TerminalFrameEncodingResult {
 
 class TerminalFrameEncoder {
   static const int _magic = 0x4d544631;
-  static const int _version = 2;
+  static const int _version = 3;
   static const int _flagFull = 1;
 
   final _TerminalBinaryWriter _writer = _TerminalBinaryWriter();
-  late final int _rowCountOffset;
-  int _rowCount = 0;
+  final int _viewportRows;
+  late final int _renderRowCountOffset;
+  late final int _patchCountOffset;
+  int _patchCount = 0;
   int _cellCount = 0;
   TerminalEncodedRowWriter? _activeRow;
 
@@ -519,7 +557,7 @@ class TerminalFrameEncoder {
     required int baseFrameId,
     required bool full,
     required TerminalFrameMetadata metadata,
-  }) {
+  }) : _viewportRows = metadata.rows {
     _writer
       ..writeUint32(_magic)
       ..writeUint16(_version)
@@ -543,7 +581,8 @@ class TerminalFrameEncoder {
       ..writeInt32(metadata.cursorStyle)
       ..writeUint8(
         (metadata.mouseTrackingActive ? 1 : 0) |
-            (metadata.alternateScreenActive ? 1 << 1 : 0),
+            (metadata.alternateScreenActive ? 1 << 1 : 0) |
+            (metadata.viewportActive ? 1 << 2 : 0),
       );
     final selection = metadata.selection;
     _writer.writeUint8(selection == null ? 0 : 1);
@@ -554,7 +593,9 @@ class TerminalFrameEncoder {
         ..writeInt64(selection.extent.row)
         ..writeInt32(selection.extent.col);
     }
-    _rowCountOffset = _writer.length;
+    _renderRowCountOffset = _writer.length;
+    _writer.writeUint16(0);
+    _patchCountOffset = _writer.length;
     _writer.writeUint16(0);
   }
 
@@ -578,19 +619,26 @@ class TerminalFrameEncoder {
   }
 
   void _finishRow(int cells) {
-    _rowCount++;
+    _patchCount++;
     _cellCount += cells;
     _activeRow = null;
   }
 
-  TerminalFrameEncodingResult finish(int viewportOffset) {
+  TerminalFrameEncodingResult finish(int viewportOffset, {int? renderRows}) {
     if (_activeRow != null) {
       throw StateError('cannot finish a frame with an active terminal row');
     }
-    _writer.patchUint16(_rowCountOffset, _rowCount);
+    final resolvedRenderRows = renderRows ?? _viewportRows;
+    if (resolvedRenderRows < _viewportRows ||
+        resolvedRenderRows > _viewportRows + 2) {
+      throw StateError('terminal render row count is out of range');
+    }
+    _writer
+      ..patchUint16(_renderRowCountOffset, resolvedRenderRows)
+      ..patchUint16(_patchCountOffset, _patchCount);
     return TerminalFrameEncodingResult(
       bytes: _writer.takeBytes(),
-      encodedRows: _rowCount,
+      encodedRows: _patchCount,
       encodedCells: _cellCount,
       viewportOffset: viewportOffset,
     );
@@ -704,6 +752,7 @@ class TerminalFrameUpdate {
   final int baseFrameId;
   final bool full;
   final TerminalFrameMetadata metadata;
+  final int renderRows;
   final List<TerminalRowPatch> rows;
 
   const TerminalFrameUpdate({
@@ -711,6 +760,7 @@ class TerminalFrameUpdate {
     required this.baseFrameId,
     required this.full,
     required this.metadata,
+    required this.renderRows,
     required this.rows,
   });
 
@@ -751,6 +801,7 @@ class TerminalFrameUpdate {
             ),
           )
         : null;
+    final renderRows = reader.readUint16();
     final patchCount = reader.readUint16();
     final patches = <TerminalRowPatch>[];
     for (var i = 0; i < patchCount; i++) {
@@ -798,8 +849,10 @@ class TerminalFrameUpdate {
         cursorStyle: cursorStyle,
         mouseTrackingActive: stateFlags & 1 != 0,
         alternateScreenActive: stateFlags & (1 << 1) != 0,
+        viewportActive: stateFlags & (1 << 2) != 0,
         selection: selection,
       ),
+      renderRows: renderRows,
       rows: patches,
     );
   }
@@ -810,7 +863,10 @@ class TerminalFrameUpdate {
       if (baseFrameId != 0) {
         throw const FormatException('full terminal frame has a base frame');
       }
-      final next = List<TerminalSnapshotRow?>.filled(metadata.rows, null);
+      if (renderRows < metadata.rows || renderRows > metadata.rows + 2) {
+        throw const FormatException('terminal render row count is invalid');
+      }
+      final next = List<TerminalSnapshotRow?>.filled(renderRows, null);
       for (final patch in rows) {
         if (patch.rowIndex < 0 || patch.rowIndex >= next.length) {
           throw const FormatException('terminal row index is out of range');
@@ -825,17 +881,29 @@ class TerminalFrameUpdate {
       if (previous == null || previous.frameId != baseFrameId) {
         throw const FormatException('terminal delta base frame mismatch');
       }
-      if (previous.lines.length != metadata.rows ||
-          previous.cols != metadata.cols) {
+      if (previous.rows != metadata.rows || previous.cols != metadata.cols) {
         throw const FormatException('terminal delta dimensions changed');
       }
-      lines = List<TerminalSnapshotRow>.of(previous.lines, growable: false);
+      if (renderRows < metadata.rows || renderRows > metadata.rows + 2) {
+        throw const FormatException('terminal render row count is invalid');
+      }
+      final next = List<TerminalSnapshotRow?>.filled(renderRows, null);
+      final retainedRows = previous.lines.length < renderRows
+          ? previous.lines.length
+          : renderRows;
+      for (var i = 0; i < retainedRows; i++) {
+        next[i] = previous.lines[i];
+      }
       for (final patch in rows) {
-        if (patch.rowIndex < 0 || patch.rowIndex >= lines.length) {
+        if (patch.rowIndex < 0 || patch.rowIndex >= next.length) {
           throw const FormatException('terminal row index is out of range');
         }
-        lines[patch.rowIndex] = patch.row;
+        next[patch.rowIndex] = patch.row;
       }
+      if (next.any((row) => row == null)) {
+        throw const FormatException('terminal delta is missing render rows');
+      }
+      lines = [for (final row in next) row!];
     }
     return metadata.snapshot(frameId: frameId, lines: lines);
   }

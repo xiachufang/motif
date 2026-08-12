@@ -58,6 +58,19 @@ final class CodexFeatureController extends ChangeNotifier {
         onSelected: (modelId) =>
             preferences.setSelectedModelId(serverId, modelId),
       );
+      state.configureReasoningEffortPreference(
+        preferredReasoningEffort: preferences.selectedReasoningEffort(serverId),
+        onSelected: (effort) =>
+            preferences.setSelectedReasoningEffort(serverId, effort),
+        onInvalidated: () => preferences.clearSelectedReasoningEffort(serverId),
+      );
+      state.configurePermissionPreference(
+        hasPreference: preferences.hasSelectedPermissionPreference(serverId),
+        preferredPermissionId: preferences.selectedPermissionId(serverId),
+        onSelected: (permissionId) =>
+            preferences.setSelectedPermissionId(serverId, permissionId),
+        onInvalidated: () => preferences.clearSelectedPermissionId(serverId),
+      );
       state.synchronizeViewModel();
       _service = state;
       viewModel.service = state;
@@ -87,6 +100,19 @@ final class CodexFeatureController extends ChangeNotifier {
         preferredModelId: preferences.selectedModelId(serverId),
         onModelSelected: (modelId) =>
             preferences.setSelectedModelId(serverId, modelId),
+        preferredReasoningEffort: preferences.selectedReasoningEffort(serverId),
+        onReasoningEffortSelected: (effort) =>
+            preferences.setSelectedReasoningEffort(serverId, effort),
+        onReasoningEffortPreferenceInvalidated: () =>
+            preferences.clearSelectedReasoningEffort(serverId),
+        hasPermissionPreference: preferences.hasSelectedPermissionPreference(
+          serverId,
+        ),
+        preferredPermissionId: preferences.selectedPermissionId(serverId),
+        onPermissionSelected: (permissionId) =>
+            preferences.setSelectedPermissionId(serverId, permissionId),
+        onPermissionPreferenceInvalidated: () =>
+            preferences.clearSelectedPermissionId(serverId),
       );
       _sideChats = collection;
       notifyListeners();

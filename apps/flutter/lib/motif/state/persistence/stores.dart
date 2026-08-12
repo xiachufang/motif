@@ -169,7 +169,7 @@ class ServerStore {
     );
   }
 
-  /// Load profiles and hydrate their credentials from secure storage.
+  /// Load profiles and hydrate their credentials from secret storage.
   static Future<ServerStore> load(
     SharedPreferences prefs, {
     required SecretStore secrets,

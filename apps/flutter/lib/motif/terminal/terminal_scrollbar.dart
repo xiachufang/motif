@@ -198,7 +198,7 @@ class _TerminalReturnToCursorButtonState
 class TerminalScrollControls extends StatelessWidget {
   final int totalRows;
   final int visibleRows;
-  final int viewportOffset;
+  final bool isAtLatest;
   final bool alternateScreenActive;
   final TerminalScrollbarVisibilityController visibilityController;
   final Color buttonForegroundColor;
@@ -211,7 +211,7 @@ class TerminalScrollControls extends StatelessWidget {
     super.key,
     required this.totalRows,
     required this.visibleRows,
-    required this.viewportOffset,
+    required this.isAtLatest,
     required this.alternateScreenActive,
     required this.visibilityController,
     required this.buttonForegroundColor,
@@ -227,8 +227,6 @@ class TerminalScrollControls extends StatelessWidget {
     if (!hasScrollback || alternateScreenActive) {
       return const SizedBox.shrink();
     }
-    final maxOffset = totalRows - visibleRows;
-    final isAtLatest = viewportOffset >= maxOffset;
     return ListenableBuilder(
       listenable: visibilityController,
       builder: (context, _) {

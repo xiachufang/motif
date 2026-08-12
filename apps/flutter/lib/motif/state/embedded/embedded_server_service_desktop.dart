@@ -102,7 +102,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     if (!_secrets.isAvailable) {
       if (legacyJwt.isNotEmpty) {
         throw StateError(
-          'Secure storage is required to migrate the relay JWT.',
+          'Secret storage is required to migrate the relay JWT.',
         );
       }
       // Rewrite even without a JWT so an empty legacy `rzv.jwt` field is
@@ -114,8 +114,8 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     final storedJwt = (await _secrets.read(kEmbeddedRzvJwtSecretKey))?.trim();
     final jwt = storedJwt == null || storedJwt.isEmpty ? legacyJwt : storedJwt;
     if ((storedJwt == null || storedJwt.isEmpty) && legacyJwt.isNotEmpty) {
-      // Write first and only then erase the plaintext copy, so a Keychain /
-      // credential-manager failure never loses the existing credential.
+      // Write first and only then erase the old config copy so a persistence
+      // failure never loses the existing credential.
       await _secrets.write(kEmbeddedRzvJwtSecretKey, legacyJwt);
     }
     configState = config.copyWith(rzvJwt: jwt);
@@ -140,7 +140,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
     final jwt = next.rzvJwt.trim();
     if (jwt != config.rzvJwt) {
       if (!_secrets.isAvailable && jwt.isNotEmpty) {
-        throw StateError('Secure storage is required for the relay JWT.');
+        throw StateError('Secret storage is required for the relay JWT.');
       }
       if (_secrets.isAvailable) {
         if (jwt.isEmpty) {

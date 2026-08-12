@@ -12,12 +12,11 @@ use motif_proto::common::{ClientId, PtyId, Seq, SessionId, UnixMs};
 use motif_proto::event::Event;
 use motif_proto::remote_port::RemotePortMapping;
 use motif_proto::session::{ClientInfo, SessionInfo};
-use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, watch, Notify};
 
-use crate::pty::PtyPool;
+use crate::pty::{Pty, PtyPool};
 
 const RING_CAPACITY: usize = 4096; // events buffered for replay
 const BROADCAST_CAPACITY: usize = 4096;
@@ -97,10 +96,9 @@ pub struct Session {
 
     /// Latest client-reported terminal palette as `(fg, bg)`, where each is
     /// the rgb portion of an OSC 10/11 reply (e.g. `"e6e6/e6e6/e6e6"`).
-    /// Updated on `session.attach`; consulted by the PTY reader when it
-    /// needs to answer an OSC 10/11 query from the shell. Latest writer
-    /// wins under multi-client mirror — colour queries are rare enough
-    /// that this is fine, and matches the rest of the mirror semantics.
+    /// Updated on `session.attach` and mirrored into every server-side Ghostty
+    /// terminal so Ghostty can answer OSC color queries itself. Latest writer
+    /// wins under multi-client mirror, matching the rest of the semantics.
     term_palette: Mutex<Option<(String, String)>>,
 
     /// Session-wide effective light/dark theme (`"light"` / `"dark"`), set by
@@ -216,6 +214,20 @@ impl Session {
         } else {
             *p = Some((new_fg, new_bg));
         }
+        let effective = p.clone().unwrap_or_default();
+        // Keep the palette lock through fan-out. PTY creation takes the same
+        // lock when applying its initial colors, which gives the two paths a
+        // total order and prevents a newly-created PTY from ending on a stale
+        // palette during a concurrent theme change.
+        self.pty_pool
+            .set_terminal_palette(Some(&effective.0), Some(&effective.1));
+    }
+
+    pub(crate) fn apply_terminal_palette(&self, pty: &Pty) {
+        let palette = self.term_palette.lock();
+        if let Some((fg, bg)) = palette.as_ref() {
+            pty.set_terminal_palette(Some(fg), Some(bg));
+        }
     }
 
     /// The session's current effective light/dark theme, if any client has
@@ -283,30 +295,6 @@ impl Session {
             theme,
             seq,
         });
-    }
-
-    /// Build the OSC 10/11 reply bytes for `kind` using the cached palette.
-    /// Returns `None` if the kind isn't OSC 10/11, or no palette has been
-    /// reported, or the requested side is empty — caller falls back to the
-    /// canonical default in that case.
-    pub fn osc_palette_response(&self, kind: &QueryKind) -> Option<Vec<u8>> {
-        let p = self.term_palette.lock();
-        let (fg, bg) = p.as_ref()?;
-        let (tag, rgb) = match kind {
-            QueryKind::Osc10 => ("10", fg),
-            QueryKind::Osc11 => ("11", bg),
-            _ => return None,
-        };
-        if rgb.is_empty() {
-            return None;
-        }
-        let mut out = Vec::with_capacity(16 + rgb.len());
-        out.extend_from_slice(b"\x1b]");
-        out.extend_from_slice(tag.as_bytes());
-        out.extend_from_slice(b";rgb:");
-        out.extend_from_slice(rgb.as_bytes());
-        out.extend_from_slice(b"\x1b\\");
-        Some(out)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<Event>> {

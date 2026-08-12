@@ -559,9 +559,6 @@ List<Widget> _turnSliverChildren({
       .whereType<CodexAgentMessageThreadItem>()
       .where((item) => item.text.trim().isNotEmpty)
       .lastOrNull;
-  final latestReasoning = items
-      .whereType<CodexReasoningThreadItem>()
-      .lastOrNull;
 
   if (turn.status == CodexTurnStatus.inProgress && turn.startedAt != null) {
     result.add(_TurnDivider(turn: turn));
@@ -679,9 +676,6 @@ List<Widget> _turnSliverChildren({
         ),
       );
   }
-  if (turn.status == CodexTurnStatus.inProgress) {
-    result.add(CodexTurnProgress(state: state, reasoning: latestReasoning));
-  }
   result.add(const SizedBox(height: MotifSpacing.xl));
   return result;
 }
@@ -720,12 +714,41 @@ List<Widget> _turnContent(
   CodexOpenImage? onOpenImage,
   CodexOpenTurnDiff? onOpenTurnDiff,
 }) {
+  final itemList = items.toList(growable: false);
+  final latestVisibleItem = itemList.lastOrNull;
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
   var groupIndex = 0;
 
   void flushActivity() {
     if (activity.isEmpty) return;
+    final reasoningIsLatest =
+        turn.status == CodexTurnStatus.inProgress &&
+        latestVisibleItem is CodexReasoningThreadItem &&
+        identical(activity.last, latestVisibleItem);
+    final visibleActivity = [
+      for (final item in activity)
+        if (item is! CodexReasoningThreadItem || reasoningIsLatest) item,
+    ];
+    activity.clear();
+    if (visibleActivity.isEmpty) return;
+    if (visibleActivity.every((item) => item is CodexReasoningThreadItem)) {
+      final reasoning = visibleActivity.last as CodexReasoningThreadItem;
+      result.add(
+        Padding(
+          key: ValueKey('codex-reasoning-${reasoning.id}'),
+          padding: const EdgeInsets.only(bottom: _turnTopLevelItemSpacing),
+          child: CodexActivityTitle(
+            state: state,
+            item: reasoning,
+            groupTitle: '',
+            showLatestItemTitle: true,
+            processingLatestItem: reasoningIsLatest,
+          ),
+        ),
+      );
+      return;
+    }
     final currentGroup = groupIndex++;
     final groupKey = groupKeyPrefix == 'active' || groupKeyPrefix == 'history'
         ? 'codex-activity-${turn.id}-$currentGroup'
@@ -736,7 +759,11 @@ List<Widget> _turnContent(
         child: CodexTurnActivityGroup(
           key: ValueKey(groupKey),
           state: state,
-          items: List.unmodifiable(activity),
+          items: List.unmodifiable(visibleActivity),
+          showLatestItemTitle: turn.status == CodexTurnStatus.inProgress,
+          processingLatestItem:
+              turn.status == CodexTurnStatus.inProgress &&
+              identical(visibleActivity.last, latestVisibleItem),
           boundedDetails: boundedActivity,
           onOpenFile: onOpenFile,
           onOpenImage: onOpenImage,
@@ -744,13 +771,15 @@ List<Widget> _turnContent(
         ),
       ),
     );
-    activity.clear();
   }
 
-  for (final item in items) {
-    // Reasoning is transient progress. It is represented once at the bottom of
-    // an active turn and is deliberately absent from persisted history.
-    if (item is CodexReasoningThreadItem) continue;
+  for (final item in itemList) {
+    // Reasoning participates in the active activity group's collapsed title,
+    // but remains absent from completed turn history and has no expanded body.
+    if (item is CodexReasoningThreadItem) {
+      if (turn.status == CodexTurnStatus.inProgress) activity.add(item);
+      continue;
+    }
     if (item is CodexContextCompactionThreadItem) {
       flushActivity();
       result.add(
@@ -1923,9 +1952,24 @@ class _Composer extends StatelessWidget {
                             ? 'Describe your goal'
                             : 'Update your goal'
                       : 'Do anything',
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
+                  border: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(MotifRadius.sm),
+                    ),
+                    borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(MotifRadius.sm),
+                    ),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: const OutlineInputBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(MotifRadius.sm),
+                    ),
+                    borderSide: BorderSide.none,
+                  ),
                 ),
               ),
             ),

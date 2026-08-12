@@ -790,6 +790,17 @@ impl<'alloc: 'cb, 'cb> Terminal<'alloc, 'cb> {
         self.set(ffi::TerminalOption::GLYPH_PROTOCOL, &enabled)?;
         Ok(self)
     }
+
+    /// Set the terminfo entry name reported by XTGETTCAP `TN` queries.
+    ///
+    /// The value is copied by libghostty. Passing `None` clears the configured
+    /// name and makes `TN` queries go unanswered. Names longer than 128 bytes
+    /// are rejected by libghostty.
+    pub fn set_terminfo_name(&mut self, name: Option<&str>) -> Result<&mut Self> {
+        let value = name.map(ffi::String::from);
+        self.set_optional(Opt::TERMINFO_NAME, value.as_ref())?;
+        Ok(self)
+    }
 }
 impl Drop for Terminal<'_, '_> {
     fn drop(&mut self) {
@@ -1934,6 +1945,29 @@ mod tests {
             .expect("glyph protocol should disable")
             .set_glyph_protocol_enabled(true)
             .expect("glyph protocol should enable");
+    }
+
+    #[test]
+    fn terminfo_name_is_reported_by_xtgettcap() {
+        let response = RefCell::new(Vec::new());
+        let mut terminal = Terminal::new(Options {
+            cols: 80,
+            rows: 24,
+            max_scrollback: 0,
+        })
+        .expect("terminal should initialize");
+
+        terminal
+            .on_pty_write(|_, bytes| response.borrow_mut().extend_from_slice(bytes))
+            .expect("pty-write callback should register")
+            .set_terminfo_name(Some("xterm-ghostty"))
+            .expect("terminfo name should update");
+
+        terminal.vt_write(b"\x1bP+q544E\x1b\\");
+        assert_eq!(
+            *response.borrow(),
+            b"\x1bP1+r544E=787465726D2D67686F73747479\x1b\\"
+        );
     }
 
     /// Explicitly relocate the Terminal into distinct storage, then verify the
