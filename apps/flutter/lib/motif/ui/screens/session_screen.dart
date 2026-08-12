@@ -82,6 +82,23 @@ final bool kUseNativeTerminal =
 String sessionRouteName(String serverId, String session) =>
     'session/$serverId/$session';
 
+bool _sameViewSpec(ViewSpec left, ViewSpec right) => switch ((left, right)) {
+  (PtyViewSpec(:final ptyId), PtyViewSpec(ptyId: final other)) =>
+    ptyId == other,
+  (PreviewViewSpec(:final path), PreviewViewSpec(path: final other)) =>
+    path == other,
+  (
+    DiffViewSpec(:final staged, :final path),
+    DiffViewSpec(staged: final otherStaged, path: final otherPath),
+  ) =>
+    staged == otherStaged && path == otherPath,
+  (ImageViewSpec(:final path), ImageViewSpec(path: final other)) =>
+    path == other,
+  (OtherViewSpec(:final typeName), OtherViewSpec(typeName: final other)) =>
+    typeName == other,
+  _ => false,
+};
+
 typedef _WorkspaceKey = ({String serverId, String session});
 
 CodingAgent? codingAgentForCommand(String? command) =>
@@ -97,6 +114,7 @@ class SessionScreen extends StatefulWidget {
   final String serverId;
   final String session;
   final String? initialViewId;
+  final ViewSpec? initialViewSpec;
   final bool allowSessionSwitching;
   final String? titleOverride;
   const SessionScreen({
@@ -104,6 +122,7 @@ class SessionScreen extends StatefulWidget {
     required this.serverId,
     required this.session,
     this.initialViewId,
+    this.initialViewSpec,
     this.allowSessionSwitching = true,
     this.titleOverride,
   });
@@ -163,6 +182,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
         serverId: widget.serverId,
         session: widget.session,
         initialViewId: widget.initialViewId,
+        initialViewSpec: widget.initialViewSpec,
         allowSessionSwitching: widget.allowSessionSwitching,
         titleOverride: widget.titleOverride,
       );
@@ -187,6 +207,11 @@ class _SessionScreenHostState extends State<SessionScreen> {
                           workspace.session == widget.session
                       ? widget.initialViewId
                       : null,
+                  initialViewSpec:
+                      workspace.serverId == widget.serverId &&
+                          workspace.session == widget.session
+                      ? widget.initialViewSpec
+                      : null,
                   allowSessionSwitching: widget.allowSessionSwitching,
                   titleOverride: widget.titleOverride,
                   workspaceActive: workspace == _active,
@@ -204,6 +229,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
     required String serverId,
     required String session,
     String? initialViewId,
+    ViewSpec? initialViewSpec,
     required bool allowSessionSwitching,
     String? titleOverride,
     bool workspaceActive = true,
@@ -221,6 +247,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
         serverId: serverId,
         session: session,
         initialViewId: initialViewId,
+        initialViewSpec: initialViewSpec,
         allowSessionSwitching: allowSessionSwitching,
         titleOverride: titleOverride,
         workspaceActive: workspaceActive,
@@ -234,6 +261,7 @@ class _SessionPane extends StatefulWidget {
   final String serverId;
   final String session;
   final String? initialViewId;
+  final ViewSpec? initialViewSpec;
   final bool allowSessionSwitching;
   final String? titleOverride;
   final bool workspaceActive;
@@ -243,6 +271,7 @@ class _SessionPane extends StatefulWidget {
     required this.serverId,
     required this.session,
     this.initialViewId,
+    this.initialViewSpec,
     required this.allowSessionSwitching,
     this.titleOverride,
     this.workspaceActive = true,
@@ -299,6 +328,7 @@ class _SessionScreenState extends State<_SessionPane>
   String? _asrInputViewId;
   bool _ignoreFinal = false; // set when the user bailed out of ASR by typing
   bool _initialViewApplied = false;
+  bool _initialViewOpening = false;
   _MobileEndDrawerPanel _mobileEndDrawerPanel = _MobileEndDrawerPanel.files;
 
   @override
@@ -400,23 +430,41 @@ class _SessionScreenState extends State<_SessionPane>
   }
 
   Future<void> _activateInitialView() async {
-    if (_initialViewApplied) return;
+    if (_initialViewApplied || _initialViewOpening) return;
     final viewId = widget.initialViewId;
-    if (viewId == null || viewId.isEmpty) {
+    final viewSpec = widget.initialViewSpec;
+    if ((viewId == null || viewId.isEmpty) && viewSpec == null) {
       _initialViewApplied = true;
       return;
     }
-    if (!_workspaceState.views.items.any((view) => view.id == viewId)) return;
-    _initialViewApplied = true;
+    if (viewSpec != null && _attachment.connection.status is! ConnAttached) {
+      return;
+    }
+    final existing = viewSpec == null
+        ? _workspaceState.views.items
+              .where((view) => view.id == viewId)
+              .firstOrNull
+        : _workspaceState.views.items
+              .where((view) => _sameViewSpec(view.spec, viewSpec))
+              .firstOrNull;
+    if (viewSpec == null && existing == null) return;
+    _initialViewOpening = true;
     try {
-      await _viewController.activate(viewId);
+      if (existing != null) {
+        await _viewController.activate(existing.id);
+      } else {
+        await _viewController.open(spec: viewSpec!, activate: true);
+      }
+      _initialViewApplied = true;
     } catch (error, stackTrace) {
       Log.w(
-        'notification tab activation failed view=$viewId',
+        'initial tab activation failed view=${viewId ?? viewSpec.runtimeType}',
         name: 'motif.ui',
         error: error,
         stackTrace: stackTrace,
       );
+    } finally {
+      _initialViewOpening = false;
     }
   }
 

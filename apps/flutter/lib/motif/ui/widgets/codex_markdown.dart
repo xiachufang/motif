@@ -34,6 +34,9 @@ class CodexMarkdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    final parentSelection = SelectionContainer.maybeOf(context);
+    final usesParentSelection = selectable && parentSelection != null;
+    final buildsSelectableText = selectable && !usesParentSelection;
     final body = (style ?? MotifType.body).copyWith(
       color: style?.color ?? c.textPrimary,
       height: style?.height ?? 1.5,
@@ -50,9 +53,9 @@ class CodexMarkdown extends StatelessWidget {
       softLineBreak: softLineBreak,
     );
 
-    return MarkdownBody(
+    final markdown = MarkdownBody(
       data: data,
-      selectable: selectable,
+      selectable: buildsSelectableText,
       fitContent: fitContent,
       softLineBreak: softLineBreak,
       styleSheet: MarkdownStyleSheet(
@@ -109,7 +112,8 @@ class CodexMarkdown extends StatelessWidget {
         'pre': _MarkdownCodeBlockBuilder(
           colors: c,
           padding: const EdgeInsets.all(MotifSpacing.sm),
-          selectable: selectable,
+          selectable: buildsSelectableText,
+          usesParentSelection: usesParentSelection,
         ),
         'ul': listBuilder,
         'ol': listBuilder,
@@ -123,6 +127,10 @@ class CodexMarkdown extends StatelessWidget {
         unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
       },
     );
+    if (!selectable && parentSelection != null) {
+      return SelectionContainer.disabled(child: markdown);
+    }
+    return markdown;
   }
 }
 
@@ -310,11 +318,13 @@ class _MarkdownCodeBlockBuilder extends MarkdownElementBuilder {
     required this.colors,
     required this.padding,
     required this.selectable,
+    required this.usesParentSelection,
   });
 
   final MotifColors colors;
   final EdgeInsets padding;
   final bool selectable;
+  final bool usesParentSelection;
 
   @override
   Widget? visitElementAfterWithContext(
@@ -341,6 +351,14 @@ class _MarkdownCodeBlockBuilder extends MarkdownElementBuilder {
       colors: colors,
     );
     final text = selectable ? SelectableText.rich(span) : Text.rich(span);
+
+    if (usesParentSelection) {
+      return Padding(
+        key: const ValueKey('codex-markdown-code-block'),
+        padding: padding,
+        child: text,
+      );
+    }
 
     return SingleChildScrollView(
       key: const ValueKey('codex-markdown-code-block'),

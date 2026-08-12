@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../codex/codex_service_state.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
+import '../../models/motif_proto.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
 
@@ -23,12 +24,14 @@ class CodexTurnActivityGroup extends StatelessWidget {
     required this.state,
     required this.items,
     this.boundedDetails = true,
+    this.onOpenWorkspaceView,
     super.key,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final List<CodexThreadItem> items;
   final bool boundedDetails;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   Widget build(BuildContext context) {
@@ -67,7 +70,11 @@ class CodexTurnActivityGroup extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   for (final item in items)
-                    _ActivityItem(state: state, item: item),
+                    _ActivityItem(
+                      state: state,
+                      item: item,
+                      onOpenWorkspaceView: onOpenWorkspaceView,
+                    ),
                 ],
               ),
             )
@@ -76,7 +83,11 @@ class CodexTurnActivityGroup extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 for (final item in items)
-                  _ActivityItem(state: state, item: item),
+                  _ActivityItem(
+                    state: state,
+                    item: item,
+                    onOpenWorkspaceView: onOpenWorkspaceView,
+                  ),
               ],
             ),
         ],
@@ -126,12 +137,14 @@ class CodexTurnDiffSummary extends StatefulWidget {
     required this.turnId,
     required this.items,
     this.cwd,
+    this.onOpenDiff,
     super.key,
   });
 
   final String turnId;
   final List<CodexFileChangeThreadItem> items;
   final String? cwd;
+  final ValueChanged<String>? onOpenDiff;
 
   @override
   State<CodexTurnDiffSummary> createState() => _CodexTurnDiffSummaryState();
@@ -205,7 +218,8 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
             ),
           ),
           Divider(height: 1, color: c.border),
-          for (final file in visibleFiles) _TurnDiffFileRow(file: file),
+          for (final file in visibleFiles)
+            _TurnDiffFileRow(file: file, onOpen: widget.onOpenDiff),
           if (hiddenCount > 0)
             InkWell(
               key: ValueKey('codex-turn-diff-toggle-${widget.turnId}'),
@@ -246,32 +260,44 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
 }
 
 class _TurnDiffFileRow extends StatelessWidget {
-  const _TurnDiffFileRow({required this.file});
+  const _TurnDiffFileRow({required this.file, required this.onOpen});
 
   final _TurnDiffFile file;
+  final ValueChanged<String>? onOpen;
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return Padding(
+    return InkWell(
       key: ValueKey('codex-turn-diff-file-${file.path}'),
-      padding: const EdgeInsets.symmetric(
-        horizontal: MotifSpacing.lg,
-        vertical: MotifSpacing.sm,
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              file.path,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: MotifType.subhead.copyWith(color: c.textSecondary),
+      onTap: onOpen == null ? null : () => onOpen!(file.path),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: MotifSpacing.lg,
+          vertical: MotifSpacing.sm,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                file.path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: MotifType.subhead.copyWith(color: c.textSecondary),
+              ),
             ),
-          ),
-          const SizedBox(width: MotifSpacing.md),
-          _DiffStats(added: file.added, removed: file.removed),
-        ],
+            const SizedBox(width: MotifSpacing.md),
+            _DiffStats(added: file.added, removed: file.removed),
+            if (onOpen != null) ...[
+              const SizedBox(width: MotifSpacing.sm),
+              Icon(
+                Icons.open_in_new_rounded,
+                size: MotifIconSize.sm,
+                color: c.textTertiary,
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -323,10 +349,15 @@ List<_TurnDiffFile> _mergeTurnDiffs(
 }
 
 class _ActivityItem extends StatelessWidget {
-  const _ActivityItem({required this.state, required this.item});
+  const _ActivityItem({
+    required this.state,
+    required this.item,
+    required this.onOpenWorkspaceView,
+  });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexThreadItem item;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   Widget build(BuildContext context) => switch (item) {
@@ -334,6 +365,7 @@ class _ActivityItem extends StatelessWidget {
     CodexFileChangeThreadItem value => _FileChangeActivity(
       item: value,
       cwd: state.selectedThread?.cwd.value,
+      onOpenWorkspaceView: onOpenWorkspaceView,
     ),
     CodexWebSearchThreadItem value => _DetailActivity(
       icon: Icons.search,
@@ -342,7 +374,11 @@ class _ActivityItem extends StatelessWidget {
           ? _jsonMarkdown(value.results)
           : null,
     ),
-    CodexImageViewThreadItem value => _ImageActivity(state: state, item: value),
+    CodexImageViewThreadItem value => _ImageActivity(
+      state: state,
+      item: value,
+      onOpenWorkspaceView: onOpenWorkspaceView,
+    ),
     CodexMcpToolCallThreadItem value => _DetailActivity(
       icon: Icons.extension_outlined,
       title: 'Used ${value.server} · ${value.tool}',
@@ -424,10 +460,15 @@ class _CommandActivity extends StatelessWidget {
 }
 
 class _FileChangeActivity extends StatelessWidget {
-  const _FileChangeActivity({required this.item, required this.cwd});
+  const _FileChangeActivity({
+    required this.item,
+    required this.cwd,
+    required this.onOpenWorkspaceView,
+  });
 
   final CodexFileChangeThreadItem item;
   final String? cwd;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   Widget build(BuildContext context) {
@@ -464,7 +505,11 @@ class _FileChangeActivity extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 for (final change in item.changes)
-                  _FileDiffTile(change: change, cwd: cwd),
+                  _FileDiffTile(
+                    change: change,
+                    cwd: cwd,
+                    onOpenWorkspaceView: onOpenWorkspaceView,
+                  ),
               ],
             ),
           ),
@@ -475,10 +520,15 @@ class _FileChangeActivity extends StatelessWidget {
 }
 
 class _FileDiffTile extends StatelessWidget {
-  const _FileDiffTile({required this.change, required this.cwd});
+  const _FileDiffTile({
+    required this.change,
+    required this.cwd,
+    required this.onOpenWorkspaceView,
+  });
 
   final CodexFileUpdateChange change;
   final String? cwd;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   Widget build(BuildContext context) {
@@ -529,6 +579,23 @@ class _FileDiffTile extends StatelessWidget {
             ),
           ],
         ),
+        action: onOpenWorkspaceView == null
+            ? null
+            : IconButton(
+                key: ValueKey('codex-open-diff-$path'),
+                tooltip: 'Open diff in workspace',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(
+                  width: MotifControlSize.sm,
+                  height: MotifControlSize.sm,
+                ),
+                padding: EdgeInsets.zero,
+                iconSize: MotifIconSize.sm,
+                onPressed: () => onOpenWorkspaceView!(
+                  DiffViewSpec(staged: false, path: path),
+                ),
+                icon: const Icon(Icons.open_in_new_rounded),
+              ),
         children: [_UnifiedDiff(path: path, diff: change.diff)],
       ),
     );
@@ -594,7 +661,7 @@ class _UnifiedDiff extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                         horizontal: MotifSpacing.sm,
                       ),
-                      child: SelectableText(
+                      child: _SelectionAwareText(
                         line.isEmpty ? ' ' : line,
                         style: MotifType.monoSmall.copyWith(
                           color: line.startsWith('+') && !line.startsWith('+++')
@@ -615,16 +682,52 @@ class _UnifiedDiff extends StatelessWidget {
   }
 }
 
-class _ImageActivity extends StatelessWidget {
-  const _ImageActivity({required this.state, required this.item});
+class _SelectionAwareText extends StatelessWidget {
+  const _SelectionAwareText(this.data, {required this.style});
 
-  final CodexServiceState state;
+  final String data;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    if (SelectionContainer.maybeOf(context) != null) {
+      return Text(data, style: style);
+    }
+    return SelectableText(data, style: style);
+  }
+}
+
+class _ImageActivity extends StatelessWidget {
+  const _ImageActivity({
+    required this.state,
+    required this.item,
+    required this.onOpenWorkspaceView,
+  });
+
+  final CodexConversationState state;
   final CodexImageViewThreadItem item;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   Widget build(BuildContext context) => _DetailActivity(
     icon: Icons.image_outlined,
     title: 'Viewed ${_leaf(item.path.value)}',
+    action: onOpenWorkspaceView == null
+        ? null
+        : IconButton(
+            key: ValueKey('codex-open-image-${item.path.value}'),
+            tooltip: 'Open image in workspace',
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(
+              width: MotifControlSize.sm,
+              height: MotifControlSize.sm,
+            ),
+            padding: EdgeInsets.zero,
+            iconSize: MotifIconSize.sm,
+            onPressed: () =>
+                onOpenWorkspaceView!(ImageViewSpec(item.path.value)),
+            icon: const Icon(Icons.open_in_new_rounded),
+          ),
     child: FutureBuilder<Uint8List>(
       future: state.readRemoteFile(item.path.value),
       builder: (context, snapshot) {
@@ -655,6 +758,7 @@ class _DetailActivity extends StatelessWidget {
     this.detail,
     this.child,
     this.running = false,
+    this.action,
   });
 
   final IconData icon;
@@ -662,6 +766,7 @@ class _DetailActivity extends StatelessWidget {
   final String? detail;
   final Widget? child;
   final bool running;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -697,6 +802,7 @@ class _DetailActivity extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: MotifType.subhead.copyWith(color: c.textSecondary),
         ),
+        action: action,
         children: [
           _BoundedScrollable(
             key: const ValueKey('codex-activity-detail-scroll'),
@@ -719,6 +825,7 @@ class _InlineExpansionTile extends StatefulWidget {
     required this.children,
     required this.childrenPadding,
     this.initiallyExpanded = false,
+    this.action,
     super.key,
   });
 
@@ -727,6 +834,7 @@ class _InlineExpansionTile extends StatefulWidget {
   final List<Widget> children;
   final EdgeInsetsGeometry childrenPadding;
   final bool initiallyExpanded;
+  final Widget? action;
 
   @override
   State<_InlineExpansionTile> createState() => _InlineExpansionTileState();
@@ -761,6 +869,10 @@ class _InlineExpansionTileState extends State<_InlineExpansionTile> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Flexible(child: widget.title),
+            if (widget.action != null) ...[
+              const SizedBox(width: MotifSpacing.xs),
+              widget.action!,
+            ],
             const SizedBox(width: MotifSpacing.xs),
             Icon(
               _expanded

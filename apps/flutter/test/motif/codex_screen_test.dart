@@ -16,6 +16,7 @@ import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/ui/screens/codex_screen.dart';
+import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -64,6 +65,60 @@ void main() {
     );
     await tester.pump();
     expect(codex.sidebarWidth, greaterThan(340));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('restores and records the server model preference', (
+    tester,
+  ) async {
+    final app = await appState();
+    final codex = CodexState()..setSelectedModelId('server', 'preferred-model');
+    final serviceState = readyServiceState()
+      ..models = const [
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('medium'),
+          description: 'Default model',
+          displayName: 'Default',
+          hidden: false,
+          id: 'default-model',
+          isDefault: true,
+          model: 'default-model',
+          supportedReasoningEfforts: [],
+        ),
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('high'),
+          description: 'Preferred model',
+          displayName: 'Preferred',
+          hidden: false,
+          id: 'preferred-model',
+          isDefault: false,
+          model: 'preferred-model',
+          supportedReasoningEfforts: [],
+        ),
+      ]
+      ..selectedModelId = 'default-model';
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: codex,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: CodexScreen(
+            serverId: 'server',
+            serviceStateFactory: (_, _) => serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(serviceState.selectedModelId, 'preferred-model');
+    expect(serviceState.selectedReasoningEffort, 'high');
+    serviceState.selectModel('default-model');
+    expect(codex.selectedModelId('server'), 'default-model');
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -228,7 +283,7 @@ void main() {
     app.dispose();
   });
 
-  testWidgets('thread workspace uses the selected thread cwd and fixed mode', (
+  testWidgets('resource opens the selected thread workspace and target tab', (
     tester,
   ) async {
     final calls = <(String, Map<String, Object?>)>[];
@@ -261,7 +316,19 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('codex-open-thread-workspace')));
+    expect(find.byKey(const ValueKey('open-side-chat')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-open-thread-workspace')),
+      findsOneWidget,
+    );
+    final workspace = tester.widget<CodexThreadWorkspace>(
+      find.byType(CodexThreadWorkspace),
+    );
+    unawaited(
+      workspace.onOpenWorkspaceView!(
+        const DiffViewSpec(staged: false, path: 'lib/main.dart'),
+      ),
+    );
     await tester.pumpAndSettle();
 
     final ensureCall = calls.singleWhere(
@@ -272,6 +339,57 @@ void main() {
     expect(screen.session, '__motif_internal_thread');
     expect(screen.allowSessionSwitching, isFalse);
     expect(screen.titleOverride, 'Thread');
+    expect(screen.initialViewSpec, isA<DiffViewSpec>());
+    expect((screen.initialViewSpec! as DiffViewSpec).path, 'lib/main.dart');
+    expect(find.byKey(const ValueKey('open-side-chat')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('side chat opens directly from Codex without creating a PTY', (
+    tester,
+  ) async {
+    final serverCalls = <String>[];
+    final app = await appStateWithServer((method, [params = const {}]) async {
+      serverCalls.add(method);
+      return const {};
+    });
+    final serviceState = readyServiceState();
+    serviceState.selectedThread = serviceState.catalog.allThreads.single;
+    final sideChatClient = ScreenFakeClient();
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: CodexScreen(
+            serverId: 'server',
+            serviceStateFactory: (_, _) => serviceState,
+            controllerFactory: (_, _) => sideChatClient,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('open-side-chat')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('side-chat-sidebar')), findsOneWidget);
+    expect(
+      tester
+          .widget<CodexThreadWorkspace>(find.byType(CodexThreadWorkspace))
+          .onOpenWorkspaceView,
+      isNotNull,
+    );
+    expect(sideChatClient.forkParams, hasLength(1));
+    expect(sideChatClient.forkParams.single.threadId, 'thread');
+    expect(sideChatClient.forkParams.single.ephemeral, isTrue);
+    expect(sideChatClient.forkParams.single.excludeTurns, isTrue);
+    expect(serverCalls, isNot(contains('codex.workspace.ensure')));
+    expect(find.byType(SessionScreen), findsNothing);
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -431,6 +549,7 @@ final class ScreenFakeClient extends ChangeNotifier
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
       StreamController<CodexJsonEncodable>.broadcast();
+  final List<CodexThreadForkParams> forkParams = [];
 
   @override
   CodexConnectionState state = CodexConnectionState(
@@ -471,7 +590,41 @@ final class ScreenFakeClient extends ChangeNotifier
   @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
-  ) async => throw StateError('unused');
+  ) async {
+    forkParams.add(params);
+    final thread = CodexThread(
+      cliVersion: 'test',
+      createdAt: 1,
+      cwd: const CodexV2AbsolutePathBuf('/work/motif'),
+      ephemeral: true,
+      forkedFromId: params.threadId,
+      id: 'side-chat',
+      modelProvider: 'openai',
+      parentThreadId: params.threadId,
+      preview: '',
+      sessionId: 'side-chat',
+      source: const CodexSessionSource('cli'),
+      status: const CodexIdleThreadStatus(),
+      turns: const [],
+      updatedAt: 1,
+    );
+    return CodexThreadForkResponse(
+      approvalPolicy: const CodexAskForApproval('on-request'),
+      approvalsReviewer: CodexApprovalsReviewer.user,
+      cwd: thread.cwd,
+      model: 'codex-test',
+      modelProvider: 'openai',
+      sandbox: const CodexDangerFullAccessSandboxPolicy(),
+      thread: thread,
+    );
+  }
+
+  @override
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(
+    String threadId,
+  ) async => const CodexThreadUnsubscribeResponse(
+    status: CodexThreadUnsubscribeStatus.unsubscribed,
+  );
 
   @override
   Future<CodexThreadStartResponse> startThread(

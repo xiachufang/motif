@@ -15,7 +15,7 @@ use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
-use tokio::sync::{broadcast, watch, Notify};
+use tokio::sync::{Notify, broadcast, watch};
 
 use crate::pty::PtyPool;
 
@@ -379,6 +379,30 @@ impl Session {
         });
 
         Some(AttachOutcome { existing, last_seq })
+    }
+
+    /// Idempotently restore presence when an attached connection reopens its
+    /// `/events` stream without repeating `session.attach`.
+    pub fn ensure_client_attached(&self, client_id: ClientId) -> bool {
+        let now = now_ms();
+        let mut clients = self.clients.lock();
+        if self.is_destroyed() {
+            return false;
+        }
+        if clients.iter().any(|client| client.id == client_id) {
+            return true;
+        }
+        clients.push(ClientInfo {
+            id: client_id.clone(),
+            since: now,
+        });
+        drop(clients);
+        self.publish_event(|seq| Event::ClientJoined {
+            client_id,
+            since: now,
+            seq,
+        });
+        true
     }
 
     pub fn detach_client(&self, client_id: &ClientId) -> bool {

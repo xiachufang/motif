@@ -68,6 +68,12 @@ final class _AttachmentReset extends _AttachmentEvent {
   const _AttachmentReset();
 }
 
+final class _ExistingAttachmentRestored extends _AttachmentEvent {
+  const _ExistingAttachmentRestored(this.rpcSessionId);
+
+  final String rpcSessionId;
+}
+
 final class _AttachmentCompleted extends _AttachmentEvent {
   const _AttachmentCompleted({
     required this.generation,
@@ -196,6 +202,12 @@ final class WorkspaceAttachmentRuntimeController {
     return waiter.future;
   }
 
+  void restoreExisting() {
+    final rpcSessionId = currentRpcSessionId();
+    if (rpcSessionId == null) return;
+    _machine.dispatch(_ExistingAttachmentRestored(rpcSessionId));
+  }
+
   void reset() => _machine.dispatch(const _AttachmentReset());
 
   RuntimeTransition<WorkspaceAttachmentRuntimeState, _AttachmentEffect> _reduce(
@@ -205,6 +217,19 @@ final class WorkspaceAttachmentRuntimeController {
     if (event is _AttachmentReset) {
       return RuntimeTransition(
         WorkspaceAttachmentDetached(generation: state.generation + 1),
+        invalidateEffects: true,
+      );
+    }
+    if (event case _ExistingAttachmentRestored(:final rpcSessionId)) {
+      if (state is WorkspaceAttachmentAttached &&
+          state.rpcSessionId == rpcSessionId) {
+        return RuntimeTransition(state);
+      }
+      return RuntimeTransition(
+        WorkspaceAttachmentAttached(
+          generation: state.generation + 1,
+          rpcSessionId: rpcSessionId,
+        ),
         invalidateEffects: true,
       );
     }

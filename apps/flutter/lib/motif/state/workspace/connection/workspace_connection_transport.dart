@@ -15,7 +15,53 @@ extension _WorkspaceConnectionControllerConnection
           'resume probe failed channel=events took=${sw.elapsedMilliseconds}ms',
           name: 'motif.resume',
         );
-        return false;
+        try {
+          await rpc.reopenSessionStreams(eventSequence: lastSeq);
+          final restored =
+              identical(_rpc, rpc) &&
+              connection.transportAvailable &&
+              rpc.sessionId != null;
+          if (restored) {
+            _attachmentRuntime.restoreExisting();
+            _setState(ConnAttached(session));
+          }
+          Log.i(
+            'resume streams restored=$restored using existing attachment '
+            'took=${sw.elapsedMilliseconds}ms',
+            name: 'motif.resume',
+          );
+          return restored;
+        } catch (error, stackTrace) {
+          if (!_isNotAttached(error)) {
+            Log.w(
+              'resume streams reopen failed; rebuilding transport',
+              name: 'motif.resume',
+              error: error,
+              stackTrace: stackTrace,
+            );
+            return false;
+          }
+          Log.i(
+            'resume attachment expired; attaching on existing transport',
+            name: 'motif.resume',
+          );
+          if (!identical(_rpc, rpc)) return false;
+          _attachmentRuntime.reset();
+          try {
+            await attach();
+            return identical(_rpc, rpc) &&
+                connection.transportAvailable &&
+                rpc.sessionId != null;
+          } catch (attachError, attachStackTrace) {
+            Log.w(
+              'resume attach on existing transport failed',
+              name: 'motif.resume',
+              error: attachError,
+              stackTrace: attachStackTrace,
+            );
+            return false;
+          }
+        }
       }
       if (result.failedPtyIds.isNotEmpty) {
         Log.w(
@@ -102,7 +148,10 @@ extension _WorkspaceConnectionControllerConnection
       _carriedPtyCursors = {};
     }
 
-    _eventSub = rpc.events.listen(events.handle, onDone: _handleConnectionLost);
+    _eventSub = rpc.events.listen(events.handle);
+    _sessionStreamFailureSub = rpc.sessionStreamFailures.listen(
+      (_) => unawaited(_handleConnectionLost()),
+    );
 
     try {
       stage = Stopwatch()..start();
@@ -174,6 +223,8 @@ extension _WorkspaceConnectionControllerConnection
     await remotePorts.stopAll();
     await _eventSub?.cancel();
     _eventSub = null;
+    await _sessionStreamFailureSub?.cancel();
+    _sessionStreamFailureSub = null;
     await _rpc?.close();
     _setRpc(null);
   }
@@ -219,16 +270,13 @@ extension _WorkspaceConnectionControllerConnection
   Future<void> _handleConnectionLost([
     String message = 'connection lost',
   ]) async {
+    if (_state is ConnFailed && _rpc != null) return;
     _attachmentRuntime.reset();
     final s = _state;
     if (s is ConnAttached && lastSeq > 0) {
       resumeSequence = lastSeq;
     }
     if (_rpc != null) _carriedPtyCursors = _rpc!.ptyCursors();
-    await _eventSub?.cancel();
-    _eventSub = null;
-    await _rpc?.close();
-    _setRpc(null);
     await remotePorts.stopAll();
     if (viewsController.hasPendingActivation) {
       pendingLocalViewId = _viewState.activeViewId;

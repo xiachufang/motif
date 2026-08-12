@@ -30,6 +30,27 @@ void main() {
     expect(second.sidebarWidth, 340);
   });
 
+  test('CodexState persists selected models per server', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final state = CodexState(preferences: preferences);
+
+    state
+      ..setSelectedModelId('server-1', 'gpt-5.4')
+      ..setSelectedModelId('server-2', 'gpt-5.6');
+    await state.flushSelectedModelPreferences();
+
+    final restored = CodexState(preferences: preferences);
+    expect(restored.selectedModelId('server-1'), 'gpt-5.4');
+    expect(restored.selectedModelId('server-2'), 'gpt-5.6');
+
+    restored.setSelectedModelId('server-1', null);
+    await restored.flushSelectedModelPreferences();
+    final cleared = CodexState(preferences: preferences);
+    expect(cleared.selectedModelId('server-1'), isNull);
+    expect(cleared.selectedModelId('server-2'), 'gpt-5.6');
+  });
+
   testWidgets('project hierarchy expands independently and switches timeline', (
     tester,
   ) async {
@@ -304,6 +325,13 @@ final class SidebarFakeClient extends ChangeNotifier
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async => throw StateError('unused');
+
+  @override
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(
+    String threadId,
+  ) async => const CodexThreadUnsubscribeResponse(
+    status: CodexThreadUnsubscribeStatus.unsubscribed,
+  );
 
   @override
   Future<CodexThreadStartResponse> startThread(

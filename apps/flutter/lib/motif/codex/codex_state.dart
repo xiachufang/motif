@@ -63,6 +63,7 @@ final class CodexProjectSidebarPreferences {
 @ObservableModel()
 class CodexState extends _$CodexState {
   static const _projectSidebarKey = 'motif.codex.projectSidebar.v1';
+  static const _selectedModelsKey = 'motif.codex.selectedModels.v1';
 
   CodexState({
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
@@ -71,11 +72,14 @@ class CodexState extends _$CodexState {
     SharedPreferences? preferences,
   }) : _preferences = preferences,
        _projectSidebars = _loadProjectSidebars(preferences),
+       _selectedModels = _loadSelectedModels(preferences),
        super(sidebarMode, desktopSidebarVisible, sidebarWidth);
 
   final SharedPreferences? _preferences;
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
+  final Map<String, String> _selectedModels;
   Future<void> _persistProjectSidebars = Future.value();
+  Future<void> _persistSelectedModels = Future.value();
 
   static Future<CodexState> load() async =>
       CodexState(preferences: await SharedPreferences.getInstance());
@@ -84,6 +88,29 @@ class CodexState extends _$CodexState {
       _projectSidebars[serverId] ?? const CodexProjectSidebarPreferences();
 
   Future<void> flushProjectSidebarPreferences() => _persistProjectSidebars;
+
+  String? selectedModelId(String serverId) => _selectedModels[serverId];
+
+  void setSelectedModelId(String serverId, String? modelId) {
+    if (serverId.isEmpty) return;
+    final normalized = modelId?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      if (_selectedModels.remove(serverId) == null) return;
+    } else {
+      if (_selectedModels[serverId] == normalized) return;
+      _selectedModels[serverId] = normalized;
+    }
+    final preferences = _preferences;
+    if (preferences == null) return;
+    final payload = jsonEncode(_selectedModels);
+    unawaited(
+      _persistSelectedModels = _persistSelectedModels.then((_) async {
+        await preferences.setString(_selectedModelsKey, payload);
+      }),
+    );
+  }
+
+  Future<void> flushSelectedModelPreferences() => _persistSelectedModels;
 
   void setShowAllProjects(String serverId, bool value) {
     _updateProjectSidebar(
@@ -145,6 +172,27 @@ class CodexState extends _$CodexState {
             entry.key as String: CodexProjectSidebarPreferences.fromJson(
               entry.value,
             ),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Map<String, String> _loadSelectedModels(
+    SharedPreferences? preferences,
+  ) {
+    final raw = preferences?.getString(_selectedModelsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return {};
+      return {
+        for (final entry in json.entries)
+          if (entry.key is String &&
+              entry.value is String &&
+              (entry.key as String).isNotEmpty &&
+              (entry.value as String).isNotEmpty)
+            entry.key as String: entry.value as String,
       };
     } catch (_) {
       return {};

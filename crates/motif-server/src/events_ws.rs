@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 use crate::session::Session;
 use crate::wire::Codec;
 use crate::ws::{
-    self, encode_event, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR,
-    OUTBOUND_FRAME_CAPACITY, PING_INTERVAL_DUR, TIMING_TARGET,
+    self, AppState, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, OUTBOUND_FRAME_CAPACITY, OutMsg,
+    PING_INTERVAL_DUR, TIMING_TARGET, encode_event,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -91,7 +91,18 @@ pub async fn events_upgrade(
     let lease = entry.acquire_lease();
 
     ws.on_upgrade(move |socket| async move {
-        handle_events_socket(socket, motif_session, client_id, since, codec, peer).await;
+        entry.begin_event_stream(&motif_session, &client_id);
+        handle_events_socket(
+            socket,
+            Arc::clone(&motif_session),
+            client_id.clone(),
+            since,
+            codec,
+            peer,
+        )
+        .await;
+        let detached = entry.end_event_stream(&motif_session, &client_id);
+        tracing::info!(peer = %peer, client_id = %client_id, detached, "events ws disconnected");
         drop(lease);
     })
 }
@@ -250,8 +261,6 @@ async fn handle_events_socket(
     forwarder.abort();
     heartbeat.abort();
     write_task.abort();
-    let detached = session.detach_client(&client_id);
-    tracing::info!(peer = %peer, client_id = %client_id, detached, "events ws disconnected");
 }
 
 fn is_self_event(ev: &Event, client_id: &str) -> bool {

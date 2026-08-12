@@ -1428,6 +1428,7 @@ void main() {
     expect(find.byKey(const ValueKey('close-session-button')), findsNothing);
     expect(find.byKey(const ValueKey('sessions-sidebar-toggle')), findsNothing);
     expect(find.byKey(const ValueKey('session-menu-button')), findsNothing);
+    expect(find.byKey(const ValueKey('open-side-chat')), findsNothing);
 
     await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyL, shift: true);
     expect(find.byKey(const ValueKey('sidebar-session-list')), findsNothing);

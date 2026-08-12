@@ -83,6 +83,7 @@ abstract interface class CodexAppServerClient implements Listenable {
   });
   Future<CodexThreadStartResponse> startThread(CodexThreadStartParams params);
   Future<CodexThreadForkResponse> forkThread(CodexThreadForkParams params);
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(String threadId);
   Future<CodexThreadResumeResponse> resumeThread(String threadId);
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params);
   Future<CodexTurnSteerResponse> steerTurn(CodexTurnSteerParams params);
@@ -248,6 +249,16 @@ final class CodexConnectionController extends ChangeNotifier
       _typedRequest(
         (id) => CodexThreadForkRequest(id: id, params: params),
         CodexThreadForkResponse.fromJson,
+      );
+
+  @override
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(String threadId) =>
+      _typedRequest(
+        (id) => CodexThreadUnsubscribeRequest(
+          id: id,
+          params: CodexThreadUnsubscribeParams(threadId: threadId),
+        ),
+        CodexThreadUnsubscribeResponse.fromJson,
       );
 
   @override

@@ -1,9 +1,62 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show SelectedContent;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 
 void main() {
+  testWidgets('uses one parent selection area across Markdown blocks', (
+    tester,
+  ) async {
+    SelectedContent? selection;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SelectionArea(
+            onSelectionChanged: (value) => selection = value,
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                CodexMarkdown('First block'),
+                CodexMarkdown('```text\nCode block\n```'),
+                CodexMarkdown('- List item'),
+                CodexMarkdown('Last block'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final markdown = find.byType(CodexMarkdown);
+    expect(
+      find.descendant(of: markdown, matching: find.byType(SelectableText)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: markdown, matching: find.byType(RichText)),
+      findsWidgets,
+    );
+
+    final first = tester.getRect(find.text('First block'));
+    final last = tester.getRect(find.text('Last block'));
+    final gesture = await tester.startGesture(
+      Offset(first.left + 1, first.center.dy),
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.moveTo(Offset(last.right - 1, last.center.dy));
+    await gesture.up();
+    await tester.pump();
+
+    expect(selection?.plainText, contains('First block'));
+    expect(selection?.plainText, contains('Code block'));
+    expect(selection?.plainText, contains('List item'));
+    expect(selection?.plainText, contains('Last block'));
+  });
+
   testWidgets('fenced code is highlighted without per-token backgrounds', (
     tester,
   ) async {

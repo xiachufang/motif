@@ -177,14 +177,20 @@ final class CodexCatalogSnapshot {
 
 CodexCatalogSnapshot buildCodexCatalog(
   Iterable<CodexThread> source,
-  CodexGlobalStateData? globalState,
-) {
+  CodexGlobalStateData? globalState, {
+  Map<String, String?> insertBeforeByThreadId = const {},
+}) {
   final unique = <String, CodexThread>{};
   for (final thread in source) {
     if (!thread.ephemeral) unique[thread.id] = thread;
   }
   final threads = unique.values.toList()..sort(compareCodexThreadsByRecency);
-  if (globalState == null) return _buildCwdCatalog(threads);
+  if (globalState == null) {
+    return _buildCwdCatalog(
+      threads,
+      insertBeforeByThreadId: insertBeforeByThreadId,
+    );
+  }
 
   final byId = {for (final thread in threads) thread.id: thread};
   final pinnedThreads = <CodexThread>[];
@@ -269,7 +275,9 @@ CodexCatalogSnapshot buildCodexCatalog(
     groups.add(
       CodexProjectGroup(
         project: project,
-        threads: List.unmodifiable(orderedMembers),
+        threads: List.unmodifiable(
+          _applyThreadPlacements(orderedMembers, insertBeforeByThreadId),
+        ),
       ),
     );
   }
@@ -277,9 +285,13 @@ CodexCatalogSnapshot buildCodexCatalog(
 
   return CodexCatalogSnapshot(
     allThreads: List.unmodifiable(threads),
-    pinnedThreads: List.unmodifiable(pinnedThreads),
+    pinnedThreads: List.unmodifiable(
+      _applyThreadPlacements(pinnedThreads, insertBeforeByThreadId),
+    ),
     projects: List.unmodifiable(groups),
-    projectlessThreads: List.unmodifiable(projectless),
+    projectlessThreads: List.unmodifiable(
+      _applyThreadPlacements(projectless, insertBeforeByThreadId),
+    ),
     pinnedThreadIds: Set.unmodifiable(pinnedIds),
     projectNamesByThreadId: Map.unmodifiable(projectNamesByThreadId),
     selectedProjectId: globalState.selectedProjectId,
@@ -287,7 +299,10 @@ CodexCatalogSnapshot buildCodexCatalog(
   );
 }
 
-CodexCatalogSnapshot _buildCwdCatalog(List<CodexThread> threads) {
+CodexCatalogSnapshot _buildCwdCatalog(
+  List<CodexThread> threads, {
+  required Map<String, String?> insertBeforeByThreadId,
+}) {
   final grouped = <String, List<CodexThread>>{};
   final projectless = <CodexThread>[];
   final projectNamesByThreadId = <String, String>{};
@@ -309,7 +324,9 @@ CodexCatalogSnapshot _buildCwdCatalog(List<CodexThread> threads) {
             name: codexPathBasename(entry.key),
             rootPaths: [entry.key],
           ),
-          threads: List.unmodifiable(members),
+          threads: List.unmodifiable(
+            _applyThreadPlacements(members, insertBeforeByThreadId),
+          ),
         );
       }).toList()..sort((a, b) {
         final recency = compareCodexThreadsByRecency(
@@ -327,12 +344,44 @@ CodexCatalogSnapshot _buildCwdCatalog(List<CodexThread> threads) {
     allThreads: List.unmodifiable(threads),
     pinnedThreads: const [],
     projects: List.unmodifiable(groups),
-    projectlessThreads: List.unmodifiable(projectless),
+    projectlessThreads: List.unmodifiable(
+      _applyThreadPlacements(projectless, insertBeforeByThreadId),
+    ),
     pinnedThreadIds: const {},
     projectNamesByThreadId: Map.unmodifiable(projectNamesByThreadId),
     selectedProjectId: null,
     usesGlobalState: false,
   );
+}
+
+List<CodexThread> _applyThreadPlacements(
+  List<CodexThread> source,
+  Map<String, String?> insertBeforeByThreadId,
+) {
+  if (source.length < 2 || insertBeforeByThreadId.isEmpty) return source;
+  final result = List<CodexThread>.of(source);
+  var fallbackIndex = 0;
+  for (final placement in insertBeforeByThreadId.entries) {
+    final threadIndex = result.indexWhere(
+      (thread) => thread.id == placement.key,
+    );
+    if (threadIndex == -1) continue;
+    final thread = result.removeAt(threadIndex);
+    final anchorId = placement.value;
+    final anchorIndex = anchorId == null
+        ? -1
+        : result.indexWhere((candidate) => candidate.id == anchorId);
+    if (anchorIndex == -1) {
+      final index = fallbackIndex > result.length
+          ? result.length
+          : fallbackIndex;
+      result.insert(index, thread);
+      fallbackIndex = index + 1;
+    } else {
+      result.insert(anchorIndex, thread);
+    }
+  }
+  return result;
 }
 
 int compareCodexThreadsByRecency(CodexThread a, CodexThread b) {

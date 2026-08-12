@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_service_state.dart';
+import '../../codex/side_chat_collection_controller.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
@@ -18,9 +19,10 @@ import '../widgets/top_toast.dart';
 import 'codex_thread_sidebar.dart';
 import 'codex_thread_workspace.dart';
 import 'session_screen.dart';
+import 'side_chat_screen.dart';
 
 typedef CodexControllerFactory =
-    CodexConnectionController Function(AppState app, String serverId);
+    CodexAppServerClient Function(AppState app, String serverId);
 typedef CodexServiceStateFactory =
     CodexServiceState Function(AppState app, String serverId);
 
@@ -49,8 +51,10 @@ class _CodexScreenState extends State<CodexScreen> {
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   CodexServiceState? _serviceState;
+  SideChatCollectionController? _sideChats;
   String? _setupError;
   bool _operationInFlight = false;
+  bool _sideChatOpening = false;
   bool _initializedSidebarVisibility = false;
 
   @override
@@ -63,6 +67,7 @@ class _CodexScreenState extends State<CodexScreen> {
     if (_serviceState != null || _setupError != null) return;
     try {
       final app = readObservationScope<AppState>(context);
+      final codex = readObservationScope<CodexState>(context);
       final factory = widget.serviceStateFactory;
       final serviceState = factory != null
           ? factory(app, widget.serverId)
@@ -70,6 +75,11 @@ class _CodexScreenState extends State<CodexScreen> {
               serverId: widget.serverId,
               connection: _createController(app),
             );
+      serviceState.configureModelPreference(
+        preferredModelId: codex.selectedModelId(widget.serverId),
+        onSelected: (modelId) =>
+            codex.setSelectedModelId(widget.serverId, modelId),
+      );
       _serviceState = serviceState;
       serviceState.addListener(_changed);
       unawaited(serviceState.start());
@@ -79,7 +89,7 @@ class _CodexScreenState extends State<CodexScreen> {
     }
   }
 
-  CodexConnectionController _createController(AppState app) {
+  CodexAppServerClient _createController(AppState app) {
     final factory = widget.controllerFactory;
     if (factory != null) {
       return factory(app, widget.serverId);
@@ -94,7 +104,14 @@ class _CodexScreenState extends State<CodexScreen> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final sideChats = _sideChats;
+    final selectedThreadId = _serviceState?.selectedThread?.id;
+    if (sideChats != null && sideChats.parentThreadId != selectedThreadId) {
+      _sideChats = null;
+      sideChats.dispose();
+    }
+    setState(() {});
   }
 
   @override
@@ -102,6 +119,7 @@ class _CodexScreenState extends State<CodexScreen> {
     final serviceState = _serviceState;
     serviceState?.removeListener(_changed);
     serviceState?.dispose();
+    _sideChats?.dispose();
     super.dispose();
   }
 
@@ -154,6 +172,15 @@ class _CodexScreenState extends State<CodexScreen> {
               title: _CodexAppBarTitle(thread: serviceState?.selectedThread),
               actions: [
                 IconButton(
+                  key: const ValueKey('open-side-chat'),
+                  tooltip: 'Open Side Chat',
+                  icon: const Icon(Icons.chat_bubble_outline_rounded),
+                  onPressed:
+                      !_sideChatOpening && serviceState?.selectedThread != null
+                      ? () => unawaited(_openSideChat(app, serviceState!))
+                      : null,
+                ),
+                IconButton(
                   key: const ValueKey('codex-open-thread-workspace'),
                   tooltip: 'Open thread workspace',
                   icon: const Icon(Icons.terminal_rounded),
@@ -204,11 +231,13 @@ class _CodexScreenState extends State<CodexScreen> {
                     value: serviceState,
                     child: mobile
                         ? _mainContent(
+                            app,
                             serviceState,
                             onOpenSidebar: () =>
                                 _scaffoldKey.currentState?.openDrawer(),
                           )
                         : _desktopBody(
+                            app,
                             constraints,
                             serviceState,
                             codex,
@@ -222,6 +251,7 @@ class _CodexScreenState extends State<CodexScreen> {
   }
 
   Widget _desktopBody(
+    AppState app,
     BoxConstraints constraints,
     CodexServiceState serviceState,
     CodexState codex,
@@ -245,7 +275,7 @@ class _CodexScreenState extends State<CodexScreen> {
             },
           ),
         ],
-        Expanded(child: _mainContent(serviceState)),
+        Expanded(child: _mainContent(app, serviceState)),
       ],
     );
   }
@@ -268,7 +298,11 @@ class _CodexScreenState extends State<CodexScreen> {
     },
   );
 
-  Widget _mainContent(CodexServiceState state, {VoidCallback? onOpenSidebar}) {
+  Widget _mainContent(
+    AppState app,
+    CodexServiceState state, {
+    VoidCallback? onOpenSidebar,
+  }) {
     final connection = state.connectionState;
     return switch (connection.phase) {
       CodexConnectionPhase.connecting => const _MainSurface(
@@ -298,7 +332,11 @@ class _CodexScreenState extends State<CodexScreen> {
                   onOpenSidebar: onOpenSidebar,
                 ),
               )
-            : CodexThreadWorkspace(state: state),
+            : CodexThreadWorkspace(
+                state: state,
+                onOpenWorkspaceView: (spec) =>
+                    _openThreadWorkspace(app, state, initialViewSpec: spec),
+              ),
       CodexConnectionPhase.failed => _MainSurface(
         child: _Failure(
           error: connection.error ?? 'Connection failed',
@@ -310,10 +348,24 @@ class _CodexScreenState extends State<CodexScreen> {
 
   Future<void> _openThreadWorkspace(
     AppState app,
-    CodexServiceState state,
-  ) async {
+    CodexServiceState state, {
+    ViewSpec? initialViewSpec,
+  }) async {
     final thread = state.selectedThread;
     if (thread == null) return;
+    await _openThreadWorkspaceForThread(
+      app,
+      thread,
+      initialViewSpec: initialViewSpec,
+    );
+  }
+
+  Future<void> _openThreadWorkspaceForThread(
+    AppState app,
+    CodexThread thread, {
+    ViewSpec? initialViewSpec,
+  }) async {
+    if (_operationInFlight) return;
     final cwd = thread.cwd.value.trim();
     if (cwd.isEmpty) {
       showMotifToast(context, 'This thread does not have a working directory');
@@ -340,6 +392,7 @@ class _CodexScreenState extends State<CodexScreen> {
             session: session.name,
             allowSessionSwitching: false,
             titleOverride: codexThreadTitle(thread),
+            initialViewSpec: initialViewSpec,
           ),
         ),
       );
@@ -350,6 +403,55 @@ class _CodexScreenState extends State<CodexScreen> {
       if (mounted) showMotifToast(context, 'Open workspace failed: $error');
     } finally {
       if (mounted) setState(() => _operationInFlight = false);
+    }
+  }
+
+  Future<void> _openSideChat(AppState app, CodexServiceState state) async {
+    final thread = state.selectedThread;
+    if (thread == null || _sideChatOpening) return;
+    final codex = readObservationScope<CodexState>(context);
+    var collection = _sideChats;
+    if (collection == null || collection.parentThreadId != thread.id) {
+      collection?.dispose();
+      collection = SideChatCollectionController(
+        serverId: widget.serverId,
+        parentThreadId: thread.id,
+        connection: _createController(app),
+        preferredModelId: codex.selectedModelId(widget.serverId),
+        onModelSelected: (modelId) =>
+            codex.setSelectedModelId(widget.serverId, modelId),
+      );
+      _sideChats = collection;
+    }
+    setState(() => _sideChatOpening = true);
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          settings: RouteSettings(
+            name: 'side-chat/${widget.serverId}/${thread.id}',
+          ),
+          builder: (_) => SideChatScreen(
+            collection: collection!,
+            onOpenWorkspaceView: (spec) async {
+              await _openThreadWorkspaceForThread(
+                app,
+                thread,
+                initialViewSpec: spec,
+              );
+              if (mounted) {
+                unawaited(
+                  MotifWindowTitle.set('Side Chat — Motif').catchError((_) {}),
+                );
+              }
+            },
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
+        setState(() => _sideChatOpening = false);
+      }
     }
   }
 

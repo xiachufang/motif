@@ -92,6 +92,89 @@ void main() {
     },
   );
 
+  test('restores a valid local model preference and records changes', () async {
+    final existing = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [existing]),
+      },
+      models: const [
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('medium'),
+          description: 'Default model',
+          displayName: 'Default',
+          hidden: false,
+          id: 'default-model',
+          isDefault: true,
+          model: 'default-model',
+          supportedReasoningEfforts: [],
+        ),
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('high'),
+          description: 'Preferred model',
+          displayName: 'Preferred',
+          hidden: false,
+          id: 'preferred-model',
+          isDefault: false,
+          model: 'preferred-model',
+          supportedReasoningEfforts: [],
+        ),
+      ],
+    );
+    final recorded = <String?>[];
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configureModelPreference(
+        preferredModelId: 'preferred-model',
+        onSelected: recorded.add,
+      );
+
+    await state.start();
+    await waitFor(() => state.models.length == 2);
+    expect(state.selectedModelId, 'preferred-model');
+    expect(state.selectedReasoningEffort, 'high');
+    expect(recorded, isEmpty);
+
+    state.selectModel('default-model');
+    expect(recorded, ['default-model']);
+    expect(state.selectedModelId, 'default-model');
+    expect(state.selectedReasoningEffort, 'medium');
+
+    await state.readThread('thread');
+    await state.ensureThreadResumedForSend('thread');
+    expect(state.selectedModelId, 'default-model');
+    await state.close();
+  });
+
+  test('clears a local model preference that is no longer available', () async {
+    final client = FakeCodexClient(
+      pages: const {null: CodexThreadListResponse(data: [])},
+      models: const [
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('medium'),
+          description: 'Default model',
+          displayName: 'Default',
+          hidden: false,
+          id: 'default-model',
+          isDefault: true,
+          model: 'default-model',
+          supportedReasoningEfforts: [],
+        ),
+      ],
+    );
+    final recorded = <String?>[];
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configureModelPreference(
+        preferredModelId: 'removed-model',
+        onSelected: recorded.add,
+      );
+
+    await state.start();
+    await waitFor(() => state.models.isNotEmpty);
+    expect(recorded, [isNull]);
+    expect(state.selectedModelId, 'default-model');
+    await state.close();
+  });
+
   test(
     'thread clicks switch highlight immediately and latest read wins',
     () async {
@@ -222,6 +305,7 @@ void main() {
   test('forks through a completed turn and selects the new thread', () async {
     final source = thread(
       'source',
+      updatedAt: 20,
       turns: const [
         CodexTurn(
           id: 'turn-1',
@@ -232,7 +316,13 @@ void main() {
     );
     final client = FakeCodexClient(
       pages: {
-        null: CodexThreadListResponse(data: [source]),
+        null: CodexThreadListResponse(
+          data: [
+            thread('before', updatedAt: 30),
+            source,
+            thread('after', updatedAt: 10),
+          ],
+        ),
       },
     );
     final state = CodexServiceState(serverId: 'server', connection: client);
@@ -245,10 +335,12 @@ void main() {
     expect(client.forkParams.single.lastTurnId, 'turn-1');
     expect(state.selectedThread?.id, 'forked-source');
     expect(state.turns.single.id, 'turn-1');
-    expect(
-      state.catalog.allThreads.map((thread) => thread.id),
-      containsAll(['source', 'forked-source']),
-    );
+    expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
+      'before',
+      'forked-source',
+      'source',
+      'after',
+    ]);
 
     await state.ensureThreadResumedForSend('forked-source');
     expect(client.resumedThreadIds, isEmpty);
@@ -256,9 +348,12 @@ void main() {
   });
 
   test('starts a thread in a project and opens it without resume', () async {
+    final before = thread('before', updatedAt: 30);
+    final current = thread('current', updatedAt: 20);
+    final after = thread('after', updatedAt: 10);
     final client = FakeCodexClient(
       pages: {
-        null: CodexThreadListResponse(data: [thread('existing')]),
+        null: CodexThreadListResponse(data: [before, current, after]),
       },
       globalState: jsonEncode({
         'local-projects': {
@@ -272,13 +367,21 @@ void main() {
         'pinned-thread-ids': <String>[],
         'projectless-thread-ids': <String>[],
         'thread-project-assignments': {
-          'existing': {'projectKind': 'local', 'projectId': 'motif'},
+          'before': {'projectKind': 'local', 'projectId': 'motif'},
+          'current': {'projectKind': 'local', 'projectId': 'motif'},
+          'after': {'projectKind': 'local', 'projectId': 'motif'},
+        },
+        'sidebar-project-thread-orders': {
+          'motif': {
+            'threadIds': ['before', 'current', 'after'],
+          },
         },
       }),
     );
     final state = CodexServiceState(serverId: 'server', connection: client);
     await state.start();
     await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('current');
     state
       ..models = const [
         CodexModel(
@@ -304,13 +407,92 @@ void main() {
     expect(client.startThreadParams.single.permissions, 'full-access');
     expect(state.selectedThread?.id, 'new-thread');
     expect(state.catalog.projects.single.threads.map((value) => value.id), [
+      'before',
       'new-thread',
-      'existing',
+      'current',
+      'after',
     ]);
     await state.ensureThreadResumedForSend('new-thread');
     expect(client.resumedThreadIds, isEmpty);
     await state.close();
   });
+
+  test(
+    'places externally started and refresh-discovered threads before current',
+    () async {
+      final before = thread('before', updatedAt: 30);
+      final current = thread('current', updatedAt: 20);
+      final after = thread('after', updatedAt: 10);
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [before, current, after]),
+        },
+        globalState: jsonEncode({
+          'local-projects': {
+            'motif': {
+              'id': 'motif',
+              'name': 'Motif',
+              'rootPaths': ['/work/motif'],
+            },
+          },
+          'project-order': ['motif'],
+          'pinned-thread-ids': <String>[],
+          'projectless-thread-ids': <String>[],
+          'thread-project-assignments': {
+            'before': {'projectKind': 'local', 'projectId': 'motif'},
+            'current': {'projectKind': 'local', 'projectId': 'motif'},
+            'after': {'projectKind': 'local', 'projectId': 'motif'},
+          },
+          'sidebar-project-thread-orders': {
+            'motif': {
+              'threadIds': ['before', 'current', 'after'],
+            },
+          },
+        }),
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('current');
+
+      final external = thread('external', updatedAt: 100);
+      client.emit(
+        CodexThreadStartedNotification2(
+          params: CodexThreadStartedNotification(thread: external),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
+        'before',
+        'external',
+        'current',
+        'after',
+      ]);
+
+      // A duplicate notification updates the thread but must not place it a
+      // second time relative to the current selection.
+      client.emit(
+        CodexThreadStartedNotification2(
+          params: CodexThreadStartedNotification(thread: external),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final refreshed = thread('refreshed', updatedAt: 200);
+      client.pages[null] = CodexThreadListResponse(
+        data: [refreshed, external, before, current, after],
+      );
+      await state.refreshCatalog(showLoading: false);
+      expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
+        'before',
+        'external',
+        'refreshed',
+        'current',
+        'after',
+      ]);
+      await state.close();
+    },
+  );
 
   test(
     'hydrates turns and applies live item deltas and plan updates',
@@ -563,10 +745,15 @@ void main() {
 
 final class FakeCodexClient extends ChangeNotifier
     implements CodexAppServerClient {
-  FakeCodexClient({required this.pages, this.globalState});
+  FakeCodexClient({
+    required this.pages,
+    this.globalState,
+    this.models = const [],
+  });
 
   final Map<String?, CodexThreadListResponse> pages;
   final String? globalState;
+  final List<CodexModel> models;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
@@ -694,6 +881,13 @@ final class FakeCodexClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(
+    String threadId,
+  ) async => const CodexThreadUnsubscribeResponse(
+    status: CodexThreadUnsubscribeStatus.unsubscribed,
+  );
+
+  @override
   Future<CodexThreadResumeResponse> resumeThread(String threadId) async {
     resumedThreadIds.add(threadId);
     final original = pages.values
@@ -737,7 +931,7 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexModelListResponse> listModels(
     CodexModelListParams params,
-  ) async => const CodexModelListResponse(data: []);
+  ) async => CodexModelListResponse(data: models);
 
   @override
   Future<CodexPermissionProfileListResponse> listPermissionProfiles(

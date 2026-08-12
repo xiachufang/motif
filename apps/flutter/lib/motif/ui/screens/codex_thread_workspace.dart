@@ -5,20 +5,36 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../codex/codex_agent_output_parser.dart';
 import '../../codex/codex_composer_models.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
+import '../../models/motif_proto.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_turn_activity.dart';
 
 const _turnTopLevelItemSpacing = MotifSpacing.lg;
 
-class CodexThreadWorkspace extends StatefulWidget {
-  const CodexThreadWorkspace({required this.state, super.key});
+typedef CodexTurnActionBuilder =
+    Widget Function(
+      BuildContext context,
+      CodexConversationState state,
+      CodexTurn turn,
+    );
 
-  final CodexServiceState state;
+class CodexThreadWorkspace extends StatefulWidget {
+  const CodexThreadWorkspace({
+    required this.state,
+    this.turnActionBuilder = _persistentForkAction,
+    this.onOpenWorkspaceView,
+    super.key,
+  });
+
+  final CodexConversationState state;
+  final CodexTurnActionBuilder turnActionBuilder;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   State<CodexThreadWorkspace> createState() => _CodexThreadWorkspaceState();
@@ -90,7 +106,12 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
                             ),
                           if (state.turns.isEmpty) const _EmptyConversation(),
                           for (final turn in state.turns)
-                            _TurnSection(state: state, turn: turn),
+                            _TurnSection(
+                              state: state,
+                              turn: turn,
+                              actionBuilder: widget.turnActionBuilder,
+                              onOpenWorkspaceView: widget.onOpenWorkspaceView,
+                            ),
                           for (final request in state.pendingServerRequests)
                             _ServerRequestCard(
                               key: ValueKey(request.toJson().toString()),
@@ -175,7 +196,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     );
   }
 
-  CodexPlanThreadItem? _decisionPlan(CodexServiceState state) {
+  CodexPlanThreadItem? _decisionPlan(CodexConversationState state) {
     final pendingItemId = state.awaitingPlanDecisionItemId;
     if (!state.planModeEnabled ||
         pendingItemId == null ||
@@ -372,10 +393,17 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
 }
 
 class _TurnSection extends StatefulWidget {
-  const _TurnSection({required this.state, required this.turn});
+  const _TurnSection({
+    required this.state,
+    required this.turn,
+    required this.actionBuilder,
+    required this.onOpenWorkspaceView,
+  });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexTurn turn;
+  final CodexTurnActionBuilder actionBuilder;
+  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
 
   @override
   State<_TurnSection> createState() => _TurnSectionState();
@@ -420,7 +448,12 @@ class _TurnSectionState extends State<_TurnSection> {
             ),
           const SizedBox(height: MotifSpacing.md),
           if (turn.status == CodexTurnStatus.inProgress)
-            ..._turnContent(state, turn, turn.items)
+            ..._turnContent(
+              state,
+              turn,
+              turn.items,
+              onOpenWorkspaceView: widget.onOpenWorkspaceView,
+            )
           else
             ..._completedTurnContent(state, turn),
           if (turn.error != null) _InlineError(message: turn.error!.message),
@@ -429,8 +462,18 @@ class _TurnSectionState extends State<_TurnSection> {
               turnId: turn.id,
               items: turn.items.whereType<CodexFileChangeThreadItem>().toList(),
               cwd: state.selectedThread?.cwd.value,
+              onOpenDiff: widget.onOpenWorkspaceView == null
+                  ? null
+                  : (path) => widget.onOpenWorkspaceView!(
+                      DiffViewSpec(staged: false, path: path),
+                    ),
             ),
-            _ResponseActions(state: state, turn: turn, response: response),
+            _ResponseActions(
+              state: state,
+              turn: turn,
+              response: response,
+              actionBuilder: widget.actionBuilder,
+            ),
           ],
           if (turn.status == CodexTurnStatus.inProgress)
             CodexTurnProgress(reasoning: latestReasoning),
@@ -439,7 +482,10 @@ class _TurnSectionState extends State<_TurnSection> {
     );
   }
 
-  List<Widget> _completedTurnContent(CodexServiceState state, CodexTurn turn) {
+  List<Widget> _completedTurnContent(
+    CodexConversationState state,
+    CodexTurn turn,
+  ) {
     final items = turn.items;
     var leadingEnd = 0;
     while (leadingEnd < items.length &&
@@ -473,7 +519,13 @@ class _TurnSectionState extends State<_TurnSection> {
         ? const <CodexThreadItem>[]
         : items.skip(responseIndex).toList(growable: false);
     return [
-      ..._turnContent(state, turn, leading, groupKeyPrefix: 'leading'),
+      ..._turnContent(
+        state,
+        turn,
+        leading,
+        groupKeyPrefix: 'leading',
+        onOpenWorkspaceView: widget.onOpenWorkspaceView,
+      ),
       _WorkedHeader(
         turn: turn,
         expanded: _historyExpanded,
@@ -488,18 +540,26 @@ class _TurnSectionState extends State<_TurnSection> {
           history,
           groupKeyPrefix: 'history',
           boundedActivity: false,
+          onOpenWorkspaceView: widget.onOpenWorkspaceView,
         ),
-      ..._turnContent(state, turn, response, groupKeyPrefix: 'response'),
+      ..._turnContent(
+        state,
+        turn,
+        response,
+        groupKeyPrefix: 'response',
+        onOpenWorkspaceView: widget.onOpenWorkspaceView,
+      ),
     ];
   }
 }
 
 List<Widget> _turnContent(
-  CodexServiceState state,
+  CodexConversationState state,
   CodexTurn turn,
   Iterable<CodexThreadItem> items, {
   String groupKeyPrefix = 'active',
   bool boundedActivity = true,
+  Future<void> Function(ViewSpec spec)? onOpenWorkspaceView,
 }) {
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
@@ -519,6 +579,7 @@ List<Widget> _turnContent(
           state: state,
           items: List.unmodifiable(activity),
           boundedDetails: boundedActivity,
+          onOpenWorkspaceView: onOpenWorkspaceView,
         ),
       ),
     );
@@ -641,7 +702,7 @@ bool _isVisibleTextBoundary(CodexThreadItem item) => switch (item) {
 class _ThreadItemView extends StatelessWidget {
   const _ThreadItemView({required this.state, required this.item});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexThreadItem item;
 
   @override
@@ -779,7 +840,7 @@ class _PlanDetailScreen extends StatelessWidget {
 class _UserMessage extends StatelessWidget {
   const _UserMessage({required this.state, required this.item});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexUserMessageThreadItem item;
 
   @override
@@ -845,7 +906,7 @@ class _UserMessage extends StatelessWidget {
 class _RemoteImage extends StatelessWidget {
   const _RemoteImage({required this.state, required this.path});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final String path;
 
   @override
@@ -883,9 +944,10 @@ class _AgentMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    if (item.text.trim().isEmpty) return const SizedBox.shrink();
+    final visibleText = const CodexAgentOutputParser().parse(item.text);
+    if (visibleText.trim().isEmpty) return const SizedBox.shrink();
     return CodexMarkdown(
-      item.text,
+      visibleText,
       style: MotifType.body.copyWith(color: c.textPrimary, height: 1.55),
     );
   }
@@ -896,16 +958,17 @@ class _ResponseActions extends StatelessWidget {
     required this.state,
     required this.turn,
     required this.response,
+    required this.actionBuilder,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexTurn turn;
   final CodexAgentMessageThreadItem? response;
+  final CodexTurnActionBuilder actionBuilder;
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final forking = state.forkingTurnId == turn.id;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -917,7 +980,11 @@ class _ResponseActions extends StatelessWidget {
             iconSize: MotifIconSize.sm,
             color: c.textTertiary,
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: response.text));
+              await Clipboard.setData(
+                ClipboardData(
+                  text: const CodexAgentOutputParser().parse(response.text),
+                ),
+              );
               if (!context.mounted) return;
               ScaffoldMessenger.maybeOf(context)?.showSnackBar(
                 const SnackBar(
@@ -928,37 +995,46 @@ class _ResponseActions extends StatelessWidget {
             },
             icon: const Icon(Icons.content_copy_rounded),
           ),
-        if (forking)
-          const Padding(
-            padding: EdgeInsets.all(MotifSpacing.sm),
-            child: SizedBox(
-              width: MotifIconSize.sm,
-              height: MotifIconSize.sm,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          )
-        else
-          IconButton(
-            key: ValueKey('codex-fork-${turn.id}'),
-            tooltip: 'Fork from this turn',
-            visualDensity: VisualDensity.compact,
-            iconSize: MotifIconSize.sm,
-            color: c.textTertiary,
-            onPressed: () async {
-              final forked = await state.forkThreadAtTurn(turn.id);
-              if (!context.mounted || !forked) return;
-              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                const SnackBar(
-                  content: Text('Fork created'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-            icon: const Icon(Icons.call_split_rounded),
-          ),
+        actionBuilder(context, state, turn),
       ],
     );
   }
+}
+
+Widget _persistentForkAction(
+  BuildContext context,
+  CodexConversationState state,
+  CodexTurn turn,
+) {
+  final c = context.motif;
+  if (state.forkingTurnId == turn.id) {
+    return const Padding(
+      padding: EdgeInsets.all(MotifSpacing.sm),
+      child: SizedBox(
+        width: MotifIconSize.sm,
+        height: MotifIconSize.sm,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    );
+  }
+  return IconButton(
+    key: ValueKey('codex-fork-${turn.id}'),
+    tooltip: 'Fork from this turn',
+    visualDensity: VisualDensity.compact,
+    iconSize: MotifIconSize.sm,
+    color: c.textTertiary,
+    onPressed: () async {
+      final forked = await state.forkThreadAtTurn(turn.id);
+      if (!context.mounted || !forked) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(
+          content: Text('Fork created'),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    },
+    icon: const Icon(Icons.call_split_rounded),
+  );
 }
 
 class _CollapsedItem extends StatelessWidget {
@@ -1405,7 +1481,7 @@ class _Composer extends StatelessWidget {
     required this.onSubmit,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final TextEditingController controller;
   final FocusNode focusNode;
   final List<CodexPendingAttachment> attachments;
@@ -1591,7 +1667,7 @@ class _ComposerAddButton extends StatelessWidget {
     required this.onTogglePlan,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final Future<void> Function() onAddImages;
   final Future<void> Function() onAddFiles;
   final ValueChanged<CodexComposerReference> onAddReference;
@@ -1636,20 +1712,21 @@ class _ComposerAddButton extends StatelessWidget {
           value: 'image',
           child: _ComposerMenuRow(icon: Icons.image_outlined, label: 'Images'),
         ),
-        PopupMenuItem(
-          key: const ValueKey('codex-add-goal'),
-          value: 'goal',
-          child: _ComposerMenuRow(
-            icon: Icons.track_changes_rounded,
-            label: 'Goal',
-            description: state.goal == null
-                ? state.goalModeEnabled
-                      ? 'Turn goal mode off'
-                      : 'Set a goal to keep pursuing'
-                : state.goal!.objective,
-            selected: state.goalModeEnabled,
+        if (state.supports(CodexConversationFeature.goals))
+          PopupMenuItem(
+            key: const ValueKey('codex-add-goal'),
+            value: 'goal',
+            child: _ComposerMenuRow(
+              icon: Icons.track_changes_rounded,
+              label: 'Goal',
+              description: state.goal == null
+                  ? state.goalModeEnabled
+                        ? 'Turn goal mode off'
+                        : 'Set a goal to keep pursuing'
+                  : state.goal!.objective,
+              selected: state.goalModeEnabled,
+            ),
           ),
-        ),
         PopupMenuItem(
           key: const ValueKey('codex-add-plan'),
           value: 'plan',
@@ -1744,7 +1821,7 @@ class _ComposerSelections extends StatelessWidget {
     required this.onRemoveGoal,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final List<CodexComposerReference> references;
   final bool compact;
   final ValueChanged<CodexComposerReference> onRemoveReference;
@@ -1756,7 +1833,8 @@ class _ComposerSelections extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         _PermissionSelector(state: state, compact: compact),
-        if (state.goal != null || state.goalModeEnabled) ...[
+        if (state.supports(CodexConversationFeature.goals) &&
+            (state.goal != null || state.goalModeEnabled)) ...[
           const SizedBox(width: MotifSpacing.xs),
           _ComposerChip(
             key: const ValueKey('codex-goal-chip'),
@@ -1859,32 +1937,42 @@ class _ComposerChip extends StatelessWidget {
 class _PermissionSelector extends StatelessWidget {
   const _PermissionSelector({required this.state, this.compact = false});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    final c = context.motif;
     final selected = state.permissionProfiles
         .where((profile) => profile.id == state.selectedPermissionId)
         .firstOrNull;
+    final selectedAppearance = _permissionAppearance(selected);
     return PopupMenuButton<String>(
       key: const ValueKey('codex-permission-selector'),
       tooltip: 'Permissions',
       onSelected: (value) =>
           state.selectPermissionProfile(value == '__default__' ? null : value),
       itemBuilder: (_) => [
-        const PopupMenuItem(
+        PopupMenuItem(
+          key: const ValueKey('codex-permission-option-default'),
           value: '__default__',
-          child: Text('Default permissions'),
+          child: _PermissionMenuRow(
+            icon: Icons.shield_outlined,
+            label: 'Default permissions',
+            selected: selected == null,
+          ),
         ),
         for (final profile in state.permissionProfiles.where(
           (value) => value.allowed,
         ))
           PopupMenuItem(
+            key: ValueKey('codex-permission-option-${profile.id}'),
             value: profile.id,
-            child: ListTile(
-              title: Text(profile.description ?? profile.id),
-              subtitle: profile.description == null ? null : Text(profile.id),
+            child: _PermissionMenuRow(
+              icon: _permissionAppearance(profile).icon,
+              label: _permissionAppearance(profile).label,
+              selected: profile.id == state.selectedPermissionId,
+              danger: _permissionAppearance(profile).danger,
             ),
           ),
       ],
@@ -1900,15 +1988,21 @@ class _PermissionSelector extends StatelessWidget {
               ? MainAxisAlignment.center
               : MainAxisAlignment.start,
           children: [
-            const Icon(Icons.shield_outlined, size: MotifIconSize.sm),
+            Icon(
+              selectedAppearance.icon,
+              size: MotifIconSize.sm,
+              color: selectedAppearance.danger ? c.danger : null,
+            ),
             if (!compact) ...[
               const SizedBox(width: MotifSpacing.xs),
               Flexible(
                 child: Text(
-                  selected?.description ?? selected?.id ?? 'Default',
+                  selectedAppearance.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: MotifType.callout,
+                  style: MotifType.callout.copyWith(
+                    color: selectedAppearance.danger ? c.danger : null,
+                  ),
                 ),
               ),
             ],
@@ -1919,10 +2013,119 @@ class _PermissionSelector extends StatelessWidget {
   }
 }
 
+class _PermissionMenuRow extends StatelessWidget {
+  const _PermissionMenuRow({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    this.danger = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final bool danger;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final color = danger ? c.danger : c.textSecondary;
+    return Row(
+      children: [
+        Icon(icon, size: MotifIconSize.md, color: color),
+        const SizedBox(width: MotifSpacing.md),
+        Expanded(
+          child: Text(
+            label,
+            style: MotifType.body.copyWith(
+              color: danger ? c.danger : c.textPrimary,
+            ),
+          ),
+        ),
+        if (selected) ...[
+          const SizedBox(width: MotifSpacing.md),
+          Icon(Icons.check_rounded, size: MotifIconSize.md, color: color),
+        ],
+      ],
+    );
+  }
+}
+
+({IconData icon, bool danger, String label}) _permissionAppearance(
+  CodexPermissionProfileSummary? profile,
+) {
+  if (profile == null) {
+    return (icon: Icons.shield_outlined, danger: false, label: 'Default');
+  }
+  final value = '${profile.id} ${profile.description ?? ''}'.toLowerCase();
+  if ((value.contains('ask') && value.contains('approval')) ||
+      value.contains('on-request')) {
+    return (
+      icon: Icons.front_hand_outlined,
+      danger: false,
+      label: 'Ask for approval',
+    );
+  }
+  if ((value.contains('approve') && value.contains('me')) ||
+      value.contains('auto-approve')) {
+    return (
+      icon: Icons.verified_user_outlined,
+      danger: false,
+      label: 'Approve for me',
+    );
+  }
+  if (value.contains('danger-full-access') ||
+      value.contains('danger full access') ||
+      value.contains('full-access') ||
+      value.contains('full access')) {
+    return (
+      icon: Icons.error_outline_rounded,
+      danger: true,
+      label: 'Full access',
+    );
+  }
+  if (value.contains('custom') || value.contains('config.toml')) {
+    return (
+      icon: Icons.settings_outlined,
+      danger: false,
+      label: 'Custom (config.toml)',
+    );
+  }
+  if (value.contains('read-only') || value.contains('read only')) {
+    return (
+      icon: Icons.lock_outline_rounded,
+      danger: false,
+      label: 'Read only',
+    );
+  }
+  if (value.contains('workspace-write') || value.contains('workspace write')) {
+    return (
+      icon: Icons.drive_file_rename_outline,
+      danger: false,
+      label: 'Workspace write',
+    );
+  }
+  if (profile.id.toLowerCase().replaceFirst(RegExp(r'^:+'), '') ==
+      'workspace') {
+    return (
+      icon: Icons.drive_file_rename_outline,
+      danger: false,
+      label: 'Workspace',
+    );
+  }
+  return (
+    icon: Icons.tune_rounded,
+    danger: false,
+    label: profile.description?.trim().isNotEmpty == true
+        ? profile.description!.trim()
+        : profile.id.replaceFirst(RegExp(r'^:+'), ''),
+  );
+}
+
 class _ModelSettingsSelector extends StatelessWidget {
   const _ModelSettingsSelector({required this.state});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
 
   @override
   Widget build(BuildContext context) {
@@ -2156,7 +2359,7 @@ class _ServerRequestCard extends StatelessWidget {
     super.key,
   });
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexServerRequest request;
 
   @override
@@ -2205,7 +2408,7 @@ class _ServerRequestCard extends StatelessWidget {
 class _QuestionnaireCard extends StatefulWidget {
   const _QuestionnaireCard({required this.state, required this.request});
 
-  final CodexServiceState state;
+  final CodexConversationState state;
   final CodexItemToolRequestUserInputRequest request;
 
   @override
@@ -2478,7 +2681,7 @@ class _SubmitIntent extends Intent {
   const _SubmitIntent();
 }
 
-int _eventCount(CodexServiceState state) => state.turns.fold<int>(
+int _eventCount(CodexConversationState state) => state.turns.fold<int>(
   state.pendingServerRequests.length + state.queuedMessages.length,
   (sum, turn) => sum + turn.items.length,
 );

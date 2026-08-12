@@ -147,6 +147,31 @@ void main() {
     expect(snapshot.projectNameForThread('ordered-collision'), 'Second');
   });
 
+  test('local placements insert before an anchor only in the same group', () {
+    final snapshot = buildCodexCatalog(
+      [
+        thread('before', cwd: '/work', updatedAt: 40),
+        thread('current', cwd: '/work', updatedAt: 30),
+        thread('new', cwd: '/work', updatedAt: 50),
+        thread('other-newest', cwd: '/other', updatedAt: 60),
+        thread('other-new', cwd: '/other', updatedAt: 55),
+      ],
+      null,
+      insertBeforeByThreadId: {
+        'new': 'current',
+        'other-newest': 'current',
+        'other-new': 'current',
+      },
+    );
+
+    final groups = {
+      for (final group in snapshot.projects)
+        group.project.id: group.threads.map((thread) => thread.id).toList(),
+    };
+    expect(groups['cwd:/work'], ['before', 'new', 'current']);
+    expect(groups['cwd:/other'], ['other-newest', 'other-new']);
+  });
+
   test('parser and title helpers tolerate invalid and sparse values', () {
     expect(CodexGlobalStateData.tryParse('{invalid'), isNull);
     expect(CodexGlobalStateData.tryParse('{}'), isNull);

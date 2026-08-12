@@ -7,6 +7,7 @@ import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/codex_sidebar_components.dart';
 
 class CodexThreadSidebar extends StatefulWidget {
   const CodexThreadSidebar({
@@ -65,11 +66,33 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
       child: SafeArea(
         child: Column(
           children: [
-            _ModeHeader(
-              mode: widget.mode,
-              refreshing: state.catalogPhase == CodexCatalogPhase.loading,
-              onChanged: widget.onModeChanged,
-              onRefresh: () => unawaited(state.refreshCatalog()),
+            CodexSidebarHeader(
+              label: 'Threads',
+              actions: [
+                CodexSidebarIconButton(
+                  key: const ValueKey('codex-mode-timeline'),
+                  icon: Icons.schedule_outlined,
+                  tooltip: widget.mode == CodexSidebarMode.timeline
+                      ? 'Group by project'
+                      : 'Group by time',
+                  selected: widget.mode == CodexSidebarMode.timeline,
+                  onTap: () => widget.onModeChanged(
+                    widget.mode == CodexSidebarMode.timeline
+                        ? CodexSidebarMode.projects
+                        : CodexSidebarMode.timeline,
+                  ),
+                ),
+                CodexSidebarIconButton(
+                  key: const ValueKey('codex-threads-refresh'),
+                  icon: Icons.refresh,
+                  tooltip: 'Refresh threads',
+                  selected: false,
+                  busy: state.catalogPhase == CodexCatalogPhase.loading,
+                  onTap: state.catalogPhase == CodexCatalogPhase.loading
+                      ? null
+                      : () => unawaited(state.refreshCatalog()),
+                ),
+              ],
             ),
             Divider(height: 1, color: c.border),
             if (state.catalogPhase == CodexCatalogPhase.loading &&
@@ -125,7 +148,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
     final snapshot = widget.serviceState.catalog;
     final children = <Widget>[];
     if (snapshot.pinnedThreads.isNotEmpty) {
-      children.add(const _SectionHeading('Pinned'));
+      children.add(const CodexSidebarSectionHeading('Pinned'));
       children.addAll(
         snapshot.pinnedThreads.map(
           (thread) => _threadRow(thread, pinned: true),
@@ -133,7 +156,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
       );
     }
 
-    children.add(const _SectionHeading('Projects'));
+    children.add(const CodexSidebarSectionHeading('Projects'));
     final visibleProjects = _showAllProjects
         ? snapshot.projects
         : snapshot.projects.take(_initialProjectCount);
@@ -190,7 +213,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
     }
 
     if (snapshot.projectlessThreads.isNotEmpty) {
-      children.add(const _SectionHeading('Recents'));
+      children.add(const CodexSidebarSectionHeading('Recents'));
       children.addAll(snapshot.projectlessThreads.map(_threadRow));
     }
     if (snapshot.allThreads.isEmpty && snapshot.projects.isEmpty) {
@@ -219,11 +242,11 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
 
     final children = <Widget>[];
     if (priority.isNotEmpty) {
-      children.add(const _SectionHeading('Priority'));
+      children.add(const CodexSidebarSectionHeading('Priority'));
       children.addAll(priority.map(_timelineThreadRow));
     }
     for (final entry in groups.entries) {
-      children.add(_SectionHeading(entry.key));
+      children.add(CodexSidebarSectionHeading(entry.key));
       children.addAll(entry.value.map(_timelineThreadRow));
     }
     if (children.isEmpty) children.add(const _EmptyCatalog());
@@ -250,11 +273,12 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
     bool pinned = false,
     bool indented = false,
     String? subtitle,
-  }) => _ThreadRow(
+  }) => CodexSidebarThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
-    thread: thread,
+    title: codexThreadTitle(thread),
     selected: widget.serviceState.selectedThread?.id == thread.id,
     loading: widget.serviceState.readingThreadId == thread.id,
+    active: codexThreadIsActive(thread),
     pinned: pinned,
     indented: indented,
     subtitle: subtitle,
@@ -300,130 +324,6 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   void _setShowAllProjects(bool value) {
     setState(() => _showAllProjects = value);
     widget.codexState.setShowAllProjects(_serverId, value);
-  }
-}
-
-class _ModeHeader extends StatelessWidget {
-  const _ModeHeader({
-    required this.mode,
-    required this.refreshing,
-    required this.onChanged,
-    required this.onRefresh,
-  });
-
-  final CodexSidebarMode mode;
-  final bool refreshing;
-  final ValueChanged<CodexSidebarMode> onChanged;
-  final VoidCallback onRefresh;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: MotifSpacing.md,
-        vertical: MotifSpacing.sm,
-      ),
-      child: Row(
-        children: [
-          _ModeButton(
-            key: const ValueKey('codex-mode-timeline'),
-            icon: Icons.schedule_outlined,
-            tooltip: mode == CodexSidebarMode.timeline
-                ? 'Group by project'
-                : 'Group by time',
-            selected: mode == CodexSidebarMode.timeline,
-            onTap: () => onChanged(
-              mode == CodexSidebarMode.timeline
-                  ? CodexSidebarMode.projects
-                  : CodexSidebarMode.timeline,
-            ),
-          ),
-          const SizedBox(width: MotifSpacing.xs),
-          _ModeButton(
-            key: const ValueKey('codex-threads-refresh'),
-            icon: Icons.refresh,
-            tooltip: 'Refresh threads',
-            selected: false,
-            busy: refreshing,
-            onTap: refreshing ? null : onRefresh,
-          ),
-          const Spacer(),
-          Text('Threads', style: MotifType.caption),
-        ],
-      ),
-    );
-  }
-}
-
-class _ModeButton extends StatelessWidget {
-  const _ModeButton({
-    required this.icon,
-    required this.tooltip,
-    required this.selected,
-    required this.onTap,
-    this.busy = false,
-    super.key,
-  });
-
-  final IconData icon;
-  final String tooltip;
-  final bool selected;
-  final VoidCallback? onTap;
-  final bool busy;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: selected ? c.accentFill() : Colors.transparent,
-        borderRadius: BorderRadius.circular(MotifRadius.xs),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(MotifRadius.xs),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(MotifSpacing.sm),
-            child: busy
-                ? SizedBox.square(
-                    dimension: MotifIconSize.md,
-                    child: CircularProgressIndicator(
-                      key: const ValueKey('codex-threads-refreshing'),
-                      strokeWidth: 2,
-                      color: c.accent,
-                    ),
-                  )
-                : Icon(
-                    icon,
-                    size: MotifIconSize.md,
-                    color: selected ? c.accent : c.textTertiary,
-                  ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SectionHeading extends StatelessWidget {
-  const _SectionHeading(this.label);
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        MotifSpacing.lg,
-        MotifSpacing.lg,
-        MotifSpacing.lg,
-        MotifSpacing.xs,
-      ),
-      child: Text(
-        label,
-        style: MotifType.headline.copyWith(color: c.textTertiary),
-      ),
-    );
   }
 }
 
@@ -501,101 +401,6 @@ class _ProjectRow extends StatelessWidget {
               color: c.textTertiary,
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ThreadRow extends StatelessWidget {
-  const _ThreadRow({
-    required this.thread,
-    required this.selected,
-    required this.loading,
-    required this.pinned,
-    required this.indented,
-    required this.subtitle,
-    required this.onTap,
-    super.key,
-  });
-
-  final CodexThread thread;
-  final bool selected;
-  final bool loading;
-  final bool pinned;
-  final bool indented;
-  final String? subtitle;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    final active = codexThreadIsActive(thread);
-    return Padding(
-      padding: EdgeInsets.only(
-        left: indented ? MotifSpacing.xl : MotifSpacing.sm,
-        right: MotifSpacing.sm,
-      ),
-      child: Material(
-        color: selected ? c.accentFill() : Colors.transparent,
-        borderRadius: BorderRadius.circular(MotifRadius.xs),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(MotifRadius.xs),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: MotifSpacing.md,
-              vertical: MotifSpacing.xs,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        codexThreadTitle(thread),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: MotifType.body.copyWith(color: c.textPrimary),
-                      ),
-                      if (subtitle?.isNotEmpty == true) ...[
-                        const SizedBox(height: 3),
-                        Text(
-                          subtitle!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: MotifType.subhead.copyWith(
-                            color: c.textTertiary,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                if (pinned) ...[
-                  const SizedBox(width: MotifSpacing.xs),
-                  Icon(
-                    Icons.push_pin_outlined,
-                    size: MotifIconSize.sm,
-                    color: c.textTertiary,
-                  ),
-                ],
-                if (loading || active) ...[
-                  const SizedBox(width: MotifSpacing.sm),
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: c.accent,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
         ),
       ),
     );

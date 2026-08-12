@@ -9,9 +9,46 @@ import 'protocol/generated/codex_app_server_protocol.dart';
 
 enum CodexCatalogPhase { idle, loading, ready, failed }
 
-/// Runtime state for the one Codex service exposed by a Motif server.
-final class CodexServiceState extends ChangeNotifier {
-  CodexServiceState({required this.serverId, required this.connection}) {
+enum CodexConversationFeature { goals }
+
+abstract interface class CodexConnectionLease {
+  const CodexConnectionLease();
+
+  Future<void> release(CodexAppServerClient connection);
+}
+
+final class CodexOwnedConnectionLease implements CodexConnectionLease {
+  const CodexOwnedConnectionLease();
+
+  @override
+  Future<void> release(CodexAppServerClient connection) async {
+    await connection.close();
+    connection.dispose();
+  }
+}
+
+/// A lease for a connection owned by a parent collection. Disposing a
+/// conversation removes its subscriptions without closing the shared socket.
+final class CodexSharedConnectionLease implements CodexConnectionLease {
+  const CodexSharedConnectionLease();
+
+  @override
+  Future<void> release(CodexAppServerClient connection) async {}
+}
+
+/// State for one active Codex conversation.
+///
+/// The normal Codex service subclasses this state with its persisted catalog.
+/// Ephemeral conversations can use it directly while sharing one connection.
+class CodexConversationState extends ChangeNotifier {
+  CodexConversationState({
+    required this.serverId,
+    required this.connection,
+    this.connectionLease = const CodexOwnedConnectionLease(),
+    Set<CodexConversationFeature> features = const {
+      CodexConversationFeature.goals,
+    },
+  }) : features = Set.unmodifiable(features) {
     connection.addListener(_onConnectionChanged);
     _typedSubscription = connection.typedMessages.listen(
       _onTypedMessage,
@@ -23,6 +60,8 @@ final class CodexServiceState extends ChangeNotifier {
 
   final String serverId;
   final CodexAppServerClient connection;
+  final CodexConnectionLease connectionLease;
+  final Set<CodexConversationFeature> features;
 
   CodexCatalogPhase catalogPhase = CodexCatalogPhase.idle;
   String? catalogError;
@@ -63,6 +102,7 @@ final class CodexServiceState extends ChangeNotifier {
   final Map<String, Future<CodexThread>> _pendingThreadResumes = {};
   final Map<String, CodexServerRequest> _serverRequests = {};
   final Map<String, Future<Uint8List>> _remoteFileCache = {};
+  final Map<String, String?> _insertBeforeByThreadId = {};
   late final StreamSubscription<CodexJsonEncodable> _typedSubscription;
   CodexGlobalStateData? _globalState;
   CodexInitializeResponse? _loadedInitializeResponse;
@@ -78,9 +118,14 @@ final class CodexServiceState extends ChangeNotifier {
   bool _modelSelectionTouched = false;
   bool _effortSelectionTouched = false;
   bool _permissionSelectionTouched = false;
+  bool _catalogLoadedOnce = false;
+  String? _preferredModelId;
+  ValueChanged<String?>? _onModelSelected;
   String? _failedReadThreadId;
 
   CodexConnectionState get connectionState => connection.state;
+
+  bool supports(CodexConversationFeature feature) => features.contains(feature);
 
   CodexTurn? get activeTurn {
     for (final turn in turns.reversed) {
@@ -121,6 +166,8 @@ final class CodexServiceState extends ChangeNotifier {
         response == null) {
       return;
     }
+    final knownThreadIds = _threads.keys.toSet();
+    final insertBeforeThreadId = selectedThread?.id;
     final generation = ++_refreshGeneration;
     if (showLoading || _threads.isEmpty) {
       catalogPhase = CodexCatalogPhase.loading;
@@ -137,6 +184,13 @@ final class CodexServiceState extends ChangeNotifier {
       final loadedThreads = await _loadAllThreads();
       final globalState = await globalFuture;
       if (_closed || generation != _refreshGeneration) return;
+      if (_catalogLoadedOnce) {
+        for (final thread in loadedThreads) {
+          if (!thread.ephemeral && !knownThreadIds.contains(thread.id)) {
+            _recordThreadPlacement(thread.id, insertBeforeThreadId);
+          }
+        }
+      }
       _threads
         ..clear()
         ..addEntries(
@@ -145,6 +199,7 @@ final class CodexServiceState extends ChangeNotifier {
               .map((thread) => MapEntry(thread.id, thread)),
         );
       _globalState = globalState;
+      _catalogLoadedOnce = true;
       _rebuildCatalog();
       catalogPhase = CodexCatalogPhase.ready;
       catalogError = null;
@@ -223,9 +278,42 @@ final class CodexServiceState extends ChangeNotifier {
     if (threadId != null) await readThread(threadId);
   }
 
+  /// Opens a thread that is already subscribed on this app-server connection.
+  /// This is used by ephemeral forks, whose `thread/fork` response is the
+  /// authoritative initial state and must not be followed by `thread/read` or
+  /// `thread/resume`.
+  void openSubscribedConversation(CodexThreadForkResponse response) {
+    if (_closed) return;
+    final thread = response.thread;
+    _threads[thread.id] = thread;
+    _resumedThreads[thread.id] = thread;
+    selectedThread = thread;
+    turns = thread.turns;
+    readingThreadId = null;
+    readError = null;
+    _failedReadThreadId = null;
+    goal = null;
+    goalError = null;
+    activePlan = null;
+    awaitingPlanDecisionItemId = null;
+    activeDiff = null;
+    sendError = null;
+    queuedMessages = const [];
+    _serverRequests.clear();
+    pendingServerRequests = const [];
+    selectedModelId = response.model;
+    selectedReasoningEffort = response.reasoningEffort?.value;
+    selectedPermissionId = response.activePermissionProfile?.id;
+    _notify();
+    unawaited(_loadModels());
+    unawaited(_loadCollaborationModes());
+    unawaited(_loadThreadConfiguration(thread));
+  }
+
   /// Starts and opens a new thread rooted in [project].
   Future<bool> createThreadForProject(CodexLocalProject project) async {
     if (_closed || creatingProjectId != null) return false;
+    final insertBeforeThreadId = selectedThread?.id;
     creatingProjectId = project.id;
     createThreadError = null;
     _notify();
@@ -241,7 +329,12 @@ final class CodexServiceState extends ChangeNotifier {
       final thread = response.thread;
       _threads[thread.id] = thread;
       _resumedThreads[thread.id] = thread;
-      _assignThreadToProject(thread, project);
+      _recordThreadPlacement(thread.id, insertBeforeThreadId, replace: true);
+      _assignThreadToProject(
+        thread,
+        project,
+        insertBeforeThreadId: insertBeforeThreadId,
+      );
       selectedThread = thread;
       turns = thread.turns;
       readingThreadId = null;
@@ -298,6 +391,7 @@ final class CodexServiceState extends ChangeNotifier {
   Future<bool> forkThreadAtTurn(String lastTurnId) async {
     final source = selectedThread;
     if (_closed || source == null || forkingTurnId != null) return false;
+    final sourceProject = _projectForThread(source.id);
     final turn = turns
         .where((candidate) => candidate.id == lastTurnId)
         .firstOrNull;
@@ -318,6 +412,14 @@ final class CodexServiceState extends ChangeNotifier {
       final thread = response.thread;
       _threads[thread.id] = thread;
       _resumedThreads[thread.id] = thread;
+      _recordThreadPlacement(thread.id, source.id, replace: true);
+      if (sourceProject != null) {
+        _assignThreadToProject(
+          thread,
+          sourceProject,
+          insertBeforeThreadId: source.id,
+        );
+      }
       selectedThread = thread;
       turns = thread.turns;
       readingThreadId = null;
@@ -364,13 +466,26 @@ final class CodexServiceState extends ChangeNotifier {
   }
 
   void selectModel(String modelId) {
-    if (selectedModelId == modelId) return;
     _modelSelectionTouched = true;
     _effortSelectionTouched = true;
+    _preferredModelId = modelId;
+    _onModelSelected?.call(modelId);
+    if (selectedModelId == modelId) return;
     selectedModelId = modelId;
     final model = selectedModel;
     selectedReasoningEffort = model?.defaultReasoningEffort.value;
     _notify();
+  }
+
+  void configureModelPreference({
+    String? preferredModelId,
+    ValueChanged<String?>? onSelected,
+  }) {
+    _preferredModelId = preferredModelId?.trim().isEmpty == true
+        ? null
+        : preferredModelId;
+    _onModelSelected = onSelected;
+    if (models.isNotEmpty) _applyPreferredModel(models);
   }
 
   void selectReasoningEffort(String effort) {
@@ -388,6 +503,7 @@ final class CodexServiceState extends ChangeNotifier {
   }
 
   void setGoalMode(bool enabled) {
+    if (!supports(CodexConversationFeature.goals)) return;
     if (goalModeEnabled == enabled) return;
     goalModeEnabled = enabled;
     _notify();
@@ -447,7 +563,7 @@ final class CodexServiceState extends ChangeNotifier {
   Future<void> _loadThreadConfiguration(CodexThread thread) async {
     await Future.wait([
       _loadPermissionProfiles(thread),
-      _loadGoal(thread.id),
+      if (supports(CodexConversationFeature.goals)) _loadGoal(thread.id),
       _loadSkills(thread),
       _loadPlugins(thread),
     ]);
@@ -541,6 +657,7 @@ final class CodexServiceState extends ChangeNotifier {
       }
       if (_closed) return;
       models = List.unmodifiable(loaded);
+      if (loaded.isNotEmpty) _applyPreferredModel(loaded);
       if (selectedModelId == null || selectedModel == null) {
         final preferred = loaded.where((model) => model.isDefault).firstOrNull;
         final model = preferred ?? loaded.firstOrNull;
@@ -554,6 +671,23 @@ final class CodexServiceState extends ChangeNotifier {
       configurationError = 'Could not load models: $error';
       _notify();
     }
+  }
+
+  void _applyPreferredModel(List<CodexModel> loaded) {
+    final preferredId = _preferredModelId;
+    if (preferredId == null) return;
+    final preferred = loaded
+        .where((model) => model.id == preferredId || model.model == preferredId)
+        .firstOrNull;
+    if (preferred == null) {
+      _preferredModelId = null;
+      _onModelSelected?.call(null);
+      return;
+    }
+    _modelSelectionTouched = true;
+    _effortSelectionTouched = true;
+    selectedModelId = preferred.id;
+    selectedReasoningEffort = preferred.defaultReasoningEffort.value;
   }
 
   Future<void> _loadPermissionProfiles(CodexThread thread) async {
@@ -617,7 +751,10 @@ final class CodexServiceState extends ChangeNotifier {
     CodexThreadGoalStatus status = CodexThreadGoalStatus.active,
   }) async {
     final threadId = selectedThread?.id;
-    if (threadId == null || goalLoading || objective.trim().isEmpty) {
+    if (!supports(CodexConversationFeature.goals) ||
+        threadId == null ||
+        goalLoading ||
+        objective.trim().isEmpty) {
       return false;
     }
     goalLoading = true;
@@ -647,7 +784,11 @@ final class CodexServiceState extends ChangeNotifier {
 
   Future<void> clearGoal() async {
     final threadId = selectedThread?.id;
-    if (threadId == null || goalLoading) return;
+    if (!supports(CodexConversationFeature.goals) ||
+        threadId == null ||
+        goalLoading) {
+      return;
+    }
     goalLoading = true;
     goalError = null;
     _notify();
@@ -1060,6 +1201,9 @@ final class CodexServiceState extends ChangeNotifier {
     switch (message) {
       case CodexThreadStartedNotification2(:final params):
         if (!params.thread.ephemeral) {
+          if (!_threads.containsKey(params.thread.id)) {
+            _recordThreadPlacement(params.thread.id, selectedThread?.id);
+          }
           _threads[params.thread.id] = params.thread;
         }
       case CodexThreadStatusChangedNotification2(:final params):
@@ -1083,13 +1227,15 @@ final class CodexServiceState extends ChangeNotifier {
       case CodexThreadClosedNotification2(:final params):
         _removeThread(params.threadId);
       case CodexThreadGoalUpdatedNotification2(:final params)
-          when params.threadId == selectedThread?.id:
+          when supports(CodexConversationFeature.goals) &&
+              params.threadId == selectedThread?.id:
         goal = params.goal;
         goalError = null;
         _notify();
         return;
       case CodexThreadGoalClearedNotification2(:final params)
-          when params.threadId == selectedThread?.id:
+          when supports(CodexConversationFeature.goals) &&
+              params.threadId == selectedThread?.id:
         goal = null;
         goalError = null;
         _notify();
@@ -1217,6 +1363,7 @@ final class CodexServiceState extends ChangeNotifier {
   }
 
   void _removeThread(String threadId) {
+    _forgetThreadPlacement(threadId);
     _threads.remove(threadId);
     _resumedThreads.remove(threadId);
     _pendingThreadResumes.remove(threadId);
@@ -1396,10 +1543,18 @@ final class CodexServiceState extends ChangeNotifier {
   }
 
   void _rebuildCatalog() {
-    catalog = buildCodexCatalog(_threads.values, _globalState);
+    catalog = buildCodexCatalog(
+      _threads.values,
+      _globalState,
+      insertBeforeByThreadId: _insertBeforeByThreadId,
+    );
   }
 
-  void _assignThreadToProject(CodexThread thread, CodexLocalProject project) {
+  void _assignThreadToProject(
+    CodexThread thread,
+    CodexLocalProject project, {
+    String? insertBeforeThreadId,
+  }) {
     final global = _globalState;
     if (global == null || !global.projects.containsKey(project.id)) return;
     final assignments = Map<String, CodexThreadProjectAssignment>.of(
@@ -1413,10 +1568,14 @@ final class CodexServiceState extends ChangeNotifier {
       for (final entry in global.projectThreadOrders.entries)
         entry.key: List<String>.of(entry.value),
     };
+    for (final order in orders.values) {
+      order.remove(thread.id);
+    }
     final order = orders.putIfAbsent(project.id, () => <String>[]);
-    order
-      ..remove(thread.id)
-      ..insert(0, thread.id);
+    final anchorIndex = insertBeforeThreadId == null
+        ? -1
+        : order.indexOf(insertBeforeThreadId);
+    order.insert(anchorIndex == -1 ? 0 : anchorIndex, thread.id);
     _globalState = CodexGlobalStateData(
       projects: global.projects,
       projectOrder: global.projectOrder,
@@ -1428,6 +1587,48 @@ final class CodexServiceState extends ChangeNotifier {
       projectThreadOrders: Map.unmodifiable(orders),
       selectedProjectId: global.selectedProjectId,
     );
+  }
+
+  CodexLocalProject? _projectForThread(String threadId) {
+    for (final group in catalog.projects) {
+      if (group.threads.any((thread) => thread.id == threadId)) {
+        return group.project;
+      }
+    }
+    final global = _globalState;
+    if (global == null || global.projectlessThreadIds.contains(threadId)) {
+      return null;
+    }
+    final assignment = global.assignments[threadId];
+    if (assignment != null) return global.projects[assignment.projectId];
+    final cwd = _threads[threadId]?.cwd.value.trim();
+    if (cwd == null || cwd.isEmpty) return null;
+    for (final project in global.projects.values) {
+      if (project.rootPaths.any((root) => root.trim() == cwd)) return project;
+    }
+    return null;
+  }
+
+  void _recordThreadPlacement(
+    String threadId,
+    String? insertBeforeThreadId, {
+    bool replace = false,
+  }) {
+    if (threadId == insertBeforeThreadId) return;
+    if (!replace && _insertBeforeByThreadId.containsKey(threadId)) return;
+    _insertBeforeByThreadId[threadId] = insertBeforeThreadId;
+  }
+
+  void _forgetThreadPlacement(String threadId) {
+    final hadPlacement = _insertBeforeByThreadId.containsKey(threadId);
+    final replacementAnchor = _insertBeforeByThreadId.remove(threadId);
+    for (final placement in _insertBeforeByThreadId.entries.toList()) {
+      if (placement.value == threadId) {
+        _insertBeforeByThreadId[placement.key] = hadPlacement
+            ? replacementAnchor
+            : null;
+      }
+    }
   }
 
   void _syncSelectedThread() {
@@ -1455,8 +1656,7 @@ final class CodexServiceState extends ChangeNotifier {
         // The socket may have already closed.
       }
     }
-    await connection.close();
-    connection.dispose();
+    await connectionLease.release(connection);
   }
 
   @override
@@ -1464,6 +1664,15 @@ final class CodexServiceState extends ChangeNotifier {
     unawaited(close());
     super.dispose();
   }
+}
+
+/// Runtime state for the one persisted Codex service exposed by a Motif
+/// server. Its catalog API is intentionally absent from Side Chat widgets;
+/// those widgets depend on [CodexConversationState] instead.
+final class CodexServiceState extends CodexConversationState {
+  CodexServiceState({required super.serverId, required super.connection});
+
+  static const globalStateWatchId = CodexConversationState.globalStateWatchId;
 }
 
 String _joinCodexPath(String root, String child) {

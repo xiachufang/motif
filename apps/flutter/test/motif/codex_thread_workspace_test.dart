@@ -8,6 +8,7 @@ import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
+import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
@@ -22,11 +23,17 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       final client = WorkspaceFakeClient();
       final state = workspaceState(client);
+      final openedViews = <ViewSpec>[];
 
       await tester.pumpWidget(
         MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+          home: Scaffold(
+            body: CodexThreadWorkspace(
+              state: state,
+              onOpenWorkspaceView: (spec) async => openedViews.add(spec),
+            ),
+          ),
         ),
       );
       await tester.pump();
@@ -134,6 +141,16 @@ void main() {
       expect(find.text('lib/c.dart'), findsOneWidget);
       expect(find.text('lib/d.dart'), findsNothing);
       expect(find.text('Show 1 more file'), findsOneWidget);
+      tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey('codex-turn-diff-file-lib/a.dart')),
+          )
+          .onTap!();
+      await tester.pump();
+      expect(openedViews, hasLength(1));
+      expect(openedViews.single, isA<DiffViewSpec>());
+      expect((openedViews.single as DiffViewSpec).path, 'lib/a.dart');
+      expect((openedViews.single as DiffViewSpec).staged, isFalse);
       expect(
         tester
             .getTopLeft(
@@ -838,6 +855,184 @@ Only show **this request**.
     state.dispose();
   });
 
+  testWidgets(
+    'permission types have semantic icons and full access is danger',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 900);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..permissionProfiles = const [
+          CodexPermissionProfileSummary(
+            allowed: true,
+            description: 'Ask for approval',
+            id: 'ask-for-approval',
+          ),
+          CodexPermissionProfileSummary(
+            allowed: true,
+            description: 'Approve for me',
+            id: 'approve-for-me',
+          ),
+          CodexPermissionProfileSummary(
+            allowed: true,
+            description: 'Danger: Full access',
+            id: 'danger-full-access',
+          ),
+          CodexPermissionProfileSummary(
+            allowed: true,
+            description: 'Custom: config.toml',
+            id: 'custom',
+          ),
+          CodexPermissionProfileSummary(allowed: true, id: ':workspace'),
+        ]
+        ..selectedPermissionId = 'danger-full-access';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      final selector = find.byKey(const ValueKey('codex-permission-selector'));
+      final selectedIcon = tester.widget<Icon>(
+        find.descendant(
+          of: selector,
+          matching: find.byIcon(Icons.error_outline_rounded),
+        ),
+      );
+      expect(selectedIcon.color, MotifColors.light.danger);
+
+      await tester.tap(selector);
+      await tester.pump(const Duration(milliseconds: 300));
+
+      void expectOptionIcon(String id, IconData icon) {
+        expect(
+          find.descendant(
+            of: find.byKey(ValueKey('codex-permission-option-$id')),
+            matching: find.byIcon(icon),
+          ),
+          findsOneWidget,
+        );
+      }
+
+      expectOptionIcon('ask-for-approval', Icons.front_hand_outlined);
+      expectOptionIcon('approve-for-me', Icons.verified_user_outlined);
+      expectOptionIcon('danger-full-access', Icons.error_outline_rounded);
+      expectOptionIcon('custom', Icons.settings_outlined);
+      expectOptionIcon(':workspace', Icons.drive_file_rename_outline);
+      expect(find.text('Danger: Full access'), findsNothing);
+      expect(find.text('Full access'), findsNWidgets(2));
+      expect(find.text('Custom: config.toml'), findsNothing);
+      expect(find.text('Custom (config.toml)'), findsOneWidget);
+      expect(find.text(':workspace'), findsNothing);
+      expect(find.text('Workspace'), findsOneWidget);
+      expect(
+        tester
+            .widget<Icon>(
+              find.descendant(
+                of: find.byKey(
+                  const ValueKey('codex-permission-option-danger-full-access'),
+                ),
+                matching: find.byIcon(Icons.error_outline_rounded),
+              ),
+            )
+            .color,
+        MotifColors.light.danger,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('codex-permission-option-danger-full-access'),
+          ),
+          matching: find.byIcon(Icons.check_rounded),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets('git directives stay out of agent messages', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    String? copiedText;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copiedText =
+              (call.arguments as Map<Object?, Object?>)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          id: 'git-directives',
+          items: [
+            CodexAgentMessageThreadItem(
+              id: 'git-directive-message',
+              text:
+                  'Finished successfully.\n\n'
+                  '::git-stage{cwd="/work/motif"}\n'
+                  '::git-commit{cwd="/work/motif"}\n'
+                  '::git-push{cwd="/work/motif" branch="main"}\n\n'
+                  '```text\n'
+                  '::git-stage{cwd="example"}\n'
+                  '```',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final response = tester.widget<MarkdownBody>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data.contains('Finished successfully.'),
+      ),
+    );
+    expect(response.data, isNot(contains('::git-commit')));
+    expect(response.data, isNot(contains('::git-push')));
+    expect(response.data, contains('::git-stage{cwd="example"}'));
+
+    await tester.tap(
+      find.byKey(const ValueKey('codex-copy-git-directive-message')),
+    );
+    await tester.pump();
+    expect(copiedText, isNot(contains('::git-commit')));
+    expect(copiedText, isNot(contains('::git-push')));
+    expect(copiedText, contains('::git-stage{cwd="example"}'));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets('goal uses the composer for its objective', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1000, 900);
@@ -1494,6 +1689,13 @@ final class WorkspaceFakeClient extends ChangeNotifier
   Future<CodexThreadStartResponse> startThread(
     CodexThreadStartParams params,
   ) async => throw StateError('unused');
+
+  @override
+  Future<CodexThreadUnsubscribeResponse> unsubscribeThread(
+    String threadId,
+  ) async => const CodexThreadUnsubscribeResponse(
+    status: CodexThreadUnsubscribeStatus.unsubscribed,
+  );
 
   @override
   Future<CodexThreadResumeResponse> resumeThread(String threadId) async =>

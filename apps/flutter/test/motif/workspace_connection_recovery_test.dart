@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_attachment_runtime.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 
@@ -184,6 +185,141 @@ void main() {
     expect(motif.state, isA<ConnAttached>());
     expect(motif.terminal.terminalSurfacePtyIds, {'pty-1'});
   });
+
+  test(
+    'failed mobile events stream reopens with the existing session id',
+    () async {
+      var attachCount = 0;
+      final ptyListSessionHeaders = <String?>[];
+      final eventSockets = <WebSocket>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final motif = WorkspaceConnectionController(session: 'dev');
+      addTearDown(() async {
+        await motif.disconnect();
+        for (final socket in eventSockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+      });
+      server.listen((request) async {
+        if (request.method == 'GET' && request.uri.path == '/ping') {
+          request.response.write(
+            jsonEncode({
+              'service': 'motif-server',
+              'version': 'test',
+              'capabilities': ['ws_probe_v1'],
+            }),
+          );
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'POST' &&
+            request.uri.path == '/rpc/session.attach') {
+          attachCount++;
+          request.response.headers.set('X-Motif-Session', 'sid-1');
+          request.response.write(_attachResponse(lastSeq: 7));
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'POST' && request.uri.path == '/rpc/pty.list') {
+          ptyListSessionHeaders.add(request.headers.value('X-Motif-Session'));
+          request.response.write(jsonEncode({'ptys': <Object?>[]}));
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET' && request.uri.path == '/events') {
+          eventSockets.add(await WebSocketTransformer.upgrade(request));
+          return;
+        }
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+      });
+
+      await motif.connect(_localServerFor(server));
+      expect(eventSockets, hasLength(1));
+      await eventSockets.first.close();
+      await _waitUntil(() => motif.state is ConnFailed);
+
+      final restored = await motif.probeTransport();
+
+      expect(restored, isTrue);
+      expect(attachCount, 1);
+      expect(ptyListSessionHeaders, ['sid-1']);
+      expect(eventSockets, hasLength(2));
+      expect(motif.state, isA<ConnAttached>());
+      expect(motif.attachmentRuntimeState, isA<WorkspaceAttachmentAttached>());
+    },
+  );
+
+  test(
+    'expired mobile attachment reattaches on the existing transport',
+    () async {
+      var attachCount = 0;
+      final attachSessionHeaders = <String?>[];
+      final eventSockets = <WebSocket>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final motif = WorkspaceConnectionController(session: 'dev');
+      addTearDown(() async {
+        await motif.disconnect();
+        for (final socket in eventSockets) {
+          await socket.close();
+        }
+        await server.close(force: true);
+      });
+      server.listen((request) async {
+        if (request.method == 'GET' && request.uri.path == '/ping') {
+          request.response.write(
+            jsonEncode({
+              'service': 'motif-server',
+              'version': 'test',
+              'capabilities': ['ws_probe_v1'],
+            }),
+          );
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'POST' &&
+            request.uri.path == '/rpc/session.attach') {
+          attachSessionHeaders.add(request.headers.value('X-Motif-Session'));
+          attachCount++;
+          request.response.headers.set('X-Motif-Session', 'sid-$attachCount');
+          request.response.write(_attachResponse(lastSeq: attachCount + 7));
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'POST' && request.uri.path == '/rpc/pty.list') {
+          request.response.statusCode = HttpStatus.conflict;
+          request.response.write(
+            jsonEncode({
+              'code': -32009,
+              'message': 'must session.attach first',
+            }),
+          );
+          await request.response.close();
+          return;
+        }
+        if (request.method == 'GET' && request.uri.path == '/events') {
+          eventSockets.add(await WebSocketTransformer.upgrade(request));
+          return;
+        }
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+      });
+
+      await motif.connect(_localServerFor(server));
+      expect(eventSockets, hasLength(1));
+      await eventSockets.first.close();
+      await _waitUntil(() => motif.state is ConnFailed);
+
+      final restored = await motif.probeTransport();
+
+      expect(restored, isTrue);
+      expect(attachCount, 2);
+      expect(attachSessionHeaders, [null, 'sid-1']);
+      expect(eventSockets, hasLength(2));
+      expect(motif.state, isA<ConnAttached>());
+    },
+  );
 
   test('terminal resize waits for reattach before sending RPC', () async {
     final attachStarted = Completer<void>();
@@ -377,4 +513,31 @@ void main() {
     expect(motif.state, isA<ConnAttached>());
     expect(motif.terminal.canInput, isTrue);
   });
+}
+
+MotifServer _localServerFor(HttpServer server) => MotifServer(
+  id: 'local-test',
+  name: 'Local test',
+  host: InternetAddress.loopbackIPv4.address,
+  port: server.port,
+);
+
+String _attachResponse({required int lastSeq}) => jsonEncode({
+  'session': {'name': 'dev'},
+  'client_id': 'client-1',
+  'clients': <Object?>[],
+  'ptys': <Object?>[],
+  'views': <Object?>[],
+  'active_view': null,
+  'last_seq': lastSeq,
+});
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  final stopwatch = Stopwatch()..start();
+  while (!predicate()) {
+    if (stopwatch.elapsed > const Duration(seconds: 2)) {
+      throw TestFailure('condition did not become true within 2 seconds');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }

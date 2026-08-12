@@ -227,6 +227,7 @@ class WorkspaceConnectionController implements SessionAttachment {
   }
 
   StreamSubscription<MotifEvent>? _eventSub;
+  StreamSubscription<void>? _sessionStreamFailureSub;
   int lastSeq = 0;
   int? resumeSequence;
   String? get pendingLocalViewId => viewsController.pendingLocalViewId;

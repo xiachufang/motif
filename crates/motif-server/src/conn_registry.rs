@@ -10,15 +10,17 @@
 //! any single connection — survives transient disconnects, gets reaped
 //! on detach or idle timeout.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use motif_proto::common::SessionId;
+use motif_proto::common::{ClientId, SessionId};
 use parking_lot::Mutex;
 
 use crate::rpc::ConnState;
+use crate::session::Session;
 use crate::session::manager::SessionManager;
 
 /// Soft idle timeout. After this much wall-clock with no `touch()`, the
@@ -39,6 +41,10 @@ pub struct ConnEntry {
     /// is allowed to go idle while `/events`, `/pty`, or `/tcp` remains live;
     /// such an entry must not be mistaken for an abandoned client by GC.
     active_leases: AtomicUsize,
+    /// Active `/events` streams by stable motif Session id. Reopening a stale
+    /// socket can briefly overlap the old handler, so presence is detached only
+    /// after the final stream for that Session exits.
+    event_streams: Mutex<HashMap<SessionId, usize>>,
 }
 
 impl ConnEntry {
@@ -47,6 +53,7 @@ impl ConnEntry {
             state: Mutex::new(state),
             last_seen: Mutex::new(Instant::now()),
             active_leases: AtomicUsize::new(0),
+            event_streams: Mutex::new(HashMap::new()),
         }
     }
 
@@ -64,6 +71,31 @@ impl ConnEntry {
         ConnLease {
             entry: Arc::clone(self),
         }
+    }
+
+    pub fn begin_event_stream(&self, session: &Session, client_id: &ClientId) {
+        let mut streams = self.event_streams.lock();
+        let count = streams.entry(session.id.clone()).or_default();
+        if *count == 0 {
+            session.ensure_client_attached(client_id.clone());
+        }
+        *count += 1;
+    }
+
+    pub fn end_event_stream(&self, session: &Session, client_id: &ClientId) -> bool {
+        let mut streams = self.event_streams.lock();
+        let Some(count) = streams.get_mut(&session.id) else {
+            return false;
+        };
+        *count -= 1;
+        if *count != 0 {
+            return false;
+        }
+        streams.remove(&session.id);
+        // Keep the stream-count lock through the presence update. Otherwise a
+        // replacement stream could observe zero, re-register, and then be
+        // removed by the old handler finishing a moment later.
+        session.detach_client(client_id)
     }
 
     fn is_gc_stale(&self) -> bool {
@@ -177,6 +209,7 @@ impl ConnRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn mint_then_get_returns_same_entry() {
@@ -261,6 +294,27 @@ mod tests {
         *entry.last_seen.lock() = Instant::now() - SESSION_IDLE_TTL - Duration::from_secs(1);
         r.gc(&mgr);
         assert!(r.get(&id).is_none(), "closed stream entry was not reaped");
+    }
+
+    #[test]
+    fn overlapping_event_streams_keep_presence_until_the_last_one_closes() {
+        let entry = ConnEntry::new(ConnState::new());
+        let session = Session::new("event-resume", PathBuf::from("/tmp"));
+        let client_id = "client-1".to_string();
+        assert!(session.attach_client(client_id.clone()).is_some());
+
+        entry.begin_event_stream(&session, &client_id);
+        entry.begin_event_stream(&session, &client_id);
+        assert_eq!(session.info().client_count, 1);
+
+        assert!(!entry.end_event_stream(&session, &client_id));
+        assert_eq!(session.info().client_count, 1);
+        assert!(entry.end_event_stream(&session, &client_id));
+        assert_eq!(session.info().client_count, 0);
+
+        entry.begin_event_stream(&session, &client_id);
+        assert_eq!(session.info().client_count, 1);
+        assert!(entry.end_event_stream(&session, &client_id));
     }
 
     #[test]

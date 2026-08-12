@@ -239,6 +239,8 @@ void main() {
               'sandbox': {'type': 'dangerFullAccess'},
               'thread': threadJson('thread-fork'),
             };
+          case 'thread/unsubscribe':
+            result = {'status': 'unsubscribed'};
           case 'fs/readFile':
             result = {'dataBase64': 'e30='};
           case 'fs/watch':
@@ -317,6 +319,10 @@ void main() {
           ),
         )).thread.id,
         'thread-fork',
+      );
+      expect(
+        (await controller.unsubscribeThread('thread-fork')).status,
+        CodexThreadUnsubscribeStatus.unsubscribed,
       );
       expect((await controller.readFile('/tmp/state.json')).dataBase64, 'e30=');
       expect(
@@ -407,6 +413,9 @@ void main() {
         'lastTurnId': 'turn-0',
         'threadId': 'thread-1',
       });
+      expect(requests['thread/unsubscribe']?['params'], {
+        'threadId': 'thread-fork',
+      });
       expect(requests['fs/readFile']?['params'], {'path': '/tmp/state.json'});
       expect(requests['fs/watch']?['params'], {
         'path': '/tmp/state.json',
@@ -462,7 +471,7 @@ void main() {
           .where((request) => request['id'] != null)
           .map((request) => request['id'])
           .toSet();
-      expect(ids, hasLength(20));
+      expect(ids, hasLength(21));
       await controller.close();
     },
   );

@@ -48,6 +48,7 @@ const _kCursorTruncated = 4011;
 const _kWsProbeRequest = 'motif.probe.v1';
 const _kWsProbeAck = 'motif.probe_ack.v1';
 const _kWsProbeTimeout = Duration(seconds: 2);
+const _kSessionResumeValidationTimeout = Duration(seconds: 3);
 
 final class WsProbeResult {
   const WsProbeResult({
@@ -129,9 +130,15 @@ class RpcClient {
 
   final StreamController<MotifEvent> _events =
       StreamController<MotifEvent>.broadcast();
+  final StreamController<void> _sessionStreamFailures =
+      StreamController<void>.broadcast();
 
   /// Stream of server notifications + client-synthesized pty events.
   Stream<MotifEvent> get events => _events.stream;
+
+  /// Signals that the current `/events` socket ended unexpectedly. The event
+  /// bus itself stays open so this [RpcClient] can resume the same attachment.
+  Stream<void> get sessionStreamFailures => _sessionStreamFailures.stream;
 
   bool get isConnected => _host.isNotEmpty;
   String? get sessionId => _sessionId;
@@ -250,6 +257,45 @@ class RpcClient {
   Future<void> reopenPtyStreams(Set<String> ptyIds) =>
       Future.wait([for (final ptyId in ptyIds) _reopenPtyStream(ptyId)]);
 
+  /// Re-establish the existing attachment's event and PTY sockets without
+  /// replacing its `X-Motif-Session` credential or discarding PTY cursors.
+  ///
+  /// A cheap attached-only RPC first distinguishes an expired attachment from
+  /// a stale WebSocket. Callers can fall back to `session.attach` only for
+  /// [RpcException] code `NotAttached`; other failures still indicate that the
+  /// resolved transport itself should be rebuilt.
+  Future<void> reopenSessionStreams({required int eventSequence}) async {
+    if (_sessionId == null) {
+      throw const RpcException('must session.attach first', code: -32009);
+    }
+    if (_events.isClosed) {
+      throw const RpcException('event stream is no longer reusable');
+    }
+
+    await _rawCall(
+      'pty.list',
+      const {},
+      timeout: _kSessionResumeValidationTimeout,
+    );
+
+    final ptyIds = <String>{..._streamingPtys, ..._desiredStreamingPtys};
+    _ptyStreamGeneration++;
+    _ptyStreamSync = null;
+    _streamingPtys
+      ..clear()
+      ..addAll(ptyIds);
+
+    await Future.wait<void>([
+      _closeEventsSocket(),
+      for (final ptyId in ptyIds)
+        _closePty(ptyId, removeState: false, removeProcessorState: false),
+    ]);
+    await Future.wait<void>([
+      _openEvents(eventSequence),
+      for (final ptyId in ptyIds) _openPty(ptyId),
+    ]);
+  }
+
   Future<void> _reopenPtyStream(String ptyId) async {
     if (!_streamingPtys.contains(ptyId)) return;
     await _closePty(ptyId, removeState: false, removeProcessorState: false);
@@ -288,6 +334,9 @@ class RpcClient {
     await _resetPtyProcessor();
     _sessionId = null;
     if (!_events.isClosed) await _events.close();
+    if (!_sessionStreamFailures.isClosed) {
+      await _sessionStreamFailures.close();
+    }
     _http.close();
   }
 
@@ -333,19 +382,22 @@ class RpcClient {
 
   Future<(Map<String, Object?>, String?)> _rawCall(
     String method,
-    Map<String, Object?> params,
-  ) async {
+    Map<String, Object?> params, {
+    Duration? timeout,
+  }) async {
     final uri = _uri('/rpc/$method');
-    final timeout = method == 'fs.write'
-        ? const Duration(seconds: 60)
-        : const Duration(seconds: 30);
+    final requestTimeout =
+        timeout ??
+        (method == 'fs.write'
+            ? const Duration(seconds: 60)
+            : const Duration(seconds: 30));
     final resp = await _http
         .post(
           uri,
           headers: {..._authHeaders, 'Content-Type': 'application/json'},
           body: jsonEncode(params),
         )
-        .timeout(timeout);
+        .timeout(requestTimeout);
     final sidHeader = resp.headers['x-motif-session'];
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
       try {
@@ -522,14 +574,20 @@ class RpcClient {
         _yieldFrame(Uint8List.fromList(data));
       },
       onDone: () {
-        if (identical(_eventsSocket, socket)) _eventsSocketOpen = false;
+        if (!identical(_eventsSocket, socket)) return;
+        _eventsSocketOpen = false;
         _failWsProbesFor(socket);
-        if (!_events.isClosed) _events.close();
+        if (!_sessionStreamFailures.isClosed) {
+          _sessionStreamFailures.add(null);
+        }
       },
       onError: (Object _) {
-        if (identical(_eventsSocket, socket)) _eventsSocketOpen = false;
+        if (!identical(_eventsSocket, socket)) return;
+        _eventsSocketOpen = false;
         _failWsProbesFor(socket);
-        if (!_events.isClosed) _events.close();
+        if (!_sessionStreamFailures.isClosed) {
+          _sessionStreamFailures.add(null);
+        }
       },
       cancelOnError: true,
     );
@@ -1183,24 +1241,30 @@ class RpcClient {
     _activePtyId = null;
     _ptyStreamSync = null;
 
+    _sessionProbe = null;
+    final ptyIds = _ptys.keys.toList();
+
+    await Future.wait<void>([
+      _closeEventsSocket(),
+      for (final id in ptyIds)
+        _closePty(id, removeState: true, removeProcessorState: false),
+    ]);
+    _ptys.clear();
+  }
+
+  Future<void> _closeEventsSocket() async {
     final eventSub = _eventsSub;
     final eventSocket = _eventsSocket;
     _eventsSub = null;
     _eventsSocket = null;
     _eventsSocketOpen = false;
-    _sessionProbe = null;
     if (eventSocket != null) _failWsProbesFor(eventSocket);
-    final ptyIds = _ptys.keys.toList();
-
     await Future.wait<void>([
       if (eventSub != null)
         _settleStreamCleanup(eventSub.cancel(), 'events subscription'),
       if (eventSocket != null)
         _settleStreamCleanup(eventSocket.sink.close(1000), 'events socket'),
-      for (final id in ptyIds)
-        _closePty(id, removeState: true, removeProcessorState: false),
     ]);
-    _ptys.clear();
   }
 
   Future<void> _settleStreamCleanup(
