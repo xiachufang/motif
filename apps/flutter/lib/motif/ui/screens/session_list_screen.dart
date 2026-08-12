@@ -22,6 +22,7 @@ import '../widgets/rename_dialog.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
+import 'codex_session_screen.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
@@ -221,6 +222,13 @@ class _SessionListScreenState extends State<SessionListScreen>
                     sessions: group.sessions,
                     workspace: group.workspace,
                     isLive: group.isLive,
+                    supportsCodex:
+                        app
+                            .existingServerInstance(group.viewModel.id)
+                            ?.transport
+                            .lastPing
+                            ?.supportsCodexSession ==
+                        true,
                     viewState: app.serverViewState(group.viewModel.id),
                     onRefresh: () =>
                         app.refreshServerSessions(group.viewModel.id),
@@ -239,16 +247,22 @@ class _SessionListScreenState extends State<SessionListScreen>
     BuildContext context,
     AppState app,
     MotifServer server,
-    String name,
+    SessionInfo session,
   ) {
     // Navigate immediately; SessionScreen performs the attach itself and shows
     // a connecting overlay, so opening a session never blocks on the network.
     unawaited(app.servers.setActive(server.id));
-    app.workspaceForSession(server.id, name);
+    if (session.type == SessionType.terminal) {
+      app.workspaceForSession(server.id, session.name);
+    }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        settings: RouteSettings(name: sessionRouteName(server.id, name)),
-        builder: (_) => SessionScreen(serverId: server.id, session: name),
+        settings: RouteSettings(
+          name: sessionRouteName(server.id, session.name),
+        ),
+        builder: (_) => session.type == SessionType.codex
+            ? CodexSessionScreen(serverId: server.id, session: session.name)
+            : SessionScreen(serverId: server.id, session: session.name),
       ),
     );
   }
@@ -260,9 +274,10 @@ class _ServerSessionSection extends _$_ServerSessionSection {
   final SessionCatalogController sessions;
   final WorkspaceApi workspace;
   final bool isLive;
+  final bool supportsCodex;
   final ServerConnectionViewState viewState;
   final Future<void> Function() onRefresh;
-  final ValueChanged<String> onAttach;
+  final ValueChanged<SessionInfo> onAttach;
   final Future<void> Function(String session) onDestroy;
 
   const _ServerSessionSection({
@@ -270,6 +285,7 @@ class _ServerSessionSection extends _$_ServerSessionSection {
     required this.sessions,
     required this.workspace,
     required this.isLive,
+    required this.supportsCodex,
     required this.viewState,
     required this.onRefresh,
     required this.onAttach,
@@ -304,7 +320,7 @@ class _ServerSessionSection extends _$_ServerSessionSection {
             _SessionRow(
               serverId: server.id,
               session: session,
-              onAttach: () => onAttach(session.name),
+              onAttach: () => onAttach(session),
               onRename: (customName) =>
                   sessions.rename(session.name, customName),
               onDestroy: () => onDestroy(session.name),
@@ -314,9 +330,14 @@ class _ServerSessionSection extends _$_ServerSessionSection {
   }
 
   Future<void> _createAndAttach(BuildContext context) async {
-    final session = await createSessionWithDialog(context, sessions, workspace);
+    final session = await createSessionWithDialog(
+      context,
+      sessions,
+      workspace,
+      allowCodex: supportsCodex,
+    );
     if (session == null || !context.mounted) return;
-    onAttach(session.name);
+    onAttach(session);
   }
 }
 
@@ -372,7 +393,16 @@ class _SessionRow extends StatelessWidget {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    if (session.workdir != null &&
+                    if (session.type == SessionType.codex)
+                      Padding(
+                        padding: const EdgeInsets.only(top: MotifSpacing.xs),
+                        child: Text(
+                          'Codex session',
+                          style: MotifType.micro.copyWith(color: c.accent),
+                        ),
+                      ),
+                    if (session.type == SessionType.terminal &&
+                        session.workdir != null &&
                         session.workdir!.isNotEmpty) ...[
                       const SizedBox(height: MotifSpacing.xs),
                       Row(

@@ -152,7 +152,8 @@ async fn run(r: Run) -> anyhow::Result<()> {
             "session.create",
             ses::CreateParams {
                 name: r.name.clone(),
-                workdir: r.workdir.clone(),
+                workdir: Some(r.workdir.clone()),
+                r#type: ses::SessionType::Terminal,
             },
         )
         .await

@@ -736,6 +736,7 @@ fn dummy_attach_result() -> ses::AttachResult {
             workdir: std::path::PathBuf::new(),
             created_at: 0,
             client_count: 0,
+            r#type: ses::SessionType::Terminal,
         },
         client_id: String::new(),
         clients: vec![],

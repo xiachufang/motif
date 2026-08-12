@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ClientNotification": {
+      "oneOf": [
+        {
+          "title": "ReadyNotification",
+          "type": "object",
+          "required": ["method", "params"],
+          "properties": {
+            "method": {"type": "string", "enum": ["ready"]},
+            "params": {"$ref": "#/definitions/Node"}
+          }
+        }
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "required": ["name", "kind", "attributes", "children", "active", "state", "nothing"],
+      "properties": {
+        "name": {"type": "string"},
+        "kind": {"$ref": "#/definitions/NodeKind"},
+        "next": {
+          "anyOf": [
+            {"$ref": "#/definitions/Node"},
+            {"type": "null"}
+          ]
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {"type": "integer"}
+        },
+        "children": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/Node"}
+        },
+        "active": {"type": "boolean"},
+        "state": {"type": "string", "enum": ["ready"]},
+        "nothing": {"type": "null"}
+      }
+    },
+    "NodeKind": {
+      "type": "string",
+      "enum": ["file", "directory"]
+    },
+    "Outcome": {
+      "oneOf": [
+        {
+          "title": "SuccessOutcome",
+          "type": "object",
+          "required": ["type", "value"],
+          "properties": {
+            "type": {"type": "string", "enum": ["success"]},
+            "value": {"type": "number"}
+          }
+        },
+        {
+          "title": "FailureOutcome",
+          "type": "object",
+          "required": ["type", "message"],
+          "properties": {
+            "type": {"type": "string", "enum": ["failure"]},
+            "message": {"type": "string"}
+          }
+        }
+      ]
+    },
+    "NodeAlias": {
+      "allOf": [{"$ref": "#/definitions/Node"}]
+    },
+    "Untagged": {
+      "oneOf": [
+        {
+          "title": "CountValue",
+          "type": "object",
+          "required": ["count"],
+          "properties": {"count": {"type": "integer"}}
+        },
+        {
+          "title": "LabelValue",
+          "type": "object",
+          "required": ["label"],
+          "properties": {"label": {"type": "string"}}
+        }
+      ]
+    }
+  }
+}

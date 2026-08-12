@@ -8,6 +8,8 @@ SHELL := /bin/bash
 
 CARGO ?= cargo
 FLUTTER ?= flutter
+CODEX ?= codex
+DART ?= dart
 
 FLUTTER_DIR := apps/flutter
 RELEASE_DIR ?= dist/release
@@ -85,6 +87,7 @@ macos_keychain_args = set --; if [ -f "$(MACOS_SIGNING_KEYCHAIN)" ]; then set --
 	check-macos-tools check-ios-tools check-android-release-signing \
 	check-ios-release-signing check-macos-release-credentials \
 	check-macos-release-entitlements \
+	codex-app-server-protocol codex-app-server-protocol-check \
 	deps deps-rust deps-flutter deps-web deps-android \
 	deps-ios clean-flutter-ephemeral build-ghostty-wasm build-flutter-web release-flutter-web \
 	release-macos release-linux release-windows \
@@ -158,6 +161,20 @@ graph: ## Print the target dependency graph (ASCII).
 
 version: ## Print the version read from apps/flutter/pubspec.yaml.
 	@printf "%s+%s\n" "$(VERSION)" "$(BUILD_NUMBER)"
+
+codex-app-server-protocol: ## Regenerate experimental Codex app-server Dart types.
+	@command -v "$(CODEX)" >/dev/null || { echo "Missing codex. Install Codex CLI first."; exit 1; }
+	@command -v "$(DART)" >/dev/null || { echo "Missing dart. Install Flutter/Dart first."; exit 1; }
+	@mkdir -p target/codex-app-server-schemas/json target/codex-app-server-schemas/ts
+	@"$(CODEX)" app-server generate-json-schema --experimental --out target/codex-app-server-schemas/json
+	@"$(CODEX)" app-server generate-ts --experimental --out target/codex-app-server-schemas/ts
+	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart
+
+codex-app-server-protocol-check: ## Verify committed Codex Dart types match the local Codex schema.
+	@command -v "$(CODEX)" >/dev/null || { echo "Missing codex. Install Codex CLI first."; exit 1; }
+	@mkdir -p target/codex-app-server-schemas/json
+	@"$(CODEX)" app-server generate-json-schema --experimental --out target/codex-app-server-schemas/json
+	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart --check
 
 check-tools: check-cargo check-flutter ## Check the common local toolchain.
 

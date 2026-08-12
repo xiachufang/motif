@@ -6,7 +6,7 @@ void main() {
     final p = PingInfo.fromJson({
       'service': 'motif-server',
       'version': '1.2.3',
-      'capabilities': ['ws_probe_v1', 'screen_capture_v1'],
+      'capabilities': ['ws_probe_v1', 'screen_capture_v1', 'codex_session_v1'],
       'rzv_direct_port': 7777,
       'rzv_direct_addrs': ['192.168.1.9', '10.0.0.4'],
     });
@@ -15,6 +15,7 @@ void main() {
     expect(p.rzvDirectAddrs, ['192.168.1.9', '10.0.0.4']);
     expect(p.supportsWsProbe, isTrue);
     expect(p.supportsScreenCapture, isTrue);
+    expect(p.supportsCodexSession, isTrue);
   });
 
   test('supports omitted optional rzv fields', () {
@@ -24,6 +25,7 @@ void main() {
     expect(p.capabilities, isEmpty);
     expect(p.supportsWsProbe, isFalse);
     expect(p.supportsScreenCapture, isFalse);
+    expect(p.supportsCodexSession, isFalse);
   });
 
   test('rejects malformed rzv address entries', () {

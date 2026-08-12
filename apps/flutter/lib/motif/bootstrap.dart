@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 
 import 'log/log.dart';
+import 'codex/codex_state.dart';
 import 'platform/platform_factory.dart';
 import 'platform/window_title.dart';
 import 'state/app/app_state.dart';
@@ -67,10 +68,12 @@ Future<void> runMotif({
             terminalRuntime: terminalRuntime,
             workspaceRetentionPolicy: workspaceRetentionPolicy,
           );
+          final codexState = CodexState();
           final embedded = appState.embeddedServer;
           runApp(
             MotifScope(
               appState: appState,
+              codexState: codexState,
               embeddedServer: embedded,
               desktopUpdateService: desktopUpdateService,
               child: MotifApp(

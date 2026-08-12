@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
+import '../../codex/codex_state.dart';
 import '../../update/desktop_update_service.dart';
 import 'app_state.dart';
 import '../embedded/embedded_server_service.dart';
@@ -15,34 +16,47 @@ import '../workspace/workspace_view_model.dart';
 ///
 /// The scopes only expose existing instances. Ownership and disposal remain
 /// with the bootstrap/runtime that created them.
-final class MotifScope extends StatelessWidget {
+final class MotifScope extends StatefulWidget {
   const MotifScope({
     required this.appState,
     required this.child,
+    this.codexState,
     this.embeddedServer,
     this.desktopUpdateService,
     super.key,
   });
 
   final AppState appState;
+  final CodexState? codexState;
   final EmbeddedServerService? embeddedServer;
   final DesktopUpdateService? desktopUpdateService;
   final Widget child;
 
   @override
+  State<MotifScope> createState() => _MotifScopeState();
+}
+
+final class _MotifScopeState extends State<MotifScope> {
+  late final CodexState _fallbackCodexState = CodexState();
+
+  @override
   Widget build(BuildContext context) {
     Widget scoped = ObservationScope<DesktopUpdateService?>(
-      value: desktopUpdateService,
-      child: child,
+      value: widget.desktopUpdateService,
+      child: widget.child,
     );
-    final server = embeddedServer ?? appState.embeddedServer;
+    final server = widget.embeddedServer ?? widget.appState.embeddedServer;
     if (server != null) {
       scoped = ObservationScope<EmbeddedServerService>(
         value: server,
         child: scoped,
       );
     }
-    return ObservationScope<AppState>(value: appState, child: scoped);
+    scoped = ObservationScope<CodexState>(
+      value: widget.codexState ?? _fallbackCodexState,
+      child: scoped,
+    );
+    return ObservationScope<AppState>(value: widget.appState, child: scoped);
   }
 }
 

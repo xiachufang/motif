@@ -95,6 +95,18 @@ pub fn dispatch_concurrent(
     req: Request,
 ) -> Response {
     let id = req.id.clone();
+    if is_terminal_only_method(&req.method)
+        && current_session(manager, conn)
+            .is_some_and(|session| session.session_type == ses::SessionType::Codex)
+    {
+        return Response::err(
+            id,
+            RpcError::new(
+                ErrorCode::Conflict,
+                format!("{} is not available for codex sessions", req.method),
+            ),
+        );
+    }
     match req.method.as_str() {
         // session.*
         "session.list" => handle_list(manager, id, req.params),
@@ -286,6 +298,21 @@ pub fn dispatch_concurrent(
     }
 }
 
+fn is_terminal_only_method(method: &str) -> bool {
+    matches!(
+        method,
+        "pty.create"
+            | "pty.list"
+            | "pty.resize"
+            | "pty.kill"
+            | "view.open"
+            | "view.close"
+            | "view.activate"
+            | "view.move"
+            | "view.rename"
+    )
+}
+
 fn parse<P: DeserializeOwned>(v: Value) -> Result<P, RpcError> {
     serde_json::from_value(v).map_err(|e| RpcError::invalid_params(e.to_string()))
 }
@@ -343,7 +370,7 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         Ok(p) => p,
         Err(e) => return Response::err(id, e),
     };
-    match mgr.create(p.name, p.workdir) {
+    match mgr.create(p.name, p.workdir, p.r#type) {
         Ok(s) => Response::ok(id, ses::CreateResult { session: s.info() }),
         Err(ManagerError::AlreadyExists(n)) => Response::err(
             id,
@@ -355,6 +382,14 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         Err(ManagerError::BadWorkdir(p)) => Response::err(
             id,
             RpcError::invalid_params(format!("workdir not a directory: {}", p.display())),
+        ),
+        Err(ManagerError::MissingWorkdir) => Response::err(
+            id,
+            RpcError::invalid_params("terminal sessions require a workdir"),
+        ),
+        Err(ManagerError::CodexStart(error)) => Response::err(
+            id,
+            RpcError::internal(format!("failed to create codex session: {error}")),
         ),
         Err(e) => Response::err(id, RpcError::internal(e.to_string())),
     }
@@ -492,9 +527,11 @@ fn handle_attach(
     s.set_terminal_palette(p.term_fg.clone(), p.term_bg.clone());
     s.set_theme(p.theme.clone());
 
-    let ptys = s.pty_pool.list();
-    let views = s.views_snapshot();
-    let active_view = s.active_view();
+    let (ptys, views, active_view) = if s.session_type == ses::SessionType::Codex {
+        (Vec::new(), Vec::new(), None)
+    } else {
+        (s.pty_pool.list(), s.views_snapshot(), s.active_view())
+    };
     let theme = s.theme();
 
     Response::ok(

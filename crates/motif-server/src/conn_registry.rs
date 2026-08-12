@@ -219,7 +219,11 @@ mod tests {
         let mgr = SessionManager::new();
         let tmp = tempfile::tempdir().expect("tempdir");
         let session = mgr
-            .create("ghost".to_string(), tmp.path().to_path_buf())
+            .create(
+                "ghost".to_string(),
+                Some(tmp.path().to_path_buf()),
+                motif_proto::session::SessionType::Terminal,
+            )
             .expect("create session");
 
         let (sid, entry) = r.mint();

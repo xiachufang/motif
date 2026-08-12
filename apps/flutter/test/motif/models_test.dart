@@ -66,6 +66,17 @@ void main() {
       expect(ShellKind.fromWire('powershell'), ShellKind.powershell);
       expect(ShellKind.fromWire('weird'), ShellKind.unknown);
     });
+
+    test('SessionInfo defaults missing type to terminal', () {
+      expect(
+        SessionInfo.fromJson({'name': 'legacy'}).type,
+        SessionType.terminal,
+      );
+      expect(
+        SessionInfo.fromJson({'name': 'agent', 'type': 'codex'}).type,
+        SessionType.codex,
+      );
+    });
   });
 
   group('settings models', () {

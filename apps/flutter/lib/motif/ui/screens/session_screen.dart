@@ -49,6 +49,7 @@ import '../widgets/quick_command_row.dart';
 import '../widgets/rename_dialog.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
+import 'codex_session_screen.dart';
 import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
 import 'preview_pane.dart';

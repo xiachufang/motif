@@ -90,8 +90,14 @@ Route<void> _sessionSwitchRoute(String serverId, String session) {
     settings: RouteSettings(name: sessionRouteName(serverId, session)),
     transitionDuration: const Duration(milliseconds: 180),
     reverseTransitionDuration: const Duration(milliseconds: 120),
-    pageBuilder: (_, _, _) =>
-        SessionScreen(serverId: serverId, session: session),
+    pageBuilder: (context, _, _) {
+      final info = readObservationScope<AppState>(
+        context,
+      ).sessionInfo(serverId, session);
+      return info?.type == SessionType.codex
+          ? CodexSessionScreen(serverId: serverId, session: session)
+          : SessionScreen(serverId: serverId, session: session);
+    },
     transitionsBuilder: (context, animation, _, child) {
       final curve = CurvedAnimation(
         parent: animation,

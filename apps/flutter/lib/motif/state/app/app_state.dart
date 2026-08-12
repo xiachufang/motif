@@ -400,6 +400,15 @@ class AppState {
   ServerInstance? existingServerInstance(String serverId) =>
       _serverInstances[serverId];
 
+  SessionInfo? sessionInfo(String serverId, String session) {
+    final sessions = _serverInstances[serverId]?.viewModel.sessions.sessions;
+    if (sessions == null) return null;
+    for (final candidate in sessions) {
+      if (candidate.name == session) return candidate;
+    }
+    return null;
+  }
+
   ServerInstance serverInstance(String serverId) {
     final existing = _serverInstances[serverId];
     if (existing != null) return existing;

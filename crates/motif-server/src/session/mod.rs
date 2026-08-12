@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use motif_proto::common::{ClientId, PtyId, Seq, SessionId, UnixMs};
 use motif_proto::event::Event;
 use motif_proto::remote_port::RemotePortMapping;
-use motif_proto::session::{ClientInfo, SessionInfo};
+use motif_proto::session::{ClientInfo, SessionInfo, SessionType};
 use motif_proto::terminal_query::QueryKind;
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
@@ -57,6 +57,8 @@ pub struct Session {
     custom_name: Mutex<Option<String>>,
     pub workdir: PathBuf,
     pub created_at: UnixMs,
+    pub session_type: SessionType,
+    codex: Option<Arc<crate::codex_app_server::CodexAppServer>>,
 
     /// Seq counter and replay ring share one mutex so `publish_event` can
     /// allocate a seq, push to the ring, and broadcast under a single
@@ -133,6 +135,23 @@ pub struct Session {
 
 impl Session {
     pub fn new(name: impl Into<String>, workdir: PathBuf) -> Arc<Self> {
+        Self::new_with_runtime(name, workdir, SessionType::Terminal, None)
+    }
+
+    pub fn new_codex(
+        name: impl Into<String>,
+        workdir: PathBuf,
+        codex: Arc<crate::codex_app_server::CodexAppServer>,
+    ) -> Arc<Self> {
+        Self::new_with_runtime(name, workdir, SessionType::Codex, Some(codex))
+    }
+
+    fn new_with_runtime(
+        name: impl Into<String>,
+        workdir: PathBuf,
+        session_type: SessionType,
+        codex: Option<Arc<crate::codex_app_server::CodexAppServer>>,
+    ) -> Arc<Self> {
         let (tx, _) = broadcast::channel::<Arc<Event>>(BROADCAST_CAPACITY);
         let (shutdown_tx, _) = watch::channel(false);
         let s = Arc::new(Self {
@@ -141,6 +160,8 @@ impl Session {
             custom_name: Mutex::new(None),
             workdir,
             created_at: now_ms(),
+            session_type,
+            codex,
             publish: Mutex::new(PublishState {
                 seq: 0,
                 ring: VecDeque::with_capacity(RING_CAPACITY),
@@ -176,7 +197,12 @@ impl Session {
             workdir: self.workdir.clone(),
             created_at: self.created_at,
             client_count: self.clients.lock().len() as u32,
+            r#type: self.session_type,
         }
+    }
+
+    pub fn codex_app_server(&self) -> Option<Arc<crate::codex_app_server::CodexAppServer>> {
+        self.codex.clone()
     }
 
     /// Set the user-facing session name without changing its stable identity.
@@ -334,6 +360,9 @@ impl Session {
         self.shutdown_tx.send_replace(true);
 
         self.pty_pool.shutdown();
+        if let Some(codex) = &self.codex {
+            codex.shutdown();
+        }
         self.clients.lock().clear();
         self.fs_subscribers.lock().clear();
         let fswatcher = { self.fswatcher.lock().take() };

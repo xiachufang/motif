@@ -69,6 +69,18 @@ enum GitFileStatus {
   String get wire => name;
 }
 
+enum SessionType {
+  terminal,
+  codex;
+
+  static SessionType fromWire(Object? value) => switch (value) {
+    'codex' => SessionType.codex,
+    _ => SessionType.terminal,
+  };
+
+  String get wire => name;
+}
+
 // ─────────────────────────── core structs ───────────────────────────
 
 class PingInfo {
@@ -108,6 +120,8 @@ class PingInfo {
   bool get supportsWsProbe => capabilities.contains('ws_probe_v1');
 
   bool get supportsScreenCapture => capabilities.contains('screen_capture_v1');
+
+  bool get supportsCodexSession => capabilities.contains('codex_session_v1');
 }
 
 class SessionInfo {
@@ -116,6 +130,7 @@ class SessionInfo {
   final String? workdir;
   final int? createdAt;
   final int? clientCount;
+  final SessionType type;
 
   const SessionInfo({
     required this.name,
@@ -123,6 +138,7 @@ class SessionInfo {
     this.workdir,
     this.createdAt,
     this.clientCount,
+    this.type = SessionType.terminal,
   });
 
   String get id => name;
@@ -134,6 +150,7 @@ class SessionInfo {
     workdir: _asString(j['workdir']),
     createdAt: _asInt(j['created_at']),
     clientCount: _asInt(j['client_count']),
+    type: SessionType.fromWire(j['type']),
   );
 
   SessionInfo copyWith({String? customName, bool clearCustomName = false}) =>
@@ -143,6 +160,7 @@ class SessionInfo {
         workdir: workdir,
         createdAt: createdAt,
         clientCount: clientCount,
+        type: type,
       );
 }
 

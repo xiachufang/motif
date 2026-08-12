@@ -64,6 +64,7 @@ pub fn router(state: AppState) -> Router {
         .route("/events", get(crate::events_ws::events_upgrade))
         .route("/pty/{pty_id}", get(crate::pty_ws::pty_upgrade))
         .route("/tcp", get(crate::tcp_ws::tcp_upgrade))
+        .route("/codex", get(crate::codex_ws::codex_upgrade))
         .fallback(crate::embed::serve_spa_fallback)
         .with_state(state)
         .layer(cors_layer())
@@ -94,6 +95,7 @@ async fn ping(
         version: crate::VERSION.to_string(),
         capabilities: {
             let mut capabilities = vec![WS_PROBE_CAPABILITY.to_string()];
+            capabilities.push(CODEX_SESSION_CAPABILITY.to_string());
             if state.capture.is_advertised() {
                 capabilities.push(SCREEN_CAPTURE_CAPABILITY.to_string());
             }
@@ -109,6 +111,7 @@ async fn ping(
 /// frames, so `/events` and `/pty/<id>` echo this small text-frame probe.
 pub const WS_PROBE_CAPABILITY: &str = "ws_probe_v1";
 pub const SCREEN_CAPTURE_CAPABILITY: &str = "screen_capture_v1";
+pub const CODEX_SESSION_CAPABILITY: &str = "codex_session_v1";
 const WS_PROBE_REQUEST: &str = "motif.probe.v1";
 const WS_PROBE_ACK: &str = "motif.probe_ack.v1";
 const WS_PROBE_MAX_ID_BYTES: usize = 64;

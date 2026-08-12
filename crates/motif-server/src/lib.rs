@@ -11,6 +11,8 @@ pub const VERSION: &str = match option_env!("MOTIF_VERSION") {
 pub mod agent_hooks;
 pub mod auth;
 pub mod capture;
+pub mod codex_app_server;
+pub mod codex_ws;
 pub mod config;
 pub mod conn_registry;
 pub mod devices;
@@ -403,7 +405,7 @@ impl RunningServer {
         let RunningServer {
             bound: _bound,
             rzv_status: _rzv_status,
-            manager: _manager,
+            manager,
             devices: _devices,
             #[cfg(feature = "tailscale")]
                 ts: _ts,
@@ -413,6 +415,10 @@ impl RunningServer {
             hook_task,
         } = self;
 
+        // Terminate session-owned process trees before waiting for open socket
+        // handlers. This also wakes every `/codex` proxy through the session's
+        // shutdown latch.
+        manager.shutdown_all();
         shutdown.cancel();
         let result = match tokio::time::timeout(GRACE, &mut serve_task).await {
             Ok(Ok(res)) => res,

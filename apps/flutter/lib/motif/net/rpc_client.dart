@@ -136,6 +136,21 @@ class RpcClient {
   bool get isConnected => _host.isNotEmpty;
   String? get sessionId => _sessionId;
 
+  /// Create an independent control/WS client using the same resolved route.
+  /// Session-scoped features use this so attaching does not disturb the
+  /// server catalog transport or another terminal workspace.
+  RpcClient fork() {
+    if (_host.isEmpty) throw const RpcException('not connected');
+    return RpcClient()..connect(
+      host: _host,
+      port: _port,
+      token: _token,
+      scheme: _scheme,
+      proxy: _proxy,
+      certPin: _certPin,
+    );
+  }
+
   /// Actively verify the existing `/events` socket and every currently
   /// streaming PTY socket. Calls made by duplicate lifecycle callbacks join
   /// the same in-flight probe.
@@ -316,6 +331,13 @@ class RpcClient {
     }
   }
 
+  /// Attach without necessarily opening Motif's `/events` stream. Codex
+  /// sessions use only the dedicated `/codex` WebSocket.
+  Future<Map<String, Object?>> attachSession(
+    String name, {
+    bool openEvents = true,
+  }) => _doAttach({'name': name}, openEvents: openEvents);
+
   Future<(Map<String, Object?>, String?)> _rawCall(
     String method,
     Map<String, Object?> params,
@@ -354,7 +376,10 @@ class RpcClient {
     );
   }
 
-  Future<Map<String, Object?>> _doAttach(Map<String, Object?> params) async {
+  Future<Map<String, Object?>> _doAttach(
+    Map<String, Object?> params, {
+    bool openEvents = true,
+  }) async {
     // session.attach replaces an existing attachment server-side when the
     // current X-Motif-Session is reused. Tear down the old local streams in
     // parallel, but deliberately keep _sessionId so the attach is atomic and
@@ -372,10 +397,10 @@ class RpcClient {
     _sessionId = sid;
     final requestedSince = (params['last_seq'] as num?)?.toInt();
     final since = requestedSince ?? (body['last_seq'] as num?)?.toInt() ?? 0;
-    await _openEvents(since);
+    if (openEvents) await _openEvents(since);
     Log.i(
       'attach timing post=${postMs}ms events=${sw.elapsedMilliseconds - postMs}ms '
-      'eventsSince=$since',
+      'eventsSince=${openEvents ? since : 'disabled'}',
       name: 'motif.rpc',
     );
     return body;

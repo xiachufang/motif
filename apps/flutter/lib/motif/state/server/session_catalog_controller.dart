@@ -68,14 +68,21 @@ final class SessionCatalogController {
     }
   }
 
-  Future<SessionInfo> create(String name, String workdir) async {
+  Future<SessionInfo> create(
+    String name,
+    String? workdir, {
+    SessionType type = SessionType.terminal,
+  }) async {
     final body = await transport.call('session.create', {
       'name': name,
-      'workdir': workdir,
+      if (type == SessionType.terminal) 'workdir': workdir,
+      // Preserve compatibility with servers predating typed sessions.
+      if (type != SessionType.terminal) 'type': type.wire,
     });
     await refresh();
     return SessionInfo.fromJson(
-      (body['session'] as Map?)?.cast<String, Object?>() ?? {'name': name},
+      (body['session'] as Map?)?.cast<String, Object?>() ??
+          {'name': name, 'type': type.wire},
     );
   }
 
