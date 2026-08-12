@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
@@ -58,7 +59,7 @@ void main() {
         'first',
       ]);
       expect(state.catalog.pinnedThreads.single.id, 'second');
-      expect(client.watchedPaths.single, '/tmp/codex/.codex-global-state.json');
+      expect(client.watchedPaths, isEmpty);
 
       await state.readThread('first');
       expect(client.readThreadIds, ['first']);
@@ -73,20 +74,44 @@ void main() {
       await state.ensureThreadResumedForSend('first');
       expect(client.resumedThreadIds, ['first']);
 
-      final callsBeforeChange = client.listParams.length;
+      final listCallsBeforeChange = client.listParams.length;
+      final readsBeforeChange = client.readPaths.length;
+      client.globalState = jsonEncode({
+        'local-projects': {
+          'motif': {
+            'id': 'motif',
+            'name': 'Motif',
+            'rootPaths': ['/work/motif'],
+          },
+        },
+        'project-order': ['motif'],
+        'pinned-thread-ids': ['first'],
+        'projectless-thread-ids': <String>[],
+        'thread-project-assignments': {
+          'first': {'projectKind': 'local', 'projectId': 'motif'},
+          'second': {'projectKind': 'local', 'projectId': 'motif'},
+        },
+      });
       client.emit(
         const CodexFsChangedNotification2(
           params: CodexFsChangedNotification(
             changedPaths: [],
-            watchId: CodexServiceState.globalStateWatchId,
+            watchId: 'unrelated-watch',
           ),
         ),
       );
       await Future<void>.delayed(const Duration(milliseconds: 260));
-      await waitFor(() => client.listParams.length > callsBeforeChange);
+      expect(client.listParams, hasLength(listCallsBeforeChange));
+      expect(client.readPaths, hasLength(readsBeforeChange));
+      expect(state.catalog.pinnedThreads.single.id, 'second');
+
+      await state.refreshCatalog(showLoading: false);
+      expect(client.listParams.length, greaterThan(listCallsBeforeChange));
+      expect(client.readPaths.length, greaterThan(readsBeforeChange));
+      expect(state.catalog.pinnedThreads.single.id, 'first');
 
       await state.close();
-      expect(client.unwatchedIds, [CodexServiceState.globalStateWatchId]);
+      expect(client.unwatchedIds, isEmpty);
       expect(client.closed, isTrue);
       expect(client.disposed, isTrue);
     },
@@ -595,6 +620,77 @@ void main() {
     },
   );
 
+  test('coalesces burst deltas into one observable item update', () async {
+    final initial = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [initial]),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+
+    client.emit(
+      const CodexTurnStartedNotification2(
+        params: CodexTurnStartedNotification(
+          threadId: 'thread',
+          turn: CodexTurn(
+            id: 'turn-1',
+            items: [],
+            status: CodexTurnStatus.inProgress,
+          ),
+        ),
+      ),
+    );
+    client.emit(
+      const CodexItemStartedNotification2(
+        params: CodexItemStartedNotification(
+          item: CodexAgentMessageThreadItem(id: 'agent-1', text: ''),
+          startedAtMs: 1,
+          threadId: 'thread',
+          turnId: 'turn-1',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final item = state.viewModel.turns.single.items.single;
+    var itemUpdates = 0;
+    final subscription = observe(
+      () => item.item,
+      onChange: (_) => itemUpdates++,
+      scheduler: ObservationSchedulers.immediate,
+    );
+    for (var index = 0; index < 100; index++) {
+      client.emit(
+        const CodexItemAgentMessageDeltaNotification(
+          params: CodexAgentMessageDeltaNotification(
+            delta: 'x',
+            itemId: 'agent-1',
+            threadId: 'thread',
+            turnId: 'turn-1',
+          ),
+        ),
+      );
+    }
+    await Future<void>.delayed(
+      CodexConversationState.deltaFlushInterval +
+          const Duration(milliseconds: 20),
+    );
+
+    expect(
+      (state.turns.single.items.single as CodexAgentMessageThreadItem).text,
+      List.filled(100, 'x').join(),
+    );
+    expect(itemUpdates, 1);
+    expect(item.streaming, isTrue);
+
+    subscription.dispose();
+    await state.close();
+  });
+
   test(
     'completed plan items wait for an explicit decision in plan mode',
     () async {
@@ -752,7 +848,7 @@ final class FakeCodexClient extends ChangeNotifier
   });
 
   final Map<String?, CodexThreadListResponse> pages;
-  final String? globalState;
+  String? globalState;
   final List<CodexModel> models;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
@@ -770,6 +866,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
       [];
   final List<String> watchedPaths = [];
+  final List<String> readPaths = [];
   final List<String> unwatchedIds = [];
   Object? listError;
   bool closed = false;
@@ -967,6 +1064,7 @@ final class FakeCodexClient extends ChangeNotifier
 
   @override
   Future<CodexFsReadFileResponse> readFile(String path) async {
+    readPaths.add(path);
     if (globalState == null) throw StateError('missing');
     return CodexFsReadFileResponse(
       dataBase64: base64Encode(utf8.encode(globalState!)),

@@ -20,7 +20,7 @@ typedef SshMotifdVersionLoader =
     Future<SshMotifdVersionInfo> Function(MotifServer server);
 typedef SshMotifdUpdater = Future<void> Function(MotifServer server);
 
-/// Font size + theme controls (mirrors TerminalSettingsSheet).
+/// Terminal-specific appearance and integration controls.
 @ObservationWidget()
 class TerminalSettingsSheet extends _$TerminalSettingsSheet {
   const TerminalSettingsSheet({
@@ -75,27 +75,6 @@ class TerminalSettingsSheet extends _$TerminalSettingsSheet {
                         : null,
                   ),
                 ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(MotifSpacing.sm),
-              child: SegmentedButton<TerminalThemeSetting>(
-                segments: const [
-                  ButtonSegment(
-                    value: TerminalThemeSetting.light,
-                    label: Text('Light'),
-                  ),
-                  ButtonSegment(
-                    value: TerminalThemeSetting.dark,
-                    label: Text('Dark'),
-                  ),
-                  ButtonSegment(
-                    value: TerminalThemeSetting.system,
-                    label: Text('System'),
-                  ),
-                ],
-                selected: {s.theme},
-                onSelectionChanged: (sel) => store.setTheme(sel.first),
               ),
             ),
           ],

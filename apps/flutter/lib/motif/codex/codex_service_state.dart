@@ -1,11 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import 'codex_connection_controller.dart';
 import 'codex_composer_models.dart';
+import 'codex_observation_view_models.dart';
 import 'codex_thread_catalog.dart';
 import 'protocol/generated/codex_app_server_protocol.dart';
+
+bool _sameIdentities<T>(List<T> current, List<T> next) {
+  if (current.length != next.length) return false;
+  for (var index = 0; index < current.length; index++) {
+    if (!identical(current[index], next[index])) return false;
+  }
+  return true;
+}
 
 enum CodexCatalogPhase { idle, loading, ready, failed }
 
@@ -48,7 +58,11 @@ class CodexConversationState extends ChangeNotifier {
     Set<CodexConversationFeature> features = const {
       CodexConversationFeature.goals,
     },
-  }) : features = Set.unmodifiable(features) {
+  }) : features = Set.unmodifiable(features),
+       viewModel = CodexConversationViewModel(
+         connectionState: connection.state,
+         turns: ObservableList<CodexTurnViewModel>(),
+       ) {
     connection.addListener(_onConnectionChanged);
     _typedSubscription = connection.typedMessages.listen(
       _onTypedMessage,
@@ -56,12 +70,11 @@ class CodexConversationState extends ChangeNotifier {
     );
   }
 
-  static const String globalStateWatchId = 'motif-codex-global-state-sidebar';
-
   final String serverId;
   final CodexAppServerClient connection;
   final CodexConnectionLease connectionLease;
   final Set<CodexConversationFeature> features;
+  final CodexConversationViewModel viewModel;
 
   CodexCatalogPhase catalogPhase = CodexCatalogPhase.idle;
   String? catalogError;
@@ -73,7 +86,13 @@ class CodexConversationState extends ChangeNotifier {
   String? forkError;
   String? creatingProjectId;
   String? createThreadError;
-  List<CodexTurn> turns = const [];
+  List<CodexTurn> _turns = const [];
+  List<CodexTurn> get turns => _turns;
+  set turns(List<CodexTurn> value) {
+    _turns = List.unmodifiable(value);
+    if (!_applyingDeltas) _syncTurnsViewModel();
+  }
+
   List<CodexModel> models = const [];
   List<CodexPermissionProfileSummary> permissionProfiles = const [];
   List<CodexCollaborationModeMask> collaborationModes = const [];
@@ -103,11 +122,13 @@ class CodexConversationState extends ChangeNotifier {
   final Map<String, CodexServerRequest> _serverRequests = {};
   final Map<String, Future<Uint8List>> _remoteFileCache = {};
   final Map<String, String?> _insertBeforeByThreadId = {};
+  final Map<_CodexDeltaKey, StringBuffer> _pendingDeltas = {};
+  final Set<String> _streamingItemIds = {};
+  final Map<String, CodexItemViewModel> _itemViewModelsById = {};
   late final StreamSubscription<CodexJsonEncodable> _typedSubscription;
   CodexGlobalStateData? _globalState;
   CodexInitializeResponse? _loadedInitializeResponse;
-  Timer? _globalStateDebounce;
-  bool _watchingGlobalState = false;
+  Timer? _deltaFlushTimer;
   int _refreshGeneration = 0;
   int _readGeneration = 0;
   int _queueSequence = 0;
@@ -118,12 +139,25 @@ class CodexConversationState extends ChangeNotifier {
   bool _modelSelectionTouched = false;
   bool _effortSelectionTouched = false;
   bool _permissionSelectionTouched = false;
+  bool _applyingDeltas = false;
   bool _catalogLoadedOnce = false;
   String? _preferredModelId;
   ValueChanged<String?>? _onModelSelected;
   String? _failedReadThreadId;
+  String? _viewModelThreadId;
+  Object? _catalogFingerprint;
+
+  static const Duration deltaFlushInterval = Duration(milliseconds: 33);
 
   CodexConnectionState get connectionState => connection.state;
+
+  /// Synchronizes direct setup mutations into the observable presentation
+  /// model. Production mutations already call this through [notifyListeners];
+  /// feature hosts use it once when adopting an injected service instance.
+  void synchronizeViewModel() {
+    _syncTurnsViewModel();
+    _syncViewModel();
+  }
 
   bool supports(CodexConversationFeature feature) => features.contains(feature);
 
@@ -152,7 +186,6 @@ class CodexConversationState extends ChangeNotifier {
     catalogError = null;
     catalogPhase = CodexCatalogPhase.idle;
     _loadedInitializeResponse = null;
-    _watchingGlobalState = false;
     _notify();
     await connection.retry();
   }
@@ -205,7 +238,6 @@ class CodexConversationState extends ChangeNotifier {
       catalogError = null;
       _syncSelectedThread();
       _notify();
-      if (globalState != null) unawaited(_ensureGlobalStateWatch(path));
     } catch (error) {
       if (_closed || generation != _refreshGeneration) return;
       catalogPhase = CodexCatalogPhase.failed;
@@ -989,11 +1021,13 @@ class CodexConversationState extends ChangeNotifier {
     return path;
   }
 
-  Future<Uint8List> readRemoteFile(String path) =>
-      _remoteFileCache.putIfAbsent(path, () async {
-        final response = await connection.readFile(path);
-        return base64Decode(response.dataBase64);
-      });
+  Future<Uint8List> readRemoteFile(String path, {bool refresh = false}) {
+    if (refresh) _remoteFileCache.remove(path);
+    return _remoteFileCache.putIfAbsent(path, () async {
+      final response = await connection.readFile(path);
+      return base64Decode(response.dataBase64);
+    });
+  }
 
   Future<void> interruptActiveTurn() async {
     final threadId = selectedThread?.id;
@@ -1153,17 +1187,6 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
-  Future<void> _ensureGlobalStateWatch(String path) async {
-    if (_closed || _watchingGlobalState) return;
-    try {
-      await connection.watchFile(path, globalStateWatchId);
-      if (!_closed) _watchingGlobalState = true;
-    } catch (_) {
-      // The catalog remains usable when the private state file cannot be
-      // watched (for example on an older app-server).
-    }
-  }
-
   void _onConnectionChanged() {
     if (_closed) return;
     final state = connection.state;
@@ -1171,7 +1194,6 @@ class CodexConversationState extends ChangeNotifier {
       _readGeneration++;
       readingThreadId = null;
       _loadedInitializeResponse = null;
-      _watchingGlobalState = false;
       _resumedThreads.clear();
       _pendingThreadResumes.clear();
       _serverRequests.clear();
@@ -1198,6 +1220,7 @@ class CodexConversationState extends ChangeNotifier {
 
   void _onTypedMessage(CodexJsonEncodable message) {
     if (_closed) return;
+    if (!_isDeltaNotification(message)) _flushPendingDeltas();
     switch (message) {
       case CodexThreadStartedNotification2(:final params):
         if (!params.thread.ephemeral) {
@@ -1275,11 +1298,15 @@ class CodexConversationState extends ChangeNotifier {
         return;
       case CodexItemStartedNotification2(:final params)
           when params.threadId == selectedThread?.id:
+        final startedId = _threadItemId(params.item);
+        if (startedId != null) _streamingItemIds.add(startedId);
         _upsertItem(params.turnId, params.item);
         _notify();
         return;
       case CodexItemCompletedNotification2(:final params)
           when params.threadId == selectedThread?.id:
+        final completedId = _threadItemId(params.item);
+        if (completedId != null) _streamingItemIds.remove(completedId);
         _upsertItem(params.turnId, params.item);
         final completedItem = params.item;
         if (planModeEnabled && completedItem is CodexPlanThreadItem) {
@@ -1289,40 +1316,55 @@ class CodexConversationState extends ChangeNotifier {
         return;
       case CodexItemAgentMessageDeltaNotification(:final params)
           when params.threadId == selectedThread?.id:
-        _appendAgentDelta(params.turnId, params.itemId, params.delta);
-        _notify();
+        _queueDelta(
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind: _CodexDeltaKind.agent,
+          delta: params.delta,
+        );
         return;
       case CodexItemPlanDeltaNotification(:final params)
           when params.threadId == selectedThread?.id:
-        _appendPlanDelta(params.turnId, params.itemId, params.delta);
-        _notify();
+        _queueDelta(
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind: _CodexDeltaKind.plan,
+          delta: params.delta,
+        );
         return;
       case CodexItemCommandExecutionOutputDeltaNotification(:final params)
           when params.threadId == selectedThread?.id:
-        _appendCommandDelta(params.turnId, params.itemId, params.delta);
-        _notify();
+        _queueDelta(
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind: _CodexDeltaKind.command,
+          delta: params.delta,
+        );
         return;
       case CodexItemReasoningSummaryTextDeltaNotification(:final params)
           when params.threadId == selectedThread?.id:
-        _appendReasoningDelta(
-          params.turnId,
-          params.itemId,
-          params.summaryIndex,
-          params.delta,
-          summary: true,
+        _queueDelta(
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind: _CodexDeltaKind.reasoningSummary,
+          index: params.summaryIndex,
+          delta: params.delta,
         );
-        _notify();
         return;
       case CodexItemReasoningTextDeltaNotification(:final params)
           when params.threadId == selectedThread?.id:
-        _appendReasoningDelta(
-          params.turnId,
-          params.itemId,
-          params.contentIndex,
-          params.delta,
-          summary: false,
+        _queueDelta(
+          threadId: params.threadId,
+          turnId: params.turnId,
+          itemId: params.itemId,
+          kind: _CodexDeltaKind.reasoningContent,
+          index: params.contentIndex,
+          delta: params.delta,
         );
-        _notify();
         return;
       case CodexItemToolRequestUserInputRequest(:final id, :final params)
           when params.threadId == selectedThread?.id:
@@ -1346,13 +1388,6 @@ class CodexConversationState extends ChangeNotifier {
       case CodexServerRequestResolvedNotification2(:final params)
           when params.threadId == selectedThread?.id:
         _removeServerRequest(params.requestId);
-        return;
-      case CodexFsChangedNotification2(:final params)
-          when params.watchId == globalStateWatchId:
-        _globalStateDebounce?.cancel();
-        _globalStateDebounce = Timer(const Duration(milliseconds: 200), () {
-          unawaited(refreshCatalog(showLoading: false));
-        });
         return;
       default:
         return;
@@ -1405,6 +1440,103 @@ class CodexConversationState extends ChangeNotifier {
         items: completed.items.isEmpty ? existing?.items : completed.items,
       ),
     );
+  }
+
+  void _queueDelta({
+    required String threadId,
+    required String turnId,
+    required String itemId,
+    required _CodexDeltaKind kind,
+    required String delta,
+    int index = -1,
+  }) {
+    if (delta.isEmpty) return;
+    _streamingItemIds.add(itemId);
+    final key = (
+      threadId: threadId,
+      turnId: turnId,
+      itemId: itemId,
+      kind: kind,
+      index: index,
+    );
+    _pendingDeltas.putIfAbsent(key, StringBuffer.new).write(delta);
+    _deltaFlushTimer ??= Timer(deltaFlushInterval, _flushPendingDeltas);
+  }
+
+  void _flushPendingDeltas() {
+    _deltaFlushTimer?.cancel();
+    _deltaFlushTimer = null;
+    if (_pendingDeltas.isEmpty || _closed) {
+      _pendingDeltas.clear();
+      return;
+    }
+    final pending = Map<_CodexDeltaKey, StringBuffer>.of(_pendingDeltas);
+    _pendingDeltas.clear();
+    observationTransaction(() {
+      _applyingDeltas = true;
+      try {
+        for (final entry in pending.entries) {
+          final key = entry.key;
+          if (key.threadId != selectedThread?.id) continue;
+          final before = _findItem(key.turnId, key.itemId);
+          final delta = entry.value.toString();
+          switch (key.kind) {
+            case _CodexDeltaKind.agent:
+              _appendAgentDelta(key.turnId, key.itemId, delta);
+              break;
+            case _CodexDeltaKind.plan:
+              _appendPlanDelta(key.turnId, key.itemId, delta);
+              break;
+            case _CodexDeltaKind.command:
+              _appendCommandDelta(key.turnId, key.itemId, delta);
+              break;
+            case _CodexDeltaKind.reasoningSummary:
+              _appendReasoningDelta(
+                key.turnId,
+                key.itemId,
+                key.index,
+                delta,
+                summary: true,
+              );
+              break;
+            case _CodexDeltaKind.reasoningContent:
+              _appendReasoningDelta(
+                key.turnId,
+                key.itemId,
+                key.index,
+                delta,
+                summary: false,
+              );
+              break;
+          }
+          final after = _findItem(key.turnId, key.itemId);
+          final structureChanged =
+              before != null &&
+              after != null &&
+              _itemDefinesTextBoundary(before) !=
+                  _itemDefinesTextBoundary(after);
+          if (after != null) {
+            _syncItemViewModel(
+              after,
+              turnId: key.turnId,
+              structureChanged: structureChanged,
+            );
+          }
+        }
+      } finally {
+        _applyingDeltas = false;
+      }
+      viewModel.streamRevision++;
+    });
+  }
+
+  CodexThreadItem? _findItem(String turnId, String itemId) {
+    final turn = turns.where((candidate) => candidate.id == turnId).firstOrNull;
+    if (turn == null) return null;
+    for (final item in turn.items) {
+      if (_threadItemId(item) == itemId) return item;
+    }
+    return null;
   }
 
   void _upsertItem(String turnId, CodexThreadItem item) {
@@ -1636,8 +1768,150 @@ class CodexConversationState extends ChangeNotifier {
     if (id != null) selectedThread = _threads[id];
   }
 
+  CodexItemViewModel itemViewModel(CodexThreadItem item) {
+    final id = _threadItemId(item);
+    if (id == null) {
+      return CodexItemViewModel(item: item, structuralItem: item);
+    }
+    return _itemViewModelsById.putIfAbsent(
+      id,
+      () => CodexItemViewModel(
+        item: item,
+        structuralItem: item,
+        streaming: _streamingItemIds.contains(id),
+      ),
+    );
+  }
+
+  CodexItemViewModel? observedItemViewModel(CodexThreadItem item) {
+    final id = _threadItemId(item);
+    return id == null ? null : _itemViewModelsById[id];
+  }
+
+  void _syncItemViewModel(
+    CodexThreadItem item, {
+    String? turnId,
+    bool structureChanged = false,
+  }) {
+    final model = itemViewModel(item);
+    model.item = item;
+    model.streaming = _streamingItemIds.contains(_threadItemId(item));
+    if (!structureChanged) return;
+    model.structuralItem = item;
+    final turnModel = viewModel.turns
+        .where((candidate) => candidate.id == turnId)
+        .firstOrNull;
+    if (turnModel == null) return;
+    final index = turnModel.items.indexOf(model);
+    if (index != -1) {
+      // The model identity stays stable for item-scoped observers, while the
+      // list mutation invalidates only the structural sliver builder.
+      turnModel.items.replaceRange(index, index + 1, [model]);
+    }
+  }
+
+  void _syncTurnsViewModel() {
+    final selectedId = selectedThread?.id;
+    if (_viewModelThreadId != selectedId) {
+      _viewModelThreadId = selectedId;
+      _deltaFlushTimer?.cancel();
+      _deltaFlushTimer = null;
+      _pendingDeltas.clear();
+      _streamingItemIds.clear();
+      _itemViewModelsById.clear();
+      viewModel.turns.clear();
+    }
+
+    final existingTurns = <String, CodexTurnViewModel>{
+      for (final model in viewModel.turns) model.id: model,
+    };
+    final nextTurns = <CodexTurnViewModel>[];
+    final nextItemsById = <String, CodexItemViewModel>{};
+
+    observationTransaction(() {
+      for (final turn in _turns) {
+        final existingTurn = existingTurns[turn.id];
+        final existingItems = <String, CodexItemViewModel>{};
+        for (final model
+            in existingTurn?.items ?? const <CodexItemViewModel>[]) {
+          final id = _threadItemId(model.structuralItem);
+          if (id != null) existingItems[id] = model;
+        }
+        final nextItems = <CodexItemViewModel>[];
+        for (final item in turn.items) {
+          final id = _threadItemId(item);
+          final model = id == null ? null : existingItems[id];
+          final nextModel =
+              model ??
+              CodexItemViewModel(
+                item: item,
+                structuralItem: item,
+                streaming: id != null && _streamingItemIds.contains(id),
+              );
+          nextModel.structuralItem = item;
+          nextModel.item = item;
+          nextModel.streaming = id != null && _streamingItemIds.contains(id);
+          if (id != null) nextItemsById[id] = nextModel;
+          nextItems.add(nextModel);
+        }
+
+        final turnModel =
+            existingTurn ??
+            CodexTurnViewModel(
+              id: turn.id,
+              turn: turn,
+              items: ObservableList<CodexItemViewModel>(),
+            );
+        turnModel.turn = turn;
+        if (!_sameIdentities(turnModel.items, nextItems)) {
+          turnModel.items.replaceRange(0, turnModel.items.length, nextItems);
+        }
+        nextTurns.add(turnModel);
+      }
+
+      _itemViewModelsById
+        ..clear()
+        ..addAll(nextItemsById);
+      _streamingItemIds.removeWhere(
+        (itemId) => !nextItemsById.containsKey(itemId),
+      );
+      if (!_sameIdentities(viewModel.turns, nextTurns)) {
+        viewModel.turns.replaceRange(0, viewModel.turns.length, nextTurns);
+      }
+    });
+  }
+
+  void _syncViewModel() {
+    observationTransaction(() {
+      viewModel.connectionState = connectionState;
+      viewModel.selectedThread = selectedThread;
+      viewModel.readingThreadId = readingThreadId;
+
+      final fingerprint = Object.hash(
+        identityHashCode(catalog),
+        catalogPhase,
+        catalogError,
+        creatingProjectId,
+        createThreadError,
+        selectedThread?.id,
+        readingThreadId,
+      );
+      if (_catalogFingerprint != fingerprint) {
+        _catalogFingerprint = fingerprint;
+        viewModel.catalogRevision++;
+      }
+    });
+  }
+
+  @override
+  void notifyListeners() {
+    if (_closed) return;
+    _syncViewModel();
+    super.notifyListeners();
+  }
+
   void _notify() {
-    if (!_closed) notifyListeners();
+    notifyListeners();
   }
 
   Future<void> close() async {
@@ -1645,17 +1919,11 @@ class CodexConversationState extends ChangeNotifier {
     _closed = true;
     _refreshGeneration++;
     _readGeneration++;
-    _globalStateDebounce?.cancel();
+    _deltaFlushTimer?.cancel();
+    _deltaFlushTimer = null;
+    _pendingDeltas.clear();
     await _typedSubscription.cancel();
     connection.removeListener(_onConnectionChanged);
-    if (_watchingGlobalState &&
-        connection.state.phase == CodexConnectionPhase.connected) {
-      try {
-        await connection.unwatchFile(globalStateWatchId);
-      } catch (_) {
-        // The socket may have already closed.
-      }
-    }
     await connectionLease.release(connection);
   }
 
@@ -1671,8 +1939,6 @@ class CodexConversationState extends ChangeNotifier {
 /// those widgets depend on [CodexConversationState] instead.
 final class CodexServiceState extends CodexConversationState {
   CodexServiceState({required super.serverId, required super.connection});
-
-  static const globalStateWatchId = CodexConversationState.globalStateWatchId;
 }
 
 String _joinCodexPath(String root, String child) {
@@ -1703,6 +1969,36 @@ String? _threadItemId(CodexThreadItem item) {
   final json = item.toJson();
   return json is Map<String, Object?> ? json['id'] as String? : null;
 }
+
+enum _CodexDeltaKind {
+  agent,
+  plan,
+  command,
+  reasoningSummary,
+  reasoningContent,
+}
+
+typedef _CodexDeltaKey = ({
+  String threadId,
+  String turnId,
+  String itemId,
+  _CodexDeltaKind kind,
+  int index,
+});
+
+bool _isDeltaNotification(CodexJsonEncodable message) =>
+    message is CodexItemAgentMessageDeltaNotification ||
+    message is CodexItemPlanDeltaNotification ||
+    message is CodexItemCommandExecutionOutputDeltaNotification ||
+    message is CodexItemReasoningSummaryTextDeltaNotification ||
+    message is CodexItemReasoningTextDeltaNotification;
+
+bool _itemDefinesTextBoundary(CodexThreadItem item) => switch (item) {
+  CodexUserMessageThreadItem() => true,
+  CodexAgentMessageThreadItem value => value.text.trim().isNotEmpty,
+  CodexPlanThreadItem value => value.text.trim().isNotEmpty,
+  _ => false,
+};
 
 String _requestKey(CodexV2RequestId id) => jsonEncode(id.toJson());
 

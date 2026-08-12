@@ -81,6 +81,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Light'), findsNothing);
+    expect(find.text('Dark'), findsNothing);
+    expect(find.text('System'), findsNothing);
     expect(backend.methods, contains('agent_hooks.status'));
     expect(find.text('CODING AGENT HOOKS'), findsOneWidget);
     expect(find.text('Claude Code'), findsOneWidget);

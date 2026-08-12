@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'codex_connection_controller.dart';
+import 'codex_feature_view_model.dart';
 import 'codex_service_state.dart';
 import 'codex_state.dart';
 import 'side_chat_collection_controller.dart';
@@ -29,6 +30,7 @@ final class CodexFeatureController extends ChangeNotifier {
   final CodexConnectionFactory connectionFactory;
   final CodexServiceControl controlService;
   final CodexServiceFactory? serviceFactory;
+  final CodexFeatureViewModel viewModel = CodexFeatureViewModel();
 
   CodexServiceState? _service;
   SideChatCollectionController? _sideChats;
@@ -56,13 +58,17 @@ final class CodexFeatureController extends ChangeNotifier {
         onSelected: (modelId) =>
             preferences.setSelectedModelId(serverId, modelId),
       );
+      state.synchronizeViewModel();
       _service = state;
+      viewModel.service = state;
+      viewModel.setupError = null;
       state.addListener(_onServiceChanged);
       notifyListeners();
       await state.start();
     } catch (error) {
       if (_closed) return;
       setupError = '$error';
+      viewModel.setupError = setupError;
       notifyListeners();
     }
   }
@@ -91,12 +97,14 @@ final class CodexFeatureController extends ChangeNotifier {
   void setSideChatOpening(bool value) {
     if (sideChatOpening == value || _closed) return;
     sideChatOpening = value;
+    viewModel.sideChatOpening = value;
     notifyListeners();
   }
 
   Future<bool> runServiceAction(CodexServiceAction action) async {
     if (_closed || operationInFlight) return false;
     operationInFlight = true;
+    viewModel.operationInFlight = true;
     notifyListeners();
     try {
       await controlService(action);
@@ -108,6 +116,7 @@ final class CodexFeatureController extends ChangeNotifier {
     } finally {
       if (!_closed) {
         operationInFlight = false;
+        viewModel.operationInFlight = false;
         notifyListeners();
       }
     }
@@ -134,6 +143,7 @@ final class CodexFeatureController extends ChangeNotifier {
     await state?.close();
     state?.dispose();
     _service = null;
+    viewModel.service = null;
   }
 
   @override

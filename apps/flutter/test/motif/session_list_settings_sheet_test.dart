@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/macos_permissions.dart';
 import 'package:motif/motif/platform/secret_store.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/screens/session_list_settings_sheet.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
@@ -13,7 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
-  testWidgets('shows push notifications and log export settings', (
+  testWidgets('shows appearance, push notifications, and log export settings', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -37,8 +39,37 @@ void main() {
       ),
     );
 
+    expect(find.text('DARK MODE'), findsOneWidget);
+    expect(find.text('System'), findsOneWidget);
+    expect(find.text('Light'), findsOneWidget);
+    expect(find.text('Dark'), findsOneWidget);
     expect(find.text('Push notifications'), findsOneWidget);
     expect(find.text('Export logs'), findsOneWidget);
+  });
+
+  testWidgets('updates and persists the selected dark mode', (tester) async {
+    final app = await _pumpSettings(
+      tester,
+      macosPermissions: _FakeMacosPermissions(const {}),
+    );
+    addTearDown(app.dispose);
+
+    SegmentedButton<TerminalThemeSetting> selector() =>
+        tester.widget(find.byKey(const ValueKey('dark-mode-selector')));
+
+    expect(selector().selected, {TerminalThemeSetting.system});
+
+    await tester.tap(find.text('Dark'));
+    await tester.pumpAndSettle();
+
+    expect(app.terminalSettings.settings.theme, TerminalThemeSetting.dark);
+    expect(selector().selected, {TerminalThemeSetting.dark});
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(
+      TerminalSettingsStore(prefs).settings.theme,
+      TerminalThemeSetting.dark,
+    );
   });
 
   testWidgets('shows and operates macOS permissions', (tester) async {
@@ -160,7 +191,10 @@ Future<AppState> _pumpSettings(
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
         home: Scaffold(
-          body: SessionListSettingsSheet(macosPermissions: macosPermissions),
+          // AdaptiveModal supplies this scrolling frame in production.
+          body: SingleChildScrollView(
+            child: SessionListSettingsSheet(macosPermissions: macosPermissions),
+          ),
         ),
       ),
     ),

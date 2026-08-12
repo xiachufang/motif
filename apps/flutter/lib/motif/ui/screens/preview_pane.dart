@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../models/resource_documents.dart';
 import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/syntax_highlight.dart';
@@ -26,20 +27,16 @@ class PreviewPane extends StatefulWidget {
 }
 
 class _PreviewPaneState extends State<PreviewPane> {
-  String _content = '';
   String _sha = '';
   bool _binary = false;
   bool _truncated = false;
   bool _editing = false;
   bool _loading = true;
   String? _error;
+  Uint8List _bytes = Uint8List(0);
+  String? _mime;
   Uint8List? _imageBytes;
   final TextEditingController _editor = TextEditingController();
-  final ScrollController _previewScrollController = ScrollController();
-  String? _highlightedSource;
-  String? _highlightedPath;
-  MotifColors? _highlightedColors;
-  TextSpan? _highlightedSpan;
 
   static const _imageExts = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'};
   bool get _isImage {
@@ -72,25 +69,7 @@ class _PreviewPaneState extends State<PreviewPane> {
   @override
   void dispose() {
     _editor.dispose();
-    _previewScrollController.dispose();
     super.dispose();
-  }
-
-  TextSpan _highlightedCode(MotifColors colors) {
-    if (_highlightedSpan == null ||
-        _highlightedSource != _content ||
-        _highlightedPath != widget.path ||
-        _highlightedColors != colors) {
-      _highlightedSource = _content;
-      _highlightedPath = widget.path;
-      _highlightedColors = colors;
-      _highlightedSpan = MotifSyntaxHighlight.build(
-        source: _content,
-        path: widget.path,
-        colors: colors,
-      );
-    }
-    return _highlightedSpan!;
   }
 
   Future<void> _load() async {
@@ -108,7 +87,8 @@ class _PreviewPaneState extends State<PreviewPane> {
           : utf8.decode(raw, allowMalformed: true);
       if (!mounted) return;
       setState(() {
-        _content = text;
+        _bytes = raw;
+        _mime = r.mime;
         _sha = r.sha256;
         _binary = r.binary && !isImg;
         _imageBytes = isImg ? raw : null;
@@ -138,7 +118,7 @@ class _PreviewPaneState extends State<PreviewPane> {
       );
       if (!mounted) return;
       setState(() {
-        _content = _editor.text;
+        _bytes = Uint8List.fromList(utf8.encode(_editor.text));
         _sha = newSha;
         _editing = false;
       });
@@ -187,6 +167,7 @@ class _PreviewPaneState extends State<PreviewPane> {
   Widget build(BuildContext context) {
     final c = context.motif;
     return Scaffold(
+      backgroundColor: c.surface,
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: Text(
@@ -225,87 +206,157 @@ class _PreviewPaneState extends State<PreviewPane> {
           ? Center(
               child: Text(_error!, style: TextStyle(color: c.danger)),
             )
-          : _imageBytes != null
-          ? Container(
-              color: c.background,
-              child: InteractiveViewer(
-                maxScale: 8,
-                child: Center(child: Image.memory(_imageBytes!)),
+          : _editing
+          ? TextField(
+              controller: _editor,
+              maxLines: null,
+              expands: true,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+              decoration: const InputDecoration(
+                contentPadding: EdgeInsets.all(MotifSpacing.sm),
+                border: InputBorder.none,
               ),
             )
-          : _binary
-          ? Center(
+          : FilePreviewBody(
+              document: FilePreviewDocument(
+                path: widget.path,
+                bytes: _bytes,
+                mime: _mime,
+                binary: _binary,
+                truncated: _truncated,
+                image: _imageBytes != null,
+              ),
+              tabActive: widget.tabActive,
+            ),
+    );
+  }
+}
+
+/// Shared read-only renderer for files loaded by Session or Codex.
+class FilePreviewBody extends StatefulWidget {
+  const FilePreviewBody({
+    required this.document,
+    this.tabActive = true,
+    super.key,
+  });
+
+  final FilePreviewDocument document;
+  final bool tabActive;
+
+  @override
+  State<FilePreviewBody> createState() => _FilePreviewBodyState();
+}
+
+class _FilePreviewBodyState extends State<FilePreviewBody> {
+  final ScrollController _scrollController = ScrollController();
+  String? _highlightedSource;
+  String? _highlightedPath;
+  MotifColors? _highlightedColors;
+  TextSpan? _highlightedSpan;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  TextSpan _highlightedCode(String content, MotifColors colors) {
+    if (_highlightedSpan == null ||
+        _highlightedSource != content ||
+        _highlightedPath != widget.document.path ||
+        _highlightedColors != colors) {
+      _highlightedSource = content;
+      _highlightedPath = widget.document.path;
+      _highlightedColors = colors;
+      _highlightedSpan = MotifSyntaxHighlight.build(
+        source: content,
+        path: widget.document.path,
+        colors: colors,
+      );
+    }
+    return _highlightedSpan!;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final document = widget.document;
+    final c = context.motif;
+    if (document.image) {
+      return Container(
+        key: const ValueKey('preview-background'),
+        color: c.surface,
+        child: InteractiveViewer(
+          maxScale: 8,
+          child: Center(child: Image.memory(document.bytes)),
+        ),
+      );
+    }
+    if (document.binary) {
+      return ColoredBox(
+        key: const ValueKey('preview-background'),
+        color: c.surface,
+        child: Center(
+          child: Text(
+            'Binary file (${document.path})',
+            style: TextStyle(color: c.textSecondary),
+          ),
+        ),
+      );
+    }
+    final content = document.text;
+    return ColoredBox(
+      key: const ValueKey('preview-background'),
+      color: c.surface,
+      child: Column(
+        children: [
+          if (document.truncated)
+            Container(
+              width: double.infinity,
+              color: c.danger.withValues(alpha: 0.15),
+              padding: const EdgeInsets.all(MotifSpacing.sm),
               child: Text(
-                'Binary file (${widget.path})',
-                style: TextStyle(color: c.textSecondary),
+                'Truncated preview',
+                style: MotifType.caption.copyWith(
+                  color: c.danger,
+                  fontWeight: FontWeight.w400,
+                ),
               ),
-            )
-          : Column(
-              children: [
-                if (_truncated)
-                  Container(
-                    width: double.infinity,
-                    color: c.danger.withValues(alpha: 0.15),
-                    padding: const EdgeInsets.all(MotifSpacing.sm),
-                    child: Text(
-                      'Truncated preview',
-                      style: MotifType.caption.copyWith(
-                        color: c.danger,
-                        fontWeight: FontWeight.w400,
+            ),
+          Expanded(
+            child: TabSelectionArea(
+              tabActive: widget.tabActive,
+              child: SizedBox.expand(
+                child: Scrollbar(
+                  key: const ValueKey('preview-scrollbar'),
+                  controller: _scrollController,
+                  child: ScrollConfiguration(
+                    behavior: ScrollConfiguration.of(
+                      context,
+                    ).copyWith(scrollbars: false),
+                    child: SingleChildScrollView(
+                      controller: _scrollController,
+                      primary: false,
+                      padding: const EdgeInsets.fromLTRB(
+                        MotifSpacing.sm,
+                        MotifSpacing.sm,
+                        MotifSpacing.lg,
+                        MotifSpacing.sm,
+                      ),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: Text.rich(
+                          key: const ValueKey('preview-highlighted-code'),
+                          _highlightedCode(content, c),
+                        ),
                       ),
                     ),
                   ),
-                Expanded(
-                  child: _editing
-                      ? TextField(
-                          controller: _editor,
-                          maxLines: null,
-                          expands: true,
-                          style: const TextStyle(
-                            fontFamily: 'monospace',
-                            fontSize: 13,
-                          ),
-                          decoration: const InputDecoration(
-                            contentPadding: EdgeInsets.all(MotifSpacing.sm),
-                            border: InputBorder.none,
-                          ),
-                        )
-                      : TabSelectionArea(
-                          tabActive: widget.tabActive,
-                          child: SizedBox.expand(
-                            child: Scrollbar(
-                              key: const ValueKey('preview-scrollbar'),
-                              controller: _previewScrollController,
-                              child: ScrollConfiguration(
-                                behavior: ScrollConfiguration.of(
-                                  context,
-                                ).copyWith(scrollbars: false),
-                                child: SingleChildScrollView(
-                                  controller: _previewScrollController,
-                                  primary: false,
-                                  padding: const EdgeInsets.fromLTRB(
-                                    MotifSpacing.sm,
-                                    MotifSpacing.sm,
-                                    MotifSpacing.lg,
-                                    MotifSpacing.sm,
-                                  ),
-                                  child: SizedBox(
-                                    width: double.infinity,
-                                    child: Text.rich(
-                                      key: const ValueKey(
-                                        'preview-highlighted-code',
-                                      ),
-                                      _highlightedCode(c),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
                 ),
-              ],
+              ),
             ),
+          ),
+        ],
+      ),
     );
   }
 }

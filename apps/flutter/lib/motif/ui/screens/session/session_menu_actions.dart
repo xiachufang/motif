@@ -3,13 +3,15 @@
 part of '../session_screen.dart';
 
 extension _SessionScreenMenuActions on _SessionScreenState {
-  Future<void> _newPty() async {
+  Future<void> _newPty({bool quietWhileReconnecting = false}) async {
     try {
       final (cols, rows) = _preferredPtySize();
       await _terminalController.create(cols: cols, rows: rows);
       _focusTerminalAfterTabSwitch();
     } catch (e) {
-      if (mounted) {
+      final connectionStillAttached =
+          _attachment.connection.status is ConnAttached;
+      if (mounted && (!quietWhileReconnecting || connectionStillAttached)) {
         showMotifToast(context, 'New terminal failed: $e');
       }
     }

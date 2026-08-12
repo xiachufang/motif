@@ -4,17 +4,19 @@ import 'package:flutter/material.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_feature_controller.dart';
-import '../../codex/codex_resource_intent.dart';
+import '../../codex/codex_navigation.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
+import '../../models/resource_documents.dart';
 import '../../platform/window_title.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
 import 'codex_thread_sidebar.dart';
 import 'codex_thread_workspace.dart';
+import 'codex_resource_screens.dart';
 import 'side_chat_screen.dart';
 
 class CodexScreen extends StatefulWidget {
@@ -44,7 +46,6 @@ class _CodexScreenState extends State<CodexScreen> {
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_changed);
     unawaited(widget.controller.start());
     unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
   }
@@ -57,31 +58,43 @@ class _CodexScreenState extends State<CodexScreen> {
     _initializedSidebarVisibility = true;
   }
 
-  void _changed() {
-    if (!mounted) return;
-    setState(() {});
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(_changed);
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final codex = widget.controller.preferences;
-    final serviceState = widget.controller.service;
     return ObservationSelect<
-      ({CodexSidebarMode mode, bool visible, double width})
+      ({
+        CodexSidebarMode mode,
+        bool visible,
+        double width,
+        CodexServiceState? service,
+        String? setupError,
+        bool operationInFlight,
+        bool sideChatOpening,
+        CodexConnectionState? connection,
+        CodexThread? selectedThread,
+        String? readingThreadId,
+      })
     >(
-      selector: () => (
-        mode: codex.sidebarMode,
-        visible: codex.desktopSidebarVisible,
-        width: codex.sidebarWidth,
-      ),
+      selector: () {
+        final feature = widget.controller.viewModel;
+        final service = feature.service;
+        final conversation = service?.viewModel;
+        return (
+          mode: codex.sidebarMode,
+          visible: codex.desktopSidebarVisible,
+          width: codex.sidebarWidth,
+          service: service,
+          setupError: feature.setupError,
+          operationInFlight: feature.operationInFlight,
+          sideChatOpening: feature.sideChatOpening,
+          connection: conversation?.connectionState,
+          selectedThread: conversation?.selectedThread,
+          readingThreadId: conversation?.readingThreadId,
+        );
+      },
       builder: (context, chrome, _) => LayoutBuilder(
         builder: (context, constraints) {
+          final serviceState = chrome.service;
           final mobile = constraints.maxWidth < _mobileBreakpoint;
           final canPop = Navigator.of(context).canPop();
           final sidebarToggle = IconButton(
@@ -113,15 +126,14 @@ class _CodexScreenState extends State<CodexScreen> {
               leading: canPop
                   ? Row(children: [const CloseButton(), sidebarToggle])
                   : sidebarToggle,
-              title: _CodexAppBarTitle(thread: serviceState?.selectedThread),
+              title: _CodexAppBarTitle(thread: chrome.selectedThread),
               actions: [
                 IconButton(
                   key: const ValueKey('open-side-chat'),
                   tooltip: 'Open Side Chat',
                   icon: const Icon(Icons.chat_bubble_outline_rounded),
                   onPressed:
-                      !widget.controller.sideChatOpening &&
-                          serviceState?.selectedThread != null
+                      !chrome.sideChatOpening && chrome.selectedThread != null
                       ? () => unawaited(_openSideChat(serviceState!))
                       : null,
                 ),
@@ -129,8 +141,7 @@ class _CodexScreenState extends State<CodexScreen> {
                   key: const ValueKey('codex-open-thread-workspace'),
                   tooltip: 'Open thread workspace',
                   icon: const Icon(Icons.terminal_rounded),
-                  onPressed:
-                      !_workspaceOpening && serviceState?.selectedThread != null
+                  onPressed: !_workspaceOpening && chrome.selectedThread != null
                       ? () => unawaited(
                           _requestWorkspace(serviceState!.selectedThread!),
                         )
@@ -139,7 +150,7 @@ class _CodexScreenState extends State<CodexScreen> {
                 PopupMenuButton<CodexServiceAction>(
                   key: const ValueKey('codex-service-menu'),
                   tooltip: 'Codex service',
-                  enabled: !widget.controller.operationInFlight,
+                  enabled: !chrome.operationInFlight,
                   itemBuilder: (_) => const [
                     PopupMenuItem(
                       value: CodexServiceAction.restart,
@@ -167,15 +178,16 @@ class _CodexScreenState extends State<CodexScreen> {
                     ),
                   )
                 : null,
-            body: widget.controller.setupError != null
-                ? _MainSurface(
-                    child: _Failure(error: widget.controller.setupError!),
-                  )
+            body: chrome.setupError != null
+                ? _MainSurface(child: _Failure(error: chrome.setupError!))
                 : serviceState == null
                 ? const _MainSurface(child: CircularProgressIndicator())
                 : mobile
                 ? _mainContent(
                     serviceState,
+                    connection: chrome.connection!,
+                    selectedThread: chrome.selectedThread,
+                    readingThreadId: chrome.readingThreadId,
                     onOpenSidebar: () =>
                         _scaffoldKey.currentState?.openDrawer(),
                   )
@@ -190,7 +202,19 @@ class _CodexScreenState extends State<CodexScreen> {
     BoxConstraints constraints,
     CodexServiceState serviceState,
     CodexState codex,
-    ({CodexSidebarMode mode, bool visible, double width}) chrome,
+    ({
+      CodexSidebarMode mode,
+      bool visible,
+      double width,
+      CodexServiceState? service,
+      String? setupError,
+      bool operationInFlight,
+      bool sideChatOpening,
+      CodexConnectionState? connection,
+      CodexThread? selectedThread,
+      String? readingThreadId,
+    })
+    chrome,
   ) {
     final maxWidth = constraints.maxWidth * 0.6;
     final width = chrome.width.clamp(_sidebarMinWidth, maxWidth).toDouble();
@@ -210,7 +234,14 @@ class _CodexScreenState extends State<CodexScreen> {
             },
           ),
         ],
-        Expanded(child: _mainContent(serviceState)),
+        Expanded(
+          child: _mainContent(
+            serviceState,
+            connection: chrome.connection!,
+            selectedThread: chrome.selectedThread,
+            readingThreadId: chrome.readingThreadId,
+          ),
+        ),
       ],
     );
   }
@@ -233,8 +264,13 @@ class _CodexScreenState extends State<CodexScreen> {
     },
   );
 
-  Widget _mainContent(CodexServiceState state, {VoidCallback? onOpenSidebar}) {
-    final connection = state.connectionState;
+  Widget _mainContent(
+    CodexServiceState state, {
+    required CodexConnectionState connection,
+    required CodexThread? selectedThread,
+    required String? readingThreadId,
+    VoidCallback? onOpenSidebar,
+  }) {
     return switch (connection.phase) {
       CodexConnectionPhase.connecting => const _MainSurface(
         child: _Progress(
@@ -249,14 +285,14 @@ class _CodexScreenState extends State<CodexScreen> {
         ),
       ),
       CodexConnectionPhase.connected =>
-        state.readingThreadId != null
+        readingThreadId != null
             ? const _MainSurface(
                 child: _Progress(
                   key: ValueKey('codex-thread-loading'),
                   title: 'Loading thread',
                 ),
               )
-            : state.selectedThread == null
+            : selectedThread == null
             ? _MainSurface(
                 child: _Connected(
                   serviceState: state,
@@ -265,10 +301,10 @@ class _CodexScreenState extends State<CodexScreen> {
               )
             : CodexThreadWorkspace(
                 state: state,
-                onOpenResource: (resource) => _requestWorkspace(
-                  state.selectedThread!,
-                  resource: resource,
-                ),
+                onOpenFile: (path) => _openFile(state, path),
+                onOpenImage: (path) => _openFile(state, path, image: true),
+                onOpenTurnDiff: (document, {initialPath}) =>
+                    _openTurnDiff(state, document, initialPath: initialPath),
               ),
       CodexConnectionPhase.failed => _MainSurface(
         child: _Failure(
@@ -279,10 +315,7 @@ class _CodexScreenState extends State<CodexScreen> {
     };
   }
 
-  Future<void> _requestWorkspace(
-    CodexThread thread, {
-    CodexResourceIntent? resource,
-  }) async {
+  Future<void> _requestWorkspace(CodexThread thread) async {
     if (_workspaceOpening) return;
     final cwd = thread.cwd.value.trim();
     if (cwd.isEmpty) {
@@ -296,7 +329,6 @@ class _CodexScreenState extends State<CodexScreen> {
           threadId: thread.id,
           cwd: cwd,
           title: codexThreadTitle(thread),
-          resource: resource,
         ),
       );
       if (mounted) {
@@ -308,6 +340,45 @@ class _CodexScreenState extends State<CodexScreen> {
       if (mounted) setState(() => _workspaceOpening = false);
     }
   }
+
+  Future<void> _openFile(
+    CodexConversationState state,
+    String path, {
+    bool image = false,
+  }) {
+    final uri = Uri.tryParse(path);
+    final networkImage =
+        image &&
+        uri != null &&
+        const {'http', 'https', 'data'}.contains(uri.scheme);
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        settings: RouteSettings(
+          name: 'codex-file/${widget.controller.serverId}',
+        ),
+        builder: (_) => networkImage
+            ? CodexNetworkImageScreen(url: path)
+            : CodexFilePreviewScreen(state: state, path: path, image: image),
+      ),
+    );
+  }
+
+  Future<void> _openTurnDiff(
+    CodexConversationState state,
+    DiffDocument document, {
+    String? initialPath,
+  }) => Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      settings: RouteSettings(
+        name: 'codex-turn-diff/${widget.controller.serverId}',
+      ),
+      builder: (_) => CodexTurnDiffScreen(
+        document: document,
+        initialPath: initialPath,
+        onOpenFile: (path) => _openFile(state, path),
+      ),
+    ),
+  );
 
   Future<void> _openSideChat(CodexServiceState state) async {
     final thread = state.selectedThread;
@@ -321,17 +392,7 @@ class _CodexScreenState extends State<CodexScreen> {
           settings: RouteSettings(
             name: 'side-chat/${widget.controller.serverId}/${thread.id}',
           ),
-          builder: (_) => SideChatScreen(
-            collection: collection,
-            onOpenResource: (resource) async {
-              await _requestWorkspace(thread, resource: resource);
-              if (mounted) {
-                unawaited(
-                  MotifWindowTitle.set('Side Chat — Motif').catchError((_) {}),
-                );
-              }
-            },
-          ),
+          builder: (_) => SideChatScreen(collection: collection),
         ),
       );
     } finally {

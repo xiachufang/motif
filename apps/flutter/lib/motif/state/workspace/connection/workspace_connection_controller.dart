@@ -15,6 +15,7 @@ import '../../../models/settings.dart';
 import '../../../net/proxy_client.dart';
 import '../../../net/remote_port_forwarder.dart';
 import '../../../net/rpc_client.dart';
+import '../../../net/transport_error.dart';
 import '../terminal/terminal_runtime_policy.dart';
 import '../remote_port/remote_port_controller.dart';
 import '../session_attachment.dart';
@@ -137,11 +138,7 @@ class WorkspaceConnectionController implements SessionAttachment {
       ),
       transport: TerminalTransport(
         canInput: () => connection.canInput && _rpc?.sessionId != null,
-        call: (method, [params = const {}]) {
-          final rpc = _rpc;
-          if (rpc == null) throw const RpcException('not connected');
-          return rpc.call(method, params);
-        },
+        call: _runAttachedTerminalCall,
         writePty: (ptyId, data) =>
             _rpc?.writePty(ptyId, data) ?? Future<void>.value(),
         resizePty: (ptyId, cols, rows) => _runAttachedTerminalRpc((rpc) async {

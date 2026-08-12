@@ -1,24 +1,25 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_feature_controller.dart';
-import 'package:motif/motif/codex/codex_resource_intent.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/models/motif_proto.dart';
+import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
-import 'package:motif/motif/session/session_feature_runtime.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/ui/screens/codex_screen.dart';
+import 'package:motif/motif/ui/screens/codex_resource_screens.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/integration/app_codex_screen.dart';
@@ -292,7 +293,191 @@ void main() {
     app.dispose();
   });
 
-  testWidgets('resource opens the selected thread workspace and target tab', (
+  testWidgets('Codex resources open directly without creating a workspace', (
+    tester,
+  ) async {
+    final calls = <(String, Map<String, Object?>)>[];
+    final app = await appStateWithServer((method, [params = const {}]) async {
+      calls.add((method, Map<String, Object?>.from(params)));
+      return const {};
+    });
+    final client = ScreenFakeClient(
+      files: const {
+        '/work/motif/lib/main.dart': 'final answer = 42;',
+        '/work/motif/lib/other.dart': 'final other = 7;',
+      },
+    );
+    final serviceState = readyServiceState(connection: client);
+    serviceState.selectedThread = serviceState.catalog.allThreads.single;
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final workspace = tester.widget<CodexThreadWorkspace>(
+      find.byType(CodexThreadWorkspace),
+    );
+    workspace.onOpenImage!(
+      'data:image/png;base64,'
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CodexNetworkImageScreen), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(client.readPaths, isEmpty);
+    expect(
+      calls.map((call) => call.$1),
+      isNot(contains('codex.workspace.ensure')),
+    );
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+
+    final document = DiffDocument.fromFilePatches(const [
+      FilePatch(
+        path: 'lib/main.dart',
+        sourcePath: '/work/motif/lib/main.dart',
+        patch: '--- a/lib/main.dart\n+++ b/lib/main.dart\n-old\n+new',
+      ),
+      FilePatch(
+        path: 'lib/other.dart',
+        sourcePath: '/work/motif/lib/other.dart',
+        patch: '--- a/lib/other.dart\n+++ b/lib/other.dart\n-before\n+after',
+      ),
+    ]);
+    workspace.onOpenTurnDiff!(document, initialPath: 'lib/main.dart');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CodexTurnDiffScreen), findsOneWidget);
+    expect(find.text('Turn changes'), findsOneWidget);
+    expect(find.text('+new'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-turn-diff-sidebar')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .getCenter(find.byKey(const ValueKey('codex-turn-diff-sidebar')))
+          .dx,
+      greaterThan(
+        tester
+            .getCenter(
+              find.byKey(
+                const ValueKey('codex-turn-diff-document-lib/main.dart'),
+              ),
+            )
+            .dx,
+      ),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('diff-list-file-lib/other.dart')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('codex-turn-diff-document-lib/other.dart')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('diff-list-file-lib/main.dart')),
+    );
+    await tester.pump();
+    expect(
+      calls.map((call) => call.$1),
+      isNot(contains('codex.workspace.ensure')),
+    );
+    expect(find.byType(SessionScreen), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('diff-open-file-lib/main.dart')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(CodexFilePreviewScreen), findsOneWidget);
+    expect(
+      tester
+          .widget<Scaffold>(
+            find.byKey(const ValueKey('codex-file-preview-screen')),
+          )
+          .backgroundColor,
+      MotifColors.light.surface,
+    );
+    expect(find.textContaining('final answer'), findsOneWidget);
+    expect(client.readPaths, ['/work/motif/lib/main.dart']);
+    expect(
+      calls.map((call) => call.$1),
+      isNot(contains('codex.workspace.ensure')),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('Codex file preview inherits the active dark theme', (
+    tester,
+  ) async {
+    final state = readyServiceState(
+      connection: ScreenFakeClient(
+        files: const {'/work/motif/lib/main.dart': 'final answer = 42;'},
+      ),
+    );
+    addTearDown(state.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        darkTheme: motifTheme(Brightness.dark),
+        themeMode: ThemeMode.dark,
+        home: CodexFilePreviewScreen(
+          state: state,
+          path: '/work/motif/lib/main.dart',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final screen = find.byKey(const ValueKey('codex-file-preview-screen'));
+    expect(Theme.of(tester.element(screen)).brightness, Brightness.dark);
+    expect(
+      tester.widget<Scaffold>(screen).backgroundColor,
+      MotifColors.dark.surface,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        darkTheme: motifTheme(Brightness.dark),
+        themeMode: ThemeMode.dark,
+        home: const CodexNetworkImageScreen(
+          url:
+              'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<Scaffold>(
+            find.byKey(const ValueKey('codex-network-image-screen')),
+          )
+          .backgroundColor,
+      MotifColors.dark.surface,
+    );
+  });
+
+  testWidgets('workspace toolbar remains the explicit Session entry', (
     tester,
   ) async {
     final calls = <(String, Map<String, Object?>)>[];
@@ -326,17 +511,7 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(find.byKey(const ValueKey('open-side-chat')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('codex-open-thread-workspace')),
-      findsOneWidget,
-    );
-    final workspace = tester.widget<CodexThreadWorkspace>(
-      find.byType(CodexThreadWorkspace),
-    );
-    unawaited(
-      workspace.onOpenResource!(const CodexDiffIntent('lib/main.dart')),
-    );
+    await tester.tap(find.byKey(const ValueKey('codex-open-thread-workspace')));
     await tester.pumpAndSettle();
 
     final ensureCall = calls.singleWhere(
@@ -347,9 +522,7 @@ void main() {
     expect(screen.session, '__motif_internal_thread');
     expect(screen.allowSessionSwitching, isFalse);
     expect(screen.titleOverride, 'Thread');
-    expect(screen.initialTarget, isA<SessionDiffTarget>());
-    expect((screen.initialTarget! as SessionDiffTarget).path, 'lib/main.dart');
-    expect(find.byKey(const ValueKey('open-side-chat')), findsNothing);
+    expect(screen.initialTarget, isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -390,7 +563,7 @@ void main() {
     expect(
       tester
           .widget<CodexThreadWorkspace>(find.byType(CodexThreadWorkspace))
-          .onOpenResource,
+          .onOpenTurnDiff,
       isNotNull,
     );
     expect(sideChatClient.forkParams, hasLength(1));
@@ -590,7 +763,7 @@ Future<AppState> appStateWithServer(TestServerCall call) async {
   return app;
 }
 
-CodexServiceState readyServiceState() {
+CodexServiceState readyServiceState({ScreenFakeClient? connection}) {
   final thread = CodexThread(
     cliVersion: 'test',
     createdAt: 1,
@@ -606,13 +779,20 @@ CodexServiceState readyServiceState() {
     turns: const [],
     updatedAt: 1,
   );
-  return CodexServiceState(serverId: 'server', connection: ScreenFakeClient())
+  return CodexServiceState(
+      serverId: 'server',
+      connection: connection ?? ScreenFakeClient(),
+    )
     ..catalog = buildCodexCatalog([thread], null)
     ..catalogPhase = CodexCatalogPhase.ready;
 }
 
 final class ScreenFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
+  ScreenFakeClient({this.files = const {}});
+
+  final Map<String, String> files;
+  final List<String> readPaths = [];
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
@@ -755,8 +935,14 @@ final class ScreenFakeClient extends ChangeNotifier
       const CodexThreadGoalClearResponse(cleared: true);
 
   @override
-  Future<CodexFsReadFileResponse> readFile(String path) async =>
-      throw StateError('unused');
+  Future<CodexFsReadFileResponse> readFile(String path) async {
+    readPaths.add(path);
+    final content = files[path];
+    if (content == null) throw StateError('Missing test file: $path');
+    return CodexFsReadFileResponse(
+      dataBase64: base64Encode(utf8.encode(content)),
+    );
+  }
 
   @override
   Future<CodexFsCreateDirectoryResponse> createDirectory(String path) async =>

@@ -4,23 +4,19 @@ import 'package:flutter/material.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_service_state.dart';
-import '../../codex/codex_resource_intent.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';
+import '../../models/resource_documents.dart';
 import '../../platform/window_title.dart';
 import '../theme/motif_theme.dart';
+import 'codex_resource_screens.dart';
 import 'codex_thread_workspace.dart';
 import 'side_chat_sidebar.dart';
 
 class SideChatScreen extends StatefulWidget {
-  const SideChatScreen({
-    required this.collection,
-    this.onOpenResource,
-    super.key,
-  });
+  const SideChatScreen({required this.collection, super.key});
 
   final SideChatCollectionController collection;
-  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   State<SideChatScreen> createState() => _SideChatScreenState();
@@ -131,7 +127,14 @@ class _SideChatScreenState extends State<SideChatScreen> {
               key: ValueKey('side-chat-workspace-${entry.id}'),
               state: entry.conversation,
               turnActionBuilder: _emptyTurnAction,
-              onOpenResource: widget.onOpenResource,
+              onOpenFile: (path) => _openFile(entry.conversation, path),
+              onOpenImage: (path) =>
+                  _openFile(entry.conversation, path, image: true),
+              onOpenTurnDiff: (document, {initialPath}) => _openTurnDiff(
+                entry.conversation,
+                document,
+                initialPath: initialPath,
+              ),
             ),
         ],
       );
@@ -155,6 +158,39 @@ class _SideChatScreenState extends State<SideChatScreen> {
       ),
     );
   }
+
+  Future<void> _openFile(
+    CodexConversationState state,
+    String path, {
+    bool image = false,
+  }) {
+    final uri = Uri.tryParse(path);
+    final networkImage =
+        image &&
+        uri != null &&
+        const {'http', 'https', 'data'}.contains(uri.scheme);
+    return Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => networkImage
+            ? CodexNetworkImageScreen(url: path)
+            : CodexFilePreviewScreen(state: state, path: path, image: image),
+      ),
+    );
+  }
+
+  Future<void> _openTurnDiff(
+    CodexConversationState state,
+    DiffDocument document, {
+    String? initialPath,
+  }) => Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      builder: (_) => CodexTurnDiffScreen(
+        document: document,
+        initialPath: initialPath,
+        onOpenFile: (path) => _openFile(state, path),
+      ),
+    ),
+  );
 }
 
 Widget _emptyTurnAction(

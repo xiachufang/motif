@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../models/motif_proto.dart';
+import '../../models/resource_documents.dart';
 import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_panel_header.dart';
@@ -119,21 +120,21 @@ class _GitDiffPanelState extends State<GitDiffPanel> {
         ? Center(
             child: Text('No changes', style: TextStyle(color: c.textSecondary)),
           )
+        : _viewMode == _DiffFileViewMode.list
+        ? DiffFileSidebar(
+            summary: _summary,
+            onOpenFile: (path) => _openDiff(path),
+          )
         : Column(
             children: [
               _SummaryBar(summary: _summary),
               Expanded(
-                child: _viewMode == _DiffFileViewMode.list
-                    ? _DiffFileList(
-                        summary: _summary,
-                        onOpenFile: (path) => _openDiff(path),
-                      )
-                    : _DiffFileTree(
-                        summary: _summary,
-                        expandedDirs: _expandedDirs,
-                        onToggleDir: _toggleDir,
-                        onOpenFile: (path) => _openDiff(path),
-                      ),
+                child: _DiffFileTree(
+                  summary: _summary,
+                  expandedDirs: _expandedDirs,
+                  onToggleDir: _toggleDir,
+                  onOpenFile: (path) => _openDiff(path),
+                ),
               ),
             ],
           );
@@ -223,7 +224,6 @@ class _GitDiffViewState extends State<GitDiffView> {
   late bool _staged;
   String _patch = '';
   List<DiffSummaryFile> _summary = const [];
-  final Set<String> _collapsedPaths = {};
   bool _loading = true;
   String? _error;
   int _lastTick = -1;
@@ -301,12 +301,12 @@ class _GitDiffViewState extends State<GitDiffView> {
         : Column(
             children: [
               Expanded(
-                child: _PatchBody(
-                  patch: _patch,
-                  summary: _summary,
-                  fallbackPath: widget.path,
-                  collapsedPaths: _collapsedPaths,
-                  onToggleSection: _toggleSection,
+                child: DiffDocumentView(
+                  document: DiffDocument.fromUnifiedPatch(
+                    patch: _patch,
+                    summary: _summary,
+                    fallbackPath: widget.path,
+                  ),
                   tabActive: widget.tabActive,
                 ),
               ),
@@ -336,64 +336,79 @@ class _GitDiffViewState extends State<GitDiffView> {
     setState(() => _staged = staged);
     _load();
   }
-
-  void _toggleSection(String path) {
-    setState(() {
-      if (!_collapsedPaths.add(path)) _collapsedPaths.remove(path);
-    });
-  }
 }
 
-class _PatchBody extends StatelessWidget {
-  final String patch;
-  final List<DiffSummaryFile> summary;
-  final String? fallbackPath;
-  final Set<String> collapsedPaths;
-  final ValueChanged<String> onToggleSection;
+/// Shared renderer for a stable diff document.
+///
+/// Session feeds it a document loaded from Git, while Codex feeds it the exact
+/// patch snapshot emitted by app-server for one turn.
+class DiffDocumentView extends StatefulWidget {
+  const DiffDocumentView({
+    required this.document,
+    this.initialPath,
+    this.onOpenFile,
+    this.tabActive = true,
+    super.key,
+  });
+
+  final DiffDocument document;
+  final String? initialPath;
+  final ValueChanged<String>? onOpenFile;
   final bool tabActive;
 
-  const _PatchBody({
-    required this.patch,
-    required this.summary,
-    required this.fallbackPath,
-    required this.collapsedPaths,
-    required this.onToggleSection,
-    required this.tabActive,
-  });
+  @override
+  State<DiffDocumentView> createState() => _DiffDocumentViewState();
+}
+
+class _DiffDocumentViewState extends State<DiffDocumentView> {
+  final Set<String> _collapsedPaths = {};
+  final Map<String, GlobalKey> _sectionKeys = {};
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    if (patch.isEmpty) {
+    final files = widget.document.files;
+    if (files.isEmpty) {
       return Center(
         child: Text('No changes', style: TextStyle(color: c.textSecondary)),
       );
     }
-    final sections = _splitPatchIntoSections(
-      patch: patch,
-      summary: summary,
-      fallbackPath: fallbackPath,
-    );
+    final initialPath = widget.initialPath;
+    final center =
+        initialPath != null && files.any((file) => file.path == initialPath)
+        ? _keyFor(initialPath)
+        : null;
     return CustomScrollView(
+      center: center,
       slivers: [
-        for (var i = 0; i < sections.length; i++)
+        for (var i = 0; i < files.length; i++)
           SliverMainAxisGroup(
+            key: _keyFor(files[i].path),
             slivers: [
               SliverPersistentHeader(
                 pinned: true,
                 floating: true,
                 delegate: _DiffFileHeaderDelegate(
-                  file: sections[i].displayFile,
-                  collapsed: collapsedPaths.contains(sections[i].path),
-                  onTap: () => onToggleSection(sections[i].path),
+                  file: DiffSummaryFile(
+                    path: files[i].path,
+                    additions: files[i].additions,
+                    deletions: files[i].deletions,
+                  ),
+                  collapsed: _collapsedPaths.contains(files[i].path),
+                  onTap: () => _toggleSection(files[i].path),
+                  onOpenFile: widget.onOpenFile == null
+                      ? null
+                      : () => widget.onOpenFile!(
+                          files[i].sourcePath ?? files[i].path,
+                        ),
                 ),
               ),
-              if (!collapsedPaths.contains(sections[i].path))
+              if (!_collapsedPaths.contains(files[i].path))
                 SliverToBoxAdapter(
                   child: _DiffSectionBody(
-                    lines: sections[i].lines,
-                    last: i == sections.length - 1,
-                    tabActive: tabActive,
+                    lines: files[i].lines,
+                    last: i == files.length - 1,
+                    tabActive: widget.tabActive,
                   ),
                 ),
             ],
@@ -402,87 +417,14 @@ class _PatchBody extends StatelessWidget {
     );
   }
 
-  List<_DiffFileSection> _splitPatchIntoSections({
-    required String patch,
-    required List<DiffSummaryFile> summary,
-    required String? fallbackPath,
-  }) {
-    final summaryByPath = {for (final file in summary) file.path: file};
-    final lines = patch.split('\n');
-    final sections = <_DiffFileSection>[];
-    var currentLines = <String>[];
-    String? currentPath;
+  GlobalKey _keyFor(String path) =>
+      _sectionKeys.putIfAbsent(path, GlobalKey.new);
 
-    void flush() {
-      if (currentLines.isEmpty) return;
-      final path = currentPath ?? fallbackPath ?? summary.firstOrNull?.path;
-      sections.add(
-        _DiffFileSection(
-          path: path ?? 'Diff',
-          file: path == null ? null : summaryByPath[path],
-          lines: currentLines,
-        ),
-      );
-      currentLines = <String>[];
-    }
-
-    for (final line in lines) {
-      if (line.startsWith('diff --git ')) {
-        flush();
-        currentPath = _pathFromDiffHeader(line) ?? fallbackPath;
-        continue;
-      }
-      if (_isDiffMetadataLine(line)) continue;
-      currentLines.add(line);
-    }
-    flush();
-
-    if (sections.isNotEmpty) return sections;
-    return [
-      _DiffFileSection(
-        path: fallbackPath ?? summary.firstOrNull?.path ?? 'Diff',
-        file: fallbackPath == null
-            ? summary.firstOrNull
-            : summaryByPath[fallbackPath],
-        lines: lines,
-      ),
-    ];
+  void _toggleSection(String path) {
+    setState(() {
+      if (!_collapsedPaths.add(path)) _collapsedPaths.remove(path);
+    });
   }
-
-  String? _pathFromDiffHeader(String line) {
-    final marker = ' b/';
-    final index = line.lastIndexOf(marker);
-    if (index < 0) return null;
-    return line.substring(index + marker.length).trim();
-  }
-
-  bool _isDiffMetadataLine(String line) =>
-      line.startsWith('@@ ') ||
-      line.startsWith('index ') ||
-      line.startsWith('--- ') ||
-      line.startsWith('+++ ') ||
-      line.startsWith('new file mode ') ||
-      line.startsWith('deleted file mode ') ||
-      line.startsWith('old mode ') ||
-      line.startsWith('new mode ') ||
-      line.startsWith('similarity index ') ||
-      line.startsWith('rename from ') ||
-      line.startsWith('rename to ');
-}
-
-class _DiffFileSection {
-  final String path;
-  final DiffSummaryFile? file;
-  final List<String> lines;
-
-  const _DiffFileSection({
-    required this.path,
-    required this.file,
-    required this.lines,
-  });
-
-  DiffSummaryFile get displayFile =>
-      file ?? DiffSummaryFile(path: path, additions: 0, deletions: 0);
 }
 
 class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
@@ -491,11 +433,13 @@ class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
   final DiffSummaryFile file;
   final bool collapsed;
   final VoidCallback onTap;
+  final VoidCallback? onOpenFile;
 
   _DiffFileHeaderDelegate({
     required this.file,
     required this.collapsed,
     required this.onTap,
+    this.onOpenFile,
   });
 
   @override
@@ -510,7 +454,12 @@ class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
     double shrinkOffset,
     bool overlapsContent,
   ) {
-    return _FileHeader(file: file, collapsed: collapsed, onTap: onTap);
+    return _FileHeader(
+      file: file,
+      collapsed: collapsed,
+      onTap: onTap,
+      onOpenFile: onOpenFile,
+    );
   }
 
   @override
@@ -518,7 +467,8 @@ class _DiffFileHeaderDelegate extends SliverPersistentHeaderDelegate {
     return oldDelegate.file.path != file.path ||
         oldDelegate.file.additions != file.additions ||
         oldDelegate.file.deletions != file.deletions ||
-        oldDelegate.collapsed != collapsed;
+        oldDelegate.collapsed != collapsed ||
+        oldDelegate.onOpenFile != onOpenFile;
   }
 }
 
@@ -552,42 +502,58 @@ class _DiffSectionBody extends StatelessWidget {
 class _ChangedFileRow extends StatelessWidget {
   final DiffSummaryFile file;
   final VoidCallback onTap;
+  final bool selected;
 
-  const _ChangedFileRow({super.key, required this.file, required this.onTap});
+  const _ChangedFileRow({
+    super.key,
+    required this.file,
+    required this.onTap,
+    this.selected = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: MotifSpacing.md,
-          vertical: MotifSpacing.sm,
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 28,
-              height: 28,
-              decoration: BoxDecoration(
-                color: c.accentFill(0.12),
-                borderRadius: BorderRadius.circular(MotifRadius.xs),
+    return Material(
+      color: selected ? c.accentFill(0.12) : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: MotifSpacing.md,
+            vertical: MotifSpacing.sm,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: c.accentFill(0.12),
+                  borderRadius: BorderRadius.circular(MotifRadius.xs),
+                ),
+                alignment: Alignment.center,
+                child: Icon(
+                  Icons.insert_drive_file_outlined,
+                  size: 16,
+                  color: c.accent,
+                ),
               ),
-              alignment: Alignment.center,
-              child: Icon(
-                Icons.insert_drive_file_outlined,
-                size: 16,
-                color: c.accent,
+              const SizedBox(width: MotifSpacing.sm),
+              Expanded(child: _PathTitle(path: file.path)),
+              const SizedBox(width: MotifSpacing.sm),
+              _ChangeStats(
+                additions: file.additions,
+                deletions: file.deletions,
               ),
-            ),
-            const SizedBox(width: MotifSpacing.sm),
-            Expanded(child: _PathTitle(path: file.path)),
-            const SizedBox(width: MotifSpacing.sm),
-            _ChangeStats(additions: file.additions, deletions: file.deletions),
-            const SizedBox(width: MotifSpacing.xs),
-            Icon(Icons.chevron_right, size: 18, color: c.textTertiary),
-          ],
+              const SizedBox(width: MotifSpacing.xs),
+              Icon(
+                selected ? Icons.check_rounded : Icons.chevron_right,
+                size: 18,
+                color: selected ? c.accent : c.textTertiary,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -688,11 +654,46 @@ class _ChangePill extends StatelessWidget {
   }
 }
 
-class _DiffFileList extends StatelessWidget {
+/// Shared changed-file sidebar used by Session and Codex diff surfaces.
+class DiffFileSidebar extends StatelessWidget {
+  const DiffFileSidebar({
+    required this.summary,
+    required this.onOpenFile,
+    this.selectedPath,
+    super.key,
+  });
+
   final List<DiffSummaryFile> summary;
   final ValueChanged<String> onOpenFile;
+  final String? selectedPath;
 
-  const _DiffFileList({required this.summary, required this.onOpenFile});
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      _SummaryBar(summary: summary),
+      Expanded(
+        child: DiffFileList(
+          summary: summary,
+          selectedPath: selectedPath,
+          onOpenFile: onOpenFile,
+        ),
+      ),
+    ],
+  );
+}
+
+/// Shared changed-file list used by [DiffFileSidebar].
+class DiffFileList extends StatelessWidget {
+  final List<DiffSummaryFile> summary;
+  final ValueChanged<String> onOpenFile;
+  final String? selectedPath;
+
+  const DiffFileList({
+    required this.summary,
+    required this.onOpenFile,
+    this.selectedPath,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -708,6 +709,7 @@ class _DiffFileList extends StatelessWidget {
           key: ValueKey('diff-list-file-${f.path}'),
           file: f,
           onTap: () => onOpenFile(f.path),
+          selected: f.path == selectedPath,
         );
       },
     );
@@ -1166,8 +1168,14 @@ class _FileHeader extends StatelessWidget {
   final DiffSummaryFile file;
   final bool collapsed;
   final VoidCallback? onTap;
+  final VoidCallback? onOpenFile;
 
-  const _FileHeader({required this.file, this.collapsed = false, this.onTap});
+  const _FileHeader({
+    required this.file,
+    this.collapsed = false,
+    this.onTap,
+    this.onOpenFile,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1189,6 +1197,22 @@ class _FileHeader extends StatelessWidget {
           Expanded(child: _PathTitle(path: file.path)),
           const SizedBox(width: MotifSpacing.sm),
           _ChangeStats(additions: file.additions, deletions: file.deletions),
+          if (onOpenFile != null) ...[
+            const SizedBox(width: MotifSpacing.xs),
+            IconButton(
+              key: ValueKey('diff-open-file-${file.path}'),
+              tooltip: 'View file',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints.tightFor(
+                width: MotifControlSize.sm,
+                height: MotifControlSize.sm,
+              ),
+              padding: EdgeInsets.zero,
+              iconSize: MotifIconSize.sm,
+              onPressed: onOpenFile,
+              icon: const Icon(Icons.open_in_new_rounded),
+            ),
+          ],
           if (onTap != null) ...[
             const SizedBox(width: MotifSpacing.sm),
             Icon(

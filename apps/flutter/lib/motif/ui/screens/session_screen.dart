@@ -642,7 +642,11 @@ class _SessionScreenState extends State<_SessionPane>
     }
 
     late final Future<void> creation;
-    creation = _newPty().whenComplete(() {
+    // A socket failure moves the workspace into reconnecting before _newPty
+    // completes. The connection overlay already communicates that state; the
+    // next attached transition invokes this method again, so avoid showing a
+    // redundant transient toast for the failed automatic attempt.
+    creation = _newPty(quietWhileReconnecting: true).whenComplete(() {
       if (identical(_autoCreatePtyFuture, creation)) {
         _autoCreatePtyFuture = null;
       }

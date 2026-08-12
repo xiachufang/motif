@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
 import 'package:motif/motif/ui/screens/preview_pane.dart';
@@ -121,6 +123,67 @@ void main() {
     expect(
       _effectiveColorForText(code.textSpan!, 'final'),
       MotifColors.light.accent,
+    );
+  });
+
+  testWidgets('shared file preview follows the dark theme surface', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        darkTheme: motifTheme(Brightness.dark),
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: FilePreviewBody(
+            document: FilePreviewDocument(
+              path: '/work/example.dart',
+              bytes: Uint8List.fromList(utf8.encode('final value = 42;')),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      tester
+          .widget<ColoredBox>(find.byKey(const ValueKey('preview-background')))
+          .color,
+      MotifColors.dark.surface,
+    );
+    final code = tester.widget<Text>(
+      find.byKey(const ValueKey('preview-highlighted-code')),
+    );
+    expect(
+      _effectiveColorForText(code.textSpan!, 'final'),
+      MotifColors.dark.accent,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        darkTheme: motifTheme(Brightness.dark),
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: FilePreviewBody(
+            document: FilePreviewDocument(
+              path: '/work/pixel.png',
+              bytes: base64Decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+              ),
+              image: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      tester
+          .widget<Container>(find.byKey(const ValueKey('preview-background')))
+          .color,
+      MotifColors.dark.surface,
     );
   });
 

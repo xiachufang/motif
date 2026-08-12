@@ -69,13 +69,11 @@ class CodexState extends _$CodexState {
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
     bool desktopSidebarVisible = true,
     double sidebarWidth = 340,
-    SharedPreferences? preferences,
-  }) : _preferences = preferences,
-       _projectSidebars = _loadProjectSidebars(preferences),
+    @ObservationIgnored() @ObservationReadOnly() SharedPreferences? preferences,
+  }) : _projectSidebars = _loadProjectSidebars(preferences),
        _selectedModels = _loadSelectedModels(preferences),
-       super(sidebarMode, desktopSidebarVisible, sidebarWidth);
+       super(sidebarMode, desktopSidebarVisible, sidebarWidth, preferences);
 
-  final SharedPreferences? _preferences;
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
   final Map<String, String> _selectedModels;
   Future<void> _persistProjectSidebars = Future.value();
@@ -100,12 +98,12 @@ class CodexState extends _$CodexState {
       if (_selectedModels[serverId] == normalized) return;
       _selectedModels[serverId] = normalized;
     }
-    final preferences = _preferences;
-    if (preferences == null) return;
+    final store = preferences;
+    if (store == null) return;
     final payload = jsonEncode(_selectedModels);
     unawaited(
       _persistSelectedModels = _persistSelectedModels.then((_) async {
-        await preferences.setString(_selectedModelsKey, payload);
+        await store.setString(_selectedModelsKey, payload);
       }),
     );
   }
@@ -145,15 +143,15 @@ class CodexState extends _$CodexState {
   ) {
     if (serverId.isEmpty) return;
     _projectSidebars[serverId] = value;
-    final preferences = _preferences;
-    if (preferences == null) return;
+    final store = preferences;
+    if (store == null) return;
     final payload = jsonEncode({
       for (final entry in _projectSidebars.entries)
         entry.key: entry.value.toJson(),
     });
     unawaited(
       _persistProjectSidebars = _persistProjectSidebars.then((_) async {
-        await preferences.setString(_projectSidebarKey, payload);
+        await store.setString(_projectSidebarKey, payload);
       }),
     );
   }

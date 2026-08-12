@@ -11,9 +11,11 @@ abstract class _$CodexState with ObservableModelMixin {
     CodexSidebarMode sidebarMode,
     bool desktopSidebarVisible,
     double sidebarWidth,
+    SharedPreferences? preferences,
   ) : _sidebarMode = sidebarMode,
       _desktopSidebarVisible = desktopSidebarVisible,
-      _sidebarWidth = sidebarWidth {
+      _sidebarWidth = sidebarWidth,
+      _preferences = preferences {
     if (!ObservationDebug.isReleaseMode) {
       observationRegisterDebugProperty(_sidebarModeKey, () => _sidebarMode);
       observationRegisterDebugProperty(
@@ -71,5 +73,11 @@ abstract class _$CodexState with ObservableModelMixin {
     observationMutation(_sidebarWidthKey, () {
       _sidebarWidth = value;
     });
+  }
+
+  final SharedPreferences? _preferences;
+
+  SharedPreferences? get preferences {
+    return _preferences;
   }
 }

@@ -6,14 +6,97 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
-import 'package:motif/motif/codex/codex_resource_intent.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
+import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
+import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
 
 void main() {
+  testWidgets(
+    'conversation starts at the bottom and resets there when the thread changes',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 820);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client);
+      final turns = List.generate(
+        12,
+        (index) => CodexTurn(
+          id: 'scroll-turn-$index',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'scroll-user-$index',
+              content: [CodexTextUserInput(text: 'Question $index')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'scroll-agent-$index',
+              text: 'Response $index',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      );
+      client.thread = CodexThread.fromJson({
+        ...client.thread.toJson(),
+        'turns': turns.map((turn) => turn.toJson()).toList(),
+      });
+      state
+        ..selectedThread = client.thread
+        ..turns = turns
+        ..activePlan = null
+        ..queuedMessages = const []
+        ..synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      final stream = find.byKey(const ValueKey('codex-turn-stream'));
+      expect(tester.widget<CustomScrollView>(stream).reverse, isTrue);
+      var position = tester
+          .state<ScrollableState>(
+            find.descendant(of: stream, matching: find.byType(Scrollable)),
+          )
+          .position;
+      expect(position.pixels, position.minScrollExtent);
+      expect(
+        tester.getTopLeft(find.text('Question 11')).dy,
+        lessThan(tester.getTopLeft(find.text('Response 11')).dy),
+      );
+
+      await tester.drag(stream, const Offset(0, 400));
+      await tester.pump();
+      expect(position.pixels, greaterThan(position.minScrollExtent + 96));
+
+      final nextThreadJson = Map<String, Object?>.from(client.thread.toJson())
+        ..['id'] = 'next-thread'
+        ..['sessionId'] = 'next-thread';
+      client.thread = CodexThread.fromJson(nextThreadJson);
+      await state.readThread('next-thread');
+      await tester.pump();
+      await tester.pump();
+
+      position = tester
+          .state<ScrollableState>(
+            find.descendant(of: stream, matching: find.byType(Scrollable)),
+          )
+          .position;
+      expect(position.pixels, position.minScrollExtent);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
   testWidgets(
     'renders turns, keeps tool details collapsed, and floats plan and queue',
     (tester) async {
@@ -23,7 +106,8 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       final client = WorkspaceFakeClient();
       final state = workspaceState(client);
-      final openedViews = <CodexResourceIntent>[];
+      final openedFiles = <String>[];
+      final openedDiffs = <({DiffDocument document, String? initialPath})>[];
 
       await tester.pumpWidget(
         MaterialApp(
@@ -31,7 +115,11 @@ void main() {
           home: Scaffold(
             body: CodexThreadWorkspace(
               state: state,
-              onOpenResource: (intent) async => openedViews.add(intent),
+              onOpenFile: openedFiles.add,
+              onOpenTurnDiff: (document, {initialPath}) => openedDiffs.add((
+                document: document,
+                initialPath: initialPath,
+              )),
             ),
           ),
         ),
@@ -44,6 +132,26 @@ void main() {
             .color,
         MotifColors.light.surface,
       );
+      final conversationSliver = tester.widget<SliverList>(
+        find.byType(SliverList).first,
+      );
+      expect(
+        conversationSliver.delegate.estimatedChildCount,
+        greaterThan(state.turns.length),
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is MarkdownBody && widget.data == 'Latest **progress**',
+        ),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('codex-turn-progress')), findsOneWidget);
+      await tester.drag(
+        find.byKey(const ValueKey('codex-turn-stream')),
+        const Offset(0, 2000),
+      );
+      await tester.pump();
 
       expect(
         find.byWidgetPredicate(
@@ -64,6 +172,8 @@ void main() {
         find.byKey(const ValueKey('codex-activity-turn-history-0')),
         findsNothing,
       );
+      expect(find.text('Historic reasoning must stay hidden'), findsNothing);
+      expect(find.text('First progress'), findsNothing);
       expect(find.text('Worked for 8m 7s'), findsOneWidget);
       await tester.tap(
         find.byKey(const ValueKey('codex-worked-toggle-turn-history')),
@@ -80,11 +190,13 @@ void main() {
         ),
       );
       expect(collapsedActivity.dense, isTrue);
-      expect(collapsedActivity.minTileHeight, 36);
+      expect(collapsedActivity.minTileHeight, 32);
       expect(collapsedActivity.visualDensity?.vertical, -4);
       expect(find.text('Ran a command, edited files'), findsOneWidget);
       expect(find.text('Ran rg · in 1.0s · exit 0'), findsNothing);
       expect(find.text(r'$ rg TODO'), findsNothing);
+      await tester.ensureVisible(find.text('Ran a command, edited files'));
+      await tester.pump();
       await tester.tap(find.text('Ran a command, edited files'));
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -101,6 +213,12 @@ void main() {
         ),
       );
       await tester.pump(const Duration(milliseconds: 300));
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('codex-open-file-lib/a.dart')),
+          )
+          .onPressed!();
+      expect(openedFiles, ['/work/motif/lib/a.dart']);
       _expandListTile(
         tester,
         find.descendant(
@@ -115,20 +233,16 @@ void main() {
       );
       expect(find.text('/work/motif/lib/a.dart'), findsNothing);
       expect(find.text('Historic reasoning must stay hidden'), findsNothing);
-      expect(find.text('First progress'), findsNothing);
-      expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is MarkdownBody && widget.data == 'Latest **progress**',
-        ),
-        findsOneWidget,
-      );
-      expect(find.byKey(const ValueKey('codex-turn-progress')), findsOneWidget);
 
       expect(find.text('Step 1 / 2'), findsOneWidget);
       expect(find.textContaining('1 file changed'), findsOneWidget);
       expect(find.textContaining('+1'), findsAtLeast(1));
       expect(find.textContaining('-1'), findsAtLeast(1));
+      await tester.drag(
+        find.byKey(const ValueKey('codex-turn-stream')),
+        const Offset(0, -1600),
+      );
+      await tester.pump();
       expect(
         find.byKey(const ValueKey('codex-turn-diff-turn-history')),
         findsOneWidget,
@@ -141,16 +255,38 @@ void main() {
       expect(find.text('lib/c.dart'), findsOneWidget);
       expect(find.text('lib/d.dart'), findsNothing);
       expect(find.text('Show 1 more file'), findsOneWidget);
+      final turnDiffCard = find.byKey(
+        const ValueKey('codex-turn-diff-turn-history'),
+      );
+      expect(
+        find.descendant(
+          of: turnDiffCard,
+          matching: find.byIcon(Icons.open_in_new_rounded),
+        ),
+        findsNothing,
+      );
+      expect(
+        tester
+            .widget<InkWell>(
+              find.byKey(const ValueKey('codex-turn-diff-open-turn-history')),
+            )
+            .onTap,
+        isNotNull,
+      );
       tester
           .widget<InkWell>(
             find.byKey(const ValueKey('codex-turn-diff-file-lib/a.dart')),
           )
           .onTap!();
       await tester.pump();
-      expect(openedViews, hasLength(1));
-      expect(openedViews.single, isA<CodexDiffIntent>());
-      expect((openedViews.single as CodexDiffIntent).path, 'lib/a.dart');
-      expect((openedViews.single as CodexDiffIntent).staged, isFalse);
+      expect(openedDiffs, hasLength(1));
+      expect(openedDiffs.single.initialPath, 'lib/a.dart');
+      final openedDocument = openedDiffs.single.document;
+      expect(openedDocument.files, hasLength(4));
+      expect(openedDocument.files.first.path, 'lib/a.dart');
+      expect(openedDocument.files.first.sourcePath, '/work/motif/lib/a.dart');
+      expect(openedDocument.files.first.additions, 2);
+      expect(openedDocument.files.first.deletions, 1);
       expect(
         tester
             .getTopLeft(
@@ -174,10 +310,6 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Context compacted'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('codex-turn-time-turn-history')),
-        findsOneWidget,
-      );
       expect(
         find.byKey(const ValueKey('codex-turn-diff-turn-1')),
         findsNothing,
@@ -758,6 +890,11 @@ Only show **this request**.
       ),
     );
     await tester.pump();
+    await tester.drag(
+      find.byKey(const ValueKey('codex-turn-stream')),
+      const Offset(0, 2000),
+    );
+    await tester.pump();
 
     final shortWidth = tester
         .getSize(find.byKey(const ValueKey('codex-user-message-short-user')))
@@ -1033,6 +1170,78 @@ Only show **this request**.
     state.dispose();
   });
 
+  testWidgets('streaming agent text defers full Markdown parsing', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    client.emit(
+      const CodexItemAgentMessageDeltaNotification(
+        params: CodexAgentMessageDeltaNotification(
+          delta: ' **more**',
+          itemId: 'active-agent',
+          threadId: 'thread',
+          turnId: 'turn-1',
+        ),
+      ),
+    );
+    await tester.pump(
+      CodexConversationState.deltaFlushInterval +
+          const Duration(milliseconds: 20),
+    );
+
+    expect(find.byType(CodexStreamingText), findsOneWidget);
+    expect(find.text('Partial response **more**'), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data == 'Partial response **more**',
+      ),
+      findsNothing,
+    );
+
+    client.emit(
+      const CodexItemCompletedNotification2(
+        params: CodexItemCompletedNotification(
+          completedAtMs: 2,
+          item: CodexAgentMessageThreadItem(
+            id: 'active-agent',
+            text: 'Partial response **more**',
+          ),
+          threadId: 'thread',
+          turnId: 'turn-1',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data == 'Partial response **more**',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets('goal uses the composer for its objective', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1000, 900);
@@ -1274,6 +1483,161 @@ Only show **this request**.
       sibling.top - nestedTwo.bottom,
       moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
     );
+  });
+
+  testWidgets('Markdown file links open through the Codex file navigator', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          id: 'file-links',
+          items: [
+            CodexAgentMessageThreadItem(
+              id: 'file-link-response',
+              text: '- [open file](lib/motif/codex_navigation.dart:42)',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ];
+    final openedFiles = <String>[];
+    addTearDown(state.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexThreadWorkspace(state: state, onOpenFile: openedFiles.add),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final linkBody = tester.widget<MarkdownBody>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data == '[open file](lib/motif/codex_navigation.dart:42)',
+      ),
+    );
+    linkBody.onTapLink!('open file', 'lib/motif/codex_navigation.dart:42', '');
+
+    expect(openedFiles, ['/work/motif/lib/motif/codex_navigation.dart']);
+  });
+
+  testWidgets('user and response images open through the image navigator', (
+    tester,
+  ) async {
+    const dataImage =
+        'data:image/png;base64,'
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=';
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          id: 'images',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'user-images',
+              content: [
+                CodexLocalImageUserInput(path: '/work/motif/request.png'),
+                CodexImageUserInput(url: dataImage),
+              ],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'response-image',
+              text: '![result](https://example.test/result.png)',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ];
+    final openedImages = <String>[];
+    addTearDown(state.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexThreadWorkspace(
+            state: state,
+            onOpenImage: openedImages.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    tester
+        .widget<GestureDetector>(
+          find.byKey(
+            const ValueKey('codex-user-local-image-/work/motif/request.png'),
+          ),
+        )
+        .onTap!();
+    tester
+        .widget<GestureDetector>(
+          find.byKey(ValueKey('codex-user-remote-image-$dataImage')),
+        )
+        .onTap!();
+    tester
+        .widget<GestureDetector>(
+          find.byKey(
+            const ValueKey(
+              'codex-markdown-image-https://example.test/result.png',
+            ),
+          ),
+        )
+        .onTap!();
+
+    expect(openedImages, [
+      '/work/motif/request.png',
+      dataImage,
+      'https://example.test/result.png',
+    ]);
+  });
+
+  testWidgets('view-image activity thumbnail opens the large image', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    final openedImages = <String>[];
+    addTearDown(state.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexTurnActivityGroup(
+            state: state,
+            items: const [
+              CodexImageViewThreadItem(
+                id: 'view-image',
+                path: CodexLegacyAppPathString('/work/motif/result.png'),
+              ),
+            ],
+            onOpenImage: openedImages.add,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Viewed an image'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Viewed result.png'));
+    await tester.pumpAndSettle();
+
+    tester
+        .widget<GestureDetector>(
+          find.byKey(
+            const ValueKey('codex-image-thumbnail-/work/motif/result.png'),
+          ),
+        )
+        .onTap!();
+
+    expect(openedImages, ['/work/motif/result.png']);
   });
 
   testWidgets('narrow composer keeps model settings before the send action', (
@@ -1630,6 +1994,8 @@ final class WorkspaceFakeClient extends ChangeNotifier
   @override
   Stream<CodexJsonEncodable> get typedMessages => _typed.stream;
 
+  void emit(CodexJsonEncodable message) => _typed.add(message);
+
   @override
   Future<void> start() async {}
 
@@ -1786,8 +2152,12 @@ final class WorkspaceFakeClient extends ChangeNotifier
       const CodexThreadGoalClearResponse(cleared: true);
 
   @override
-  Future<CodexFsReadFileResponse> readFile(String path) async =>
-      throw StateError('unused');
+  Future<CodexFsReadFileResponse> readFile(
+    String path,
+  ) async => const CodexFsReadFileResponse(
+    dataBase64:
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=',
+  );
 
   @override
   Future<CodexFsCreateDirectoryResponse> createDirectory(String path) async =>

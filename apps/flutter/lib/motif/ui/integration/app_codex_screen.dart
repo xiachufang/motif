@@ -4,10 +4,9 @@ import 'package:flutter/material.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_feature_controller.dart';
-import '../../codex/codex_resource_intent.dart';
+import '../../codex/codex_navigation.dart';
 import '../../codex/codex_state.dart';
 import '../../models/motif_proto.dart';
-import '../../session/session_feature_runtime.dart';
 import '../../state/app/app_state.dart';
 import '../../state/dependency_scope.dart';
 import '../../state/server/server_transport.dart';
@@ -93,7 +92,10 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
   }
 }
 
-/// The sole bridge between Codex resource intents and Session navigation.
+/// The sole bridge from Codex's explicit workspace action into Session.
+///
+/// File, image, and turn-diff navigation stays inside the Codex navigator and
+/// never reaches this coordinator.
 abstract final class CodexSessionCoordinator {
   static Future<void> open(
     BuildContext context, {
@@ -120,20 +122,8 @@ abstract final class CodexSessionCoordinator {
           session: session.name,
           allowSessionSwitching: false,
           titleOverride: request.title,
-          initialTarget: _sessionTarget(request.resource),
         ),
       ),
     );
   }
-
-  static SessionOpenTarget? _sessionTarget(CodexResourceIntent? intent) =>
-      switch (intent) {
-        CodexFileIntent(:final path) => SessionFileTarget(path),
-        CodexDiffIntent(:final path, :final staged) => SessionDiffTarget(
-          path,
-          staged: staged,
-        ),
-        CodexImageIntent(:final path) => SessionImageTarget(path),
-        null => null,
-      };
 }

@@ -21,6 +21,33 @@ extension _WorkspaceConnectionControllerRecovery
     return rpc;
   }
 
+  /// Run a terminal command that needs a response body. Unlike high-frequency
+  /// stream operations, a command failure must surface to its caller. Socket
+  /// failures also invalidate the workspace transport immediately so the
+  /// owning lifecycle machine can rebuild the route instead of waiting for a
+  /// WebSocket close callback.
+  Future<Map<String, Object?>> _runAttachedTerminalCall(
+    String method, [
+    Map<String, Object?> params = const {},
+  ]) async {
+    final rpc = await _waitForAttachedRpc();
+    if (rpc == null) throw const RpcException('not connected');
+    try {
+      return await rpc.call(method, params);
+    } catch (error, stackTrace) {
+      if (isTransportConnectionFailure(error) && identical(_rpc, rpc)) {
+        Log.w(
+          'terminal RPC lost transport method=$method',
+          name: 'motif.session',
+          error: error,
+          stackTrace: stackTrace,
+        );
+        await _handleConnectionLost('connection lost during $method');
+      }
+      rethrow;
+    }
+  }
+
   Future<void> _runAttachedTerminalRpc(
     Future<void> Function(RpcClient rpc) operation,
   ) async {

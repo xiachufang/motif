@@ -8,6 +8,21 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/motif_theme.dart';
 import 'syntax_highlight.dart';
 
+/// Lightweight renderer used while a protocol item is still streaming.
+///
+/// Full Markdown parsing and syntax highlighting are intentionally deferred
+/// until item completion. A surrounding [SelectionArea] still makes this text
+/// selectable without creating a separate selection tree per update.
+class CodexStreamingText extends StatelessWidget {
+  const CodexStreamingText(this.data, {required this.style, super.key});
+
+  final String data;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) => Text(data, style: style);
+}
+
 /// Motif-styled Markdown for text received from or sent to Codex.
 ///
 /// Navigation labels and other application chrome intentionally remain plain
@@ -22,6 +37,8 @@ class CodexMarkdown extends StatelessWidget {
     this.softLineBreak = true,
     this.fitContent = false,
     this.blockSpacing = MotifSpacing.lg,
+    this.onTapFileLink,
+    this.imageBuilder,
   });
 
   final String data;
@@ -30,6 +47,8 @@ class CodexMarkdown extends StatelessWidget {
   final bool softLineBreak;
   final bool fitContent;
   final double blockSpacing;
+  final ValueChanged<String>? onTapFileLink;
+  final MarkdownImageBuilder? imageBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -51,6 +70,8 @@ class CodexMarkdown extends StatelessWidget {
       bodyStyle: body,
       selectable: selectable,
       softLineBreak: softLineBreak,
+      onTapFileLink: onTapFileLink,
+      imageBuilder: imageBuilder,
     );
 
     final markdown = MarkdownBody(
@@ -58,6 +79,7 @@ class CodexMarkdown extends StatelessWidget {
       selectable: buildsSelectableText,
       fitContent: fitContent,
       softLineBreak: softLineBreak,
+      imageBuilder: imageBuilder,
       styleSheet: MarkdownStyleSheet(
         p: body,
         a: body.copyWith(
@@ -119,12 +141,14 @@ class CodexMarkdown extends StatelessWidget {
         'ol': listBuilder,
       },
       onTapLink: (_, href, _) {
-        final uri = href == null ? null : Uri.tryParse(href);
-        if (uri == null ||
-            !const {'http', 'https', 'mailto'}.contains(uri.scheme)) {
-          return;
+        if (href == null) return;
+        final uri = Uri.tryParse(href);
+        if (uri != null &&
+            const {'http', 'https', 'mailto'}.contains(uri.scheme)) {
+          unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+        } else {
+          onTapFileLink?.call(href);
         }
-        unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
       },
     );
     if (!selectable && parentSelection != null) {
@@ -139,11 +163,15 @@ class _CompactMarkdownListBuilder extends MarkdownElementBuilder {
     required this.bodyStyle,
     required this.selectable,
     required this.softLineBreak,
+    required this.onTapFileLink,
+    required this.imageBuilder,
   });
 
   final TextStyle bodyStyle;
   final bool selectable;
   final bool softLineBreak;
+  final ValueChanged<String>? onTapFileLink;
+  final MarkdownImageBuilder? imageBuilder;
 
   @override
   Widget? visitElementAfterWithContext(
@@ -169,6 +197,8 @@ class _CompactMarkdownListBuilder extends MarkdownElementBuilder {
       bodyStyle: bodyStyle,
       selectable: selectable,
       softLineBreak: softLineBreak,
+      onTapFileLink: onTapFileLink,
+      imageBuilder: imageBuilder,
     );
   }
 }
@@ -181,6 +211,8 @@ class _CompactMarkdownList extends StatelessWidget {
     required this.bodyStyle,
     required this.selectable,
     required this.softLineBreak,
+    required this.onTapFileLink,
+    required this.imageBuilder,
   });
 
   final List<String> items;
@@ -189,6 +221,8 @@ class _CompactMarkdownList extends StatelessWidget {
   final TextStyle bodyStyle;
   final bool selectable;
   final bool softLineBreak;
+  final ValueChanged<String>? onTapFileLink;
+  final MarkdownImageBuilder? imageBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -238,6 +272,8 @@ class _CompactMarkdownList extends StatelessWidget {
                       selectable: selectable,
                       softLineBreak: softLineBreak,
                       blockSpacing: MotifSpacing.sm,
+                      onTapFileLink: onTapFileLink,
+                      imageBuilder: imageBuilder,
                     ),
                   ),
                 ],

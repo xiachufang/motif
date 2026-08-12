@@ -210,6 +210,9 @@ class _ShortcutWorkspaceConnectionController
   }
 
   int createdPtys = 0;
+  int createPtyAttempts = 0;
+  int createPtyFailuresRemaining = 0;
+  bool loseConnectionOnCreateFailure = false;
   final List<String> closedViews = [];
   final List<String> writtenPtyIds = [];
   final List<List<int>> writtenPtyData = [];
@@ -242,6 +245,17 @@ class _ShortcutWorkspaceConnectionController
       canInput: () => true,
       call: (method, [params = const {}]) async {
         if (method == 'pty.create') {
+          createPtyAttempts++;
+          if (createPtyFailuresRemaining > 0) {
+            createPtyFailuresRemaining--;
+            if (loseConnectionOnCreateFailure) {
+              simulateConnectionState(
+                const ConnFailed('connection lost during pty.create'),
+                live: false,
+              );
+            }
+            throw Exception('Connection refused');
+          }
           createdPtys++;
           final pty = PtyInfo(
             id: 'new-pty-$createdPtys',
@@ -659,6 +673,32 @@ void main() {
     expect(motif.createdPtys, 1);
     expect(motif.terminal.viewModel.ptys, hasLength(1));
   });
+
+  testWidgets(
+    'automatic PTY creation waits for reconnect without showing an error',
+    (tester) async {
+      final motif = _ShortcutWorkspaceConnectionController()
+        ..createPtyFailuresRemaining = 1
+        ..loseConnectionOnCreateFailure = true;
+
+      await _pumpSession(tester, const Size(1024, 768), motif: motif);
+
+      expect(motif.createPtyAttempts, 1);
+      expect(motif.createdPtys, 0);
+      expect(find.textContaining('New terminal failed'), findsNothing);
+
+      motif.simulateConnectionState(
+        const ConnAttached('test-session'),
+        live: true,
+      );
+      await tester.pump();
+
+      expect(motif.createPtyAttempts, 2);
+      expect(motif.createdPtys, 1);
+      expect(motif.terminal.viewModel.ptys, hasLength(1));
+      expect(find.textContaining('New terminal failed'), findsNothing);
+    },
+  );
 
   testWidgets('Android push transition mounts terminal pane immediately', (
     tester,

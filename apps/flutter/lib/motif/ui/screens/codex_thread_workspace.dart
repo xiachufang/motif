@@ -3,17 +3,21 @@ import 'dart:convert';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 
 import '../../codex/codex_agent_output_parser.dart';
 import '../../codex/codex_composer_models.dart';
-import '../../codex/codex_resource_intent.dart';
+import '../../codex/codex_navigation.dart';
+import '../../codex/codex_observation_view_models.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_turn_activity.dart';
+
+part 'codex_thread_workspace.g.dart';
 
 const _turnTopLevelItemSpacing = MotifSpacing.lg;
 
@@ -23,18 +27,27 @@ typedef CodexTurnActionBuilder =
       CodexConversationState state,
       CodexTurn turn,
     );
+typedef _ConversationScrollSnapshot = ({
+  int stream,
+  int structure,
+  String? threadId,
+});
 
 class CodexThreadWorkspace extends StatefulWidget {
   const CodexThreadWorkspace({
     required this.state,
     this.turnActionBuilder = _persistentForkAction,
-    this.onOpenResource,
+    this.onOpenFile,
+    this.onOpenImage,
+    this.onOpenTurnDiff,
     super.key,
   });
 
   final CodexConversationState state;
   final CodexTurnActionBuilder turnActionBuilder;
-  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
+  final CodexOpenFile? onOpenFile;
+  final CodexOpenImage? onOpenImage;
+  final CodexOpenTurnDiff? onOpenTurnDiff;
 
   @override
   State<CodexThreadWorkspace> createState() => _CodexThreadWorkspaceState();
@@ -47,17 +60,30 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   final FocusNode _planFeedbackFocus = FocusNode();
   final ScrollController _scroll = ScrollController();
   final Set<String> _resolvedPlanItems = <String>{};
+  final Set<String> _expandedHistoryTurnIds = <String>{};
   List<CodexPendingAttachment> _attachments = const [];
   List<CodexComposerReference> _references = const [];
-  int _lastEventCount = 0;
+  ObservationSubscription<_ConversationScrollSnapshot>? _scrollSubscription;
+  String? _scrollThreadId;
+  bool _followTail = true;
+  bool _scrollScheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollThreadId = widget.state.viewModel.selectedThread?.id;
+    _bindScrollUpdates();
+    _scheduleScrollToBottom();
+  }
 
   @override
   void didUpdateWidget(CodexThreadWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final count = _eventCount(widget.state);
-    if (count != _lastEventCount) {
-      _lastEventCount = count;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    if (!identical(oldWidget.state, widget.state)) {
+      _scrollThreadId = widget.state.viewModel.selectedThread?.id;
+      _bindScrollUpdates();
+      _followTail = true;
+      _scheduleScrollToBottom();
     }
   }
 
@@ -67,6 +93,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     _planFeedback.dispose();
     _composerFocus.dispose();
     _planFeedbackFocus.dispose();
+    _scrollSubscription?.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -74,7 +101,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
-    final decisionPlan = _decisionPlan(state);
     final c = context.motif;
     return Material(
       key: const ValueKey('codex-thread-detail'),
@@ -82,116 +108,92 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
       child: Column(
         children: [
           Expanded(
-            child: SelectionArea(
-              child: ListView(
-                key: const ValueKey('codex-turn-stream'),
-                controller: _scroll,
-                padding: const EdgeInsets.fromLTRB(
-                  MotifSpacing.xl,
-                  MotifSpacing.lg,
-                  MotifSpacing.xl,
-                  MotifSpacing.xxl,
-                ),
-                children: [
-                  Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 860),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (state.readError != null)
-                            _InlineError(
-                              message: state.readError!,
-                              onRetry: state.retryRead,
-                            ),
-                          if (state.turns.isEmpty) const _EmptyConversation(),
-                          for (final turn in state.turns)
-                            _TurnSection(
-                              state: state,
-                              turn: turn,
-                              actionBuilder: widget.turnActionBuilder,
-                              onOpenResource: widget.onOpenResource,
-                            ),
-                          for (final request in state.pendingServerRequests)
-                            _ServerRequestCard(
-                              key: ValueKey(request.toJson().toString()),
-                              state: state,
-                              request: request,
-                            ),
-                          if (state.sendError != null)
-                            _InlineError(message: state.sendError!),
-                          if (state.forkError != null)
-                            _InlineError(message: state.forkError!),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+            child: ListenableBuilder(
+              listenable: state,
+              builder: (context, _) => _CodexConversationViewport(
+                key: const ValueKey('codex-conversation-viewport'),
+                state: state,
+                scrollController: _scroll,
+                onScrollNotification: _onUserScroll,
+                turnActionBuilder: widget.turnActionBuilder,
+                expandedHistoryTurnIds: _expandedHistoryTurnIds,
+                onToggleHistory: _toggleHistory,
+                onOpenFile: widget.onOpenFile,
+                onOpenImage: widget.onOpenImage,
+                onOpenTurnDiff: widget.onOpenTurnDiff,
               ),
             ),
           ),
-          SafeArea(
-            top: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 900),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    MotifSpacing.lg,
-                    0,
-                    MotifSpacing.lg,
-                    MotifSpacing.md,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (state.activePlan != null)
-                        _PlanChip(
-                          plan: state.activePlan!,
-                          diff: state.activeDiff,
-                        ),
-                      for (final message in state.queuedMessages)
-                        _QueuedMessageCard(
-                          message: message,
-                          queueing: state.queueMessagesWhileActive,
-                          onSteer: () => state.steerQueuedMessage(message.id),
-                          onDelete: () => state.deleteQueuedMessage(message.id),
-                          onEdit: () => _editQueued(message.id),
-                          onQueueingChanged: state.setQueueing,
-                        ),
-                      if (decisionPlan != null)
-                        _PlanDecisionPanel(
-                          sending: state.sending,
-                          controller: _planFeedback,
-                          focusNode: _planFeedbackFocus,
-                          onImplement: () => _implementPlan(decisionPlan),
-                          onRevise: () => _revisePlan(decisionPlan),
-                          onSkip: () => _skipPlan(decisionPlan),
-                        )
-                      else
-                        _Composer(
-                          state: state,
-                          controller: _composer,
-                          focusNode: _composerFocus,
-                          attachments: _attachments,
-                          references: _references,
-                          onAddImages: _pickImages,
-                          onAddFiles: _pickFiles,
-                          onRemoveAttachment: _removeAttachment,
-                          onAddReference: _addReference,
-                          onRemoveReference: _removeReference,
-                          onToggleGoal: _toggleGoalMode,
-                          onTogglePlan: _togglePlanMode,
-                          onRemoveGoal: _removeGoal,
-                          onSubmit: _submit,
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          ListenableBuilder(
+            listenable: state,
+            builder: (context, _) => _buildComposerArea(context, state),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildComposerArea(
+    BuildContext context,
+    CodexConversationState state,
+  ) {
+    final decisionPlan = _decisionPlan(state);
+    return SafeArea(
+      top: false,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              MotifSpacing.lg,
+              0,
+              MotifSpacing.lg,
+              MotifSpacing.md,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (state.activePlan != null)
+                  _PlanChip(plan: state.activePlan!, diff: state.activeDiff),
+                for (final message in state.queuedMessages)
+                  _QueuedMessageCard(
+                    message: message,
+                    queueing: state.queueMessagesWhileActive,
+                    onSteer: () => state.steerQueuedMessage(message.id),
+                    onDelete: () => state.deleteQueuedMessage(message.id),
+                    onEdit: () => _editQueued(message.id),
+                    onQueueingChanged: state.setQueueing,
+                  ),
+                if (decisionPlan != null)
+                  _PlanDecisionPanel(
+                    sending: state.sending,
+                    controller: _planFeedback,
+                    focusNode: _planFeedbackFocus,
+                    onImplement: () => _implementPlan(decisionPlan),
+                    onRevise: () => _revisePlan(decisionPlan),
+                    onSkip: () => _skipPlan(decisionPlan),
+                  )
+                else
+                  _Composer(
+                    state: state,
+                    controller: _composer,
+                    focusNode: _composerFocus,
+                    attachments: _attachments,
+                    references: _references,
+                    onAddImages: _pickImages,
+                    onAddFiles: _pickFiles,
+                    onRemoveAttachment: _removeAttachment,
+                    onAddReference: _addReference,
+                    onRemoveReference: _removeReference,
+                    onToggleGoal: _toggleGoalMode,
+                    onTogglePlan: _togglePlanMode,
+                    onRemoveGoal: _removeGoal,
+                    onSubmit: _submit,
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -384,107 +386,200 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
 
   void _scrollToBottom() {
     if (!mounted || !_scroll.hasClients) return;
-    _scroll.animateTo(
-      _scroll.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
+    _scroll.jumpTo(_scroll.position.minScrollExtent);
+  }
+
+  void _bindScrollUpdates() {
+    _scrollSubscription?.dispose();
+    _scrollSubscription = observe(
+      () => (
+        stream: widget.state.viewModel.streamRevision,
+        structure: Object.hashAll([
+          for (final turn in widget.state.viewModel.turns)
+            Object.hash(
+              identityHashCode(turn.turn),
+              Object.hashAll(
+                turn.items.map((item) => identityHashCode(item.structuralItem)),
+              ),
+            ),
+        ]),
+        threadId: widget.state.viewModel.selectedThread?.id,
+      ),
+      onChange: (snapshot) {
+        if (_scrollThreadId != snapshot.threadId) {
+          _scrollThreadId = snapshot.threadId;
+          _followTail = true;
+        }
+        _scheduleScrollToBottom();
+      },
+      scheduler: ObservationSchedulers.frame,
     );
+  }
+
+  void _toggleHistory(String turnId) {
+    setState(() {
+      if (!_expandedHistoryTurnIds.add(turnId)) {
+        _expandedHistoryTurnIds.remove(turnId);
+      }
+    });
+  }
+
+  void _scheduleScrollToBottom() {
+    if (!_followTail || _scrollScheduled || !mounted) return;
+    _scrollScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollScheduled = false;
+      if (_followTail) _scrollToBottom();
+    });
+  }
+
+  bool _onUserScroll(ScrollNotification notification) {
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      _followTail =
+          notification.metrics.pixels <=
+          notification.metrics.minScrollExtent + 96;
+    }
+    return false;
   }
 }
 
-class _TurnSection extends StatefulWidget {
-  const _TurnSection({
+/// Virtualized conversation surface. It owns the broad structural observation
+/// boundary while individual streaming items observe their own view models.
+@ObservationWidget()
+class _CodexConversationViewport extends _$_CodexConversationViewport {
+  const _CodexConversationViewport({
     required this.state,
-    required this.turn,
-    required this.actionBuilder,
-    required this.onOpenResource,
+    required this.scrollController,
+    required this.onScrollNotification,
+    required this.turnActionBuilder,
+    required this.expandedHistoryTurnIds,
+    required this.onToggleHistory,
+    required this.onOpenFile,
+    required this.onOpenImage,
+    required this.onOpenTurnDiff,
+    super.key,
   });
 
   final CodexConversationState state;
-  final CodexTurn turn;
-  final CodexTurnActionBuilder actionBuilder;
-  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
-
-  @override
-  State<_TurnSection> createState() => _TurnSectionState();
-}
-
-class _TurnSectionState extends State<_TurnSection> {
-  bool _historyExpanded = false;
+  final ScrollController scrollController;
+  final NotificationListenerCallback<ScrollNotification> onScrollNotification;
+  final CodexTurnActionBuilder turnActionBuilder;
+  final Set<String> expandedHistoryTurnIds;
+  final ValueChanged<String> onToggleHistory;
+  final CodexOpenFile? onOpenFile;
+  final CodexOpenImage? onOpenImage;
+  final CodexOpenTurnDiff? onOpenTurnDiff;
 
   @override
   Widget build(BuildContext context) {
-    final state = widget.state;
-    final turn = widget.turn;
-    final c = context.motif;
-    final response = turn.items
-        .whereType<CodexAgentMessageThreadItem>()
-        .where((item) => item.text.trim().isNotEmpty)
-        .lastOrNull;
-    final latestReasoning = turn.items
-        .whereType<CodexReasoningThreadItem>()
-        .lastOrNull;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: MotifSpacing.xl),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (turn.status == CodexTurnStatus.inProgress &&
-              turn.startedAt != null)
-            Row(
-              children: [
-                Expanded(child: Divider(color: c.border)),
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: MotifSpacing.md,
-                  ),
-                  child: Text(
-                    _turnLabel(turn),
-                    style: MotifType.caption.copyWith(color: c.textTertiary),
-                  ),
-                ),
-                Expanded(child: Divider(color: c.border)),
-              ],
-            ),
-          const SizedBox(height: MotifSpacing.md),
-          if (turn.status == CodexTurnStatus.inProgress)
-            ..._turnContent(
-              state,
-              turn,
-              turn.items,
-              onOpenResource: widget.onOpenResource,
-            )
-          else
-            ..._completedTurnContent(state, turn),
-          if (turn.error != null) _InlineError(message: turn.error!.message),
-          if (turn.status == CodexTurnStatus.completed) ...[
-            CodexTurnDiffSummary(
-              turnId: turn.id,
-              items: turn.items.whereType<CodexFileChangeThreadItem>().toList(),
-              cwd: state.selectedThread?.cwd.value,
-              onOpenDiff: widget.onOpenResource == null
-                  ? null
-                  : (path) => widget.onOpenResource!(CodexDiffIntent(path)),
-            ),
-            _ResponseActions(
-              state: state,
-              turn: turn,
-              response: response,
-              actionBuilder: widget.actionBuilder,
+    final turns = state.viewModel.turns;
+    final conversationChildren = <Widget>[
+      if (state.readError != null)
+        _InlineError(message: state.readError!, onRetry: state.retryRead),
+      if (turns.isEmpty) const _EmptyConversation(),
+      for (final turn in turns)
+        ..._turnSliverChildren(
+          state: state,
+          turnModel: turn,
+          actionBuilder: turnActionBuilder,
+          historyExpanded: expandedHistoryTurnIds.contains(turn.id),
+          onToggleHistory: () => onToggleHistory(turn.id),
+          onOpenFile: onOpenFile,
+          onOpenImage: onOpenImage,
+          onOpenTurnDiff: onOpenTurnDiff,
+        ),
+      for (final request in state.pendingServerRequests)
+        _ServerRequestCard(
+          key: ValueKey(request.toJson().toString()),
+          state: state,
+          request: request,
+        ),
+      if (state.sendError != null) _InlineError(message: state.sendError!),
+      if (state.forkError != null) _InlineError(message: state.forkError!),
+    ];
+    return NotificationListener<ScrollNotification>(
+      onNotification: onScrollNotification,
+      child: SelectionArea(
+        child: CustomScrollView(
+          key: const ValueKey('codex-turn-stream'),
+          controller: scrollController,
+          reverse: true,
+          // TODO(flutter): use ScrollCacheExtent.pixels when the native-assets
+          // test frontend catches up with the SDK API.
+          // ignore: deprecated_member_use
+          cacheExtent: 1600,
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(
+                MotifSpacing.xl,
+                MotifSpacing.lg,
+                MotifSpacing.xl,
+                MotifSpacing.xxl,
+              ),
+              sliver: SliverList.builder(
+                itemCount: conversationChildren.length,
+                itemBuilder: (context, index) {
+                  final child =
+                      conversationChildren[conversationChildren.length -
+                          index -
+                          1];
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 860),
+                      child: SizedBox(width: double.infinity, child: child),
+                    ),
+                  );
+                },
+              ),
             ),
           ],
-          if (turn.status == CodexTurnStatus.inProgress)
-            CodexTurnProgress(reasoning: latestReasoning),
-        ],
+        ),
       ),
     );
   }
+}
 
-  List<Widget> _completedTurnContent(
-    CodexConversationState state,
-    CodexTurn turn,
-  ) {
-    final items = turn.items;
+List<Widget> _turnSliverChildren({
+  required CodexConversationState state,
+  required CodexTurnViewModel turnModel,
+  required CodexTurnActionBuilder actionBuilder,
+  required bool historyExpanded,
+  required VoidCallback onToggleHistory,
+  CodexOpenFile? onOpenFile,
+  CodexOpenImage? onOpenImage,
+  CodexOpenTurnDiff? onOpenTurnDiff,
+}) {
+  final turn = turnModel.turn;
+  final items = turnModel.items
+      .map((model) => model.structuralItem)
+      .toList(growable: false);
+  final result = <Widget>[];
+  final response = items
+      .whereType<CodexAgentMessageThreadItem>()
+      .where((item) => item.text.trim().isNotEmpty)
+      .lastOrNull;
+  final latestReasoning = items
+      .whereType<CodexReasoningThreadItem>()
+      .lastOrNull;
+
+  if (turn.status == CodexTurnStatus.inProgress && turn.startedAt != null) {
+    result.add(_TurnDivider(turn: turn));
+  }
+  result.add(const SizedBox(height: MotifSpacing.md));
+
+  if (turn.status == CodexTurnStatus.inProgress) {
+    result.addAll(
+      _turnContent(
+        state,
+        turn,
+        items,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
+        onOpenTurnDiff: onOpenTurnDiff,
+      ),
+    );
+  } else {
     var leadingEnd = 0;
     while (leadingEnd < items.length &&
         items[leadingEnd] is CodexUserMessageThreadItem) {
@@ -513,41 +608,105 @@ class _TurnSectionState extends State<_TurnSection> {
         .skip(leadingEnd)
         .take(historyEnd - leadingEnd)
         .toList(growable: false);
-    final response = responseIndex == -1
+    final responseItems = responseIndex == -1
         ? const <CodexThreadItem>[]
         : items.skip(responseIndex).toList(growable: false);
-    return [
-      ..._turnContent(
-        state,
-        turn,
-        leading,
-        groupKeyPrefix: 'leading',
-        onOpenResource: widget.onOpenResource,
-      ),
-      _WorkedHeader(
-        turn: turn,
-        expanded: _historyExpanded,
-        onTap: history.isEmpty
-            ? null
-            : () => setState(() => _historyExpanded = !_historyExpanded),
-      ),
-      if (_historyExpanded)
-        ..._turnContent(
+    result
+      ..addAll(
+        _turnContent(
+          state,
+          turn,
+          leading,
+          groupKeyPrefix: 'leading',
+          onOpenFile: onOpenFile,
+          onOpenImage: onOpenImage,
+          onOpenTurnDiff: onOpenTurnDiff,
+        ),
+      )
+      ..add(
+        _WorkedHeader(
+          turn: turn,
+          expanded: historyExpanded,
+          onTap: history.isEmpty ? null : onToggleHistory,
+        ),
+      );
+    if (historyExpanded) {
+      result.addAll(
+        _turnContent(
           state,
           turn,
           history,
           groupKeyPrefix: 'history',
           boundedActivity: false,
-          onOpenResource: widget.onOpenResource,
+          onOpenFile: onOpenFile,
+          onOpenImage: onOpenImage,
+          onOpenTurnDiff: onOpenTurnDiff,
         ),
-      ..._turnContent(
+      );
+    }
+    result.addAll(
+      _turnContent(
         state,
         turn,
-        response,
+        responseItems,
         groupKeyPrefix: 'response',
-        onOpenResource: widget.onOpenResource,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
+        onOpenTurnDiff: onOpenTurnDiff,
       ),
-    ];
+    );
+  }
+
+  if (turn.error != null) {
+    result.add(_InlineError(message: turn.error!.message));
+  }
+  if (turn.status == CodexTurnStatus.completed) {
+    result
+      ..add(
+        CodexTurnDiffSummary(
+          turnId: turn.id,
+          items: items.whereType<CodexFileChangeThreadItem>().toList(),
+          cwd: state.selectedThread?.cwd.value,
+          onOpenDiff: onOpenTurnDiff,
+        ),
+      )
+      ..add(
+        _ResponseActions(
+          state: state,
+          turn: turn,
+          response: response,
+          actionBuilder: actionBuilder,
+        ),
+      );
+  }
+  if (turn.status == CodexTurnStatus.inProgress) {
+    result.add(CodexTurnProgress(state: state, reasoning: latestReasoning));
+  }
+  result.add(const SizedBox(height: MotifSpacing.xl));
+  return result;
+}
+
+class _TurnDivider extends StatelessWidget {
+  const _TurnDivider({required this.turn});
+
+  final CodexTurn turn;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Row(
+      children: [
+        Expanded(child: Divider(color: c.border)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
+          child: Text(
+            _turnLabel(turn),
+            style: MotifType.caption.copyWith(color: c.textTertiary),
+          ),
+        ),
+        Expanded(child: Divider(color: c.border)),
+      ],
+    );
   }
 }
 
@@ -557,7 +716,9 @@ List<Widget> _turnContent(
   Iterable<CodexThreadItem> items, {
   String groupKeyPrefix = 'active',
   bool boundedActivity = true,
-  Future<void> Function(CodexResourceIntent resource)? onOpenResource,
+  CodexOpenFile? onOpenFile,
+  CodexOpenImage? onOpenImage,
+  CodexOpenTurnDiff? onOpenTurnDiff,
 }) {
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
@@ -577,7 +738,9 @@ List<Widget> _turnContent(
           state: state,
           items: List.unmodifiable(activity),
           boundedDetails: boundedActivity,
-          onOpenResource: onOpenResource,
+          onOpenFile: onOpenFile,
+          onOpenImage: onOpenImage,
+          onOpenTurnDiff: onOpenTurnDiff,
         ),
       ),
     );
@@ -603,7 +766,12 @@ List<Widget> _turnContent(
       result.add(
         Padding(
           padding: const EdgeInsets.only(bottom: _turnTopLevelItemSpacing),
-          child: _ThreadItemView(state: state, item: item),
+          child: _ThreadItemView(
+            state: state,
+            item: item,
+            onOpenFile: onOpenFile,
+            onOpenImage: onOpenImage,
+          ),
         ),
       );
     } else {
@@ -698,10 +866,17 @@ bool _isVisibleTextBoundary(CodexThreadItem item) => switch (item) {
 };
 
 class _ThreadItemView extends StatelessWidget {
-  const _ThreadItemView({required this.state, required this.item});
+  const _ThreadItemView({
+    required this.state,
+    required this.item,
+    required this.onOpenFile,
+    required this.onOpenImage,
+  });
 
   final CodexConversationState state;
   final CodexThreadItem item;
+  final CodexOpenFile? onOpenFile;
+  final CodexOpenImage? onOpenImage;
 
   @override
   Widget build(BuildContext context) {
@@ -709,21 +884,53 @@ class _ThreadItemView extends StatelessWidget {
       CodexUserMessageThreadItem value => _UserMessage(
         state: state,
         item: value,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
       ),
-      CodexAgentMessageThreadItem value => _AgentMessage(item: value),
-      CodexPlanThreadItem value => _CollapsedPlanCard(plan: value),
+      CodexAgentMessageThreadItem value => _AgentMessage(
+        key: ValueKey('codex-agent-message-${value.id}'),
+        state: state,
+        item: value,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
+      ),
+      CodexPlanThreadItem value => _CollapsedPlanCard(
+        key: ValueKey('codex-plan-card-${value.id}'),
+        state: state,
+        plan: value,
+      ),
       _ => const SizedBox.shrink(),
     };
   }
 }
 
-class _CollapsedPlanCard extends StatelessWidget {
-  const _CollapsedPlanCard({required this.plan});
+@ObservationWidget()
+class _CollapsedPlanCard extends _$_CollapsedPlanCard {
+  const _CollapsedPlanCard({
+    required this.state,
+    required this.plan,
+    super.key,
+  });
 
+  final CodexConversationState state;
   final CodexPlanThreadItem plan;
 
   @override
   Widget build(BuildContext context) {
+    final model = state.observedItemViewModel(plan);
+    final live = model?.item;
+    return _buildCard(
+      context,
+      live is CodexPlanThreadItem ? live : plan,
+      streaming: model?.streaming ?? false,
+    );
+  }
+
+  Widget _buildCard(
+    BuildContext context,
+    CodexPlanThreadItem plan, {
+    required bool streaming,
+  }) {
     final c = context.motif;
     return Material(
       key: ValueKey('codex-plan-item-${plan.id}'),
@@ -780,14 +987,23 @@ class _CollapsedPlanCard extends StatelessWidget {
                   child: SingleChildScrollView(
                     physics: const NeverScrollableScrollPhysics(),
                     child: IgnorePointer(
-                      child: CodexMarkdown(
-                        plan.text,
-                        key: ValueKey('codex-plan-preview-${plan.id}'),
-                        style: MotifType.body.copyWith(
-                          color: c.textPrimary,
-                          height: 1.55,
-                        ),
-                      ),
+                      child: streaming
+                          ? CodexStreamingText(
+                              plan.text,
+                              key: ValueKey('codex-plan-preview-${plan.id}'),
+                              style: MotifType.body.copyWith(
+                                color: c.textPrimary,
+                                height: 1.55,
+                              ),
+                            )
+                          : CodexMarkdown(
+                              plan.text,
+                              key: ValueKey('codex-plan-preview-${plan.id}'),
+                              style: MotifType.body.copyWith(
+                                color: c.textPrimary,
+                                height: 1.55,
+                              ),
+                            ),
                     ),
                   ),
                 ),
@@ -836,10 +1052,17 @@ class _PlanDetailScreen extends StatelessWidget {
 }
 
 class _UserMessage extends StatelessWidget {
-  const _UserMessage({required this.state, required this.item});
+  const _UserMessage({
+    required this.state,
+    required this.item,
+    required this.onOpenFile,
+    required this.onOpenImage,
+  });
 
   final CodexConversationState state;
   final CodexUserMessageThreadItem item;
+  final CodexOpenFile? onOpenFile;
+  final CodexOpenImage? onOpenImage;
 
   @override
   Widget build(BuildContext context) {
@@ -868,17 +1091,27 @@ class _UserMessage extends StatelessWidget {
                     runSpacing: MotifSpacing.sm,
                     children: [
                       for (final image in localImages)
-                        _RemoteImage(state: state, path: image.path),
+                        _RemoteImage(
+                          state: state,
+                          path: image.path,
+                          onTap: onOpenImage == null
+                              ? null
+                              : () => onOpenImage!(image.path),
+                        ),
                       for (final image in remoteImages)
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(MotifRadius.xs),
-                          child: Image.network(
-                            image.url,
-                            width: 160,
-                            height: 120,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) =>
-                                const Icon(Icons.broken_image_outlined),
+                        GestureDetector(
+                          key: ValueKey('codex-user-remote-image-${image.url}'),
+                          onTap: onOpenImage == null
+                              ? null
+                              : () => onOpenImage!(image.url),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(MotifRadius.xs),
+                            child: _RemoteUrlImage(
+                              url: image.url,
+                              width: 160,
+                              height: 120,
+                              fit: BoxFit.cover,
+                            ),
                           ),
                         ),
                     ],
@@ -890,6 +1123,9 @@ class _UserMessage extends StatelessWidget {
                     parsed.text,
                     fitContent: true,
                     style: MotifType.body.copyWith(color: c.textPrimary),
+                    onTapFileLink: onOpenFile == null
+                        ? null
+                        : (href) => _openMarkdownFile(state, onOpenFile!, href),
                   ),
                 ],
               ],
@@ -902,10 +1138,11 @@ class _UserMessage extends StatelessWidget {
 }
 
 class _RemoteImage extends StatelessWidget {
-  const _RemoteImage({required this.state, required this.path});
+  const _RemoteImage({required this.state, required this.path, this.onTap});
 
   final CodexConversationState state;
   final String path;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -919,14 +1156,19 @@ class _RemoteImage extends StatelessWidget {
             child: Center(child: CircularProgressIndicator()),
           );
         }
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(MotifRadius.xs),
-          child: Image.memory(
-            snapshot.data!,
-            width: 160,
-            height: 120,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
+        return GestureDetector(
+          key: ValueKey('codex-user-local-image-$path'),
+          onTap: onTap,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(MotifRadius.xs),
+            child: Image.memory(
+              snapshot.data!,
+              width: 160,
+              height: 120,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) =>
+                  const Icon(Icons.broken_image_outlined),
+            ),
           ),
         );
       },
@@ -934,19 +1176,149 @@ class _RemoteImage extends StatelessWidget {
   }
 }
 
-class _AgentMessage extends StatelessWidget {
-  const _AgentMessage({required this.item});
+class _CodexMarkdownImage extends StatelessWidget {
+  const _CodexMarkdownImage({
+    required this.state,
+    required this.uri,
+    required this.onOpenImage,
+  });
 
-  final CodexAgentMessageThreadItem item;
+  final CodexConversationState state;
+  final Uri uri;
+  final CodexOpenImage? onOpenImage;
 
   @override
   Widget build(BuildContext context) {
+    final source = uri.toString();
+    final remote = const {'http', 'https', 'data'}.contains(uri.scheme);
+    final path = remote
+        ? source
+        : codexFilePathFromMarkdownLink(
+            source,
+            cwd: state.selectedThread?.cwd.value,
+          );
+    if (path == null) return const Icon(Icons.broken_image_outlined);
+    final image = remote
+        ? _RemoteUrlImage(url: path, fit: BoxFit.contain)
+        : FutureBuilder<Uint8List>(
+            future: state.readRemoteFile(path),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) return const LinearProgressIndicator();
+              return Image.memory(
+                snapshot.data!,
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) =>
+                    const Icon(Icons.broken_image_outlined),
+              );
+            },
+          );
+    return GestureDetector(
+      key: ValueKey('codex-markdown-image-$path'),
+      onTap: onOpenImage == null
+          ? null
+          : () => _invokeOpenImage(onOpenImage!, path),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640, maxHeight: 480),
+        child: image,
+      ),
+    );
+  }
+}
+
+class _RemoteUrlImage extends StatelessWidget {
+  const _RemoteUrlImage({required this.url, this.width, this.height, this.fit});
+
+  final String url;
+  final double? width;
+  final double? height;
+  final BoxFit? fit;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = Uri.tryParse(url);
+    final data = uri?.data;
+    if (data != null) {
+      return Image.memory(
+        data.contentAsBytes(),
+        width: width,
+        height: height,
+        fit: fit,
+        errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
+      );
+    }
+    return Image.network(
+      url,
+      width: width,
+      height: height,
+      fit: fit,
+      errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
+    );
+  }
+}
+
+void _openMarkdownFile(
+  CodexConversationState state,
+  CodexOpenFile openFile,
+  String href,
+) {
+  final path = codexFilePathFromMarkdownLink(
+    href,
+    cwd: state.selectedThread?.cwd.value,
+  );
+  if (path == null) return;
+  final result = openFile(path);
+  if (result is Future<void>) unawaited(result);
+}
+
+void _invokeOpenImage(CodexOpenImage openImage, String source) {
+  final result = openImage(source);
+  if (result is Future<void>) unawaited(result);
+}
+
+@ObservationWidget()
+class _AgentMessage extends _$_AgentMessage {
+  const _AgentMessage({
+    required this.state,
+    required this.item,
+    required this.onOpenFile,
+    required this.onOpenImage,
+    super.key,
+  });
+
+  final CodexConversationState state;
+  final CodexAgentMessageThreadItem item;
+  final CodexOpenFile? onOpenFile;
+  final CodexOpenImage? onOpenImage;
+
+  @override
+  Widget build(BuildContext context) {
+    final model = state.observedItemViewModel(item);
+    final live = model?.item;
+    return _buildMessage(
+      context,
+      live is CodexAgentMessageThreadItem ? live : item,
+      streaming: model?.streaming ?? false,
+    );
+  }
+
+  Widget _buildMessage(
+    BuildContext context,
+    CodexAgentMessageThreadItem item, {
+    required bool streaming,
+  }) {
     final c = context.motif;
     final visibleText = const CodexAgentOutputParser().parse(item.text);
     if (visibleText.trim().isEmpty) return const SizedBox.shrink();
+    final style = MotifType.body.copyWith(color: c.textPrimary, height: 1.55);
+    if (streaming) return CodexStreamingText(visibleText, style: style);
     return CodexMarkdown(
       visibleText,
-      style: MotifType.body.copyWith(color: c.textPrimary, height: 1.55),
+      style: style,
+      onTapFileLink: onOpenFile == null
+          ? null
+          : (href) => _openMarkdownFile(state, onOpenFile!, href),
+      imageBuilder: (uri, _, _) =>
+          _CodexMarkdownImage(state: state, uri: uri, onOpenImage: onOpenImage),
     );
   }
 }
@@ -2678,11 +3050,6 @@ class _EmptyConversation extends StatelessWidget {
 class _SubmitIntent extends Intent {
   const _SubmitIntent();
 }
-
-int _eventCount(CodexConversationState state) => state.turns.fold<int>(
-  state.pendingServerRequests.length + state.queuedMessages.length,
-  (sum, turn) => sum + turn.items.length,
-);
 
 String _turnLabel(CodexTurn turn) {
   if (turn.status == CodexTurnStatus.inProgress) return 'Working';

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_state.dart';
@@ -9,7 +10,25 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_sidebar_components.dart';
 
-class CodexThreadSidebar extends StatefulWidget {
+part 'codex_thread_sidebar.g.dart';
+
+@ObservableModel()
+class CodexThreadSidebarViewModel extends _$CodexThreadSidebarViewModel {
+  CodexThreadSidebarViewModel({
+    @ObservationReadOnly() required ObservableSet<String> expandedProjects,
+    @ObservationReadOnly() required ObservableSet<String> expandedThreadLists,
+    String? seededSelectedProject,
+    bool showAllProjects = false,
+  }) : super(
+         expandedProjects,
+         expandedThreadLists,
+         seededSelectedProject,
+         showAllProjects,
+       );
+}
+
+@ObservationWidget()
+class CodexThreadSidebar extends _$CodexThreadSidebar {
   const CodexThreadSidebar({
     required this.serviceState,
     required this.codexState,
@@ -25,42 +44,38 @@ class CodexThreadSidebar extends StatefulWidget {
   final ValueChanged<CodexSidebarMode> onModeChanged;
   final ValueChanged<String> onThreadSelected;
 
-  @override
-  State<CodexThreadSidebar> createState() => _CodexThreadSidebarState();
-}
-
-class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   static const int _initialProjectCount = 6;
   static const int _initialThreadCount = 5;
 
-  late Set<String> _expandedProjects;
-  late Set<String> _expandedThreadLists;
-  String? _seededSelectedProject;
-  late bool _showAllProjects;
+  String get _serverId => serviceState.serverId;
 
-  String get _serverId => widget.serviceState.serverId;
-
-  @override
-  void initState() {
-    super.initState();
-    _restorePreferences();
+  @ObservableState(name: 'viewModel')
+  CodexThreadSidebarViewModel createViewModel() {
+    final preferences = codexState.projectSidebar(_serverId);
+    return CodexThreadSidebarViewModel(
+      expandedProjects: ObservableSet(preferences.expandedProjects),
+      expandedThreadLists: ObservableSet(preferences.expandedThreadLists),
+      seededSelectedProject: preferences.initialized
+          ? serviceState.catalog.selectedProjectId
+          : null,
+      showAllProjects: preferences.showAllProjects,
+    );
   }
 
   @override
-  void didUpdateWidget(covariant CodexThreadSidebar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.serviceState.serverId != widget.serviceState.serverId ||
-        !identical(oldWidget.codexState, widget.codexState)) {
-      _restorePreferences();
-    }
-    _seedSelectedProject();
-  }
+  bool shouldRecreateStates(covariant CodexThreadSidebar oldWidget) =>
+      oldWidget.serviceState.serverId != serviceState.serverId ||
+      !identical(oldWidget.codexState, codexState);
 
   @override
-  Widget build(BuildContext context) {
-    _seedSelectedProject();
+  Widget build(
+    BuildContext context, {
+    required CodexThreadSidebarViewModel viewModel,
+  }) {
+    final _ = serviceState.viewModel.catalogRevision;
+    _scheduleSelectedProjectSeed(context, viewModel);
     final c = context.motif;
-    final state = widget.serviceState;
+    final state = serviceState;
     return ColoredBox(
       color: c.surface,
       child: SafeArea(
@@ -72,12 +87,12 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
                 CodexSidebarIconButton(
                   key: const ValueKey('codex-mode-timeline'),
                   icon: Icons.schedule_outlined,
-                  tooltip: widget.mode == CodexSidebarMode.timeline
+                  tooltip: mode == CodexSidebarMode.timeline
                       ? 'Group by project'
                       : 'Group by time',
-                  selected: widget.mode == CodexSidebarMode.timeline,
-                  onTap: () => widget.onModeChanged(
-                    widget.mode == CodexSidebarMode.timeline
+                  selected: mode == CodexSidebarMode.timeline,
+                  onTap: () => onModeChanged(
+                    mode == CodexSidebarMode.timeline
                         ? CodexSidebarMode.projects
                         : CodexSidebarMode.timeline,
                   ),
@@ -113,15 +128,15 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
                 error: state.createThreadError!,
                 onDismiss: state.clearCreateThreadError,
               ),
-            Expanded(child: _content(context)),
+            Expanded(child: _content(context, viewModel)),
           ],
         ),
       ),
     );
   }
 
-  Widget _content(BuildContext context) {
-    final state = widget.serviceState;
+  Widget _content(BuildContext context, CodexThreadSidebarViewModel viewModel) {
+    final state = serviceState;
     if ((state.catalogPhase == CodexCatalogPhase.idle ||
             state.catalogPhase == CodexCatalogPhase.loading) &&
         state.catalog.allThreads.isEmpty) {
@@ -138,14 +153,17 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
         onRetry: state.retryCatalog,
       );
     }
-    return switch (widget.mode) {
-      CodexSidebarMode.projects => _projectList(context),
+    return switch (mode) {
+      CodexSidebarMode.projects => _projectList(context, viewModel),
       CodexSidebarMode.timeline => _timelineList(context),
     };
   }
 
-  Widget _projectList(BuildContext context) {
-    final snapshot = widget.serviceState.catalog;
+  Widget _projectList(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+  ) {
+    final snapshot = serviceState.catalog;
     final children = <Widget>[];
     if (snapshot.pinnedThreads.isNotEmpty) {
       children.add(const CodexSidebarSectionHeading('Pinned'));
@@ -157,25 +175,25 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
     }
 
     children.add(const CodexSidebarSectionHeading('Projects'));
-    final visibleProjects = _showAllProjects
+    final visibleProjects = viewModel.showAllProjects
         ? snapshot.projects
         : snapshot.projects.take(_initialProjectCount);
     for (final group in visibleProjects) {
       final projectId = group.project.id;
-      final expanded = _expandedProjects.contains(projectId);
+      final expanded = _projectIsExpanded(viewModel, projectId);
       children.add(
         _ProjectRow(
           key: ValueKey('codex-project-$projectId'),
           group: group,
           expanded: expanded,
-          creating: widget.serviceState.creatingProjectId == projectId,
-          onTap: () => _setProjectExpanded(projectId, !expanded),
+          creating: serviceState.creatingProjectId == projectId,
+          onTap: () => _setProjectExpanded(viewModel, projectId, !expanded),
           onNewThread: () async {
-            final created = await widget.serviceState.createThreadForProject(
+            final created = await serviceState.createThreadForProject(
               group.project,
             );
-            if (!mounted || !created) return;
-            _setProjectExpanded(projectId, true);
+            if (!context.mounted || !created) return;
+            _setProjectExpanded(viewModel, projectId, true);
           },
         ),
       );
@@ -184,7 +202,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
         children.add(const _EmptyProjectRow());
         continue;
       }
-      final showAllThreads = _expandedThreadLists.contains(projectId);
+      final showAllThreads = viewModel.expandedThreadLists.contains(projectId);
       final visibleThreads = showAllThreads
           ? group.threads
           : group.threads.take(_initialThreadCount);
@@ -197,7 +215,8 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
             key: ValueKey('codex-project-threads-more-$projectId'),
             label: showAllThreads ? 'Show less' : 'Show more',
             indented: true,
-            onTap: () => _setThreadListExpanded(projectId, !showAllThreads),
+            onTap: () =>
+                _setThreadListExpanded(viewModel, projectId, !showAllThreads),
           ),
         );
       }
@@ -206,8 +225,9 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
       children.add(
         _ShowMoreRow(
           key: const ValueKey('codex-projects-more'),
-          label: _showAllProjects ? 'Show less' : 'Show more',
-          onTap: () => _setShowAllProjects(!_showAllProjects),
+          label: viewModel.showAllProjects ? 'Show less' : 'Show more',
+          onTap: () =>
+              _setShowAllProjects(viewModel, !viewModel.showAllProjects),
         ),
       );
     }
@@ -227,7 +247,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _timelineList(BuildContext context) {
-    final snapshot = widget.serviceState.catalog;
+    final snapshot = serviceState.catalog;
     final priority = snapshot.allThreads.where(codexThreadIsActive).toList()
       ..sort(compareCodexThreadsByRecency);
     final dated =
@@ -258,7 +278,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _timelineThreadRow(CodexThread thread) {
-    final catalog = widget.serviceState.catalog;
+    final catalog = serviceState.catalog;
     final project = catalog.projectNameForThread(thread.id);
     final cwd = thread.cwd.value.trim();
     return _threadRow(
@@ -276,54 +296,67 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }) => CodexSidebarThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
     title: codexThreadTitle(thread),
-    selected: widget.serviceState.selectedThread?.id == thread.id,
-    loading: widget.serviceState.readingThreadId == thread.id,
+    selected: serviceState.selectedThread?.id == thread.id,
+    loading: serviceState.readingThreadId == thread.id,
     active: codexThreadIsActive(thread),
     pinned: pinned,
     indented: indented,
     subtitle: subtitle,
-    onTap: () => widget.onThreadSelected(thread.id),
+    onTap: () => onThreadSelected(thread.id),
   );
 
-  void _seedSelectedProject() {
-    final selected = widget.serviceState.catalog.selectedProjectId;
-    if (selected == null || selected == _seededSelectedProject) return;
-    _seededSelectedProject = selected;
-    _expandedProjects.add(selected);
-    widget.codexState.setProjectExpanded(_serverId, selected, true);
+  bool _projectIsExpanded(
+    CodexThreadSidebarViewModel viewModel,
+    String projectId,
+  ) {
+    final selected = serviceState.catalog.selectedProjectId;
+    return viewModel.expandedProjects.contains(projectId) ||
+        (selected == projectId && selected != viewModel.seededSelectedProject);
   }
 
-  void _restorePreferences() {
-    final preferences = widget.codexState.projectSidebar(_serverId);
-    _expandedProjects = {...preferences.expandedProjects};
-    _expandedThreadLists = {...preferences.expandedThreadLists};
-    _showAllProjects = preferences.showAllProjects;
-    _seededSelectedProject = preferences.initialized
-        ? widget.serviceState.catalog.selectedProjectId
-        : null;
-  }
-
-  void _setProjectExpanded(String projectId, bool expanded) {
-    setState(() {
-      expanded
-          ? _expandedProjects.add(projectId)
-          : _expandedProjects.remove(projectId);
+  void _scheduleSelectedProjectSeed(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+  ) {
+    final selected = serviceState.catalog.selectedProjectId;
+    if (selected == null || selected == viewModel.seededSelectedProject) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!context.mounted || selected == viewModel.seededSelectedProject) {
+        return;
+      }
+      viewModel.seededSelectedProject = selected;
+      viewModel.expandedProjects.add(selected);
+      codexState.setProjectExpanded(_serverId, selected, true);
     });
-    widget.codexState.setProjectExpanded(_serverId, projectId, expanded);
   }
 
-  void _setThreadListExpanded(String projectId, bool expanded) {
-    setState(() {
-      expanded
-          ? _expandedThreadLists.add(projectId)
-          : _expandedThreadLists.remove(projectId);
-    });
-    widget.codexState.setThreadListExpanded(_serverId, projectId, expanded);
+  void _setProjectExpanded(
+    CodexThreadSidebarViewModel viewModel,
+    String projectId,
+    bool expanded,
+  ) {
+    expanded
+        ? viewModel.expandedProjects.add(projectId)
+        : viewModel.expandedProjects.remove(projectId);
+    codexState.setProjectExpanded(_serverId, projectId, expanded);
   }
 
-  void _setShowAllProjects(bool value) {
-    setState(() => _showAllProjects = value);
-    widget.codexState.setShowAllProjects(_serverId, value);
+  void _setThreadListExpanded(
+    CodexThreadSidebarViewModel viewModel,
+    String projectId,
+    bool expanded,
+  ) {
+    expanded
+        ? viewModel.expandedThreadLists.add(projectId)
+        : viewModel.expandedThreadLists.remove(projectId);
+    codexState.setThreadListExpanded(_serverId, projectId, expanded);
+  }
+
+  void _setShowAllProjects(CodexThreadSidebarViewModel viewModel, bool value) {
+    viewModel.showAllProjects = value;
+    codexState.setShowAllProjects(_serverId, value);
   }
 }
 

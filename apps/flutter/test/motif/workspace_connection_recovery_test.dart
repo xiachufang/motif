@@ -104,6 +104,61 @@ void main() {
     expect(motif.activeViewId, 'view-1');
   });
 
+  test('PTY create socket failure enters workspace recovery state', () async {
+    final eventSockets = <WebSocket>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      if (request.method == 'GET' && request.uri.path == '/ping') {
+        request.response.persistentConnection = false;
+        request.response.write(
+          jsonEncode({'service': 'motif-server', 'version': 'test'}),
+        );
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'POST' &&
+          request.uri.path == '/rpc/session.attach') {
+        request.response.persistentConnection = false;
+        request.response.headers.set('X-Motif-Session', 'sid-1');
+        request.response.write(_attachResponse(lastSeq: 0));
+        await request.response.close();
+        return;
+      }
+      if (request.method == 'GET' && request.uri.path == '/events') {
+        eventSockets.add(await WebSocketTransformer.upgrade(request));
+        return;
+      }
+      request.response.statusCode = HttpStatus.notFound;
+      await request.response.close();
+    });
+
+    final motif = WorkspaceConnectionController(session: 'dev');
+    await motif.connect(_localServerFor(server));
+    expect(motif.state, isA<ConnAttached>());
+
+    // Stop accepting new HTTP connections while retaining the already-open
+    // events socket. The next RPC then reproduces the first-open refusal from
+    // a local tunnel/proxy disappearing between attach and pty.create.
+    final serverClosed = server.close(force: false);
+    await Future<void>.delayed(Duration.zero);
+
+    await expectLater(
+      motif.terminal.create(cols: 80, rows: 24),
+      throwsA(isA<SocketException>()),
+    );
+    expect(motif.state, isA<ConnFailed>());
+    expect(
+      (motif.state as ConnFailed).message,
+      'connection lost during pty.create',
+    );
+
+    await motif.disconnect();
+    for (final socket in eventSockets) {
+      await socket.close();
+    }
+    await serverClosed;
+  });
+
   test('mobile reattach restores a mounted terminal PTY stream', () async {
     final ptyOpened = Completer<void>();
     final sockets = <WebSocket>[];

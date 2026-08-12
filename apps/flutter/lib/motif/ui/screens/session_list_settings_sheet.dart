@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../log/log.dart';
 import '../../log/log_export.dart';
+import '../../models/settings.dart';
 import '../../platform/macos_permissions.dart';
 import '../../state/app/app_state.dart';
 import '../../update/desktop_update_service.dart';
@@ -196,6 +197,36 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        MotifSection(
+          title: 'Dark mode',
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(MotifSpacing.sm),
+              child: SegmentedButton<TerminalThemeSetting>(
+                key: const ValueKey('dark-mode-selector'),
+                segments: const [
+                  ButtonSegment(
+                    value: TerminalThemeSetting.system,
+                    label: Text('System'),
+                  ),
+                  ButtonSegment(
+                    value: TerminalThemeSetting.light,
+                    label: Text('Light'),
+                  ),
+                  ButtonSegment(
+                    value: TerminalThemeSetting.dark,
+                    label: Text('Dark'),
+                  ),
+                ],
+                showSelectedIcon: false,
+                selected: {app.terminalSettings.settings.theme},
+                onSelectionChanged: (selection) =>
+                    app.terminalSettings.setTheme(selection.first),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: MotifSpacing.xl),
         MotifSection(
           title: 'Notifications',
           dividerIndent: MotifSpacing.lg,
