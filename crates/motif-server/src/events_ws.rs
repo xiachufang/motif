@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 use crate::session::Session;
 use crate::wire::Codec;
 use crate::ws::{
-    self, AppState, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR, OUTBOUND_FRAME_CAPACITY, OutMsg,
-    PING_INTERVAL_DUR, TIMING_TARGET, encode_event,
+    self, encode_event, AppState, OutMsg, HEARTBEAT_TICK_DUR, IDLE_TIMEOUT_DUR,
+    OUTBOUND_FRAME_CAPACITY, PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
 #[derive(Debug, Default, Deserialize)]

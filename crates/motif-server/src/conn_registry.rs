@@ -11,8 +11,8 @@
 //! on detach or idle timeout.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -20,8 +20,8 @@ use motif_proto::common::{ClientId, SessionId};
 use parking_lot::Mutex;
 
 use crate::rpc::ConnState;
-use crate::session::Session;
 use crate::session::manager::SessionManager;
+use crate::session::Session;
 
 /// Soft idle timeout. After this much wall-clock with no `touch()`, the
 /// entry is eligible for reaping on the next `gc()` call. Lazy GC: we
