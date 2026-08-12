@@ -68,31 +68,26 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   /// detach all connected clients (one per connected server) and return to the
   /// list. Detach is non-destructive — the sessions keep running server-side.
   Future<void> _closeSession() async {
-    final app = readObservationScope<AppState>(context);
     if (mounted) Navigator.of(context).pop();
     unawaited(
-      app.detachAllSessions().catchError((Object e) {
+      _runtime.detachAllSessions().catchError((Object e) {
         if (mounted) showMotifToast(context, 'Close failed: $e');
       }),
     );
   }
 
-  Future<void> _switchSession(
-    AppState app,
-    String serverId,
-    String name,
-  ) async {
+  Future<void> _switchSession(String serverId, String name) async {
     if (!widget.allowSessionSwitching) return;
     if (serverId == widget.serverId && name == widget.session) return;
     try {
-      final keepWarm = app.keepSessionWarmOnSwitchAway;
+      final keepWarm = _runtime.keepWorkspaceWarm;
       if (!keepWarm) {
         setState(() {
           _switchingSession = true;
           _mountedViewIds.clear();
         });
       }
-      app.prepareWorkspaceSelection(
+      _runtime.prepareWorkspaceSelection(
         fromServerId: widget.serverId,
         fromSession: widget.session,
         toServerId: serverId,
@@ -116,12 +111,11 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   }
 
   Future<void> _switchSessionFromMobileDrawer(
-    AppState app,
     String serverId,
     String session,
   ) async {
     await _closeMobileDrawers();
-    if (mounted) await _switchSession(app, serverId, session);
+    if (mounted) await _switchSession(serverId, session);
   }
 
   Future<void> _closeAllSessionsFromMobileDrawer() async {

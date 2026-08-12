@@ -163,13 +163,13 @@ Future<bool> _confirmCloseRunningTab(
 }
 
 List<SessionInfo> _sessionsForServer(
-  MotifServer server,
+  String serverId,
   Iterable<SessionInfo> source, {
   required String currentServerId,
   required String currentSession,
 }) {
   final sessions = [...source];
-  if (server.id == currentServerId &&
+  if (serverId == currentServerId &&
       !sessions.any((s) => s.name == currentSession)) {
     sessions.insert(0, SessionInfo(name: currentSession));
   }
@@ -179,16 +179,6 @@ List<SessionInfo> _sessionsForServer(
 bool get _usesCommandShortcuts =>
     defaultTargetPlatform == TargetPlatform.macOS ||
     defaultTargetPlatform == TargetPlatform.iOS;
-
-String _sessionDisplayName(AppState app, String serverId, String sessionName) {
-  for (final server in app.connectedServers) {
-    if (server.id != serverId) continue;
-    for (final session in server.sessions.sessions) {
-      if (session.name == sessionName) return session.displayName;
-    }
-  }
-  return sessionName;
-}
 
 List<int> _terminalBytes(String text, {bool enter = false}) => [
   ...utf8.encode(text),
@@ -272,19 +262,20 @@ _tabBarSelectKey(WorkspaceViewModel workspace) {
 }
 
 /// Equality key for connected-sessions sidebar (ignores view/tick noise).
-({String servers, String sessions}) _connectedSessionsSelectKey(AppState app) {
-  final groups = app.connectedServers;
+({String servers, String sessions}) _connectedSessionsSelectKey(
+  SessionFeatureRuntime runtime,
+) {
+  final groups = runtime.connectedServers;
   return (
     servers: jsonEncode([
-      for (final g in groups)
-        {'id': g.profile.id, 'name': g.profile.name, 'live': g.access.isReady},
+      for (final g in groups) {'id': g.id, 'name': g.name, 'live': g.isReady},
     ]),
     sessions: jsonEncode([
       for (final g in groups)
         {
-          'server': g.profile.id,
+          'server': g.id,
           'sessions': [
-            for (final s in g.sessions.sessions)
+            for (final s in g.sessions)
               {'name': s.name, 'customName': s.customName},
           ],
         },

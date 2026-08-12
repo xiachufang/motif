@@ -3,42 +3,30 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../codex/codex_connection_controller.dart';
+import '../../codex/codex_feature_controller.dart';
+import '../../codex/codex_resource_intent.dart';
 import '../../codex/codex_service_state.dart';
-import '../../codex/side_chat_collection_controller.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
-import '../../models/motif_proto.dart';
 import '../../platform/window_title.dart';
-import '../../state/app/app_state.dart';
-import '../../state/app/motif_scope.dart';
-import '../../state/server/server_transport.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
 import 'codex_thread_sidebar.dart';
 import 'codex_thread_workspace.dart';
-import 'session_screen.dart';
 import 'side_chat_screen.dart';
-
-typedef CodexControllerFactory =
-    CodexAppServerClient Function(AppState app, String serverId);
-typedef CodexServiceStateFactory =
-    CodexServiceState Function(AppState app, String serverId);
-
-enum _CodexServiceAction { restart, stop }
 
 class CodexScreen extends StatefulWidget {
   const CodexScreen({
-    required this.serverId,
-    this.controllerFactory,
-    this.serviceStateFactory,
+    required this.controller,
+    required this.onWorkspaceRequested,
     super.key,
   });
 
-  final String serverId;
-  final CodexControllerFactory? controllerFactory;
-  final CodexServiceStateFactory? serviceStateFactory;
+  final CodexFeatureController controller;
+  final Future<void> Function(CodexWorkspaceRequest request)
+  onWorkspaceRequested;
 
   @override
   State<CodexScreen> createState() => _CodexScreenState();
@@ -50,84 +38,40 @@ class _CodexScreenState extends State<CodexScreen> {
   static const double _resizeHandleWidth = 8;
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  CodexServiceState? _serviceState;
-  SideChatCollectionController? _sideChats;
-  String? _setupError;
-  bool _operationInFlight = false;
-  bool _sideChatOpening = false;
+  bool _workspaceOpening = false;
   bool _initializedSidebarVisibility = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_changed);
+    unawaited(widget.controller.start());
+    unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
+  }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_initializedSidebarVisibility) {
-      readObservationScope<CodexState>(context).desktopSidebarVisible = true;
-      _initializedSidebarVisibility = true;
-    }
-    if (_serviceState != null || _setupError != null) return;
-    try {
-      final app = readObservationScope<AppState>(context);
-      final codex = readObservationScope<CodexState>(context);
-      final factory = widget.serviceStateFactory;
-      final serviceState = factory != null
-          ? factory(app, widget.serverId)
-          : CodexServiceState(
-              serverId: widget.serverId,
-              connection: _createController(app),
-            );
-      serviceState.configureModelPreference(
-        preferredModelId: codex.selectedModelId(widget.serverId),
-        onSelected: (modelId) =>
-            codex.setSelectedModelId(widget.serverId, modelId),
-      );
-      _serviceState = serviceState;
-      serviceState.addListener(_changed);
-      unawaited(serviceState.start());
-      unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
-    } catch (error) {
-      _setupError = error.toString();
-    }
-  }
-
-  CodexAppServerClient _createController(AppState app) {
-    final factory = widget.controllerFactory;
-    if (factory != null) {
-      return factory(app, widget.serverId);
-    }
-    final transport = app.serverInstance(widget.serverId).transport;
-    if (transport is! RpcServerTransport) {
-      throw const ServerTransportException(
-        'This server transport cannot open Codex.',
-      );
-    }
-    return CodexConnectionController(transport: RpcCodexTransport(transport));
+    if (_initializedSidebarVisibility) return;
+    widget.controller.preferences.desktopSidebarVisible = true;
+    _initializedSidebarVisibility = true;
   }
 
   void _changed() {
     if (!mounted) return;
-    final sideChats = _sideChats;
-    final selectedThreadId = _serviceState?.selectedThread?.id;
-    if (sideChats != null && sideChats.parentThreadId != selectedThreadId) {
-      _sideChats = null;
-      sideChats.dispose();
-    }
     setState(() {});
   }
 
   @override
   void dispose() {
-    final serviceState = _serviceState;
-    serviceState?.removeListener(_changed);
-    serviceState?.dispose();
-    _sideChats?.dispose();
+    widget.controller.removeListener(_changed);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final app = readObservationScope<AppState>(context);
-    final codex = readObservationScope<CodexState>(context);
-    final serviceState = _serviceState;
+    final codex = widget.controller.preferences;
+    final serviceState = widget.controller.service;
     return ObservationSelect<
       ({CodexSidebarMode mode, bool visible, double width})
     >(
@@ -176,8 +120,9 @@ class _CodexScreenState extends State<CodexScreen> {
                   tooltip: 'Open Side Chat',
                   icon: const Icon(Icons.chat_bubble_outline_rounded),
                   onPressed:
-                      !_sideChatOpening && serviceState?.selectedThread != null
-                      ? () => unawaited(_openSideChat(app, serviceState!))
+                      !widget.controller.sideChatOpening &&
+                          serviceState?.selectedThread != null
+                      ? () => unawaited(_openSideChat(serviceState!))
                       : null,
                 ),
                 IconButton(
@@ -185,28 +130,27 @@ class _CodexScreenState extends State<CodexScreen> {
                   tooltip: 'Open thread workspace',
                   icon: const Icon(Icons.terminal_rounded),
                   onPressed:
-                      !_operationInFlight &&
-                          serviceState?.selectedThread != null
-                      ? () =>
-                            unawaited(_openThreadWorkspace(app, serviceState!))
+                      !_workspaceOpening && serviceState?.selectedThread != null
+                      ? () => unawaited(
+                          _requestWorkspace(serviceState!.selectedThread!),
+                        )
                       : null,
                 ),
-                PopupMenuButton<_CodexServiceAction>(
+                PopupMenuButton<CodexServiceAction>(
                   key: const ValueKey('codex-service-menu'),
                   tooltip: 'Codex service',
-                  enabled: !_operationInFlight,
+                  enabled: !widget.controller.operationInFlight,
                   itemBuilder: (_) => const [
                     PopupMenuItem(
-                      value: _CodexServiceAction.restart,
+                      value: CodexServiceAction.restart,
                       child: Text('Restart Codex'),
                     ),
                     PopupMenuItem(
-                      value: _CodexServiceAction.stop,
+                      value: CodexServiceAction.stop,
                       child: Text('Stop Codex'),
                     ),
                   ],
-                  onSelected: (action) =>
-                      unawaited(_controlService(app, action)),
+                  onSelected: (action) => unawaited(_controlService(action)),
                 ),
               ],
             ),
@@ -223,27 +167,19 @@ class _CodexScreenState extends State<CodexScreen> {
                     ),
                   )
                 : null,
-            body: _setupError != null
-                ? _MainSurface(child: _Failure(error: _setupError!))
+            body: widget.controller.setupError != null
+                ? _MainSurface(
+                    child: _Failure(error: widget.controller.setupError!),
+                  )
                 : serviceState == null
                 ? const _MainSurface(child: CircularProgressIndicator())
-                : MotifValueScope<CodexServiceState>(
-                    value: serviceState,
-                    child: mobile
-                        ? _mainContent(
-                            app,
-                            serviceState,
-                            onOpenSidebar: () =>
-                                _scaffoldKey.currentState?.openDrawer(),
-                          )
-                        : _desktopBody(
-                            app,
-                            constraints,
-                            serviceState,
-                            codex,
-                            chrome,
-                          ),
-                  ),
+                : mobile
+                ? _mainContent(
+                    serviceState,
+                    onOpenSidebar: () =>
+                        _scaffoldKey.currentState?.openDrawer(),
+                  )
+                : _desktopBody(constraints, serviceState, codex, chrome),
           );
         },
       ),
@@ -251,7 +187,6 @@ class _CodexScreenState extends State<CodexScreen> {
   }
 
   Widget _desktopBody(
-    AppState app,
     BoxConstraints constraints,
     CodexServiceState serviceState,
     CodexState codex,
@@ -275,7 +210,7 @@ class _CodexScreenState extends State<CodexScreen> {
             },
           ),
         ],
-        Expanded(child: _mainContent(app, serviceState)),
+        Expanded(child: _mainContent(serviceState)),
       ],
     );
   }
@@ -298,11 +233,7 @@ class _CodexScreenState extends State<CodexScreen> {
     },
   );
 
-  Widget _mainContent(
-    AppState app,
-    CodexServiceState state, {
-    VoidCallback? onOpenSidebar,
-  }) {
+  Widget _mainContent(CodexServiceState state, {VoidCallback? onOpenSidebar}) {
     final connection = state.connectionState;
     return switch (connection.phase) {
       CodexConnectionPhase.connecting => const _MainSurface(
@@ -334,8 +265,10 @@ class _CodexScreenState extends State<CodexScreen> {
               )
             : CodexThreadWorkspace(
                 state: state,
-                onOpenWorkspaceView: (spec) =>
-                    _openThreadWorkspace(app, state, initialViewSpec: spec),
+                onOpenResource: (resource) => _requestWorkspace(
+                  state.selectedThread!,
+                  resource: resource,
+                ),
               ),
       CodexConnectionPhase.failed => _MainSurface(
         child: _Failure(
@@ -346,54 +279,24 @@ class _CodexScreenState extends State<CodexScreen> {
     };
   }
 
-  Future<void> _openThreadWorkspace(
-    AppState app,
-    CodexServiceState state, {
-    ViewSpec? initialViewSpec,
-  }) async {
-    final thread = state.selectedThread;
-    if (thread == null) return;
-    await _openThreadWorkspaceForThread(
-      app,
-      thread,
-      initialViewSpec: initialViewSpec,
-    );
-  }
-
-  Future<void> _openThreadWorkspaceForThread(
-    AppState app,
+  Future<void> _requestWorkspace(
     CodexThread thread, {
-    ViewSpec? initialViewSpec,
+    CodexResourceIntent? resource,
   }) async {
-    if (_operationInFlight) return;
+    if (_workspaceOpening) return;
     final cwd = thread.cwd.value.trim();
     if (cwd.isEmpty) {
       showMotifToast(context, 'This thread does not have a working directory');
       return;
     }
-    setState(() => _operationInFlight = true);
+    setState(() => _workspaceOpening = true);
     try {
-      final body = await app.serverInstance(widget.serverId).transport.call(
-        'codex.workspace.ensure',
-        {'thread_id': thread.id, 'cwd': cwd},
-      );
-      final session = SessionInfo.fromJson(
-        (body['session'] as Map).cast<String, Object?>(),
-      );
-      app.workspaceForSession(widget.serverId, session.name);
-      if (!mounted) return;
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute<void>(
-          settings: RouteSettings(
-            name: 'codex-workspace/${widget.serverId}/${thread.id}',
-          ),
-          builder: (_) => SessionScreen(
-            serverId: widget.serverId,
-            session: session.name,
-            allowSessionSwitching: false,
-            titleOverride: codexThreadTitle(thread),
-            initialViewSpec: initialViewSpec,
-          ),
+      await widget.onWorkspaceRequested(
+        CodexWorkspaceRequest(
+          threadId: thread.id,
+          cwd: cwd,
+          title: codexThreadTitle(thread),
+          resource: resource,
         ),
       );
       if (mounted) {
@@ -402,42 +305,26 @@ class _CodexScreenState extends State<CodexScreen> {
     } catch (error) {
       if (mounted) showMotifToast(context, 'Open workspace failed: $error');
     } finally {
-      if (mounted) setState(() => _operationInFlight = false);
+      if (mounted) setState(() => _workspaceOpening = false);
     }
   }
 
-  Future<void> _openSideChat(AppState app, CodexServiceState state) async {
+  Future<void> _openSideChat(CodexServiceState state) async {
     final thread = state.selectedThread;
-    if (thread == null || _sideChatOpening) return;
-    final codex = readObservationScope<CodexState>(context);
-    var collection = _sideChats;
-    if (collection == null || collection.parentThreadId != thread.id) {
-      collection?.dispose();
-      collection = SideChatCollectionController(
-        serverId: widget.serverId,
-        parentThreadId: thread.id,
-        connection: _createController(app),
-        preferredModelId: codex.selectedModelId(widget.serverId),
-        onModelSelected: (modelId) =>
-            codex.setSelectedModelId(widget.serverId, modelId),
-      );
-      _sideChats = collection;
-    }
-    setState(() => _sideChatOpening = true);
+    if (thread == null || widget.controller.sideChatOpening) return;
+    final collection = widget.controller.openSideChats();
+    if (collection == null) return;
+    widget.controller.setSideChatOpening(true);
     try {
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           settings: RouteSettings(
-            name: 'side-chat/${widget.serverId}/${thread.id}',
+            name: 'side-chat/${widget.controller.serverId}/${thread.id}',
           ),
           builder: (_) => SideChatScreen(
-            collection: collection!,
-            onOpenWorkspaceView: (spec) async {
-              await _openThreadWorkspaceForThread(
-                app,
-                thread,
-                initialViewSpec: spec,
-              );
+            collection: collection,
+            onOpenResource: (resource) async {
+              await _requestWorkspace(thread, resource: resource);
               if (mounted) {
                 unawaited(
                   MotifWindowTitle.set('Side Chat — Motif').catchError((_) {}),
@@ -450,35 +337,20 @@ class _CodexScreenState extends State<CodexScreen> {
     } finally {
       if (mounted) {
         unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
-        setState(() => _sideChatOpening = false);
       }
+      widget.controller.setSideChatOpening(false);
     }
   }
 
-  Future<void> _controlService(AppState app, _CodexServiceAction action) async {
-    setState(() => _operationInFlight = true);
+  Future<void> _controlService(CodexServiceAction action) async {
     try {
-      final method = switch (action) {
-        _CodexServiceAction.restart => 'codex.restart',
-        _CodexServiceAction.stop => 'codex.stop',
-      };
-      final body = await app
-          .serverInstance(widget.serverId)
-          .transport
-          .call(method);
-      final closed = (body['closed_sessions'] as List? ?? const [])
-          .whereType<String>();
-      await app.discardWorkspaces(widget.serverId, closed);
+      final completed = await widget.controller.runServiceAction(action);
       if (!mounted) return;
-      if (action == _CodexServiceAction.restart) {
-        await _serviceState?.retryConnection();
-      } else {
+      if (completed && action == CodexServiceAction.stop) {
         Navigator.of(context).pop();
       }
     } catch (error) {
       if (mounted) showMotifToast(context, 'Codex operation failed: $error');
-    } finally {
-      if (mounted) setState(() => _operationInFlight = false);
     }
   }
 }

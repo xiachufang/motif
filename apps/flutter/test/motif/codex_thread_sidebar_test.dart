@@ -139,6 +139,20 @@ void main() {
     expect(find.byKey(const ValueKey('codex-mode-projects')), findsNothing);
     expect(find.byKey(const ValueKey('codex-mode-timeline')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-threads-refresh')), findsOneWidget);
+    expect(
+      tester.getCenter(find.text('Threads')).dx,
+      lessThan(
+        tester.getCenter(find.byKey(const ValueKey('codex-mode-timeline'))).dx,
+      ),
+    );
+    expect(
+      tester.getCenter(find.byKey(const ValueKey('codex-mode-timeline'))).dx,
+      lessThan(
+        tester
+            .getCenter(find.byKey(const ValueKey('codex-threads-refresh')))
+            .dx,
+      ),
+    );
     expect(find.text('Project 7'), findsNothing);
     expect(find.byKey(const ValueKey('codex-thread-t1')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t5')), findsOneWidget);

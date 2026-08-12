@@ -22,7 +22,7 @@ import '../widgets/rename_dialog.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
-import 'codex_screen.dart';
+import '../integration/app_codex_screen.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
@@ -272,7 +272,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       MaterialPageRoute<void>(
         settings: RouteSettings(name: 'codex/${server.id}'),
         fullscreenDialog: true,
-        builder: (_) => CodexScreen(serverId: server.id),
+        builder: (_) => AppCodexScreen(serverId: server.id),
       ),
     );
   }

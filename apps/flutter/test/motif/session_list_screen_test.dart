@@ -10,7 +10,7 @@ import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
-import 'package:motif/motif/ui/screens/codex_screen.dart';
+import 'package:motif/motif/ui/integration/app_codex_screen.dart';
 import 'package:motif/motif/ui/screens/session_name_generator.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
@@ -303,7 +303,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(motif.createPayloads, isEmpty);
-    expect(find.byType(CodexScreen), findsOneWidget);
+    expect(find.byType(AppCodexScreen), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
   });

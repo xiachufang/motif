@@ -7,10 +7,10 @@ import 'package:flutter/services.dart';
 
 import '../../codex/codex_agent_output_parser.dart';
 import '../../codex/codex_composer_models.dart';
+import '../../codex/codex_resource_intent.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
-import '../../models/motif_proto.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_turn_activity.dart';
@@ -28,13 +28,13 @@ class CodexThreadWorkspace extends StatefulWidget {
   const CodexThreadWorkspace({
     required this.state,
     this.turnActionBuilder = _persistentForkAction,
-    this.onOpenWorkspaceView,
+    this.onOpenResource,
     super.key,
   });
 
   final CodexConversationState state;
   final CodexTurnActionBuilder turnActionBuilder;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   State<CodexThreadWorkspace> createState() => _CodexThreadWorkspaceState();
@@ -110,7 +110,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
                               state: state,
                               turn: turn,
                               actionBuilder: widget.turnActionBuilder,
-                              onOpenWorkspaceView: widget.onOpenWorkspaceView,
+                              onOpenResource: widget.onOpenResource,
                             ),
                           for (final request in state.pendingServerRequests)
                             _ServerRequestCard(
@@ -397,13 +397,13 @@ class _TurnSection extends StatefulWidget {
     required this.state,
     required this.turn,
     required this.actionBuilder,
-    required this.onOpenWorkspaceView,
+    required this.onOpenResource,
   });
 
   final CodexConversationState state;
   final CodexTurn turn;
   final CodexTurnActionBuilder actionBuilder;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   State<_TurnSection> createState() => _TurnSectionState();
@@ -452,7 +452,7 @@ class _TurnSectionState extends State<_TurnSection> {
               state,
               turn,
               turn.items,
-              onOpenWorkspaceView: widget.onOpenWorkspaceView,
+              onOpenResource: widget.onOpenResource,
             )
           else
             ..._completedTurnContent(state, turn),
@@ -462,11 +462,9 @@ class _TurnSectionState extends State<_TurnSection> {
               turnId: turn.id,
               items: turn.items.whereType<CodexFileChangeThreadItem>().toList(),
               cwd: state.selectedThread?.cwd.value,
-              onOpenDiff: widget.onOpenWorkspaceView == null
+              onOpenDiff: widget.onOpenResource == null
                   ? null
-                  : (path) => widget.onOpenWorkspaceView!(
-                      DiffViewSpec(staged: false, path: path),
-                    ),
+                  : (path) => widget.onOpenResource!(CodexDiffIntent(path)),
             ),
             _ResponseActions(
               state: state,
@@ -524,7 +522,7 @@ class _TurnSectionState extends State<_TurnSection> {
         turn,
         leading,
         groupKeyPrefix: 'leading',
-        onOpenWorkspaceView: widget.onOpenWorkspaceView,
+        onOpenResource: widget.onOpenResource,
       ),
       _WorkedHeader(
         turn: turn,
@@ -540,14 +538,14 @@ class _TurnSectionState extends State<_TurnSection> {
           history,
           groupKeyPrefix: 'history',
           boundedActivity: false,
-          onOpenWorkspaceView: widget.onOpenWorkspaceView,
+          onOpenResource: widget.onOpenResource,
         ),
       ..._turnContent(
         state,
         turn,
         response,
         groupKeyPrefix: 'response',
-        onOpenWorkspaceView: widget.onOpenWorkspaceView,
+        onOpenResource: widget.onOpenResource,
       ),
     ];
   }
@@ -559,7 +557,7 @@ List<Widget> _turnContent(
   Iterable<CodexThreadItem> items, {
   String groupKeyPrefix = 'active',
   bool boundedActivity = true,
-  Future<void> Function(ViewSpec spec)? onOpenWorkspaceView,
+  Future<void> Function(CodexResourceIntent resource)? onOpenResource,
 }) {
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
@@ -579,7 +577,7 @@ List<Widget> _turnContent(
           state: state,
           items: List.unmodifiable(activity),
           boundedDetails: boundedActivity,
-          onOpenWorkspaceView: onOpenWorkspaceView,
+          onOpenResource: onOpenResource,
         ),
       ),
     );

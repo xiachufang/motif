@@ -56,7 +56,7 @@ extension _SessionScreenInputActions on _SessionScreenState {
 
   Future<void> _toggleMic() async {
     if (_micStarting) return;
-    final speech = readObservationScope<AppState>(context).platform.speech;
+    final speech = _runtime.speech;
     if (_recording) {
       final finalText = await speech.stop();
       final input = _inputControllerForView(_asrInputViewId) ?? _input;
@@ -151,10 +151,9 @@ extension _SessionScreenInputActions on _SessionScreenState {
   }
 
   void _syncWindowTitle() {
-    final app = readObservationScope<AppState>(context);
     final title =
         widget.titleOverride ??
-        _sessionDisplayName(app, widget.serverId, widget.session);
+        _runtime.sessionDisplayName(widget.serverId, widget.session);
     _lastWindowTitle = title;
     unawaited(MotifWindowTitle.set(title).catchError((_) {}));
   }

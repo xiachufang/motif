@@ -21,12 +21,12 @@ class CodexSidebarHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
+          Text(label, style: MotifType.caption),
+          const Spacer(),
           for (var index = 0; index < actions.length; index++) ...[
             if (index > 0) const SizedBox(width: MotifSpacing.xs),
             actions[index],
           ],
-          const Spacer(),
-          Text(label, style: MotifType.caption),
         ],
       ),
     );

@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../codex/codex_service_state.dart';
+import '../../codex/codex_resource_intent.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
-import '../../models/motif_proto.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
 
@@ -24,14 +24,14 @@ class CodexTurnActivityGroup extends StatelessWidget {
     required this.state,
     required this.items,
     this.boundedDetails = true,
-    this.onOpenWorkspaceView,
+    this.onOpenResource,
     super.key,
   });
 
   final CodexConversationState state;
   final List<CodexThreadItem> items;
   final bool boundedDetails;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   Widget build(BuildContext context) {
@@ -73,7 +73,7 @@ class CodexTurnActivityGroup extends StatelessWidget {
                     _ActivityItem(
                       state: state,
                       item: item,
-                      onOpenWorkspaceView: onOpenWorkspaceView,
+                      onOpenResource: onOpenResource,
                     ),
                 ],
               ),
@@ -86,7 +86,7 @@ class CodexTurnActivityGroup extends StatelessWidget {
                   _ActivityItem(
                     state: state,
                     item: item,
-                    onOpenWorkspaceView: onOpenWorkspaceView,
+                    onOpenResource: onOpenResource,
                   ),
               ],
             ),
@@ -352,12 +352,12 @@ class _ActivityItem extends StatelessWidget {
   const _ActivityItem({
     required this.state,
     required this.item,
-    required this.onOpenWorkspaceView,
+    required this.onOpenResource,
   });
 
   final CodexConversationState state;
   final CodexThreadItem item;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   Widget build(BuildContext context) => switch (item) {
@@ -365,7 +365,7 @@ class _ActivityItem extends StatelessWidget {
     CodexFileChangeThreadItem value => _FileChangeActivity(
       item: value,
       cwd: state.selectedThread?.cwd.value,
-      onOpenWorkspaceView: onOpenWorkspaceView,
+      onOpenResource: onOpenResource,
     ),
     CodexWebSearchThreadItem value => _DetailActivity(
       icon: Icons.search,
@@ -377,7 +377,7 @@ class _ActivityItem extends StatelessWidget {
     CodexImageViewThreadItem value => _ImageActivity(
       state: state,
       item: value,
-      onOpenWorkspaceView: onOpenWorkspaceView,
+      onOpenResource: onOpenResource,
     ),
     CodexMcpToolCallThreadItem value => _DetailActivity(
       icon: Icons.extension_outlined,
@@ -463,12 +463,12 @@ class _FileChangeActivity extends StatelessWidget {
   const _FileChangeActivity({
     required this.item,
     required this.cwd,
-    required this.onOpenWorkspaceView,
+    required this.onOpenResource,
   });
 
   final CodexFileChangeThreadItem item;
   final String? cwd;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   Widget build(BuildContext context) {
@@ -508,7 +508,7 @@ class _FileChangeActivity extends StatelessWidget {
                   _FileDiffTile(
                     change: change,
                     cwd: cwd,
-                    onOpenWorkspaceView: onOpenWorkspaceView,
+                    onOpenResource: onOpenResource,
                   ),
               ],
             ),
@@ -523,12 +523,12 @@ class _FileDiffTile extends StatelessWidget {
   const _FileDiffTile({
     required this.change,
     required this.cwd,
-    required this.onOpenWorkspaceView,
+    required this.onOpenResource,
   });
 
   final CodexFileUpdateChange change;
   final String? cwd;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   Widget build(BuildContext context) {
@@ -579,7 +579,7 @@ class _FileDiffTile extends StatelessWidget {
             ),
           ],
         ),
-        action: onOpenWorkspaceView == null
+        action: onOpenResource == null
             ? null
             : IconButton(
                 key: ValueKey('codex-open-diff-$path'),
@@ -591,9 +591,7 @@ class _FileDiffTile extends StatelessWidget {
                 ),
                 padding: EdgeInsets.zero,
                 iconSize: MotifIconSize.sm,
-                onPressed: () => onOpenWorkspaceView!(
-                  DiffViewSpec(staged: false, path: path),
-                ),
+                onPressed: () => onOpenResource!(CodexDiffIntent(path)),
                 icon: const Icon(Icons.open_in_new_rounded),
               ),
         children: [_UnifiedDiff(path: path, diff: change.diff)],
@@ -701,18 +699,18 @@ class _ImageActivity extends StatelessWidget {
   const _ImageActivity({
     required this.state,
     required this.item,
-    required this.onOpenWorkspaceView,
+    required this.onOpenResource,
   });
 
   final CodexConversationState state;
   final CodexImageViewThreadItem item;
-  final Future<void> Function(ViewSpec spec)? onOpenWorkspaceView;
+  final Future<void> Function(CodexResourceIntent resource)? onOpenResource;
 
   @override
   Widget build(BuildContext context) => _DetailActivity(
     icon: Icons.image_outlined,
     title: 'Viewed ${_leaf(item.path.value)}',
-    action: onOpenWorkspaceView == null
+    action: onOpenResource == null
         ? null
         : IconButton(
             key: ValueKey('codex-open-image-${item.path.value}'),
@@ -724,8 +722,7 @@ class _ImageActivity extends StatelessWidget {
             ),
             padding: EdgeInsets.zero,
             iconSize: MotifIconSize.sm,
-            onPressed: () =>
-                onOpenWorkspaceView!(ImageViewSpec(item.path.value)),
+            onPressed: () => onOpenResource!(CodexImageIntent(item.path.value)),
             icon: const Icon(Icons.open_in_new_rounded),
           ),
     child: FutureBuilder<Uint8List>(

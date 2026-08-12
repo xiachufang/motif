@@ -1,7 +1,7 @@
 part of '../session_screen.dart';
 
 class _ConnectedSessionsPanel extends StatelessWidget {
-  final AppState app;
+  final SessionFeatureRuntime runtime;
   final String currentServerId;
   final String currentSession;
   final VoidCallback? onCloseAll;
@@ -9,7 +9,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
   onSessionSelected;
 
   const _ConnectedSessionsPanel({
-    required this.app,
+    required this.runtime,
     required this.currentServerId,
     required this.currentSession,
     this.onCloseAll,
@@ -19,7 +19,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final groups = app.connectedServers;
+    final groups = runtime.connectedServers;
     return Column(
       children: [
         _SidebarPanelHeader(
@@ -63,7 +63,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                       MotifSpacing.xs,
                     ),
                     child: Text(
-                      group.profile.name,
+                      group.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: MotifType.caption.copyWith(
@@ -73,26 +73,25 @@ class _ConnectedSessionsPanel extends StatelessWidget {
                     ),
                   ),
                   for (final session in _sessionsForServer(
-                    group.profile,
-                    group.sessions.sessions,
+                    group.id,
+                    group.sessions,
                     currentServerId: currentServerId,
                     currentSession: currentSession,
                   ))
                     _SidebarSessionRow(
-                      serverId: group.profile.id,
+                      serverId: group.id,
                       session: session,
                       selected:
-                          group.profile.id == currentServerId &&
+                          group.id == currentServerId &&
                           session.name == currentSession,
-                      enabled: group.access.isReady,
-                      onTap: () =>
-                          onSessionSelected(group.profile.id, session.name),
+                      enabled: group.isReady,
+                      onTap: () => onSessionSelected(group.id, session.name),
                       onRename: () =>
-                          _renameSession(context, group.profile.id, session),
+                          _renameSession(context, group.id, session),
                     ),
                   if (_sessionsForServer(
-                    group.profile,
-                    group.sessions.sessions,
+                    group.id,
+                    group.sessions,
                     currentServerId: currentServerId,
                     currentSession: currentSession,
                   ).isEmpty)
@@ -131,9 +130,7 @@ class _ConnectedSessionsPanel extends StatelessWidget {
     );
     if (name == null || !context.mounted) return;
     try {
-      final server = app.existingServerInstance(serverId);
-      if (server == null) throw StateError('server is not connected');
-      await server.sessions.rename(session.name, name);
+      await runtime.renameSession(serverId, session.name, name);
     } catch (error) {
       if (context.mounted) {
         showMotifToast(context, 'Rename session failed: $error');

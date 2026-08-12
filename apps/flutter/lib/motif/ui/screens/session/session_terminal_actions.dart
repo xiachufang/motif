@@ -26,7 +26,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       }
       if (key == LogicalKeyboardKey.keyL) {
         if (!widget.allowSessionSwitching) return false;
-        _toggleSessionsPanel(readObservationScope<AppState>(context));
+        _toggleSessionsPanel();
         return true;
       }
       if (key == LogicalKeyboardKey.keyE) {
@@ -54,7 +54,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
         // the session has no tabs left. Claim this ⌘W so the app-level "hide
         // window" binding (which Flutter fires right after this handler) doesn't
         // also hide the window on top of a tab close.
-        readObservationScope<AppState>(context).markCloseShortcutConsumed();
+        _runtime.markCloseShortcutConsumed();
         if (_workspaceState.views.items.isEmpty) {
           unawaited(DesktopWindow.hide());
         } else {
@@ -158,17 +158,17 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
     _focusTerminalAfterTabSwitch();
   }
 
-  void _toggleSessionsPanel(AppState app) {
+  void _toggleSessionsPanel() {
     if (!widget.allowSessionSwitching) return;
     if (!_usesSidebarLayout) {
       _scaffoldKey.currentState?.openDrawer();
-      unawaited(app.refreshConnectedSessions().catchError((_) => null));
+      unawaited(_runtime.refreshConnectedSessions().catchError((_) => null));
       return;
     }
-    final sidebar = app.sessionSidebar;
+    final sidebar = _runtime.sidebar;
     setState(() => sidebar.showSessions = !sidebar.showSessions);
     if (sidebar.showSessions) {
-      unawaited(app.refreshConnectedSessions().catchError((_) => null));
+      unawaited(_runtime.refreshConnectedSessions().catchError((_) => null));
     }
   }
 
@@ -177,7 +177,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       _openMobileEndDrawer(_MobileEndDrawerPanel.files);
       return;
     }
-    final sidebar = readObservationScope<AppState>(context).sessionSidebar;
+    final sidebar = _runtime.sidebar;
     setState(() => sidebar.showFileTree = !sidebar.showFileTree);
   }
 
@@ -186,7 +186,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
       _openMobileEndDrawer(_MobileEndDrawerPanel.gitDiff);
       return;
     }
-    final sidebar = readObservationScope<AppState>(context).sessionSidebar;
+    final sidebar = _runtime.sidebar;
     setState(() => sidebar.showGitDiff = !sidebar.showGitDiff);
   }
 
@@ -414,7 +414,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   void _openDirectoryInFiles(String path) {
     if (!mounted) return;
     if (_usesSidebarLayout) {
-      final sidebar = readObservationScope<AppState>(context).sessionSidebar;
+      final sidebar = _runtime.sidebar;
       setState(() {
         _fileTreeRoot = path;
         sidebar.showFileTree = true;

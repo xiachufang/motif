@@ -4,7 +4,7 @@ class _SessionSidebar extends StatelessWidget {
   static const double _splitHandleExtent = 8;
   static const double _minPanelExtent = 160;
 
-  final AppState app;
+  final SessionFeatureRuntime runtime;
   final bool showSessions;
   final bool showFileTree;
   final bool showDiff;
@@ -25,7 +25,7 @@ class _SessionSidebar extends StatelessWidget {
   final ValueChanged<double> onSecondSplitChanged;
 
   const _SessionSidebar({
-    required this.app,
+    required this.runtime,
     required this.showSessions,
     required this.showFileTree,
     required this.showDiff,
@@ -53,9 +53,9 @@ class _SessionSidebar extends StatelessWidget {
       if (showSessions)
         panel(
           ObservationSelect(
-            selector: () => _connectedSessionsSelectKey(app),
+            selector: () => _connectedSessionsSelectKey(runtime),
             builder: (context, _, _) => _ConnectedSessionsPanel(
-              app: app,
+              runtime: runtime,
               currentServerId: currentServerId,
               currentSession: currentSession,
               onSessionSelected: onSessionSelected,

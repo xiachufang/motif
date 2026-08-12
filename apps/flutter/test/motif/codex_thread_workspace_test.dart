@@ -6,9 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
+import 'package:motif/motif/codex/codex_resource_intent.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
-import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
@@ -23,7 +23,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       final client = WorkspaceFakeClient();
       final state = workspaceState(client);
-      final openedViews = <ViewSpec>[];
+      final openedViews = <CodexResourceIntent>[];
 
       await tester.pumpWidget(
         MaterialApp(
@@ -31,7 +31,7 @@ void main() {
           home: Scaffold(
             body: CodexThreadWorkspace(
               state: state,
-              onOpenWorkspaceView: (spec) async => openedViews.add(spec),
+              onOpenResource: (intent) async => openedViews.add(intent),
             ),
           ),
         ),
@@ -148,9 +148,9 @@ void main() {
           .onTap!();
       await tester.pump();
       expect(openedViews, hasLength(1));
-      expect(openedViews.single, isA<DiffViewSpec>());
-      expect((openedViews.single as DiffViewSpec).path, 'lib/a.dart');
-      expect((openedViews.single as DiffViewSpec).staged, isFalse);
+      expect(openedViews.single, isA<CodexDiffIntent>());
+      expect((openedViews.single as CodexDiffIntent).path, 'lib/a.dart');
+      expect((openedViews.single as CodexDiffIntent).staged, isFalse);
       expect(
         tester
             .getTopLeft(

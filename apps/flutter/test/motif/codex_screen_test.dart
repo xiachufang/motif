@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
+import 'package:motif/motif/codex/codex_feature_controller.dart';
+import 'package:motif/motif/codex/codex_resource_intent.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
@@ -10,6 +12,7 @@ import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.d
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
+import 'package:motif/motif/session/session_feature_runtime.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
@@ -18,6 +21,7 @@ import 'package:motif/motif/state/workspace/connection/workspace_connection_view
 import 'package:motif/motif/ui/screens/codex_screen.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
+import 'package:motif/motif/ui/integration/app_codex_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -42,9 +46,10 @@ void main() {
         codexState: codex,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -106,9 +111,10 @@ void main() {
         codexState: codex,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -141,9 +147,10 @@ void main() {
         codexState: codex,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -201,9 +208,10 @@ void main() {
         codexState: CodexState(),
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -262,9 +270,10 @@ void main() {
           theme: motifTheme(Brightness.light),
           routes: {
             '/': (_) => const Scaffold(body: Text('Sessions home')),
-            '/codex': (_) => CodexScreen(
-              serverId: 'server',
-              serviceStateFactory: (_, _) => serviceState,
+            '/codex': (_) => _CodexTestHost(
+              app: app,
+              codex: CodexState(),
+              serviceState: serviceState,
             ),
           },
         ),
@@ -308,9 +317,10 @@ void main() {
         codexState: CodexState(),
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -325,9 +335,7 @@ void main() {
       find.byType(CodexThreadWorkspace),
     );
     unawaited(
-      workspace.onOpenWorkspaceView!(
-        const DiffViewSpec(staged: false, path: 'lib/main.dart'),
-      ),
+      workspace.onOpenResource!(const CodexDiffIntent('lib/main.dart')),
     );
     await tester.pumpAndSettle();
 
@@ -339,8 +347,8 @@ void main() {
     expect(screen.session, '__motif_internal_thread');
     expect(screen.allowSessionSwitching, isFalse);
     expect(screen.titleOverride, 'Thread');
-    expect(screen.initialViewSpec, isA<DiffViewSpec>());
-    expect((screen.initialViewSpec! as DiffViewSpec).path, 'lib/main.dart');
+    expect(screen.initialTarget, isA<SessionDiffTarget>());
+    expect((screen.initialTarget! as SessionDiffTarget).path, 'lib/main.dart');
     expect(find.byKey(const ValueKey('open-side-chat')), findsNothing);
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -365,10 +373,11 @@ void main() {
         codexState: CodexState(),
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
-            controllerFactory: (_, _) => sideChatClient,
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
+            connection: sideChatClient,
           ),
         ),
       ),
@@ -381,7 +390,7 @@ void main() {
     expect(
       tester
           .widget<CodexThreadWorkspace>(find.byType(CodexThreadWorkspace))
-          .onOpenWorkspaceView,
+          .onOpenResource,
       isNotNull,
     );
     expect(sideChatClient.forkParams, hasLength(1));
@@ -419,9 +428,10 @@ void main() {
         codexState: CodexState(),
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexScreen(
-            serverId: 'server',
-            serviceStateFactory: (_, _) => serviceState,
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
           ),
         ),
       ),
@@ -466,9 +476,10 @@ void main() {
           theme: motifTheme(Brightness.light),
           routes: {
             '/': (_) => const Scaffold(body: Text('Sessions home')),
-            '/codex': (_) => CodexScreen(
-              serverId: 'server',
-              serviceStateFactory: (_, _) => serviceState,
+            '/codex': (_) => _CodexTestHost(
+              app: app,
+              codex: CodexState(),
+              serviceState: serviceState,
             ),
           },
         ),
@@ -487,6 +498,63 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
   });
+}
+
+final class _CodexTestHost extends StatefulWidget {
+  const _CodexTestHost({
+    required this.app,
+    required this.codex,
+    required this.serviceState,
+    this.connection,
+  });
+
+  final AppState app;
+  final CodexState codex;
+  final CodexServiceState serviceState;
+  final CodexAppServerClient? connection;
+
+  @override
+  State<_CodexTestHost> createState() => _CodexTestHostState();
+}
+
+final class _CodexTestHostState extends State<_CodexTestHost> {
+  late final CodexFeatureController _controller = CodexFeatureController(
+    serverId: 'server',
+    preferences: widget.codex,
+    connectionFactory: () =>
+        widget.connection ?? widget.serviceState.connection,
+    serviceFactory: () => widget.serviceState,
+    controlService: (action) async {
+      final method = switch (action) {
+        CodexServiceAction.restart => 'codex.restart',
+        CodexServiceAction.stop => 'codex.stop',
+      };
+      final body = await widget.app
+          .serverInstance('server')
+          .transport
+          .call(method);
+      final closed = (body['closed_sessions'] as List? ?? const [])
+          .whereType<String>();
+      await widget.app.discardWorkspaces('server', closed);
+    },
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => CodexScreen(
+    controller: _controller,
+    onWorkspaceRequested: (request) => CodexSessionCoordinator.open(
+      context,
+      app: widget.app,
+      serverId: 'server',
+      request: request,
+    ),
+  );
 }
 
 Future<AppState> appState() async {

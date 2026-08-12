@@ -23,10 +23,8 @@ import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
 import '../../platform/apple_input_document.dart';
 import '../../platform/window_title.dart';
-import '../../state/app/app_state.dart';
-import '../../state/app/motif_scope.dart';
-import '../../state/server/coding_agent_hooks_controller.dart';
-import '../../state/server/coding_agent_hook_prompt.dart';
+import '../../session/session_feature_runtime.dart';
+import '../../state/dependency_scope.dart';
 import '../../state/workspace/remote_port/remote_port_controller.dart';
 import '../../state/workspace/session_attachment.dart';
 import '../../state/workspace/terminal/sticky_modifiers.dart';
@@ -52,10 +50,8 @@ import 'change_directory_panel.dart';
 import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
 import 'preview_pane.dart';
-import 'quick_command_editor.dart';
 import 'remote_port_mapping_sheet.dart';
 import 'screen_capture_flow.dart';
-import 'terminal_settings_sheet.dart';
 
 part 'session/session_helpers.dart';
 part 'session/session_input_actions.dart';
@@ -99,6 +95,16 @@ bool _sameViewSpec(ViewSpec left, ViewSpec right) => switch ((left, right)) {
   _ => false,
 };
 
+ViewSpec? _viewSpecForTarget(SessionOpenTarget? target) => switch (target) {
+  SessionFileTarget(:final path) => PreviewViewSpec(path),
+  SessionDiffTarget(:final path, :final staged) => DiffViewSpec(
+    path: path,
+    staged: staged,
+  ),
+  SessionImageTarget(:final path) => ImageViewSpec(path),
+  null => null,
+};
+
 typedef _WorkspaceKey = ({String serverId, String session});
 
 CodingAgent? codingAgentForCommand(String? command) =>
@@ -114,7 +120,7 @@ class SessionScreen extends StatefulWidget {
   final String serverId;
   final String session;
   final String? initialViewId;
-  final ViewSpec? initialViewSpec;
+  final SessionOpenTarget? initialTarget;
   final bool allowSessionSwitching;
   final String? titleOverride;
   const SessionScreen({
@@ -122,7 +128,7 @@ class SessionScreen extends StatefulWidget {
     required this.serverId,
     required this.session,
     this.initialViewId,
-    this.initialViewSpec,
+    this.initialTarget,
     this.allowSessionSwitching = true,
     this.titleOverride,
   });
@@ -158,14 +164,14 @@ class _SessionScreenHostState extends State<SessionScreen> {
   void _selectWorkspace(String serverId, String session) {
     final next = (serverId: serverId, session: session);
     if (next == _active) return;
-    final app = ObservationScope.of<AppState>(context);
-    app.workspaceForSession(serverId, session);
+    final runtime = ObservationScope.of<SessionFeatureRuntime>(context);
+    runtime.retainWorkspace(serverId, session);
     setState(() {
       // Refresh recency when revisiting a pane, then evict the oldest mounted
-      // pane in lockstep with AppState's bounded warm-workspace cache.
+      // pane in lockstep with the runtime's bounded warm-workspace cache.
       _mounted.remove(next);
       _mounted.add(next);
-      while (_mounted.length > app.maxRetainedWorkspaces) {
+      while (_mounted.length > runtime.maxRetainedWorkspaces) {
         _mounted.removeAt(0);
       }
       _active = next;
@@ -174,15 +180,15 @@ class _SessionScreenHostState extends State<SessionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final app = readObservationScope<AppState>(context);
-    final keepWarm = app.keepSessionWarmOnSwitchAway;
+    final runtime = readObservationScope<SessionFeatureRuntime>(context);
+    final keepWarm = runtime.keepWorkspaceWarm;
     if (!keepWarm) {
       return _scopedPane(
-        app,
+        runtime,
         serverId: widget.serverId,
         session: widget.session,
         initialViewId: widget.initialViewId,
-        initialViewSpec: widget.initialViewSpec,
+        initialTarget: widget.initialTarget,
         allowSessionSwitching: widget.allowSessionSwitching,
         titleOverride: widget.titleOverride,
       );
@@ -199,7 +205,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
               child: TickerMode(
                 enabled: workspace == _active,
                 child: _scopedPane(
-                  app,
+                  runtime,
                   serverId: workspace.serverId,
                   session: workspace.session,
                   initialViewId:
@@ -207,10 +213,10 @@ class _SessionScreenHostState extends State<SessionScreen> {
                           workspace.session == widget.session
                       ? widget.initialViewId
                       : null,
-                  initialViewSpec:
+                  initialTarget:
                       workspace.serverId == widget.serverId &&
                           workspace.session == widget.session
-                      ? widget.initialViewSpec
+                      ? widget.initialTarget
                       : null,
                   allowSessionSwitching: widget.allowSessionSwitching,
                   titleOverride: widget.titleOverride,
@@ -225,17 +231,17 @@ class _SessionScreenHostState extends State<SessionScreen> {
   }
 
   Widget _scopedPane(
-    AppState app, {
+    SessionFeatureRuntime runtime, {
     required String serverId,
     required String session,
     String? initialViewId,
-    ViewSpec? initialViewSpec,
+    SessionOpenTarget? initialTarget,
     required bool allowSessionSwitching,
     String? titleOverride,
     bool workspaceActive = true,
     void Function(String serverId, String session)? onWorkspaceSelected,
   }) {
-    final capabilities = app.workspaceCapabilities(serverId, session);
+    final capabilities = runtime.workspaceCapabilities(serverId, session);
     return WorkspaceScope(
       viewModel: capabilities.viewModel,
       attachment: capabilities.attachment,
@@ -247,7 +253,7 @@ class _SessionScreenHostState extends State<SessionScreen> {
         serverId: serverId,
         session: session,
         initialViewId: initialViewId,
-        initialViewSpec: initialViewSpec,
+        initialViewSpec: _viewSpecForTarget(initialTarget),
         allowSessionSwitching: allowSessionSwitching,
         titleOverride: titleOverride,
         workspaceActive: workspaceActive,
@@ -296,6 +302,7 @@ class _SessionScreenState extends State<_SessionPane>
   final Set<String> _appleInputDocumentIds = <String>{};
   final Map<String, _TabInputState> _tabInputs = <String, _TabInputState>{};
   late final WorkspaceViewModel _workspaceState;
+  late final SessionFeatureRuntime _runtime;
   late final SessionAttachment _attachment;
   late final TerminalController _terminalController;
   late final ViewController _viewController;
@@ -334,6 +341,7 @@ class _SessionScreenState extends State<_SessionPane>
   @override
   void initState() {
     super.initState();
+    _runtime = readObservationScope<SessionFeatureRuntime>(context);
     _workspaceState = readObservationScope<WorkspaceViewModel>(context);
     _attachment = readObservationScope<SessionAttachment>(context);
     _terminalController = readObservationScope<TerminalController>(context);
@@ -532,20 +540,14 @@ class _SessionScreenState extends State<_SessionPane>
 
   void _checkCodingAgentHookPrompt() {
     if (_codingAgentHookCheckInFlight || !widget.workspaceActive) return;
-    final app = readObservationScope<AppState>(context);
-    final server = app.existingServerInstance(widget.serverId);
-    if (server == null || !server.isLive) return;
-    final controller = server.codingAgentHooks;
+    if (!_runtime.canCheckCodingAgentHooks(widget.serverId)) return;
     for (final command in _terminalController.viewModel.runningCommand.values) {
       final agent = codingAgentForCommand(command);
       if (agent == null ||
-          app.terminalSettings.codingAgentHookPromptShown(
-            widget.serverId,
-            agent,
-          )) {
+          _runtime.codingAgentHookPromptShown(widget.serverId, agent)) {
         continue;
       }
-      unawaited(_maybePromptCodingAgentHook(controller, agent));
+      unawaited(_maybePromptCodingAgentHook(agent));
       return;
     }
   }
@@ -556,23 +558,12 @@ class _SessionScreenState extends State<_SessionPane>
       .values
       .any((command) => codingAgentForCommand(command) == agent);
 
-  Future<void> _maybePromptCodingAgentHook(
-    CodingAgentHooksController controller,
-    CodingAgent agent,
-  ) async {
+  Future<void> _maybePromptCodingAgentHook(CodingAgent agent) async {
     if (_codingAgentHookCheckInFlight) return;
     _codingAgentHookCheckInFlight = true;
     var installRequested = false;
     try {
-      final promptStore = readObservationScope<AppState>(
-        context,
-      ).terminalSettings;
-      if (!await claimCodingAgentHookPrompt(
-        controller: controller,
-        promptStore: promptStore,
-        serverId: widget.serverId,
-        agent: agent,
-      )) {
+      if (!await _runtime.claimCodingAgentHookPrompt(widget.serverId, agent)) {
         return;
       }
       if (!mounted ||
@@ -607,8 +598,11 @@ class _SessionScreenState extends State<_SessionPane>
       if (install != true || !mounted) return;
 
       installRequested = true;
-      final installed = await controller.install(agent);
-      if (!installed.configured(agent)) {
+      final installed = await _runtime.installCodingAgentHook(
+        widget.serverId,
+        agent,
+      );
+      if (!installed) {
         throw StateError('${agent.label} hook was not added to its config');
       }
       if (mounted) showMotifToast(context, '${agent.label} hook installed');
@@ -685,16 +679,15 @@ class _SessionScreenState extends State<_SessionPane>
     if ((media.viewInsets.bottom - _keyboardInset.value).abs() >= 0.5) {
       _scheduleKeyboardInsetSync();
     }
-    final app = ObservationScope.of<AppState>(context);
     final sessionDisplayName =
         widget.titleOverride ??
-        _sessionDisplayName(app, widget.serverId, widget.session);
+        _runtime.sessionDisplayName(widget.serverId, widget.session);
     if (widget.workspaceActive && _lastWindowTitle != sessionDisplayName) {
       _lastWindowTitle = sessionDisplayName;
       unawaited(MotifWindowTitle.set(sessionDisplayName).catchError((_) {}));
     }
     final c = context.motif;
-    final fontSize = app.terminalSettings.settings.fontSize;
+    final fontSize = _runtime.terminalFontSize;
     final workspaceConnection = _workspaceState.connection;
     final overlayFromWorkspace = switch (workspaceConnection.phase) {
       WorkspaceConnectionPhase.connecting ||
@@ -711,7 +704,7 @@ class _SessionScreenState extends State<_SessionPane>
     final terminalPalette = terminalPaletteForBrightness(
       Theme.of(context).brightness,
     );
-    final sidebar = app.sessionSidebar;
+    final sidebar = _runtime.sidebar;
     final sidebarState = (
       showSessions: widget.allowSessionSwitching && sidebar.showSessions,
       showFileTree: sidebar.showFileTree,
@@ -761,18 +754,14 @@ class _SessionScreenState extends State<_SessionPane>
                     backgroundColor: c.surface,
                     child: SafeArea(
                       child: ObservationSelect(
-                        selector: () => _connectedSessionsSelectKey(app),
+                        selector: () => _connectedSessionsSelectKey(_runtime),
                         builder: (context, _, _) => _ConnectedSessionsPanel(
-                          app: app,
+                          runtime: _runtime,
                           currentServerId: widget.serverId,
                           currentSession: widget.session,
                           onCloseAll: _closeAllSessionsFromMobileDrawer,
                           onSessionSelected: (serverId, session) =>
-                              _switchSessionFromMobileDrawer(
-                                app,
-                                serverId,
-                                session,
-                              ),
+                              _switchSessionFromMobileDrawer(serverId, session),
                         ),
                       ),
                     ),
@@ -856,7 +845,7 @@ class _SessionScreenState extends State<_SessionPane>
                             c,
                             sidebarState.showSessions,
                           ),
-                          onPressed: () => _toggleSessionsPanel(app),
+                          onPressed: _toggleSessionsPanel,
                         ),
                       ],
                     )
@@ -868,7 +857,7 @@ class _SessionScreenState extends State<_SessionPane>
                           key: const ValueKey('session-menu-button'),
                           icon: const Icon(Icons.menu),
                           tooltip: 'Sessions',
-                          onPressed: () => _toggleSessionsPanel(app),
+                          onPressed: _toggleSessionsPanel,
                         ),
                       ),
                     ),
@@ -944,9 +933,11 @@ class _SessionScreenState extends State<_SessionPane>
                 IconButton(
                   icon: const Icon(Icons.settings_outlined),
                   tooltip: 'Terminal settings',
-                  onPressed: () => showTerminalSettingsSheet(
-                    context,
-                    serverId: widget.serverId,
+                  onPressed: () => unawaited(
+                    _runtime.openTerminalSettings(
+                      context,
+                      serverId: widget.serverId,
+                    ),
                   ),
                 ),
               ],
@@ -957,7 +948,7 @@ class _SessionScreenState extends State<_SessionPane>
               sidebar: ObservationSelect(
                 selector: _workspaceApi.activeCwd,
                 builder: (context, cwd, _) => _SessionSidebar(
-                  app: app,
+                  runtime: _runtime,
                   showSessions: sidebarState.showSessions,
                   showFileTree: sidebarState.showFileTree,
                   showDiff: sidebarState.showGitDiff,
@@ -966,8 +957,7 @@ class _SessionScreenState extends State<_SessionPane>
                   root: _fileTreeRoot ?? cwd ?? '~',
                   cwd: cwd,
                   workspace: _workspaceApi,
-                  onSessionSelected: (serverId, session) =>
-                      _switchSession(app, serverId, session),
+                  onSessionSelected: _switchSession,
                   onOpenPreview: _openPreview,
                   onOpenDiff: _openDiff,
                   splitFraction: sidebarState.splitFraction,
@@ -1060,16 +1050,13 @@ class _SessionScreenState extends State<_SessionPane>
                         child: ObservationSelect(
                           selector: () => _bottomBarSelectKey(_workspaceState),
                           builder: (context, snap, _) {
-                            final commandStore = ObservationScope.of<AppState>(
-                              context,
-                            ).commands;
                             final runningProgram = snap.runningProgram;
                             final inputState = _inputStateForView(
                               snap.activeViewId,
                             );
                             return ObservationSelect(
                               selector: () =>
-                                  commandStore.resolved(runningProgram),
+                                  _runtime.resolvedCommands(runningProgram),
                               builder: (context, commands, _) {
                                 return _MeasureSize(
                                   onChange: _setBottomBarContentSize,
@@ -1093,18 +1080,15 @@ class _SessionScreenState extends State<_SessionPane>
                                           onInsertText: _insertText,
                                           onChangeDirectory:
                                               _openChangeDirectory,
-                                          onEdit: () =>
-                                              Navigator.of(context).push(
-                                                MaterialPageRoute<void>(
-                                                  builder: (_) =>
-                                                      QuickCommandEditor(
-                                                        setId: commandStore
-                                                            .effectiveSetId(
-                                                              runningProgram,
-                                                            ),
-                                                      ),
-                                                ),
-                                              ),
+                                          onEdit: () => unawaited(
+                                            _runtime.openQuickCommandEditor(
+                                              context,
+                                              setId: _runtime
+                                                  .effectiveCommandSetId(
+                                                    runningProgram,
+                                                  ),
+                                            ),
+                                          ),
                                         ),
                                         _InputBar(
                                           key: ValueKey(
