@@ -1,11 +1,10 @@
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/state/server/session_catalog_controller.dart';
 import 'package:motif/motif/state/server/session_catalog_view_model.dart';
 
 void main() {
-  test('terminal create omits type while codex sends it', () async {
+  test('create sends an ordinary session payload', () async {
     final payloads = <Map<String, Object?>>[];
     final controller = SessionCatalogController(
       viewModel: SessionCatalogViewModel(sessions: ObservableList()),
@@ -15,28 +14,18 @@ void main() {
           expect(method, 'session.create');
           payloads.add(params);
           return {
-            'session': {
-              'name': params['name'],
-              'workdir': params['workdir'],
-              if (params['type'] != null) 'type': params['type'],
-            },
+            'session': {'name': params['name'], 'workdir': params['workdir']},
           };
         },
       ),
     )..refreshDelegate = () async {};
 
-    final terminal = await controller.create('shell', '/tmp');
-    final codex = await controller.create(
-      'agent',
-      null,
-      type: SessionType.codex,
-    );
+    final session = await controller.create('shell', '/tmp');
 
     expect(payloads, [
       {'name': 'shell', 'workdir': '/tmp'},
-      {'name': 'agent', 'type': 'codex'},
     ]);
-    expect(terminal.type, SessionType.terminal);
-    expect(codex.type, SessionType.codex);
+    expect(session.name, 'shell');
+    expect(session.workdir, '/tmp');
   });
 }

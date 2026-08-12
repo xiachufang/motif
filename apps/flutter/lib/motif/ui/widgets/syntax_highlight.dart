@@ -120,16 +120,28 @@ abstract final class MotifSyntaxHighlight {
     required String path,
     required MotifColors colors,
   }) {
+    return buildForLanguage(
+      source: source,
+      language: languageForPath(path),
+      colors: colors,
+    );
+  }
+
+  static TextSpan buildForLanguage({
+    required String source,
+    required String? language,
+    required MotifColors colors,
+  }) {
     final baseStyle = MotifType.mono.copyWith(
       color: colors.textPrimary,
       height: 1.45,
     );
-    final language = languageForPath(path);
-    if (language == null || source.isEmpty) {
+    final normalizedLanguage = _normalizeLanguage(language);
+    if (normalizedLanguage == null || source.isEmpty) {
       return TextSpan(text: source, style: baseStyle);
     }
     try {
-      final result = _highlight.parse(source, language: language);
+      final result = _highlight.parse(source, language: normalizedLanguage);
       return TextSpan(
         style: baseStyle,
         children: [
@@ -140,6 +152,20 @@ abstract final class MotifSyntaxHighlight {
     } catch (_) {
       return TextSpan(text: source, style: baseStyle);
     }
+  }
+
+  static String? _normalizeLanguage(String? language) {
+    final normalized = language?.trim().toLowerCase();
+    if (normalized == null ||
+        normalized.isEmpty ||
+        const {'none', 'plain', 'plaintext', 'text'}.contains(normalized)) {
+      return null;
+    }
+    return switch (normalized) {
+      'csharp' => 'cs',
+      'console' || 'shell' || 'shellscript' => 'bash',
+      _ => _extensionLanguages[normalized] ?? normalized,
+    };
   }
 
   static TextSpan _spanForNode(Node node, MotifColors colors) {

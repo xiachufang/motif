@@ -49,7 +49,6 @@ import '../widgets/quick_command_row.dart';
 import '../widgets/rename_dialog.dart';
 import '../widgets/top_toast.dart';
 import 'change_directory_panel.dart';
-import 'codex_session_screen.dart';
 import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
 import 'preview_pane.dart';
@@ -98,11 +97,15 @@ class SessionScreen extends StatefulWidget {
   final String serverId;
   final String session;
   final String? initialViewId;
+  final bool allowSessionSwitching;
+  final String? titleOverride;
   const SessionScreen({
     super.key,
     required this.serverId,
     required this.session,
     this.initialViewId,
+    this.allowSessionSwitching = true,
+    this.titleOverride,
   });
 
   @override
@@ -160,6 +163,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
         serverId: widget.serverId,
         session: widget.session,
         initialViewId: widget.initialViewId,
+        allowSessionSwitching: widget.allowSessionSwitching,
+        titleOverride: widget.titleOverride,
       );
     }
     return Stack(
@@ -182,6 +187,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
                           workspace.session == widget.session
                       ? widget.initialViewId
                       : null,
+                  allowSessionSwitching: widget.allowSessionSwitching,
+                  titleOverride: widget.titleOverride,
                   workspaceActive: workspace == _active,
                   onWorkspaceSelected: _selectWorkspace,
                 ),
@@ -197,6 +204,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
     required String serverId,
     required String session,
     String? initialViewId,
+    required bool allowSessionSwitching,
+    String? titleOverride,
     bool workspaceActive = true,
     void Function(String serverId, String session)? onWorkspaceSelected,
   }) {
@@ -212,6 +221,8 @@ class _SessionScreenHostState extends State<SessionScreen> {
         serverId: serverId,
         session: session,
         initialViewId: initialViewId,
+        allowSessionSwitching: allowSessionSwitching,
+        titleOverride: titleOverride,
         workspaceActive: workspaceActive,
         onWorkspaceSelected: onWorkspaceSelected,
       ),
@@ -223,6 +234,8 @@ class _SessionPane extends StatefulWidget {
   final String serverId;
   final String session;
   final String? initialViewId;
+  final bool allowSessionSwitching;
+  final String? titleOverride;
   final bool workspaceActive;
   final void Function(String serverId, String session)? onWorkspaceSelected;
 
@@ -230,6 +243,8 @@ class _SessionPane extends StatefulWidget {
     required this.serverId,
     required this.session,
     this.initialViewId,
+    required this.allowSessionSwitching,
+    this.titleOverride,
     this.workspaceActive = true,
     this.onWorkspaceSelected,
   });
@@ -623,11 +638,9 @@ class _SessionScreenState extends State<_SessionPane>
       _scheduleKeyboardInsetSync();
     }
     final app = ObservationScope.of<AppState>(context);
-    final sessionDisplayName = _sessionDisplayName(
-      app,
-      widget.serverId,
-      widget.session,
-    );
+    final sessionDisplayName =
+        widget.titleOverride ??
+        _sessionDisplayName(app, widget.serverId, widget.session);
     if (widget.workspaceActive && _lastWindowTitle != sessionDisplayName) {
       _lastWindowTitle = sessionDisplayName;
       unawaited(MotifWindowTitle.set(sessionDisplayName).catchError((_) {}));
@@ -652,11 +665,14 @@ class _SessionScreenState extends State<_SessionPane>
     );
     final sidebar = app.sessionSidebar;
     final sidebarState = (
-      showSessions: sidebar.showSessions,
+      showSessions: widget.allowSessionSwitching && sidebar.showSessions,
       showFileTree: sidebar.showFileTree,
       showGitDiff: sidebar.showGitDiff,
       showBottomBar: sidebar.showBottomBar,
-      hasVisiblePanel: sidebar.hasVisiblePanel,
+      hasVisiblePanel:
+          (widget.allowSessionSwitching && sidebar.showSessions) ||
+          sidebar.showFileTree ||
+          sidebar.showGitDiff,
       width: sidebar.width,
       splitFraction: sidebar.splitFraction,
       firstSplitFraction: sidebar.firstSplitFraction,
@@ -686,7 +702,7 @@ class _SessionScreenState extends State<_SessionPane>
           child: Scaffold(
             key: _scaffoldKey,
             resizeToAvoidBottomInset: false,
-            drawer: usesSidebar
+            drawer: usesSidebar || !widget.allowSessionSwitching
                 ? null
                 : Drawer(
                     key: const ValueKey('mobile-sessions-drawer'),
@@ -764,8 +780,12 @@ class _SessionScreenState extends State<_SessionPane>
                   : Text(sessionDisplayName),
               titleSpacing: usesSidebar ? 0 : null,
               toolbarHeight: usesSidebar ? 52 : null,
-              leadingWidth: usesSidebar ? 104 : null,
-              leading: usesSidebar
+              leadingWidth: usesSidebar && widget.allowSessionSwitching
+                  ? 104
+                  : null,
+              leading: !widget.allowSessionSwitching
+                  ? const BackButton()
+                  : usesSidebar
                   ? Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [

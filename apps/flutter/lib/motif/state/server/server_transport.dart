@@ -49,7 +49,7 @@ final class RpcServerTransport implements ServerTransport {
   @override
   PingInfo? lastPing;
 
-  RpcClient createSessionClient() {
+  RpcClient forkClient() {
     final rpc = _rpc;
     if (rpc == null) throw const RpcException('not connected');
     return rpc.fork();

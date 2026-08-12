@@ -137,8 +137,8 @@ class RpcClient {
   String? get sessionId => _sessionId;
 
   /// Create an independent control/WS client using the same resolved route.
-  /// Session-scoped features use this so attaching does not disturb the
-  /// server catalog transport or another terminal workspace.
+  /// This keeps feature-specific sockets from disturbing the server catalog
+  /// transport or another terminal workspace.
   RpcClient fork() {
     if (_host.isEmpty) throw const RpcException('not connected');
     return RpcClient()..connect(
@@ -331,13 +331,6 @@ class RpcClient {
     }
   }
 
-  /// Attach without necessarily opening Motif's `/events` stream. Codex
-  /// sessions use only the dedicated `/codex` WebSocket.
-  Future<Map<String, Object?>> attachSession(
-    String name, {
-    bool openEvents = true,
-  }) => _doAttach({'name': name}, openEvents: openEvents);
-
   Future<(Map<String, Object?>, String?)> _rawCall(
     String method,
     Map<String, Object?> params,
@@ -376,10 +369,7 @@ class RpcClient {
     );
   }
 
-  Future<Map<String, Object?>> _doAttach(
-    Map<String, Object?> params, {
-    bool openEvents = true,
-  }) async {
+  Future<Map<String, Object?>> _doAttach(Map<String, Object?> params) async {
     // session.attach replaces an existing attachment server-side when the
     // current X-Motif-Session is reused. Tear down the old local streams in
     // parallel, but deliberately keep _sessionId so the attach is atomic and
@@ -397,10 +387,10 @@ class RpcClient {
     _sessionId = sid;
     final requestedSince = (params['last_seq'] as num?)?.toInt();
     final since = requestedSince ?? (body['last_seq'] as num?)?.toInt() ?? 0;
-    if (openEvents) await _openEvents(since);
+    await _openEvents(since);
     Log.i(
       'attach timing post=${postMs}ms events=${sw.elapsedMilliseconds - postMs}ms '
-      'eventsSince=${openEvents ? since : 'disabled'}',
+      'eventsSince=$since',
       name: 'motif.rpc',
     );
     return body;

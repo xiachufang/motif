@@ -1,6 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../../codex/codex_session_state.dart';
+import '../../codex/codex_service_state.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
@@ -8,14 +10,16 @@ import '../theme/motif_theme.dart';
 
 class CodexThreadSidebar extends StatefulWidget {
   const CodexThreadSidebar({
-    required this.sessionState,
+    required this.serviceState,
+    required this.codexState,
     required this.mode,
     required this.onModeChanged,
     required this.onThreadSelected,
     super.key,
   });
 
-  final CodexSessionState sessionState;
+  final CodexServiceState serviceState;
+  final CodexState codexState;
   final CodexSidebarMode mode;
   final ValueChanged<CodexSidebarMode> onModeChanged;
   final ValueChanged<String> onThreadSelected;
@@ -28,14 +32,26 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   static const int _initialProjectCount = 6;
   static const int _initialThreadCount = 5;
 
-  final Set<String> _expandedProjects = {};
-  final Set<String> _expandedThreadLists = {};
+  late Set<String> _expandedProjects;
+  late Set<String> _expandedThreadLists;
   String? _seededSelectedProject;
-  bool _showAllProjects = false;
+  late bool _showAllProjects;
+
+  String get _serverId => widget.serviceState.serverId;
+
+  @override
+  void initState() {
+    super.initState();
+    _restorePreferences();
+  }
 
   @override
   void didUpdateWidget(covariant CodexThreadSidebar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.serviceState.serverId != widget.serviceState.serverId ||
+        !identical(oldWidget.codexState, widget.codexState)) {
+      _restorePreferences();
+    }
     _seedSelectedProject();
   }
 
@@ -43,13 +59,18 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   Widget build(BuildContext context) {
     _seedSelectedProject();
     final c = context.motif;
-    final state = widget.sessionState;
+    final state = widget.serviceState;
     return ColoredBox(
       color: c.surface,
       child: SafeArea(
         child: Column(
           children: [
-            _ModeHeader(mode: widget.mode, onChanged: widget.onModeChanged),
+            _ModeHeader(
+              mode: widget.mode,
+              refreshing: state.catalogPhase == CodexCatalogPhase.loading,
+              onChanged: widget.onModeChanged,
+              onRefresh: () => unawaited(state.refreshCatalog()),
+            ),
             Divider(height: 1, color: c.border),
             if (state.catalogPhase == CodexCatalogPhase.loading &&
                 state.catalog.allThreads.isNotEmpty)
@@ -77,7 +98,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _content(BuildContext context) {
-    final state = widget.sessionState;
+    final state = widget.serviceState;
     if ((state.catalogPhase == CodexCatalogPhase.idle ||
             state.catalogPhase == CodexCatalogPhase.loading) &&
         state.catalog.allThreads.isEmpty) {
@@ -101,7 +122,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _projectList(BuildContext context) {
-    final snapshot = widget.sessionState.catalog;
+    final snapshot = widget.serviceState.catalog;
     final children = <Widget>[];
     if (snapshot.pinnedThreads.isNotEmpty) {
       children.add(const _SectionHeading('Pinned'));
@@ -124,18 +145,14 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
           key: ValueKey('codex-project-$projectId'),
           group: group,
           expanded: expanded,
-          creating: widget.sessionState.creatingProjectId == projectId,
-          onTap: () => setState(() {
-            expanded
-                ? _expandedProjects.remove(projectId)
-                : _expandedProjects.add(projectId);
-          }),
+          creating: widget.serviceState.creatingProjectId == projectId,
+          onTap: () => _setProjectExpanded(projectId, !expanded),
           onNewThread: () async {
-            final created = await widget.sessionState.createThreadForProject(
+            final created = await widget.serviceState.createThreadForProject(
               group.project,
             );
             if (!mounted || !created) return;
-            setState(() => _expandedProjects.add(projectId));
+            _setProjectExpanded(projectId, true);
           },
         ),
       );
@@ -157,11 +174,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
             key: ValueKey('codex-project-threads-more-$projectId'),
             label: showAllThreads ? 'Show less' : 'Show more',
             indented: true,
-            onTap: () => setState(() {
-              showAllThreads
-                  ? _expandedThreadLists.remove(projectId)
-                  : _expandedThreadLists.add(projectId);
-            }),
+            onTap: () => _setThreadListExpanded(projectId, !showAllThreads),
           ),
         );
       }
@@ -171,7 +184,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
         _ShowMoreRow(
           key: const ValueKey('codex-projects-more'),
           label: _showAllProjects ? 'Show less' : 'Show more',
-          onTap: () => setState(() => _showAllProjects = !_showAllProjects),
+          onTap: () => _setShowAllProjects(!_showAllProjects),
         ),
       );
     }
@@ -191,7 +204,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _timelineList(BuildContext context) {
-    final snapshot = widget.sessionState.catalog;
+    final snapshot = widget.serviceState.catalog;
     final priority = snapshot.allThreads.where(codexThreadIsActive).toList()
       ..sort(compareCodexThreadsByRecency);
     final dated =
@@ -222,7 +235,7 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }
 
   Widget _timelineThreadRow(CodexThread thread) {
-    final catalog = widget.sessionState.catalog;
+    final catalog = widget.serviceState.catalog;
     final project = catalog.projectNameForThread(thread.id);
     final cwd = thread.cwd.value.trim();
     return _threadRow(
@@ -240,8 +253,8 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   }) => _ThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
     thread: thread,
-    selected: widget.sessionState.selectedThread?.id == thread.id,
-    loading: widget.sessionState.readingThreadId == thread.id,
+    selected: widget.serviceState.selectedThread?.id == thread.id,
+    loading: widget.serviceState.readingThreadId == thread.id,
     pinned: pinned,
     indented: indented,
     subtitle: subtitle,
@@ -249,18 +262,59 @@ class _CodexThreadSidebarState extends State<CodexThreadSidebar> {
   );
 
   void _seedSelectedProject() {
-    final selected = widget.sessionState.catalog.selectedProjectId;
+    final selected = widget.serviceState.catalog.selectedProjectId;
     if (selected == null || selected == _seededSelectedProject) return;
     _seededSelectedProject = selected;
     _expandedProjects.add(selected);
+    widget.codexState.setProjectExpanded(_serverId, selected, true);
+  }
+
+  void _restorePreferences() {
+    final preferences = widget.codexState.projectSidebar(_serverId);
+    _expandedProjects = {...preferences.expandedProjects};
+    _expandedThreadLists = {...preferences.expandedThreadLists};
+    _showAllProjects = preferences.showAllProjects;
+    _seededSelectedProject = preferences.initialized
+        ? widget.serviceState.catalog.selectedProjectId
+        : null;
+  }
+
+  void _setProjectExpanded(String projectId, bool expanded) {
+    setState(() {
+      expanded
+          ? _expandedProjects.add(projectId)
+          : _expandedProjects.remove(projectId);
+    });
+    widget.codexState.setProjectExpanded(_serverId, projectId, expanded);
+  }
+
+  void _setThreadListExpanded(String projectId, bool expanded) {
+    setState(() {
+      expanded
+          ? _expandedThreadLists.add(projectId)
+          : _expandedThreadLists.remove(projectId);
+    });
+    widget.codexState.setThreadListExpanded(_serverId, projectId, expanded);
+  }
+
+  void _setShowAllProjects(bool value) {
+    setState(() => _showAllProjects = value);
+    widget.codexState.setShowAllProjects(_serverId, value);
   }
 }
 
 class _ModeHeader extends StatelessWidget {
-  const _ModeHeader({required this.mode, required this.onChanged});
+  const _ModeHeader({
+    required this.mode,
+    required this.refreshing,
+    required this.onChanged,
+    required this.onRefresh,
+  });
 
   final CodexSidebarMode mode;
+  final bool refreshing;
   final ValueChanged<CodexSidebarMode> onChanged;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -272,19 +326,26 @@ class _ModeHeader extends StatelessWidget {
       child: Row(
         children: [
           _ModeButton(
-            key: const ValueKey('codex-mode-projects'),
-            icon: Icons.folder_outlined,
-            tooltip: 'Projects',
-            selected: mode == CodexSidebarMode.projects,
-            onTap: () => onChanged(CodexSidebarMode.projects),
+            key: const ValueKey('codex-mode-timeline'),
+            icon: Icons.schedule_outlined,
+            tooltip: mode == CodexSidebarMode.timeline
+                ? 'Group by project'
+                : 'Group by time',
+            selected: mode == CodexSidebarMode.timeline,
+            onTap: () => onChanged(
+              mode == CodexSidebarMode.timeline
+                  ? CodexSidebarMode.projects
+                  : CodexSidebarMode.timeline,
+            ),
           ),
           const SizedBox(width: MotifSpacing.xs),
           _ModeButton(
-            key: const ValueKey('codex-mode-timeline'),
-            icon: Icons.schedule_outlined,
-            tooltip: 'Timeline',
-            selected: mode == CodexSidebarMode.timeline,
-            onTap: () => onChanged(CodexSidebarMode.timeline),
+            key: const ValueKey('codex-threads-refresh'),
+            icon: Icons.refresh,
+            tooltip: 'Refresh threads',
+            selected: false,
+            busy: refreshing,
+            onTap: refreshing ? null : onRefresh,
           ),
           const Spacer(),
           Text('Threads', style: MotifType.caption),
@@ -300,13 +361,15 @@ class _ModeButton extends StatelessWidget {
     required this.tooltip,
     required this.selected,
     required this.onTap,
+    this.busy = false,
     super.key,
   });
 
   final IconData icon;
   final String tooltip;
   final bool selected;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -321,11 +384,20 @@ class _ModeButton extends StatelessWidget {
           onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(MotifSpacing.sm),
-            child: Icon(
-              icon,
-              size: MotifIconSize.md,
-              color: selected ? c.accent : c.textTertiary,
-            ),
+            child: busy
+                ? SizedBox.square(
+                    dimension: MotifIconSize.md,
+                    child: CircularProgressIndicator(
+                      key: const ValueKey('codex-threads-refreshing'),
+                      strokeWidth: 2,
+                      color: c.accent,
+                    ),
+                  )
+                : Icon(
+                    icon,
+                    size: MotifIconSize.md,
+                    color: selected ? c.accent : c.textTertiary,
+                  ),
           ),
         ),
       ),
@@ -343,9 +415,9 @@ class _SectionHeading extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         MotifSpacing.lg,
-        MotifSpacing.xl,
         MotifSpacing.lg,
-        MotifSpacing.sm,
+        MotifSpacing.lg,
+        MotifSpacing.xs,
       ),
       child: Text(
         label,
@@ -379,7 +451,7 @@ class _ProjectRow extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: MotifSpacing.lg,
-          vertical: MotifSpacing.md,
+          vertical: MotifSpacing.xs,
         ),
         child: Row(
           children: [
@@ -409,6 +481,14 @@ class _ProjectRow extends StatelessWidget {
               IconButton(
                 key: ValueKey('codex-project-new-${group.project.id}'),
                 tooltip: 'New thread in ${group.project.name}',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: MotifControlSize.sm,
+                  height: MotifControlSize.sm,
+                ),
+                style: const ButtonStyle(
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
                 visualDensity: VisualDensity.compact,
                 iconSize: MotifIconSize.sm,
                 color: c.textTertiary,
@@ -455,7 +535,6 @@ class _ThreadRow extends StatelessWidget {
       padding: EdgeInsets.only(
         left: indented ? MotifSpacing.xl : MotifSpacing.sm,
         right: MotifSpacing.sm,
-        bottom: 2,
       ),
       child: Material(
         color: selected ? c.accentFill() : Colors.transparent,
@@ -466,7 +545,7 @@ class _ThreadRow extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.symmetric(
               horizontal: MotifSpacing.md,
-              vertical: 10,
+              vertical: MotifSpacing.xs,
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -543,9 +622,9 @@ class _ShowMoreRow extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           indented ? 56 : MotifSpacing.lg,
-          MotifSpacing.sm,
+          MotifSpacing.xs,
           MotifSpacing.lg,
-          MotifSpacing.sm,
+          MotifSpacing.xs,
         ),
         child: Text(
           label,
@@ -563,7 +642,12 @@ class _EmptyProjectRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(56, 4, MotifSpacing.lg, 12),
+      padding: const EdgeInsets.fromLTRB(
+        56,
+        MotifSpacing.xs,
+        MotifSpacing.lg,
+        MotifSpacing.sm,
+      ),
       child: Text(
         'No threads',
         style: MotifType.subhead.copyWith(color: c.textTertiary),

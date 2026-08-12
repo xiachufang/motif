@@ -17,6 +17,7 @@ use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::TokenStore;
+use crate::codex_service::CodexService;
 use crate::conn_registry::ConnRegistry;
 use crate::http_rpc;
 use crate::session::manager::SessionManager;
@@ -25,6 +26,7 @@ use crate::wire::Codec;
 #[derive(Clone)]
 pub struct AppState {
     pub manager: Arc<SessionManager>,
+    pub codex: Arc<CodexService>,
     pub auth: Arc<TokenStore>,
     /// Registry of per-session_id ConnState. Used by HTTP /rpc and the
     /// /events and /pty/<id> WS upgrades.
@@ -95,7 +97,7 @@ async fn ping(
         version: crate::VERSION.to_string(),
         capabilities: {
             let mut capabilities = vec![WS_PROBE_CAPABILITY.to_string()];
-            capabilities.push(CODEX_SESSION_CAPABILITY.to_string());
+            capabilities.push(CODEX_CAPABILITY.to_string());
             if state.capture.is_advertised() {
                 capabilities.push(SCREEN_CAPTURE_CAPABILITY.to_string());
             }
@@ -111,7 +113,7 @@ async fn ping(
 /// frames, so `/events` and `/pty/<id>` echo this small text-frame probe.
 pub const WS_PROBE_CAPABILITY: &str = "ws_probe_v1";
 pub const SCREEN_CAPTURE_CAPABILITY: &str = "screen_capture_v1";
-pub const CODEX_SESSION_CAPABILITY: &str = "codex_session_v1";
+pub const CODEX_CAPABILITY: &str = "codex_v1";
 const WS_PROBE_REQUEST: &str = "motif.probe.v1";
 const WS_PROBE_ACK: &str = "motif.probe_ack.v1";
 const WS_PROBE_MAX_ID_BYTES: usize = 64;

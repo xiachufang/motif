@@ -218,19 +218,35 @@ CodexCatalogSnapshot buildCodexCatalog(
   final projectThreads = <String, List<CodexThread>>{
     for (final id in orderedProjectIds) id: <CodexThread>[],
   };
+  final projectIdByRootPath = <String, String>{};
+  for (final projectId in orderedProjectIds) {
+    for (final rootPath in globalState.projects[projectId]!.rootPaths) {
+      final normalized = rootPath.trim();
+      if (normalized.isNotEmpty) {
+        projectIdByRootPath.putIfAbsent(normalized, () => projectId);
+      }
+    }
+  }
   final projectNamesByThreadId = <String, String>{};
   final projectless = <CodexThread>[];
   final explicitProjectless = globalState.projectlessThreadIds.toSet();
   for (final thread in threads) {
     final assignment = globalState.assignments[thread.id];
-    final project = assignment == null
+    final assignedProject = assignment == null
         ? null
         : globalState.projects[assignment.projectId];
-    if (project != null && !explicitProjectless.contains(thread.id)) {
+    final inferredProjectId = projectIdByRootPath[thread.cwd.value.trim()];
+    final project = explicitProjectless.contains(thread.id)
+        ? null
+        : assignedProject ??
+              (inferredProjectId == null
+                  ? null
+                  : globalState.projects[inferredProjectId]);
+    if (project != null) {
       projectNamesByThreadId[thread.id] = project.name;
     }
     if (pinnedIds.contains(thread.id)) continue;
-    if (project == null || explicitProjectless.contains(thread.id)) {
+    if (project == null) {
       projectless.add(thread);
     } else {
       projectThreads[project.id]!.add(thread);

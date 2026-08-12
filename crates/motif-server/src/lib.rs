@@ -12,6 +12,7 @@ pub mod agent_hooks;
 pub mod auth;
 pub mod capture;
 pub mod codex_app_server;
+pub mod codex_service;
 pub mod codex_ws;
 pub mod config;
 pub mod conn_registry;
@@ -310,6 +311,8 @@ pub struct RunningServer {
     bound: Vec<String>,
     rzv_status: Option<tokio::sync::watch::Receiver<motif_net::RzvStatus>>,
     manager: Arc<session::manager::SessionManager>,
+    codex: Arc<codex_service::CodexService>,
+    conns: Arc<conn_registry::ConnRegistry>,
     devices: relay::DeviceState,
     #[cfg(feature = "tailscale")]
     ts: Option<Arc<motif_net::motif_tailscale::TsServer>>,
@@ -406,6 +409,8 @@ impl RunningServer {
             bound: _bound,
             rzv_status: _rzv_status,
             manager,
+            codex,
+            conns: _conns,
             devices: _devices,
             #[cfg(feature = "tailscale")]
                 ts: _ts,
@@ -415,9 +420,9 @@ impl RunningServer {
             hook_task,
         } = self;
 
-        // Terminate session-owned process trees before waiting for open socket
-        // handlers. This also wakes every `/codex` proxy through the session's
-        // shutdown latch.
+        // Terminate the server-scoped Codex process and all of its hidden
+        // thread workspaces before waiting for open socket handlers.
+        let _ = codex.stop();
         manager.shutdown_all();
         shutdown.cancel();
         let result = match tokio::time::timeout(GRACE, &mut serve_task).await {
@@ -445,6 +450,8 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     cfg.validate()?;
 
     let manager = session::manager::SessionManager::new();
+    let conns = conn_registry::ConnRegistry::new();
+    let codex = codex_service::CodexService::new(Arc::clone(&manager), Arc::clone(&conns));
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
         None => {
@@ -476,8 +483,9 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
 
     let state = ws::AppState {
         manager: manager.clone(),
+        codex: codex.clone(),
         auth: Arc::new(token_store),
-        conns: conn_registry::ConnRegistry::new(),
+        conns: conns.clone(),
         devices: device_state.clone(),
         capture: capture::CaptureService::system(cfg.allow_screen_capture),
         rzv_direct: cfg.rzv_direct.clone(),
@@ -567,6 +575,8 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         bound,
         rzv_status,
         manager,
+        codex,
+        conns,
         devices: device_state,
         #[cfg(feature = "tailscale")]
         ts,

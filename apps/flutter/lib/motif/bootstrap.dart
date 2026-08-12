@@ -68,7 +68,7 @@ Future<void> runMotif({
             terminalRuntime: terminalRuntime,
             workspaceRetentionPolicy: workspaceRetentionPolicy,
           );
-          final codexState = CodexState();
+          final codexState = await CodexState.load();
           final embedded = appState.embeddedServer;
           runApp(
             MotifScope(

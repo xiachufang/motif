@@ -9,13 +9,9 @@ import 'protocol/generated/codex_app_server_protocol.dart';
 
 enum CodexCatalogPhase { idle, loading, ready, failed }
 
-/// Runtime state for exactly one Motif Codex session.
-final class CodexSessionState extends ChangeNotifier {
-  CodexSessionState({
-    required this.serverId,
-    required this.session,
-    required this.connection,
-  }) {
+/// Runtime state for the one Codex service exposed by a Motif server.
+final class CodexServiceState extends ChangeNotifier {
+  CodexServiceState({required this.serverId, required this.connection}) {
     connection.addListener(_onConnectionChanged);
     _typedSubscription = connection.typedMessages.listen(
       _onTypedMessage,
@@ -26,7 +22,6 @@ final class CodexSessionState extends ChangeNotifier {
   static const String globalStateWatchId = 'motif-codex-global-state-sidebar';
 
   final String serverId;
-  final String session;
   final CodexAppServerClient connection;
 
   CodexCatalogPhase catalogPhase = CodexCatalogPhase.idle;
@@ -48,7 +43,9 @@ final class CodexSessionState extends ChangeNotifier {
   String? selectedModelId;
   String? selectedReasoningEffort;
   String? selectedPermissionId;
+  bool goalModeEnabled = false;
   bool planModeEnabled = false;
+  String? awaitingPlanDecisionItemId;
   String? configurationError;
   CodexThreadGoal? goal;
   bool goalLoading = false;
@@ -72,6 +69,7 @@ final class CodexSessionState extends ChangeNotifier {
   Timer? _globalStateDebounce;
   bool _watchingGlobalState = false;
   int _refreshGeneration = 0;
+  int _readGeneration = 0;
   int _queueSequence = 0;
   int _attachmentSequence = 0;
   bool _closed = false;
@@ -163,8 +161,28 @@ final class CodexSessionState extends ChangeNotifier {
 
   /// Reads persisted history for display without loading or subscribing to it.
   Future<void> readThread(String threadId) async {
-    if (_closed || readingThreadId != null) return;
+    if (_closed || readingThreadId == threadId) return;
+    final generation = ++_readGeneration;
     final changingSelection = selectedThread?.id != threadId;
+    final preview = _threads[threadId];
+    if (preview != null) {
+      // Selection is a UI action, so move the highlight immediately instead
+      // of waiting for the history request. A later click supersedes this
+      // request; stale responses are ignored below.
+      selectedThread = preview;
+      if (changingSelection) {
+        turns = preview.turns;
+        goal = null;
+        goalError = null;
+        activePlan = null;
+        awaitingPlanDecisionItemId = null;
+        activeDiff = null;
+        sendError = null;
+        queuedMessages = const [];
+        _serverRequests.clear();
+        pendingServerRequests = const [];
+      }
+    }
     readingThreadId = threadId;
     _failedReadThreadId = null;
     readError = null;
@@ -174,11 +192,12 @@ final class CodexSessionState extends ChangeNotifier {
         threadId,
         includeTurns: true,
       );
-      if (_closed) return;
+      if (_closed || generation != _readGeneration) return;
       _threads[response.thread.id] = response.thread;
       selectedThread = response.thread;
       turns = response.thread.turns;
       activePlan = null;
+      awaitingPlanDecisionItemId = null;
       activeDiff = null;
       sendError = null;
       if (changingSelection) queuedMessages = const [];
@@ -188,11 +207,11 @@ final class CodexSessionState extends ChangeNotifier {
       _notify();
       unawaited(_loadThreadConfiguration(response.thread));
     } catch (error) {
-      if (_closed) return;
+      if (_closed || generation != _readGeneration) return;
       _failedReadThreadId = threadId;
       readError = '$error';
     } finally {
-      if (!_closed) {
+      if (!_closed && generation == _readGeneration) {
         readingThreadId = null;
         _notify();
       }
@@ -231,6 +250,7 @@ final class CodexSessionState extends ChangeNotifier {
       goal = null;
       goalError = null;
       activePlan = null;
+      awaitingPlanDecisionItemId = null;
       activeDiff = null;
       sendError = null;
       queuedMessages = const [];
@@ -306,6 +326,7 @@ final class CodexSessionState extends ChangeNotifier {
       goal = null;
       goalError = null;
       activePlan = null;
+      awaitingPlanDecisionItemId = null;
       activeDiff = null;
       sendError = null;
       queuedMessages = const [];
@@ -366,11 +387,56 @@ final class CodexSessionState extends ChangeNotifier {
     _notify();
   }
 
-  void setPlanMode(bool enabled) {
-    if (planModeEnabled == enabled) return;
-    planModeEnabled = enabled;
+  void setGoalMode(bool enabled) {
+    if (goalModeEnabled == enabled) return;
+    goalModeEnabled = enabled;
     _notify();
   }
+
+  void setPlanMode(bool enabled) {
+    if (planModeEnabled == enabled &&
+        (enabled || awaitingPlanDecisionItemId == null)) {
+      return;
+    }
+    planModeEnabled = enabled;
+    if (!enabled) awaitingPlanDecisionItemId = null;
+    _notify();
+  }
+
+  Future<bool> implementCurrentPlan() async {
+    final wasEnabled = planModeEnabled;
+    final pendingItemId = awaitingPlanDecisionItemId;
+    setPlanMode(false);
+    final accepted = await submitMessage(
+      'Implement this plan.',
+      const <CodexPendingAttachment>[],
+    );
+    if (!accepted && wasEnabled) {
+      planModeEnabled = true;
+      awaitingPlanDecisionItemId = pendingItemId;
+      _notify();
+    }
+    return accepted;
+  }
+
+  Future<bool> reviseCurrentPlan(String instructions) async {
+    if (instructions.trim().isEmpty) return false;
+    final pendingItemId = awaitingPlanDecisionItemId;
+    setPlanMode(true);
+    awaitingPlanDecisionItemId = null;
+    _notify();
+    final accepted = await submitMessage(
+      instructions,
+      const <CodexPendingAttachment>[],
+    );
+    if (!accepted) {
+      awaitingPlanDecisionItemId = pendingItemId;
+      _notify();
+    }
+    return accepted;
+  }
+
+  void skipCurrentPlan() => setPlanMode(false);
 
   void setQueueing(bool enabled) {
     if (queueMessagesWhileActive == enabled) return;
@@ -545,13 +611,15 @@ final class CodexSessionState extends ChangeNotifier {
     }
   }
 
-  Future<void> saveGoal({
+  Future<bool> saveGoal({
     required String objective,
     int? tokenBudget,
     CodexThreadGoalStatus status = CodexThreadGoalStatus.active,
   }) async {
     final threadId = selectedThread?.id;
-    if (threadId == null || goalLoading) return;
+    if (threadId == null || goalLoading || objective.trim().isEmpty) {
+      return false;
+    }
     goalLoading = true;
     goalError = null;
     _notify();
@@ -565,8 +633,10 @@ final class CodexSessionState extends ChangeNotifier {
         ),
       );
       if (!_closed && selectedThread?.id == threadId) goal = response.goal;
+      return true;
     } catch (error) {
       if (!_closed && selectedThread?.id == threadId) goalError = '$error';
+      return false;
     } finally {
       if (!_closed && selectedThread?.id == threadId) {
         goalLoading = false;
@@ -865,7 +935,7 @@ final class CodexSessionState extends ChangeNotifier {
   Future<CodexThread> ensureThreadResumedForSend(String threadId) {
     if (_closed) {
       return Future<CodexThread>.error(
-        StateError('Codex session state is closed'),
+        StateError('Codex service state is closed'),
       );
     }
     final resumed = _resumedThreads[threadId];
@@ -879,7 +949,7 @@ final class CodexSessionState extends ChangeNotifier {
   Future<CodexThread> _resumeThreadForSend(String threadId) async {
     try {
       final response = await connection.resumeThread(threadId);
-      if (_closed) throw StateError('Codex session state is closed');
+      if (_closed) throw StateError('Codex service state is closed');
       final thread = response.thread;
       if (!_modelSelectionTouched) {
         selectedModelId = models
@@ -957,6 +1027,8 @@ final class CodexSessionState extends ChangeNotifier {
     if (_closed) return;
     final state = connection.state;
     if (state.phase != CodexConnectionPhase.connected) {
+      _readGeneration++;
+      readingThreadId = null;
       _loadedInitializeResponse = null;
       _watchingGlobalState = false;
       _resumedThreads.clear();
@@ -964,6 +1036,7 @@ final class CodexSessionState extends ChangeNotifier {
       _serverRequests.clear();
       pendingServerRequests = const [];
       activePlan = null;
+      awaitingPlanDecisionItemId = null;
       activeDiff = null;
       _attachmentDirectoryReady = false;
       _remoteFileCache.clear();
@@ -1029,6 +1102,16 @@ final class CodexSessionState extends ChangeNotifier {
       case CodexTurnCompletedNotification2(:final params)
           when params.threadId == selectedThread?.id:
         _completeTurn(params.turn);
+        if (planModeEnabled) {
+          final completed = turns
+              .where((turn) => turn.id == params.turn.id)
+              .firstOrNull;
+          awaitingPlanDecisionItemId = completed?.items
+              .whereType<CodexPlanThreadItem>()
+              .where((item) => item.text.trim().isNotEmpty)
+              .lastOrNull
+              ?.id;
+        }
         activePlan = null;
         activeDiff = null;
         _notify();
@@ -1052,6 +1135,10 @@ final class CodexSessionState extends ChangeNotifier {
       case CodexItemCompletedNotification2(:final params)
           when params.threadId == selectedThread?.id:
         _upsertItem(params.turnId, params.item);
+        final completedItem = params.item;
+        if (planModeEnabled && completedItem is CodexPlanThreadItem) {
+          awaitingPlanDecisionItemId = completedItem.id;
+        }
         _notify();
         return;
       case CodexItemAgentMessageDeltaNotification(:final params)
@@ -1138,6 +1225,7 @@ final class CodexSessionState extends ChangeNotifier {
       turns = const [];
       goal = null;
       activePlan = null;
+      awaitingPlanDecisionItemId = null;
       activeDiff = null;
       queuedMessages = const [];
       _serverRequests.clear();
@@ -1355,6 +1443,7 @@ final class CodexSessionState extends ChangeNotifier {
     if (_closed) return;
     _closed = true;
     _refreshGeneration++;
+    _readGeneration++;
     _globalStateDebounce?.cancel();
     await _typedSubscription.cancel();
     connection.removeListener(_onConnectionChanged);

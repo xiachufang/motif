@@ -6,12 +6,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../models/settings.dart';
-import '../models/motif_proto.dart';
 import '../platform/desktop_window.dart';
 import '../state/app/app_state.dart';
 import '../state/app/motif_scope.dart';
 import 'screens/connection_screen.dart';
-import 'screens/codex_session_screen.dart';
 import 'screens/session_list_screen.dart';
 import 'screens/session_screen.dart';
 import 'screens/welcome_screen.dart';
@@ -461,11 +459,7 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
         showMotifToast(context, 'Could not connect to the notification server');
         return;
       }
-      final sessionInfo = app.sessionInfo(pending.serverId, pending.session);
-      final isCodex = sessionInfo?.type == SessionType.codex;
-      if (!isCodex) {
-        app.workspaceForSession(pending.serverId, pending.session);
-      }
+      app.workspaceForSession(pending.serverId, pending.session);
       // The visible route may have changed while the connection was opening.
       final topRouteName = _topRouteName(context);
       if (topRouteName == routeName) {
@@ -476,16 +470,11 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
       final nav = Navigator.of(context);
       final route = MaterialPageRoute<void>(
         settings: RouteSettings(name: routeName),
-        builder: (_) => isCodex
-            ? CodexSessionScreen(
-                serverId: pending.serverId,
-                session: pending.session,
-              )
-            : SessionScreen(
-                serverId: pending.serverId,
-                session: pending.session,
-                initialViewId: pending.viewId,
-              ),
+        builder: (_) => SessionScreen(
+          serverId: pending.serverId,
+          session: pending.session,
+          initialViewId: pending.viewId,
+        ),
       );
       if (topRouteName?.startsWith('session/') ?? false) {
         unawaited(nav.pushReplacement<void, void>(route));

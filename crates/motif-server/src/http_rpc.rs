@@ -381,11 +381,12 @@ async fn dispatch_concurrent_http(
     };
 
     let manager = Arc::clone(&state.manager);
+    let codex = Arc::clone(&state.codex);
     let conns = Arc::clone(&state.conns);
     let devices = state.devices.clone();
     let capture = Arc::clone(&state.capture);
     let resp = tokio::task::spawn_blocking(move || {
-        rpc::dispatch_concurrent(&manager, &conns, &snap, &devices, &capture, req)
+        rpc::dispatch_concurrent(&manager, &codex, &conns, &snap, &devices, &capture, req)
     })
     .await
     .unwrap_or_else(|e| {

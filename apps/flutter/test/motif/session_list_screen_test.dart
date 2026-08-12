@@ -10,7 +10,7 @@ import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:motif/motif/ui/screens/session_list_screen.dart';
-import 'package:motif/motif/ui/screens/codex_session_screen.dart';
+import 'package:motif/motif/ui/screens/codex_screen.dart';
 import 'package:motif/motif/ui/screens/session_name_generator.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
@@ -46,12 +46,11 @@ class _CreatingServerFixture {
       case 'session.create':
         final name = params['name']! as String;
         final workdir = params['workdir'] as String?;
-        final type = SessionType.fromWire(params['type']);
         created.add((name, workdir));
         createPayloads.add(Map<String, Object?>.from(params));
-        sessions.add(SessionInfo(name: name, workdir: workdir, type: type));
+        sessions.add(SessionInfo(name: name, workdir: workdir));
         return {
-          'session': {'name': name, 'workdir': ?workdir, 'type': type.wire},
+          'session': {'name': name, 'workdir': ?workdir},
         };
       case 'session.list':
         refreshes++;
@@ -62,7 +61,6 @@ class _CreatingServerFixture {
                 'name': session.name,
                 'custom_name': session.customName,
                 'workdir': session.workdir,
-                'type': session.type.wire,
               },
           ],
         };
@@ -289,30 +287,23 @@ void main() {
     await _disposeSessionScreen(tester, app);
   });
 
-  testWidgets('Codex create is capability gated and routes by session type', (
+  testWidgets('Codex is a server-level entry when capability is present', (
     tester,
   ) async {
     final motif = _CreatingServerFixture();
     motif.transport.lastPing = const PingInfo(
       service: 'motif-server',
       version: 'test',
-      capabilities: ['codex_session_v1'],
+      capabilities: ['codex_v1'],
     );
     final app = await _pumpSessionList(tester, motif);
 
-    await tester.tap(find.text('Create session'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('session-type-selector')), findsOneWidget);
-    await tester.tap(find.text('Codex'));
-    await tester.pumpAndSettle();
-    expect(find.text('Working directory'), findsNothing);
-    await tester.enterText(_fieldWithLabel('Name'), 'agent');
-    await tester.tap(find.text('Create'));
+    expect(find.byKey(const ValueKey('open-codex-server-1')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('open-codex-server-1')));
     await tester.pumpAndSettle();
 
-    expect(motif.createPayloads.single['type'], 'codex');
-    expect(motif.createPayloads.single.containsKey('workdir'), isFalse);
-    expect(find.byType(CodexSessionScreen), findsOneWidget);
+    expect(motif.createPayloads, isEmpty);
+    expect(find.byType(CodexScreen), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
   });
@@ -338,6 +329,18 @@ void main() {
     expect(motif.renamed, [('dev', 'Frontend work')]);
     expect(find.text('Frontend work'), findsOneWidget);
     expect(find.text('dev'), findsNothing);
+  });
+
+  testWidgets('session rows show a terminal icon', (tester) async {
+    final motif = _CreatingServerFixture()
+      ..sessions = const [
+        SessionInfo(name: 'dev', workdir: '~/dev'),
+        SessionInfo(name: 'docs', workdir: '~/docs'),
+      ];
+
+    await _pumpSessionList(tester, motif);
+
+    expect(find.byIcon(Icons.terminal_rounded), findsNWidgets(2));
   });
 
   testWidgets('swipe destroy alert cancel keeps the session', (tester) async {

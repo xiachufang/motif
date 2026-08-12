@@ -22,50 +22,38 @@ final class CodexConnectionState {
   final String? error;
 }
 
-abstract interface class CodexSessionTransport {
-  Future<void> attach(String session);
+abstract interface class CodexTransport {
+  Future<void> connect();
   WebSocketChannel openCodexWebSocket();
-  Future<void> detachAndClose();
+  Future<void> close();
 }
 
-final class RpcCodexSessionTransport implements CodexSessionTransport {
-  RpcCodexSessionTransport(this._server);
+final class RpcCodexTransport implements CodexTransport {
+  RpcCodexTransport(this._server);
 
   final RpcServerTransport _server;
   RpcClient? _rpc;
 
   @override
-  Future<void> attach(String session) async {
-    final rpc = _server.createSessionClient();
+  Future<void> connect() async {
+    final rpc = _server.forkClient();
     _rpc = rpc;
-    try {
-      await rpc.attachSession(session, openEvents: false);
-    } catch (_) {
-      if (identical(_rpc, rpc)) _rpc = null;
-      await rpc.close();
-      rethrow;
-    }
   }
 
   @override
   WebSocketChannel openCodexWebSocket() {
     final rpc = _rpc;
-    if (rpc == null || rpc.sessionId == null) {
-      throw const RpcException('codex session not attached');
+    if (rpc == null) {
+      throw const RpcException('codex transport is not connected');
     }
-    return rpc.openRawWebSocket('/codex', query: {'session': rpc.sessionId!});
+    return rpc.openRawWebSocket('/codex');
   }
 
   @override
-  Future<void> detachAndClose() async {
+  Future<void> close() async {
     final rpc = _rpc;
     _rpc = null;
-    if (rpc == null) return;
-    try {
-      if (rpc.sessionId != null) await rpc.call('session.detach');
-    } finally {
-      await rpc.close();
-    }
+    await rpc?.close();
   }
 }
 
@@ -132,20 +120,18 @@ final class _PendingRequest {
   final _Decoder decoder;
 }
 
-/// Owns the attachment, `/codex` socket and app-server JSON-RPC handshake.
+/// Owns the server-scoped `/codex` socket and app-server JSON-RPC handshake.
 /// Raw frames are always published before typed decoding so protocol additions
 /// in a newer app-server remain observable even when the generated schema is
 /// older.
 final class CodexConnectionController extends ChangeNotifier
     implements CodexAppServerClient {
   CodexConnectionController({
-    required this.session,
     required this.transport,
     CodexAppVersionProvider? appVersionProvider,
   }) : _appVersionProvider = appVersionProvider ?? _packageVersion;
 
-  final String session;
-  final CodexSessionTransport transport;
+  final CodexTransport transport;
   final CodexAppVersionProvider _appVersionProvider;
   @override
   CodexConnectionState state = const CodexConnectionState.connecting();
@@ -166,7 +152,7 @@ final class CodexConnectionController extends ChangeNotifier
   int _nextId = 0;
   int _generation = 0;
   bool _closed = false;
-  bool _attached = false;
+  bool _transportOpen = false;
 
   @override
   Future<void> start() async {
@@ -175,8 +161,8 @@ final class CodexConnectionController extends ChangeNotifier
     if (_closed || generation != _generation) return;
     _setState(const CodexConnectionState.connecting());
     try {
-      await transport.attach(session);
-      _attached = true;
+      await transport.connect();
+      _transportOpen = true;
       if (_closed || generation != _generation) {
         await _releaseConnection();
         return;
@@ -546,12 +532,12 @@ final class CodexConnectionController extends ChangeNotifier
     _socket = null;
     await subscription?.cancel();
     await socket?.sink.close();
-    if (_attached) {
-      _attached = false;
+    if (_transportOpen) {
+      _transportOpen = false;
       try {
-        await transport.detachAndClose();
+        await transport.close();
       } catch (_) {
-        // The attachment may already have expired after a transport failure.
+        // The server connection may already have failed.
       }
     }
   }

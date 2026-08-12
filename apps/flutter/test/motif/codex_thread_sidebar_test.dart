@@ -4,15 +4,16 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
-import 'package:motif/motif/codex/codex_session_state.dart';
+import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/ui/screens/codex_thread_sidebar.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  test('CodexState owns independent runtime-only sidebar preferences', () {
+  test('CodexState owns independent in-memory sidebar chrome', () {
     final first = CodexState();
     final second = CodexState();
 
@@ -81,44 +82,54 @@ void main() {
     final client = SidebarFakeClient({
       for (final thread in threads) thread.id: thread,
     });
-    final state =
-        CodexSessionState(
-            serverId: 'server',
-            session: 'agent',
-            connection: client,
-          )
-          ..catalog = buildCodexCatalog(threads, global)
-          ..catalogPhase = CodexCatalogPhase.ready;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalog = buildCodexCatalog(threads, global)
+      ..catalogPhase = CodexCatalogPhase.ready;
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final codexState = CodexState(preferences: preferences);
     final mode = ValueNotifier(CodexSidebarMode.projects);
 
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: motifTheme(Brightness.light),
-        home: Scaffold(
-          body: SizedBox(
-            width: 340,
-            child: ValueListenableBuilder<CodexSidebarMode>(
-              valueListenable: mode,
-              builder: (context, value, _) => CodexThreadSidebar(
-                sessionState: state,
-                mode: value,
-                onModeChanged: (next) => mode.value = next,
-                onThreadSelected: (threadId) =>
-                    unawaited(state.readThread(threadId)),
-              ),
+    Widget buildSidebar(CodexState preferences) => MaterialApp(
+      theme: motifTheme(Brightness.light),
+      home: Scaffold(
+        body: SizedBox(
+          width: 340,
+          child: ValueListenableBuilder<CodexSidebarMode>(
+            valueListenable: mode,
+            builder: (context, value, _) => CodexThreadSidebar(
+              serviceState: state,
+              codexState: preferences,
+              mode: value,
+              onModeChanged: (next) => mode.value = next,
+              onThreadSelected: (threadId) =>
+                  unawaited(state.readThread(threadId)),
             ),
           ),
         ),
       ),
     );
 
+    await tester.pumpWidget(buildSidebar(codexState));
+
     expect(find.text('Pinned'), findsOneWidget);
     expect(find.text('Projects'), findsOneWidget);
     expect(find.text('Recents'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-mode-projects')), findsNothing);
+    expect(find.byKey(const ValueKey('codex-mode-timeline')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-threads-refresh')), findsOneWidget);
     expect(find.text('Project 7'), findsNothing);
     expect(find.byKey(const ValueKey('codex-thread-t1')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t5')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t6')), findsNothing);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('codex-project-p1'))).height,
+      lessThanOrEqualTo(40),
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('codex-thread-t1'))).height,
+      lessThanOrEqualTo(32),
+    );
 
     await tester.tap(find.byKey(const ValueKey('codex-projects-more')));
     await tester.pump();
@@ -150,6 +161,37 @@ void main() {
     expect(client.resumedThreadIds, isEmpty);
     expect(state.selectedThread?.id, 't1');
 
+    await tester.tap(find.byKey(const ValueKey('codex-threads-refresh')));
+    await tester.pump();
+    expect(client.listThreadCalls, 1);
+
+    await tester.tap(find.byKey(const ValueKey('codex-mode-timeline')));
+    await tester.pump();
+    expect(mode.value, CodexSidebarMode.projects);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(codexState.flushProjectSidebarPreferences);
+    final restoredCodexState = CodexState(preferences: preferences);
+    state.catalog = buildCodexCatalog(threads, global);
+    await tester.pumpWidget(buildSidebar(restoredCodexState));
+    await tester.pump();
+    expect(find.text('Project 7'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t6')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-thread-p2-thread')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex-project-p1')));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(restoredCodexState.flushProjectSidebarPreferences);
+    final collapsedCodexState = CodexState(preferences: preferences);
+    await tester.pumpWidget(buildSidebar(collapsedCodexState));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('codex-thread-t1')), findsNothing);
+    expect(find.text('Project 7'), findsOneWidget);
+
     await tester.pumpWidget(const SizedBox.shrink());
     mode.dispose();
     state.dispose();
@@ -164,23 +206,18 @@ void main() {
       rootPaths: ['/work/p1'],
     );
     final client = SidebarFakeClient({});
-    final state =
-        CodexSessionState(
-            serverId: 'server',
-            session: 'agent',
-            connection: client,
-          )
-          ..catalog = CodexCatalogSnapshot(
-            allThreads: const [],
-            pinnedThreads: const [],
-            projects: [CodexProjectGroup(project: project, threads: const [])],
-            projectlessThreads: const [],
-            pinnedThreadIds: const {},
-            projectNamesByThreadId: const {},
-            selectedProjectId: 'p1',
-            usesGlobalState: true,
-          )
-          ..catalogPhase = CodexCatalogPhase.ready;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalog = CodexCatalogSnapshot(
+        allThreads: const [],
+        pinnedThreads: const [],
+        projects: [CodexProjectGroup(project: project, threads: const [])],
+        projectlessThreads: const [],
+        pinnedThreadIds: const {},
+        projectNamesByThreadId: const {},
+        selectedProjectId: 'p1',
+        usesGlobalState: true,
+      )
+      ..catalogPhase = CodexCatalogPhase.ready;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -189,7 +226,8 @@ void main() {
           body: SizedBox(
             width: 340,
             child: CodexThreadSidebar(
-              sessionState: state,
+              serviceState: state,
+              codexState: CodexState(),
               mode: CodexSidebarMode.projects,
               onModeChanged: (_) {},
               onThreadSelected: (_) {},
@@ -216,6 +254,7 @@ final class SidebarFakeClient extends ChangeNotifier
   final List<String> readThreadIds = [];
   final List<String> resumedThreadIds = [];
   final List<CodexThreadStartParams> startThreadParams = [];
+  int listThreadCalls = 0;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
@@ -247,7 +286,10 @@ final class SidebarFakeClient extends ChangeNotifier
   @override
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
-  ) async => const CodexThreadListResponse(data: []);
+  ) async {
+    listThreadCalls++;
+    return CodexThreadListResponse(data: threads.values.toList());
+  }
 
   @override
   Future<CodexThreadReadResponse> readThread(

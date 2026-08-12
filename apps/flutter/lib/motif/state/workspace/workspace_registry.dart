@@ -55,6 +55,12 @@ final class WorkspaceRegistry {
 
   WorkspaceInstance? removeActive(String serverId) => _active.remove(serverId);
 
+  WorkspaceInstance? remove(WorkspaceKey key) {
+    final active = _active[key.serverId];
+    if (active?.key == key) return _active.remove(key.serverId);
+    return _warm.remove(key);
+  }
+
   WorkspaceInstance parkActive(WorkspaceKey key) {
     final instance = _active.remove(key.serverId);
     if (instance == null || instance.key != key) {

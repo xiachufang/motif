@@ -82,16 +82,9 @@ extension _SessionScreenMenuActions on _SessionScreenState {
     String serverId,
     String name,
   ) async {
+    if (!widget.allowSessionSwitching) return;
     if (serverId == widget.serverId && name == widget.session) return;
     try {
-      if (app.sessionInfo(serverId, name)?.type == SessionType.codex) {
-        if (mounted) {
-          Navigator.of(
-            context,
-          ).pushReplacement(_sessionSwitchRoute(serverId, name));
-        }
-        return;
-      }
       final keepWarm = app.keepSessionWarmOnSwitchAway;
       if (!keepWarm) {
         setState(() {

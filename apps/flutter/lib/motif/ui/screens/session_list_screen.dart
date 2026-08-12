@@ -22,7 +22,7 @@ import '../widgets/rename_dialog.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
 import 'create_session_dialog.dart';
-import 'codex_session_screen.dart';
+import 'codex_screen.dart';
 import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
@@ -227,13 +227,15 @@ class _SessionListScreenState extends State<SessionListScreen>
                             .existingServerInstance(group.viewModel.id)
                             ?.transport
                             .lastPing
-                            ?.supportsCodexSession ==
+                            ?.supportsCodex ==
                         true,
                     viewState: app.serverViewState(group.viewModel.id),
                     onRefresh: () =>
                         app.refreshServerSessions(group.viewModel.id),
                     onAttach: (session) =>
                         _attach(context, app, group.viewModel.profile, session),
+                    onOpenCodex: () =>
+                        _openCodex(context, app, group.viewModel.profile),
                     onDestroy: (session) =>
                         app.destroySession(group.viewModel.id, session),
                   );
@@ -252,17 +254,25 @@ class _SessionListScreenState extends State<SessionListScreen>
     // Navigate immediately; SessionScreen performs the attach itself and shows
     // a connecting overlay, so opening a session never blocks on the network.
     unawaited(app.servers.setActive(server.id));
-    if (session.type == SessionType.terminal) {
-      app.workspaceForSession(server.id, session.name);
-    }
+    app.workspaceForSession(server.id, session.name);
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         settings: RouteSettings(
           name: sessionRouteName(server.id, session.name),
         ),
-        builder: (_) => session.type == SessionType.codex
-            ? CodexSessionScreen(serverId: server.id, session: session.name)
-            : SessionScreen(serverId: server.id, session: session.name),
+        builder: (_) =>
+            SessionScreen(serverId: server.id, session: session.name),
+      ),
+    );
+  }
+
+  void _openCodex(BuildContext context, AppState app, MotifServer server) {
+    unawaited(app.servers.setActive(server.id));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        settings: RouteSettings(name: 'codex/${server.id}'),
+        fullscreenDialog: true,
+        builder: (_) => CodexScreen(serverId: server.id),
       ),
     );
   }
@@ -278,6 +288,7 @@ class _ServerSessionSection extends _$_ServerSessionSection {
   final ServerConnectionViewState viewState;
   final Future<void> Function() onRefresh;
   final ValueChanged<SessionInfo> onAttach;
+  final VoidCallback onOpenCodex;
   final Future<void> Function(String session) onDestroy;
 
   const _ServerSessionSection({
@@ -289,6 +300,7 @@ class _ServerSessionSection extends _$_ServerSessionSection {
     required this.viewState,
     required this.onRefresh,
     required this.onAttach,
+    required this.onOpenCodex,
     required this.onDestroy,
     super.key,
   });
@@ -309,6 +321,8 @@ class _ServerSessionSection extends _$_ServerSessionSection {
         _CreateSessionRow(
           onPressed: isLive ? () => unawaited(_createAndAttach(context)) : null,
         ),
+        if (supportsCodex)
+          _CodexRow(serverId: server.id, onOpen: isLive ? onOpenCodex : null),
         if (server.sessions.sessions.isEmpty)
           const MotifSectionRow(
             title: 'No sessions yet',
@@ -330,14 +344,62 @@ class _ServerSessionSection extends _$_ServerSessionSection {
   }
 
   Future<void> _createAndAttach(BuildContext context) async {
-    final session = await createSessionWithDialog(
-      context,
-      sessions,
-      workspace,
-      allowCodex: supportsCodex,
-    );
+    final session = await createSessionWithDialog(context, sessions, workspace);
     if (session == null || !context.mounted) return;
     onAttach(session);
+  }
+}
+
+class _CodexRow extends StatelessWidget {
+  const _CodexRow({required this.serverId, required this.onOpen});
+
+  final String serverId;
+  final VoidCallback? onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final enabled = onOpen != null;
+    return InkWell(
+      key: ValueKey('open-codex-$serverId'),
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: MotifSpacing.lg,
+          vertical: MotifSpacing.md,
+        ),
+        child: Row(
+          children: [
+            Icon(
+              Icons.auto_awesome_outlined,
+              color: enabled ? c.accent : c.textTertiary,
+              size: MotifIconSize.md,
+            ),
+            const SizedBox(width: MotifSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Codex',
+                    style: MotifType.body.copyWith(
+                      color: enabled ? c.textPrimary : c.textTertiary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: MotifSpacing.xs),
+                  Text(
+                    'Open the server Codex workspace',
+                    style: MotifType.micro.copyWith(color: c.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: c.textTertiary, size: 20),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -380,6 +442,12 @@ class _SessionRow extends StatelessWidget {
           ),
           child: Row(
             children: [
+              Icon(
+                Icons.terminal_rounded,
+                color: c.textSecondary,
+                size: MotifIconSize.md,
+              ),
+              const SizedBox(width: MotifSpacing.md),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -393,16 +461,7 @@ class _SessionRow extends StatelessWidget {
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    if (session.type == SessionType.codex)
-                      Padding(
-                        padding: const EdgeInsets.only(top: MotifSpacing.xs),
-                        child: Text(
-                          'Codex session',
-                          style: MotifType.micro.copyWith(color: c.accent),
-                        ),
-                      ),
-                    if (session.type == SessionType.terminal &&
-                        session.workdir != null &&
+                    if (session.workdir != null &&
                         session.workdir!.isNotEmpty) ...[
                       const SizedBox(height: MotifSpacing.xs),
                       Row(

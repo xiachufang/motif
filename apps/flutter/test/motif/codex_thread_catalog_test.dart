@@ -102,6 +102,51 @@ void main() {
     );
   });
 
+  test('unassigned threads inherit a project from an exact root path', () {
+    final global = CodexGlobalStateData.tryParse(
+      jsonEncode({
+        'local-projects': {
+          'first': {
+            'id': 'first',
+            'name': 'First',
+            'rootPaths': ['/work/shared'],
+          },
+          'second': {
+            'id': 'second',
+            'name': 'Second',
+            'rootPaths': ['/work/shared', '/work/second'],
+          },
+        },
+        'project-order': ['second', 'first'],
+        'projectless-thread-ids': ['explicit-projectless'],
+        'thread-project-assignments': {
+          'assigned': {'projectKind': 'local', 'projectId': 'first'},
+        },
+      }),
+    );
+
+    final snapshot = buildCodexCatalog([
+      thread('inferred', cwd: '/work/second', updatedAt: 50),
+      thread('ordered-collision', cwd: '/work/shared', updatedAt: 40),
+      thread('assigned', cwd: '/work/second', updatedAt: 30),
+      thread('nested', cwd: '/work/second/nested', updatedAt: 20),
+      thread('explicit-projectless', cwd: '/work/second', updatedAt: 10),
+    ], global);
+
+    final byProject = {
+      for (final group in snapshot.projects)
+        group.project.id: group.threads.map((thread) => thread.id).toList(),
+    };
+    expect(byProject['second'], ['inferred', 'ordered-collision']);
+    expect(byProject['first'], ['assigned']);
+    expect(snapshot.projectlessThreads.map((thread) => thread.id), [
+      'nested',
+      'explicit-projectless',
+    ]);
+    expect(snapshot.projectNameForThread('inferred'), 'Second');
+    expect(snapshot.projectNameForThread('ordered-collision'), 'Second');
+  });
+
   test('parser and title helpers tolerate invalid and sparse values', () {
     expect(CodexGlobalStateData.tryParse('{invalid'), isNull);
     expect(CodexGlobalStateData.tryParse('{}'), isNull);

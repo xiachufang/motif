@@ -3,17 +3,25 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
-import 'package:motif/motif/codex/codex_session_state.dart';
+import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
+import 'package:motif/motif/models/motif_proto.dart';
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
-import 'package:motif/motif/ui/screens/codex_session_screen.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
+import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
+import 'package:motif/motif/ui/screens/codex_screen.dart';
+import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/test_server_transport.dart';
+import 'support/workspace_connection_fixture.dart';
 
 void main() {
   testWidgets('desktop sidebar defaults open, toggles and resizes', (
@@ -24,8 +32,8 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final app = await appState();
-    final codex = CodexState();
-    final sessionState = readySessionState();
+    final codex = CodexState(desktopSidebarVisible: false);
+    final serviceState = readyServiceState();
 
     await tester.pumpWidget(
       MotifScope(
@@ -33,10 +41,9 @@ void main() {
         codexState: codex,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexSessionScreen(
+          home: CodexScreen(
             serverId: 'server',
-            session: 'agent',
-            sessionStateFactory: (_, _, _) => sessionState,
+            serviceStateFactory: (_, _) => serviceState,
           ),
         ),
       ),
@@ -44,6 +51,7 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const ValueKey('codex-desktop-sidebar')), findsOneWidget);
+    expect(codex.desktopSidebarVisible, isTrue);
     await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
     await tester.pump();
     expect(find.byKey(const ValueKey('codex-desktop-sidebar')), findsNothing);
@@ -61,7 +69,7 @@ void main() {
     app.dispose();
   });
 
-  testWidgets('mobile sidebar starts closed and opens as a drawer', (
+  testWidgets('mobile welcome opens the sidebar by button or edge drag', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -70,7 +78,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final app = await appState();
     final codex = CodexState();
-    final sessionState = readySessionState();
+    final serviceState = readyServiceState();
 
     await tester.pumpWidget(
       MotifScope(
@@ -78,26 +86,42 @@ void main() {
         codexState: codex,
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexSessionScreen(
+          home: CodexScreen(
             serverId: 'server',
-            session: 'agent',
-            sessionStateFactory: (_, _, _) => sessionState,
+            serviceStateFactory: (_, _) => serviceState,
           ),
         ),
       ),
     );
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    expect(find.byType(Drawer), findsNothing);
     expect(find.byKey(const ValueKey('codex-desktop-sidebar')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
+    expect(find.byType(Drawer), findsNothing);
+    expect(find.text('Start with a thread'), findsOneWidget);
+    expect(
+      find.text('You can also swipe in from the left edge.'),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('codex-open-sidebar-cta')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex-open-sidebar-cta')));
     await tester.pumpAndSettle();
     expect(find.byType(Drawer), findsOneWidget);
     expect(find.text('Projects'), findsOneWidget);
-
     await tester.tap(find.byKey(const ValueKey('codex-mode-timeline')));
     await tester.pump();
     expect(codex.sidebarMode, CodexSidebarMode.timeline);
+
+    await tester.dragFrom(const Offset(590, 400), const Offset(-500, 0));
+    await tester.pumpAndSettle();
+    expect(find.byType(Drawer), findsNothing);
+
+    await tester.dragFrom(const Offset(1, 400), const Offset(420, 0));
+    await tester.pumpAndSettle();
+    expect(find.byType(Drawer), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -111,9 +135,9 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final app = await appState();
-    final sessionState = readySessionState();
-    sessionState
-      ..selectedThread = sessionState.catalog.allThreads.single
+    final serviceState = readyServiceState();
+    serviceState
+      ..selectedThread = serviceState.catalog.allThreads.single
       ..readingThreadId = 'next-thread';
 
     await tester.pumpWidget(
@@ -122,10 +146,9 @@ void main() {
         codexState: CodexState(),
         child: MaterialApp(
           theme: motifTheme(Brightness.light),
-          home: CodexSessionScreen(
+          home: CodexScreen(
             serverId: 'server',
-            session: 'agent',
-            sessionStateFactory: (_, _, _) => sessionState,
+            serviceStateFactory: (_, _) => serviceState,
           ),
         ),
       ),
@@ -134,6 +157,16 @@ void main() {
 
     expect(find.byKey(const ValueKey('codex-thread-loading')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-detail')), findsNothing);
+    final appBarTitle = find.byKey(const ValueKey('codex-thread-appbar-title'));
+    expect(appBarTitle, findsOneWidget);
+    expect(
+      find.descendant(of: appBarTitle, matching: find.text('Thread')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: appBarTitle, matching: find.text('/work/motif')),
+      findsOneWidget,
+    );
     expect(
       tester
           .widget<ColoredBox>(find.byKey(const ValueKey('codex-main-surface')))
@@ -141,7 +174,7 @@ void main() {
       MotifColors.light.surface,
     );
 
-    sessionState
+    serviceState
       ..readingThreadId = null
       ..notifyListeners();
     await tester.pump();
@@ -155,7 +188,7 @@ void main() {
     app.dispose();
   });
 
-  testWidgets('nested Codex route keeps Back beside the sidebar toggle', (
+  testWidgets('nested Codex route keeps Close beside the sidebar toggle', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -163,7 +196,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final app = await appState();
-    final sessionState = readySessionState();
+    final serviceState = readyServiceState();
 
     await tester.pumpWidget(
       MotifScope(
@@ -174,10 +207,9 @@ void main() {
           theme: motifTheme(Brightness.light),
           routes: {
             '/': (_) => const Scaffold(body: Text('Sessions home')),
-            '/codex': (_) => CodexSessionScreen(
+            '/codex': (_) => CodexScreen(
               serverId: 'server',
-              session: 'agent',
-              sessionStateFactory: (_, _, _) => sessionState,
+              serviceStateFactory: (_, _) => serviceState,
             ),
           },
         ),
@@ -185,10 +217,153 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.byType(BackButton), findsOneWidget);
+    expect(find.byType(CloseButton), findsOneWidget);
+    expect(find.byType(BackButton), findsNothing);
     expect(find.byKey(const ValueKey('codex-sidebar-toggle')), findsOneWidget);
-    await tester.tap(find.byType(BackButton));
+    await tester.tap(find.byType(CloseButton));
     await tester.pumpAndSettle();
+    expect(find.text('Sessions home'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('thread workspace uses the selected thread cwd and fixed mode', (
+    tester,
+  ) async {
+    final calls = <(String, Map<String, Object?>)>[];
+    final app = await appStateWithServer((method, [params = const {}]) async {
+      calls.add((method, Map<String, Object?>.from(params)));
+      if (method == 'codex.workspace.ensure') {
+        return const {
+          'session': {
+            'name': '__motif_internal_thread',
+            'workdir': '/work/motif',
+          },
+        };
+      }
+      return const {};
+    });
+    final serviceState = readyServiceState();
+    serviceState.selectedThread = serviceState.catalog.allThreads.single;
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: CodexScreen(
+            serverId: 'server',
+            serviceStateFactory: (_, _) => serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('codex-open-thread-workspace')));
+    await tester.pumpAndSettle();
+
+    final ensureCall = calls.singleWhere(
+      (call) => call.$1 == 'codex.workspace.ensure',
+    );
+    expect(ensureCall.$2, {'thread_id': 'thread', 'cwd': '/work/motif'});
+    final screen = tester.widget<SessionScreen>(find.byType(SessionScreen));
+    expect(screen.session, '__motif_internal_thread');
+    expect(screen.allowSessionSwitching, isFalse);
+    expect(screen.titleOverride, 'Thread');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('restart discards associated local workspaces and reconnects', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    final app = await appStateWithServer((method, [params = const {}]) async {
+      calls.add(method);
+      if (method == 'codex.restart') {
+        return const {
+          'running': true,
+          'closed_sessions': ['__motif_internal_old'],
+        };
+      }
+      return const {};
+    });
+    app.workspaceForSession('server', '__motif_internal_old');
+    final serviceState = readyServiceState();
+    final client = serviceState.connection as ScreenFakeClient;
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: CodexScreen(
+            serverId: 'server',
+            serviceStateFactory: (_, _) => serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('codex-service-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Restart Codex'));
+    await tester.pumpAndSettle();
+
+    expect(calls, contains('codex.restart'));
+    expect(app.existingWorkspace('server', '__motif_internal_old'), isNull);
+    expect(client.retryCount, 1);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('stop discards associated workspaces and leaves Codex', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    final app = await appStateWithServer((method, [params = const {}]) async {
+      calls.add(method);
+      if (method == 'codex.stop') {
+        return const {
+          'running': false,
+          'closed_sessions': ['__motif_internal_old'],
+        };
+      }
+      return const {};
+    });
+    app.workspaceForSession('server', '__motif_internal_old');
+    final serviceState = readyServiceState();
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          initialRoute: '/codex',
+          theme: motifTheme(Brightness.light),
+          routes: {
+            '/': (_) => const Scaffold(body: Text('Sessions home')),
+            '/codex': (_) => CodexScreen(
+              serverId: 'server',
+              serviceStateFactory: (_, _) => serviceState,
+            ),
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('codex-service-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Stop Codex'));
+    await tester.pumpAndSettle();
+
+    expect(calls, contains('codex.stop'));
+    expect(app.existingWorkspace('server', '__motif_internal_old'), isNull);
     expect(find.text('Sessions home'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -208,7 +383,28 @@ Future<AppState> appState() async {
   );
 }
 
-CodexSessionState readySessionState() {
+Future<AppState> appStateWithServer(TestServerCall call) async {
+  SharedPreferences.setMockInitialValues({});
+  final prefs = await SharedPreferences.getInstance();
+  final app = AppState(
+    servers: ServerStore(prefs),
+    terminalSettings: TerminalSettingsStore(prefs),
+    commands: QuickCommandStore(prefs),
+    push: PushSettingsStore(prefs),
+    platform: PlatformServices.defaults(),
+    serverTransportFactory: (_) =>
+        TestServerTransport(live: true, onCall: call),
+    workspaceConnectionFactory: (_, session) =>
+        _ReadyWorkspaceConnection(session),
+  );
+  await app.servers.add(
+    const MotifServer(id: 'server', name: 'Server', host: '127.0.0.1'),
+  );
+  app.serverInstance('server');
+  return app;
+}
+
+CodexServiceState readyServiceState() {
   final thread = CodexThread(
     cliVersion: 'test',
     createdAt: 1,
@@ -224,11 +420,7 @@ CodexSessionState readySessionState() {
     turns: const [],
     updatedAt: 1,
   );
-  return CodexSessionState(
-      serverId: 'server',
-      session: 'agent',
-      connection: ScreenFakeClient(),
-    )
+  return CodexServiceState(serverId: 'server', connection: ScreenFakeClient())
     ..catalog = buildCodexCatalog([thread], null)
     ..catalogPhase = CodexCatalogPhase.ready;
 }
@@ -261,7 +453,9 @@ final class ScreenFakeClient extends ChangeNotifier
   Future<void> start() async {}
 
   @override
-  Future<void> retry() async {}
+  Future<void> retry() async => retryCount++;
+
+  int retryCount = 0;
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -376,4 +570,22 @@ final class ScreenFakeClient extends ChangeNotifier
     unawaited(_typed.close());
     super.dispose();
   }
+}
+
+final class _ReadyWorkspaceConnection extends WorkspaceConnectionController {
+  _ReadyWorkspaceConnection(String session) : super(session: session) {
+    updateConnectionState(ConnAttached(session), live: true);
+    ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
+    views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))];
+    activeViewId = 'view-1';
+  }
+
+  @override
+  Future<void> attach() async {}
+
+  @override
+  Future<void> detach() async {}
+
+  @override
+  Future<void> disconnect() async {}
 }

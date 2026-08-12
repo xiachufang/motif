@@ -7,12 +7,9 @@ part of 'create_session_dialog.dart';
 // **************************************************************************
 
 abstract class _$_CreateSessionDialogViewModel with ObservableModelMixin {
-  _$_CreateSessionDialogViewModel(bool canCreate, SessionType selectedType)
-    : _canCreate = canCreate,
-      _selectedType = selectedType {
+  _$_CreateSessionDialogViewModel(bool canCreate) : _canCreate = canCreate {
     if (!ObservationDebug.isReleaseMode) {
       observationRegisterDebugProperty(_canCreateKey, () => _canCreate);
-      observationRegisterDebugProperty(_selectedTypeKey, () => _selectedType);
     }
   }
   final ObservationKey<bool> _canCreateKey = ObservationKey<bool>(
@@ -29,22 +26,6 @@ abstract class _$_CreateSessionDialogViewModel with ObservableModelMixin {
     if (_canCreate == value) return;
     observationMutation(_canCreateKey, () {
       _canCreate = value;
-    });
-  }
-
-  final ObservationKey<SessionType> _selectedTypeKey =
-      ObservationKey<SessionType>('_CreateSessionDialogViewModel.selectedType');
-  SessionType _selectedType;
-
-  SessionType get selectedType {
-    observationAccess(_selectedTypeKey);
-    return _selectedType;
-  }
-
-  set selectedType(SessionType value) {
-    if (_selectedType == value) return;
-    observationMutation(_selectedTypeKey, () {
-      _selectedType = value;
     });
   }
 }

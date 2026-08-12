@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use motif_proto::agent_hooks as pagent;
+use motif_proto::codex as pcodex;
 use motif_proto::envelope::{Id, Request, Response};
 use motif_proto::error::{ErrorCode, RpcError};
 use motif_proto::remote_port as premote;
@@ -11,6 +12,7 @@ use motif_proto::{event::Event, fs as pfs, git as pgit, pty as ppty, session as 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::codex_service::{CodexService, CodexServiceError};
 use crate::conn_registry::ConnRegistry;
 use crate::session::manager::{ManagerError, SessionManager};
 use crate::session::Session;
@@ -88,6 +90,7 @@ pub fn is_mutating_method(method: &str) -> bool {
 /// to keep heavy fs/git handlers off the runtime workers.
 pub fn dispatch_concurrent(
     manager: &Arc<SessionManager>,
+    codex: &Arc<CodexService>,
     conns: &ConnRegistry,
     conn: &ConnSnapshot,
     devices: &crate::relay::DeviceState,
@@ -95,24 +98,68 @@ pub fn dispatch_concurrent(
     req: Request,
 ) -> Response {
     let id = req.id.clone();
-    if is_terminal_only_method(&req.method)
-        && current_session(manager, conn)
-            .is_some_and(|session| session.session_type == ses::SessionType::Codex)
-    {
-        return Response::err(
-            id,
-            RpcError::new(
-                ErrorCode::Conflict,
-                format!("{} is not available for codex sessions", req.method),
-            ),
-        );
-    }
     match req.method.as_str() {
         // session.*
         "session.list" => handle_list(manager, id, req.params),
         "session.create" => handle_create(manager, id, req.params),
         "session.rename" => handle_session_rename(manager, id, req.params),
         "session.destroy" => handle_destroy(manager, conns, id, req.params),
+
+        // One server-scoped Codex service and its hidden thread workspaces.
+        "codex.status" => Response::ok(
+            id,
+            pcodex::StatusResult {
+                running: codex.is_running(),
+            },
+        ),
+        "codex.start" => match codex.start() {
+            Ok(_) => Response::ok(
+                id,
+                pcodex::LifecycleResult {
+                    running: true,
+                    closed_sessions: Vec::new(),
+                },
+            ),
+            Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+        },
+        "codex.stop" => {
+            let closed_sessions = codex.stop();
+            Response::ok(
+                id,
+                pcodex::LifecycleResult {
+                    running: false,
+                    closed_sessions,
+                },
+            )
+        }
+        "codex.restart" => match codex.restart() {
+            Ok((_, closed_sessions)) => Response::ok(
+                id,
+                pcodex::LifecycleResult {
+                    running: true,
+                    closed_sessions,
+                },
+            ),
+            Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+        },
+        "codex.workspace.ensure" => {
+            let params: pcodex::EnsureWorkspaceParams = match parse(req.params) {
+                Ok(params) => params,
+                Err(error) => return Response::err(id, error),
+            };
+            match codex.ensure_thread_workspace(params.thread_id, params.cwd) {
+                Ok(session) => Response::ok(
+                    id,
+                    pcodex::EnsureWorkspaceResult {
+                        session: session.info(),
+                    },
+                ),
+                Err(CodexServiceError::Launch(error)) => {
+                    Response::err(id, RpcError::internal(error.to_string()))
+                }
+                Err(error) => Response::err(id, RpcError::invalid_params(error.to_string())),
+            }
+        }
 
         // agent_hooks.* (server-global user configuration; no attach needed)
         "agent_hooks.status" => handle_agent_hooks_status(id, req.params),
@@ -298,21 +345,6 @@ pub fn dispatch_concurrent(
     }
 }
 
-fn is_terminal_only_method(method: &str) -> bool {
-    matches!(
-        method,
-        "pty.create"
-            | "pty.list"
-            | "pty.resize"
-            | "pty.kill"
-            | "view.open"
-            | "view.close"
-            | "view.activate"
-            | "view.move"
-            | "view.rename"
-    )
-}
-
 fn parse<P: DeserializeOwned>(v: Value) -> Result<P, RpcError> {
     serde_json::from_value(v).map_err(|e| RpcError::invalid_params(e.to_string()))
 }
@@ -370,7 +402,7 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         Ok(p) => p,
         Err(e) => return Response::err(id, e),
     };
-    match mgr.create(p.name, p.workdir, p.r#type) {
+    match mgr.create(p.name, p.workdir) {
         Ok(s) => Response::ok(id, ses::CreateResult { session: s.info() }),
         Err(ManagerError::AlreadyExists(n)) => Response::err(
             id,
@@ -382,14 +414,6 @@ fn handle_create(mgr: &Arc<SessionManager>, id: Id, params: Value) -> Response {
         Err(ManagerError::BadWorkdir(p)) => Response::err(
             id,
             RpcError::invalid_params(format!("workdir not a directory: {}", p.display())),
-        ),
-        Err(ManagerError::MissingWorkdir) => Response::err(
-            id,
-            RpcError::invalid_params("terminal sessions require a workdir"),
-        ),
-        Err(ManagerError::CodexStart(error)) => Response::err(
-            id,
-            RpcError::internal(format!("failed to create codex session: {error}")),
         ),
         Err(e) => Response::err(id, RpcError::internal(e.to_string())),
     }
@@ -527,11 +551,9 @@ fn handle_attach(
     s.set_terminal_palette(p.term_fg.clone(), p.term_bg.clone());
     s.set_theme(p.theme.clone());
 
-    let (ptys, views, active_view) = if s.session_type == ses::SessionType::Codex {
-        (Vec::new(), Vec::new(), None)
-    } else {
-        (s.pty_pool.list(), s.views_snapshot(), s.active_view())
-    };
+    let ptys = s.pty_pool.list();
+    let views = s.views_snapshot();
+    let active_view = s.active_view();
     let theme = s.theme();
 
     Response::ok(

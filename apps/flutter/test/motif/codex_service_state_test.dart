@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
-import 'package:motif/motif/codex/codex_session_state.dart';
+import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 
@@ -43,11 +43,7 @@ void main() {
           },
         }),
       );
-      final state = CodexSessionState(
-        serverId: 'server',
-        session: 'agent',
-        connection: client,
-      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
 
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
@@ -82,7 +78,7 @@ void main() {
         const CodexFsChangedNotification2(
           params: CodexFsChangedNotification(
             changedPaths: [],
-            watchId: CodexSessionState.globalStateWatchId,
+            watchId: CodexServiceState.globalStateWatchId,
           ),
         ),
       );
@@ -90,9 +86,50 @@ void main() {
       await waitFor(() => client.listParams.length > callsBeforeChange);
 
       await state.close();
-      expect(client.unwatchedIds, [CodexSessionState.globalStateWatchId]);
+      expect(client.unwatchedIds, [CodexServiceState.globalStateWatchId]);
       expect(client.closed, isTrue);
       expect(client.disposed, isTrue);
+    },
+  );
+
+  test(
+    'thread clicks switch highlight immediately and latest read wins',
+    () async {
+      final first = thread('first', updatedAt: 10);
+      final second = thread('second', updatedAt: 20);
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [first, second]),
+        },
+      );
+      final firstRead = Completer<CodexThreadReadResponse>();
+      final secondRead = Completer<CodexThreadReadResponse>();
+      client.readGates
+        ..['first'] = firstRead
+        ..['second'] = secondRead;
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+
+      final pendingFirst = state.readThread('first');
+      expect(state.selectedThread?.id, 'first');
+      expect(state.readingThreadId, 'first');
+
+      final pendingSecond = state.readThread('second');
+      expect(state.selectedThread?.id, 'second');
+      expect(state.readingThreadId, 'second');
+
+      firstRead.complete(CodexThreadReadResponse(thread: first));
+      await pendingFirst;
+      expect(state.selectedThread?.id, 'second');
+      expect(state.readingThreadId, 'second');
+
+      secondRead.complete(CodexThreadReadResponse(thread: second));
+      await pendingSecond;
+      expect(state.selectedThread?.id, 'second');
+      expect(state.readingThreadId, isNull);
+      expect(client.readThreadIds, ['first', 'second']);
+      await state.close();
     },
   );
 
@@ -109,14 +146,12 @@ void main() {
           null: CodexThreadListResponse(data: [thread('same')]),
         },
       );
-      final first = CodexSessionState(
+      final first = CodexServiceState(
         serverId: 'server',
-        session: 'one',
         connection: firstClient,
       );
-      final second = CodexSessionState(
+      final second = CodexServiceState(
         serverId: 'server',
-        session: 'two',
         connection: secondClient,
       );
       await first.start();
@@ -170,11 +205,7 @@ void main() {
         null: CodexThreadListResponse(data: [thread('thread')]),
       },
     )..listError = StateError('temporary failure');
-    final state = CodexSessionState(
-      serverId: 'server',
-      session: 'agent',
-      connection: client,
-    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
 
     await state.start();
     await waitFor(() => state.catalogPhase == CodexCatalogPhase.failed);
@@ -204,11 +235,7 @@ void main() {
         null: CodexThreadListResponse(data: [source]),
       },
     );
-    final state = CodexSessionState(
-      serverId: 'server',
-      session: 'agent',
-      connection: client,
-    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
     await state.start();
     await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
     await state.readThread(source.id);
@@ -249,11 +276,7 @@ void main() {
         },
       }),
     );
-    final state = CodexSessionState(
-      serverId: 'server',
-      session: 'agent',
-      connection: client,
-    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
     await state.start();
     await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
     state
@@ -298,11 +321,7 @@ void main() {
           null: CodexThreadListResponse(data: [initial]),
         },
       );
-      final state = CodexSessionState(
-        serverId: 'server',
-        session: 'agent',
-        connection: client,
-      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
       await state.readThread('thread');
@@ -395,6 +414,65 @@ void main() {
   );
 
   test(
+    'completed plan items wait for an explicit decision in plan mode',
+    () async {
+      final initial = thread('thread');
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [initial]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+      state.setPlanMode(true);
+
+      client.emit(
+        const CodexTurnStartedNotification2(
+          params: CodexTurnStartedNotification(
+            threadId: 'thread',
+            turn: CodexTurn(
+              id: 'plan-turn',
+              items: [],
+              status: CodexTurnStatus.inProgress,
+            ),
+          ),
+        ),
+      );
+      client.emit(
+        const CodexItemCompletedNotification2(
+          params: CodexItemCompletedNotification(
+            completedAtMs: 1,
+            item: CodexPlanThreadItem(id: 'plan-item', text: '# Plan'),
+            threadId: 'thread',
+            turnId: 'plan-turn',
+          ),
+        ),
+      );
+      client.emit(
+        const CodexTurnCompletedNotification2(
+          params: CodexTurnCompletedNotification(
+            threadId: 'thread',
+            turn: CodexTurn(
+              id: 'plan-turn',
+              items: [],
+              status: CodexTurnStatus.completed,
+            ),
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(state.awaitingPlanDecisionItemId, 'plan-item');
+      state.skipCurrentPlan();
+      expect(state.planModeEnabled, isFalse);
+      expect(state.awaitingPlanDecisionItemId, isNull);
+      await state.close();
+    },
+  );
+
+  test(
     'queues during an active turn and can steer the queued message',
     () async {
       final active = thread(
@@ -412,11 +490,7 @@ void main() {
           null: CodexThreadListResponse(data: [active]),
         },
       );
-      final state = CodexSessionState(
-        serverId: 'server',
-        session: 'agent',
-        connection: client,
-      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
       await state.readThread('thread');
@@ -457,11 +531,7 @@ void main() {
           null: CodexThreadListResponse(data: [active]),
         },
       );
-      final state = CodexSessionState(
-        serverId: 'server',
-        session: 'agent',
-        connection: client,
-      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
       await state.readThread('thread');
@@ -504,6 +574,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<CodexThreadListParams> listParams = [];
   final List<String> readThreadIds = [];
   final List<bool> readIncludeTurns = [];
+  final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
   final List<CodexThreadForkParams> forkParams = [];
   final List<CodexThreadStartParams> startThreadParams = [];
   final List<String> resumedThreadIds = [];
@@ -559,6 +630,8 @@ final class FakeCodexClient extends ChangeNotifier
   }) async {
     readThreadIds.add(threadId);
     readIncludeTurns.add(includeTurns);
+    final gate = readGates[threadId];
+    if (gate != null) return gate.future;
     final original = pages.values
         .expand((page) => page.data)
         .firstWhere((thread) => thread.id == threadId);

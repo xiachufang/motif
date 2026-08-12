@@ -4,6 +4,7 @@
 
 pub mod agent_hooks;
 pub mod capture;
+pub mod codex;
 pub mod common;
 pub mod device;
 pub mod envelope;

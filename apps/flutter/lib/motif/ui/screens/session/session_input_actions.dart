@@ -152,7 +152,9 @@ extension _SessionScreenInputActions on _SessionScreenState {
 
   void _syncWindowTitle() {
     final app = readObservationScope<AppState>(context);
-    final title = _sessionDisplayName(app, widget.serverId, widget.session);
+    final title =
+        widget.titleOverride ??
+        _sessionDisplayName(app, widget.serverId, widget.session);
     _lastWindowTitle = title;
     unawaited(MotifWindowTitle.set(title).catchError((_) {}));
   }

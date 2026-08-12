@@ -1,4 +1,4 @@
-//! Authenticated WebSocket proxy for a session's loopback Codex app-server.
+//! Authenticated WebSocket proxy for this server's one Codex app-server.
 
 use axum::extract::ws::{
     CloseFrame as AxumCloseFrame, Message as AxumMessage, WebSocket, WebSocketUpgrade,
@@ -8,7 +8,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use motif_net::PeerAddr;
-use motif_proto::session::SessionType;
 use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::{
@@ -20,7 +19,6 @@ use crate::ws::AppState;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CodexQuery {
-    pub session: Option<String>,
     pub token: Option<String>,
 }
 
@@ -39,48 +37,26 @@ pub async fn codex_upgrade(
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
     }
 
-    let Some(attachment_id) = query.session else {
-        return (StatusCode::BAD_REQUEST, "missing ?session=<attachment-id>").into_response();
+    let codex = state.codex.clone();
+    let runtime = match tokio::task::spawn_blocking(move || codex.start()).await {
+        Ok(Ok(runtime)) => runtime,
+        Ok(Err(error)) => {
+            tracing::warn!(peer = %peer, %error, "codex app-server start failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "codex app-server is unavailable",
+            )
+                .into_response();
+        }
+        Err(error) => {
+            tracing::warn!(peer = %peer, %error, "codex app-server start task failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "codex app-server is unavailable",
+            )
+                .into_response();
+        }
     };
-    let Some(entry) = state.conns.get(&attachment_id) else {
-        return (StatusCode::CONFLICT, "unknown or expired attachment").into_response();
-    };
-    let snapshot = entry.state.lock().snapshot();
-    if snapshot.attached.is_none() {
-        return (
-            StatusCode::CONFLICT,
-            "attachment is not attached to a session",
-        )
-            .into_response();
-    }
-    let Some(session) = crate::rpc::current_session(&state.manager, &snapshot) else {
-        return (
-            StatusCode::CONFLICT,
-            "attached session is no longer available",
-        )
-            .into_response();
-    };
-    if session.session_type != SessionType::Codex {
-        return (
-            StatusCode::CONFLICT,
-            "attached session is not a codex session",
-        )
-            .into_response();
-    }
-    let Some(runtime) = session.codex_app_server() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "codex app-server is unavailable",
-        )
-            .into_response();
-    };
-    if !runtime.is_alive() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "codex app-server has exited",
-        )
-            .into_response();
-    }
 
     // Build a fresh inner WebSocket for every Motif client. `client_async`
     // creates only the WebSocket handshake headers, so Motif Authorization and
@@ -89,7 +65,7 @@ pub async fn codex_upgrade(
     let tcp = match TcpStream::connect(address).await {
         Ok(tcp) => tcp,
         Err(error) => {
-            tracing::warn!(session = %session.name, %address, %error, "codex app-server dial failed");
+            tracing::warn!(%address, %error, "codex app-server dial failed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "codex app-server is unavailable",
@@ -101,7 +77,7 @@ pub async fn codex_upgrade(
     let (upstream, _) = match tokio_tungstenite::client_async(upstream_url, tcp).await {
         Ok(upstream) => upstream,
         Err(error) => {
-            tracing::warn!(session = %session.name, %address, %error, "codex app-server websocket handshake failed");
+            tracing::warn!(%address, %error, "codex app-server websocket handshake failed");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "codex app-server websocket unavailable",
@@ -110,25 +86,21 @@ pub async fn codex_upgrade(
         }
     };
 
-    let client_id = snapshot.client_id;
-    let lease = entry.acquire_lease();
-    tracing::info!(peer = %peer, session = %session.name, %client_id, "codex ws proxy connected");
+    let client_id = ulid::Ulid::new().to_string();
+    tracing::info!(peer = %peer, %client_id, "codex ws proxy connected");
     ws.on_upgrade(move |socket| async move {
-        proxy(socket, upstream, session, runtime, client_id).await;
-        drop(lease);
+        proxy(socket, upstream, runtime, client_id).await;
     })
 }
 
 async fn proxy(
     client: WebSocket,
     upstream: tokio_tungstenite::WebSocketStream<TcpStream>,
-    session: std::sync::Arc<crate::session::Session>,
     runtime: std::sync::Arc<crate::codex_app_server::CodexAppServer>,
     client_id: String,
 ) {
     let (mut client_tx, mut client_rx) = client.split();
     let (mut upstream_tx, mut upstream_rx) = upstream.split();
-    let mut shutdown = session.subscribe_shutdown();
     let mut exited = runtime.subscribe_exit();
 
     if *exited.borrow() {
@@ -176,16 +148,9 @@ async fn proxy(
                     break;
                 }
             }
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    let _ = client_tx.send(close(1001, "motif session closed")).await;
-                    let _ = upstream_tx.send(TungsteniteMessage::Close(None)).await;
-                    break;
-                }
-            }
         }
     }
-    tracing::info!(%client_id, session = %session.name, "codex ws proxy disconnected");
+    tracing::info!(%client_id, "codex ws proxy disconnected");
 }
 
 fn to_upstream(message: AxumMessage) -> TungsteniteMessage {

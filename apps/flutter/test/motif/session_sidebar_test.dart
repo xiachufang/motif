@@ -419,6 +419,8 @@ Future<_RouteCounter> _pumpSession(
   WorkspaceConnectionController? motif,
   WorkspaceConnectionController Function(MotifServer server, String session)?
   workspaceConnectionFactory,
+  bool allowSessionSwitching = true,
+  String? titleOverride,
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
@@ -436,9 +438,11 @@ Future<_RouteCounter> _pumpSession(
       child: MaterialApp(
         theme: motifTheme(Brightness.dark),
         navigatorObservers: [routes],
-        home: const SessionScreen(
+        home: SessionScreen(
           serverId: 'server-1',
           session: 'test-session',
+          allowSessionSwitching: allowSessionSwitching,
+          titleOverride: titleOverride,
         ),
       ),
     ),
@@ -1395,6 +1399,42 @@ void main() {
     await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyE, shift: true);
     expect(find.byType(FileTreePanel), findsNothing);
     expect(find.byKey(const ValueKey('sidebar-session-list')), findsOneWidget);
+    expect(find.byType(GitDiffPanel), findsOneWidget);
+  });
+
+  testWidgets('fixed thread workspace keeps session tools without switching', (
+    tester,
+  ) async {
+    final motif = _SessionMenuWorkspaceConnectionController()
+      ..sessions = const [
+        SessionInfo(name: 'test-session'),
+        SessionInfo(name: 'next-session'),
+      ];
+    await _pumpSession(
+      tester,
+      const Size(1024, 768),
+      motif: motif,
+      allowSessionSwitching: false,
+      titleOverride: 'Thread workspace',
+    );
+
+    expect(find.byType(BackButton), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is Title && widget.title == 'Thread workspace',
+      ),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('close-session-button')), findsNothing);
+    expect(find.byKey(const ValueKey('sessions-sidebar-toggle')), findsNothing);
+    expect(find.byKey(const ValueKey('session-menu-button')), findsNothing);
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyL, shift: true);
+    expect(find.byKey(const ValueKey('sidebar-session-list')), findsNothing);
+
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyE, shift: true);
+    expect(find.byType(FileTreePanel), findsOneWidget);
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyG, shift: true);
     expect(find.byType(GitDiffPanel), findsOneWidget);
   });
 

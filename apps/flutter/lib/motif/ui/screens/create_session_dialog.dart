@@ -16,28 +16,19 @@ part 'create_session_dialog.g.dart';
 Future<SessionInfo?> createSessionWithDialog(
   BuildContext context,
   SessionCatalogController sessions,
-  WorkspaceApi workspace, {
-  bool allowCodex = false,
-}) async {
-  final result =
-      await showAdaptiveModal<
-        ({String name, String? workdir, SessionType type})
-      >(
-        context,
-        builder: (_) => _CreateSessionDialog(
-          key: const ValueKey('create-session-dialog'),
-          sessions: sessions,
-          workspace: workspace,
-          allowCodex: allowCodex,
-        ),
-      );
+  WorkspaceApi workspace,
+) async {
+  final result = await showAdaptiveModal<(String, String)>(
+    context,
+    builder: (_) => _CreateSessionDialog(
+      key: const ValueKey('create-session-dialog'),
+      sessions: sessions,
+      workspace: workspace,
+    ),
+  );
   if (result == null) return null;
   try {
-    return await sessions.create(
-      result.name,
-      result.workdir,
-      type: result.type,
-    );
+    return await sessions.create(result.$1, result.$2);
   } catch (e) {
     if (context.mounted) {
       showMotifToast(context, 'Create failed: $e');
@@ -48,10 +39,7 @@ Future<SessionInfo?> createSessionWithDialog(
 
 @ObservableModel()
 class _CreateSessionDialogViewModel extends _$_CreateSessionDialogViewModel {
-  _CreateSessionDialogViewModel({
-    bool canCreate = true,
-    SessionType selectedType = SessionType.terminal,
-  }) : super(canCreate, selectedType);
+  _CreateSessionDialogViewModel({bool canCreate = true}) : super(canCreate);
 }
 
 @ObservationWidget()
@@ -59,13 +47,11 @@ class _CreateSessionDialog extends _$_CreateSessionDialog {
   const _CreateSessionDialog({
     required this.sessions,
     required this.workspace,
-    required this.allowCodex,
     super.key,
   });
 
   final SessionCatalogController sessions;
   final WorkspaceApi workspace;
-  final bool allowCodex;
 
   @PlainState(name: 'nameController')
   TextEditingController createNameController() => TextEditingController(
@@ -95,57 +81,28 @@ class _CreateSessionDialog extends _$_CreateSessionDialog {
         title: 'Session',
         dividerIndent: MotifSpacing.lg,
         children: [
-          if (allowCodex)
-            Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: MotifSpacing.md,
-                vertical: MotifSpacing.sm,
-              ),
-              child: SegmentedButton<SessionType>(
-                key: const ValueKey('session-type-selector'),
-                segments: const [
-                  ButtonSegment(
-                    value: SessionType.terminal,
-                    label: Text('Terminal'),
-                    icon: Icon(Icons.terminal),
-                  ),
-                  ButtonSegment(
-                    value: SessionType.codex,
-                    label: Text('Codex'),
-                    icon: Icon(Icons.auto_awesome_outlined),
-                  ),
-                ],
-                selected: {viewModel.selectedType},
-                onSelectionChanged: (selection) =>
-                    viewModel.selectedType = selection.single,
-              ),
-            ),
           _sectionField(
             controller: nameController,
             label: 'Name',
             onChanged: (value) => viewModel.canCreate = value.trim().isNotEmpty,
           ),
-          if (viewModel.selectedType == SessionType.terminal)
-            _sectionField(
-              controller: workdirController,
-              label: 'Working directory',
-              trailing: IconButton(
-                icon: const Icon(Icons.folder_open),
-                tooltip: 'Browse',
-                onPressed: () => _pickWorkdir(context, workdirController),
-              ),
+          _sectionField(
+            controller: workdirController,
+            label: 'Working directory',
+            trailing: IconButton(
+              icon: const Icon(Icons.folder_open),
+              tooltip: 'Browse',
+              onPressed: () => _pickWorkdir(context, workdirController),
             ),
+          ),
         ],
       ),
       actions: [
         TextButton(
           onPressed: viewModel.canCreate
               ? () => Navigator.pop(context, (
-                  name: nameController.text.trim(),
-                  workdir: viewModel.selectedType == SessionType.terminal
-                      ? workdirController.text.trim()
-                      : null,
-                  type: viewModel.selectedType,
+                  nameController.text.trim(),
+                  workdirController.text.trim(),
                 ))
               : null,
           child: const Text('Create'),

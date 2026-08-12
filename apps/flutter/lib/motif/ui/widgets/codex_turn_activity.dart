@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../codex/codex_session_state.dart';
+import '../../codex/codex_service_state.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
@@ -13,6 +13,7 @@ const _activityTileHeight = 36.0;
 const _activityGroupMaxHeight = 360.0;
 const _activityDetailMaxHeight = 300.0;
 const _diffBodyMaxHeight = 280.0;
+const _activityTitleGap = 6.0;
 
 /// One chronological group of non-text items located between two text items.
 /// The group is collapsed by default; expanding it never changes or merges the
@@ -25,7 +26,7 @@ class CodexTurnActivityGroup extends StatelessWidget {
     super.key,
   });
 
-  final CodexSessionState state;
+  final CodexServiceState state;
   final List<CodexThreadItem> items;
   final bool boundedDetails;
 
@@ -35,13 +36,8 @@ class CodexTurnActivityGroup extends StatelessWidget {
     final running = items.any(_isRunning);
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
+      child: _InlineExpansionTile(
         initiallyExpanded: false,
-        dense: true,
-        visualDensity: _activityDensity,
-        minTileHeight: _activityTileHeight,
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        tilePadding: EdgeInsets.zero,
         childrenPadding: const EdgeInsets.only(left: MotifSpacing.lg),
         leading: running
             ? SizedBox.square(
@@ -329,7 +325,7 @@ List<_TurnDiffFile> _mergeTurnDiffs(
 class _ActivityItem extends StatelessWidget {
   const _ActivityItem({required this.state, required this.item});
 
-  final CodexSessionState state;
+  final CodexServiceState state;
   final CodexThreadItem item;
 
   @override
@@ -439,14 +435,9 @@ class _FileChangeActivity extends StatelessWidget {
     final count = item.changes.length;
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
+      child: _InlineExpansionTile(
         key: ValueKey('codex-file-change-${item.id}'),
         initiallyExpanded: false,
-        dense: true,
-        visualDensity: _activityDensity,
-        minTileHeight: _activityTileHeight,
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        tilePadding: EdgeInsets.zero,
         childrenPadding: const EdgeInsets.only(left: MotifSpacing.md),
         leading: item.status == CodexPatchApplyStatus.inProgress
             ? SizedBox.square(
@@ -502,14 +493,9 @@ class _FileDiffTile extends StatelessWidget {
     };
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
+      child: _InlineExpansionTile(
         key: ValueKey('codex-file-diff-$path'),
         initiallyExpanded: false,
-        dense: true,
-        visualDensity: _activityDensity,
-        minTileHeight: _activityTileHeight,
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        tilePadding: EdgeInsets.zero,
         childrenPadding: EdgeInsets.zero,
         leading: Icon(
           Icons.edit_outlined,
@@ -632,7 +618,7 @@ class _UnifiedDiff extends StatelessWidget {
 class _ImageActivity extends StatelessWidget {
   const _ImageActivity({required this.state, required this.item});
 
-  final CodexSessionState state;
+  final CodexServiceState state;
   final CodexImageViewThreadItem item;
 
   @override
@@ -693,13 +679,8 @@ class _DetailActivity extends StatelessWidget {
     }
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
+      child: _InlineExpansionTile(
         initiallyExpanded: false,
-        dense: true,
-        visualDensity: _activityDensity,
-        minTileHeight: _activityTileHeight,
-        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
-        tilePadding: EdgeInsets.zero,
         childrenPadding: const EdgeInsets.only(left: MotifSpacing.lg),
         leading: running
             ? SizedBox.square(
@@ -723,6 +704,73 @@ class _DetailActivity extends StatelessWidget {
             child: content,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Keeps the disclosure control beside the title instead of pinning it to the
+/// far edge of the available row. Activity rows are intentionally compact, so
+/// their leading glyph also uses a smaller gap than a regular list tile.
+class _InlineExpansionTile extends StatefulWidget {
+  const _InlineExpansionTile({
+    required this.leading,
+    required this.title,
+    required this.children,
+    required this.childrenPadding,
+    this.initiallyExpanded = false,
+    super.key,
+  });
+
+  final Widget leading;
+  final Widget title;
+  final List<Widget> children;
+  final EdgeInsetsGeometry childrenPadding;
+  final bool initiallyExpanded;
+
+  @override
+  State<_InlineExpansionTile> createState() => _InlineExpansionTileState();
+}
+
+class _InlineExpansionTileState extends State<_InlineExpansionTile> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Theme(
+      data: theme.copyWith(
+        dividerColor: Colors.transparent,
+        listTileTheme: theme.listTileTheme.copyWith(
+          horizontalTitleGap: _activityTitleGap,
+          minLeadingWidth: MotifIconSize.sm,
+        ),
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: widget.initiallyExpanded,
+        onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+        dense: true,
+        visualDensity: _activityDensity,
+        minTileHeight: _activityTileHeight,
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: widget.childrenPadding,
+        leading: widget.leading,
+        trailing: const SizedBox.shrink(),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(child: widget.title),
+            const SizedBox(width: MotifSpacing.xs),
+            Icon(
+              _expanded
+                  ? Icons.keyboard_arrow_up_rounded
+                  : Icons.keyboard_arrow_down_rounded,
+              size: MotifIconSize.sm,
+            ),
+          ],
+        ),
+        children: widget.children,
       ),
     );
   }

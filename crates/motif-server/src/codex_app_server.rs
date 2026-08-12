@@ -1,4 +1,4 @@
-//! Lifecycle wrapper for a session-scoped `codex app-server` process.
+//! Lifecycle wrapper for the server-scoped `codex app-server` process.
 //!
 //! The child is deliberately bound to IPv4 loopback and has no app-server
 //! authentication configured. Remote clients can only reach it through the
@@ -35,7 +35,7 @@ pub enum CodexLaunchError {
 pub trait CodexLauncher: Send + Sync {
     fn launch(
         &self,
-        session_name: &str,
+        service_label: &str,
         workdir: &Path,
     ) -> Result<Arc<CodexAppServer>, CodexLaunchError>;
 }
@@ -46,10 +46,10 @@ pub struct SystemCodexLauncher;
 impl CodexLauncher for SystemCodexLauncher {
     fn launch(
         &self,
-        session_name: &str,
+        service_label: &str,
         workdir: &Path,
     ) -> Result<Arc<CodexAppServer>, CodexLaunchError> {
-        CodexAppServer::launch(session_name, workdir)
+        CodexAppServer::launch(service_label, workdir)
     }
 }
 
@@ -69,7 +69,7 @@ struct Inner {
 }
 
 impl CodexAppServer {
-    pub fn launch(session_name: &str, workdir: &Path) -> Result<Arc<Self>, CodexLaunchError> {
+    pub fn launch(service_label: &str, workdir: &Path) -> Result<Arc<Self>, CodexLaunchError> {
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(CodexLaunchError::AllocatePort)?;
         let port = listener
@@ -86,7 +86,6 @@ impl CodexAppServer {
             .arg("--listen")
             .arg(&listen)
             .current_dir(workdir)
-            .env("MOTIF_SESSION_NAME", session_name)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -100,8 +99,8 @@ impl CodexAppServer {
         let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        drain_output(stdout, session_name.to_string(), "stdout");
-        drain_output(stderr, session_name.to_string(), "stderr");
+        drain_output(stdout, service_label.to_string(), "stdout");
+        drain_output(stderr, service_label.to_string(), "stderr");
 
         #[cfg(windows)]
         let job = match crate::windows_job::ProcessJob::assign(pid) {
@@ -129,8 +128,8 @@ impl CodexAppServer {
             #[cfg(windows)]
             job: Mutex::new(job),
         });
-        spawn_monitor(Arc::clone(&inner), session_name.to_string());
-        tracing::info!(session = session_name, pid, %address, "codex app-server ready");
+        spawn_monitor(Arc::clone(&inner), service_label.to_string());
+        tracing::info!(service = service_label, pid, %address, "codex app-server ready");
         Ok(Arc::new(Self { inner }))
     }
 
@@ -172,11 +171,6 @@ impl CodexAppServer {
         self.inner.exited.store(true, Ordering::Release);
         self.inner.exit_tx.send_replace(true);
     }
-
-    #[cfg(test)]
-    pub(crate) fn is_stopping_for_test(&self) -> bool {
-        self.inner.stopping.load(Ordering::Acquire)
-    }
 }
 
 impl Drop for CodexAppServer {
@@ -208,9 +202,9 @@ impl Inner {
     }
 }
 
-fn spawn_monitor(inner: Arc<Inner>, session_name: String) {
+fn spawn_monitor(inner: Arc<Inner>, service_label: String) {
     std::thread::Builder::new()
-        .name(format!("codex-monitor-{session_name}"))
+        .name(format!("codex-monitor-{service_label}"))
         .spawn(move || loop {
             let result = {
                 let mut child = inner.child.lock();
@@ -223,14 +217,14 @@ fn spawn_monitor(inner: Arc<Inner>, session_name: String) {
                 Ok(Some(status)) => {
                     inner.exited.store(true, Ordering::Release);
                     inner.exit_tx.send_replace(true);
-                    tracing::warn!(session = %session_name, %status, "codex app-server exited");
+                    tracing::warn!(service = %service_label, %status, "codex app-server exited");
                     return;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(100)),
                 Err(error) => {
                     inner.exited.store(true, Ordering::Release);
                     inner.exit_tx.send_replace(true);
-                    tracing::warn!(session = %session_name, %error, "codex app-server status check failed");
+                    tracing::warn!(service = %service_label, %error, "codex app-server status check failed");
                     return;
                 }
             }
@@ -283,18 +277,18 @@ fn terminate_child(child: &mut Child, pid: u32) {
 
 fn drain_output<R: Read + Send + 'static>(
     reader: Option<R>,
-    session_name: String,
+    service_label: String,
     stream: &'static str,
 ) {
     let Some(reader) = reader else { return };
     let _ = std::thread::Builder::new()
-        .name(format!("codex-{stream}-{session_name}"))
+        .name(format!("codex-{stream}-{service_label}"))
         .spawn(move || {
             for line in BufReader::new(reader).lines() {
                 match line {
-                    Ok(line) => tracing::info!(target: "motif::codex", session = %session_name, stream, message = %line),
+                    Ok(line) => tracing::info!(target: "motif::codex", service = %service_label, stream, message = %line),
                     Err(error) => {
-                        tracing::debug!(target: "motif::codex", session = %session_name, stream, %error, "codex output drain ended");
+                        tracing::debug!(target: "motif::codex", service = %service_label, stream, %error, "codex output drain ended");
                         break;
                     }
                 }

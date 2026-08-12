@@ -76,14 +76,13 @@ void main() {
       });
       final transport = _FakeTransport(socket);
       final controller = CodexConnectionController(
-        session: 'agent',
         transport: transport,
         appVersionProvider: () async => '1.2.3',
       );
 
       await controller.start();
 
-      expect(transport.attachedSession, 'agent');
+      expect(transport.connectCount, 1);
       expect(controller.state.phase, CodexConnectionPhase.connected);
       expect(controller.state.response?.platformOs, 'macos');
       expect(sent.map((message) => message['method']), [
@@ -96,7 +95,7 @@ void main() {
       });
 
       await controller.close();
-      expect(transport.detachCount, 1);
+      expect(transport.closeCount, 1);
     },
   );
 
@@ -121,7 +120,6 @@ void main() {
       }
     });
     final controller = CodexConnectionController(
-      session: 'agent',
       transport: _FakeTransport(socket),
       appVersionProvider: () async => '1.0.0',
     );
@@ -178,7 +176,6 @@ void main() {
       respondingSocket(fail: false),
     ]);
     final controller = CodexConnectionController(
-      session: 'agent',
       transport: transport,
       appVersionProvider: () async => '1.0.0',
     );
@@ -190,9 +187,9 @@ void main() {
     await controller.retry();
     expect(controller.state.phase, CodexConnectionPhase.connected);
     expect(controller.state.response?.userAgent, 'codex-retry');
-    expect(transport.detachCount, 1);
+    expect(transport.closeCount, 1);
     await controller.close();
-    expect(transport.detachCount, 2);
+    expect(transport.closeCount, 2);
   });
 
   test(
@@ -287,7 +284,6 @@ void main() {
         );
       });
       final controller = CodexConnectionController(
-        session: 'agent',
         transport: _FakeTransport(socket),
         appVersionProvider: () async => '1.0.0',
       );
@@ -487,36 +483,36 @@ Map<String, Object?> threadJson(String id) => {
   'cliVersion': 'test',
 };
 
-final class _FakeTransport implements CodexSessionTransport {
+final class _FakeTransport implements CodexTransport {
   _FakeTransport(this.socket);
   final WebSocketChannel socket;
-  String? attachedSession;
-  int detachCount = 0;
+  int connectCount = 0;
+  int closeCount = 0;
 
   @override
-  Future<void> attach(String session) async => attachedSession = session;
+  Future<void> connect() async => connectCount++;
 
   @override
   WebSocketChannel openCodexWebSocket() => socket;
 
   @override
-  Future<void> detachAndClose() async => detachCount++;
+  Future<void> close() async => closeCount++;
 }
 
-final class _RetryTransport implements CodexSessionTransport {
+final class _RetryTransport implements CodexTransport {
   _RetryTransport(this.sockets);
   final List<WebSocketChannel> sockets;
   int index = -1;
-  int detachCount = 0;
+  int closeCount = 0;
 
   @override
-  Future<void> attach(String session) async => index++;
+  Future<void> connect() async => index++;
 
   @override
   WebSocketChannel openCodexWebSocket() => sockets[index];
 
   @override
-  Future<void> detachAndClose() async => detachCount++;
+  Future<void> close() async => closeCount++;
 }
 
 final class _FakeWebSocket

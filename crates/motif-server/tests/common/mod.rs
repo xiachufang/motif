@@ -60,8 +60,13 @@ impl TestServer {
         let token = format!("test-{}", ulid::Ulid::new());
         let manager = motif_server::session::manager::SessionManager::new();
         let conns = motif_server::conn_registry::ConnRegistry::new();
+        let codex = motif_server::codex_service::CodexService::new(
+            Arc::clone(&manager),
+            Arc::clone(&conns),
+        );
         let state = motif_server::ws::AppState {
             manager: Arc::clone(&manager),
+            codex,
             auth: Arc::new(motif_server::auth::TokenStore::required(token.clone())),
             conns: Arc::clone(&conns),
             devices: motif_server::relay::DeviceState {
@@ -736,7 +741,6 @@ fn dummy_attach_result() -> ses::AttachResult {
             workdir: std::path::PathBuf::new(),
             created_at: 0,
             client_count: 0,
-            r#type: ses::SessionType::Terminal,
         },
         client_id: String::new(),
         clients: vec![],

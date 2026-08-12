@@ -17,10 +17,15 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
 
     if (primaryPressed && hw.isShiftPressed && !hw.isAltPressed) {
       if (key == LogicalKeyboardKey.keyW) {
-        unawaited(_closeSession());
+        if (widget.allowSessionSwitching) {
+          unawaited(_closeSession());
+        } else {
+          Navigator.of(context).maybePop();
+        }
         return true;
       }
       if (key == LogicalKeyboardKey.keyL) {
+        if (!widget.allowSessionSwitching) return false;
         _toggleSessionsPanel(readObservationScope<AppState>(context));
         return true;
       }
@@ -154,6 +159,7 @@ extension _SessionScreenTerminalActions on _SessionScreenState {
   }
 
   void _toggleSessionsPanel(AppState app) {
+    if (!widget.allowSessionSwitching) return;
     if (!_usesSidebarLayout) {
       _scaffoldKey.currentState?.openDrawer();
       unawaited(app.refreshConnectedSessions().catchError((_) => null));

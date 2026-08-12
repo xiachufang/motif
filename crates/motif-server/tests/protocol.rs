@@ -23,7 +23,9 @@ use motif_proto::capture::{
     CaptureDisplay, CaptureTarget, CaptureTargetKind, TakeParams, TargetsResult,
 };
 use motif_proto::event::Event;
-use motif_proto::{fs as pfs, git as pgit, pty as ppty, session as ses, view as pview};
+use motif_proto::{
+    codex as pcodex, fs as pfs, git as pgit, pty as ppty, session as ses, view as pview,
+};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -144,14 +146,23 @@ async fn screen_capture_is_advertised_and_returns_raw_png() {
 async fn disabled_screen_capture_is_not_advertised() {
     let server = TestServer::start().await;
     let ping = server.ping().await.unwrap();
-    assert!(ping
-        .capabilities
-        .iter()
-        .any(|value| value == "codex_session_v1"));
+    assert!(ping.capabilities.iter().any(|value| value == "codex_v1"));
     assert!(!ping
         .capabilities
         .iter()
         .any(|value| value == "screen_capture_v1"));
+}
+
+#[tokio::test]
+async fn codex_service_status_and_stop_are_server_scoped() {
+    let server = TestServer::start().await;
+
+    let initial: pcodex::StatusResult = server.call("codex.status", json!({})).await.unwrap();
+    assert!(!initial.running);
+
+    let stopped: pcodex::LifecycleResult = server.call("codex.stop", json!({})).await.unwrap();
+    assert!(!stopped.running);
+    assert!(stopped.closed_sessions.is_empty());
 }
 
 #[tokio::test]
@@ -218,15 +229,13 @@ async fn session_lifecycle() {
             "session.create",
             ses::CreateParams {
                 name: "A".into(),
-                workdir: Some(dir_a.path().to_path_buf()),
-                r#type: ses::SessionType::Terminal,
+                workdir: dir_a.path().to_path_buf(),
             },
         )
         .await
         .unwrap();
     assert_eq!(created.session.name, "A");
     assert_eq!(created.session.client_count, 0);
-    assert_eq!(created.session.r#type, ses::SessionType::Terminal);
 
     // create B
     server
@@ -234,8 +243,7 @@ async fn session_lifecycle() {
             "session.create",
             ses::CreateParams {
                 name: "B".into(),
-                workdir: Some(dir_b.path().to_path_buf()),
-                r#type: ses::SessionType::Terminal,
+                workdir: dir_b.path().to_path_buf(),
             },
         )
         .await
@@ -412,8 +420,7 @@ async fn session_destroy_closes_connections_kills_ptys_and_invalidates_attach_id
             "session.create",
             ses::CreateParams {
                 name: "destroy-live".into(),
-                workdir: Some(dir.path().to_path_buf()),
-                r#type: ses::SessionType::Terminal,
+                workdir: dir.path().to_path_buf(),
             },
         )
         .await
@@ -1753,45 +1760,16 @@ async fn fs_watch_subscription_gates_events() {
 // ─────────────────────────── 9. tcp_ws_forwarding ───────────────────────────
 
 #[tokio::test]
-async fn codex_ws_enforces_auth_attachment_and_session_type() {
+async fn codex_ws_requires_auth_but_not_a_session_attachment() {
     let server = TestServer::start().await;
 
-    let unauthorized =
-        tokio_tungstenite::connect_async(format!("ws://{}/codex?session=missing", server.addr))
-            .await
-            .unwrap_err();
+    let unauthorized = tokio_tungstenite::connect_async(format!("ws://{}/codex", server.addr))
+        .await
+        .unwrap_err();
     assert!(matches!(
         unauthorized,
         tokio_tungstenite::tungstenite::Error::Http(response)
             if response.status() == http::StatusCode::UNAUTHORIZED
-    ));
-
-    let missing_session = tokio_tungstenite::connect_async(format!(
-        "ws://{}/codex?token={}",
-        server.addr, server.token
-    ))
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        missing_session,
-        tokio_tungstenite::tungstenite::Error::Http(response)
-            if response.status() == http::StatusCode::BAD_REQUEST
-    ));
-
-    let dir = TempDir::new().unwrap();
-    let client = TestClient::connect_no_events(&server, "terminal-only", dir.path())
-        .await
-        .unwrap();
-    let wrong_type = tokio_tungstenite::connect_async(format!(
-        "ws://{}/codex?session={}&token={}",
-        server.addr, client.session_id, client.token
-    ))
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        wrong_type,
-        tokio_tungstenite::tungstenite::Error::Http(response)
-            if response.status() == http::StatusCode::CONFLICT
     ));
 }
 

@@ -67,15 +67,9 @@ void main() {
       expect(ShellKind.fromWire('weird'), ShellKind.unknown);
     });
 
-    test('SessionInfo defaults missing type to terminal', () {
-      expect(
-        SessionInfo.fromJson({'name': 'legacy'}).type,
-        SessionType.terminal,
-      );
-      expect(
-        SessionInfo.fromJson({'name': 'agent', 'type': 'codex'}).type,
-        SessionType.codex,
-      );
+    test('SessionInfo ignores unknown fields', () {
+      final session = SessionInfo.fromJson({'name': 'legacy', 'type': 'codex'});
+      expect(session.name, 'legacy');
     });
   });
 

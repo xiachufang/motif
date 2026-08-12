@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
-import 'package:motif/motif/codex/codex_session_state.dart';
+import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
@@ -173,6 +173,21 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Codex Test  High'), findsOneWidget);
+      expect(
+        tester.getRect(find.byKey(const ValueKey('codex-stop'))).left -
+            tester
+                .getRect(find.byKey(const ValueKey('codex-model-selector')))
+                .right,
+        moreOrLessEquals(MotifSpacing.xs, epsilon: 0.1),
+      );
+      final stopButton = tester.widget<IconButton>(
+        find.byKey(const ValueKey('codex-stop')),
+      );
+      expect(
+        stopButton.style?.backgroundColor?.resolve(const {}),
+        MotifColors.light.accent,
+      );
+      expect(stopButton.style?.shape?.resolve(const {}), isA<CircleBorder>());
       await tester.tap(
         find.byKey(const ValueKey('codex-model-settings-label')),
       );
@@ -182,9 +197,29 @@ void main() {
         find.byKey(const ValueKey('codex-effort-selector')),
         findsOneWidget,
       );
+      expect(
+        tester
+            .widget<SubmenuButton>(
+              find.byKey(const ValueKey('codex-model-submenu')),
+            )
+            .hoverOpenDelay,
+        Duration.zero,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('codex-model-submenu')));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.byKey(const ValueKey('codex-model-option-codex-test')),
+        findsOneWidget,
+      );
+      expect(find.text('Test model'), findsNothing);
       await tester.tap(find.byKey(const ValueKey('codex-effort-selector')));
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('Consumes usage limits faster'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-model-option-codex-test')),
+        findsNothing,
+      );
+      expect(find.text('Consumes usage limits faster'), findsNothing);
       expect(
         find.descendant(
           of: find.byKey(const ValueKey('codex-effort-option-high')),
@@ -269,6 +304,46 @@ void main() {
         findsNothing,
       );
 
+      for (final status in [
+        CodexTurnStatus.interrupted,
+        CodexTurnStatus.failed,
+      ]) {
+        state.turns = [
+          state.turns.first,
+          CodexTurn(
+            durationMs: 6000,
+            id: 'turn-1',
+            items: const [
+              CodexAgentMessageThreadItem(
+                id: 'active-agent',
+                text: 'Partial response',
+              ),
+            ],
+            status: status,
+          ),
+        ];
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: motifTheme(Brightness.light),
+            home: Scaffold(body: CodexThreadWorkspace(state: state)),
+          ),
+        );
+        await tester.pump();
+        expect(find.byKey(const ValueKey('codex-fork-turn-1')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('codex-copy-active-agent')),
+          findsNothing,
+        );
+        expect(
+          find.text(
+            status == CodexTurnStatus.interrupted
+                ? 'You stopped after 6s'
+                : 'Failed after 6s',
+          ),
+          findsOneWidget,
+        );
+      }
+
       await tester.pumpWidget(const SizedBox.shrink());
       state.dispose();
     },
@@ -327,6 +402,130 @@ Only show **this request**.
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
+  });
+
+  testWidgets('plan items stay collapsed and open on a detail page', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          id: 'plan-turn',
+          items: [
+            CodexPlanThreadItem(
+              id: 'plan-item',
+              text: '# Delivery plan\n\n- Build the UI\n- Run tests',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final card = find.byKey(const ValueKey('codex-plan-item-plan-item'));
+    expect(card, findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-plan-preview-plan-item')),
+      findsOneWidget,
+    );
+    expect(find.text('Delivery plan'), findsOneWidget);
+    await tester.tap(card);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('codex-plan-detail')), findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data == '# Delivery plan\n\n- Build the UI\n- Run tests',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('plan decision can implement, revise, or skip', (tester) async {
+    Future<({WorkspaceFakeClient client, CodexServiceState state})> pumpPlan({
+      required String itemId,
+    }) async {
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..turns = [
+          CodexTurn(
+            id: 'plan-turn-$itemId',
+            items: [CodexPlanThreadItem(id: itemId, text: '# Plan\n\nDo it.')],
+            status: CodexTurnStatus.completed,
+          ),
+        ]
+        ..planModeEnabled = true
+        ..awaitingPlanDecisionItemId = itemId;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+      return (client: client, state: state);
+    }
+
+    var fixture = await pumpPlan(itemId: 'implement-plan');
+    expect(find.byKey(const ValueKey('codex-plan-decision')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-composer')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('codex-plan-implement')));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(fixture.state.planModeEnabled, isFalse);
+    expect(fixture.client.started, hasLength(1));
+    expect(fixture.client.started.single.collaborationMode, isNull);
+    expect(
+      fixture.client.started.single.input
+          .whereType<CodexTextUserInput>()
+          .single
+          .text,
+      'Implement this plan.',
+    );
+    fixture.state.dispose();
+
+    fixture = await pumpPlan(itemId: 'revise-plan');
+    await tester.enterText(
+      find.byKey(const ValueKey('codex-plan-feedback')),
+      'Add a migration step',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('codex-plan-revise')));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(fixture.state.planModeEnabled, isTrue);
+    expect(
+      fixture.client.started.single.collaborationMode?.mode,
+      CodexModeKind.plan,
+    );
+    expect(
+      fixture.client.started.single.input
+          .whereType<CodexTextUserInput>()
+          .single
+          .text,
+      'Add a migration step',
+    );
+    fixture.state.dispose();
+
+    fixture = await pumpPlan(itemId: 'skip-plan');
+    await tester.tap(find.byKey(const ValueKey('codex-plan-skip')));
+    await tester.pump();
+    expect(fixture.state.planModeEnabled, isFalse);
+    expect(fixture.client.started, isEmpty);
+    expect(find.byKey(const ValueKey('codex-composer')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    fixture.state.dispose();
   });
 
   testWidgets('activity groups and item details use bounded scroll areas', (
@@ -557,7 +756,7 @@ Only show **this request**.
     state.dispose();
   });
 
-  testWidgets('add menu owns goal, plan, skill and plugin composer options', (
+  testWidgets('add menu owns goal, plan and plugin composer options', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -596,11 +795,19 @@ Only show **this request**.
 
     expect(find.byKey(const ValueKey('codex-goal-button')), findsNothing);
     expect(find.byKey(const ValueKey('codex-goal-chip')), findsOneWidget);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('codex-goal-chip'))).left -
+          tester
+              .getRect(find.byKey(const ValueKey('codex-permission-selector')))
+              .right,
+      moreOrLessEquals(MotifSpacing.xs, epsilon: 0.1),
+    );
     await tester.tap(find.byKey(const ValueKey('codex-add-menu')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('codex-add-goal')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-add-plan')), findsOneWidget);
-    expect(find.text('Skills'), findsOneWidget);
+    expect(find.text('Skills'), findsNothing);
+    expect(find.byKey(const ValueKey('codex-add-skill-0')), findsNothing);
     expect(find.text('Plugins'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('codex-add-plan')));
     await tester.pumpAndSettle();
@@ -618,21 +825,6 @@ Only show **this request**.
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('codex-add-plan')));
     await tester.pumpAndSettle();
-    await tester.pumpWidget(buildComposerApp());
-    await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('codex-add-menu')));
-    await tester.pumpAndSettle();
-    final skill = find.byKey(const ValueKey('codex-add-skill-0'));
-    await tester.ensureVisible(skill);
-    await tester.tap(skill);
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(
-        const ValueKey('codex-reference-skill-/skills/review/SKILL.md'),
-      ),
-      findsOneWidget,
-    );
-
     await tester.enterText(
       find.byKey(const ValueKey('codex-composer-input')),
       'Use the selected capability',
@@ -641,9 +833,63 @@ Only show **this request**.
     await tester.pump(const Duration(milliseconds: 200));
     expect(client.started, hasLength(1));
     expect(client.started.single.collaborationMode?.mode, CodexModeKind.plan);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('goal uses the composer for its objective', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    state.turns = [state.turns.first];
+    Widget buildGoalApp() => MaterialApp(
+      theme: motifTheme(Brightness.light),
+      home: Scaffold(body: CodexThreadWorkspace(state: state)),
+    );
+
+    await tester.pumpWidget(buildGoalApp());
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('codex-add-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('codex-add-goal')));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(buildGoalApp());
+    await tester.pump();
+
+    expect(find.text('Thread goal'), findsNothing);
+    expect(state.goalModeEnabled, isTrue);
+    expect(find.byKey(const ValueKey('codex-goal-chip')), findsOneWidget);
     expect(
-      client.started.single.input.whereType<CodexSkillUserInput>().single.path,
-      '/skills/review/SKILL.md',
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('codex-composer-input')))
+          .decoration
+          ?.hintText,
+      'Describe your goal',
+    );
+
+    await tester.enterText(
+      find.byKey(const ValueKey('codex-composer-input')),
+      'Ship the composer goal flow',
+    );
+    await tester.tap(find.byKey(const ValueKey('codex-send')));
+    await tester.pumpAndSettle();
+
+    expect(client.goalsSet, hasLength(1));
+    expect(client.goalsSet.single.objective, 'Ship the composer goal flow');
+    expect(client.started, isEmpty);
+    expect(state.goalModeEnabled, isFalse);
+    expect(state.goal?.objective, 'Ship the composer goal flow');
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('codex-composer-input')))
+          .controller
+          ?.text,
+      isEmpty,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -741,6 +987,100 @@ Only show **this request**.
     expect(tester.getSize(quote).width, 400);
   });
 
+  testWidgets('Markdown lists use compact right-aligned marker gutters', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: const Scaffold(
+          body: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 400,
+              child: CodexMarkdown(
+                'Before\n\n1. Ordered item\n\n- First bullet\n- Second bullet\n\nAfter',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final markdown = tester.widget<MarkdownBody>(
+      find.byType(MarkdownBody).first,
+    );
+    expect(markdown.styleSheet?.blockSpacing, MotifSpacing.lg);
+    expect(markdown.styleSheet?.listIndent, MotifSpacing.lg);
+    expect(
+      markdown.styleSheet?.listBulletPadding,
+      const EdgeInsets.only(right: MotifSpacing.sm),
+    );
+    final bullets = find.text('•');
+    expect(bullets, findsNWidgets(2));
+    final marker = tester.widget<Text>(bullets.first);
+    expect(marker.style?.fontSize, MotifType.body.fontSize);
+    expect(marker.style?.fontWeight, FontWeight.w700);
+    final orderedMarkerRect = tester.getRect(find.text('1.'));
+    final orderedItemRect = tester.getRect(find.text('Ordered item'));
+    expect(
+      orderedMarkerRect.left,
+      moreOrLessEquals(MotifSpacing.xs, epsilon: 0.1),
+    );
+    expect(
+      orderedItemRect.left - orderedMarkerRect.right,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+    final markerRect = tester.getRect(bullets.first);
+    final firstRect = tester.getRect(find.text('First bullet'));
+    final secondRect = tester.getRect(find.text('Second bullet'));
+    expect(markerRect.left, moreOrLessEquals(MotifSpacing.xs, epsilon: 0.1));
+    expect(
+      firstRect.left - markerRect.right,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+    expect(
+      secondRect.top - firstRect.bottom,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+  });
+
+  testWidgets('nested Markdown lists use the same vertical spacing', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: const Scaffold(
+          body: SizedBox(
+            width: 400,
+            child: CodexMarkdown(
+              '- Parent\n  - Nested one\n  - Nested two\n- Sibling',
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final parent = tester.getRect(find.text('Parent'));
+    final nestedOne = tester.getRect(find.text('Nested one'));
+    final nestedTwo = tester.getRect(find.text('Nested two'));
+    final sibling = tester.getRect(find.text('Sibling'));
+    expect(nestedOne.left, greaterThan(parent.left));
+    expect(
+      nestedOne.top - parent.bottom,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+    expect(
+      nestedTwo.top - nestedOne.bottom,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+    expect(
+      sibling.top - nestedTwo.bottom,
+      moreOrLessEquals(MotifSpacing.sm, epsilon: 0.1),
+    );
+  });
+
   testWidgets('narrow composer keeps model settings before the send action', (
     tester,
   ) async {
@@ -749,7 +1089,17 @@ Only show **this request**.
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final client = WorkspaceFakeClient();
-    final state = workspaceState(client);
+    final state = workspaceState(client)
+      ..goal = const CodexThreadGoal(
+        createdAt: 1,
+        objective: 'Keep the compact composer readable',
+        status: CodexThreadGoalStatus.active,
+        threadId: 'thread',
+        timeUsedSeconds: 0,
+        tokensUsed: 0,
+        updatedAt: 1,
+      )
+      ..planModeEnabled = true;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -761,6 +1111,7 @@ Only show **this request**.
 
     final model = find.byKey(const ValueKey('codex-model-settings-label'));
     final send = find.byKey(const ValueKey('codex-stop'));
+    final composer = find.byKey(const ValueKey('codex-composer'));
     final modelRect = tester.getRect(model);
     final sendRect = tester.getRect(send);
     expect(
@@ -768,6 +1119,45 @@ Only show **this request**.
       moreOrLessEquals(sendRect.center.dy, epsilon: 1),
     );
     expect(modelRect.right, lessThan(sendRect.left));
+    expect(
+      tester.getRect(composer).right - sendRect.right,
+      moreOrLessEquals(MotifSpacing.md + 1, epsilon: 0.1),
+    );
+
+    final permission = find.byKey(const ValueKey('codex-permission-selector'));
+    final goal = find.byKey(const ValueKey('codex-goal-chip'));
+    final plan = find.byKey(const ValueKey('codex-plan-chip'));
+    expect(
+      find.descendant(of: permission, matching: find.byType(Text)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: goal, matching: find.byType(Text)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: plan, matching: find.byType(Text)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: goal,
+        matching: find.byIcon(Icons.track_changes_rounded),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: plan,
+        matching: find.byIcon(Icons.lightbulb_outline_rounded),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.getSize(permission).width, MotifControlSize.sm);
+    expect(
+      tester.getRect(plan).left - tester.getRect(goal).right,
+      moreOrLessEquals(MotifSpacing.xs, epsilon: 0.1),
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -842,7 +1232,7 @@ void _expandListTile(WidgetTester tester, Finder finder) {
   tester.widget<ListTile>(finder).onTap!.call();
 }
 
-CodexSessionState workspaceState(WorkspaceFakeClient client) {
+CodexServiceState workspaceState(WorkspaceFakeClient client) {
   final turns = <CodexTurn>[
     const CodexTurn(
       completedAt: 1754973480,
@@ -954,11 +1344,7 @@ CodexSessionState workspaceState(WorkspaceFakeClient client) {
     updatedAt: 1,
   );
   client.thread = thread;
-  return CodexSessionState(
-      serverId: 'server',
-      session: 'agent',
-      connection: client,
-    )
+  return CodexServiceState(serverId: 'server', connection: client)
     ..selectedThread = thread
     ..turns = turns
     ..models = const [
@@ -1024,6 +1410,7 @@ final class WorkspaceFakeClient extends ChangeNotifier
   final List<CodexThreadForkParams> forked = [];
   final List<CodexTurnStartParams> started = [];
   final List<CodexTurnSteerParams> steered = [];
+  final List<CodexThreadGoalSetParams> goalsSet = [];
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
       [];
   final StreamController<Map<String, Object?>> _raw =
@@ -1176,7 +1563,21 @@ final class WorkspaceFakeClient extends ChangeNotifier
   @override
   Future<CodexThreadGoalSetResponse> setThreadGoal(
     CodexThreadGoalSetParams params,
-  ) async => throw StateError('unused');
+  ) async {
+    goalsSet.add(params);
+    return CodexThreadGoalSetResponse(
+      goal: CodexThreadGoal(
+        createdAt: 1,
+        objective: params.objective!,
+        status: params.status ?? CodexThreadGoalStatus.active,
+        threadId: params.threadId,
+        timeUsedSeconds: 0,
+        tokenBudget: params.tokenBudget,
+        tokensUsed: 0,
+        updatedAt: 1,
+      ),
+    );
+  }
 
   @override
   Future<CodexThreadGoalClearResponse> clearThreadGoal(String threadId) async =>

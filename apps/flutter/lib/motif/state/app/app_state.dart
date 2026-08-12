@@ -516,6 +516,28 @@ class AppState {
     return target;
   }
 
+  /// Drop local controllers for server-owned hidden Sessions that were
+  /// destroyed by a Codex stop/restart operation.
+  Future<void> discardWorkspaces(
+    String serverId,
+    Iterable<String> sessions,
+  ) async {
+    final registry = serverRegistryViewModel.entries[serverId]?.workspaces;
+    final removed = <WorkspaceInstance>[];
+    for (final session in sessions.toSet()) {
+      final key = (serverId: serverId, session: session);
+      final instance = _workspaces.remove(key);
+      if (instance == null) continue;
+      registry?.retained.remove(session);
+      registry?.warmOrder.remove(session);
+      if (registry?.activeSession == session) registry?.activeSession = null;
+      removed.add(instance);
+    }
+    await Future.wait([
+      for (final instance in removed) instance.closeAndDispose(),
+    ]);
+  }
+
   WorkspaceInstance _createWorkspace(MotifServer profile, WorkspaceKey key) {
     final connection = _workspaceConnectionFactory(profile, key.session);
     connection.onSessionRenamed = (customName) =>

@@ -8,16 +8,6 @@ use crate::common::{ClientId, Seq, SessionId, UnixMs};
 use crate::pty::PtyInfo;
 use crate::view::{ViewId, ViewInfo};
 
-/// Runtime backing a Motif session. Missing values from older clients are
-/// interpreted as `terminal` for wire compatibility.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionType {
-    #[default]
-    Terminal,
-    Codex,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: SessionId,
@@ -29,8 +19,6 @@ pub struct SessionInfo {
     pub workdir: PathBuf,
     pub created_at: UnixMs,
     pub client_count: u32,
-    #[serde(default)]
-    pub r#type: SessionType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,10 +42,7 @@ pub struct ListResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateParams {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workdir: Option<PathBuf>,
-    #[serde(default)]
-    pub r#type: SessionType,
+    pub workdir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,27 +152,3 @@ pub struct DestroyParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DestroyResult {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_type_defaults_to_terminal_for_old_clients() {
-        let params: CreateParams = serde_json::from_value(serde_json::json!({
-            "name": "legacy"
-        }))
-        .unwrap();
-        assert_eq!(params.r#type, SessionType::Terminal);
-        assert_eq!(params.workdir, None);
-    }
-
-    #[test]
-    fn session_type_uses_lowercase_wire_values() {
-        assert_eq!(
-            serde_json::to_value(SessionType::Terminal).unwrap(),
-            "terminal"
-        );
-        assert_eq!(serde_json::to_value(SessionType::Codex).unwrap(), "codex");
-    }
-}
