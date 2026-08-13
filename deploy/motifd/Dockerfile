@@ -25,7 +25,7 @@ RUN set -eux; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      ca-certificates curl git unzip xz-utils zip; \
+      ca-certificates curl git patch unzip xz-utils zip; \
     rm -rf /var/lib/apt/lists/*; \
     curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
     mkdir -p /opt/zig; \
@@ -70,7 +70,7 @@ RUN set -eux; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      ca-certificates curl cmake git pkg-config xz-utils; \
+      ca-certificates curl cmake git patch pkg-config xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
     curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
     mkdir -p /opt/zig; \

@@ -34,7 +34,7 @@ RUN set -eux; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends cmake pkg-config xz-utils ca-certificates; \
+    apt-get install -y --no-install-recommends cmake patch pkg-config xz-utils ca-certificates; \
     rm -rf /var/lib/apt/lists/*; \
     curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz; \
     mkdir -p /opt/zig; \
