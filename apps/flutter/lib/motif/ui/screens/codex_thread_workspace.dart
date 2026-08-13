@@ -719,6 +719,7 @@ List<Widget> _turnContent(
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
   var groupIndex = 0;
+  var bottomHasProgressOrAssistant = false;
 
   void flushActivity() {
     if (activity.isEmpty) return;
@@ -741,12 +742,13 @@ List<Widget> _turnContent(
           child: CodexActivityTitle(
             state: state,
             item: reasoning,
-            groupTitle: '',
+            groupTitle: 'Thinking',
             showLatestItemTitle: true,
             processingLatestItem: reasoningIsLatest,
           ),
         ),
       );
+      bottomHasProgressOrAssistant = true;
       return;
     }
     final currentGroup = groupIndex++;
@@ -771,6 +773,7 @@ List<Widget> _turnContent(
         ),
       ),
     );
+    bottomHasProgressOrAssistant = true;
   }
 
   for (final item in itemList) {
@@ -788,6 +791,17 @@ List<Widget> _turnContent(
           child: _ContextCompactionItem(item: item),
         ),
       );
+      bottomHasProgressOrAssistant = false;
+      continue;
+    }
+    if (item case CodexAgentMessageThreadItem(
+      text: final text,
+    ) when text.trim().isEmpty) {
+      continue;
+    }
+    if (item case CodexPlanThreadItem(
+      text: final text,
+    ) when text.trim().isEmpty) {
       continue;
     }
     if (_isVisibleTextBoundary(item)) {
@@ -803,12 +817,35 @@ List<Widget> _turnContent(
           ),
         ),
       );
+      bottomHasProgressOrAssistant = item is CodexAgentMessageThreadItem;
     } else {
       activity.add(item);
     }
   }
   flushActivity();
+  if (turn.status == CodexTurnStatus.inProgress &&
+      !bottomHasProgressOrAssistant) {
+    result.add(
+      Padding(
+        key: ValueKey('codex-turn-thinking-${turn.id}'),
+        padding: const EdgeInsets.only(bottom: _turnTopLevelItemSpacing),
+        child: const _ActiveTurnThinking(),
+      ),
+    );
+  }
   return result;
+}
+
+class _ActiveTurnThinking extends StatelessWidget {
+  const _ActiveTurnThinking();
+
+  @override
+  Widget build(BuildContext context) => Text(
+    'Thinking',
+    maxLines: 2,
+    overflow: TextOverflow.ellipsis,
+    style: MotifType.subhead.copyWith(color: context.motif.textSecondary),
+  );
 }
 
 class _WorkedHeader extends StatelessWidget {

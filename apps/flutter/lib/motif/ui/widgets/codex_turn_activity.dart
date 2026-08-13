@@ -20,6 +20,9 @@ const _activityGroupMaxHeight = 360.0;
 const _activityDetailMaxHeight = 300.0;
 const _diffBodyMaxHeight = 280.0;
 const _activityTitleGap = 4.0;
+const _processingSweepDuration = Duration(milliseconds: 1600);
+const _processingSweepPause = Duration(milliseconds: 450);
+final _processingSweepPeriod = _processingSweepDuration + _processingSweepPause;
 
 /// One chronological group of non-text items located between two text items.
 /// The group is collapsed by default; expanding it never changes or merges the
@@ -50,6 +53,10 @@ class CodexTurnActivityGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     final running = items.any(_isRunning);
+    final groupTitle = _groupTitle(items);
+    final fallbackTitle = showLatestItemTitle
+        ? _latestNonReasoningTitle(items) ?? groupTitle
+        : groupTitle;
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: _InlineExpansionTile(
@@ -71,7 +78,7 @@ class CodexTurnActivityGroup extends StatelessWidget {
         title: CodexActivityTitle(
           state: state,
           item: items.last,
-          groupTitle: _groupTitle(items),
+          groupTitle: fallbackTitle,
           showLatestItemTitle: showLatestItemTitle,
           processingLatestItem: processingLatestItem,
         ),
@@ -144,8 +151,11 @@ class CodexActivityTitle extends StatelessWidget {
         if (processingLatestItem && latestTitle.isNotEmpty) {
           return _ProcessingSweepText(latestTitle, style: style);
         }
+        final title = showLatestItemTitle && latestTitle.isNotEmpty
+            ? latestTitle
+            : groupTitle;
         return Text(
-          showLatestItemTitle ? latestTitle : groupTitle,
+          title,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: style,
@@ -169,8 +179,21 @@ class _ProcessingSweepTextState extends State<_ProcessingSweepText>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1600),
+    duration: _processingSweepPeriod,
   )..repeat();
+  late final Animation<double> _position = TweenSequence<double>([
+    TweenSequenceItem(
+      tween: Tween(
+        begin: 0.0,
+        end: 1.0,
+      ).chain(CurveTween(curve: Curves.easeInOutCubic)),
+      weight: _processingSweepDuration.inMilliseconds.toDouble(),
+    ),
+    TweenSequenceItem(
+      tween: ConstantTween(1.0),
+      weight: _processingSweepPause.inMilliseconds.toDouble(),
+    ),
+  ]).animate(_controller);
 
   @override
   void dispose() {
@@ -197,12 +220,12 @@ class _ProcessingSweepTextState extends State<_ProcessingSweepText>
             child: AnimatedBuilder(
               animation: _controller,
               builder: (context, child) => ShaderMask(
+                key: const ValueKey('codex-processing-sweep'),
                 blendMode: BlendMode.srcIn,
                 shaderCallback: (bounds) {
                   final bandWidth = bounds.width.clamp(72.0, 140.0).toDouble();
                   final left =
-                      -bandWidth +
-                      _controller.value * (bounds.width + bandWidth);
+                      -bandWidth + _position.value * (bounds.width + bandWidth);
                   final base = widget.style.color ?? c.textSecondary;
                   final highlight = Color.lerp(base, Colors.white, 0.78)!;
                   return LinearGradient(
@@ -563,7 +586,6 @@ class _CommandActivity extends _$_CommandActivity {
     return _DetailActivity(
       icon: Icons.terminal_rounded,
       title: _commandActivityTitle(item),
-      running: item.status == CodexCommandExecutionStatus.inProgress,
       detail: streaming ? null : detail,
       child: streaming
           ? CodexStreamingText(
@@ -1237,6 +1259,15 @@ String _activityTitle(CodexThreadItem item) => switch (item) {
   _ => _itemType(item),
 };
 
+String? _latestNonReasoningTitle(List<CodexThreadItem> items) {
+  for (final item in items.reversed) {
+    if (item is CodexReasoningThreadItem) continue;
+    final title = _activityTitle(item);
+    if (title.trim().isNotEmpty) return title;
+  }
+  return null;
+}
+
 IconData _groupIcon(List<CodexThreadItem> items) {
   if (items.every((item) => item is CodexFileChangeThreadItem)) {
     return Icons.edit_outlined;
@@ -1275,8 +1306,6 @@ IconData _groupIcon(List<CodexThreadItem> items) {
 }
 
 bool _isRunning(CodexThreadItem item) => switch (item) {
-  CodexCommandExecutionThreadItem value =>
-    value.status == CodexCommandExecutionStatus.inProgress,
   CodexFileChangeThreadItem value =>
     value.status == CodexPatchApplyStatus.inProgress,
   CodexMcpToolCallThreadItem value =>

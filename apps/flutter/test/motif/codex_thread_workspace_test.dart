@@ -15,6 +15,262 @@ import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
 
 void main() {
+  testWidgets('running commands use terminal icons instead of loading icons', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    state.turns = const [
+      CodexTurn(
+        id: 'running-command-turn',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'running-command-user',
+            content: [CodexTextUserInput(text: 'Run it')],
+          ),
+          CodexCommandExecutionThreadItem(
+            command: 'flutter test',
+            commandActions: [],
+            cwd: CodexLegacyAppPathString('/work/motif'),
+            id: 'running-command',
+            status: CodexCommandExecutionStatus.inProgress,
+          ),
+        ],
+        status: CodexTurnStatus.inProgress,
+      ),
+    ];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final group = find.byKey(
+      const ValueKey('codex-activity-running-command-turn-0'),
+    );
+    expect(
+      find.descendant(
+        of: group,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: group, matching: find.byIcon(Icons.terminal_rounded)),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Running flutter'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.descendant(
+        of: group,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: group, matching: find.byIcon(Icons.terminal_rounded)),
+      findsNWidgets(2),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets(
+    'active turn falls back to Thinking until assistant text starts',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client);
+
+      state.turns = const [
+        CodexTurn(
+          id: 'thinking-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'thinking-user',
+              content: [CodexTextUserInput(text: 'Start')],
+            ),
+          ],
+          status: CodexTurnStatus.inProgress,
+        ),
+      ];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('codex-turn-thinking-thinking-turn')),
+        findsOneWidget,
+      );
+      expect(find.text('Thinking'), findsOneWidget);
+
+      state.turns = const [
+        CodexTurn(
+          id: 'thinking-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'thinking-user',
+              content: [CodexTextUserInput(text: 'Start')],
+            ),
+            CodexAgentMessageThreadItem(id: 'thinking-agent', text: ''),
+          ],
+          status: CodexTurnStatus.inProgress,
+        ),
+      ];
+      state.synchronizeViewModel();
+      await tester.pump();
+
+      expect(find.text('Thinking'), findsOneWidget);
+      expect(find.text('agentMessage'), findsNothing);
+
+      state.turns = const [
+        CodexTurn(
+          id: 'thinking-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'thinking-user',
+              content: [CodexTextUserInput(text: 'Start')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'thinking-agent',
+              text: 'Assistant has started',
+            ),
+          ],
+          status: CodexTurnStatus.inProgress,
+        ),
+      ];
+      state.synchronizeViewModel();
+      await tester.pump();
+
+      expect(find.text('Thinking'), findsNothing);
+      expect(find.text('Assistant has started'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets('empty active reasoning keeps a meaningful activity title', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    const tool = CodexMcpToolCallThreadItem(
+      arguments: {},
+      id: 'empty-reasoning-tool',
+      server: 'node_repl',
+      status: CodexMcpToolCallStatus.completed,
+      tool: 'js',
+    );
+
+    state.turns = const [
+      CodexTurn(
+        id: 'empty-reasoning-turn',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'empty-reasoning-user',
+            content: [CodexTextUserInput(text: 'Do something')],
+          ),
+          tool,
+          CodexReasoningThreadItem(
+            id: 'empty-reasoning',
+            summary: [],
+            content: [],
+          ),
+        ],
+        status: CodexTurnStatus.inProgress,
+      ),
+    ];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Used node_repl · js'), findsOneWidget);
+
+    state.turns = const [
+      CodexTurn(
+        id: 'empty-reasoning-turn',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'empty-reasoning-user',
+            content: [CodexTextUserInput(text: 'Do something')],
+          ),
+          tool,
+          CodexReasoningThreadItem(
+            id: 'empty-reasoning',
+            summary: ['Planning the next step'],
+            content: [],
+          ),
+        ],
+        status: CodexTurnStatus.inProgress,
+      ),
+    ];
+    state.synchronizeViewModel();
+    await tester.pump();
+
+    expect(find.text('Planning the next step'), findsOneWidget);
+    expect(find.text('Used node_repl · js'), findsNothing);
+    final sweep = find.byKey(const ValueKey('codex-processing-sweep'));
+    expect(sweep, findsOneWidget);
+    final firstCycle = tester.widget<ShaderMask>(sweep);
+    await tester.pump(const Duration(milliseconds: 2200));
+    final secondCycle = tester.widget<ShaderMask>(sweep);
+    await tester.pump(const Duration(milliseconds: 2200));
+    final thirdCycle = tester.widget<ShaderMask>(sweep);
+    expect(identical(firstCycle, secondCycle), isFalse);
+    expect(identical(secondCycle, thirdCycle), isFalse);
+
+    state.turns = const [
+      CodexTurn(
+        id: 'reasoning-only-turn',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'reasoning-only-user',
+            content: [CodexTextUserInput(text: 'Keep working')],
+          ),
+          CodexReasoningThreadItem(
+            id: 'reasoning-only',
+            summary: [],
+            content: [],
+          ),
+        ],
+        status: CodexTurnStatus.inProgress,
+      ),
+    ];
+    state.synchronizeViewModel();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Thinking'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets(
     'conversation starts at the bottom and resets there when the thread changes',
     (tester) async {
