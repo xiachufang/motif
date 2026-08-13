@@ -125,6 +125,7 @@ class CodexState extends _$CodexState {
       'motif.codex.selectedReasoningEfforts.v1';
   static const _selectedPermissionsKey = 'motif.codex.selectedPermissions.v1';
   static const _sideChatIndexesKey = 'motif.codex.sideChatIndexes.v1';
+  static const _lastOpenedThreadsKey = 'motif.codex.lastOpenedThreads.v1';
 
   CodexState({
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
@@ -136,6 +137,7 @@ class CodexState extends _$CodexState {
        _selectedReasoningEfforts = _loadSelectedReasoningEfforts(preferences),
        _selectedPermissions = _loadSelectedPermissions(preferences),
        _sideChatIndexes = _loadSideChatIndexes(preferences),
+       _lastOpenedThreads = _loadStringMap(preferences, _lastOpenedThreadsKey),
        super(sidebarMode, desktopSidebarVisible, sidebarWidth, preferences);
 
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
@@ -143,12 +145,14 @@ class CodexState extends _$CodexState {
   final Map<String, String> _selectedReasoningEfforts;
   final Map<String, String?> _selectedPermissions;
   final Map<String, Map<String, CodexSideChatIndex>> _sideChatIndexes;
+  final Map<String, String> _lastOpenedThreads;
   final Map<String, Map<CodexSidebarMode, double>> _sidebarScrollOffsets = {};
   Future<void> _persistProjectSidebars = Future.value();
   Future<void> _persistSelectedModels = Future.value();
   Future<void> _persistSelectedReasoningEfforts = Future.value();
   Future<void> _persistSelectedPermissions = Future.value();
   Future<void> _persistSideChatIndexes = Future.value();
+  Future<void> _persistLastOpenedThreads = Future.value();
 
   static Future<CodexState> load() async =>
       CodexState(preferences: await SharedPreferences.getInstance());
@@ -312,6 +316,29 @@ class CodexState extends _$CodexState {
 
   Future<void> flushSideChatIndexes() => _persistSideChatIndexes;
 
+  String? lastOpenedThreadId(String serverId) => _lastOpenedThreads[serverId];
+
+  void setLastOpenedThreadId(String serverId, String? threadId) {
+    if (serverId.isEmpty) return;
+    final normalized = threadId?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      if (_lastOpenedThreads.remove(serverId) == null) return;
+    } else {
+      if (_lastOpenedThreads[serverId] == normalized) return;
+      _lastOpenedThreads[serverId] = normalized;
+    }
+    final store = preferences;
+    if (store == null) return;
+    final payload = jsonEncode(_lastOpenedThreads);
+    unawaited(
+      _persistLastOpenedThreads = _persistLastOpenedThreads.then((_) async {
+        await store.setString(_lastOpenedThreadsKey, payload);
+      }),
+    );
+  }
+
+  Future<void> flushLastOpenedThreadPreferences() => _persistLastOpenedThreads;
+
   void _persistPermissionPreferences() {
     final store = preferences;
     if (store == null) return;
@@ -395,8 +422,13 @@ class CodexState extends _$CodexState {
 
   static Map<String, String> _loadSelectedModels(
     SharedPreferences? preferences,
+  ) => _loadStringMap(preferences, _selectedModelsKey);
+
+  static Map<String, String> _loadStringMap(
+    SharedPreferences? preferences,
+    String key,
   ) {
-    final raw = preferences?.getString(_selectedModelsKey);
+    final raw = preferences?.getString(key);
     if (raw == null || raw.isEmpty) return {};
     try {
       final json = jsonDecode(raw);

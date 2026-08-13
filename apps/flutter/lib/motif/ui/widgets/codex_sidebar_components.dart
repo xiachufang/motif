@@ -132,7 +132,11 @@ class CodexSidebarThreadRow extends StatelessWidget {
     this.pinned = false,
     this.indented = false,
     this.subtitle,
+    this.subtitleIcon,
+    this.subtitleSpacing = 0,
     this.trailing,
+    this.height = codexSidebarRowHeight,
+    this.horizontalContentPadding = MotifSpacing.md,
     super.key,
   });
 
@@ -143,8 +147,12 @@ class CodexSidebarThreadRow extends StatelessWidget {
   final bool pinned;
   final bool indented;
   final String? subtitle;
+  final IconData? subtitleIcon;
+  final double subtitleSpacing;
   final Widget? trailing;
   final VoidCallback? onTap;
+  final double height;
+  final double horizontalContentPadding;
 
   @override
   Widget build(BuildContext context) {
@@ -155,7 +163,7 @@ class CodexSidebarThreadRow extends StatelessWidget {
         right: MotifSpacing.sm,
       ),
       child: SizedBox(
-        height: codexSidebarRowHeight,
+        height: height,
         child: Material(
           color: selected ? c.accentFill() : Colors.transparent,
           borderRadius: BorderRadius.circular(MotifRadius.xs),
@@ -163,7 +171,9 @@ class CodexSidebarThreadRow extends StatelessWidget {
             borderRadius: BorderRadius.circular(MotifRadius.xs),
             onTap: onTap,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
+              padding: EdgeInsets.symmetric(
+                horizontal: horizontalContentPadding,
+              ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
@@ -180,17 +190,33 @@ class CodexSidebarThreadRow extends StatelessWidget {
                             color: c.textPrimary,
                           ),
                         ),
-                        if (subtitle?.isNotEmpty == true)
-                          Text(
-                            subtitle!,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: MotifType.caption.copyWith(
-                              color: c.textTertiary,
-                              height: 1,
-                              fontWeight: FontWeight.w400,
-                            ),
+                        if (subtitle?.isNotEmpty == true) ...[
+                          SizedBox(height: subtitleSpacing),
+                          Row(
+                            children: [
+                              if (subtitleIcon != null) ...[
+                                Icon(
+                                  subtitleIcon,
+                                  size: MotifIconSize.sm,
+                                  color: c.textTertiary,
+                                ),
+                                const SizedBox(width: MotifSpacing.xs),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  subtitle!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: MotifType.caption.copyWith(
+                                    color: c.textTertiary,
+                                    height: 1,
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
+                        ],
                       ],
                     ),
                   ),

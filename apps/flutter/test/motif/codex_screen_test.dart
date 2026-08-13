@@ -113,6 +113,35 @@ void main() {
     app.dispose();
   });
 
+  test('restores the last opened thread when its catalog is ready', () async {
+    SharedPreferences.setMockInitialValues({});
+    final sharedPreferences = await SharedPreferences.getInstance();
+    final preferences = CodexState(preferences: sharedPreferences)
+      ..setLastOpenedThreadId('server', 'thread');
+    final client = ScreenFakeClient();
+    final serviceState = readyServiceState(connection: client);
+    client.threadReadResponse = CodexThreadReadResponse(
+      thread: serviceState.catalog.allThreads.single,
+    );
+    final controller = CodexFeatureController(
+      serverId: 'server',
+      preferences: preferences,
+      connectionFactory: () => client,
+      serviceFactory: () => serviceState,
+      controlService: (_) async {},
+    );
+
+    await controller.start();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.readThreadIds, ['thread']);
+    expect(serviceState.selectedThread?.id, 'thread');
+    expect(preferences.lastOpenedThreadId('server'), 'thread');
+
+    await controller.close();
+    controller.dispose();
+  });
+
   testWidgets('restores and records the server model preference', (
     tester,
   ) async {
@@ -978,6 +1007,8 @@ final class ScreenFakeClient extends ChangeNotifier
   final StreamController<CodexJsonEncodable> _typed =
       StreamController<CodexJsonEncodable>.broadcast();
   final List<CodexThreadForkParams> forkParams = [];
+  final List<String> readThreadIds = [];
+  CodexThreadReadResponse? threadReadResponse;
 
   @override
   CodexConnectionState state = CodexConnectionState(
@@ -1031,7 +1062,10 @@ final class ScreenFakeClient extends ChangeNotifier
   Future<CodexThreadReadResponse> readThread(
     String threadId, {
     bool includeTurns = false,
-  }) async => throw StateError('unused');
+  }) async {
+    readThreadIds.add(threadId);
+    return threadReadResponse ?? (throw StateError('unused'));
+  }
 
   @override
   Future<CodexThreadForkResponse> forkThread(

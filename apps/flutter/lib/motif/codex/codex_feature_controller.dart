@@ -39,6 +39,9 @@ final class CodexFeatureController extends ChangeNotifier {
   bool sideChatOpening = false;
   bool _started = false;
   bool _closed = false;
+  String? _lastObservedThreadId;
+  String? _pendingRestoreThreadId;
+  bool _restoringThread = false;
 
   CodexServiceState? get service => _service;
   SideChatCollectionController? get sideChats {
@@ -51,6 +54,7 @@ final class CodexFeatureController extends ChangeNotifier {
   Future<void> start() async {
     if (_started || _closed) return;
     _started = true;
+    _pendingRestoreThreadId = preferences.lastOpenedThreadId(serverId);
     try {
       final state =
           serviceFactory?.call() ??
@@ -81,8 +85,11 @@ final class CodexFeatureController extends ChangeNotifier {
       viewModel.service = state;
       viewModel.setupError = null;
       state.addListener(_onServiceChanged);
+      _syncSelectedThreadPreference(state);
+      _maybeRestoreLastOpenedThread(state);
       notifyListeners();
       await state.start();
+      _maybeRestoreLastOpenedThread(state);
     } catch (error) {
       if (_closed) return;
       setupError = '$error';
@@ -164,7 +171,46 @@ final class CodexFeatureController extends ChangeNotifier {
 
   void _onServiceChanged() {
     if (_closed) return;
+    final state = _service;
+    if (state != null) {
+      _syncSelectedThreadPreference(state);
+      _maybeRestoreLastOpenedThread(state);
+    }
     notifyListeners();
+  }
+
+  void _syncSelectedThreadPreference(CodexServiceState state) {
+    final threadId = state.selectedThread?.id;
+    if (threadId == _lastObservedThreadId) return;
+    if (threadId != null) {
+      _lastObservedThreadId = threadId;
+      _pendingRestoreThreadId = null;
+      preferences.setLastOpenedThreadId(serverId, threadId);
+    } else if (_lastObservedThreadId != null) {
+      _lastObservedThreadId = null;
+      preferences.setLastOpenedThreadId(serverId, null);
+    }
+  }
+
+  void _maybeRestoreLastOpenedThread(CodexServiceState state) {
+    final threadId = _pendingRestoreThreadId;
+    if (threadId == null ||
+        _restoringThread ||
+        state.selectedThread != null ||
+        state.catalogPhase != CodexCatalogPhase.ready) {
+      return;
+    }
+    _pendingRestoreThreadId = null;
+    if (!state.catalog.allThreads.any((thread) => thread.id == threadId)) {
+      preferences.setLastOpenedThreadId(serverId, null);
+      return;
+    }
+    _restoringThread = true;
+    unawaited(
+      state.readThread(threadId).whenComplete(() {
+        _restoringThread = false;
+      }),
+    );
   }
 
   Future<void> close() async {
@@ -179,6 +225,7 @@ final class CodexFeatureController extends ChangeNotifier {
       collection.dispose();
     }
     await preferences.flushSideChatIndexes();
+    await preferences.flushLastOpenedThreadPreferences();
     await state?.close();
     state?.dispose();
     _service = null;

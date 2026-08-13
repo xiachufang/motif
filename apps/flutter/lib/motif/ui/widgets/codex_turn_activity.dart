@@ -307,7 +307,7 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
       key: ValueKey('codex-turn-diff-${widget.turnId}'),
       margin: const EdgeInsets.only(
         top: MotifSpacing.sm,
-        bottom: MotifSpacing.xs,
+        bottom: MotifSpacing.lg,
       ),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(

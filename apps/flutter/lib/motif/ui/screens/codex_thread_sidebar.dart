@@ -359,7 +359,13 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       children.add(const CodexSidebarSectionHeading('Pinned'));
       children.addAll(
         snapshot.pinnedThreads.map(
-          (thread) => _threadRow(context, viewModel, thread, pinned: true),
+          (thread) => _threadRow(
+            context,
+            viewModel,
+            thread,
+            pinned: true,
+            horizontalContentPadding: MotifSpacing.sm,
+          ),
         ),
       );
     }
@@ -391,7 +397,6 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         _ShowMoreRow(
           key: const ValueKey('codex-projects-more'),
           label: viewModel.showAllProjects ? 'Show less' : 'Show more',
-          showLess: viewModel.showAllProjects,
           onTap: () =>
               _setShowAllProjects(viewModel, !viewModel.showAllProjects),
         ),
@@ -430,7 +435,12 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     );
     children.addAll(
       snapshot.projectlessThreads.map(
-        (thread) => _threadRow(context, viewModel, thread),
+        (thread) => _threadRow(
+          context,
+          viewModel,
+          thread,
+          horizontalContentPadding: MotifSpacing.sm,
+        ),
       ),
     );
     if (snapshot.allThreads.isEmpty && snapshot.projects.isEmpty) {
@@ -465,8 +475,13 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         group.threads
             .take(effectiveThreadCount)
             .map(
-              (thread) =>
-                  _threadRow(context, viewModel, thread, indented: true),
+              (thread) => _threadRow(
+                context,
+                viewModel,
+                thread,
+                indented: true,
+                horizontalContentPadding: MotifSpacing.lg,
+              ),
             ),
       );
       if (group.threads.length > _initialThreadCount) {
@@ -474,8 +489,6 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
           _ShowMoreRow(
             key: ValueKey('codex-project-threads-more-$projectId'),
             label: hasMoreThreads ? 'Show more' : 'Show less',
-            showLess: !hasMoreThreads,
-            indented: true,
             onTap: () => _setVisibleThreadCount(
               viewModel,
               projectId,
@@ -511,7 +524,12 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         ),
         CodexMotionExpansion(
           expanded: expanded,
-          child: Column(mainAxisSize: MainAxisSize.min, children: nested),
+          child: AnimatedSize(
+            duration: codexExpansionDuration(context),
+            curve: codexExpansionCurve(context),
+            alignment: Alignment.topCenter,
+            child: Column(mainAxisSize: MainAxisSize.min, children: nested),
+          ),
         ),
       ],
     );
@@ -580,6 +598,10 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       thread,
       pinned: catalog.isPinned(thread.id),
       subtitle: project ?? (cwd.isEmpty ? null : codexPathBasename(cwd)),
+      subtitleIcon: Icons.folder_outlined,
+      subtitleSpacing: MotifSpacing.xs,
+      height: MotifControlSize.lg + MotifSpacing.sm,
+      horizontalContentPadding: MotifSpacing.sm,
     );
   }
 
@@ -591,6 +613,10 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     bool indented = false,
     bool archived = false,
     String? subtitle,
+    IconData? subtitleIcon,
+    double subtitleSpacing = 0,
+    double height = codexSidebarRowHeight,
+    double horizontalContentPadding = MotifSpacing.md,
   }) => CodexSidebarThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
     title: codexThreadTitle(thread),
@@ -600,6 +626,10 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     pinned: pinned,
     indented: indented,
     subtitle: subtitle,
+    subtitleIcon: subtitleIcon,
+    subtitleSpacing: subtitleSpacing,
+    height: height,
+    horizontalContentPadding: horizontalContentPadding,
     trailing: _ThreadActionsButton(
       thread: thread,
       archived: archived,
@@ -957,7 +987,7 @@ class _ProjectRow extends StatelessWidget {
                 size: MotifIconSize.md,
                 color: c.textSecondary,
               ),
-              const SizedBox(width: MotifSpacing.md),
+              const SizedBox(width: MotifSpacing.xs),
               Expanded(
                 child: Text(
                   group.project.name,
@@ -1022,18 +1052,10 @@ class _ProjectRow extends StatelessWidget {
 }
 
 class _ShowMoreRow extends StatelessWidget {
-  const _ShowMoreRow({
-    required this.label,
-    required this.onTap,
-    required this.showLess,
-    this.indented = false,
-    super.key,
-  });
+  const _ShowMoreRow({required this.label, required this.onTap, super.key});
 
   final String label;
   final VoidCallback onTap;
-  final bool showLess;
-  final bool indented;
 
   @override
   Widget build(BuildContext context) {
@@ -1044,31 +1066,14 @@ class _ShowMoreRow extends StatelessWidget {
         onTap: onTap,
         child: Padding(
           padding: EdgeInsets.only(
-            left: indented
-                ? MotifSpacing.xl + MotifSpacing.md
-                : MotifSpacing.lg,
+            left: MotifSpacing.lg + MotifIconSize.md + MotifSpacing.xs,
             right: MotifSpacing.lg,
           ),
           child: Row(
             children: [
-              CodexMotionSwitcher(
-                offset: const Offset(0, 0.12),
-                child: Text(
-                  label,
-                  key: ValueKey(label),
-                  style: MotifType.sidebar.copyWith(color: c.textTertiary),
-                ),
-              ),
-              const SizedBox(width: MotifSpacing.xs),
-              AnimatedRotation(
-                turns: showLess ? 0.5 : 0,
-                duration: codexExpansionDuration(context),
-                curve: codexExpansionCurve(context),
-                child: Icon(
-                  Icons.keyboard_arrow_down_rounded,
-                  size: MotifIconSize.sm,
-                  color: c.textTertiary,
-                ),
+              Text(
+                label,
+                style: MotifType.sidebar.copyWith(color: c.textTertiary),
               ),
             ],
           ),

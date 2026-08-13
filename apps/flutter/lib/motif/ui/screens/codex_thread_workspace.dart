@@ -1471,34 +1471,37 @@ class _ResponseActions extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (response case final response?)
-          IconButton(
-            key: ValueKey('codex-copy-${response.id}'),
-            tooltip: 'Copy response',
-            visualDensity: VisualDensity.compact,
-            iconSize: MotifIconSize.sm,
-            style: context.iconButtonStyle(foregroundColor: c.textTertiary),
-            onPressed: () async {
-              await Clipboard.setData(
-                ClipboardData(
-                  text: const CodexAgentOutputParser().parse(response.text),
-                ),
-              );
-              if (!context.mounted) return;
-              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                const SnackBar(
-                  content: Text('Response copied'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-            icon: const Icon(Icons.content_copy_rounded),
-          ),
-        actionBuilder(context, state, turn),
-      ],
+    return Transform.translate(
+      offset: const Offset(-(MotifControlSize.md - MotifIconSize.sm) / 2, 0),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (response case final response?)
+            IconButton(
+              key: ValueKey('codex-copy-${response.id}'),
+              tooltip: 'Copy response',
+              visualDensity: VisualDensity.compact,
+              iconSize: MotifIconSize.sm,
+              style: context.iconButtonStyle(foregroundColor: c.textTertiary),
+              onPressed: () async {
+                await Clipboard.setData(
+                  ClipboardData(
+                    text: const CodexAgentOutputParser().parse(response.text),
+                  ),
+                );
+                if (!context.mounted) return;
+                ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                  const SnackBar(
+                    content: Text('Response copied'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.content_copy_rounded),
+            ),
+          actionBuilder(context, state, turn),
+        ],
+      ),
     );
   }
 }

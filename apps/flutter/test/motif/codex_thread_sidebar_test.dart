@@ -10,6 +10,7 @@ import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/ui/screens/codex_thread_sidebar.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:motif/motif/ui/widgets/codex_sidebar_components.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -77,6 +78,27 @@ void main() {
     final cleared = CodexState(preferences: preferences);
     expect(cleared.selectedModelId('server-1'), isNull);
     expect(cleared.selectedModelId('server-2'), 'gpt-5.6');
+  });
+
+  test('CodexState persists the last opened thread per server', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final state = CodexState(preferences: preferences);
+
+    state
+      ..setLastOpenedThreadId('server-1', 'thread-1')
+      ..setLastOpenedThreadId('server-2', 'thread-2');
+    await state.flushLastOpenedThreadPreferences();
+
+    final restored = CodexState(preferences: preferences);
+    expect(restored.lastOpenedThreadId('server-1'), 'thread-1');
+    expect(restored.lastOpenedThreadId('server-2'), 'thread-2');
+
+    restored.setLastOpenedThreadId('server-1', null);
+    await restored.flushLastOpenedThreadPreferences();
+    final cleared = CodexState(preferences: preferences);
+    expect(cleared.lastOpenedThreadId('server-1'), isNull);
+    expect(cleared.lastOpenedThreadId('server-2'), 'thread-2');
   });
 
   test('CodexState persists permission choices per server', () async {
@@ -270,11 +292,11 @@ void main() {
     );
     expect(
       tester.getSize(find.byKey(const ValueKey('codex-project-p1'))).height,
-      lessThanOrEqualTo(40),
+      codexSidebarRowHeight,
     );
     expect(
       tester.getSize(find.byKey(const ValueKey('codex-thread-t1'))).height,
-      lessThanOrEqualTo(32),
+      codexSidebarRowHeight,
     );
 
     await tester.tap(find.byKey(const ValueKey('codex-projects-more')));
