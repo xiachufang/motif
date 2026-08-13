@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugDefaultTargetPlatformOverride;
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/services.dart';
@@ -1258,6 +1259,12 @@ Only show **this request**.
                   kind: const CodexUpdatePatchChangeKind(),
                   path: '/work/motif/lib/long.dart',
                 ),
+                for (var index = 0; index < 6; index++)
+                  CodexFileUpdateChange(
+                    diff: '-old $index\n+new $index',
+                    kind: const CodexUpdatePatchChangeKind(),
+                    path: '/work/motif/lib/extra_$index.dart',
+                  ),
               ],
               id: 'long-file-change',
               status: CodexPatchApplyStatus.completed,
@@ -1332,6 +1339,58 @@ Only show **this request**.
     expect(tester.getSize(inlineDiff).height, lessThanOrEqualTo(288));
     expect(tester.getSize(diffScroll).height, lessThanOrEqualTo(246));
     expect(_maxScrollExtent(tester, diffScroll), greaterThan(0));
+
+    final diffPosition = tester
+        .state<ScrollableState>(
+          find
+              .descendant(of: diffScroll, matching: find.byType(Scrollable))
+              .first,
+        )
+        .position;
+    final fileChangeScroll = find.byKey(
+      const ValueKey('codex-file-change-scroll-long-file-change'),
+    );
+    final fileChangePosition = tester
+        .state<ScrollableState>(
+          find
+              .descendant(
+                of: fileChangeScroll,
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        )
+        .position;
+    expect(fileChangePosition.maxScrollExtent, greaterThan(0));
+    final transferredDelta = fileChangePosition.maxScrollExtent
+        .clamp(1.0, 12.0)
+        .toDouble();
+
+    diffPosition.jumpTo(diffPosition.maxScrollExtent - 10);
+    fileChangePosition.jumpTo(0);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(diffScroll),
+        scrollDelta: Offset(0, 10 + transferredDelta),
+      ),
+    );
+    await tester.pump();
+    expect(diffPosition.pixels, closeTo(diffPosition.maxScrollExtent, 0.01));
+    expect(fileChangePosition.pixels, closeTo(transferredDelta, 0.01));
+
+    diffPosition.jumpTo(10);
+    fileChangePosition.jumpTo(fileChangePosition.maxScrollExtent);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(diffScroll),
+        scrollDelta: Offset(0, -10 - transferredDelta),
+      ),
+    );
+    await tester.pump();
+    expect(diffPosition.pixels, closeTo(0, 0.01));
+    expect(
+      fileChangePosition.pixels,
+      closeTo(fileChangePosition.maxScrollExtent - transferredDelta, 0.01),
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();

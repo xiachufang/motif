@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show precisionErrorTolerance;
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
@@ -1143,6 +1145,84 @@ class _BoundedScrollable extends StatefulWidget {
 class _BoundedScrollableState extends State<_BoundedScrollable> {
   final ScrollController _controller = ScrollController();
 
+  static bool _isVertical(ScrollPosition position) =>
+      position.axisDirection == AxisDirection.up ||
+      position.axisDirection == AxisDirection.down;
+
+  static double _logicalDelta(ScrollPosition position, double physicalDelta) =>
+      position.axisDirection == AxisDirection.up
+      ? -physicalDelta
+      : physicalDelta;
+
+  static double _physicalDelta(ScrollPosition position, double logicalDelta) =>
+      position.axisDirection == AxisDirection.up ? -logicalDelta : logicalDelta;
+
+  static double _consumableDelta(
+    ScrollPosition position,
+    double physicalDelta,
+  ) {
+    if (!_isVertical(position) ||
+        !position.physics.shouldAcceptUserOffset(position)) {
+      return 0;
+    }
+    final start = position.pixels.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    final target = (start + _logicalDelta(position, physicalDelta)).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    return _physicalDelta(position, target - start);
+  }
+
+  List<ScrollPosition> _scrollChain() {
+    final positions = <ScrollPosition>[];
+    if (_controller.hasClients) positions.add(_controller.position);
+    context.visitAncestorElements((element) {
+      if (element is StatefulElement && element.state is ScrollableState) {
+        final position = (element.state as ScrollableState).position;
+        if (_isVertical(position) && !positions.contains(position)) {
+          positions.add(position);
+        }
+      }
+      return true;
+    });
+    return positions;
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || event.scrollDelta.dy == 0) return;
+    final delta = event.scrollDelta.dy;
+    if (!_scrollChain().any(
+      (position) => _consumableDelta(position, delta) != 0,
+    )) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(
+      event,
+      _handlePointerScroll,
+    );
+  }
+
+  void _handlePointerScroll(PointerEvent event) {
+    if (event is! PointerScrollEvent) return;
+    var remaining = event.scrollDelta.dy;
+    for (final position in _scrollChain()) {
+      final boundedPixels = position.pixels.clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if (boundedPixels != position.pixels) position.jumpTo(boundedPixels);
+      final consumed = _consumableDelta(position, remaining);
+      if (consumed == 0) continue;
+      position.pointerScroll(_logicalDelta(position, remaining));
+      remaining -= consumed;
+      if (remaining.abs() < precisionErrorTolerance) break;
+    }
+    event.respond(allowPlatformDefault: false);
+  }
+
   @override
   void dispose() {
     _controller.dispose();
@@ -1159,7 +1239,11 @@ class _BoundedScrollableState extends State<_BoundedScrollable> {
         child: SingleChildScrollView(
           controller: _controller,
           primary: false,
-          child: widget.child,
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerSignal: _onPointerSignal,
+            child: widget.child,
+          ),
         ),
       ),
     );
