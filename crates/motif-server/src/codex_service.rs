@@ -9,7 +9,10 @@ use parking_lot::Mutex;
 use crate::codex_app_server::{
     CodexAppServer, CodexLaunchError, CodexLauncher, SystemCodexLauncher,
 };
+use crate::codex_observer::CodexObserver;
 use crate::conn_registry::ConnRegistry;
+use crate::devices::DeviceStore;
+use crate::relay::DeviceState;
 use crate::session::manager::{ManagerError, SessionManager};
 use crate::session::Session;
 
@@ -20,6 +23,7 @@ pub struct CodexService {
     manager: Arc<SessionManager>,
     conns: Arc<ConnRegistry>,
     launcher: Arc<dyn CodexLauncher>,
+    observer: Arc<CodexObserver>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,13 +38,38 @@ pub enum CodexServiceError {
 
 impl CodexService {
     pub fn new(manager: Arc<SessionManager>, conns: Arc<ConnRegistry>) -> Arc<Self> {
+        Self::new_with_devices(
+            manager,
+            conns,
+            DeviceState {
+                store: DeviceStore::new(),
+                relay: None,
+            },
+        )
+    }
+
+    pub fn new_with_devices(
+        manager: Arc<SessionManager>,
+        conns: Arc<ConnRegistry>,
+        devices: DeviceState,
+    ) -> Arc<Self> {
+        Self::build(manager, conns, Arc::new(SystemCodexLauncher), devices)
+    }
+
+    fn build(
+        manager: Arc<SessionManager>,
+        conns: Arc<ConnRegistry>,
+        launcher: Arc<dyn CodexLauncher>,
+        devices: DeviceState,
+    ) -> Arc<Self> {
         Arc::new(Self {
             operation: Mutex::new(()),
             runtime: Mutex::new(None),
             thread_workspaces: Mutex::new(HashMap::new()),
             manager,
             conns,
-            launcher: Arc::new(SystemCodexLauncher),
+            launcher,
+            observer: CodexObserver::new(devices),
         })
     }
 
@@ -50,14 +79,19 @@ impl CodexService {
         conns: Arc<ConnRegistry>,
         launcher: Arc<dyn CodexLauncher>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            operation: Mutex::new(()),
-            runtime: Mutex::new(None),
-            thread_workspaces: Mutex::new(HashMap::new()),
+        Self::build(
             manager,
             conns,
             launcher,
-        })
+            DeviceState {
+                store: DeviceStore::new(),
+                relay: None,
+            },
+        )
+    }
+
+    pub fn observer(&self) -> Arc<CodexObserver> {
+        Arc::clone(&self.observer)
     }
 
     pub fn is_running(&self) -> bool {
@@ -82,6 +116,7 @@ impl CodexService {
             slot.take()
         };
         if let Some(runtime) = stale {
+            self.observer.stop();
             runtime.shutdown();
             self.cleanup_workspaces_locked();
         }
@@ -126,6 +161,7 @@ impl CodexService {
     }
 
     fn stop_locked(&self) -> Vec<String> {
+        self.observer.stop();
         if let Some(runtime) = self.runtime.lock().take() {
             runtime.shutdown();
         }

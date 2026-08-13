@@ -12,6 +12,7 @@ pub mod agent_hooks;
 pub mod auth;
 pub mod capture;
 pub mod codex_app_server;
+pub mod codex_observer;
 pub mod codex_service;
 pub mod codex_ws;
 pub mod config;
@@ -371,6 +372,9 @@ impl RunningServer {
                     body: "Push notifications are working.".to_string(),
                     session_id: None,
                     view_id: None,
+                    thread_id: None,
+                    turn_id: None,
+                    request_id: None,
                     kind: "test_push".to_string(),
                 },
             )
@@ -451,7 +455,6 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
 
     let manager = session::manager::SessionManager::new();
     let conns = conn_registry::ConnRegistry::new();
-    let codex = codex_service::CodexService::new(Arc::clone(&manager), Arc::clone(&conns));
     let token_store = match cfg.token.clone() {
         Some(t) => auth::TokenStore::required(t),
         None => {
@@ -480,6 +483,11 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         store: device_store,
         relay: relay_client,
     };
+    let codex = codex_service::CodexService::new_with_devices(
+        Arc::clone(&manager),
+        Arc::clone(&conns),
+        device_state.clone(),
+    );
 
     let state = ws::AppState {
         manager: manager.clone(),

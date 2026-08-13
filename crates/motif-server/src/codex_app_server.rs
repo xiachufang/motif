@@ -165,10 +165,15 @@ impl CodexAppServer {
 
     #[cfg(test)]
     pub(crate) fn fake() -> Arc<Self> {
+        Self::fake_at(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake_at(address: SocketAddr) -> Arc<Self> {
         let (exit_tx, _) = watch::channel(false);
         Arc::new(Self {
             inner: Arc::new(Inner {
-                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9),
+                address,
                 pid: None,
                 child: Mutex::new(None),
                 exited: AtomicBool::new(false),
