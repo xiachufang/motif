@@ -1169,7 +1169,10 @@ final class FakeCodexClient extends ChangeNotifier
   );
 
   @override
-  Future<CodexThreadResumeResponse> resumeThread(String threadId) async {
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async {
     resumedThreadIds.add(threadId);
     final original = pages.values
         .expand((page) => page.data)

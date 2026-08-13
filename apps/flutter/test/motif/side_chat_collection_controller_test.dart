@@ -84,6 +84,67 @@ void main() {
     await collection.close();
   });
 
+  test(
+    'restores indexed ephemeral conversations and the selected one',
+    () async {
+      final restored = [
+        _sideThread('saved-1', parentThreadId: 'parent-thread', updatedAt: 10),
+        _sideThread('saved-2', parentThreadId: 'parent-thread', updatedAt: 20),
+      ];
+      final client = _SideChatFakeClient(restoredThreads: restored);
+      final indexUpdates = <({List<String> ids, String? selected})>[];
+      final collection = SideChatCollectionController(
+        serverId: 'server',
+        parentThreadId: 'parent-thread',
+        connection: client,
+        initialThreadIds: const ['saved-1', 'saved-2'],
+        initialSelectedThreadId: 'saved-1',
+        onIndexChanged: (ids, selected) =>
+            indexUpdates.add((ids: ids, selected: selected)),
+      );
+
+      final selected = await collection.ensureInitial();
+
+      expect(client.resumed, ['saved-1', 'saved-2']);
+      expect(client.resumeIncludesTurns, everyElement(isTrue));
+      expect(client.forks, isEmpty);
+      expect(collection.entries.map((entry) => entry.id), [
+        'saved-2',
+        'saved-1',
+      ]);
+      expect(selected?.id, 'saved-1');
+      expect(collection.selected?.id, 'saved-1');
+      expect(indexUpdates.last.ids, ['saved-1', 'saved-2']);
+      expect(indexUpdates.last.selected, 'saved-1');
+
+      await collection.close();
+    },
+  );
+
+  test('drops stale indexed IDs and creates a replacement', () async {
+    final client = _SideChatFakeClient();
+    final indexUpdates = <({List<String> ids, String? selected})>[];
+    final collection = SideChatCollectionController(
+      serverId: 'server',
+      parentThreadId: 'parent-thread',
+      connection: client,
+      initialThreadIds: const ['expired-side-chat'],
+      initialSelectedThreadId: 'expired-side-chat',
+      onIndexChanged: (ids, selected) =>
+          indexUpdates.add((ids: ids, selected: selected)),
+    );
+
+    final replacement = await collection.ensureInitial();
+
+    expect(client.resumed, ['expired-side-chat']);
+    expect(client.forks, hasLength(1));
+    expect(replacement?.id, 'side-1');
+    expect(indexUpdates.last.ids, ['side-1']);
+    expect(indexUpdates.last.selected, 'side-1');
+
+    await collection.close();
+  });
+
   testWidgets('shows only the temporary collection in a desktop split view', (
     tester,
   ) async {
@@ -189,12 +250,21 @@ void main() {
 
 final class _SideChatFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
+  _SideChatFakeClient({Iterable<CodexThread> restoredThreads = const []}) {
+    for (final thread in restoredThreads) {
+      _threads[thread.id] = thread;
+    }
+  }
+
   final StreamController<Map<String, Object?>> _raw =
       StreamController.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
       StreamController.broadcast();
   final List<CodexThreadForkParams> forks = [];
   final List<String> unsubscribed = [];
+  final List<String> resumed = [];
+  final List<bool> resumeIncludesTurns = [];
+  final Map<String, CodexThread> _threads = {};
   int listCalls = 0;
   int goalCalls = 0;
   bool closed = false;
@@ -260,6 +330,7 @@ final class _SideChatFakeClient extends ChangeNotifier
       turns: const [],
       updatedAt: index,
     );
+    _threads[thread.id] = thread;
     return CodexThreadForkResponse(
       approvalPolicy: const CodexAskForApproval('on-request'),
       approvalsReviewer: CodexApprovalsReviewer.user,
@@ -278,6 +349,33 @@ final class _SideChatFakeClient extends ChangeNotifier
     unsubscribed.add(threadId);
     return const CodexThreadUnsubscribeResponse(
       status: CodexThreadUnsubscribeStatus.unsubscribed,
+    );
+  }
+
+  @override
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async {
+    resumed.add(threadId);
+    resumeIncludesTurns.add(includeTurns);
+    final thread = _threads[threadId];
+    if (thread == null) {
+      throw CodexRpcException(
+        CodexJSONRPCErrorError(
+          code: -32600,
+          message: 'no rollout found for thread id $threadId',
+        ),
+      );
+    }
+    return CodexThreadResumeResponse(
+      approvalPolicy: const CodexAskForApproval('on-request'),
+      approvalsReviewer: CodexApprovalsReviewer.user,
+      cwd: thread.cwd,
+      model: 'codex-test',
+      modelProvider: 'openai',
+      sandbox: const CodexDangerFullAccessSandboxPolicy(),
+      thread: thread,
     );
   }
 
@@ -316,6 +414,27 @@ final class _SideChatFakeClient extends ChangeNotifier
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
+
+CodexThread _sideThread(
+  String id, {
+  required String parentThreadId,
+  required int updatedAt,
+}) => CodexThread(
+  cliVersion: 'test',
+  createdAt: updatedAt,
+  cwd: const CodexV2AbsolutePathBuf('/work/motif'),
+  ephemeral: true,
+  forkedFromId: parentThreadId,
+  id: id,
+  modelProvider: 'openai',
+  parentThreadId: parentThreadId,
+  preview: '',
+  sessionId: id,
+  source: const CodexSessionSource('cli'),
+  status: const CodexIdleThreadStatus(),
+  turns: const [],
+  updatedAt: updatedAt,
+);
 
 Future<void> _waitFor(bool Function() condition) async {
   for (var attempt = 0; attempt < 100; attempt++) {

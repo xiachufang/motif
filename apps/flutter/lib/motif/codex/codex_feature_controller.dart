@@ -33,7 +33,7 @@ final class CodexFeatureController extends ChangeNotifier {
   final CodexFeatureViewModel viewModel = CodexFeatureViewModel();
 
   CodexServiceState? _service;
-  SideChatCollectionController? _sideChats;
+  final Map<String, SideChatCollectionController> _sideChatsByParentThread = {};
   String? setupError;
   bool operationInFlight = false;
   bool sideChatOpening = false;
@@ -41,7 +41,12 @@ final class CodexFeatureController extends ChangeNotifier {
   bool _closed = false;
 
   CodexServiceState? get service => _service;
-  SideChatCollectionController? get sideChats => _sideChats;
+  SideChatCollectionController? get sideChats {
+    final parentThreadId = _service?.selectedThread?.id;
+    return parentThreadId == null
+        ? null
+        : _sideChatsByParentThread[parentThreadId];
+  }
 
   Future<void> start() async {
     if (_started || _closed) return;
@@ -90,9 +95,9 @@ final class CodexFeatureController extends ChangeNotifier {
     if (_closed) return null;
     final thread = _service?.selectedThread;
     if (thread == null) return null;
-    var collection = _sideChats;
-    if (collection == null || collection.parentThreadId != thread.id) {
-      collection?.dispose();
+    var collection = _sideChatsByParentThread[thread.id];
+    if (collection == null) {
+      final stored = preferences.sideChatIndex(serverId, thread.id);
       collection = SideChatCollectionController(
         serverId: serverId,
         parentThreadId: thread.id,
@@ -113,8 +118,17 @@ final class CodexFeatureController extends ChangeNotifier {
             preferences.setSelectedPermissionId(serverId, permissionId),
         onPermissionPreferenceInvalidated: () =>
             preferences.clearSelectedPermissionId(serverId),
+        initialThreadIds: stored.threadIds,
+        initialSelectedThreadId: stored.selectedThreadId,
+        onIndexChanged: (threadIds, selectedThreadId) =>
+            preferences.setSideChatIndex(
+              serverId,
+              thread.id,
+              threadIds: threadIds,
+              selectedThreadId: selectedThreadId,
+            ),
       );
-      _sideChats = collection;
+      _sideChatsByParentThread[thread.id] = collection;
       notifyListeners();
     }
     return collection;
@@ -150,12 +164,6 @@ final class CodexFeatureController extends ChangeNotifier {
 
   void _onServiceChanged() {
     if (_closed) return;
-    final collection = _sideChats;
-    final selectedThreadId = _service?.selectedThread?.id;
-    if (collection != null && collection.parentThreadId != selectedThreadId) {
-      _sideChats = null;
-      collection.dispose();
-    }
     notifyListeners();
   }
 
@@ -164,8 +172,13 @@ final class CodexFeatureController extends ChangeNotifier {
     _closed = true;
     final state = _service;
     state?.removeListener(_onServiceChanged);
-    await _sideChats?.close();
-    _sideChats = null;
+    final sideChats = _sideChatsByParentThread.values.toList(growable: false);
+    _sideChatsByParentThread.clear();
+    for (final collection in sideChats) {
+      await collection.close();
+      collection.dispose();
+    }
+    await preferences.flushSideChatIndexes();
     await state?.close();
     state?.dispose();
     _service = null;

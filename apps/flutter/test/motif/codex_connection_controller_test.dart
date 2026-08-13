@@ -426,6 +426,10 @@ void main() {
         controller.resumeThread('thread-1'),
         throwsA(isA<CodexRpcException>()),
       );
+      await expectLater(
+        controller.resumeThread('thread-2', includeTurns: true),
+        throwsA(isA<CodexRpcException>()),
+      );
 
       final requests = {
         for (final message in sent)
@@ -466,10 +470,15 @@ void main() {
         'watchId': 'watch',
       });
       expect(requests['fs/unwatch']?['params'], {'watchId': 'watch'});
-      expect(requests['thread/resume']?['params'], {
-        'excludeTurns': true,
-        'threadId': 'thread-1',
-      });
+      expect(
+        sent
+            .where((message) => message['method'] == 'thread/resume')
+            .map((message) => message['params']),
+        [
+          {'excludeTurns': true, 'threadId': 'thread-1'},
+          {'excludeTurns': false, 'threadId': 'thread-2'},
+        ],
+      );
       expect(requests['turn/start']?['params'], {
         'effort': 'high',
         'input': [

@@ -376,8 +376,31 @@ class CodexConversationState extends ChangeNotifier {
   /// authoritative initial state and must not be followed by `thread/read` or
   /// `thread/resume`.
   void openSubscribedConversation(CodexThreadForkResponse response) {
+    _openSubscribedConversation(
+      thread: response.thread,
+      model: response.model,
+      reasoningEffort: response.reasoningEffort,
+      activePermissionProfile: response.activePermissionProfile,
+    );
+  }
+
+  /// Opens a thread restored and subscribed by `thread/resume`.
+  void openResumedConversation(CodexThreadResumeResponse response) {
+    _openSubscribedConversation(
+      thread: response.thread,
+      model: response.model,
+      reasoningEffort: response.reasoningEffort,
+      activePermissionProfile: response.activePermissionProfile,
+    );
+  }
+
+  void _openSubscribedConversation({
+    required CodexThread thread,
+    required String model,
+    required CodexReasoningEffort? reasoningEffort,
+    required CodexActivePermissionProfile? activePermissionProfile,
+  }) {
     if (_closed) return;
-    final thread = response.thread;
     _threads[thread.id] = thread;
     _resumedThreads[thread.id] = thread;
     selectedThread = thread;
@@ -394,9 +417,9 @@ class CodexConversationState extends ChangeNotifier {
     queuedMessages = const [];
     _serverRequests.clear();
     pendingServerRequests = const [];
-    selectedModelId = response.model;
-    selectedReasoningEffort = response.reasoningEffort?.value;
-    selectedPermissionId = response.activePermissionProfile?.id;
+    selectedModelId = model;
+    selectedReasoningEffort = reasoningEffort?.value;
+    selectedPermissionId = activePermissionProfile?.id;
     _notify();
     unawaited(_loadModels());
     unawaited(_loadCollaborationModes());
