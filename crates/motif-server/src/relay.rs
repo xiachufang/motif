@@ -46,6 +46,12 @@ pub struct PushNotification {
     pub body: String,
     pub session_id: Option<String>,
     pub view_id: Option<String>,
+    /// Codex thread/turn context. Terminal-hook notifications leave these
+    /// empty; Codex observer notifications use them for precise navigation and
+    /// de-duplication on the client.
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub request_id: Option<String>,
     /// Coarse kind, e.g. `"needs_input"` / `"finished"`.
     pub kind: String,
 }
@@ -57,6 +63,12 @@ struct EncMotif<'a> {
     session_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     view_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<&'a str>,
     kind: &'a str,
 }
 
@@ -222,6 +234,9 @@ fn plaintext_for(instance_id: &str, notif: &PushNotification) -> anyhow::Result<
             instance_id,
             session_id: notif.session_id.as_deref(),
             view_id: notif.view_id.as_deref(),
+            thread_id: notif.thread_id.as_deref(),
+            turn_id: notif.turn_id.as_deref(),
+            request_id: notif.request_id.as_deref(),
             kind: &notif.kind,
         },
     })?)
@@ -252,7 +267,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plaintext_includes_notification_view_id() {
+    fn plaintext_includes_terminal_and_codex_navigation_context() {
         let plain = plaintext_for(
             "instance-1",
             &PushNotification {
@@ -260,6 +275,9 @@ mod tests {
                 body: "Build finished".to_string(),
                 session_id: Some("work".to_string()),
                 view_id: Some("view-2".to_string()),
+                thread_id: Some("thread-3".to_string()),
+                turn_id: Some("turn-4".to_string()),
+                request_id: Some("request-5".to_string()),
                 kind: "finished".to_string(),
             },
         )
@@ -267,6 +285,9 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
 
         assert_eq!(value["motif"]["view_id"], "view-2");
+        assert_eq!(value["motif"]["thread_id"], "thread-3");
+        assert_eq!(value["motif"]["turn_id"], "turn-4");
+        assert_eq!(value["motif"]["request_id"], "request-5");
     }
 
     #[test]

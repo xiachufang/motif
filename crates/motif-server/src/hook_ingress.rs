@@ -327,6 +327,9 @@ async fn handle(
                     body: body_text,
                     session_id: session_name,
                     view_id,
+                    thread_id: None,
+                    turn_id: None,
+                    request_id: None,
                     kind: kind.to_string(),
                 },
             )
