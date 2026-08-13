@@ -308,6 +308,10 @@ class _CodexScreenState extends State<CodexScreen> {
               ),
       CodexConnectionPhase.failed => _MainSurface(
         child: _Failure(
+          title:
+              connection.failureKind == CodexConnectionFailureKind.cliNotFound
+              ? 'Codex CLI not found'
+              : 'Codex connection failed',
           error: connection.error ?? 'Connection failed',
           onRetry: state.retryConnection,
         ),
@@ -607,7 +611,12 @@ class _Connected extends StatelessWidget {
 }
 
 class _Failure extends StatelessWidget {
-  const _Failure({required this.error, this.onRetry});
+  const _Failure({
+    required this.error,
+    this.title = 'Codex connection failed',
+    this.onRetry,
+  });
+  final String title;
   final String error;
   final Future<void> Function()? onRetry;
 
@@ -620,10 +629,7 @@ class _Failure extends StatelessWidget {
       children: [
         Icon(Icons.error_outline, size: 44, color: c.danger),
         const SizedBox(height: MotifSpacing.md),
-        Text(
-          'Codex connection failed',
-          style: MotifType.title.copyWith(color: c.textPrimary),
-        ),
+        Text(title, style: MotifType.title.copyWith(color: c.textPrimary)),
         const SizedBox(height: MotifSpacing.sm),
         Text(
           error,

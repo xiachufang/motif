@@ -193,6 +193,30 @@ void main() {
   });
 
   test(
+    'missing Codex CLI is classified separately from socket failures',
+    () async {
+      final controller = CodexConnectionController(
+        transport: const _FailingTransport(
+          CodexCliNotFoundException('could not find an executable Codex CLI'),
+        ),
+        appVersionProvider: () async => '1.0.0',
+      );
+
+      await controller.start();
+
+      expect(controller.state.phase, CodexConnectionPhase.failed);
+      expect(
+        controller.state.failureKind,
+        CodexConnectionFailureKind.cliNotFound,
+      );
+      expect(controller.state.error, contains('Install the Codex CLI'));
+      expect(controller.state.error, contains('MOTIFD_CODEX_PATH'));
+
+      await controller.close();
+    },
+  );
+
+  test(
     'typed requests use generated wire shapes and correlate responses',
     () async {
       late final _FakeWebSocket socket;
@@ -522,6 +546,21 @@ final class _RetryTransport implements CodexTransport {
 
   @override
   Future<void> close() async => closeCount++;
+}
+
+final class _FailingTransport implements CodexTransport {
+  const _FailingTransport(this.error);
+
+  final Object error;
+
+  @override
+  Future<void> connect() async => throw error;
+
+  @override
+  WebSocketChannel openCodexWebSocket() => throw StateError('not connected');
+
+  @override
+  Future<void> close() async {}
 }
 
 final class _FakeWebSocket

@@ -560,6 +560,7 @@ fn err_response(
         c if c == ErrorCode::CaptureTargetNotFound as i32 => StatusCode::NOT_FOUND,
         c if c == ErrorCode::CaptureBusy as i32 => StatusCode::TOO_MANY_REQUESTS,
         c if c == ErrorCode::CaptureTooLarge as i32 => StatusCode::PAYLOAD_TOO_LARGE,
+        c if c == ErrorCode::CodexCliNotFound as i32 => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     tracing::info!(

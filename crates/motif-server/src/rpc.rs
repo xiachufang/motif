@@ -12,6 +12,7 @@ use motif_proto::{event::Event, fs as pfs, git as pgit, pty as ppty, session as 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::codex_app_server::CodexLaunchError;
 use crate::codex_service::{CodexService, CodexServiceError};
 use crate::conn_registry::ConnRegistry;
 use crate::session::manager::{ManagerError, SessionManager};
@@ -120,7 +121,7 @@ pub fn dispatch_concurrent(
                     closed_sessions: Vec::new(),
                 },
             ),
-            Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+            Err(error) => Response::err(id, codex_service_rpc_error(error)),
         },
         "codex.stop" => {
             let closed_sessions = codex.stop();
@@ -140,7 +141,7 @@ pub fn dispatch_concurrent(
                     closed_sessions,
                 },
             ),
-            Err(error) => Response::err(id, RpcError::internal(error.to_string())),
+            Err(error) => Response::err(id, codex_service_rpc_error(error)),
         },
         "codex.workspace.ensure" => {
             let params: pcodex::EnsureWorkspaceParams = match parse(req.params) {
@@ -154,8 +155,8 @@ pub fn dispatch_concurrent(
                         session: session.info(),
                     },
                 ),
-                Err(CodexServiceError::Launch(error)) => {
-                    Response::err(id, RpcError::internal(error.to_string()))
+                Err(error @ CodexServiceError::Launch(_)) => {
+                    Response::err(id, codex_service_rpc_error(error))
                 }
                 Err(error) => Response::err(id, RpcError::invalid_params(error.to_string())),
             }
@@ -342,6 +343,15 @@ pub fn dispatch_concurrent(
         }),
 
         other => Response::err(id, RpcError::method_not_found(other)),
+    }
+}
+
+fn codex_service_rpc_error(error: CodexServiceError) -> RpcError {
+    match &error {
+        CodexServiceError::Launch(
+            CodexLaunchError::ConfiguredCodexNotFound(_) | CodexLaunchError::CodexNotFound(_),
+        ) => RpcError::new(ErrorCode::CodexCliNotFound, error.to_string()),
+        _ => RpcError::internal(error.to_string()),
     }
 }
 
@@ -991,3 +1001,29 @@ pub struct RenameParams {
 pub struct Empty {}
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct EmptyOk {}
+
+#[cfg(test)]
+mod codex_error_tests {
+    use super::*;
+
+    #[test]
+    fn missing_codex_cli_has_a_stable_rpc_error_code() {
+        let error = CodexServiceError::Launch(CodexLaunchError::CodexNotFound(
+            "/home/user/.local/bin/codex".to_string(),
+        ));
+
+        let rpc_error = codex_service_rpc_error(error);
+
+        assert_eq!(rpc_error.code, ErrorCode::CodexCliNotFound as i32);
+        assert!(rpc_error.message.contains("could not find"));
+    }
+
+    #[test]
+    fn other_codex_launch_failures_remain_internal_errors() {
+        let error = CodexServiceError::Launch(CodexLaunchError::ReadyTimeout);
+
+        let rpc_error = codex_service_rpc_error(error);
+
+        assert_eq!(rpc_error.code, -32603);
+    }
+}

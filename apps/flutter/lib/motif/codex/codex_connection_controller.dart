@@ -11,8 +11,15 @@ import 'protocol/generated/codex_app_server_protocol.dart';
 
 enum CodexConnectionPhase { connecting, initializing, connected, failed }
 
+enum CodexConnectionFailureKind { connection, cliNotFound }
+
 final class CodexConnectionState {
-  const CodexConnectionState({required this.phase, this.response, this.error});
+  const CodexConnectionState({
+    required this.phase,
+    this.response,
+    this.error,
+    this.failureKind = CodexConnectionFailureKind.connection,
+  });
 
   const CodexConnectionState.connecting()
     : this(phase: CodexConnectionPhase.connecting);
@@ -20,6 +27,22 @@ final class CodexConnectionState {
   final CodexConnectionPhase phase;
   final CodexInitializeResponse? response;
   final String? error;
+  final CodexConnectionFailureKind failureKind;
+}
+
+const _codexCliNotFoundErrorCode = -32022;
+
+final class CodexCliNotFoundException implements Exception {
+  const CodexCliNotFoundException(this.serverMessage);
+
+  final String serverMessage;
+
+  @override
+  String toString() =>
+      'Install the Codex CLI on the Motif server, then retry. The standalone '
+      'installer normally places it at ~/.local/bin/codex. If Codex is '
+      'installed elsewhere, set MOTIFD_CODEX_PATH to its executable.\n\n'
+      'Server detail: $serverMessage';
 }
 
 abstract interface class CodexTransport {
@@ -37,7 +60,22 @@ final class RpcCodexTransport implements CodexTransport {
   @override
   Future<void> connect() async {
     final rpc = _server.forkClient();
-    _rpc = rpc;
+    try {
+      // Starting over HTTP first preserves motifd's structured launch errors.
+      // A failed WebSocket upgrade otherwise collapses them into an opaque
+      // channel connection exception on both native and web clients.
+      await rpc.call('codex.start');
+      _rpc = rpc;
+    } on RpcException catch (error) {
+      await rpc.close();
+      if (error.code == _codexCliNotFoundErrorCode) {
+        throw CodexCliNotFoundException(error.message);
+      }
+      rethrow;
+    } catch (_) {
+      await rpc.close();
+      rethrow;
+    }
   }
 
   @override
@@ -524,6 +562,9 @@ final class CodexConnectionController extends ChangeNotifier
       CodexConnectionState(
         phase: CodexConnectionPhase.failed,
         error: error.toString(),
+        failureKind: error is CodexCliNotFoundException
+            ? CodexConnectionFailureKind.cliNotFound
+            : CodexConnectionFailureKind.connection,
       ),
     );
   }

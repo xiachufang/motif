@@ -34,6 +34,8 @@ pub enum ErrorCode {
     CaptureBusy = -32020,
     /// The captured image exceeded the server's pixel/encoded-byte limit.
     CaptureTooLarge = -32021,
+    /// The Codex CLI executable could not be found on the motifd host.
+    CodexCliNotFound = -32022,
     /// Catch-all for unrecognized internal errors.
     Internal = -32099,
 }
@@ -64,6 +66,7 @@ impl TryFrom<i32> for ErrorCode {
             -32019 => Self::CaptureTargetNotFound,
             -32020 => Self::CaptureBusy,
             -32021 => Self::CaptureTooLarge,
+            -32022 => Self::CodexCliNotFound,
             -32099 => Self::Internal,
             other => return Err(other),
         })

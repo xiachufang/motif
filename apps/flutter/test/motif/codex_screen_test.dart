@@ -30,6 +30,41 @@ import 'support/test_server_transport.dart';
 import 'support/workspace_connection_fixture.dart';
 
 void main() {
+  testWidgets('missing Codex CLI shows installation guidance', (tester) async {
+    final app = await appState();
+    final client = ScreenFakeClient()
+      ..state = const CodexConnectionState(
+        phase: CodexConnectionPhase.failed,
+        failureKind: CodexConnectionFailureKind.cliNotFound,
+        error: 'Install Codex or set MOTIFD_CODEX_PATH.',
+      );
+    final serviceState = readyServiceState(connection: client);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Codex CLI not found'), findsOneWidget);
+    expect(find.textContaining('MOTIFD_CODEX_PATH'), findsOneWidget);
+    expect(find.text('Codex connection failed'), findsNothing);
+    expect(find.byKey(const ValueKey('codex-retry')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
   testWidgets('desktop sidebar defaults open, toggles and resizes', (
     tester,
   ) async {
