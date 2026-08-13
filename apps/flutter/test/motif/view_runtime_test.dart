@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:characters/characters.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
@@ -125,6 +126,12 @@ void main() {
       expect(method, 'view.rename');
       expect(params, {'view_id': 'v1', 'custom_name': 'Logs'});
       expect(controller.viewModel.items.first.customName, 'Logs');
+
+      final longName = List.filled(40, '🧑🏽‍💻').join();
+      await controller.rename('v1', longName);
+      final limitedName = controller.viewModel.items.first.customName!;
+      expect(limitedName.characters.length, maxTabNameCharacters);
+      expect(params, {'view_id': 'v1', 'custom_name': limitedName});
 
       controller.handleRenamed('v1', null);
       expect(controller.viewModel.items.first.customName, isNull);

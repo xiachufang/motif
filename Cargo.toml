@@ -69,6 +69,7 @@ hex                = "0.4"
 ulid               = { version = "1", features = ["serde"] }
 getrandom          = "0.2"
 dirs               = "6"
+unicode-segmentation = "1.12"
 # Terminal QR for rzv pairing (`motif://pair`). default-features off to skip
 # the image/svg renderers — we only use the unicode half-block renderer.
 qrcode             = { version = "0.14", default-features = false }

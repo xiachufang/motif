@@ -6,8 +6,8 @@
 /// helper) to read colors.
 library;
 
-import 'package:flutter/cupertino.dart' show CupertinoPageTransition;
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart' show CupertinoPageTransition;
+import 'package:material_ui/material_ui.dart';
 
 /// Spacing scale (T-shirt sizes).
 abstract final class MotifSpacing {

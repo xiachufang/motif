@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 
@@ -13,9 +13,12 @@ import '../../codex/codex_observation_view_models.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
+import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_turn_activity.dart';
+import '../widgets/observation_select.dart';
+import '../widgets/top_toast.dart';
 
 part 'codex_thread_workspace.g.dart';
 
@@ -154,7 +157,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (state.activePlan != null)
-                  _PlanChip(plan: state.activePlan!, diff: state.activeDiff),
+                  _PlanChip(
+                    plan: state.activePlan!,
+                    diff: state.activeDiff,
+                    onOpenDiff: widget.onOpenTurnDiff,
+                  ),
                 for (final message in state.queuedMessages)
                   _QueuedMessageCard(
                     message: message,
@@ -251,14 +258,30 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
       label: 'Images',
       extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'],
       mimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+      // iOS file_selector only accepts Uniform Type Identifiers. Without
+      // these, tapping Images throws before the native picker is presented.
+      uniformTypeIdentifiers: [
+        'public.png',
+        'public.jpeg',
+        'com.compuserve.gif',
+        'org.webmproject.webp',
+      ],
     );
-    final files = await openFiles(acceptedTypeGroups: const [images]);
-    await _addFiles(files, CodexAttachmentKind.image);
+    try {
+      final files = await openFiles(acceptedTypeGroups: const [images]);
+      await _addFiles(files, CodexAttachmentKind.image);
+    } catch (error) {
+      if (mounted) showMotifToast(context, 'Could not select images: $error');
+    }
   }
 
   Future<void> _pickFiles() async {
-    final files = await openFiles();
-    await _addFiles(files, CodexAttachmentKind.file);
+    try {
+      final files = await openFiles();
+      await _addFiles(files, CodexAttachmentKind.file);
+    } catch (error) {
+      if (mounted) showMotifToast(context, 'Could not select files: $error');
+    }
   }
 
   Future<void> _addFiles(List<XFile> files, CodexAttachmentKind kind) async {
@@ -560,9 +583,6 @@ List<Widget> _turnSliverChildren({
       .where((item) => item.text.trim().isNotEmpty)
       .lastOrNull;
 
-  if (turn.status == CodexTurnStatus.inProgress && turn.startedAt != null) {
-    result.add(_TurnDivider(turn: turn));
-  }
   result.add(const SizedBox(height: MotifSpacing.md));
 
   if (turn.status == CodexTurnStatus.inProgress) {
@@ -680,30 +700,6 @@ List<Widget> _turnSliverChildren({
   return result;
 }
 
-class _TurnDivider extends StatelessWidget {
-  const _TurnDivider({required this.turn});
-
-  final CodexTurn turn;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    return Row(
-      children: [
-        Expanded(child: Divider(color: c.border)),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
-          child: Text(
-            _turnLabel(turn),
-            style: MotifType.caption.copyWith(color: c.textTertiary),
-          ),
-        ),
-        Expanded(child: Divider(color: c.border)),
-      ],
-    );
-  }
-}
-
 List<Widget> _turnContent(
   CodexConversationState state,
   CodexTurn turn,
@@ -788,10 +784,10 @@ List<Widget> _turnContent(
       result.add(
         Padding(
           padding: const EdgeInsets.only(bottom: _turnTopLevelItemSpacing),
-          child: _ContextCompactionItem(item: item),
+          child: _ContextCompactionItem(state: state, item: item),
         ),
       );
-      bottomHasProgressOrAssistant = false;
+      bottomHasProgressOrAssistant = true;
       continue;
     }
     if (item case CodexAgentMessageThreadItem(
@@ -840,10 +836,8 @@ class _ActiveTurnThinking extends StatelessWidget {
   const _ActiveTurnThinking();
 
   @override
-  Widget build(BuildContext context) => Text(
+  Widget build(BuildContext context) => CodexProcessingSweepText(
     'Thinking',
-    maxLines: 2,
-    overflow: TextOverflow.ellipsis,
     style: MotifType.subhead.copyWith(color: context.motif.textSecondary),
   );
 }
@@ -899,27 +893,34 @@ class _WorkedHeader extends StatelessWidget {
 }
 
 class _ContextCompactionItem extends StatelessWidget {
-  const _ContextCompactionItem({required this.item});
+  const _ContextCompactionItem({required this.state, required this.item});
 
+  final CodexConversationState state;
   final CodexContextCompactionThreadItem item;
 
   @override
   Widget build(BuildContext context) {
-    final c = context.motif;
-    return Row(
-      key: ValueKey('codex-context-compaction-${item.id}'),
-      children: [
-        Icon(
-          Icons.compress_rounded,
-          size: MotifIconSize.md,
-          color: c.textTertiary,
-        ),
-        const SizedBox(width: MotifSpacing.sm),
-        Text(
-          'Context compacted',
-          style: MotifType.subhead.copyWith(color: c.textSecondary),
-        ),
-      ],
+    return ObservationSelect<bool>(
+      selector: () => state.itemViewModel(item).streaming,
+      builder: (context, streaming, _) {
+        final c = context.motif;
+        final style = MotifType.subhead.copyWith(color: c.textSecondary);
+        return Row(
+          key: ValueKey('codex-context-compaction-${item.id}'),
+          children: [
+            Icon(
+              Icons.compress_rounded,
+              size: MotifIconSize.md,
+              color: c.textTertiary,
+            ),
+            const SizedBox(width: MotifSpacing.sm),
+            if (streaming)
+              CodexProcessingSweepText('Context compacting', style: style)
+            else
+              Text('Context compacted', style: style),
+          ],
+        );
+      },
     );
   }
 }
@@ -1690,10 +1691,15 @@ class _PlanDecisionPanel extends StatelessWidget {
 }
 
 class _PlanChip extends StatelessWidget {
-  const _PlanChip({required this.plan, required this.diff});
+  const _PlanChip({
+    required this.plan,
+    required this.diff,
+    required this.onOpenDiff,
+  });
 
   final CodexTurnPlanUpdatedNotification plan;
   final String? diff;
+  final CodexOpenTurnDiff? onOpenDiff;
 
   @override
   Widget build(BuildContext context) {
@@ -1708,107 +1714,146 @@ class _PlanChip extends StatelessWidget {
         ? completed.clamp(0, plan.plan.length)
         : current + 1;
     final stats = _diffStats(diff);
+    final diffDocument = diff == null || diff!.isEmpty
+        ? null
+        : DiffDocument.fromUnifiedPatch(patch: diff!, summary: const []);
     return Padding(
       padding: const EdgeInsets.only(bottom: MotifSpacing.sm),
-      child: PopupMenuButton<void>(
-        tooltip: 'Show plan',
-        offset: const Offset(0, -12),
-        itemBuilder: (_) => [
-          PopupMenuItem<void>(
-            enabled: false,
-            child: SizedBox(
-              width: 400,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (plan.explanation?.trim().isNotEmpty == true) ...[
-                    CodexMarkdown(
-                      plan.explanation!,
-                      style: MotifType.subhead.copyWith(color: c.textSecondary),
-                    ),
-                    const SizedBox(height: MotifSpacing.md),
-                  ],
-                  for (final step in plan.plan)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: MotifSpacing.xs,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: c.surfaceElevated,
+          border: Border.all(color: c.border),
+          borderRadius: BorderRadius.circular(MotifRadius.pill),
+          boxShadow: MotifElevation.card(c.shadow),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(MotifRadius.pill),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PopupMenuButton<void>(
+                key: const ValueKey('codex-plan-details'),
+                tooltip: 'Show plan',
+                offset: const Offset(0, -12),
+                itemBuilder: (_) => [_planDetailsMenuItem(context)],
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    MotifSpacing.md,
+                    MotifSpacing.sm,
+                    MotifSpacing.sm,
+                    MotifSpacing.sm,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          value: plan.plan.isEmpty
+                              ? null
+                              : completed / plan.plan.length,
+                          strokeWidth: 2,
+                          color: c.accent,
+                        ),
                       ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            switch (step.status) {
-                              CodexTurnPlanStepStatus.completed =>
-                                Icons.check_circle,
-                              CodexTurnPlanStepStatus.inProgress =>
-                                Icons.radio_button_checked,
-                              CodexTurnPlanStepStatus.pending =>
-                                Icons.radio_button_unchecked,
-                            },
-                            size: MotifIconSize.sm,
-                            color:
-                                step.status == CodexTurnPlanStepStatus.completed
-                                ? c.success
-                                : c.textTertiary,
-                          ),
-                          const SizedBox(width: MotifSpacing.sm),
-                          Expanded(
-                            child: CodexMarkdown(
-                              step.step,
-                              style: MotifType.subhead.copyWith(
-                                color: c.textSecondary,
-                              ),
-                            ),
-                          ),
-                        ],
+                      const SizedBox(width: MotifSpacing.sm),
+                      Text(
+                        'Step $position / ${plan.plan.length}',
+                        style: MotifType.callout.copyWith(
+                          color: c.textSecondary,
+                        ),
                       ),
-                    ),
-                ],
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
-        ],
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: c.surfaceElevated,
-            border: Border.all(color: c.border),
-            borderRadius: BorderRadius.circular(MotifRadius.pill),
-            boxShadow: MotifElevation.card(c.shadow),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: MotifSpacing.md,
-              vertical: MotifSpacing.sm,
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    value: plan.plan.isEmpty
-                        ? null
-                        : completed / plan.plan.length,
-                    strokeWidth: 2,
-                    color: c.accent,
+              if (stats.files > 0)
+                InkWell(
+                  key: const ValueKey('codex-plan-diff'),
+                  onTap: diffDocument == null || onOpenDiff == null
+                      ? null
+                      : () => onOpenDiff!(diffDocument),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      MotifSpacing.sm,
+                      MotifSpacing.sm,
+                      MotifSpacing.md,
+                      MotifSpacing.sm,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '·  ${stats.files} ${stats.files == 1 ? 'file' : 'files'} changed',
+                        ),
+                        Text(
+                          ' +${stats.added}',
+                          style: TextStyle(color: c.success),
+                        ),
+                        Text(
+                          ' -${stats.removed}',
+                          style: TextStyle(color: c.danger),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: MotifSpacing.sm),
-                Text(
-                  'Step $position / ${plan.plan.length}',
-                  style: MotifType.callout.copyWith(color: c.textSecondary),
-                ),
-                if (stats.files > 0) ...[
-                  Text(
-                    '  ·  ${stats.files} ${stats.files == 1 ? 'file' : 'files'} changed',
-                  ),
-                  Text(' +${stats.added}', style: TextStyle(color: c.success)),
-                  Text(' -${stats.removed}', style: TextStyle(color: c.danger)),
-                ],
-              ],
-            ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+
+  PopupMenuItem<void> _planDetailsMenuItem(BuildContext context) {
+    final c = context.motif;
+    return PopupMenuItem<void>(
+      enabled: false,
+      child: SizedBox(
+        width: 400,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (plan.explanation?.trim().isNotEmpty == true) ...[
+              CodexMarkdown(
+                plan.explanation!,
+                style: MotifType.subhead.copyWith(color: c.textSecondary),
+              ),
+              const SizedBox(height: MotifSpacing.md),
+            ],
+            for (final step in plan.plan)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: MotifSpacing.xs),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      switch (step.status) {
+                        CodexTurnPlanStepStatus.completed => Icons.check_circle,
+                        CodexTurnPlanStepStatus.inProgress =>
+                          Icons.radio_button_checked,
+                        CodexTurnPlanStepStatus.pending =>
+                          Icons.radio_button_unchecked,
+                      },
+                      size: MotifIconSize.sm,
+                      color: step.status == CodexTurnPlanStepStatus.completed
+                          ? c.success
+                          : c.textTertiary,
+                    ),
+                    const SizedBox(width: MotifSpacing.sm),
+                    Expanded(
+                      child: CodexMarkdown(
+                        step.step,
+                        style: MotifType.subhead.copyWith(
+                          color: c.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -1964,14 +2009,22 @@ class _Composer extends StatelessWidget {
               ),
             ),
           Shortcuts(
-            shortcuts: const {
-              SingleActivator(LogicalKeyboardKey.enter): _SubmitIntent(),
+            shortcuts: {
+              _ComposerSubmitActivator(controller): const _SubmitIntent(),
+              const SingleActivator(LogicalKeyboardKey.enter, shift: true):
+                  const _InsertNewlineIntent(),
             },
             child: Actions(
               actions: {
                 _SubmitIntent: CallbackAction<_SubmitIntent>(
                   onInvoke: (_) {
                     unawaited(onSubmit());
+                    return null;
+                  },
+                ),
+                _InsertNewlineIntent: CallbackAction<_InsertNewlineIntent>(
+                  onInvoke: (_) {
+                    _insertNewline(controller);
                     return null;
                   },
                 ),
@@ -3128,17 +3181,46 @@ class _EmptyConversation extends StatelessWidget {
   }
 }
 
+class _ComposerSubmitActivator extends ShortcutActivator {
+  const _ComposerSubmitActivator(this.controller);
+
+  static const _enter = SingleActivator(LogicalKeyboardKey.enter);
+
+  final TextEditingController controller;
+
+  @override
+  Iterable<LogicalKeyboardKey> get triggers => _enter.triggers;
+
+  @override
+  bool accepts(KeyEvent event, HardwareKeyboard state) {
+    final composing = controller.value.composing;
+    if (composing.isValid && !composing.isCollapsed) return false;
+    return _enter.accepts(event, state);
+  }
+
+  @override
+  String debugDescribeKeys() => _enter.debugDescribeKeys();
+}
+
 class _SubmitIntent extends Intent {
   const _SubmitIntent();
 }
 
-String _turnLabel(CodexTurn turn) {
-  if (turn.status == CodexTurnStatus.inProgress) return 'Working';
-  final duration = turn.durationMs;
-  if (duration == null) return _titleCase(turn.status.value);
-  final seconds = duration ~/ 1000;
-  if (seconds < 60) return '${_titleCase(turn.status.value)} in ${seconds}s';
-  return '${_titleCase(turn.status.value)} in ${seconds ~/ 60}m ${seconds % 60}s';
+class _InsertNewlineIntent extends Intent {
+  const _InsertNewlineIntent();
+}
+
+void _insertNewline(TextEditingController controller) {
+  final value = controller.value;
+  final selection = value.selection;
+  final range = selection.isValid
+      ? TextRange(start: selection.start, end: selection.end)
+      : TextRange.collapsed(value.text.length);
+  controller.value = value.copyWith(
+    text: value.text.replaceRange(range.start, range.end, '\n'),
+    selection: TextSelection.collapsed(offset: range.start + 1),
+    composing: TextRange.empty,
+  );
 }
 
 String _workedLabel(CodexTurn turn) {

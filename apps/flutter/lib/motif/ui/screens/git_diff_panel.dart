@@ -1,14 +1,12 @@
-import 'dart:math' as math;
-
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../models/motif_proto.dart';
 import '../../models/resource_documents.dart';
 import '../../state/workspace/workspace_api.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/diff_text_view.dart';
 import '../widgets/motif_panel_header.dart';
 import '../widgets/observation_select.dart';
-import '../widgets/tab_selection_area.dart';
 
 typedef OpenDiffView =
     Future<void> Function({String? path, required bool staged});
@@ -493,7 +491,7 @@ class _DiffSectionBody extends StatelessWidget {
           color: c.surface,
           border: Border(bottom: BorderSide(color: c.border)),
         ),
-        child: _DiffText(lines: lines, tabActive: tabActive),
+        child: DiffTextView(lines: lines, tabActive: tabActive),
       ),
     );
   }
@@ -1233,155 +1231,5 @@ class _FileHeader extends StatelessWidget {
         child: content,
       ),
     );
-  }
-}
-
-class _DiffText extends StatelessWidget {
-  final List<String> lines;
-  final bool tabActive;
-  const _DiffText({required this.lines, required this.tabActive});
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        const fontSize = 12.0;
-        final longestLine = lines.fold<int>(
-          0,
-          (longest, line) => math.max(longest, line.length),
-        );
-        final contentWidth = math.max(
-          constraints.maxWidth,
-          longestLine * fontSize * 0.62 + 72,
-        );
-        return TabSelectionArea(
-          tabActive: tabActive,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: contentWidth,
-              child: Column(
-                children: [
-                  for (var i = 0; i < lines.length; i++)
-                    _DiffLine(
-                      index: i + 1,
-                      line: lines[i],
-                      width: contentWidth,
-                      fontSize: fontSize,
-                    ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-enum _DiffLineKind { addition, deletion, hunk, fileHeader, context }
-
-class _DiffLine extends StatelessWidget {
-  final int index;
-  final String line;
-  final double width;
-  final double fontSize;
-
-  const _DiffLine({
-    required this.index,
-    required this.line,
-    required this.width,
-    required this.fontSize,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.motif;
-    final kind = _kindFor(line);
-    final textColor = switch (kind) {
-      _DiffLineKind.addition => c.success,
-      _DiffLineKind.deletion => c.danger,
-      _DiffLineKind.hunk => c.accent,
-      _DiffLineKind.fileHeader => c.textPrimary,
-      _DiffLineKind.context => c.textSecondary,
-    };
-    final bg = switch (kind) {
-      _DiffLineKind.addition => c.success.withValues(alpha: 0.08),
-      _DiffLineKind.deletion => c.danger.withValues(alpha: 0.08),
-      _DiffLineKind.hunk => c.accentFill(0.10),
-      _DiffLineKind.fileHeader => c.surfaceElevated,
-      _DiffLineKind.context => Colors.transparent,
-    };
-    final gutterBg = switch (kind) {
-      _DiffLineKind.addition => c.success.withValues(alpha: 0.12),
-      _DiffLineKind.deletion => c.danger.withValues(alpha: 0.12),
-      _DiffLineKind.hunk => c.accentFill(0.14),
-      _DiffLineKind.fileHeader => c.surfaceElevated,
-      _DiffLineKind.context => c.background.withValues(alpha: 0.45),
-    };
-    return Container(
-      width: width,
-      color: bg,
-      child: Row(
-        children: [
-          Container(
-            width: 52,
-            padding: const EdgeInsets.only(right: MotifSpacing.sm),
-            decoration: BoxDecoration(
-              color: gutterBg,
-              border: Border(right: BorderSide(color: c.border)),
-            ),
-            alignment: Alignment.centerRight,
-            child: Text(
-              '$index',
-              maxLines: 1,
-              style: MotifType.micro.copyWith(
-                color: c.textTertiary,
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.w400,
-                height: 1.45,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.sm),
-              child: Text(
-                line.isEmpty ? ' ' : line,
-                maxLines: 1,
-                softWrap: false,
-                overflow: TextOverflow.visible,
-                style: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: fontSize,
-                  color: textColor,
-                  height: 1.45,
-                  fontWeight: kind == _DiffLineKind.fileHeader
-                      ? FontWeight.w700
-                      : FontWeight.w400,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  _DiffLineKind _kindFor(String line) {
-    if (line.startsWith('+') && !line.startsWith('+++')) {
-      return _DiffLineKind.addition;
-    }
-    if (line.startsWith('-') && !line.startsWith('---')) {
-      return _DiffLineKind.deletion;
-    }
-    if (line.startsWith('@@')) return _DiffLineKind.hunk;
-    if (line.startsWith('diff --git') ||
-        line.startsWith('index ') ||
-        line.startsWith('---') ||
-        line.startsWith('+++')) {
-      return _DiffLineKind.fileHeader;
-    }
-    return _DiffLineKind.context;
   }
 }

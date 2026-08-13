@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,8 +13,198 @@ import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
+import 'package:motif/motif/ui/widgets/diff_text_view.dart';
 
 void main() {
+  testWidgets('active plan details and diff use separate hit targets', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)..queuedMessages = const [];
+    final openedDiffs = <DiffDocument>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexThreadWorkspace(
+            state: state,
+            onOpenTurnDiff: (document, {initialPath}) {
+              openedDiffs.add(document);
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final details = find.byKey(const ValueKey('codex-plan-details'));
+    final diff = find.byKey(const ValueKey('codex-plan-diff'));
+    expect(details, findsOneWidget);
+    expect(diff, findsOneWidget);
+    expect(
+      tester.getRect(details).right,
+      lessThanOrEqualTo(tester.getRect(diff).left),
+    );
+
+    await tester.tap(details);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Implement UI'), findsOneWidget);
+    expect(find.text('Run tests'), findsOneWidget);
+    expect(openedDiffs, isEmpty);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(diff);
+    await tester.pump();
+
+    expect(openedDiffs, hasLength(1));
+    expect(openedDiffs.single.files, hasLength(1));
+    expect(openedDiffs.single.files.single.path, 'lib/a.dart');
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets(
+    'composer gives Enter to the IME and Shift+Enter inserts a line',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..turns = const []
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      final input = find.byKey(const ValueKey('codex-composer-input'));
+      await tester.tap(input);
+      await tester.pump();
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'ni',
+          selection: TextSelection.collapsed(offset: 2),
+          composing: TextRange(start: 0, end: 2),
+        ),
+      );
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(client.started, isEmpty);
+      expect(tester.widget<TextField>(input).controller?.text, 'ni');
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '你',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump();
+
+      expect(client.started, isEmpty);
+      expect(tester.widget<TextField>(input).controller?.text, '你\n');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(client.started, hasLength(1));
+      expect(tester.widget<TextField>(input).controller?.text, isEmpty);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets('context compaction transitions without a Thinking fallback', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    state.turns = const [
+      CodexTurn(
+        id: 'compaction-turn',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'compaction-user',
+            content: [CodexTextUserInput(text: 'Keep going')],
+          ),
+        ],
+        status: CodexTurnStatus.inProgress,
+      ),
+    ];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('Thinking'), findsOneWidget);
+
+    client.emit(
+      const CodexItemStartedNotification2(
+        params: CodexItemStartedNotification(
+          item: CodexContextCompactionThreadItem(id: 'compaction'),
+          startedAtMs: 1,
+          threadId: 'thread',
+          turnId: 'compaction-turn',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Context compacting'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-processing-sweep')),
+      findsOneWidget,
+    );
+    expect(find.text('Thinking'), findsNothing);
+
+    client.emit(
+      const CodexItemCompletedNotification2(
+        params: CodexItemCompletedNotification(
+          completedAtMs: 2,
+          item: CodexContextCompactionThreadItem(id: 'compaction'),
+          threadId: 'thread',
+          turnId: 'compaction-turn',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Context compacting'), findsNothing);
+    expect(find.text('Context compacted'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-processing-sweep')), findsNothing);
+    expect(find.text('Thinking'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('codex-context-compaction-compaction')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets('running commands use terminal icons instead of loading icons', (
     tester,
   ) async {
@@ -29,9 +219,13 @@ void main() {
             content: [CodexTextUserInput(text: 'Run it')],
           ),
           CodexCommandExecutionThreadItem(
-            command: 'flutter test',
-            commandActions: [],
+            command: '/bin/zsh -lc "flutter test"',
+            commandActions: [
+              CodexUnknownCommandAction(command: 'flutter test'),
+            ],
             cwd: CodexLegacyAppPathString('/work/motif'),
+            durationMs: 1,
+            exitCode: 0,
             id: 'running-command',
             status: CodexCommandExecutionStatus.inProgress,
           ),
@@ -116,6 +310,11 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Thinking'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-processing-sweep')),
+        findsOneWidget,
+      );
+      expect(find.text('Working'), findsNothing);
 
       state.turns = const [
         CodexTurn(
@@ -134,6 +333,10 @@ void main() {
       await tester.pump();
 
       expect(find.text('Thinking'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-processing-sweep')),
+        findsOneWidget,
+      );
       expect(find.text('agentMessage'), findsNothing);
 
       state.turns = const [
@@ -266,6 +469,10 @@ void main() {
     await tester.pump();
 
     expect(find.text('Thinking'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-processing-sweep')),
+      findsOneWidget,
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -395,14 +602,11 @@ void main() {
         conversationSliver.delegate.estimatedChildCount,
         greaterThan(state.turns.length),
       );
+      expect(find.text('Latest **progress**'), findsOneWidget);
       expect(
-        find.byWidgetPredicate(
-          (widget) =>
-              widget is MarkdownBody && widget.data == 'Latest **progress**',
-        ),
+        find.byKey(const ValueKey('codex-reasoning-active-reasoning-2')),
         findsOneWidget,
       );
-      expect(find.byKey(const ValueKey('codex-turn-progress')), findsOneWidget);
       await tester.drag(
         find.byKey(const ValueKey('codex-turn-stream')),
         const Offset(0, 2000),
@@ -449,7 +653,7 @@ void main() {
       expect(collapsedActivity.minTileHeight, 32);
       expect(collapsedActivity.visualDensity?.vertical, -4);
       expect(find.text('Ran a command, edited files'), findsOneWidget);
-      expect(find.text('Ran rg · in 1.0s · exit 0'), findsNothing);
+      expect(find.text('Ran rg'), findsNothing);
       expect(find.text(r'$ rg TODO'), findsNothing);
       await tester.ensureVisible(find.text('Ran a command, edited files'));
       await tester.pump();
@@ -459,8 +663,11 @@ void main() {
         find.byKey(const ValueKey('codex-activity-group-scroll')),
         findsNothing,
       );
-      expect(find.text('Ran rg · in 1.0s · exit 0'), findsOneWidget);
-      expect(find.text('Edited 1 file'), findsNWidgets(2));
+      expect(find.text('Ran rg'), findsOneWidget);
+      expect(find.textContaining('exit 0'), findsNothing);
+      expect(find.text('Edited a.dart'), findsOneWidget);
+      expect(find.text('Edited b.dart'), findsOneWidget);
+      expect(find.text('Edited a.dart, c.dart and 1 more'), findsOneWidget);
       _expandListTile(
         tester,
         find.descendant(
@@ -469,11 +676,25 @@ void main() {
         ),
       );
       await tester.pump(const Duration(milliseconds: 300));
-      tester
-          .widget<IconButton>(
-            find.byKey(const ValueKey('codex-open-file-lib/a.dart')),
-          )
-          .onPressed!();
+      final openFileButton = find.byKey(
+        const ValueKey('codex-open-file-lib/a.dart'),
+      );
+      final activityIconStyle = IconButtonTheme.of(
+        tester.element(openFileButton),
+      ).style!;
+      expect(
+        activityIconStyle.foregroundColor!.resolve(<WidgetState>{}),
+        MotifColors.light.textSecondary,
+      );
+      final fileDiffTile = tester.widget<ExpansionTile>(
+        find.descendant(
+          of: find.byKey(const ValueKey('codex-file-diff-lib/a.dart')),
+          matching: find.byType(ExpansionTile),
+        ),
+      );
+      expect(fileDiffTile.iconColor, MotifColors.light.textSecondary);
+      expect(fileDiffTile.collapsedIconColor, MotifColors.light.textSecondary);
+      tester.widget<IconButton>(openFileButton).onPressed!();
       expect(openedFiles, ['/work/motif/lib/a.dart']);
       _expandListTile(
         tester,
@@ -992,10 +1213,7 @@ Only show **this request**.
 
     _expandListTile(
       tester,
-      find.ancestor(
-        of: find.text('Ran sh · exit 0'),
-        matching: find.byType(ListTile),
-      ),
+      find.ancestor(of: find.text('Ran sh'), matching: find.byType(ListTile)),
     );
     await tester.pump(const Duration(milliseconds: 300));
     final detailScroll = find.byKey(
@@ -1096,9 +1314,21 @@ Only show **this request**.
     final diffScroll = find.byKey(
       const ValueKey('codex-diff-scroll-lib/long.dart'),
     );
+    final inlineDiff = find.byKey(
+      const ValueKey('codex-inline-diff-lib/long.dart'),
+    );
+    expect(
+      find.descendant(of: diffScroll, matching: find.byType(DiffTextView)),
+      findsOneWidget,
+    );
     expect(find.text('/work/motif/lib/long.dart'), findsNothing);
     expect(find.text('lib/long.dart'), findsWidgets);
-    expect(tester.getSize(diffScroll).height, lessThanOrEqualTo(280));
+    expect(
+      tester.getSize(diffScroll).height,
+      lessThan(tester.getSize(inlineDiff).height),
+    );
+    expect(tester.getSize(inlineDiff).height, lessThanOrEqualTo(288));
+    expect(tester.getSize(diffScroll).height, lessThanOrEqualTo(246));
     expect(_maxScrollExtent(tester, diffScroll), greaterThan(0));
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -1161,6 +1391,57 @@ Only show **this request**.
     expect(shortWidth, lessThan(200));
     expect(longWidth, greaterThan(shortWidth));
     expect(longWidth, lessThanOrEqualTo(680));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('image picker includes iOS-compatible type identifiers', (
+    tester,
+  ) async {
+    const channel = MethodChannel('plugins.flutter.io/file_selector');
+    MethodCall? pickerCall;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      pickerCall = call;
+      return <String>[];
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)..queuedMessages = const [];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    tester
+        .widget<PopupMenuButton<String>>(
+          find.byKey(const ValueKey('codex-add-menu')),
+        )
+        .onSelected!('image');
+    await tester.pump();
+
+    expect(pickerCall?.method, 'openFile');
+    final arguments = pickerCall!.arguments as Map<Object?, Object?>;
+    expect(arguments['multiple'], isTrue);
+    final groups = arguments['acceptedTypeGroups'] as List<Object?>;
+    final images = groups.single as Map<Object?, Object?>;
+    expect(images['uniformTypeIdentifiers'], [
+      'public.png',
+      'public.jpeg',
+      'com.compuserve.gif',
+      'org.webmproject.webp',
+    ]);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -2262,6 +2543,24 @@ final class WorkspaceFakeClient extends ChangeNotifier
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
   ) async => CodexThreadListResponse(data: [thread]);
+
+  @override
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  ) async => const CodexThreadSetNameResponse();
+
+  @override
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId) async =>
+      const CodexThreadArchiveResponse();
+
+  @override
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId) async =>
+      CodexThreadUnarchiveResponse(thread: thread);
+
+  @override
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId) async =>
+      const CodexThreadDeleteResponse();
 
   @override
   Future<CodexThreadReadResponse> readThread(

@@ -1,10 +1,11 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/state/workspace/workspace_api.dart';
 import 'package:motif/motif/state/workspace/workspace_content_view_model.dart';
 import 'package:motif/motif/ui/screens/git_diff_panel.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
+import 'package:motif/motif/ui/widgets/diff_text_view.dart';
 
 class _DiffWorkspace {
   final diffPaths = <String?>[];
@@ -261,6 +262,7 @@ void main() {
     );
     expect(find.text('@@ -1,1 +1,1 @@'), findsNothing);
     expect(find.textContaining('very_long_diff_line_'), findsOneWidget);
+    expect(find.byType(DiffTextView), findsOneWidget);
   });
 
   testWidgets('diff view groups full patch by changed file', (tester) async {

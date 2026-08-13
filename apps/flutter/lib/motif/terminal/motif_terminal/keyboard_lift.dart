@@ -79,7 +79,7 @@ extension _MotifTerminalKeyboardLift on _MotifTerminalViewState {
     final cursorX = hasCursorPosition ? cursor.x : -1;
     final cursorY = hasCursorPosition ? cursor.y : rowCount - 1;
     final cursorBottomY =
-        widget.padding + ((cursorY + 1).clamp(1, rowCount) * _cellHeight);
+        widget.padding + (cursorY + 1).clamp(1, rowCount) * _cellHeight;
     final cursorToBottomBarTop = (_viewportHeight - cursorBottomY).clamp(
       0.0,
       double.infinity,

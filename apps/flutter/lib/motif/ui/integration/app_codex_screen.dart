@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_feature_controller.dart';

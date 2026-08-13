@@ -67,6 +67,7 @@ rcgen              = { workspace = true }
 
 dashmap            = { workspace = true }
 parking_lot        = { workspace = true }
+unicode-segmentation = { workspace = true }
 portable-pty       = { workspace = true }
 walkdir            = { workspace = true }
 mime_guess         = { workspace = true }

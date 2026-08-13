@@ -141,7 +141,7 @@ class _TabBarState extends State<_TabBar> {
                           },
                           onRename: () =>
                               unawaited(_renameTab(context, v, label)),
-                          renameKey: ValueKey('rename-tab-${v.id}'),
+                          menuKey: ValueKey('tab-menu-${v.id}'),
                           onClose: () => unawaited(
                             _closeViewWithConfirmation(
                               context,
@@ -258,6 +258,7 @@ class _TabBarState extends State<_TabBar> {
       helperText: 'Leave empty to use the automatic name.',
       fieldKey: const ValueKey('rename-tab-field'),
       saveKey: const ValueKey('rename-tab-save'),
+      maxLength: maxTabNameCharacters,
     );
     if (name == null || !mounted) return;
     try {
@@ -268,14 +269,18 @@ class _TabBarState extends State<_TabBar> {
   }
 }
 
+enum _SessionTabAction { rename, close }
+
 class _SessionTabChip extends StatelessWidget {
+  static const double _maxLabelWidth = 200;
+
   final bool active;
   final IconData icon;
   final String label;
   final int dragIndex;
   final VoidCallback onTap;
   final VoidCallback onRename;
-  final Key renameKey;
+  final Key menuKey;
   final VoidCallback onClose;
   final Key closeKey;
 
@@ -286,7 +291,7 @@ class _SessionTabChip extends StatelessWidget {
     required this.dragIndex,
     required this.onTap,
     required this.onRename,
-    required this.renameKey,
+    required this.menuKey,
     required this.onClose,
     required this.closeKey,
   });
@@ -295,18 +300,52 @@ class _SessionTabChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     final bg = active ? c.accentFill() : c.subtleFill;
-    final dragContent = Row(
-      children: [
-        Icon(icon, size: 14, color: active ? c.accent : c.textSecondary),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: MotifType.monoSmall.copyWith(
-            color: active ? c.accent : c.textSecondary,
-            fontWeight: FontWeight.w500,
+    final dragContent = ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: _maxLabelWidth),
+      child: Text(
+        label,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.ellipsis,
+        style: MotifType.monoSmall.copyWith(
+          color: active ? c.accent : c.textSecondary,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+    final menuButton = PopupMenuButton<_SessionTabAction>(
+      key: menuKey,
+      tooltip: null,
+      onSelected: (action) => switch (action) {
+        _SessionTabAction.rename => onRename(),
+        _SessionTabAction.close => onClose(),
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: _SessionTabAction.rename,
+          child: Row(
+            children: [
+              Icon(Icons.edit_outlined, size: 16),
+              SizedBox(width: 8),
+              Text('Rename'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          value: _SessionTabAction.close,
+          child: Row(
+            children: [
+              Icon(Icons.close, size: 16),
+              SizedBox(width: 8),
+              Text('Close'),
+            ],
           ),
         ),
       ],
+      child: Padding(
+        padding: const EdgeInsets.all(3),
+        child: Icon(icon, size: 14, color: active ? c.accent : c.textSecondary),
+      ),
     );
     final dragHandle = switch (Theme.of(context).platform) {
       TargetPlatform.android ||
@@ -330,21 +369,10 @@ class _SessionTabChip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              menuButton,
+              const SizedBox(width: 6),
               dragHandle,
               const SizedBox(width: 4),
-              GestureDetector(
-                key: renameKey,
-                behavior: HitTestBehavior.opaque,
-                onTap: onRename,
-                child: Padding(
-                  padding: const EdgeInsets.all(3),
-                  child: Icon(
-                    Icons.edit_outlined,
-                    size: 12,
-                    color: active ? c.accent : c.textTertiary,
-                  ),
-                ),
-              ),
               // No Tooltip here: this chip is a ReorderableListView item, and a
               // Tooltip's OverlayPortal reactivates during reorder (the list
               // rebuilds inside its own layout callback), which mutates the

@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../codex/codex_service_state.dart';
@@ -9,6 +9,8 @@ import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_sidebar_components.dart';
+import '../widgets/rename_dialog.dart';
+import '../widgets/top_toast.dart';
 
 part 'codex_thread_sidebar.g.dart';
 
@@ -16,15 +18,31 @@ part 'codex_thread_sidebar.g.dart';
 class CodexThreadSidebarViewModel extends _$CodexThreadSidebarViewModel {
   CodexThreadSidebarViewModel({
     @ObservationReadOnly() required ObservableSet<String> expandedProjects,
-    @ObservationReadOnly() required ObservableSet<String> expandedThreadLists,
+    @ObservationReadOnly()
+    required ObservableMap<String, int> visibleThreadCounts,
+    @ObservationReadOnly() required ObservableList<CodexThread> queryResults,
     String? seededSelectedProject,
     bool showAllProjects = false,
+    bool showSearch = false,
+    bool showArchived = false,
+    String query = '',
+    bool queryLoading = false,
+    String? queryError,
   }) : super(
          expandedProjects,
-         expandedThreadLists,
+         visibleThreadCounts,
+         queryResults,
          seededSelectedProject,
          showAllProjects,
+         showSearch,
+         showArchived,
+         query,
+         queryLoading,
+         queryError,
        );
+
+  Timer? searchTimer;
+  int queryGeneration = 0;
 }
 
 @ObservationWidget()
@@ -35,6 +53,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     required this.mode,
     required this.onModeChanged,
     required this.onThreadSelected,
+    this.onThreadCreated,
     super.key,
   });
 
@@ -43,9 +62,11 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   final CodexSidebarMode mode;
   final ValueChanged<CodexSidebarMode> onModeChanged;
   final ValueChanged<String> onThreadSelected;
+  final VoidCallback? onThreadCreated;
 
   static const int _initialProjectCount = 6;
   static const int _initialThreadCount = 5;
+  static const int _threadPageSize = 10;
 
   String get _serverId => serviceState.serverId;
 
@@ -54,7 +75,8 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     final preferences = codexState.projectSidebar(_serverId);
     return CodexThreadSidebarViewModel(
       expandedProjects: ObservableSet(preferences.expandedProjects),
-      expandedThreadLists: ObservableSet(preferences.expandedThreadLists),
+      visibleThreadCounts: ObservableMap(preferences.visibleThreadCounts),
+      queryResults: ObservableList<CodexThread>(),
       seededSelectedProject: preferences.initialized
           ? serviceState.catalog.selectedProjectId
           : null,
@@ -66,6 +88,12 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   bool shouldRecreateStates(covariant CodexThreadSidebar oldWidget) =>
       oldWidget.serviceState.serverId != serviceState.serverId ||
       !identical(oldWidget.codexState, codexState);
+
+  @override
+  void disposeStates({required CodexThreadSidebarViewModel viewModel}) {
+    viewModel.searchTimer?.cancel();
+    viewModel.queryGeneration++;
+  }
 
   @override
   Widget build(
@@ -82,34 +110,80 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         child: Column(
           children: [
             CodexSidebarHeader(
-              label: 'Threads',
+              label: viewModel.showArchived ? 'Archived' : 'Threads',
               actions: [
-                CodexSidebarIconButton(
-                  key: const ValueKey('codex-mode-timeline'),
-                  icon: Icons.schedule_outlined,
-                  tooltip: mode == CodexSidebarMode.timeline
-                      ? 'Group by project'
-                      : 'Group by time',
-                  selected: mode == CodexSidebarMode.timeline,
-                  onTap: () => onModeChanged(
-                    mode == CodexSidebarMode.timeline
-                        ? CodexSidebarMode.projects
-                        : CodexSidebarMode.timeline,
+                if (!viewModel.showArchived)
+                  CodexSidebarIconButton(
+                    key: const ValueKey('codex-mode-timeline'),
+                    icon: Icons.schedule_outlined,
+                    tooltip: mode == CodexSidebarMode.timeline
+                        ? 'Group by project'
+                        : 'Group by time',
+                    selected: mode == CodexSidebarMode.timeline,
+                    onTap: () => onModeChanged(
+                      mode == CodexSidebarMode.timeline
+                          ? CodexSidebarMode.projects
+                          : CodexSidebarMode.timeline,
+                    ),
                   ),
+                CodexSidebarIconButton(
+                  key: const ValueKey('codex-threads-search'),
+                  icon: Icons.search,
+                  tooltip: viewModel.showSearch ? 'Close search' : 'Search',
+                  selected: viewModel.showSearch,
+                  onTap: () => _toggleSearch(viewModel),
+                ),
+                CodexSidebarIconButton(
+                  key: const ValueKey('codex-threads-archived'),
+                  icon: Icons.archive_outlined,
+                  tooltip: viewModel.showArchived
+                      ? 'Back to threads'
+                      : 'Archived threads',
+                  selected: viewModel.showArchived,
+                  onTap: () => _toggleArchived(viewModel),
                 ),
                 CodexSidebarIconButton(
                   key: const ValueKey('codex-threads-refresh'),
                   icon: Icons.refresh,
-                  tooltip: 'Refresh threads',
+                  tooltip:
+                      viewModel.showArchived ||
+                          viewModel.query.trim().isNotEmpty
+                      ? 'Refresh results'
+                      : 'Refresh threads',
                   selected: false,
-                  busy: state.catalogPhase == CodexCatalogPhase.loading,
-                  onTap: state.catalogPhase == CodexCatalogPhase.loading
+                  busy:
+                      viewModel.queryLoading ||
+                      state.catalogPhase == CodexCatalogPhase.loading,
+                  onTap:
+                      viewModel.queryLoading ||
+                          state.catalogPhase == CodexCatalogPhase.loading
                       ? null
-                      : () => unawaited(state.refreshCatalog()),
+                      : () {
+                          if (_usesQueryResults(viewModel)) {
+                            unawaited(_runThreadQuery(viewModel));
+                          } else {
+                            unawaited(state.refreshCatalog());
+                          }
+                        },
                 ),
               ],
             ),
             Divider(height: 1, color: c.border),
+            if (viewModel.showSearch)
+              _ThreadSearchField(
+                key: const ValueKey('codex-thread-search-field'),
+                initialValue: viewModel.query,
+                archived: viewModel.showArchived,
+                onChanged: (value) => _setQuery(viewModel, value),
+                onClear: () => _setQuery(viewModel, ''),
+              ),
+            if (viewModel.queryLoading)
+              LinearProgressIndicator(
+                key: const ValueKey('codex-thread-query-loading'),
+                minHeight: 2,
+                color: c.accent,
+                backgroundColor: c.surface,
+              ),
             if (state.catalogPhase == CodexCatalogPhase.loading &&
                 state.catalog.allThreads.isNotEmpty)
               LinearProgressIndicator(
@@ -128,6 +202,11 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
                 error: state.createThreadError!,
                 onDismiss: state.clearCreateThreadError,
               ),
+            if (viewModel.queryError != null)
+              _CatalogErrorBanner(
+                error: viewModel.queryError!,
+                onRetry: () => _runThreadQuery(viewModel),
+              ),
             Expanded(child: _content(context, viewModel)),
           ],
         ),
@@ -137,6 +216,9 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
 
   Widget _content(BuildContext context, CodexThreadSidebarViewModel viewModel) {
     final state = serviceState;
+    if (_usesQueryResults(viewModel)) {
+      return _queryList(context, viewModel);
+    }
     if ((state.catalogPhase == CodexCatalogPhase.idle ||
             state.catalogPhase == CodexCatalogPhase.loading) &&
         state.catalog.allThreads.isEmpty) {
@@ -155,8 +237,56 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     }
     return switch (mode) {
       CodexSidebarMode.projects => _projectList(context, viewModel),
-      CodexSidebarMode.timeline => _timelineList(context),
+      CodexSidebarMode.timeline => _timelineList(context, viewModel),
     };
+  }
+
+  Widget _queryList(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+  ) {
+    if (viewModel.queryLoading && viewModel.queryResults.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (viewModel.queryError != null && viewModel.queryResults.isEmpty) {
+      return _CatalogFailure(
+        error: viewModel.queryError!,
+        onRetry: () => _runThreadQuery(viewModel),
+      );
+    }
+    final results = viewModel.queryResults;
+    if (results.isEmpty) {
+      return _EmptyCatalog(
+        label: viewModel.showArchived
+            ? 'No archived threads'
+            : 'No matching threads',
+      );
+    }
+    return ListView(
+      key: ValueKey(
+        viewModel.showArchived
+            ? 'codex-archived-thread-list'
+            : 'codex-thread-search-results',
+      ),
+      padding: const EdgeInsets.only(bottom: MotifSpacing.xl),
+      children: [
+        CodexSidebarSectionHeading(
+          viewModel.showArchived
+              ? (viewModel.query.trim().isEmpty
+                    ? 'Archived threads'
+                    : 'Archived results')
+              : 'Search results',
+        ),
+        for (final thread in results)
+          _threadRow(
+            context,
+            viewModel,
+            thread,
+            archived: viewModel.showArchived,
+            subtitle: _managementThreadSubtitle(thread),
+          ),
+      ],
+    );
   }
 
   Widget _projectList(
@@ -169,7 +299,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       children.add(const CodexSidebarSectionHeading('Pinned'));
       children.addAll(
         snapshot.pinnedThreads.map(
-          (thread) => _threadRow(thread, pinned: true),
+          (thread) => _threadRow(context, viewModel, thread, pinned: true),
         ),
       );
     }
@@ -194,6 +324,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
             );
             if (!context.mounted || !created) return;
             _setProjectExpanded(viewModel, projectId, true);
+            onThreadCreated?.call();
           },
         ),
       );
@@ -202,21 +333,34 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         children.add(const _EmptyProjectRow());
         continue;
       }
-      final showAllThreads = viewModel.expandedThreadLists.contains(projectId);
-      final visibleThreads = showAllThreads
-          ? group.threads
-          : group.threads.take(_initialThreadCount);
+      final visibleThreadCount =
+          viewModel.visibleThreadCounts[projectId] ?? _initialThreadCount;
+      final effectiveThreadCount = visibleThreadCount < group.threads.length
+          ? visibleThreadCount
+          : group.threads.length;
+      final hasMoreThreads = effectiveThreadCount < group.threads.length;
+      final visibleThreads = group.threads.take(effectiveThreadCount);
       children.addAll(
-        visibleThreads.map((thread) => _threadRow(thread, indented: true)),
+        visibleThreads.map(
+          (thread) => _threadRow(context, viewModel, thread, indented: true),
+        ),
       );
       if (group.threads.length > _initialThreadCount) {
         children.add(
           _ShowMoreRow(
             key: ValueKey('codex-project-threads-more-$projectId'),
-            label: showAllThreads ? 'Show less' : 'Show more',
+            label: hasMoreThreads ? 'Show more' : 'Show less',
             indented: true,
-            onTap: () =>
-                _setThreadListExpanded(viewModel, projectId, !showAllThreads),
+            onTap: () => _setVisibleThreadCount(
+              viewModel,
+              projectId,
+              hasMoreThreads
+                  ? (effectiveThreadCount + _threadPageSize <
+                            group.threads.length
+                        ? effectiveThreadCount + _threadPageSize
+                        : group.threads.length)
+                  : _initialThreadCount,
+            ),
           ),
         );
       }
@@ -232,10 +376,41 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       );
     }
 
-    if (snapshot.projectlessThreads.isNotEmpty) {
-      children.add(const CodexSidebarSectionHeading('Recents'));
-      children.addAll(snapshot.projectlessThreads.map(_threadRow));
-    }
+    children.add(
+      CodexSidebarSectionHeading(
+        'Recents',
+        trailing: serviceState.creatingProjectlessThread
+            ? const SizedBox.square(
+                dimension: MotifControlSize.sm,
+                child: Padding(
+                  padding: EdgeInsets.all(8),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            : IconButton(
+                key: const ValueKey('codex-recents-new'),
+                tooltip: 'New thread without a project',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: MotifControlSize.sm,
+                  height: MotifControlSize.sm,
+                ),
+                style: const ButtonStyle(
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                visualDensity: VisualDensity.compact,
+                iconSize: MotifIconSize.sm,
+                color: context.motif.textTertiary,
+                onPressed: () => unawaited(_createProjectlessThread(context)),
+                icon: const Icon(Icons.edit_square),
+              ),
+      ),
+    );
+    children.addAll(
+      snapshot.projectlessThreads.map(
+        (thread) => _threadRow(context, viewModel, thread),
+      ),
+    );
     if (snapshot.allThreads.isEmpty && snapshot.projects.isEmpty) {
       children.add(const _EmptyCatalog());
     }
@@ -246,7 +421,16 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     );
   }
 
-  Widget _timelineList(BuildContext context) {
+  Future<void> _createProjectlessThread(BuildContext context) async {
+    final created = await serviceState.createProjectlessThread();
+    if (!context.mounted || !created) return;
+    onThreadCreated?.call();
+  }
+
+  Widget _timelineList(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+  ) {
     final snapshot = serviceState.catalog;
     final priority = snapshot.allThreads.where(codexThreadIsActive).toList()
       ..sort(compareCodexThreadsByRecency);
@@ -263,11 +447,19 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     final children = <Widget>[];
     if (priority.isNotEmpty) {
       children.add(const CodexSidebarSectionHeading('Priority'));
-      children.addAll(priority.map(_timelineThreadRow));
+      children.addAll(
+        priority.map(
+          (thread) => _timelineThreadRow(context, viewModel, thread),
+        ),
+      );
     }
     for (final entry in groups.entries) {
       children.add(CodexSidebarSectionHeading(entry.key));
-      children.addAll(entry.value.map(_timelineThreadRow));
+      children.addAll(
+        entry.value.map(
+          (thread) => _timelineThreadRow(context, viewModel, thread),
+        ),
+      );
     }
     if (children.isEmpty) children.add(const _EmptyCatalog());
     return ListView(
@@ -277,11 +469,17 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     );
   }
 
-  Widget _timelineThreadRow(CodexThread thread) {
+  Widget _timelineThreadRow(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+    CodexThread thread,
+  ) {
     final catalog = serviceState.catalog;
     final project = catalog.projectNameForThread(thread.id);
     final cwd = thread.cwd.value.trim();
     return _threadRow(
+      context,
+      viewModel,
       thread,
       pinned: catalog.isPinned(thread.id),
       subtitle: project ?? (cwd.isEmpty ? null : codexPathBasename(cwd)),
@@ -289,21 +487,143 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   }
 
   Widget _threadRow(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
     CodexThread thread, {
     bool pinned = false,
     bool indented = false,
+    bool archived = false,
     String? subtitle,
   }) => CodexSidebarThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
     title: codexThreadTitle(thread),
-    selected: serviceState.selectedThread?.id == thread.id,
-    loading: serviceState.readingThreadId == thread.id,
+    selected: !archived && serviceState.selectedThread?.id == thread.id,
+    loading: !archived && serviceState.readingThreadId == thread.id,
     active: codexThreadIsActive(thread),
     pinned: pinned,
     indented: indented,
     subtitle: subtitle,
-    onTap: () => onThreadSelected(thread.id),
+    trailing: _ThreadActionsButton(
+      thread: thread,
+      archived: archived,
+      onSelected: (action) =>
+          _handleThreadAction(context, viewModel, thread, action),
+    ),
+    onTap: archived ? null : () => onThreadSelected(thread.id),
   );
+
+  bool _usesQueryResults(CodexThreadSidebarViewModel viewModel) =>
+      viewModel.showArchived || viewModel.query.trim().isNotEmpty;
+
+  String? _managementThreadSubtitle(CodexThread thread) {
+    final project = serviceState.catalog.projectNameForThread(thread.id);
+    if (project != null) return project;
+    final cwd = thread.cwd.value.trim();
+    return cwd.isEmpty ? null : codexPathBasename(cwd);
+  }
+
+  void _toggleSearch(CodexThreadSidebarViewModel viewModel) {
+    viewModel.showSearch = !viewModel.showSearch;
+    if (!viewModel.showSearch && viewModel.query.isNotEmpty) {
+      _setQuery(viewModel, '');
+    }
+  }
+
+  void _toggleArchived(CodexThreadSidebarViewModel viewModel) {
+    viewModel.showArchived = !viewModel.showArchived;
+    viewModel.queryError = null;
+    if (_usesQueryResults(viewModel)) {
+      unawaited(_runThreadQuery(viewModel));
+    } else {
+      viewModel.searchTimer?.cancel();
+      viewModel.queryGeneration++;
+      viewModel.queryLoading = false;
+      viewModel.queryResults.clear();
+    }
+  }
+
+  void _setQuery(CodexThreadSidebarViewModel viewModel, String value) {
+    viewModel.query = value;
+    viewModel.queryError = null;
+    viewModel.searchTimer?.cancel();
+    if (!_usesQueryResults(viewModel)) {
+      viewModel.queryGeneration++;
+      viewModel.queryLoading = false;
+      viewModel.queryResults.clear();
+      return;
+    }
+    viewModel.queryLoading = true;
+    viewModel.searchTimer = Timer(
+      const Duration(milliseconds: 250),
+      () => unawaited(_runThreadQuery(viewModel)),
+    );
+  }
+
+  Future<void> _runThreadQuery(CodexThreadSidebarViewModel viewModel) async {
+    viewModel.searchTimer?.cancel();
+    final generation = ++viewModel.queryGeneration;
+    viewModel.queryLoading = true;
+    viewModel.queryError = null;
+    try {
+      final threads = await serviceState.listThreadsForManagement(
+        archived: viewModel.showArchived,
+        searchTerm: viewModel.query,
+      );
+      if (generation != viewModel.queryGeneration) return;
+      viewModel.queryResults.replaceRange(
+        0,
+        viewModel.queryResults.length,
+        threads,
+      );
+    } catch (error) {
+      if (generation != viewModel.queryGeneration) return;
+      viewModel.queryError = '$error';
+    } finally {
+      if (generation == viewModel.queryGeneration) {
+        viewModel.queryLoading = false;
+      }
+    }
+  }
+
+  Future<void> _handleThreadAction(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+    CodexThread thread,
+    _ThreadAction action,
+  ) async {
+    try {
+      switch (action) {
+        case _ThreadAction.rename:
+          final name = await showRenameDialog(
+            context,
+            title: 'Rename thread',
+            initialValue: codexThreadTitle(thread),
+            helperText: 'Shown in the Codex thread list',
+            fieldKey: const ValueKey('codex-thread-rename-field'),
+            saveKey: const ValueKey('codex-thread-rename-save'),
+          );
+          if (name == null) return;
+          if (name.trim().isEmpty) {
+            if (context.mounted) {
+              showMotifToast(context, 'Thread name cannot be empty');
+            }
+            return;
+          }
+          await serviceState.renameThread(thread.id, name);
+        case _ThreadAction.archive:
+          await serviceState.archiveThread(thread.id);
+        case _ThreadAction.restore:
+          await serviceState.unarchiveThread(thread.id);
+      }
+      if (_usesQueryResults(viewModel)) {
+        await _runThreadQuery(viewModel);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        showMotifToast(context, 'Thread operation failed: $error');
+      }
+    }
+  }
 
   bool _projectIsExpanded(
     CodexThreadSidebarViewModel viewModel,
@@ -337,26 +657,174 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     String projectId,
     bool expanded,
   ) {
+    if (!expanded) {
+      _setVisibleThreadCount(viewModel, projectId, _initialThreadCount);
+    }
     expanded
         ? viewModel.expandedProjects.add(projectId)
         : viewModel.expandedProjects.remove(projectId);
     codexState.setProjectExpanded(_serverId, projectId, expanded);
   }
 
-  void _setThreadListExpanded(
+  void _setVisibleThreadCount(
     CodexThreadSidebarViewModel viewModel,
     String projectId,
-    bool expanded,
+    int count,
   ) {
-    expanded
-        ? viewModel.expandedThreadLists.add(projectId)
-        : viewModel.expandedThreadLists.remove(projectId);
-    codexState.setThreadListExpanded(_serverId, projectId, expanded);
+    if (count <= _initialThreadCount) {
+      viewModel.visibleThreadCounts.remove(projectId);
+      codexState.setVisibleThreadCount(_serverId, projectId, null);
+      return;
+    }
+    viewModel.visibleThreadCounts[projectId] = count;
+    codexState.setVisibleThreadCount(_serverId, projectId, count);
   }
 
   void _setShowAllProjects(CodexThreadSidebarViewModel viewModel, bool value) {
     viewModel.showAllProjects = value;
     codexState.setShowAllProjects(_serverId, value);
+  }
+}
+
+enum _ThreadAction { rename, archive, restore }
+
+class _ThreadActionsButton extends StatelessWidget {
+  const _ThreadActionsButton({
+    required this.thread,
+    required this.archived,
+    required this.onSelected,
+  });
+
+  final CodexThread thread;
+  final bool archived;
+  final ValueChanged<_ThreadAction> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final canArchive = !codexThreadIsActive(thread);
+    return PopupMenuButton<_ThreadAction>(
+      key: ValueKey('codex-thread-actions-${thread.id}'),
+      tooltip: 'Thread actions',
+      padding: EdgeInsets.zero,
+      onSelected: onSelected,
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: _ThreadAction.rename,
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.edit_outlined),
+            title: Text('Rename'),
+          ),
+        ),
+        if (archived)
+          const PopupMenuItem(
+            value: _ThreadAction.restore,
+            child: ListTile(
+              dense: true,
+              leading: Icon(Icons.unarchive_outlined),
+              title: Text('Restore'),
+            ),
+          )
+        else
+          PopupMenuItem(
+            value: _ThreadAction.archive,
+            enabled: canArchive,
+            child: const ListTile(
+              dense: true,
+              leading: Icon(Icons.archive_outlined),
+              title: Text('Archive'),
+            ),
+          ),
+      ],
+      child: const SizedBox.square(
+        dimension: 20,
+        child: Icon(Icons.more_horiz, size: MotifIconSize.sm),
+      ),
+    );
+  }
+}
+
+class _ThreadSearchField extends StatefulWidget {
+  const _ThreadSearchField({
+    required this.initialValue,
+    required this.archived,
+    required this.onChanged,
+    required this.onClear,
+    super.key,
+  });
+
+  final String initialValue;
+  final bool archived;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  @override
+  State<_ThreadSearchField> createState() => _ThreadSearchFieldState();
+}
+
+class _ThreadSearchFieldState extends State<_ThreadSearchField> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialValue,
+  );
+
+  @override
+  void didUpdateWidget(covariant _ThreadSearchField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialValue != _controller.text) {
+      _controller.value = TextEditingValue(
+        text: widget.initialValue,
+        selection: TextSelection.collapsed(offset: widget.initialValue.length),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        MotifSpacing.sm,
+        MotifSpacing.sm,
+        MotifSpacing.sm,
+        MotifSpacing.xs,
+      ),
+      child: TextField(
+        controller: _controller,
+        autofocus: true,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: widget.archived
+              ? 'Search archived threads'
+              : 'Search threads',
+          prefixIcon: const Icon(Icons.search, size: MotifIconSize.sm),
+          suffixIcon: _controller.text.isEmpty
+              ? null
+              : IconButton(
+                  key: const ValueKey('codex-thread-search-clear'),
+                  tooltip: 'Clear search',
+                  icon: const Icon(Icons.close, size: MotifIconSize.sm),
+                  onPressed: () {
+                    _controller.clear();
+                    widget.onClear();
+                    setState(() {});
+                  },
+                ),
+          filled: true,
+          fillColor: c.surfaceElevated,
+        ),
+        onChanged: (value) {
+          widget.onChanged(value);
+          setState(() {});
+        },
+      ),
+    );
   }
 }
 
@@ -402,32 +870,36 @@ class _ProjectRow extends StatelessWidget {
                 style: MotifType.body.copyWith(color: c.textPrimary),
               ),
             ),
-            if (creating)
-              const SizedBox.square(
-                dimension: 32,
-                child: Padding(
-                  padding: EdgeInsets.all(8),
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              )
-            else
-              IconButton(
-                key: ValueKey('codex-project-new-${group.project.id}'),
-                tooltip: 'New thread in ${group.project.name}',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints.tightFor(
-                  width: MotifControlSize.sm,
-                  height: MotifControlSize.sm,
-                ),
-                style: const ButtonStyle(
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-                visualDensity: VisualDensity.compact,
-                iconSize: MotifIconSize.sm,
-                color: c.textTertiary,
-                onPressed: onNewThread,
-                icon: const Icon(Icons.edit_square),
+            SizedBox.square(
+              dimension: MotifControlSize.sm,
+              child: Center(
+                child: creating
+                    ? SizedBox.square(
+                        key: ValueKey(
+                          'codex-project-new-loading-${group.project.id}',
+                        ),
+                        dimension: MotifIconSize.sm,
+                        child: const CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : IconButton(
+                        key: ValueKey('codex-project-new-${group.project.id}'),
+                        tooltip: 'New thread in ${group.project.name}',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                          width: MotifControlSize.sm,
+                          height: MotifControlSize.sm,
+                        ),
+                        style: const ButtonStyle(
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        iconSize: MotifIconSize.sm,
+                        color: c.textTertiary,
+                        onPressed: onNewThread,
+                        icon: const Icon(Icons.edit_square),
+                      ),
               ),
+            ),
             Icon(
               expanded ? Icons.expand_less : Icons.expand_more,
               size: MotifIconSize.sm,
@@ -459,7 +931,7 @@ class _ShowMoreRow extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: EdgeInsets.fromLTRB(
-          indented ? 56 : MotifSpacing.lg,
+          indented ? MotifSpacing.xl + MotifSpacing.md : MotifSpacing.lg,
           MotifSpacing.xs,
           MotifSpacing.lg,
           MotifSpacing.xs,
@@ -495,7 +967,9 @@ class _EmptyProjectRow extends StatelessWidget {
 }
 
 class _EmptyCatalog extends StatelessWidget {
-  const _EmptyCatalog();
+  const _EmptyCatalog({this.label = 'No Codex threads'});
+
+  final String label;
 
   @override
   Widget build(BuildContext context) {
@@ -503,7 +977,7 @@ class _EmptyCatalog extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(MotifSpacing.xl),
       child: Text(
-        'No Codex threads',
+        label,
         textAlign: TextAlign.center,
         style: MotifType.body.copyWith(color: c.textTertiary),
       ),

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
@@ -82,7 +82,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final threads = <CodexThread>[
-      for (var index = 1; index <= 6; index++)
+      for (var index = 1; index <= 26; index++)
         thread(
           't$index',
           name: 'Thread $index',
@@ -109,14 +109,14 @@ void main() {
         'pinned-thread-ids': ['pin'],
         'projectless-thread-ids': ['recent'],
         'thread-project-assignments': {
-          for (var index = 1; index <= 6; index++)
+          for (var index = 1; index <= 26; index++)
             't$index': {'projectKind': 'local', 'projectId': 'p1'},
           'p2-thread': {'projectKind': 'local', 'projectId': 'p2'},
           'pin': {'projectKind': 'local', 'projectId': 'p1'},
         },
         'sidebar-project-thread-orders': {
           'p1': {
-            'threadIds': [for (var index = 1; index <= 6; index++) 't$index'],
+            'threadIds': [for (var index = 1; index <= 26; index++) 't$index'],
           },
         },
         'selected-project': {'type': 'local', 'projectId': 'p1'},
@@ -179,6 +179,27 @@ void main() {
     expect(find.byKey(const ValueKey('codex-thread-t1')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t5')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t6')), findsNothing);
+    final projectThreadsMore = find.byKey(
+      const ValueKey('codex-project-threads-more-p1'),
+    );
+    expect(
+      tester
+          .getTopLeft(
+            find.descendant(
+              of: projectThreadsMore,
+              matching: find.text('Show more'),
+            ),
+          )
+          .dx,
+      tester
+          .getTopLeft(
+            find.descendant(
+              of: find.byKey(const ValueKey('codex-thread-t1')),
+              matching: find.text('Thread 1'),
+            ),
+          )
+          .dx,
+    );
     expect(
       tester.getSize(find.byKey(const ValueKey('codex-project-p1'))).height,
       lessThanOrEqualTo(40),
@@ -192,11 +213,31 @@ void main() {
     await tester.pump();
     expect(find.text('Project 7'), findsOneWidget);
 
-    await tester.tap(
-      find.byKey(const ValueKey('codex-project-threads-more-p1')),
-    );
+    await tester.tap(projectThreadsMore);
     await tester.pump();
-    expect(find.byKey(const ValueKey('codex-thread-t6')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t15')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t16')), findsNothing);
+    expect(
+      find.descendant(of: projectThreadsMore, matching: find.text('Show more')),
+      findsOneWidget,
+    );
+
+    await tester.tap(projectThreadsMore);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('codex-thread-t25')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t26')), findsNothing);
+    expect(
+      find.descendant(of: projectThreadsMore, matching: find.text('Show more')),
+      findsOneWidget,
+    );
+
+    await tester.tap(projectThreadsMore);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('codex-thread-t26')), findsOneWidget);
+    expect(
+      find.descendant(of: projectThreadsMore, matching: find.text('Show less')),
+      findsOneWidget,
+    );
 
     await tester.tap(find.byKey(const ValueKey('codex-project-p2')));
     await tester.pump();
@@ -233,7 +274,7 @@ void main() {
     await tester.pumpWidget(buildSidebar(restoredCodexState));
     await tester.pump();
     expect(find.text('Project 7'), findsOneWidget);
-    expect(find.byKey(const ValueKey('codex-thread-t6')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t26')), findsOneWidget);
     expect(
       find.byKey(const ValueKey('codex-thread-p2-thread')),
       findsOneWidget,
@@ -249,6 +290,18 @@ void main() {
     expect(find.byKey(const ValueKey('codex-thread-t1')), findsNothing);
     expect(find.text('Project 7'), findsOneWidget);
 
+    await tester.tap(find.byKey(const ValueKey('codex-project-p1')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('codex-thread-t5')), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-thread-t6')), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('codex-project-threads-more-p1')),
+        matching: find.text('Show more'),
+      ),
+      findsOneWidget,
+    );
+
     await tester.pumpWidget(const SizedBox.shrink());
     mode.dispose();
     state.dispose();
@@ -263,6 +316,7 @@ void main() {
       rootPaths: ['/work/p1'],
     );
     final client = SidebarFakeClient({});
+    var createdThreads = 0;
     final state = CodexServiceState(serverId: 'server', connection: client)
       ..catalog = CodexCatalogSnapshot(
         allThreads: const [],
@@ -288,6 +342,7 @@ void main() {
               mode: CodexSidebarMode.projects,
               onModeChanged: (_) {},
               onThreadSelected: (_) {},
+              onThreadCreated: () => createdThreads++,
             ),
           ),
         ),
@@ -298,6 +353,206 @@ void main() {
 
     expect(client.startThreadParams.single.cwd, '/work/p1');
     expect(state.selectedThread?.id, 'new-project-thread');
+    expect(createdThreads, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('project action loading indicator is vertically centered', (
+    tester,
+  ) async {
+    const project = CodexLocalProject(
+      id: 'p1',
+      name: 'Project 1',
+      rootPaths: ['/work/p1'],
+    );
+    final state =
+        CodexServiceState(serverId: 'server', connection: SidebarFakeClient({}))
+          ..catalog = const CodexCatalogSnapshot(
+            allThreads: [],
+            pinnedThreads: [],
+            projects: [CodexProjectGroup(project: project, threads: [])],
+            projectlessThreads: [],
+            pinnedThreadIds: {},
+            projectNamesByThreadId: {},
+            selectedProjectId: 'p1',
+            usesGlobalState: true,
+          )
+          ..catalogPhase = CodexCatalogPhase.ready
+          ..creatingProjectId = 'p1';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.projects,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final row = find.byKey(const ValueKey('codex-project-p1'));
+    final loading = find.byKey(const ValueKey('codex-project-new-loading-p1'));
+    expect(loading, findsOneWidget);
+    expect(tester.getCenter(loading).dy, tester.getCenter(row).dy);
+    expect(tester.getSize(loading), const Size.square(16));
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('Recents action starts and opens a projectless thread', (
+    tester,
+  ) async {
+    final client = SidebarFakeClient({});
+    var createdThreads = 0;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalog = const CodexCatalogSnapshot.empty()
+      ..catalogPhase = CodexCatalogPhase.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.projects,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+              onThreadCreated: () => createdThreads++,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Recents'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('codex-recents-new')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(client.startThreadParams.single.cwd, isNull);
+    expect(state.selectedThread?.id, 'new-projectless-thread');
+    expect(createdThreads, 1);
+    expect(
+      state.catalog.projectlessThreads.single.id,
+      'new-projectless-thread',
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('searches and manages active and archived threads', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(400, 1200);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final active = thread('managed', name: 'Managed thread', updatedAt: 20);
+    final client = SidebarFakeClient({'managed': active});
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalog = buildCodexCatalog([active], null)
+      ..catalogPhase = CodexCatalogPhase.ready;
+    await state.refreshCatalog();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.timeline,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('codex-thread-actions-managed')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('codex-thread-rename-field')),
+      'Renamed thread',
+    );
+    await tester.tap(find.byKey(const ValueKey('codex-thread-rename-save')));
+    await tester.pumpAndSettle();
+    expect(find.text('Renamed thread'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('codex-threads-search')));
+    await tester.pump();
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const ValueKey('codex-thread-search-field')),
+        matching: find.byType(TextField),
+      ),
+      'Renamed',
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(client.listParams.last.archived, isFalse);
+    expect(client.listParams.last.searchTerm, 'Renamed');
+    expect(
+      find.byKey(const ValueKey('codex-thread-search-results')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex-threads-search')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('codex-thread-actions-managed')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Archive'));
+    await tester.pumpAndSettle();
+    expect(client.threads, isEmpty);
+    expect(client.archivedThreads, contains('managed'));
+
+    await tester.tap(find.byKey(const ValueKey('codex-threads-archived')));
+    await tester.pumpAndSettle();
+    expect(client.listParams.last.archived, isTrue);
+    expect(
+      find.byKey(const ValueKey('codex-archived-thread-list')),
+      findsOneWidget,
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('codex-thread-actions-managed')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Delete permanently'), findsNothing);
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+    expect(client.archivedThreads, isEmpty);
+    expect(client.threads, contains('managed'));
+    expect(find.text('No archived threads'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('codex-threads-archived')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('codex-thread-actions-managed')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Delete permanently'), findsNothing);
+    expect(client.threads, contains('managed'));
+
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
   });
@@ -305,12 +560,15 @@ void main() {
 
 final class SidebarFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
-  SidebarFakeClient(this.threads);
+  SidebarFakeClient(this.threads, {Map<String, CodexThread>? archivedThreads})
+    : archivedThreads = archivedThreads ?? {};
 
   final Map<String, CodexThread> threads;
+  final Map<String, CodexThread> archivedThreads;
   final List<String> readThreadIds = [];
   final List<String> resumedThreadIds = [];
   final List<CodexThreadStartParams> startThreadParams = [];
+  final List<CodexThreadListParams> listParams = [];
   int listThreadCalls = 0;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
@@ -345,7 +603,52 @@ final class SidebarFakeClient extends ChangeNotifier
     CodexThreadListParams params,
   ) async {
     listThreadCalls++;
-    return CodexThreadListResponse(data: threads.values.toList());
+    listParams.add(params);
+    final source = params.archived == true ? archivedThreads : threads;
+    final searchTerm = params.searchTerm;
+    final data = source.values
+        .where(
+          (thread) =>
+              searchTerm == null ||
+              codexThreadTitle(thread).contains(searchTerm),
+        )
+        .toList();
+    return CodexThreadListResponse(data: data);
+  }
+
+  @override
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  ) async {
+    final current = threads[threadId] ?? archivedThreads[threadId]!;
+    final renamed = codexThreadWithName(current, name);
+    if (threads.containsKey(threadId)) {
+      threads[threadId] = renamed;
+    } else {
+      archivedThreads[threadId] = renamed;
+    }
+    return const CodexThreadSetNameResponse();
+  }
+
+  @override
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId) async {
+    archivedThreads[threadId] = threads.remove(threadId)!;
+    return const CodexThreadArchiveResponse();
+  }
+
+  @override
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId) async {
+    final restored = archivedThreads.remove(threadId)!;
+    threads[threadId] = restored;
+    return CodexThreadUnarchiveResponse(thread: restored);
+  }
+
+  @override
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId) async {
+    threads.remove(threadId);
+    archivedThreads.remove(threadId);
+    return const CodexThreadDeleteResponse();
   }
 
   @override
@@ -374,16 +677,17 @@ final class SidebarFakeClient extends ChangeNotifier
     CodexThreadStartParams params,
   ) async {
     startThreadParams.add(params);
+    final projectless = params.cwd == null;
     final created = CodexThread(
       cliVersion: 'test',
       createdAt: 100,
       cwd: CodexV2AbsolutePathBuf(params.cwd ?? ''),
       ephemeral: false,
-      id: 'new-project-thread',
+      id: projectless ? 'new-projectless-thread' : 'new-project-thread',
       modelProvider: 'openai',
-      name: 'New project thread',
+      name: projectless ? 'New projectless thread' : 'New project thread',
       preview: '',
-      sessionId: 'new-project-thread',
+      sessionId: projectless ? 'new-projectless-thread' : 'new-project-thread',
       source: const CodexSessionSource('cli'),
       status: const CodexNotLoadedThreadStatus(),
       turns: const [],

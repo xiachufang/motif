@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
@@ -229,8 +229,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Connect server-1'), findsNothing);
-    expect(find.text('Create session'), findsOneWidget);
-    expect(find.text('No sessions yet'), findsOneWidget);
+    expect(find.text('Create terminal session'), findsOneWidget);
+    expect(find.text('No sessions yet'), findsNothing);
     expect(motif.transport.connectCalls, 1);
     expect(motif.refreshes, 1);
   });
@@ -241,10 +241,10 @@ void main() {
 
     final app = await _pumpSessionList(tester, motif);
 
-    expect(find.text('Create session'), findsOneWidget);
+    expect(find.text('Create terminal session'), findsOneWidget);
     expect(find.text('dev'), findsOneWidget);
 
-    await tester.tap(find.text('Create session'));
+    await tester.tap(find.text('Create terminal session'));
     await tester.pumpAndSettle();
 
     expect(find.text('New session'), findsOneWidget);
@@ -269,7 +269,7 @@ void main() {
 
     final app = await _pumpSessionList(tester, motif);
 
-    await tester.tap(find.text('Create session'));
+    await tester.tap(find.text('Create terminal session'));
     await tester.pumpAndSettle();
 
     final nameField = tester.widget<TextField>(_fieldWithLabel('Name'));

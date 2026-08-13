@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_feature_controller.dart';
@@ -8,6 +8,7 @@ import '../../codex/codex_navigation.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
+import '../../codex/side_chat_collection_controller.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../../platform/window_title.dart';
@@ -120,7 +121,20 @@ class _CodexScreenState extends State<CodexScreen> {
           return Scaffold(
             key: _scaffoldKey,
             drawerEnableOpenDragGesture: mobile && serviceState != null,
+            endDrawerEnableOpenDragGesture:
+                mobile &&
+                serviceState != null &&
+                chrome.selectedThread != null &&
+                !chrome.sideChatOpening,
             drawerEdgeDragWidth: 48,
+            onEndDrawerChanged: (open) {
+              widget.controller.setSideChatOpening(open);
+              unawaited(
+                MotifWindowTitle.set(
+                  open ? 'Side Chat — Motif' : 'Codex — Motif',
+                ).catchError((_) {}),
+              );
+            },
             appBar: AppBar(
               leadingWidth: canPop ? 96 : null,
               leading: canPop
@@ -134,7 +148,9 @@ class _CodexScreenState extends State<CodexScreen> {
                   icon: const Icon(Icons.chat_bubble_outline_rounded),
                   onPressed:
                       !chrome.sideChatOpening && chrome.selectedThread != null
-                      ? () => unawaited(_openSideChat(serviceState!))
+                      ? () => unawaited(
+                          _openSideChat(serviceState!, drawer: mobile),
+                        )
                       : null,
                 ),
                 IconButton(
@@ -176,6 +192,14 @@ class _CodexScreenState extends State<CodexScreen> {
                       codex,
                       mobile: true,
                     ),
+                  )
+                : null,
+            endDrawer:
+                mobile && serviceState != null && chrome.selectedThread != null
+                ? Drawer(
+                    key: const ValueKey('codex-side-chat-drawer'),
+                    width: constraints.maxWidth,
+                    child: _LazySideChatDrawer(controller: widget.controller),
                   )
                 : null,
             body: chrome.setupError != null
@@ -257,12 +281,17 @@ class _CodexScreenState extends State<CodexScreen> {
     mode: mode,
     onModeChanged: (value) => codex.sidebarMode = value,
     onThreadSelected: (threadId) {
-      if (mobile && _scaffoldKey.currentState?.isDrawerOpen == true) {
-        Navigator.of(context).pop();
-      }
+      if (mobile) _closeMobileSidebar();
       unawaited(serviceState.readThread(threadId));
     },
+    onThreadCreated: mobile ? _closeMobileSidebar : null,
   );
+
+  void _closeMobileSidebar() {
+    if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+      Navigator.of(context).pop();
+    }
+  }
 
   Widget _mainContent(
     CodexServiceState state, {
@@ -384,9 +413,16 @@ class _CodexScreenState extends State<CodexScreen> {
     ),
   );
 
-  Future<void> _openSideChat(CodexServiceState state) async {
+  Future<void> _openSideChat(
+    CodexServiceState state, {
+    bool drawer = false,
+  }) async {
     final thread = state.selectedThread;
     if (thread == null || widget.controller.sideChatOpening) return;
+    if (drawer) {
+      _scaffoldKey.currentState?.openEndDrawer();
+      return;
+    }
     final collection = widget.controller.openSideChats();
     if (collection == null) return;
     widget.controller.setSideChatOpening(true);
@@ -417,6 +453,40 @@ class _CodexScreenState extends State<CodexScreen> {
     } catch (error) {
       if (mounted) showMotifToast(context, 'Codex operation failed: $error');
     }
+  }
+}
+
+class _LazySideChatDrawer extends StatefulWidget {
+  const _LazySideChatDrawer({required this.controller});
+
+  final CodexFeatureController controller;
+
+  @override
+  State<_LazySideChatDrawer> createState() => _LazySideChatDrawerState();
+}
+
+class _LazySideChatDrawerState extends State<_LazySideChatDrawer> {
+  SideChatCollectionController? _collection;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _collection = widget.controller.openSideChats());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final collection = _collection;
+    if (collection == null) {
+      return ColoredBox(
+        color: context.motif.surface,
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+    return SideChatScreen(collection: collection, manageWindowTitle: false);
   }
 }
 
@@ -565,39 +635,33 @@ class _Connected extends StatelessWidget {
             style: MotifType.caption.copyWith(color: c.textTertiary),
           ),
         ],
-        const SizedBox(height: MotifSpacing.xxl),
-        Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: MotifSpacing.md,
-            vertical: MotifSpacing.sm,
-          ),
-          decoration: BoxDecoration(
-            color: catalogFailed
-                ? c.warning.withValues(alpha: 0.08)
-                : c.subtleFill,
-            borderRadius: BorderRadius.circular(MotifRadius.pill),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                catalogFailed
-                    ? Icons.warning_amber_rounded
-                    : Icons.check_circle_outline_rounded,
-                size: MotifIconSize.sm,
-                color: catalogFailed ? c.warning : c.success,
-              ),
-              const SizedBox(width: MotifSpacing.sm),
-              Text(
-                catalogFailed
-                    ? 'Threads could not be loaded'
-                    : 'Codex is ready',
-                style: MotifType.callout.copyWith(color: c.textSecondary),
-              ),
-            ],
-          ),
-        ),
         if (catalogFailed) ...[
+          const SizedBox(height: MotifSpacing.xxl),
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: MotifSpacing.md,
+              vertical: MotifSpacing.sm,
+            ),
+            decoration: BoxDecoration(
+              color: c.warning.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(MotifRadius.pill),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: MotifIconSize.sm,
+                  color: c.warning,
+                ),
+                const SizedBox(width: MotifSpacing.sm),
+                Text(
+                  'Threads could not be loaded',
+                  style: MotifType.callout.copyWith(color: c.textSecondary),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: MotifSpacing.md),
           OutlinedButton.icon(
             onPressed: () => unawaited(serviceState.retryCatalog()),

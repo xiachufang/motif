@@ -85,6 +85,7 @@ class CodexConversationState extends ChangeNotifier {
   String? forkingTurnId;
   String? forkError;
   String? creatingProjectId;
+  bool creatingProjectlessThread = false;
   String? createThreadError;
   List<CodexTurn> _turns = const [];
   List<CodexTurn> get turns => _turns;
@@ -198,6 +199,59 @@ class CodexConversationState extends ChangeNotifier {
   }
 
   Future<void> retryCatalog() => refreshCatalog(showLoading: true);
+
+  /// Lists active or archived threads through the app-server catalog API.
+  ///
+  /// This is intentionally separate from [catalog]: archived threads and
+  /// transient search results should not affect project grouping or the
+  /// currently selected conversation.
+  Future<List<CodexThread>> listThreadsForManagement({
+    required bool archived,
+    String? searchTerm,
+  }) => _loadThreads(archived: archived, searchTerm: searchTerm);
+
+  Future<void> renameThread(String threadId, String name) async {
+    final normalized = name.trim();
+    if (normalized.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Thread name cannot be empty');
+    }
+    await connection.setThreadName(threadId, normalized);
+    if (_closed) return;
+    final current = _threads[threadId];
+    if (current != null) {
+      _threads[threadId] = codexThreadWithName(current, normalized);
+      if (selectedThread?.id == threadId) {
+        selectedThread = _threads[threadId];
+      }
+      _rebuildCatalog();
+      _notify();
+    }
+  }
+
+  Future<void> archiveThread(String threadId) async {
+    await connection.archiveThread(threadId);
+    if (_closed) return;
+    _removeThread(threadId);
+    _rebuildCatalog();
+    _notify();
+  }
+
+  Future<void> unarchiveThread(String threadId) async {
+    final response = await connection.unarchiveThread(threadId);
+    if (_closed) return;
+    final thread = response.thread;
+    if (!thread.ephemeral) _threads[thread.id] = thread;
+    _rebuildCatalog();
+    _notify();
+  }
+
+  Future<void> deleteThread(String threadId) async {
+    await connection.deleteThread(threadId);
+    if (_closed) return;
+    _removeThread(threadId);
+    _rebuildCatalog();
+    _notify();
+  }
 
   Future<void> refreshCatalog({bool showLoading = true}) async {
     final response = connection.state.response;
@@ -351,7 +405,9 @@ class CodexConversationState extends ChangeNotifier {
 
   /// Starts and opens a new thread rooted in [project].
   Future<bool> createThreadForProject(CodexLocalProject project) async {
-    if (_closed || creatingProjectId != null) return false;
+    if (_closed || creatingProjectId != null || creatingProjectlessThread) {
+      return false;
+    }
     final insertBeforeThreadId = selectedThread?.id;
     creatingProjectId = project.id;
     createThreadError = null;
@@ -414,6 +470,73 @@ class CodexConversationState extends ChangeNotifier {
     } finally {
       if (!_closed && creatingProjectId == project.id) {
         creatingProjectId = null;
+        _notify();
+      }
+    }
+  }
+
+  /// Starts and opens a new thread without assigning it to a project.
+  Future<bool> createProjectlessThread() async {
+    if (_closed || creatingProjectId != null || creatingProjectlessThread) {
+      return false;
+    }
+    final insertBeforeThreadId = selectedThread?.id;
+    creatingProjectlessThread = true;
+    createThreadError = null;
+    _notify();
+    try {
+      final response = await connection.startThread(
+        CodexThreadStartParams(
+          model: selectedModel?.model,
+          permissions: selectedPermissionId,
+        ),
+      );
+      if (_closed) return false;
+      final thread = response.thread;
+      _threads[thread.id] = thread;
+      _resumedThreads[thread.id] = thread;
+      _recordThreadPlacement(thread.id, insertBeforeThreadId, replace: true);
+      _assignThreadProjectless(thread.id);
+      selectedThread = thread;
+      turns = thread.turns;
+      readingThreadId = null;
+      readError = null;
+      _failedReadThreadId = null;
+      goal = null;
+      goalError = null;
+      activePlan = null;
+      awaitingPlanDecisionItemId = null;
+      activeDiff = null;
+      sendError = null;
+      queuedMessages = const [];
+      _serverRequests.clear();
+      pendingServerRequests = const [];
+      if (!_modelSelectionTouched) {
+        selectedModelId = models
+            .where(
+              (candidate) =>
+                  candidate.model == response.model ||
+                  candidate.id == response.model,
+            )
+            .firstOrNull
+            ?.id;
+      }
+      if (!_effortSelectionTouched) {
+        selectedReasoningEffort = response.reasoningEffort?.value;
+      }
+      if (!_permissionSelectionTouched) {
+        selectedPermissionId = response.activePermissionProfile?.id;
+      }
+      _rebuildCatalog();
+      _notify();
+      unawaited(_loadThreadConfiguration(thread));
+      return true;
+    } catch (error) {
+      if (!_closed) createThreadError = '$error';
+      return false;
+    } finally {
+      if (!_closed) {
+        creatingProjectlessThread = false;
         _notify();
       }
     }
@@ -1023,6 +1146,7 @@ class CodexConversationState extends ChangeNotifier {
           ),
         );
         _upsertTurn(response.turn);
+        _useFirstMessageAsThreadPreview(thread.id, message.text);
       }
       return true;
     } catch (error) {
@@ -1248,16 +1372,25 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
-  Future<List<CodexThread>> _loadAllThreads() async {
+  Future<List<CodexThread>> _loadAllThreads() => _loadThreads(archived: false);
+
+  Future<List<CodexThread>> _loadThreads({
+    required bool archived,
+    String? searchTerm,
+  }) async {
     final threads = <CodexThread>[];
     final seenCursors = <String>{};
+    final normalizedSearch = searchTerm?.trim();
     String? cursor;
     while (true) {
       final response = await connection.listThreads(
         CodexThreadListParams(
-          archived: false,
+          archived: archived,
           cursor: cursor,
           limit: 100,
+          searchTerm: normalizedSearch == null || normalizedSearch.isEmpty
+              ? null
+              : normalizedSearch,
           sortDirection: CodexSortDirection.desc,
           sortKey: CodexThreadSortKey.recencyAt,
         ),
@@ -1342,8 +1475,16 @@ class CodexConversationState extends ChangeNotifier {
         }
       case CodexThreadArchivedNotification2(:final params):
         _removeThread(params.threadId);
-      case CodexThreadClosedNotification2(:final params):
+      case CodexThreadDeletedNotification2(:final params):
         _removeThread(params.threadId);
+      case CodexThreadUnarchivedNotification2(:final params):
+        if (!_threads.containsKey(params.threadId)) {
+          unawaited(refreshCatalog(showLoading: false));
+        }
+      case CodexThreadClosedNotification2():
+        // Closing unloads a thread from app-server memory; its persisted
+        // catalog entry remains available and must stay in the sidebar.
+        break;
       case CodexThreadGoalUpdatedNotification2(:final params)
           when supports(CodexConversationFeature.goals) &&
               params.threadId == selectedThread?.id:
@@ -1777,6 +1918,20 @@ class CodexConversationState extends ChangeNotifier {
     );
   }
 
+  void _useFirstMessageAsThreadPreview(String threadId, String message) {
+    final preview = message.trim();
+    final current = _threads[threadId];
+    if (preview.isEmpty || current == null) return;
+    if (current.name?.trim().isNotEmpty == true ||
+        current.preview.trim().isNotEmpty) {
+      return;
+    }
+    final updated = codexThreadWithPreview(current, preview);
+    _threads[threadId] = updated;
+    if (selectedThread?.id == threadId) selectedThread = updated;
+    _rebuildCatalog();
+  }
+
   void _assignThreadToProject(
     CodexThread thread,
     CodexLocalProject project, {
@@ -1810,6 +1965,30 @@ class CodexConversationState extends ChangeNotifier {
       projectlessThreadIds: global.projectlessThreadIds
           .where((id) => id != thread.id)
           .toList(growable: false),
+      assignments: Map.unmodifiable(assignments),
+      projectThreadOrders: Map.unmodifiable(orders),
+      selectedProjectId: global.selectedProjectId,
+    );
+  }
+
+  void _assignThreadProjectless(String threadId) {
+    final global = _globalState;
+    if (global == null) return;
+    final assignments = Map<String, CodexThreadProjectAssignment>.of(
+      global.assignments,
+    )..remove(threadId);
+    final orders = <String, List<String>>{
+      for (final entry in global.projectThreadOrders.entries)
+        entry.key: List<String>.of(entry.value)..remove(threadId),
+    };
+    _globalState = CodexGlobalStateData(
+      projects: global.projects,
+      projectOrder: global.projectOrder,
+      pinnedThreadIds: global.pinnedThreadIds,
+      projectlessThreadIds: [
+        threadId,
+        ...global.projectlessThreadIds.where((id) => id != threadId),
+      ],
       assignments: Map.unmodifiable(assignments),
       projectThreadOrders: Map.unmodifiable(orders),
       selectedProjectId: global.selectedProjectId,
@@ -1987,6 +2166,7 @@ class CodexConversationState extends ChangeNotifier {
         catalogPhase,
         catalogError,
         creatingProjectId,
+        creatingProjectlessThread,
         createThreadError,
         selectedThread?.id,
         readingThreadId,

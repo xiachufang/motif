@@ -115,6 +115,13 @@ abstract interface class CodexAppServerClient implements Listenable {
   Future<void> retry();
   Future<void> close();
   Future<CodexThreadListResponse> listThreads(CodexThreadListParams params);
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  );
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId);
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId);
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId);
   Future<CodexThreadReadResponse> readThread(
     String threadId, {
     bool includeTurns = false,
@@ -258,6 +265,48 @@ final class CodexConnectionController extends ChangeNotifier
       _typedRequest(
         (id) => CodexThreadListRequest(id: id, params: params),
         CodexThreadListResponse.fromJson,
+      );
+
+  @override
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  ) => _typedRequest(
+    (id) => CodexThreadNameSetRequest(
+      id: id,
+      params: CodexThreadSetNameParams(threadId: threadId, name: name),
+    ),
+    CodexThreadSetNameResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId) =>
+      _typedRequest(
+        (id) => CodexThreadArchiveRequest(
+          id: id,
+          params: CodexThreadArchiveParams(threadId: threadId),
+        ),
+        CodexThreadArchiveResponse.fromJson,
+      );
+
+  @override
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId) =>
+      _typedRequest(
+        (id) => CodexThreadUnarchiveRequest(
+          id: id,
+          params: CodexThreadUnarchiveParams(threadId: threadId),
+        ),
+        CodexThreadUnarchiveResponse.fromJson,
+      );
+
+  @override
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId) =>
+      _typedRequest(
+        (id) => CodexThreadDeleteRequest(
+          id: id,
+          params: CodexThreadDeleteParams(threadId: threadId),
+        ),
+        CodexThreadDeleteResponse.fromJson,
       );
 
   @override

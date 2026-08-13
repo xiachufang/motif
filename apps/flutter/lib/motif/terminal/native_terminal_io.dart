@@ -23,6 +23,7 @@ Widget nativeTerminalView({
   motif: motif,
   ptyId: ptyId,
   fontSize: fontSize,
+  padding: 4.0,
   active: active,
   tabActive: tabActive,
   focusSerial: focusSerial,

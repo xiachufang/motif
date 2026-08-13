@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
@@ -61,9 +61,9 @@ class CodexMarkdown extends StatelessWidget {
       height: style?.height ?? 1.5,
     );
     final secondary = body.copyWith(color: c.textSecondary);
-    final inlineCode = MotifType.mono.copyWith(
+    final code = body.copyWith(
+      fontFamily: MotifType.mono.fontFamily,
       color: c.textPrimary,
-      backgroundColor: c.subtleFill,
       height: 1.45,
     );
     final listBuilder = _CompactMarkdownListBuilder(
@@ -96,7 +96,7 @@ class CodexMarkdown extends StatelessWidget {
         em: body.copyWith(fontStyle: FontStyle.italic),
         strong: body.copyWith(fontWeight: FontWeight.w700),
         del: secondary.copyWith(decoration: TextDecoration.lineThrough),
-        code: inlineCode,
+        code: code.copyWith(backgroundColor: c.subtleFill),
         codeblockDecoration: BoxDecoration(
           color: c.subtleFill,
           border: Border.all(color: c.border),
@@ -133,6 +133,7 @@ class CodexMarkdown extends StatelessWidget {
       builders: {
         'pre': _MarkdownCodeBlockBuilder(
           colors: c,
+          style: code,
           padding: const EdgeInsets.all(MotifSpacing.sm),
           selectable: buildsSelectableText,
           usesParentSelection: usesParentSelection,
@@ -352,12 +353,14 @@ String _escapeMarkdownText(String source) => source.replaceAllMapped(
 class _MarkdownCodeBlockBuilder extends MarkdownElementBuilder {
   _MarkdownCodeBlockBuilder({
     required this.colors,
+    required this.style,
     required this.padding,
     required this.selectable,
     required this.usesParentSelection,
   });
 
   final MotifColors colors;
+  final TextStyle style;
   final EdgeInsets padding;
   final bool selectable;
   final bool usesParentSelection;
@@ -385,6 +388,7 @@ class _MarkdownCodeBlockBuilder extends MarkdownElementBuilder {
       source: source,
       language: _languageFrom(codeElement),
       colors: colors,
+      baseStyle: style,
     );
     final text = selectable ? SelectableText.rich(span) : Text.rich(span);
 

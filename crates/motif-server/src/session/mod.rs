@@ -15,11 +15,13 @@ use motif_proto::session::{ClientInfo, SessionInfo};
 use motif_proto::view::{ViewId, ViewInfo, ViewSpec};
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, watch, Notify};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::pty::{Pty, PtyPool};
 
 const RING_CAPACITY: usize = 4096; // events buffered for replay
 const BROADCAST_CAPACITY: usize = 4096;
+const MAX_VIEW_CUSTOM_NAME_CHARACTERS: usize = 32;
 
 /// Trailing window for `publish_coalesced`. A burst of same-key last-wins
 /// events (rapid tab switching, a resize storm) collapses to its final value
@@ -612,7 +614,7 @@ impl Session {
     /// Update a tab's user-facing name and broadcast the change to every
     /// attached client. Returns false when the view no longer exists.
     pub fn rename_view(&self, view_id: &str, custom_name: Option<String>) -> bool {
-        let custom_name = normalize_custom_name(custom_name);
+        let custom_name = normalize_view_custom_name(custom_name);
         {
             let mut views = self.views.lock();
             let Some(view) = views.iter_mut().find(|view| view.id == view_id) else {
@@ -796,6 +798,15 @@ fn normalize_custom_name(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_view_custom_name(value: Option<String>) -> Option<String> {
+    normalize_custom_name(value).map(|value| {
+        value
+            .graphemes(true)
+            .take(MAX_VIEW_CUSTOM_NAME_CHARACTERS)
+            .collect()
+    })
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         self.shutdown();
@@ -863,6 +874,16 @@ fn now_ms() -> UnixMs {
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn view_custom_name_is_trimmed_and_limited_by_grapheme() {
+        let grapheme = "🧑🏽‍💻";
+        let name = format!("  {}tail  ", grapheme.repeat(32));
+        let normalized = normalize_view_custom_name(Some(name)).unwrap();
+        assert_eq!(normalized.graphemes(true).count(), 32);
+        assert_eq!(normalized, grapheme.repeat(32));
+        assert_eq!(normalize_view_custom_name(Some("   ".into())), None);
+    }
 
     /// Concurrent publishers must observe seq monotonic in the ring.
     /// Pre-fix this would fail with extremely high probability under

@@ -13,38 +13,49 @@ final class CodexProjectSidebarPreferences {
     this.initialized = false,
     this.showAllProjects = false,
     this.expandedProjects = const {},
-    this.expandedThreadLists = const {},
+    this.visibleThreadCounts = const {},
   });
 
   final bool initialized;
   final bool showAllProjects;
   final Set<String> expandedProjects;
-  final Set<String> expandedThreadLists;
+  final Map<String, int> visibleThreadCounts;
 
   CodexProjectSidebarPreferences copyWith({
     bool? showAllProjects,
     Set<String>? expandedProjects,
-    Set<String>? expandedThreadLists,
+    Map<String, int>? visibleThreadCounts,
   }) => CodexProjectSidebarPreferences(
     initialized: true,
     showAllProjects: showAllProjects ?? this.showAllProjects,
     expandedProjects: expandedProjects ?? this.expandedProjects,
-    expandedThreadLists: expandedThreadLists ?? this.expandedThreadLists,
+    visibleThreadCounts: visibleThreadCounts ?? this.visibleThreadCounts,
   );
 
   Map<String, Object?> toJson() => {
     'showAllProjects': showAllProjects,
     'expandedProjects': expandedProjects.toList()..sort(),
-    'expandedThreadLists': expandedThreadLists.toList()..sort(),
+    'visibleThreadCounts': Map.fromEntries(
+      visibleThreadCounts.entries.toList()
+        ..sort((a, b) => a.key.compareTo(b.key)),
+    ),
   };
 
   static CodexProjectSidebarPreferences fromJson(Object? json) {
     if (json is! Map) return const CodexProjectSidebarPreferences();
+    final visibleThreadCounts = _positiveIntMap(json['visibleThreadCounts']);
+    // Migrate the previous all-or-nothing expansion preference. A large count
+    // preserves its old "show all" behavior until the project is collapsed.
+    if (visibleThreadCounts.isEmpty) {
+      for (final projectId in _stringSet(json['expandedThreadLists'])) {
+        visibleThreadCounts[projectId] = 0x7fffffff;
+      }
+    }
     return CodexProjectSidebarPreferences(
       initialized: true,
       showAllProjects: json['showAllProjects'] == true,
       expandedProjects: _stringSet(json['expandedProjects']),
-      expandedThreadLists: _stringSet(json['expandedThreadLists']),
+      visibleThreadCounts: Map.unmodifiable(visibleThreadCounts),
     );
   }
 
@@ -53,6 +64,18 @@ final class CodexProjectSidebarPreferences {
           value.whereType<String>().where((item) => item.isNotEmpty),
         )
       : const {};
+
+  static Map<String, int> _positiveIntMap(Object? value) {
+    if (value is! Map) return {};
+    return {
+      for (final entry in value.entries)
+        if (entry.key is String &&
+            (entry.key as String).isNotEmpty &&
+            entry.value is num &&
+            (entry.value as num).toInt() > 0)
+          entry.key as String: (entry.value as num).toInt(),
+    };
+  }
 }
 
 /// Process-wide Codex UI preferences.
@@ -204,13 +227,17 @@ class CodexState extends _$CodexState {
     );
   }
 
-  void setThreadListExpanded(String serverId, String projectId, bool expanded) {
+  void setVisibleThreadCount(String serverId, String projectId, int? count) {
     final current = projectSidebar(serverId);
-    final projects = {...current.expandedThreadLists};
-    expanded ? projects.add(projectId) : projects.remove(projectId);
+    final counts = {...current.visibleThreadCounts};
+    if (count == null) {
+      counts.remove(projectId);
+    } else {
+      counts[projectId] = count;
+    }
     _updateProjectSidebar(
       serverId,
-      current.copyWith(expandedThreadLists: Set.unmodifiable(projects)),
+      current.copyWith(visibleThreadCounts: Map.unmodifiable(counts)),
     );
   }
 

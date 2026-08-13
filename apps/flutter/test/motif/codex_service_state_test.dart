@@ -117,6 +117,57 @@ void main() {
     },
   );
 
+  test('manages threads through app-server APIs', () async {
+    final original = thread('managed', updatedAt: 10);
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [original]),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+
+    final searchResults = await state.listThreadsForManagement(
+      archived: true,
+      searchTerm: 'managed',
+    );
+    expect(searchResults.single.id, 'managed');
+    expect(client.listParams.last.archived, isTrue);
+    expect(client.listParams.last.searchTerm, 'managed');
+
+    await state.renameThread('managed', 'Renamed');
+    expect(client.renamedThreads.single, (
+      threadId: 'managed',
+      name: 'Renamed',
+    ));
+    expect(codexThreadTitle(state.catalog.allThreads.single), 'Renamed');
+
+    client.emit(
+      const CodexThreadClosedNotification2(
+        params: CodexThreadClosedNotification(threadId: 'managed'),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(state.catalog.allThreads.single.id, 'managed');
+
+    await state.archiveThread('managed');
+    expect(client.archivedThreadIds, ['managed']);
+    expect(state.catalog.allThreads, isEmpty);
+
+    client.unarchiveResult = codexThreadWithName(original, 'Renamed');
+    await state.unarchiveThread('managed');
+    expect(client.unarchivedThreadIds, ['managed']);
+    expect(codexThreadTitle(state.catalog.allThreads.single), 'Renamed');
+
+    await state.deleteThread('managed');
+    expect(client.deletedThreadIds, ['managed']);
+    expect(state.catalog.allThreads, isEmpty);
+
+    await state.close();
+  });
+
   test('restores a valid local model preference and records changes', () async {
     final existing = thread('thread');
     final client = FakeCodexClient(
@@ -507,6 +558,35 @@ void main() {
     ]);
     await state.ensureThreadResumedForSend('new-thread');
     expect(client.resumedThreadIds, isEmpty);
+
+    expect(codexThreadTitle(state.selectedThread!), 'Untitled thread');
+    expect(
+      await state.submitMessage(
+        'Fix observer race\nwith a regression test',
+        const [],
+      ),
+      isTrue,
+    );
+    expect(codexThreadTitle(state.selectedThread!), 'Fix observer race');
+    expect(
+      codexThreadTitle(state.catalog.projects.single.threads[1]),
+      'Fix observer race',
+    );
+
+    client.emit(
+      const CodexThreadNameUpdatedNotification2(
+        params: CodexThreadNameUpdatedNotification(
+          threadId: 'new-thread',
+          threadName: 'Observer rollout fix',
+        ),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(codexThreadTitle(state.selectedThread!), 'Observer rollout fix');
+    expect(
+      codexThreadTitle(state.catalog.projects.single.threads[1]),
+      'Observer rollout fix',
+    );
     await state.close();
   });
 
@@ -925,6 +1005,11 @@ final class FakeCodexClient extends ChangeNotifier
   final StreamController<CodexJsonEncodable> _typed =
       StreamController<CodexJsonEncodable>.broadcast();
   final List<CodexThreadListParams> listParams = [];
+  final List<({String threadId, String name})> renamedThreads = [];
+  final List<String> archivedThreadIds = [];
+  final List<String> unarchivedThreadIds = [];
+  final List<String> deletedThreadIds = [];
+  CodexThread? unarchiveResult;
   final List<String> readThreadIds = [];
   final List<bool> readIncludeTurns = [];
   final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
@@ -978,6 +1063,35 @@ final class FakeCodexClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  ) async {
+    renamedThreads.add((threadId: threadId, name: name));
+    return const CodexThreadSetNameResponse();
+  }
+
+  @override
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId) async {
+    archivedThreadIds.add(threadId);
+    return const CodexThreadArchiveResponse();
+  }
+
+  @override
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId) async {
+    unarchivedThreadIds.add(threadId);
+    final restored = unarchiveResult;
+    if (restored == null) throw StateError('Missing unarchive result');
+    return CodexThreadUnarchiveResponse(thread: restored);
+  }
+
+  @override
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId) async {
+    deletedThreadIds.add(threadId);
+    return const CodexThreadDeleteResponse();
+  }
+
+  @override
   Future<CodexThreadReadResponse> readThread(
     String threadId, {
     bool includeTurns = false,
@@ -1028,7 +1142,7 @@ final class FakeCodexClient extends ChangeNotifier
       ephemeral: false,
       id: 'new-thread',
       modelProvider: 'openai',
-      name: 'New thread',
+      name: null,
       preview: '',
       sessionId: 'new-thread',
       source: const CodexSessionSource('cli'),

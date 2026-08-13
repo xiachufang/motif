@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:highlight/highlight_core.dart';
 import 'package:highlight/languages/bash.dart' as lang_bash;
 import 'package:highlight/languages/cpp.dart' as lang_cpp;
@@ -131,26 +131,27 @@ abstract final class MotifSyntaxHighlight {
     required String source,
     required String? language,
     required MotifColors colors,
+    TextStyle? baseStyle,
   }) {
-    final baseStyle = MotifType.mono.copyWith(
-      color: colors.textPrimary,
-      height: 1.45,
+    final effectiveBaseStyle = (baseStyle ?? MotifType.mono).copyWith(
+      color: baseStyle?.color ?? colors.textPrimary,
+      height: baseStyle?.height ?? 1.45,
     );
     final normalizedLanguage = _normalizeLanguage(language);
     if (normalizedLanguage == null || source.isEmpty) {
-      return TextSpan(text: source, style: baseStyle);
+      return TextSpan(text: source, style: effectiveBaseStyle);
     }
     try {
       final result = _highlight.parse(source, language: normalizedLanguage);
       return TextSpan(
-        style: baseStyle,
+        style: effectiveBaseStyle,
         children: [
           for (final node in result.nodes ?? const <Node>[])
             _spanForNode(node, colors),
         ],
       );
     } catch (_) {
-      return TextSpan(text: source, style: baseStyle);
+      return TextSpan(text: source, style: effectiveBaseStyle);
     }
   }
 

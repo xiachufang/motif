@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../theme/motif_theme.dart';

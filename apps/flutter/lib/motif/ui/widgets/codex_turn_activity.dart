@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 
@@ -10,6 +10,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
+import 'diff_text_view.dart';
 import 'observation_select.dart';
 
 part 'codex_turn_activity.g.dart';
@@ -18,7 +19,11 @@ const _activityDensity = VisualDensity(vertical: -4);
 const _activityTileHeight = 32.0;
 const _activityGroupMaxHeight = 360.0;
 const _activityDetailMaxHeight = 300.0;
-const _diffBodyMaxHeight = 280.0;
+const _inlineDiffMaxHeight = _activityDetailMaxHeight - MotifSpacing.md;
+const _inlineDiffHeaderHeight = MotifControlSize.md;
+const _inlineDiffVerticalBorder = 2.0;
+const _diffBodyMaxHeight =
+    _inlineDiffMaxHeight - _inlineDiffHeaderHeight - _inlineDiffVerticalBorder;
 const _activityTitleGap = 4.0;
 const _processingSweepDuration = Duration(milliseconds: 1600);
 const _processingSweepPause = Duration(milliseconds: 450);
@@ -148,12 +153,12 @@ class CodexActivityTitle extends StatelessWidget {
         final c = context.motif;
         final style = MotifType.subhead.copyWith(color: c.textSecondary);
         final latestTitle = _activityTitle(liveItem);
-        if (processingLatestItem && latestTitle.isNotEmpty) {
-          return _ProcessingSweepText(latestTitle, style: style);
-        }
         final title = showLatestItemTitle && latestTitle.isNotEmpty
             ? latestTitle
             : groupTitle;
+        if (processingLatestItem) {
+          return CodexProcessingSweepText(title, style: style);
+        }
         return Text(
           title,
           maxLines: 2,
@@ -165,17 +170,18 @@ class CodexActivityTitle extends StatelessWidget {
   }
 }
 
-class _ProcessingSweepText extends StatefulWidget {
-  const _ProcessingSweepText(this.text, {required this.style});
+class CodexProcessingSweepText extends StatefulWidget {
+  const CodexProcessingSweepText(this.text, {required this.style, super.key});
 
   final String text;
   final TextStyle style;
 
   @override
-  State<_ProcessingSweepText> createState() => _ProcessingSweepTextState();
+  State<CodexProcessingSweepText> createState() =>
+      _CodexProcessingSweepTextState();
 }
 
-class _ProcessingSweepTextState extends State<_ProcessingSweepText>
+class _CodexProcessingSweepTextState extends State<CodexProcessingSweepText>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
@@ -615,7 +621,6 @@ class _FileChangeActivity extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final count = item.changes.length;
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: _InlineExpansionTile(
@@ -636,7 +641,7 @@ class _FileChangeActivity extends StatelessWidget {
                 color: c.textTertiary,
               ),
         title: Text(
-          '${item.status == CodexPatchApplyStatus.inProgress ? 'Editing' : 'Edited'} $count ${count == 1 ? 'file' : 'files'}',
+          _fileChangeActivityTitle(item),
           style: MotifType.subhead.copyWith(color: c.textSecondary),
         ),
         children: [
@@ -780,89 +785,68 @@ class _UnifiedDiff extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: c.subtleFill,
-        border: Border.all(color: c.border),
-        borderRadius: BorderRadius.circular(MotifRadius.xs),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: MotifSpacing.md),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    path,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: MotifType.monoSmall.copyWith(color: c.textSecondary),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Copy diff',
-                  visualDensity: VisualDensity.compact,
-                  iconSize: MotifIconSize.sm,
-                  onPressed: () => Clipboard.setData(ClipboardData(text: diff)),
-                  icon: const Icon(Icons.content_copy_outlined),
-                ),
-              ],
-            ),
-          ),
-          _BoundedScrollable(
-            key: ValueKey('codex-diff-scroll-$path'),
-            maxHeight: _diffBodyMaxHeight,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final line in const LineSplitter().convert(diff))
-                  ColoredBox(
-                    color: line.startsWith('+') && !line.startsWith('+++')
-                        ? c.success.withValues(alpha: 0.10)
-                        : line.startsWith('-') && !line.startsWith('---')
-                        ? c.danger.withValues(alpha: 0.10)
-                        : Colors.transparent,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: MotifSpacing.sm,
-                      ),
-                      child: _SelectionAwareText(
-                        line.isEmpty ? ' ' : line,
+    final document = DiffDocument.fromFilePatches([
+      FilePatch(path: path, patch: diff),
+    ]);
+    final lines = document.files.firstOrNull?.lines ?? const <String>[];
+    return ConstrainedBox(
+      key: ValueKey('codex-inline-diff-$path'),
+      constraints: const BoxConstraints(maxHeight: _inlineDiffMaxHeight),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: c.subtleFill,
+          border: Border.all(color: c.border),
+          borderRadius: BorderRadius.circular(MotifRadius.xs),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              height: _inlineDiffHeaderHeight,
+              child: Padding(
+                padding: const EdgeInsets.only(left: MotifSpacing.md),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: MotifType.monoSmall.copyWith(
-                          color: line.startsWith('+') && !line.startsWith('+++')
-                              ? c.success
-                              : line.startsWith('-') && !line.startsWith('---')
-                              ? c.danger
-                              : c.textSecondary,
+                          color: c.textSecondary,
                         ),
                       ),
                     ),
-                  ),
-              ],
+                    IconButton(
+                      tooltip: 'Copy diff',
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: MotifControlSize.sm,
+                        height: MotifControlSize.sm,
+                      ),
+                      padding: EdgeInsets.zero,
+                      iconSize: MotifIconSize.sm,
+                      onPressed: () =>
+                          Clipboard.setData(ClipboardData(text: diff)),
+                      icon: const Icon(Icons.content_copy_outlined),
+                    ),
+                    const SizedBox(width: MotifSpacing.xs),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ],
+            _BoundedScrollable(
+              key: ValueKey('codex-diff-scroll-$path'),
+              maxHeight: _diffBodyMaxHeight,
+              child: DiffTextView(lines: lines),
+            ),
+          ],
+        ),
       ),
     );
-  }
-}
-
-class _SelectionAwareText extends StatelessWidget {
-  const _SelectionAwareText(this.data, {required this.style});
-
-  final String data;
-  final TextStyle style;
-
-  @override
-  Widget build(BuildContext context) {
-    if (SelectionContainer.maybeOf(context) != null) {
-      return Text(data, style: style);
-    }
-    return SelectableText(data, style: style);
   }
 }
 
@@ -1088,6 +1072,7 @@ class _InlineExpansionTileState extends State<_InlineExpansionTile> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final c = context.motif;
     return Theme(
       data: theme.copyWith(
         dividerColor: Colors.transparent,
@@ -1100,6 +1085,8 @@ class _InlineExpansionTileState extends State<_InlineExpansionTile> {
       child: ExpansionTile(
         initiallyExpanded: widget.initiallyExpanded,
         onExpansionChanged: (expanded) => setState(() => _expanded = expanded),
+        iconColor: c.textSecondary,
+        collapsedIconColor: c.textSecondary,
         dense: true,
         visualDensity: _activityDensity,
         minTileHeight: _activityTileHeight,
@@ -1114,7 +1101,14 @@ class _InlineExpansionTileState extends State<_InlineExpansionTile> {
             Flexible(child: widget.title),
             if (widget.action != null) ...[
               const SizedBox(width: MotifSpacing.xs),
-              widget.action!,
+              IconButtonTheme(
+                data: IconButtonThemeData(
+                  style: context.iconButtonStyle(
+                    foregroundColor: c.textSecondary,
+                  ),
+                ),
+                child: widget.action!,
+              ),
             ],
             const SizedBox(width: MotifSpacing.xs),
             Icon(
@@ -1122,6 +1116,7 @@ class _InlineExpansionTileState extends State<_InlineExpansionTile> {
                   ? Icons.keyboard_arrow_up_rounded
                   : Icons.keyboard_arrow_down_rounded,
               size: MotifIconSize.sm,
+              color: c.textSecondary,
             ),
           ],
         ),
@@ -1243,9 +1238,7 @@ String _groupTitle(List<CodexThreadItem> items) {
 String _activityTitle(CodexThreadItem item) => switch (item) {
   CodexReasoningThreadItem value => _reasoningText(value) ?? '',
   CodexCommandExecutionThreadItem value => _commandActivityTitle(value),
-  CodexFileChangeThreadItem value =>
-    '${value.status == CodexPatchApplyStatus.inProgress ? 'Editing' : 'Edited'} '
-        '${value.changes.length} ${value.changes.length == 1 ? 'file' : 'files'}',
+  CodexFileChangeThreadItem value => _fileChangeActivityTitle(value),
   CodexWebSearchThreadItem value => 'Searched for ${value.query}',
   CodexImageViewThreadItem value => 'Viewed ${_leaf(value.path.value)}',
   CodexMcpToolCallThreadItem value => 'Used ${value.server} · ${value.tool}',
@@ -1327,18 +1320,98 @@ String? _reasoningText(CodexReasoningThreadItem? reasoning) {
 }
 
 String _commandTitle(CodexCommandExecutionThreadItem value) {
-  final first = value.command.trim().split(RegExp(r'\s+')).firstOrNull;
+  final first = _commandExecutable(value);
   return value.status == CodexCommandExecutionStatus.inProgress
       ? 'Running ${first ?? 'command'}'
       : 'Ran ${first ?? 'command'}';
 }
 
-String _commandActivityTitle(CodexCommandExecutionThreadItem value) {
-  final suffix = <String>[
-    if (value.durationMs != null) 'in ${_duration(value.durationMs!)}',
-    if (value.exitCode != null) 'exit ${value.exitCode}',
-  ].join(' · ');
-  return '${_commandTitle(value)}${suffix.isEmpty ? '' : ' · $suffix'}';
+String _commandActivityTitle(CodexCommandExecutionThreadItem value) =>
+    _commandTitle(value);
+
+String _fileChangeActivityTitle(CodexFileChangeThreadItem value) {
+  final verb = value.status == CodexPatchApplyStatus.inProgress
+      ? 'Editing'
+      : 'Edited';
+  final names = <String>[];
+  for (final change in value.changes) {
+    final name = _leaf(change.path);
+    if (name.isNotEmpty && !names.contains(name)) names.add(name);
+  }
+  if (names.isEmpty) return '$verb files';
+  final visible = names.take(2).join(', ');
+  final remaining = names.length - 2;
+  return '$verb $visible${remaining > 0 ? ' and $remaining more' : ''}';
+}
+
+String? _commandExecutable(CodexCommandExecutionThreadItem value) {
+  final parsed = value.commandActions
+      .map(_commandActionText)
+      .where((command) => command.trim().isNotEmpty)
+      .firstOrNull;
+  final command = parsed ?? _unwrapShellCommand(value.command);
+  final token = _firstShellToken(command);
+  if (token == null) return null;
+  return token.replaceAll('\\', '/').split('/').last;
+}
+
+String _commandActionText(CodexCommandAction action) => switch (action) {
+  CodexReadCommandAction value => value.command,
+  CodexListFilesCommandAction value => value.command,
+  CodexSearchCommandAction value => value.command,
+  CodexUnknownCommandAction value => value.command,
+  _ => '',
+};
+
+String _unwrapShellCommand(String command) {
+  final trimmed = command.trim();
+  final match = RegExp(
+    r'^(?:[^\s]*/)?(?:ba|z|k)?sh\s+-[^\s]*c[^\s]*\s+([\s\S]+)$',
+  ).firstMatch(trimmed);
+  if (match == null) return trimmed;
+  final payload = match.group(1)!.trim();
+  if (payload.length < 2) return payload;
+  final quote = payload[0];
+  if ((quote == "'" || quote == '"') && payload.endsWith(quote)) {
+    return payload.substring(1, payload.length - 1);
+  }
+  return payload;
+}
+
+String? _firstShellToken(String command) {
+  final trimmed = command.trimLeft();
+  if (trimmed.isEmpty) return null;
+  final buffer = StringBuffer();
+  String? quote;
+  var escaped = false;
+  for (final codeUnit in trimmed.codeUnits) {
+    final char = String.fromCharCode(codeUnit);
+    if (escaped) {
+      buffer.write(char);
+      escaped = false;
+      continue;
+    }
+    if (char == r'\') {
+      escaped = true;
+      continue;
+    }
+    if (quote != null) {
+      if (char == quote) {
+        quote = null;
+      } else {
+        buffer.write(char);
+      }
+      continue;
+    }
+    if (char == "'" || char == '"') {
+      quote = char;
+      continue;
+    }
+    if (RegExp(r'\s').hasMatch(char)) break;
+    buffer.write(char);
+  }
+  final token = buffer.toString();
+  return token.isEmpty ? null : token;
 }
 
 String _duration(int milliseconds) {

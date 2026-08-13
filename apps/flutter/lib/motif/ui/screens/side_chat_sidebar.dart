@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';

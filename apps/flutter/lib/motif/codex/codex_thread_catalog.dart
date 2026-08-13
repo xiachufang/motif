@@ -448,6 +448,11 @@ CodexThread codexThreadWithName(CodexThread thread, String? name) {
   return CodexThread.fromJson(json);
 }
 
+CodexThread codexThreadWithPreview(CodexThread thread, String preview) {
+  final json = thread.toJson()..['preview'] = preview;
+  return CodexThread.fromJson(json);
+}
+
 String? _string(Object? value) => value is String ? value : null;
 
 List<String> _stringList(Object? value) => value is List

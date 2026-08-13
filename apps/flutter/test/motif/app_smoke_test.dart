@@ -112,7 +112,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Sessions'), findsOneWidget);
-    expect(find.text('Create session'), findsOneWidget);
+    expect(find.text('Create terminal session'), findsOneWidget);
     expect(app.isServerLive('s1'), isTrue);
   });
 

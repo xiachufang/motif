@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_feature_controller.dart';
@@ -260,6 +260,47 @@ void main() {
     await tester.dragFrom(const Offset(1, 400), const Offset(420, 0));
     await tester.pumpAndSettle();
     expect(find.byType(Drawer), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('mobile new thread closes the sidebar and opens the thread', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final app = await appState();
+    final codex = CodexState();
+    final client = ScreenFakeClient();
+    final serviceState = readyServiceState(connection: client);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: codex,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('codex-recents-new')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Drawer), findsNothing);
+    expect(serviceState.selectedThread?.id, 'new-thread');
+    expect(find.byKey(const ValueKey('codex-thread-detail')), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -906,6 +947,24 @@ final class ScreenFakeClient extends ChangeNotifier
   ) async => const CodexThreadListResponse(data: []);
 
   @override
+  Future<CodexThreadSetNameResponse> setThreadName(
+    String threadId,
+    String name,
+  ) async => const CodexThreadSetNameResponse();
+
+  @override
+  Future<CodexThreadArchiveResponse> archiveThread(String threadId) async =>
+      const CodexThreadArchiveResponse();
+
+  @override
+  Future<CodexThreadUnarchiveResponse> unarchiveThread(String threadId) async =>
+      throw StateError('unused');
+
+  @override
+  Future<CodexThreadDeleteResponse> deleteThread(String threadId) async =>
+      const CodexThreadDeleteResponse();
+
+  @override
   Future<CodexThreadReadResponse> readThread(
     String threadId, {
     bool includeTurns = false,
@@ -953,7 +1012,32 @@ final class ScreenFakeClient extends ChangeNotifier
   @override
   Future<CodexThreadStartResponse> startThread(
     CodexThreadStartParams params,
-  ) async => throw StateError('unused');
+  ) async {
+    final thread = CodexThread(
+      cliVersion: 'test',
+      createdAt: 2,
+      cwd: CodexV2AbsolutePathBuf(params.cwd ?? ''),
+      ephemeral: false,
+      id: 'new-thread',
+      modelProvider: 'openai',
+      name: 'New thread',
+      preview: '',
+      sessionId: 'new-thread',
+      source: const CodexSessionSource('cli'),
+      status: const CodexNotLoadedThreadStatus(),
+      turns: const [],
+      updatedAt: 2,
+    );
+    return CodexThreadStartResponse(
+      approvalPolicy: const CodexAskForApproval('never'),
+      approvalsReviewer: CodexApprovalsReviewer.user,
+      cwd: thread.cwd,
+      model: params.model ?? 'test',
+      modelProvider: 'openai',
+      sandbox: const CodexDangerFullAccessSandboxPolicy(),
+      thread: thread,
+    );
+  }
 
   @override
   Future<CodexThreadResumeResponse> resumeThread(String threadId) async =>

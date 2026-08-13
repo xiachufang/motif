@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.59+42
 
 environment:
-  sdk: ^3.12.0-113.0.dev
+  sdk: ^3.12.0
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -30,6 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  characters: ^1.4.1
   cupertino_icons: ^1.0.8
   ffi: ^2.1.0
   code_assets: ^1.0.0
@@ -65,11 +66,9 @@ dependencies:
   url_launcher: ^6.3.2
   wakelock_plus: ^1.2.8
   flutter_observation: ^0.2.0
+  material_ui: ^1.0.0
+  cupertino_ui: ^1.0.0
 dependency_overrides:
-  flutter_observation:
-    git:
-      url: https://github.com/gfreezy/flutter-observation.git
-      ref: 3f790a5919dfdb16ba5962a5cfa4326d43eb6a37
   opus_flutter_android:
     git:
       url: https://github.com/gfreezy/opus_flutter.git

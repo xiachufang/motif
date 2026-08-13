@@ -1,6 +1,7 @@
 import 'dart:ui' show PointerDeviceKind;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/rendering.dart' show SelectedContent;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
@@ -82,6 +83,7 @@ Inline `token`.
       find.descendant(of: block, matching: find.byType(SelectableText)),
     );
     final blockSpans = _flatten(blockText.textSpan!);
+    expect(blockText.textSpan?.style?.fontSize, MotifType.body.fontSize);
     expect(
       blockSpans.map((span) => span.style?.backgroundColor),
       everyElement(isNull),
@@ -95,17 +97,19 @@ Inline `token`.
       greaterThan(1),
     );
 
-    final inlineText = tester.widget<SelectableText>(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is SelectableText &&
-            widget.textSpan?.toPlainText().contains('Inline token.') == true,
-      ),
+    final markdown = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    expect(
+      markdown.styleSheet?.code?.fontSize,
+      markdown.styleSheet?.p?.fontSize,
     );
-    final token = _flatten(
-      inlineText.textSpan!,
-    ).singleWhere((span) => span.text == 'token');
-    expect(token.style?.backgroundColor, MotifColors.light.subtleFill);
+    expect(
+      markdown.styleSheet?.blockquote?.fontSize,
+      markdown.styleSheet?.p?.fontSize,
+    );
+    expect(
+      markdown.styleSheet?.code?.backgroundColor,
+      MotifColors.light.subtleFill,
+    );
   });
 
   testWidgets('ordered-list markers stay on one line', (tester) async {

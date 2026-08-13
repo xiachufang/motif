@@ -2474,6 +2474,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ulid",
+ "unicode-segmentation",
  "walkdir",
  "which",
  "windows-sys 0.61.2",

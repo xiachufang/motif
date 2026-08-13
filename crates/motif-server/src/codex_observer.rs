@@ -463,6 +463,12 @@ async fn handle_command(
                     watch.running = true;
                 }
             }
+            // A brand-new thread has no rollout to resume until its first
+            // turn starts. Retry immediately after the proxied turn/start is
+            // accepted instead of waiting for the periodic retry below.
+            if state.watches.contains_key(&thread_id) {
+                ensure_resume(state, &thread_id, sink).await?;
+            }
         }
         Command::Cancel {
             thread_id,
@@ -594,11 +600,23 @@ async fn handle_rpc_response(
     let Some(pending) = state.pending_rpcs.remove(&id) else {
         return Ok(());
     };
-    let error = value.get("error").map(ToString::to_string);
+    let error = value.get("error");
     match pending {
         PendingRpc::Resume(thread_id) => {
             if let Some(error) = error {
-                if let Some(mut watch) = state.watches.remove(&thread_id) {
+                if is_rollout_not_ready(error) {
+                    // thread/start returns an id before the first turn creates
+                    // its rollout. Let that turn proceed, retain the watch,
+                    // and subscribe as soon as the rollout becomes available.
+                    if let Some(watch) = state.watches.get_mut(&thread_id) {
+                        for (generation, waiter) in watch.waiters.drain() {
+                            if watch.pending_starts.contains_key(&generation) {
+                                let _ = waiter.send(Ok(()));
+                            }
+                        }
+                    }
+                } else if let Some(mut watch) = state.watches.remove(&thread_id) {
+                    let error = error.to_string();
                     for (_, waiter) in watch.waiters.drain() {
                         let _ = waiter.send(Err(error.clone()));
                     }
@@ -723,8 +741,19 @@ async fn expire_unconfirmed_starts(
             }
         }
         cleanup_if_idle(state, &thread_id, sink).await?;
+        if state.watches.contains_key(&thread_id) {
+            ensure_resume(state, &thread_id, sink).await?;
+        }
     }
     Ok(())
+}
+
+fn is_rollout_not_ready(error: &Value) -> bool {
+    error.get("code").and_then(Value::as_i64) == Some(-32600)
+        && error
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with("no rollout found for thread id "))
 }
 
 fn pending_for_thread<'a>(state: &'a WorkerState, thread_id: &str) -> Option<&'a PendingRpc> {
@@ -995,6 +1024,101 @@ mod tests {
             .unwrap()
             .unwrap();
         observer.confirm_turn(prepared);
+        timeout(Duration::from_secs(3), server)
+            .await
+            .unwrap()
+            .unwrap();
+        observer.stop();
+    }
+
+    #[tokio::test]
+    async fn fresh_thread_allows_first_turn_then_retries_subscription() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let runtime = CodexAppServer::fake_at(address);
+        let observer = CodexObserver::new(DeviceState {
+            store: crate::devices::DeviceStore::new(),
+            relay: Some(crate::relay::RelayClient::new(
+                "http://127.0.0.1:9/push".to_string(),
+            )),
+        });
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+
+            let initialize = read_json(&mut socket).await;
+            socket
+                .send(Message::Text(
+                    json!({"id": initialize["id"], "result": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(read_json(&mut socket).await["method"], "initialized");
+
+            let first_resume = read_json(&mut socket).await;
+            assert_eq!(first_resume["method"], "thread/resume");
+            assert_eq!(first_resume["params"]["threadId"], "thread-new");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": first_resume["id"],
+                        "error": {
+                            "code": -32600,
+                            "message": "no rollout found for thread id thread-new"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let second_resume = read_json(&mut socket).await;
+            assert_eq!(second_resume["method"], "thread/resume");
+            assert_eq!(second_resume["params"]["threadId"], "thread-new");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": second_resume["id"],
+                        "result": {"thread": {"id": "thread-new"}}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-new",
+                            "turn": {"id": "turn-new", "status": "completed", "items": []}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+
+            let unsubscribe = read_json(&mut socket).await;
+            assert_eq!(unsubscribe["method"], "thread/unsubscribe");
+            assert_eq!(unsubscribe["params"]["threadId"], "thread-new");
+        });
+
+        let prepared = timeout(
+            Duration::from_secs(3),
+            observer.prepare_turn(Arc::clone(&runtime), "thread-new"),
+        )
+        .await
+        .unwrap()
+        .expect("a missing rollout must not block the first turn");
+        observer.confirm_turn(prepared);
+
         timeout(Duration::from_secs(3), server)
             .await
             .unwrap()

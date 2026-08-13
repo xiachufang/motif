@@ -1,255 +1,9 @@
 import 'dart:collection';
 import 'dart:ui' as ui;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'ghostty_bindings.g.dart';
 import 'terminal_link.dart';
 import 'terminal_snapshot.dart';
-import 'terminal_state.dart';
-
-class TerminalPainter extends CustomPainter {
-  final TerminalState state;
-  final double cellWidth;
-  final double cellHeight;
-  final double padding;
-  final String fontFamily;
-  final List<String> fontFamilyFallback;
-  final double fontSize;
-  final Color? defaultForeground;
-  final Color? defaultBackground;
-  final bool showCursor;
-
-  TerminalPainter({
-    required this.state,
-    required this.cellWidth,
-    required this.cellHeight,
-    this.padding = 4.0,
-    this.fontFamily = 'Menlo',
-    this.fontFamilyFallback = const [],
-    this.fontSize = 14.0,
-    this.defaultForeground,
-    this.defaultBackground,
-    this.showCursor = true,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final colors = state.colors;
-
-    // Use sensible defaults when the terminal hasn't configured colors
-    final bgColor = defaultBackground ?? _renderBackground(colors);
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      Paint()..color = bgColor,
-    );
-
-    final fgDefault = defaultForeground ?? _renderForeground(colors);
-
-    // Iterate rows
-    state.populateRowIterator();
-    int rowIdx = 0;
-
-    while (state.rowIteratorNext()) {
-      final y = padding + rowIdx * cellHeight;
-
-      state.populateRowCells();
-      int colIdx = 0;
-      while (state.rowCellsNext()) {
-        final wide = state.cellWide;
-
-        // The right half of a wide (CJK) glyph; the lead cell renders it.
-        if (wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_SPACER_TAIL) {
-          colIdx++;
-          continue;
-        }
-
-        final x = padding + colIdx * cellWidth;
-        final drawWidth = wide == GhosttyCellWide.GHOSTTY_CELL_WIDE_WIDE
-            ? cellWidth * 2
-            : cellWidth;
-        final graphemeLen = state.getCellGraphemeLen();
-
-        if (graphemeLen > 0) {
-          final style = state.cellStyle;
-          final grapheme = state.getCellGrapheme(graphemeLen);
-
-          // Resolve colors
-          var fg = _resolveColor(style.fg_color, fgDefault);
-          var bg = _resolveColor(style.bg_color, bgColor);
-
-          if (style.inverse) {
-            final tmp = fg;
-            fg = bg;
-            bg = tmp;
-          }
-
-          if (style.faint) {
-            fg = fg.withValues(alpha: 0.5);
-          }
-
-          // Draw background if non-default
-          if (bg != bgColor) {
-            canvas.drawRect(
-              Rect.fromLTWH(x, y, drawWidth, cellHeight),
-              Paint()..color = bg,
-            );
-          }
-
-          // Draw text
-          if (!style.invisible && grapheme.isNotEmpty) {
-            _drawText(
-              canvas,
-              grapheme,
-              x,
-              y,
-              fg,
-              bold: style.bold,
-              italic: style.italic,
-            );
-          }
-        } else {
-          // Empty cell — check for bg-only styling
-          final style = state.cellStyle;
-          var bg = _resolveColor(style.bg_color, bgColor);
-          if (style.inverse) {
-            bg = _resolveColor(style.fg_color, fgDefault);
-          }
-          if (bg != bgColor) {
-            canvas.drawRect(
-              Rect.fromLTWH(x, y, drawWidth, cellHeight),
-              Paint()..color = bg,
-            );
-          }
-        }
-
-        colIdx++;
-      }
-
-      state.setRowDirty(false);
-      rowIdx++;
-    }
-
-    // Draw cursor
-    if (showCursor && state.cursorVisible && state.cursorInViewport) {
-      final cx = padding + state.cursorX * cellWidth;
-      final cy = padding + state.cursorY * cellHeight;
-      final cursorColor = colors.cursor_has_value
-          ? Color.fromARGB(
-              255,
-              colors.cursor.r,
-              colors.cursor.g,
-              colors.cursor.b,
-            )
-          : fgDefault;
-
-      final cursorStyle = state.cursorStyle;
-      switch (cursorStyle) {
-        case GhosttyRenderStateCursorVisualStyle
-            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK:
-          canvas.drawRect(
-            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
-            Paint()..color = cursorColor,
-          );
-        case GhosttyRenderStateCursorVisualStyle
-            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR:
-          canvas.drawRect(
-            Rect.fromLTWH(cx, cy, 2, cellHeight),
-            Paint()..color = cursorColor,
-          );
-        case GhosttyRenderStateCursorVisualStyle
-            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE:
-          canvas.drawRect(
-            Rect.fromLTWH(cx, cy + cellHeight - 2, cellWidth, 2),
-            Paint()..color = cursorColor,
-          );
-        case GhosttyRenderStateCursorVisualStyle
-            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
-          canvas.drawRect(
-            Rect.fromLTWH(cx, cy, cellWidth, cellHeight),
-            Paint()..color = cursorColor,
-          );
-        case GhosttyRenderStateCursorVisualStyle
-            .GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_MAX_VALUE:
-          break;
-      }
-    }
-
-    // Reset dirty flag
-    state.setDirty(GhosttyRenderStateDirty.GHOSTTY_RENDER_STATE_DIRTY_FALSE);
-  }
-
-  Color _resolveColor(GhosttyStyleColor styleColor, Color defaultColor) {
-    switch (styleColor.tag) {
-      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_NONE:
-        return defaultColor;
-      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_RGB:
-        final rgb = styleColor.value.rgb;
-        return Color.fromARGB(255, rgb.r, rgb.g, rgb.b);
-      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_PALETTE:
-        final idx = styleColor.value.palette;
-        final (r, g, b) = state.paletteColor(idx);
-        return Color.fromARGB(255, r, g, b);
-      case GhosttyStyleColorTag.GHOSTTY_STYLE_COLOR_TAG_MAX_VALUE:
-        return defaultColor;
-    }
-  }
-
-  Color _renderBackground(GhosttyRenderStateColors colors) {
-    if (colors.background.r == 0 &&
-        colors.background.g == 0 &&
-        colors.background.b == 0 &&
-        colors.foreground.r == 0 &&
-        colors.foreground.g == 0 &&
-        colors.foreground.b == 0) {
-      return const Color(0xFF1E1E2E);
-    }
-    return Color.fromARGB(
-      255,
-      colors.background.r,
-      colors.background.g,
-      colors.background.b,
-    );
-  }
-
-  Color _renderForeground(GhosttyRenderStateColors colors) {
-    if (colors.foreground.r == 0 &&
-        colors.foreground.g == 0 &&
-        colors.foreground.b == 0) {
-      return const Color(0xFFCDD6F4);
-    }
-    return Color.fromARGB(
-      255,
-      colors.foreground.r,
-      colors.foreground.g,
-      colors.foreground.b,
-    );
-  }
-
-  void _drawText(
-    Canvas canvas,
-    String text,
-    double x,
-    double y,
-    Color color, {
-    bool bold = false,
-    bool italic = false,
-  }) {
-    _drawTerminalText(
-      canvas,
-      text,
-      x,
-      y,
-      color,
-      fontFamily: fontFamily,
-      fontFamilyFallback: fontFamilyFallback,
-      fontSize: fontSize,
-      bold: bold,
-      italic: italic,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant TerminalPainter oldDelegate) => true;
-}
 
 class TerminalSnapshotPainter extends CustomPainter {
   final TerminalSnapshot snapshot;
@@ -278,7 +32,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     this.viewportPixelOffset = 0,
     required this.cellWidth,
     required this.cellHeight,
-    this.padding = 4.0,
+    required this.padding,
     this.fontFamily = 'Menlo',
     this.fontFamilyFallback = const [],
     this.fontSize = 14.0,
@@ -295,13 +49,22 @@ class TerminalSnapshotPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final bgColor = Color(snapshot.backgroundArgb);
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height),
-      Paint()..color = bgColor,
+    final availableGridWidth = (size.width - 2 * padding)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    final availableGridHeight = (size.height - 2 * padding)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    final gridRect = Rect.fromLTWH(
+      padding,
+      padding,
+      (snapshot.cols * cellWidth).clamp(0.0, availableGridWidth).toDouble(),
+      (snapshot.rows * cellHeight).clamp(0.0, availableGridHeight).toDouble(),
     );
-
+    canvas.drawRect(Offset.zero & size, Paint()..color = bgColor);
     canvas.save();
-    canvas.clipRect(Offset.zero & size);
+    canvas.clipRect(gridRect);
+    canvas.translate(padding, padding);
     final paintRows = _paintRows().toList(growable: false);
     final cache = renderCache;
     if (selection == null && cache != null) {
@@ -309,7 +72,6 @@ class TerminalSnapshotPainter extends CustomPainter {
         rowCount: paintRows.length,
         cellWidth: cellWidth,
         cellHeight: cellHeight,
-        padding: padding,
         fontFamily: fontFamily,
         fontFamilyFallback: fontFamilyFallback,
         fontSize: fontSize,
@@ -337,8 +99,8 @@ class TerminalSnapshotPainter extends CustomPainter {
         snapshot.cursorX >= 0 &&
         snapshot.cursorY >= 0) {
       final cursorSpan = snapshot.cursorCellSpan;
-      final cx = padding + cursorSpan.col * cellWidth;
-      final cy = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
+      final cx = cursorSpan.col * cellWidth;
+      final cy = snapshot.cursorY * cellHeight - viewportPixelOffset;
       final cursorWidth = cursorSpan.widthCells * cellWidth;
       final cursorColor = Color(snapshot.cursorArgb);
       switch (GhosttyRenderStateCursorVisualStyle.fromValue(
@@ -395,7 +157,6 @@ class TerminalSnapshotPainter extends CustomPainter {
         screenRow: screenRow,
         row: snapshot.lines[index],
         y:
-            padding +
             (screenRow - snapshot.viewportOffset) * cellHeight -
             viewportPixelOffset,
       );
@@ -406,8 +167,8 @@ class TerminalSnapshotPainter extends CustomPainter {
     final cell = snapshot.cursorCell;
     if (cell == null || cell.invisible || cell.text.isEmpty) return;
     final preferred = Color(cell.backgroundArgb);
-    final x = padding + cell.col * cellWidth;
-    final y = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
+    final x = cell.col * cellWidth;
+    final y = snapshot.cursorY * cellHeight - viewportPixelOffset;
     final widthCells = cell.widthCells <= 0 ? 1 : cell.widthCells;
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(x, y, widthCells * cellWidth, cellHeight));
@@ -440,12 +201,12 @@ class TerminalSnapshotPainter extends CustomPainter {
       return;
     }
 
-    final y = padding + snapshot.cursorY * cellHeight - viewportPixelOffset;
-    final startX = padding + snapshot.cursorX * cellWidth;
+    final y = snapshot.cursorY * cellHeight - viewportPixelOffset;
+    final startX = snapshot.cursorX * cellWidth;
     // The preedit must never paint left of the cursor — content there is
     // already-committed terminal output. This is the hard left boundary.
     final leftEdge = startX;
-    final rightEdge = padding + snapshot.cols * cellWidth;
+    final rightEdge = snapshot.cols * cellWidth;
 
     final fg = Color(snapshot.foregroundArgb);
     final bg = Color(snapshot.backgroundArgb);
@@ -523,7 +284,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     void flush() {
       final current = run;
       if (current == null) return;
-      final x = padding + current.startCol * cellWidth;
+      final x = current.startCol * cellWidth;
       final width = (current.endCol - current.startCol + 1) * cellWidth;
       canvas.drawRect(
         Rect.fromLTWH(x, y, width, cellHeight),
@@ -565,7 +326,7 @@ class TerminalSnapshotPainter extends CustomPainter {
       _drawTerminalText(
         canvas,
         current.text,
-        padding + current.startCol * cellWidth,
+        current.startCol * cellWidth,
         y,
         current.foreground,
         fontFamily: fontFamily,
@@ -598,7 +359,7 @@ class TerminalSnapshotPainter extends CustomPainter {
         _drawTerminalText(
           canvas,
           cell.text,
-          padding + cell.col * cellWidth,
+          cell.col * cellWidth,
           y,
           foreground,
           fontFamily: fontFamily,
@@ -658,7 +419,7 @@ class TerminalSnapshotPainter extends CustomPainter {
     for (final paintRow in paintRows) {
       final columns = range.columnsForRow(paintRow.screenRow, snapshot.cols);
       if (columns == null || columns.endCol < columns.startCol) continue;
-      final x = padding + columns.startCol * cellWidth;
+      final x = columns.startCol * cellWidth;
       final width = (columns.endCol - columns.startCol + 1) * cellWidth;
       canvas.drawRect(Rect.fromLTWH(x, paintRow.y, width, cellHeight), paint);
     }
@@ -674,9 +435,8 @@ class TerminalSnapshotPainter extends CustomPainter {
       if (segment.row < firstVisibleRow || segment.row > lastVisibleRow) {
         continue;
       }
-      final x = padding + segment.startCol * cellWidth;
+      final x = segment.startCol * cellWidth;
       final y =
-          padding +
           (segment.row - snapshot.viewportOffset + 1) * cellHeight -
           viewportPixelOffset -
           thickness;
@@ -728,7 +488,6 @@ class TerminalRenderCache {
     required int rowCount,
     required double cellWidth,
     required double cellHeight,
-    required double padding,
     required String fontFamily,
     required List<String> fontFamilyFallback,
     required double fontSize,
@@ -737,7 +496,6 @@ class TerminalRenderCache {
     final nextConfig = Object.hash(
       cellWidth,
       cellHeight,
-      padding,
       fontFamily,
       Object.hashAll(fontFamilyFallback),
       fontSize,

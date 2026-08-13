@@ -12,7 +12,7 @@ import 'dart:js_interop';
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../ui/theme/motif_theme.dart';

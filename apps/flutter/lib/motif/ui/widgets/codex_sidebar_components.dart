@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../theme/motif_theme.dart';
 
@@ -83,9 +83,10 @@ class CodexSidebarIconButton extends StatelessWidget {
 }
 
 class CodexSidebarSectionHeading extends StatelessWidget {
-  const CodexSidebarSectionHeading(this.label, {super.key});
+  const CodexSidebarSectionHeading(this.label, {this.trailing, super.key});
 
   final String label;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -97,9 +98,16 @@ class CodexSidebarSectionHeading extends StatelessWidget {
         MotifSpacing.lg,
         MotifSpacing.xs,
       ),
-      child: Text(
-        label,
-        style: MotifType.headline.copyWith(color: c.textTertiary),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: MotifType.headline.copyWith(color: c.textTertiary),
+            ),
+          ),
+          ?trailing,
+        ],
       ),
     );
   }
@@ -127,7 +135,7 @@ class CodexSidebarThreadRow extends StatelessWidget {
   final bool indented;
   final String? subtitle;
   final Widget? trailing;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

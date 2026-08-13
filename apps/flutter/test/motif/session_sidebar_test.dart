@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -613,10 +613,19 @@ void main() {
       ..activeViewId = 'v1';
 
     await _pumpSession(tester, const Size(1024, 768), motif: motif);
-    await tester.tap(find.byKey(const ValueKey('rename-tab-v1')));
+    expect(find.byKey(const ValueKey('rename-tab-v1')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('tab-menu-v1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rename'));
     await tester.pumpAndSettle();
 
     expect(find.text('Rename tab'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const ValueKey('rename-tab-field')))
+          .maxLength,
+      maxTabNameCharacters,
+    );
     await tester.enterText(
       find.byKey(const ValueKey('rename-tab-field')),
       'API logs',

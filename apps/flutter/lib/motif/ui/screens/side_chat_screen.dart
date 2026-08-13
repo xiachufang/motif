@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_service_state.dart';
@@ -14,9 +14,14 @@ import 'codex_thread_workspace.dart';
 import 'side_chat_sidebar.dart';
 
 class SideChatScreen extends StatefulWidget {
-  const SideChatScreen({required this.collection, super.key});
+  const SideChatScreen({
+    required this.collection,
+    this.manageWindowTitle = true,
+    super.key,
+  });
 
   final SideChatCollectionController collection;
+  final bool manageWindowTitle;
 
   @override
   State<SideChatScreen> createState() => _SideChatScreenState();
@@ -32,7 +37,9 @@ class _SideChatScreenState extends State<SideChatScreen> {
   @override
   void initState() {
     super.initState();
-    unawaited(MotifWindowTitle.set('Side Chat — Motif').catchError((_) {}));
+    if (widget.manageWindowTitle) {
+      unawaited(MotifWindowTitle.set('Side Chat — Motif').catchError((_) {}));
+    }
     unawaited(widget.collection.ensureInitial());
   }
 
@@ -47,7 +54,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
             collection: widget.collection,
             onSelected: (threadId) {
               widget.collection.select(threadId);
-              if (_scaffoldKey.currentState?.isDrawerOpen == true) {
+              if (_scaffoldKey.currentState?.isEndDrawerOpen == true) {
                 Navigator.of(context).pop();
               }
             },
@@ -61,7 +68,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
                 : 'Show Side Chat list',
             onPressed: () {
               if (mobile) {
-                _scaffoldKey.currentState?.openDrawer();
+                _scaffoldKey.currentState?.openEndDrawer();
               } else {
                 setState(
                   () => _desktopSidebarVisible = !_desktopSidebarVisible,
@@ -77,16 +84,16 @@ class _SideChatScreenState extends State<SideChatScreen> {
           return Scaffold(
             key: _scaffoldKey,
             backgroundColor: context.motif.surface,
-            drawerEnableOpenDragGesture: mobile,
+            endDrawerEnableOpenDragGesture: mobile,
             drawerEdgeDragWidth: 48,
-            drawer: mobile
+            endDrawer: mobile
                 ? Drawer(width: _sidebarWidth, child: sidebar)
                 : null,
             appBar: AppBar(
-              leadingWidth: 96,
-              leading: Row(children: [const BackButton(), sidebarToggle]),
+              leading: const BackButton(),
               title: Text(widget.collection.selected?.name ?? 'Side Chat'),
               actions: [
+                sidebarToggle,
                 IconButton(
                   key: const ValueKey('side-chat-new-toolbar'),
                   tooltip: 'New Side Chat',

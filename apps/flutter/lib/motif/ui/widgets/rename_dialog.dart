@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 Future<String?> showRenameDialog(
   BuildContext context, {
@@ -7,6 +7,7 @@ Future<String?> showRenameDialog(
   required String helperText,
   required Key fieldKey,
   required Key saveKey,
+  int? maxLength,
 }) => showDialog<String>(
   context: context,
   builder: (context) => _RenameDialog(
@@ -15,6 +16,7 @@ Future<String?> showRenameDialog(
     helperText: helperText,
     fieldKey: fieldKey,
     saveKey: saveKey,
+    maxLength: maxLength,
   ),
 );
 
@@ -25,6 +27,7 @@ class _RenameDialog extends StatefulWidget {
     required this.helperText,
     required this.fieldKey,
     required this.saveKey,
+    this.maxLength,
   });
 
   final String title;
@@ -32,6 +35,7 @@ class _RenameDialog extends StatefulWidget {
   final String helperText;
   final Key fieldKey;
   final Key saveKey;
+  final int? maxLength;
 
   @override
   State<_RenameDialog> createState() => _RenameDialogState();
@@ -56,6 +60,7 @@ class _RenameDialogState extends State<_RenameDialog> {
       controller: _controller,
       autofocus: true,
       textInputAction: TextInputAction.done,
+      maxLength: widget.maxLength,
       decoration: InputDecoration(
         labelText: 'Name',
         helperText: widget.helperText,

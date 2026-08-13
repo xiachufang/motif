@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/motif_proto.dart';
@@ -323,22 +323,14 @@ class _ServerSessionSection extends _$_ServerSessionSection {
         ),
         if (supportsCodex)
           _CodexRow(serverId: server.id, onOpen: isLive ? onOpenCodex : null),
-        if (server.sessions.sessions.isEmpty)
-          const MotifSectionRow(
-            title: 'No sessions yet',
-            subtitle: 'Create a session on this server.',
-            titleWeight: FontWeight.w400,
-          )
-        else
-          for (final session in server.sessions.sessions)
-            _SessionRow(
-              serverId: server.id,
-              session: session,
-              onAttach: () => onAttach(session),
-              onRename: (customName) =>
-                  sessions.rename(session.name, customName),
-              onDestroy: () => onDestroy(session.name),
-            ),
+        for (final session in server.sessions.sessions)
+          _SessionRow(
+            serverId: server.id,
+            session: session,
+            onAttach: () => onAttach(session),
+            onRename: (customName) => sessions.rename(session.name, customName),
+            onDestroy: () => onDestroy(session.name),
+          ),
       ],
     );
   }
@@ -611,7 +603,7 @@ class _CreateSessionRow extends StatelessWidget {
               const SizedBox(width: MotifSpacing.md),
               Expanded(
                 child: Text(
-                  'Create session',
+                  'Create terminal session',
                   style: MotifType.body.copyWith(
                     color: color,
                     fontWeight: FontWeight.w700,

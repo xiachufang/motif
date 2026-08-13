@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';

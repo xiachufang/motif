@@ -9,22 +9,35 @@ part of 'codex_thread_sidebar.dart';
 abstract class _$CodexThreadSidebarViewModel with ObservableModelMixin {
   _$CodexThreadSidebarViewModel(
     ObservableSet<String> expandedProjects,
-    ObservableSet<String> expandedThreadLists,
+    ObservableMap<String, int> visibleThreadCounts,
+    ObservableList<CodexThread> queryResults,
     String? seededSelectedProject,
     bool showAllProjects,
+    bool showSearch,
+    bool showArchived,
+    String query,
+    bool queryLoading,
+    String? queryError,
   ) : _expandedProjects = expandedProjects,
-      _expandedThreadLists = expandedThreadLists,
+      _visibleThreadCounts = visibleThreadCounts,
+      _queryResults = queryResults,
       _seededSelectedProject = seededSelectedProject,
-      _showAllProjects = showAllProjects {
+      _showAllProjects = showAllProjects,
+      _showSearch = showSearch,
+      _showArchived = showArchived,
+      _query = query,
+      _queryLoading = queryLoading,
+      _queryError = queryError {
     if (!ObservationDebug.isReleaseMode) {
       observationRegisterDebugProperty(
         _expandedProjectsKey,
         () => _expandedProjects,
       );
       observationRegisterDebugProperty(
-        _expandedThreadListsKey,
-        () => _expandedThreadLists,
+        _visibleThreadCountsKey,
+        () => _visibleThreadCounts,
       );
+      observationRegisterDebugProperty(_queryResultsKey, () => _queryResults);
       observationRegisterDebugProperty(
         _seededSelectedProjectKey,
         () => _seededSelectedProject,
@@ -33,6 +46,11 @@ abstract class _$CodexThreadSidebarViewModel with ObservableModelMixin {
         _showAllProjectsKey,
         () => _showAllProjects,
       );
+      observationRegisterDebugProperty(_showSearchKey, () => _showSearch);
+      observationRegisterDebugProperty(_showArchivedKey, () => _showArchived);
+      observationRegisterDebugProperty(_queryKey, () => _query);
+      observationRegisterDebugProperty(_queryLoadingKey, () => _queryLoading);
+      observationRegisterDebugProperty(_queryErrorKey, () => _queryError);
     }
   }
   final ObservationKey<ObservableSet<String>> _expandedProjectsKey =
@@ -46,15 +64,26 @@ abstract class _$CodexThreadSidebarViewModel with ObservableModelMixin {
     return _expandedProjects;
   }
 
-  final ObservationKey<ObservableSet<String>> _expandedThreadListsKey =
-      ObservationKey<ObservableSet<String>>(
-        'CodexThreadSidebarViewModel.expandedThreadLists',
+  final ObservationKey<ObservableMap<String, int>> _visibleThreadCountsKey =
+      ObservationKey<ObservableMap<String, int>>(
+        'CodexThreadSidebarViewModel.visibleThreadCounts',
       );
-  final ObservableSet<String> _expandedThreadLists;
+  final ObservableMap<String, int> _visibleThreadCounts;
 
-  ObservableSet<String> get expandedThreadLists {
-    observationAccess(_expandedThreadListsKey);
-    return _expandedThreadLists;
+  ObservableMap<String, int> get visibleThreadCounts {
+    observationAccess(_visibleThreadCountsKey);
+    return _visibleThreadCounts;
+  }
+
+  final ObservationKey<ObservableList<CodexThread>> _queryResultsKey =
+      ObservationKey<ObservableList<CodexThread>>(
+        'CodexThreadSidebarViewModel.queryResults',
+      );
+  final ObservableList<CodexThread> _queryResults;
+
+  ObservableList<CodexThread> get queryResults {
+    observationAccess(_queryResultsKey);
+    return _queryResults;
   }
 
   final ObservationKey<String?> _seededSelectedProjectKey =
@@ -89,6 +118,91 @@ abstract class _$CodexThreadSidebarViewModel with ObservableModelMixin {
     if (_showAllProjects == value) return;
     observationMutation(_showAllProjectsKey, () {
       _showAllProjects = value;
+    });
+  }
+
+  final ObservationKey<bool> _showSearchKey = ObservationKey<bool>(
+    'CodexThreadSidebarViewModel.showSearch',
+  );
+  bool _showSearch;
+
+  bool get showSearch {
+    observationAccess(_showSearchKey);
+    return _showSearch;
+  }
+
+  set showSearch(bool value) {
+    if (_showSearch == value) return;
+    observationMutation(_showSearchKey, () {
+      _showSearch = value;
+    });
+  }
+
+  final ObservationKey<bool> _showArchivedKey = ObservationKey<bool>(
+    'CodexThreadSidebarViewModel.showArchived',
+  );
+  bool _showArchived;
+
+  bool get showArchived {
+    observationAccess(_showArchivedKey);
+    return _showArchived;
+  }
+
+  set showArchived(bool value) {
+    if (_showArchived == value) return;
+    observationMutation(_showArchivedKey, () {
+      _showArchived = value;
+    });
+  }
+
+  final ObservationKey<String> _queryKey = ObservationKey<String>(
+    'CodexThreadSidebarViewModel.query',
+  );
+  String _query;
+
+  String get query {
+    observationAccess(_queryKey);
+    return _query;
+  }
+
+  set query(String value) {
+    if (_query == value) return;
+    observationMutation(_queryKey, () {
+      _query = value;
+    });
+  }
+
+  final ObservationKey<bool> _queryLoadingKey = ObservationKey<bool>(
+    'CodexThreadSidebarViewModel.queryLoading',
+  );
+  bool _queryLoading;
+
+  bool get queryLoading {
+    observationAccess(_queryLoadingKey);
+    return _queryLoading;
+  }
+
+  set queryLoading(bool value) {
+    if (_queryLoading == value) return;
+    observationMutation(_queryLoadingKey, () {
+      _queryLoading = value;
+    });
+  }
+
+  final ObservationKey<String?> _queryErrorKey = ObservationKey<String?>(
+    'CodexThreadSidebarViewModel.queryError',
+  );
+  String? _queryError;
+
+  String? get queryError {
+    observationAccess(_queryErrorKey);
+    return _queryError;
+  }
+
+  set queryError(String? value) {
+    if (_queryError == value) return;
+    observationMutation(_queryErrorKey, () {
+      _queryError = value;
     });
   }
 }

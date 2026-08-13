@@ -240,6 +240,12 @@ void main() {
             result = {'data': <Object?>[], 'nextCursor': null};
           case 'thread/read':
             result = {'thread': threadJson('thread-1')};
+          case 'thread/name/set':
+          case 'thread/archive':
+          case 'thread/delete':
+            result = <String, Object?>{};
+          case 'thread/unarchive':
+            result = {'thread': threadJson('thread-1')};
           case 'thread/start':
             result = {
               'approvalPolicy': 'never',
@@ -324,6 +330,13 @@ void main() {
         ),
       );
       expect(list.data, isEmpty);
+      await controller.setThreadName('thread-1', 'Renamed thread');
+      await controller.archiveThread('thread-1');
+      expect(
+        (await controller.unarchiveThread('thread-1')).thread.id,
+        'thread-1',
+      );
+      await controller.deleteThread('thread-1');
       expect((await controller.readThread('thread-1')).thread.id, 'thread-1');
       expect(
         (await controller.startThread(
@@ -424,6 +437,13 @@ void main() {
         'sortDirection': 'desc',
         'sortKey': 'recency_at',
       });
+      expect(requests['thread/name/set']?['params'], {
+        'name': 'Renamed thread',
+        'threadId': 'thread-1',
+      });
+      expect(requests['thread/archive']?['params'], {'threadId': 'thread-1'});
+      expect(requests['thread/unarchive']?['params'], {'threadId': 'thread-1'});
+      expect(requests['thread/delete']?['params'], {'threadId': 'thread-1'});
       expect(requests['thread/read']?['params'], {
         'includeTurns': false,
         'threadId': 'thread-1',
@@ -495,7 +515,7 @@ void main() {
           .where((request) => request['id'] != null)
           .map((request) => request['id'])
           .toSet();
-      expect(ids, hasLength(21));
+      expect(ids, hasLength(25));
       await controller.close();
     },
   );

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:characters/characters.dart';
+
 import '../../../log/log.dart';
 import '../../../models/motif_proto.dart';
 import '../../../net/rpc_client.dart';
@@ -13,6 +15,14 @@ typedef ViewRpcCall =
       String method, [
       Map<String, Object?> params,
     ]);
+
+const int maxTabNameCharacters = 32;
+
+String? normalizeTabCustomName(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+  return trimmed.characters.take(maxTabNameCharacters).toString();
+}
 
 final class ViewTransport {
   const ViewTransport({required this.isAvailable, required this.call});
@@ -126,6 +136,7 @@ final class ViewController {
           onTransition: _onTransition,
         );
     viewModel.runtime = _machine.state;
+    _replaceItems(viewModel.items);
   }
 
   final ViewTabsViewModel viewModel;
@@ -157,6 +168,7 @@ final class ViewController {
       'activate view requested previous=$previous next=$viewId',
       name: 'motif.view',
     );
+
     _machine.dispatch(
       _ActivationRequested(
         viewId: viewId,
@@ -239,7 +251,7 @@ final class ViewController {
   Future<void> rename(String viewId, String? customName) async {
     final index = viewModel.items.indexWhere((view) => view.id == viewId);
     if (index < 0) return;
-    final normalized = customName?.trim();
+    final normalized = normalizeTabCustomName(customName);
     final previous = viewModel.items[index];
     final optimistic = previous.copyWith(
       customName: normalized,
@@ -283,7 +295,7 @@ final class ViewController {
       (body['view'] as Map).cast<String, Object?>(),
     );
     if (!viewModel.items.any((candidate) => candidate.id == view.id)) {
-      viewModel.items.add(view);
+      viewModel.items.add(_normalizeViewName(view));
       callbacks.onTabsChanged();
     }
     return view;
@@ -291,7 +303,7 @@ final class ViewController {
 
   void handleOpened(ViewInfo view) {
     if (!viewModel.items.any((candidate) => candidate.id == view.id)) {
-      viewModel.items.add(view);
+      viewModel.items.add(_normalizeViewName(view));
     }
     callbacks.onTabsChanged();
   }
@@ -322,9 +334,10 @@ final class ViewController {
   void handleRenamed(String? id, String? customName) {
     final index = viewModel.items.indexWhere((view) => view.id == id);
     if (index < 0) return;
+    final normalized = normalizeTabCustomName(customName);
     viewModel.items[index] = viewModel.items[index].copyWith(
-      customName: customName,
-      clearCustomName: customName == null || customName.isEmpty,
+      customName: normalized,
+      clearCustomName: normalized == null,
     );
     callbacks.onTabsChanged();
   }
@@ -524,6 +537,16 @@ final class ViewController {
   }
 
   void _replaceItems(Iterable<ViewInfo> items) {
-    viewModel.items.replaceRange(0, viewModel.items.length, items);
+    viewModel.items.replaceRange(0, viewModel.items.length, [
+      for (final item in items) _normalizeViewName(item),
+    ]);
+  }
+
+  ViewInfo _normalizeViewName(ViewInfo view) {
+    final normalized = normalizeTabCustomName(view.customName);
+    return view.copyWith(
+      customName: normalized,
+      clearCustomName: normalized == null,
+    );
   }
 }

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// A selection area that clears its selection when its owner stops being the
 /// active tab.
