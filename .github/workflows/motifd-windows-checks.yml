@@ -12,6 +12,9 @@ on:
       - 'crates/motif-tailscale/**'
       - 'apps/flutter/hook/build.dart'
       - 'apps/flutter/scripts/build_motif_embed.sh'
+      - 'scripts/apply_ghostty_patches.sh'
+      - 'scripts/build_ghostty.sh'
+      - 'patches/ghostty/**'
       - '.github/workflows/motifd-windows-checks.yml'
   push:
     branches: [main]
@@ -25,6 +28,9 @@ on:
       - 'crates/motif-tailscale/**'
       - 'apps/flutter/hook/build.dart'
       - 'apps/flutter/scripts/build_motif_embed.sh'
+      - 'scripts/apply_ghostty_patches.sh'
+      - 'scripts/build_ghostty.sh'
+      - 'patches/ghostty/**'
       - '.github/workflows/motifd-windows-checks.yml'
 
 concurrency:
