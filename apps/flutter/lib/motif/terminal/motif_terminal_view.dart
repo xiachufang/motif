@@ -14,10 +14,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
 
-import 'package:flutter/cupertino.dart' as cupertino;
+import 'package:cupertino_ui/cupertino_ui.dart' as cupertino;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -84,12 +84,6 @@ class MotifTerminalView extends StatefulWidget {
 
 class _MotifTerminalViewState extends State<MotifTerminalView>
     with TextInputClient {
-  static const Set<PointerDeviceKind> _terminalScrollDragDevices = {
-    PointerDeviceKind.touch,
-    PointerDeviceKind.stylus,
-    PointerDeviceKind.invertedStylus,
-    PointerDeviceKind.trackpad,
-  };
   static const double _keyboardCursorMargin = 16;
   static const Duration _terminalInitDelay = Duration(milliseconds: 32);
   static const Duration _remoteByteCoalesceDelay = Duration(milliseconds: 8);
@@ -107,15 +101,12 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   Timer? _remoteByteFlushTimer;
   final Set<LogicalKeyboardKey> _hostShortcutKeys = <LogicalKeyboardKey>{};
   final Set<PhysicalKeyboardKey> _textInputOwnedKeys = <PhysicalKeyboardKey>{};
-  final ScrollController _terminalScrollController = ScrollController(
-    debugLabel: 'Motif terminal scroll position',
-    keepScrollOffset: false,
-  );
-  bool _syncingTerminalScrollPosition = false;
-  bool _terminalScrollSyncScheduled = false;
-  int? _requestedViewportOffset;
-  bool _waitingForLatestViewport = false;
-  double _viewportRowFraction = 0;
+  final TerminalScrollController _terminalScrollController =
+      TerminalScrollController(
+        debugLabel: 'Motif terminal scroll position',
+        keepScrollOffset: false,
+      );
+  TerminalViewportTarget? _pendingViewportRequest;
   int? _touchScrollPointer;
   int? _touchSelectionPointer;
   PointerDeviceKind? _lastPointerKind;
@@ -127,8 +118,6 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
   double _touchScrollDistance = 0;
   final TerminalScrollAccumulator _scrollAccumulator =
       TerminalScrollAccumulator();
-  Drag? _terminalHistoryScrollDrag;
-  ScrollHoldController? _terminalHistoryScrollHold;
   final TerminalScrollbarVisibilityController _scrollbarVisibility =
       TerminalScrollbarVisibilityController();
   final Set<int> _terminalOverlayPointers = <int>{};
@@ -232,43 +221,41 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       'snapshot=${snapshot == null ? 'none' : '${snapshot.viewportOffset}/${snapshot.maxViewportOffset}'} '
       'active=${snapshot?.viewportActive} history=${snapshot?.hasScrollback} '
       'overscan=${snapshot == null ? 'none' : '${snapshot.topOverscanRows}/${snapshot.bottomOverscanRows}'} '
-      'fraction=${_viewportRowFraction.toStringAsFixed(4)} '
-      'requested=$_requestedViewportOffset latest=$_waitingForLatestViewport '
+      'pending=$_pendingViewportRequest '
       '$detail',
       name: 'motif.terminal.scroll',
     );
   }
 
-  double get _effectiveViewportRowFraction {
+  TerminalViewportProjection? get _viewportProjection {
     final snapshot = _snapshot;
-    if (snapshot == null || !snapshot.hasBottomOverscan) return 0;
-    return _viewportRowFraction.clamp(0.0, 1.0).toDouble();
-  }
-
-  double get _visualViewportOffset {
-    final snapshot = _snapshot;
-    if (snapshot == null) return 0;
-    if (_cellHeight <= 0) return snapshot.viewportOffset.toDouble();
-    return snapshot.viewportOffset + _viewportPixelOffset / _cellHeight;
-  }
-
-  double get _viewportPixelOffset {
-    final snapshot = _snapshot;
-    if (snapshot == null || _cellHeight <= 0) return 0;
-    var offset = _effectiveViewportRowFraction * _cellHeight;
+    if (snapshot == null || _cellHeight <= 0) return null;
+    var scrollPixels = snapshot.viewportOffset * _cellHeight;
+    var maxScrollPixels = snapshot.maxViewportOffset * _cellHeight;
     if (_terminalScrollController.hasClients) {
       final position = _terminalScrollController.position;
       if (position.hasContentDimensions) {
-        offset = position.pixels - snapshot.viewportOffset * _cellHeight;
+        scrollPixels = position.pixels;
+        maxScrollPixels = position.maxScrollExtent;
       }
     }
-    return offset
-        .clamp(
-          -snapshot.topOverscanRows * _cellHeight,
-          snapshot.bottomOverscanRows * _cellHeight,
-        )
-        .toDouble();
+    return TerminalViewportProjection.calculate(
+      scrollPixels: scrollPixels,
+      rowHeight: _cellHeight,
+      maxViewportOffset: (maxScrollPixels / _cellHeight).round(),
+      maxScrollPixels: maxScrollPixels,
+      snapshotViewportOffset: snapshot.viewportOffset,
+      snapshotIsLive: snapshot.viewportActive,
+      followsLatest: _terminalScrollController.followsLatest,
+    );
   }
+
+  double get _visualViewportOffset =>
+      _viewportProjection?.visualRowOffset ??
+      _snapshot?.viewportOffset.toDouble() ??
+      0;
+
+  double get _viewportPixelOffset => _viewportProjection?.paintOffset ?? 0;
 
   TerminalFontSpec get _fontSpec {
     final explicit = widget.fontFamily;
@@ -310,9 +297,10 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     }
     if (oldWidget.fontSize != widget.fontSize ||
         oldWidget.fontFamily != widget.fontFamily) {
+      final visualViewportOffset = _visualViewportOffset;
       _measureCell();
       _scheduleResizeAndMaybeOpen();
-      _scheduleTerminalScrollPositionSync();
+      _scheduleTerminalScrollPositionRestore(visualViewportOffset);
     }
     if (oldWidget.palette != widget.palette) {
       _worker?.setThemeColors(
@@ -393,7 +381,7 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
     _pendingTerminalInputs.clear();
     _terminalHyperlinkPointers.clear();
     HardwareKeyboard.instance.removeHandler(_terminalLinkKeyboardHandler);
-    _stopScrollInertia(resetVelocity: true);
+    _stopScrollInertia();
     _terminalScrollController.removeListener(_onTerminalScrollPositionChanged);
     _terminalScrollController.dispose();
     _discardTerminalSelectionState();
@@ -513,6 +501,8 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
       _bottomViewPadding = bottomViewPadding;
       _scheduleKeyboardLiftSync();
     }
+    _terminalScrollController.autoFollowThresholdPixels =
+        _cellHeight * terminalAutoFollowThresholdRows;
     final useTouchSelectionGestures = _usesTouchSelectionGestures;
     return ValueListenableBuilder<double>(
       valueListenable: _keyboardLiftOffset,
@@ -525,169 +515,124 @@ class _MotifTerminalViewState extends State<MotifTerminalView>
           onKeyEvent: _onKeyEvent,
           child: Scrollable(
             controller: _terminalScrollController,
-            physics: TerminalScrollAnchorPhysics(
-              followLatest: _snapshot?.viewportActive ?? true,
-            ),
             // Match Ghostty: zero is the oldest row and the maximum is the
             // active terminal area.
             axisDirection: AxisDirection.down,
             viewportBuilder: (context, position) {
-              final scrollBehavior = ScrollConfiguration.of(context);
-              final scrollPhysics = _terminalScrollController.position.physics;
-              final historyScrollEnabled = _terminalHistoryScrollEnabled;
               return _TerminalScrollViewport(
                 offset: position,
                 maxScrollExtent: _terminalScrollMaxExtent,
                 scrollIdentity: widget.ptyId,
-                child: RawGestureDetector(
+                child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  gestures: historyScrollEnabled
-                      ? <Type, GestureRecognizerFactory>{
-                          VerticalDragGestureRecognizer:
-                              GestureRecognizerFactoryWithHandlers<
-                                VerticalDragGestureRecognizer
-                              >(
-                                () => VerticalDragGestureRecognizer(
-                                  supportedDevices: _terminalScrollDragDevices,
-                                ),
-                                (recognizer) {
-                                  recognizer
-                                    ..onDown = _onTerminalHistoryDragDown
-                                    ..onStart = _onTerminalHistoryDragStart
-                                    ..onUpdate = _onTerminalHistoryDragUpdate
-                                    ..onEnd = _onTerminalHistoryDragEnd
-                                    ..onCancel = _onTerminalHistoryDragCancel
-                                    ..minFlingDistance =
-                                        scrollPhysics.minFlingDistance
-                                    ..minFlingVelocity =
-                                        scrollPhysics.minFlingVelocity
-                                    ..maxFlingVelocity =
-                                        scrollPhysics.maxFlingVelocity
-                                    ..velocityTrackerBuilder = scrollBehavior
-                                        .velocityTrackerBuilder(context)
-                                    ..dragStartBehavior =
-                                        DragStartBehavior.start
-                                    ..multitouchDragStrategy = scrollBehavior
-                                        .getMultitouchDragStrategy(context);
-                                },
-                              ),
-                        }
-                      : const <Type, GestureRecognizerFactory>{},
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _onTerminalTap,
-                    onTapCancel: _onTerminalTapCancel,
-                    onLongPressStart: useTouchSelectionGestures
-                        ? _onTerminalLongPressStart
-                        : null,
-                    onLongPressMoveUpdate: useTouchSelectionGestures
-                        ? _onTerminalLongPressMoveUpdate
-                        : null,
-                    onLongPressEnd: useTouchSelectionGestures
-                        ? _onTerminalLongPressEnd
-                        : null,
-                    onLongPressCancel: useTouchSelectionGestures
-                        ? _onTerminalLongPressCancel
-                        : null,
-                    child: MouseRegion(
-                      cursor: _terminalMouseCursor,
-                      onHover: _onPointerHover,
-                      onExit: _onPointerExit,
-                      child: Listener(
-                        onPointerDown: _onPointerDown,
-                        onPointerUp: _onPointerUp,
-                        onPointerCancel: _onPointerCancel,
-                        onPointerMove: _onPointerMove,
-                        onPointerSignal: _onPointerSignal,
-                        onPointerPanZoomStart: _onPanZoomStart,
-                        onPointerPanZoomUpdate: _onPanZoomUpdate,
-                        onPointerPanZoomEnd: _onPanZoomEnd,
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final viewportWidth = constraints.maxWidth;
-                            final viewportHeight = constraints.maxHeight;
-                            final hadViewportSize =
-                                _viewportWidth > 0 && _viewportHeight > 0;
-                            final viewportSizeChanged =
-                                hadViewportSize &&
-                                ((_viewportWidth - viewportWidth).abs() >=
-                                        0.5 ||
-                                    (_viewportHeight - viewportHeight).abs() >=
-                                        0.5);
-                            _viewportWidth = viewportWidth;
-                            if ((_viewportHeight - viewportHeight).abs() >=
-                                0.5) {
-                              _viewportHeight = viewportHeight;
-                              _scheduleKeyboardLiftSync();
-                              _scheduleImeRectSync();
-                            }
-                            final font = _fontSpec;
-                            final snapshot = _snapshot;
-                            if (!_initialized) {
-                              _scheduleTerminalInit(constraints);
-                            }
-                            if (snapshot == null) {
-                              return ColoredBox(
-                                color: widget.palette.background,
-                              );
-                            }
-                            if (_initialized) {
-                              _handleResize(
-                                constraints,
-                                viewportSizeChanged: viewportSizeChanged,
-                              );
-                            }
-                            final colorScheme = Theme.of(context).colorScheme;
-                            return Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                CustomPaint(
-                                  painter: TerminalSnapshotPainter(
-                                    snapshot: snapshot,
-                                    viewportPixelOffset: _viewportPixelOffset,
-                                    cellWidth: _cellWidth,
-                                    cellHeight: _cellHeight,
-                                    padding: widget.padding,
-                                    fontFamily: font.family,
-                                    fontFamilyFallback: font.fallback,
-                                    fontSize: widget.fontSize,
-                                    showCursor: _focusNode.hasFocus,
-                                    selection: _selection,
-                                    selectionBackground: colorScheme.primary
-                                        .withValues(alpha: 0.72),
-                                    selectionForeground: colorScheme.onPrimary,
-                                    renderCache: _terminalRenderCache,
-                                    preeditText: _composingText,
-                                    linkSegments:
-                                        _hoveredTerminalLink?.segments ??
-                                        const [],
-                                    linkUnderlineColor: colorScheme.primary,
-                                  ),
-                                  size: Size(
-                                    constraints.maxWidth,
-                                    constraints.maxHeight,
-                                  ),
-                                ),
-                                TerminalScrollControls(
-                                  totalRows: snapshot.scrollTotalRows,
-                                  visibleRows: snapshot.scrollViewportRows,
-                                  isAtLatest: snapshot.isAtLatest,
-                                  alternateScreenActive:
-                                      snapshot.alternateScreenActive,
-                                  visibilityController: _scrollbarVisibility,
-                                  buttonForegroundColor: colorScheme.onSurface,
-                                  buttonBackgroundColor: colorScheme.surface
-                                      .withValues(alpha: 0.92),
-                                  onReturnButtonHoverChanged:
-                                      _onReturnButtonHoverChanged,
-                                  onReturnToCursorInteractionStart:
-                                      _onReturnToCursorInteractionStart,
-                                  onReturnToCursor: _returnToCursor,
-                                ),
-                              ],
+                  onTap: _onTerminalTap,
+                  onTapCancel: _onTerminalTapCancel,
+                  onLongPressStart: useTouchSelectionGestures
+                      ? _onTerminalLongPressStart
+                      : null,
+                  onLongPressMoveUpdate: useTouchSelectionGestures
+                      ? _onTerminalLongPressMoveUpdate
+                      : null,
+                  onLongPressEnd: useTouchSelectionGestures
+                      ? _onTerminalLongPressEnd
+                      : null,
+                  onLongPressCancel: useTouchSelectionGestures
+                      ? _onTerminalLongPressCancel
+                      : null,
+                  child: MouseRegion(
+                    cursor: _terminalMouseCursor,
+                    onHover: _onPointerHover,
+                    onExit: _onPointerExit,
+                    child: Listener(
+                      onPointerDown: _onPointerDown,
+                      onPointerUp: _onPointerUp,
+                      onPointerCancel: _onPointerCancel,
+                      onPointerMove: _onPointerMove,
+                      onPointerSignal: _onPointerSignal,
+                      onPointerPanZoomStart: _onPanZoomStart,
+                      onPointerPanZoomUpdate: _onPanZoomUpdate,
+                      onPointerPanZoomEnd: _onPanZoomEnd,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final viewportWidth = constraints.maxWidth;
+                          final viewportHeight = constraints.maxHeight;
+                          final hadViewportSize =
+                              _viewportWidth > 0 && _viewportHeight > 0;
+                          final viewportSizeChanged =
+                              hadViewportSize &&
+                              ((_viewportWidth - viewportWidth).abs() >= 0.5 ||
+                                  (_viewportHeight - viewportHeight).abs() >=
+                                      0.5);
+                          _viewportWidth = viewportWidth;
+                          if ((_viewportHeight - viewportHeight).abs() >= 0.5) {
+                            _viewportHeight = viewportHeight;
+                            _scheduleKeyboardLiftSync();
+                            _scheduleImeRectSync();
+                          }
+                          final font = _fontSpec;
+                          final snapshot = _snapshot;
+                          if (!_initialized) {
+                            _scheduleTerminalInit(constraints);
+                          }
+                          if (snapshot == null) {
+                            return ColoredBox(color: widget.palette.background);
+                          }
+                          if (_initialized) {
+                            _handleResize(
+                              constraints,
+                              viewportSizeChanged: viewportSizeChanged,
                             );
-                          },
-                        ),
+                          }
+                          final colorScheme = Theme.of(context).colorScheme;
+                          return Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              CustomPaint(
+                                painter: TerminalSnapshotPainter(
+                                  snapshot: snapshot,
+                                  viewportPixelOffset: _viewportPixelOffset,
+                                  cellWidth: _cellWidth,
+                                  cellHeight: _cellHeight,
+                                  padding: widget.padding,
+                                  fontFamily: font.family,
+                                  fontFamilyFallback: font.fallback,
+                                  fontSize: widget.fontSize,
+                                  showCursor: _focusNode.hasFocus,
+                                  selection: _selection,
+                                  selectionBackground: colorScheme.primary
+                                      .withValues(alpha: 0.72),
+                                  selectionForeground: colorScheme.onPrimary,
+                                  renderCache: _terminalRenderCache,
+                                  preeditText: _composingText,
+                                  linkSegments:
+                                      _hoveredTerminalLink?.segments ??
+                                      const [],
+                                  linkUnderlineColor: colorScheme.primary,
+                                ),
+                                size: Size(
+                                  constraints.maxWidth,
+                                  constraints.maxHeight,
+                                ),
+                              ),
+                              TerminalScrollControls(
+                                totalRows: snapshot.scrollTotalRows,
+                                visibleRows: snapshot.scrollViewportRows,
+                                isAtLatest: snapshot.isAtLatest,
+                                alternateScreenActive:
+                                    snapshot.alternateScreenActive,
+                                visibilityController: _scrollbarVisibility,
+                                buttonForegroundColor: colorScheme.onSurface,
+                                buttonBackgroundColor: colorScheme.surface
+                                    .withValues(alpha: 0.92),
+                                onReturnButtonHoverChanged:
+                                    _onReturnButtonHoverChanged,
+                                onReturnToCursorInteractionStart:
+                                    _onReturnToCursorInteractionStart,
+                                onReturnToCursor: _returnToCursor,
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -774,17 +719,33 @@ class _RenderTerminalScrollViewport extends RenderProxyBox {
   void performLayout() {
     super.performLayout();
     _offset.applyViewportDimension(size.height);
+    var contentDimensionsAccepted = _offset.applyContentDimensions(
+      0,
+      _maxScrollExtent,
+    );
     // A new terminal starts in Ghostty's active area, which is the maximum on
-    // the shared forward axis. Do the initial correction in the same layout
-    // that publishes the content extent so the oldest row never flashes.
+    // the shared forward axis. Publish the new extent before the fallback
+    // correction: follow-latest physics may already have moved pixels to the
+    // bottom, and correcting first would make that extent delta apply twice.
     final applyInitialBottom = !_initialBottomApplied && _maxScrollExtent > 0;
+    var correctedToInitialBottom = false;
     if (applyInitialBottom && _offset.hasPixels) {
       final correction = _maxScrollExtent - _offset.pixels;
       if (correction.abs() > precisionErrorTolerance) {
         _offset.correctBy(correction);
+        correctedToInitialBottom = true;
       }
       if (_maxScrollExtent > 0) _initialBottomApplied = true;
     }
-    _offset.applyContentDimensions(0, _maxScrollExtent);
+    // Unlike RenderViewport, this proxy has no offset-dependent child layout
+    // to repeat. It still must let ScrollPosition accept dimensions again
+    // after either physics or the initial-bottom fallback corrected pixels.
+    if (!contentDimensionsAccepted || correctedToInitialBottom) {
+      contentDimensionsAccepted = _offset.applyContentDimensions(
+        0,
+        _maxScrollExtent,
+      );
+      assert(contentDimensionsAccepted);
+    }
   }
 }

@@ -288,7 +288,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _scheduleResizeAndMaybeOpen();
     _syncKeyboardLift();
     if (mounted) setState(() {});
-    _scheduleTerminalScrollPositionSync();
   }
 
   void _onWorkerSnapshot(
@@ -327,10 +326,9 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
   void _applyWorkerSnapshot(int generation, TerminalSnapshot snapshot) {
     if (!_isCurrentWorker(generation)) return;
     final previousSnapshot = _snapshot;
-    final requestedOffset = _requestedViewportOffset;
+    final pendingRequest = _pendingViewportRequest;
     final scrollRelevantSnapshot =
-        requestedOffset != null ||
-        _waitingForLatestViewport ||
+        pendingRequest != null ||
         previousSnapshot?.viewportOffset != snapshot.viewportOffset ||
         previousSnapshot?.viewportActive != snapshot.viewportActive ||
         previousSnapshot?.hasTopOverscan != snapshot.hasTopOverscan ||
@@ -346,23 +344,18 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
         force: true,
       );
     }
-    if (_waitingForLatestViewport && snapshot.viewportActive) {
-      _waitingForLatestViewport = false;
-      _viewportRowFraction = 0;
-    }
     if (snapshot.alternateScreenActive || snapshot.mouseTrackingActive) {
-      _requestedViewportOffset = null;
-      _waitingForLatestViewport = false;
-      _viewportRowFraction = 0;
-    } else if (requestedOffset != null &&
-        snapshot.viewportOffset ==
-            requestedOffset.clamp(0, snapshot.maxViewportOffset)) {
-      _requestedViewportOffset = null;
-    }
-    if (_requestedViewportOffset == null &&
-        !_waitingForLatestViewport &&
-        !snapshot.hasBottomOverscan) {
-      _viewportRowFraction = 0;
+      _pendingViewportRequest = null;
+    } else if (pendingRequest != null &&
+        (pendingRequest.latest
+            ? snapshot.viewportActive
+            : !snapshot.viewportActive &&
+                  snapshot.viewportOffset ==
+                      pendingRequest.offset.clamp(
+                        0,
+                        snapshot.maxViewportOffset,
+                      ))) {
+      _pendingViewportRequest = null;
     }
     final viewportChanged =
         previousSnapshot?.viewportOffset != snapshot.viewportOffset;
@@ -398,7 +391,6 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
       }
     }
     if (mounted) setState(() {});
-    _scheduleTerminalScrollPositionSync();
   }
 
   void _onWorkerError(int generation, Object error) {
@@ -479,9 +471,8 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _pendingTerminalInputs.clear();
-    _requestedViewportOffset = null;
-    _waitingForLatestViewport = false;
-    _viewportRowFraction = 0;
+    _pendingViewportRequest = null;
+    _terminalScrollController.resetAutoFollow();
     _terminalHyperlinkPointers.clear();
     _terminalLinkMode = false;
     _hoveredTerminalLink = null;
@@ -543,9 +534,8 @@ extension _MotifTerminalCore on _MotifTerminalViewState {
     _initialized = false;
     _workerStarting = false;
     _workerNeedsColdResync = false;
-    _requestedViewportOffset = null;
-    _waitingForLatestViewport = false;
-    _viewportRowFraction = 0;
+    _pendingViewportRequest = null;
+    _terminalScrollController.resetAutoFollow();
     _pendingTerminalInputs.clear();
     _terminalHyperlinkPointers.clear();
     _terminalLinkMode = false;

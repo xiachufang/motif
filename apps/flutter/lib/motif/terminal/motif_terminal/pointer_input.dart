@@ -177,7 +177,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _touchDownPosition = null;
     _touchDownSnapshot = null;
     _touchDownCell = null;
-    _stopScrollInertia(resetVelocity: true);
+    _stopScrollInertia();
   }
 
   void _onPointerMove(PointerMoveEvent e) {
@@ -231,9 +231,6 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
           (snapshot?.alternateScreenActive ?? false);
       if (canHandle && e.scrollDelta.dy != 0) {
         // The terminal consumes wheel input only when the application owns it.
-        // Ordinary scrollback deliberately falls through to the surrounding
-        // Flutter Scrollable so precise macOS devices (including Magic Mouse)
-        // retain ScrollPosition.pointerScroll and its native input semantics.
         GestureBinding.instance.pointerSignalResolver.register(
           e,
           _handleTerminalPointerScroll,
@@ -242,6 +239,18 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
           'pointer-signal-registered',
           detail: 'owner=terminal-app',
         );
+      } else if (_terminalHistoryScrollEnabled && e.scrollDelta.dy != 0) {
+        // Keep ordinary history in Flutter's ScrollPosition. This custom
+        // pointer entry only removes Flutter's wheel boundary clamp so the
+        // platform bouncing physics also works with precise pointer devices.
+        GestureBinding.instance.pointerSignalResolver.register(
+          e,
+          _handleTerminalHistoryPointerScroll,
+        );
+        _logScrollDiagnostic(
+          'pointer-signal-registered',
+          detail: 'owner=flutter-scroll-position',
+        );
       } else {
         _logScrollDiagnostic(
           'pointer-signal-fallthrough',
@@ -249,7 +258,18 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         );
       }
     } else if (e is PointerScrollInertiaCancelEvent) {
-      _stopScrollInertia(resetVelocity: true);
+      // The surrounding Scrollable receives the same signal and calls
+      // position.pointerScroll(0), which starts the platform spring. Starting
+      // it here as well resets the simulation and looks like a second bounce.
+      _scrollAccumulator.reset();
+    }
+  }
+
+  void _handleTerminalHistoryPointerScroll(PointerSignalEvent signal) {
+    final event = signal as PointerScrollEvent;
+    if (_terminalScrollController.hasClients && event.scrollDelta.dy != 0) {
+      _terminalScrollController.position.pointerScroll(event.scrollDelta.dy);
+      event.respond(allowPlatformDefault: false);
     }
   }
 
@@ -258,7 +278,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     final rows = event.kind == PointerDeviceKind.mouse
         ? terminalRowsFromDiscreteWheel(event.scrollDelta.dy)
         : _scrollAccumulator.applyPixelDelta(event.scrollDelta.dy, _cellHeight);
-    if (rows != 0) _scrollByRows(rows);
+    if (rows != 0) _sendTerminalAppScrollRows(rows);
     _logScrollDiagnostic(
       'pointer-signal-resolved',
       detail: 'owner=terminal-app rows=$rows kind=${event.kind.name}',
@@ -558,7 +578,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     if (terminalTapRequestsFocus(selectionActive: _selection != null)) {
       _requestFocusWithoutKeyboard();
     }
-    _stopScrollInertia(resetVelocity: true);
+    _stopScrollInertia();
     _clearTerminalSelection();
     _mouseSelectionPointer = e.pointer;
     final anchor = _terminalCellAt(e.localPosition);
@@ -599,7 +619,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     );
     if (wordSelection == null) return;
     _requestFocusWithoutKeyboard();
-    _stopScrollInertia(resetVelocity: true);
+    _stopScrollInertia();
     final selectionPointer = _touchScrollPointer;
     _touchScrollPointer = null;
     _touchDownPosition = null;
@@ -1028,7 +1048,11 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
               : 'none'}',
     );
     if (terminalAppOwnsGesture) {
-      _scrollByPixels(touchMoveDeltaToScrollPixels(e.localPanDelta.dy));
+      final rows = _scrollAccumulator.applyPixelDelta(
+        touchMoveDeltaToScrollPixels(e.localPanDelta.dy),
+        _cellHeight,
+      );
+      if (rows != 0) _sendTerminalAppScrollRows(rows);
     }
   }
 
@@ -1048,71 +1072,6 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
         !snapshot.alternateScreenActive;
   }
 
-  void _onTerminalHistoryDragDown(DragDownDetails details) {
-    if (!_terminalHistoryScrollEnabled ||
-        !_terminalScrollController.hasClients ||
-        !_terminalScrollController.position.hasContentDimensions) {
-      return;
-    }
-    _cancelTerminalHistoryDrag();
-    final position = _terminalScrollController.position;
-    _terminalHistoryScrollHold = position.hold(() {
-      _terminalHistoryScrollHold = null;
-    });
-    _logScrollDiagnostic('history-drag-down');
-  }
-
-  void _onTerminalHistoryDragStart(DragStartDetails details) {
-    if (!_terminalHistoryScrollEnabled ||
-        !_terminalScrollController.hasClients ||
-        !_terminalScrollController.position.hasContentDimensions) {
-      _terminalHistoryScrollHold?.cancel();
-      _terminalHistoryScrollHold = null;
-      return;
-    }
-    final position = _terminalScrollController.position;
-    late final Drag drag;
-    drag = position.drag(details, () {
-      if (identical(_terminalHistoryScrollDrag, drag)) {
-        _terminalHistoryScrollDrag = null;
-      }
-    });
-    _terminalHistoryScrollDrag = drag;
-    _terminalHistoryScrollHold = null;
-    _scrollbarVisibility.showTemporarily();
-    _logScrollDiagnostic('history-drag-start', force: true);
-  }
-
-  void _onTerminalHistoryDragUpdate(DragUpdateDetails details) {
-    _terminalHistoryScrollDrag?.update(details);
-  }
-
-  void _onTerminalHistoryDragEnd(DragEndDetails details) {
-    final drag = _terminalHistoryScrollDrag;
-    _terminalHistoryScrollDrag = null;
-    drag?.end(details);
-    _terminalHistoryScrollHold?.cancel();
-    _terminalHistoryScrollHold = null;
-    _logScrollDiagnostic(
-      'history-drag-end',
-      detail: 'velocity=${(details.primaryVelocity ?? 0).toStringAsFixed(2)}',
-      force: true,
-    );
-  }
-
-  void _onTerminalHistoryDragCancel() {
-    _cancelTerminalHistoryDrag();
-    _logScrollDiagnostic('history-drag-cancel', force: true);
-  }
-
-  void _cancelTerminalHistoryDrag() {
-    final drag = _terminalHistoryScrollDrag;
-    _terminalHistoryScrollDrag = null;
-    drag?.cancel();
-    _terminalHistoryScrollHold?.cancel();
-    _terminalHistoryScrollHold = null;
-  }
-
   double get _terminalScrollMaxExtent {
     final snapshot = _snapshot;
     if (snapshot == null ||
@@ -1127,9 +1086,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
   void _onTerminalScrollPositionChanged() {
     _logScrollDiagnostic('scroll-position-listener');
-    if (_syncingTerminalScrollPosition ||
-        !_terminalScrollController.hasClients ||
-        _cellHeight <= 0) {
+    if (!_terminalScrollController.hasClients || _cellHeight <= 0) {
       return;
     }
     final snapshot = _snapshot;
@@ -1143,29 +1100,29 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
 
     final position = _terminalScrollController.position;
     final laidOutMaxOffset = (position.maxScrollExtent / _cellHeight).round();
-    final target = terminalViewportPositionFromScrollPixels(
+    final projection = TerminalViewportProjection.calculate(
       scrollPixels: position.pixels,
-      maxOffset: laidOutMaxOffset,
       rowHeight: _cellHeight,
+      maxViewportOffset: laidOutMaxOffset,
+      maxScrollPixels: position.maxScrollExtent,
+      snapshotViewportOffset: snapshot.viewportOffset,
+      snapshotIsLive: snapshot.viewportActive,
+      followsLatest: _terminalScrollController.followsLatest,
     );
     _logScrollDiagnostic(
       'scroll-position-mapped',
       detail:
-          'target=${target.viewportOffset} '
-          'remainder=${target.pixelRemainder.toStringAsFixed(2)} '
+          'target=${projection.target} '
+          'remainder=${projection.pixelRemainder.toStringAsFixed(2)} '
           'laidOutMax=$laidOutMaxOffset',
     );
-    final nextFraction = target.pixelRemainder / _cellHeight;
-    if ((_viewportRowFraction - nextFraction).abs() > 1e-6) {
-      _viewportRowFraction = nextFraction;
-      if (mounted) setState(() {});
-      _touchSelectionHandlesEntry?.markNeedsBuild();
-      _touchSelectionMenuEntry?.markNeedsBuild();
-    }
-    _requestTerminalViewportOffset(target.viewportOffset);
+    if (mounted) setState(() {});
+    _touchSelectionHandlesEntry?.markNeedsBuild();
+    _touchSelectionMenuEntry?.markNeedsBuild();
+    _requestTerminalViewport(projection.target);
   }
 
-  void _requestTerminalViewportOffset(int target) {
+  void _requestTerminalViewport(TerminalViewportTarget target) {
     final snapshot = _snapshot;
     if (snapshot == null) {
       _logScrollDiagnostic(
@@ -1175,26 +1132,23 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       );
       return;
     }
-    final clamped = target.clamp(0, snapshot.maxViewportOffset);
-    if (clamped == snapshot.maxViewportOffset) {
-      if (snapshot.viewportActive &&
-          _requestedViewportOffset == null &&
-          !_waitingForLatestViewport) {
+    final clamped = target.offset.clamp(0, snapshot.maxViewportOffset);
+    if (target.latest) {
+      if (snapshot.viewportActive && _pendingViewportRequest == null) {
         _logScrollDiagnostic(
           'viewport-request-noop',
           detail: 'reason=already-live target=$target clamped=$clamped',
         );
         return;
       }
-      if (_waitingForLatestViewport) {
+      if (_pendingViewportRequest?.latest == true) {
         _logScrollDiagnostic(
           'viewport-request-noop',
           detail: 'reason=waiting-live target=$target clamped=$clamped',
         );
         return;
       }
-      _requestedViewportOffset = null;
-      _waitingForLatestViewport = true;
+      _pendingViewportRequest = (offset: clamped, latest: true);
       _scrollbarVisibility.showTemporarily();
       _logScrollDiagnostic(
         'viewport-request-send',
@@ -1204,23 +1158,26 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       _worker?.scrollToBottom();
       return;
     }
-    _waitingForLatestViewport = false;
     if (clamped == snapshot.viewportOffset &&
-        _requestedViewportOffset == null) {
+        !snapshot.viewportActive &&
+        _pendingViewportRequest == null) {
       _logScrollDiagnostic(
         'viewport-request-noop',
         detail: 'reason=same-offset target=$target clamped=$clamped',
       );
       return;
     }
-    if (_requestedViewportOffset == clamped) {
+    final pendingRequest = _pendingViewportRequest;
+    if (pendingRequest != null &&
+        !pendingRequest.latest &&
+        pendingRequest.offset == clamped) {
       _logScrollDiagnostic(
         'viewport-request-noop',
         detail: 'reason=already-requested target=$target clamped=$clamped',
       );
       return;
     }
-    _requestedViewportOffset = clamped;
+    _pendingViewportRequest = (offset: clamped, latest: false);
     _scrollbarVisibility.showTemporarily();
     _logScrollDiagnostic(
       'viewport-request-send',
@@ -1230,100 +1187,30 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     _worker?.scrollToOffset(clamped);
   }
 
-  void _scheduleTerminalScrollPositionSync() {
-    if (_terminalScrollSyncScheduled) return;
-    _terminalScrollSyncScheduled = true;
+  void _scheduleTerminalScrollPositionRestore(double viewportOffset) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _terminalScrollSyncScheduled = false;
       if (!mounted ||
           !_terminalScrollController.hasClients ||
           _cellHeight <= 0) {
         return;
       }
-      final snapshot = _snapshot;
-      if (snapshot == null) return;
       final position = _terminalScrollController.position;
-      if (!position.hasContentDimensions ||
-          position.isScrollingNotifier.value) {
-        return;
-      }
-      final requestedOffset = _requestedViewportOffset;
-      if (_waitingForLatestViewport && !snapshot.viewportActive) return;
-      if (requestedOffset != null &&
-          snapshot.viewportOffset !=
-              requestedOffset.clamp(0, snapshot.maxViewportOffset)) {
-        return;
-      }
-      final target =
-          ((snapshot.viewportOffset + _effectiveViewportRowFraction) *
-                  _cellHeight)
-              .clamp(position.minScrollExtent, position.maxScrollExtent)
-              .toDouble();
+      if (!position.hasContentDimensions) return;
+      final target = (viewportOffset * _cellHeight)
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
       if ((position.pixels - target).abs() <= 0.01) return;
-      _syncingTerminalScrollPosition = true;
-      try {
-        _terminalScrollController.jumpTo(target);
-      } finally {
-        _syncingTerminalScrollPosition = false;
-      }
+      _terminalScrollController.jumpTo(target);
     });
   }
 
-  void _scrollByPixels(double pixels) {
-    final snapshot = _snapshot;
-    if (snapshot != null &&
-        snapshot.hasScrollback &&
-        !snapshot.mouseTrackingActive &&
-        !snapshot.alternateScreenActive) {
-      _scrollViewportByPixels(pixels);
-      return;
-    }
-    final rows = _scrollAccumulator.applyPixelDelta(pixels, _cellHeight);
-    if (rows != 0) _scrollByRows(rows);
-  }
-
-  void _scrollViewportByPixels(double pixels) {
-    final snapshot = _snapshot;
-    if (snapshot == null || !snapshot.hasScrollback || pixels == 0) return;
-    _scrollbarVisibility.showTemporarily();
-    if (_terminalScrollController.hasClients &&
-        _terminalScrollController.position.hasContentDimensions) {
-      final position = _terminalScrollController.position;
-      final target = (position.pixels + pixels)
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
-      if ((target - position.pixels).abs() > 1e-6) {
-        _terminalScrollController.jumpTo(target);
-      }
-      return;
-    }
-    final target = terminalViewportPositionFromScrollPixels(
-      scrollPixels: (_visualViewportOffset * _cellHeight) + pixels,
-      maxOffset: snapshot.maxViewportOffset,
-      rowHeight: _cellHeight,
-    );
-    _viewportRowFraction = target.pixelRemainder / _cellHeight;
-    if (mounted) setState(() {});
-    _requestTerminalViewportOffset(target.viewportOffset);
-  }
-
-  void _scrollByRows(int rows) {
+  void _sendTerminalAppScrollRows(int rows) {
     final snapshot = _snapshot;
     if (snapshot == null || rows == 0) return;
-    if (snapshot.hasScrollback &&
-        !snapshot.mouseTrackingActive &&
-        !snapshot.alternateScreenActive) {
-      _scrollbarVisibility.showTemporarily();
-    }
     if (snapshot.mouseTrackingActive) {
-      // The app (claude, vim with mouse, htop, ...) wants wheel events.
       _sendWheelEvents(rows);
     } else if (snapshot.alternateScreenActive) {
-      // Alternate screen has no scrollback; emulate xterm's alternate
-      // scroll mode by sending arrow keys (less, vim, man, ...).
       _sendAlternateScrollArrows(rows);
-    } else if (snapshot.hasScrollback) {
-      _scrollViewportByPixels(rows * _cellHeight);
     }
   }
 
@@ -1354,18 +1241,30 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
   }
 
   void _onReturnToCursorInteractionStart() {
-    _stopScrollInertia(resetVelocity: true);
+    _stopScrollInertia();
     _scrollAccumulator.reset();
   }
 
   void _returnToCursor() {
-    _stopScrollInertia(resetVelocity: true);
+    final snapshot = _snapshot;
+    if (snapshot == null) return;
+    _stopScrollInertia();
     _scrollAccumulator.reset();
-    _requestedViewportOffset = null;
-    _waitingForLatestViewport = true;
-    _viewportRowFraction = 0;
     _scrollbarVisibility.showTemporarily();
-    _worker?.scrollToBottom();
+    _terminalScrollController.followLatest();
+    if (_terminalScrollController.hasClients) {
+      final position = _terminalScrollController.position;
+      if (position.hasContentDimensions) {
+        _terminalScrollController.jumpTo(position.maxScrollExtent);
+      }
+    }
+    // A ScrollPosition already at max does not emit another notification.
+    // Explicitly activate Ghostty's live viewport as well, since the maximum
+    // history offset and the active viewport are distinct terminal states.
+    _requestTerminalViewport((
+      offset: snapshot.maxViewportOffset,
+      latest: true,
+    ));
   }
 
   /// Wheel events are encoded as presses of buttons four/five (xterm
@@ -1408,19 +1307,13 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
     }
   }
 
-  void _stopScrollInertia({required bool resetVelocity}) {
-    _cancelTerminalHistoryDrag();
+  void _stopScrollInertia() {
     if (!_terminalScrollController.hasClients) return;
     final position = _terminalScrollController.position;
     final target = position.pixels
         .clamp(position.minScrollExtent, position.maxScrollExtent)
         .toDouble();
-    _syncingTerminalScrollPosition = true;
-    try {
-      _terminalScrollController.jumpTo(target);
-    } finally {
-      _syncingTerminalScrollPosition = false;
-    }
+    _terminalScrollController.jumpTo(target);
   }
 
   /// Extract the visible grid as text (rows joined by newlines, trailing
