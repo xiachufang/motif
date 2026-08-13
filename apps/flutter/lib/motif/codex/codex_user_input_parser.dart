@@ -20,7 +20,10 @@ final class CodexUserInputParser {
   const CodexUserInputParser();
 
   static const _filesHeader = '# Files mentioned by the user:';
-  static final _requestHeader = RegExp(r'^## My request:\s*$', multiLine: true);
+  static final _requestHeader = RegExp(
+    r'^## My request(?: for Codex)?:\s*$',
+    multiLine: true,
+  );
 
   CodexParsedUserInputs parse(Iterable<CodexUserInput> inputs) {
     final textParts = <String>[];

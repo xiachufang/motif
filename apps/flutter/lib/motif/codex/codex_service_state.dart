@@ -113,7 +113,7 @@ class CodexConversationState extends ChangeNotifier {
   String? sendError;
   CodexTurnPlanUpdatedNotification? activePlan;
   String? activeDiff;
-  bool queueMessagesWhileActive = true;
+  bool queueMessagesWhileActive = false;
   List<CodexQueuedMessage> queuedMessages = const [];
   List<CodexServerRequest> pendingServerRequests = const [];
 
@@ -132,6 +132,7 @@ class CodexConversationState extends ChangeNotifier {
   Timer? _deltaFlushTimer;
   int _refreshGeneration = 0;
   int _readGeneration = 0;
+  int _connectionGeneration = 0;
   int _queueSequence = 0;
   int _attachmentSequence = 0;
   bool _closed = false;
@@ -142,6 +143,7 @@ class CodexConversationState extends ChangeNotifier {
   bool _permissionSelectionTouched = false;
   bool _applyingDeltas = false;
   bool _catalogLoadedOnce = false;
+  bool _recoverSelectedThreadOnConnect = false;
   String? _preferredModelId;
   ValueChanged<String?>? _onModelSelected;
   String? _preferredReasoningEffort;
@@ -1442,6 +1444,10 @@ class CodexConversationState extends ChangeNotifier {
     if (_closed) return;
     final state = connection.state;
     if (state.phase != CodexConnectionPhase.connected) {
+      _connectionGeneration++;
+      if (_loadedInitializeResponse != null && selectedThread != null) {
+        _recoverSelectedThreadOnConnect = true;
+      }
       _readGeneration++;
       readingThreadId = null;
       _loadedInitializeResponse = null;
@@ -1459,14 +1465,71 @@ class CodexConversationState extends ChangeNotifier {
     }
     final response = state.response;
     if (response != null && !identical(response, _loadedInitializeResponse)) {
+      final connectionGeneration = ++_connectionGeneration;
+      final threadId = _recoverSelectedThreadOnConnect
+          ? selectedThread?.id
+          : null;
+      final readGeneration = _readGeneration;
+      _recoverSelectedThreadOnConnect = false;
       _resumedThreads.clear();
       _pendingThreadResumes.clear();
       _loadedInitializeResponse = response;
       unawaited(_loadModels());
       unawaited(_loadCollaborationModes());
       unawaited(refreshCatalog(showLoading: true));
+      if (threadId != null) {
+        unawaited(
+          _recoverSelectedThreadAfterReconnect(
+            threadId,
+            connectionGeneration: connectionGeneration,
+            readGeneration: readGeneration,
+          ),
+        );
+      }
     }
     _notify();
+  }
+
+  Future<void> _recoverSelectedThreadAfterReconnect(
+    String threadId, {
+    required int connectionGeneration,
+    required int readGeneration,
+  }) async {
+    try {
+      // Resuming both restores this connection's live subscription and returns
+      // a complete snapshot of turns missed while the socket was unavailable.
+      final response = await connection.resumeThread(
+        threadId,
+        includeTurns: true,
+      );
+      if (_closed ||
+          connection.state.phase != CodexConnectionPhase.connected ||
+          connectionGeneration != _connectionGeneration ||
+          readGeneration != _readGeneration ||
+          selectedThread?.id != threadId) {
+        return;
+      }
+      final thread = response.thread;
+      _resumedThreads[thread.id] = thread;
+      _threads[thread.id] = thread;
+      selectedThread = thread;
+      turns = thread.turns;
+      readError = null;
+      _failedReadThreadId = null;
+      _rebuildCatalog();
+      _notify();
+      unawaited(_loadThreadConfiguration(thread));
+    } catch (error) {
+      if (_closed ||
+          connectionGeneration != _connectionGeneration ||
+          readGeneration != _readGeneration ||
+          selectedThread?.id != threadId) {
+        return;
+      }
+      _failedReadThreadId = threadId;
+      readError = '$error';
+      _notify();
+    }
   }
 
   void _onTypedMessage(CodexJsonEncodable message) {

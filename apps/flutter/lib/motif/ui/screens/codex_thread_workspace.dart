@@ -19,6 +19,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
+import '../widgets/codex_motion.dart';
 import '../widgets/codex_turn_activity.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
@@ -80,7 +81,12 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   final TextEditingController _planFeedback = TextEditingController();
   final FocusNode _composerFocus = FocusNode();
   final FocusNode _planFeedbackFocus = FocusNode();
-  final ScrollController _scroll = ScrollController();
+  // A newly selected thread should lay out at its tail immediately. Starting
+  // at zero exposes the top of a long conversation for one frame before the
+  // post-frame follow-tail correction runs.
+  final ScrollController _scroll = ScrollController(
+    initialScrollOffset: double.maxFinite,
+  );
   final Set<String> _resolvedPlanItems = <String>{};
   final Set<String> _expandedHistoryTurnIds = <String>{};
   List<CodexPendingAttachment> _attachments = const [];
@@ -160,6 +166,9 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     CodexConversationState state,
   ) {
     final decisionPlan = _decisionPlan(state);
+    final queueKey = Object.hashAll(
+      state.queuedMessages.map((message) => message.id),
+    );
     return SafeArea(
       top: false,
       child: Center(
@@ -175,47 +184,77 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (state.activePlan != null)
-                  _PlanChip(
-                    plan: state.activePlan!,
+                CodexMotionPresence(
+                  visible: state.activePlan != null,
+                  child: _PlanChip(
+                    plan:
+                        state.activePlan ??
+                        const CodexTurnPlanUpdatedNotification(
+                          plan: [],
+                          threadId: '',
+                          turnId: '',
+                        ),
                     diff: state.activeDiff,
                     onOpenDiff: widget.onOpenTurnDiff,
                   ),
-                for (final message in state.queuedMessages)
-                  _QueuedMessageCard(
-                    message: message,
-                    queueing: state.queueMessagesWhileActive,
-                    onSteer: () => state.steerQueuedMessage(message.id),
-                    onDelete: () => state.deleteQueuedMessage(message.id),
-                    onEdit: () => _editQueued(message.id),
-                    onQueueingChanged: state.setQueueing,
-                  ),
-                if (decisionPlan != null)
-                  _PlanDecisionPanel(
-                    sending: state.sending,
-                    controller: _planFeedback,
-                    focusNode: _planFeedbackFocus,
-                    onImplement: () => _implementPlan(decisionPlan),
-                    onRevise: () => _revisePlan(decisionPlan),
-                    onSkip: () => _skipPlan(decisionPlan),
-                  )
-                else
-                  _Composer(
-                    state: state,
-                    controller: _composer,
-                    focusNode: _composerFocus,
-                    attachments: _attachments,
-                    references: _references,
-                    onAddImages: _pickImages,
-                    onAddFiles: _pickFiles,
-                    onRemoveAttachment: _removeAttachment,
-                    onAddReference: _addReference,
-                    onRemoveReference: _removeReference,
-                    onToggleGoal: _toggleGoalMode,
-                    onTogglePlan: _togglePlanMode,
-                    onRemoveGoal: _removeGoal,
-                    onSubmit: _submit,
-                  ),
+                ),
+                CodexMotionSwitcher(
+                  animateSize: true,
+                  alignment: Alignment.topCenter,
+                  child: state.queuedMessages.isEmpty
+                      ? const SizedBox.shrink(
+                          key: ValueKey('codex-queue-empty'),
+                        )
+                      : Column(
+                          key: ValueKey('codex-queue-$queueKey'),
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (final message in state.queuedMessages)
+                              _QueuedMessageCard(
+                                key: ValueKey('codex-queued-${message.id}'),
+                                message: message,
+                                queueing: state.queueMessagesWhileActive,
+                                onSteer: () =>
+                                    state.steerQueuedMessage(message.id),
+                                onDelete: () =>
+                                    state.deleteQueuedMessage(message.id),
+                                onEdit: () => _editQueued(message.id),
+                                onQueueingChanged: state.setQueueing,
+                              ),
+                          ],
+                        ),
+                ),
+                CodexMotionSwitcher(
+                  animateSize: true,
+                  alignment: Alignment.bottomCenter,
+                  child: decisionPlan != null
+                      ? _PlanDecisionPanel(
+                          key: const ValueKey('codex-plan-decision'),
+                          sending: state.sending,
+                          controller: _planFeedback,
+                          focusNode: _planFeedbackFocus,
+                          onImplement: () => _implementPlan(decisionPlan),
+                          onRevise: () => _revisePlan(decisionPlan),
+                          onSkip: () => _skipPlan(decisionPlan),
+                        )
+                      : _Composer(
+                          key: const ValueKey('codex-composer'),
+                          state: state,
+                          controller: _composer,
+                          focusNode: _composerFocus,
+                          attachments: _attachments,
+                          references: _references,
+                          onAddImages: _pickImages,
+                          onAddFiles: _pickFiles,
+                          onRemoveAttachment: _removeAttachment,
+                          onAddReference: _addReference,
+                          onRemoveReference: _removeReference,
+                          onToggleGoal: _toggleGoalMode,
+                          onTogglePlan: _togglePlanMode,
+                          onRemoveGoal: _removeGoal,
+                          onSubmit: _submit,
+                        ),
+                ),
               ],
             ),
           ),
@@ -419,7 +458,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
 
   void _scrollToBottom() {
     if (!mounted || !_scroll.hasClients) return;
-    _scroll.jumpTo(_scroll.position.minScrollExtent);
+    _scroll.jumpTo(_scroll.position.maxScrollExtent);
   }
 
   void _bindScrollUpdates() {
@@ -470,8 +509,8 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     if (notification is ScrollUpdateNotification &&
         notification.dragDetails != null) {
       _followTail =
-          notification.metrics.pixels <=
-          notification.metrics.minScrollExtent + 96;
+          notification.metrics.pixels >=
+          notification.metrics.maxScrollExtent - 96;
     }
     return false;
   }
@@ -537,7 +576,6 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
         child: CustomScrollView(
           key: const ValueKey('codex-turn-stream'),
           controller: scrollController,
-          reverse: true,
           // TODO(flutter): use ScrollCacheExtent.pixels when the native-assets
           // test frontend catches up with the SDK API.
           // ignore: deprecated_member_use
@@ -553,10 +591,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
               sliver: SliverList.builder(
                 itemCount: conversationChildren.length,
                 itemBuilder: (context, index) {
-                  final child =
-                      conversationChildren[conversationChildren.length -
-                          index -
-                          1];
+                  final child = conversationChildren[index];
                   return Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 860),
@@ -657,17 +692,24 @@ List<Widget> _turnSliverChildren({
           onTap: history.isEmpty ? null : onToggleHistory,
         ),
       );
-    if (historyExpanded) {
-      result.addAll(
-        _turnContent(
-          state,
-          turn,
-          history,
-          groupKeyPrefix: 'history',
-          boundedActivity: false,
-          onOpenFile: onOpenFile,
-          onOpenImage: onOpenImage,
-          onOpenTurnDiff: onOpenTurnDiff,
+    if (history.isNotEmpty) {
+      result.add(
+        CodexMotionExpansion(
+          key: ValueKey('codex-worked-history-${turn.id}'),
+          expanded: historyExpanded,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: _turnContent(
+              state,
+              turn,
+              history,
+              groupKeyPrefix: 'history',
+              boundedActivity: false,
+              onOpenFile: onOpenFile,
+              onOpenImage: onOpenImage,
+              onOpenTurnDiff: onOpenTurnDiff,
+            ),
+          ),
         ),
       );
     }
@@ -887,12 +929,15 @@ class _WorkedHeader extends StatelessWidget {
             ),
             if (onTap != null) ...[
               const SizedBox(width: MotifSpacing.xs),
-              Icon(
-                expanded
-                    ? Icons.keyboard_arrow_down_rounded
-                    : Icons.keyboard_arrow_right_rounded,
-                size: MotifIconSize.sm,
-                color: c.textTertiary,
+              AnimatedRotation(
+                turns: expanded ? 0.25 : 0,
+                duration: codexExpansionDuration(context),
+                curve: codexExpansionCurve(context),
+                child: Icon(
+                  Icons.keyboard_arrow_right_rounded,
+                  size: MotifIconSize.sm,
+                  color: c.textTertiary,
+                ),
               ),
             ],
           ],
@@ -924,10 +969,20 @@ class _ContextCompactionItem extends StatelessWidget {
               color: c.textTertiary,
             ),
             const SizedBox(width: MotifSpacing.sm),
-            if (streaming)
-              CodexProcessingSweepText('Context compacting', style: style)
-            else
-              Text('Context compacted', style: style),
+            CodexMotionSwitcher(
+              offset: const Offset(0, 0.12),
+              child: streaming
+                  ? CodexProcessingSweepText(
+                      'Context compacting',
+                      key: const ValueKey('compacting'),
+                      style: style,
+                    )
+                  : Text(
+                      'Context compacted',
+                      key: const ValueKey('compacted'),
+                      style: style,
+                    ),
+            ),
           ],
         );
       },
@@ -1425,7 +1480,7 @@ class _ResponseActions extends StatelessWidget {
             tooltip: 'Copy response',
             visualDensity: VisualDensity.compact,
             iconSize: MotifIconSize.sm,
-            color: c.textTertiary,
+            style: context.iconButtonStyle(foregroundColor: c.textTertiary),
             onPressed: () async {
               await Clipboard.setData(
                 ClipboardData(
@@ -1454,33 +1509,37 @@ Widget _persistentForkAction(
   CodexTurn turn,
 ) {
   final c = context.motif;
-  if (state.forkingTurnId == turn.id) {
-    return const Padding(
-      padding: EdgeInsets.all(MotifSpacing.sm),
-      child: SizedBox(
-        width: MotifIconSize.sm,
-        height: MotifIconSize.sm,
-        child: CircularProgressIndicator(strokeWidth: 2),
-      ),
-    );
-  }
-  return IconButton(
-    key: ValueKey('codex-fork-${turn.id}'),
-    tooltip: 'Fork from this turn',
-    visualDensity: VisualDensity.compact,
-    iconSize: MotifIconSize.sm,
-    color: c.textTertiary,
-    onPressed: () async {
-      final forked = await state.forkThreadAtTurn(turn.id);
-      if (!context.mounted || !forked) return;
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(
-          content: Text('Fork created'),
-          duration: Duration(seconds: 1),
-        ),
-      );
-    },
-    icon: const Icon(Icons.call_split_rounded),
+  final forking = state.forkingTurnId == turn.id;
+  return CodexMotionSwitcher(
+    offset: Offset.zero,
+    child: forking
+        ? const Padding(
+            key: ValueKey('codex-fork-loading'),
+            padding: EdgeInsets.all(MotifSpacing.sm),
+            child: SizedBox(
+              width: MotifIconSize.sm,
+              height: MotifIconSize.sm,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        : IconButton(
+            key: ValueKey('codex-fork-${turn.id}'),
+            tooltip: 'Fork from this turn',
+            visualDensity: VisualDensity.compact,
+            iconSize: MotifIconSize.sm,
+            style: context.iconButtonStyle(foregroundColor: c.textTertiary),
+            onPressed: () async {
+              final forked = await state.forkThreadAtTurn(turn.id);
+              if (!context.mounted || !forked) return;
+              ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                const SnackBar(
+                  content: Text('Fork created'),
+                  duration: Duration(seconds: 1),
+                ),
+              );
+            },
+            icon: const Icon(Icons.call_split_rounded),
+          ),
   );
 }
 
@@ -1542,6 +1601,7 @@ class _PlanDecisionPanel extends StatelessWidget {
     required this.onImplement,
     required this.onRevise,
     required this.onSkip,
+    super.key,
   });
 
   final bool sending;
@@ -1555,7 +1615,6 @@ class _PlanDecisionPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.motif;
     return Container(
-      key: const ValueKey('codex-plan-decision'),
       decoration: BoxDecoration(
         color: c.surfaceElevated,
         border: Border.all(color: c.border),
@@ -1878,6 +1937,7 @@ class _QueuedMessageCard extends StatelessWidget {
     required this.onDelete,
     required this.onEdit,
     required this.onQueueingChanged,
+    super.key,
   });
 
   final CodexQueuedMessage message;
@@ -1970,6 +2030,7 @@ class _Composer extends StatelessWidget {
     required this.onTogglePlan,
     required this.onRemoveGoal,
     required this.onSubmit,
+    super.key,
   });
 
   final CodexConversationState state;
@@ -1990,9 +2051,8 @@ class _Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final active = state.activeTurn != null && !state.goalModeEnabled;
+    final turnActive = state.activeTurn != null && !state.goalModeEnabled;
     return Container(
-      key: const ValueKey('codex-composer'),
       padding: const EdgeInsets.all(MotifSpacing.md),
       decoration: BoxDecoration(
         color: c.surface,
@@ -2003,21 +2063,34 @@ class _Composer extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (attachments.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: MotifSpacing.sm),
-              child: Wrap(
-                spacing: MotifSpacing.sm,
-                runSpacing: MotifSpacing.sm,
-                children: [
-                  for (var index = 0; index < attachments.length; index++)
-                    _PendingAttachment(
-                      attachment: attachments[index],
-                      onRemove: () => onRemoveAttachment(index),
+          CodexMotionSwitcher(
+            animateSize: true,
+            alignment: Alignment.topCenter,
+            child: attachments.isEmpty
+                ? const SizedBox.shrink(
+                    key: ValueKey('codex-attachments-empty'),
+                  )
+                : Padding(
+                    key: ValueKey(
+                      'codex-attachments-${Object.hashAll(attachments)}',
                     ),
-                ],
-              ),
-            ),
+                    padding: const EdgeInsets.only(bottom: MotifSpacing.sm),
+                    child: Wrap(
+                      spacing: MotifSpacing.sm,
+                      runSpacing: MotifSpacing.sm,
+                      children: [
+                        for (var index = 0; index < attachments.length; index++)
+                          _PendingAttachment(
+                            key: ValueKey(
+                              'codex-attachment-${attachments[index].name}-$index',
+                            ),
+                            attachment: attachments[index],
+                            onRemove: () => onRemoveAttachment(index),
+                          ),
+                      ],
+                    ),
+                  ),
+          ),
           Shortcuts(
             shortcuts: {
               _ComposerSubmitActivator(controller): const _SubmitIntent(),
@@ -2075,96 +2148,118 @@ class _Composer extends StatelessWidget {
             ),
           ),
           const SizedBox(height: MotifSpacing.sm),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final compactActions = constraints.maxWidth < 540;
-              final add = _ComposerAddButton(
-                state: state,
-                onAddImages: onAddImages,
-                onAddFiles: onAddFiles,
-                onAddReference: onAddReference,
-                onToggleGoal: onToggleGoal,
-                onTogglePlan: onTogglePlan,
-              );
-              final selections = _ComposerSelections(
-                state: state,
-                references: references,
-                compact: compactActions,
-                onRemoveReference: onRemoveReference,
-                onRemoveGoal: onRemoveGoal,
-              );
-              final send = IconButton.filled(
-                key: ValueKey(active ? 'codex-stop' : 'codex-send'),
-                tooltip: active
-                    ? 'Stop turn'
-                    : state.goalModeEnabled
-                    ? 'Save goal'
-                    : 'Send',
-                onPressed: state.sending || state.goalLoading
-                    ? null
-                    : active
-                    ? state.interruptActiveTurn
-                    : onSubmit,
-                style: context.iconButtonStyle().copyWith(
-                  foregroundColor: WidgetStateProperty.resolveWith(
-                    (states) => states.contains(WidgetState.disabled)
-                        ? c.textTertiary
-                        : c.textOnAccent,
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: controller,
+            builder: (context, value, _) => LayoutBuilder(
+              builder: (context, constraints) {
+                final stopActiveTurn = turnActive && value.text.trim().isEmpty;
+                final compactActions = constraints.maxWidth < 540;
+                final add = _ComposerAddButton(
+                  state: state,
+                  onAddImages: onAddImages,
+                  onAddFiles: onAddFiles,
+                  onAddReference: onAddReference,
+                  onToggleGoal: onToggleGoal,
+                  onTogglePlan: onTogglePlan,
+                );
+                final selections = _ComposerSelections(
+                  state: state,
+                  references: references,
+                  compact: compactActions,
+                  onRemoveReference: onRemoveReference,
+                  onRemoveGoal: onRemoveGoal,
+                );
+                final send = IconButton.filled(
+                  key: ValueKey(stopActiveTurn ? 'codex-stop' : 'codex-send'),
+                  tooltip: stopActiveTurn
+                      ? 'Stop turn'
+                      : state.goalModeEnabled
+                      ? 'Save goal'
+                      : 'Send',
+                  onPressed: state.sending || state.goalLoading
+                      ? null
+                      : stopActiveTurn
+                      ? state.interruptActiveTurn
+                      : onSubmit,
+                  style: context.iconButtonStyle().copyWith(
+                    foregroundColor: WidgetStateProperty.resolveWith(
+                      (states) => states.contains(WidgetState.disabled)
+                          ? c.textTertiary
+                          : c.textOnAccent,
+                    ),
+                    backgroundColor: WidgetStateProperty.resolveWith(
+                      (states) => states.contains(WidgetState.disabled)
+                          ? c.subtleFill
+                          : c.accent,
+                    ),
+                    shape: const WidgetStatePropertyAll(CircleBorder()),
                   ),
-                  backgroundColor: WidgetStateProperty.resolveWith(
-                    (states) => states.contains(WidgetState.disabled)
-                        ? c.subtleFill
-                        : c.accent,
+                  icon: CodexMotionSwitcher(
+                    offset: Offset.zero,
+                    child: state.sending || state.goalLoading
+                        ? const SizedBox.square(
+                            key: ValueKey('codex-submit-loading'),
+                            dimension: MotifIconSize.md,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            key: ValueKey(
+                              stopActiveTurn ? 'stop-icon' : 'send-icon',
+                            ),
+                            stopActiveTurn
+                                ? Icons.stop_rounded
+                                : Icons.arrow_upward_rounded,
+                          ),
                   ),
-                  shape: const WidgetStatePropertyAll(CircleBorder()),
-                ),
-                icon: Icon(
-                  active ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                ),
-              );
-              if (compactActions) {
+                );
+                if (compactActions) {
+                  return Row(
+                    children: [
+                      add,
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: selections,
+                        ),
+                      ),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: constraints.maxWidth * 0.46,
+                        ),
+                        child: _ModelSettingsSelector(state: state),
+                      ),
+                      const SizedBox(width: MotifSpacing.xs),
+                      send,
+                    ],
+                  );
+                }
                 return Row(
                   children: [
                     add,
-                    Expanded(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: selections,
-                      ),
-                    ),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(
-                        maxWidth: constraints.maxWidth * 0.46,
-                      ),
-                      child: _ModelSettingsSelector(state: state),
-                    ),
+                    selections,
+                    const Spacer(),
+                    _ModelSettingsSelector(state: state),
                     const SizedBox(width: MotifSpacing.xs),
                     send,
                   ],
                 );
-              }
-              return Row(
-                children: [
-                  add,
-                  selections,
-                  const Spacer(),
-                  _ModelSettingsSelector(state: state),
-                  const SizedBox(width: MotifSpacing.xs),
-                  send,
-                ],
-              );
-            },
+              },
+            ),
           ),
-          if (state.configurationError != null)
-            CodexMarkdown(
-              state.configurationError!,
+          CodexMotionPresence(
+            visible: state.configurationError != null,
+            child: CodexMarkdown(
+              state.configurationError ?? '',
               style: MotifType.caption.copyWith(color: c.warning),
             ),
-          if (state.goalError != null)
-            CodexMarkdown(
-              state.goalError!,
+          ),
+          CodexMotionPresence(
+            visible: state.goalError != null,
+            child: CodexMarkdown(
+              state.goalError ?? '',
               style: MotifType.caption.copyWith(color: c.warning),
             ),
+          ),
         ],
       ),
     );
@@ -2343,49 +2438,62 @@ class _ComposerSelections extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _PermissionSelector(state: state, compact: compact),
-        if (state.supports(CodexConversationFeature.goals) &&
-            (state.goal != null || state.goalModeEnabled)) ...[
-          const SizedBox(width: MotifSpacing.xs),
-          _ComposerChip(
-            key: const ValueKey('codex-goal-chip'),
-            icon: Icons.track_changes_rounded,
-            label: 'Goal',
-            compact: compact,
-            removable: true,
-            onTap: onRemoveGoal,
-          ),
-        ],
-        if (state.planModeEnabled) ...[
-          const SizedBox(width: MotifSpacing.xs),
-          _ComposerChip(
-            key: const ValueKey('codex-plan-chip'),
-            icon: Icons.lightbulb_outline_rounded,
-            label: 'Plan',
-            compact: compact,
-            removable: true,
-            onTap: () => state.setPlanMode(false),
-          ),
-        ],
-        for (final reference in references) ...[
-          const SizedBox(width: MotifSpacing.xs),
-          _ComposerChip(
-            key: ValueKey(
-              'codex-reference-${reference.kind.name}-${reference.path}',
+    final signature = Object.hash(
+      compact,
+      state.goal != null,
+      state.goalModeEnabled,
+      state.planModeEnabled,
+      Object.hashAll(references.map((reference) => reference.path)),
+    );
+    return CodexMotionSwitcher(
+      animateSize: true,
+      alignment: Alignment.centerLeft,
+      offset: Offset.zero,
+      child: Row(
+        key: ValueKey('codex-composer-selections-$signature'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _PermissionSelector(state: state, compact: compact),
+          if (state.supports(CodexConversationFeature.goals) &&
+              (state.goal != null || state.goalModeEnabled)) ...[
+            const SizedBox(width: MotifSpacing.xs),
+            _ComposerChip(
+              key: const ValueKey('codex-goal-chip'),
+              icon: Icons.track_changes_rounded,
+              label: 'Goal',
+              compact: compact,
+              removable: true,
+              onTap: onRemoveGoal,
             ),
-            icon: reference.kind == CodexComposerReferenceKind.skill
-                ? Icons.auto_awesome_outlined
-                : Icons.extension_outlined,
-            label: reference.name,
-            compact: compact,
-            removable: true,
-            onTap: () => onRemoveReference(reference),
-          ),
+          ],
+          if (state.planModeEnabled) ...[
+            const SizedBox(width: MotifSpacing.xs),
+            _ComposerChip(
+              key: const ValueKey('codex-plan-chip'),
+              icon: Icons.lightbulb_outline_rounded,
+              label: 'Plan',
+              compact: compact,
+              removable: true,
+              onTap: () => state.setPlanMode(false),
+            ),
+          ],
+          for (final reference in references) ...[
+            const SizedBox(width: MotifSpacing.xs),
+            _ComposerChip(
+              key: ValueKey(
+                'codex-reference-${reference.kind.name}-${reference.path}',
+              ),
+              icon: reference.kind == CodexComposerReferenceKind.skill
+                  ? Icons.auto_awesome_outlined
+                  : Icons.extension_outlined,
+              label: reference.name,
+              compact: compact,
+              removable: true,
+              onTap: () => onRemoveReference(reference),
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }
@@ -2789,7 +2897,11 @@ class _ModelMenuChoice extends StatelessWidget {
 }
 
 class _PendingAttachment extends StatelessWidget {
-  const _PendingAttachment({required this.attachment, required this.onRemove});
+  const _PendingAttachment({
+    required this.attachment,
+    required this.onRemove,
+    super.key,
+  });
 
   final CodexPendingAttachment attachment;
   final VoidCallback onRemove;
@@ -3013,7 +3125,27 @@ class _QuestionnaireCardState extends State<_QuestionnaireCard> {
               alignment: Alignment.centerRight,
               child: FilledButton(
                 onPressed: _submitting ? null : _submit,
-                child: Text(_submitting ? 'Submitting…' : 'Submit answers'),
+                child: CodexMotionSwitcher(
+                  animateSize: true,
+                  offset: Offset.zero,
+                  child: _submitting
+                      ? const Row(
+                          key: ValueKey('questionnaire-submitting'),
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox.square(
+                              dimension: MotifIconSize.sm,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: MotifSpacing.sm),
+                            Text('Submitting…'),
+                          ],
+                        )
+                      : const Text(
+                          'Submit answers',
+                          key: ValueKey('questionnaire-submit'),
+                        ),
+                ),
               ),
             ),
           ],
@@ -3100,6 +3232,17 @@ class _ApprovalCardState extends State<_ApprovalCard> {
               alignment: WrapAlignment.end,
               spacing: MotifSpacing.sm,
               children: [
+                CodexMotionSwitcher(
+                  animateSize: true,
+                  offset: Offset.zero,
+                  child: _submitting
+                      ? const SizedBox.square(
+                          key: ValueKey('approval-submitting'),
+                          dimension: MotifIconSize.md,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const SizedBox.shrink(key: ValueKey('approval-idle')),
+                ),
                 TextButton(
                   onPressed: _submitting ? null : () => _decide('decline'),
                   child: const Text('Decline'),

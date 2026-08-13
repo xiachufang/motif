@@ -9,6 +9,7 @@ import '../../codex/side_chat_collection_controller.dart';
 import '../../models/resource_documents.dart';
 import '../../platform/window_title.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/codex_motion.dart';
 import 'codex_resource_screens.dart';
 import 'codex_thread_workspace.dart';
 import 'side_chat_sidebar.dart';
@@ -91,7 +92,15 @@ class _SideChatScreenState extends State<SideChatScreen> {
                 : null,
             appBar: AppBar(
               leading: const BackButton(),
-              title: Text(widget.collection.selected?.name ?? 'Side Chat'),
+              title: CodexMotionSwitcher(
+                offset: const Offset(0, 0.12),
+                child: Text(
+                  widget.collection.selected?.name ?? 'Side Chat',
+                  key: ValueKey(
+                    'side-chat-title-${widget.collection.selected?.id ?? 'empty'}',
+                  ),
+                ),
+              ),
               actions: [
                 sidebarToggle,
                 IconButton(
@@ -100,20 +109,34 @@ class _SideChatScreenState extends State<SideChatScreen> {
                   onPressed: widget.collection.creating
                       ? null
                       : () => widget.collection.createSideChat(),
-                  icon: const Icon(Icons.add_comment_outlined),
+                  icon: CodexMotionSwitcher(
+                    offset: Offset.zero,
+                    child: widget.collection.creating
+                        ? const SizedBox.square(
+                            key: ValueKey('side-chat-creating'),
+                            dimension: MotifIconSize.md,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(
+                            Icons.add_comment_outlined,
+                            key: ValueKey('side-chat-create'),
+                          ),
+                  ),
                 ),
               ],
             ),
             body: mobile
                 ? _conversationSurface(widget.collection)
-                : Row(
-                    children: [
-                      if (_desktopSidebarVisible) ...[
+                : CodexAnimatedSidebarLayout(
+                    visible: _desktopSidebarVisible,
+                    sidebarExtent: _sidebarWidth + 1,
+                    sidebar: Row(
+                      children: [
                         SizedBox(width: _sidebarWidth, child: sidebar),
                         VerticalDivider(width: 1, color: context.motif.border),
                       ],
-                      Expanded(child: _conversationSurface(widget.collection)),
-                    ],
+                    ),
+                    mainContent: _conversationSurface(widget.collection),
                   ),
           );
         },
@@ -126,21 +149,42 @@ class _SideChatScreenState extends State<SideChatScreen> {
     final selectedId = collection.selected?.id;
     final selectedIndex = entries.indexWhere((entry) => entry.id == selectedId);
     if (selectedIndex != -1) {
-      return IndexedStack(
-        index: selectedIndex,
+      return Stack(
+        key: const ValueKey('side-chat-conversations'),
+        fit: StackFit.expand,
         children: [
-          for (final entry in entries)
-            CodexThreadWorkspace(
-              key: ValueKey('side-chat-workspace-${entry.id}'),
-              state: entry.conversation,
-              turnActionBuilder: _emptyTurnAction,
-              onOpenFile: (path) => _openFile(entry.conversation, path),
-              onOpenImage: (path) =>
-                  _openFile(entry.conversation, path, image: true),
-              onOpenTurnDiff: (document, {initialPath}) => _openTurnDiff(
-                entry.conversation,
-                document,
-                initialPath: initialPath,
+          for (var index = 0; index < entries.length; index++)
+            TickerMode(
+              enabled: index == selectedIndex,
+              child: IgnorePointer(
+                ignoring: index != selectedIndex,
+                child: ExcludeSemantics(
+                  excluding: index != selectedIndex,
+                  child: AnimatedOpacity(
+                    key: ValueKey('side-chat-surface-${entries[index].id}'),
+                    opacity: index == selectedIndex ? 1 : 0,
+                    duration: codexMotionDuration(context, CodexMotion.enter),
+                    curve: CodexMotion.enterCurve,
+                    child: CodexThreadWorkspace(
+                      key: ValueKey('side-chat-workspace-${entries[index].id}'),
+                      state: entries[index].conversation,
+                      turnActionBuilder: _emptyTurnAction,
+                      onOpenFile: (path) =>
+                          _openFile(entries[index].conversation, path),
+                      onOpenImage: (path) => _openFile(
+                        entries[index].conversation,
+                        path,
+                        image: true,
+                      ),
+                      onOpenTurnDiff: (document, {initialPath}) =>
+                          _openTurnDiff(
+                            entries[index].conversation,
+                            document,
+                            initialPath: initialPath,
+                          ),
+                    ),
+                  ),
+                ),
               ),
             ),
         ],
@@ -149,19 +193,27 @@ class _SideChatScreenState extends State<SideChatScreen> {
     final state = collection.connectionState;
     if (state.phase == CodexConnectionPhase.failed ||
         collection.error != null) {
-      return _SideChatFailure(
-        message: collection.error ?? state.error ?? 'Side Chat failed',
-        onRetry: collection.creating ? null : () => collection.ensureInitial(),
+      return CodexMotionSwitcher(
+        child: _SideChatFailure(
+          key: const ValueKey('side-chat-failure'),
+          message: collection.error ?? state.error ?? 'Side Chat failed',
+          onRetry: collection.creating
+              ? null
+              : () => collection.ensureInitial(),
+        ),
       );
     }
-    return const Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          CircularProgressIndicator(),
-          SizedBox(height: MotifSpacing.md),
-          Text('Creating Side Chat…'),
-        ],
+    return const CodexMotionSwitcher(
+      child: Center(
+        key: ValueKey('side-chat-loading'),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: MotifSpacing.md),
+            Text('Creating Side Chat…'),
+          ],
+        ),
       ),
     );
   }
@@ -207,7 +259,11 @@ Widget _emptyTurnAction(
 ) => const SizedBox.shrink();
 
 class _SideChatFailure extends StatelessWidget {
-  const _SideChatFailure({required this.message, required this.onRetry});
+  const _SideChatFailure({
+    required this.message,
+    required this.onRetry,
+    super.key,
+  });
 
   final String message;
   final VoidCallback? onRetry;

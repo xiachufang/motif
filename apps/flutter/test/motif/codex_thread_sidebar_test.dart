@@ -30,6 +30,34 @@ void main() {
     expect(second.sidebarWidth, 340);
   });
 
+  test('CodexState keeps sidebar scroll positions per server and mode', () {
+    final state = CodexState();
+
+    state
+      ..setSidebarScrollOffset('server-1', CodexSidebarMode.projects, 120)
+      ..setSidebarScrollOffset('server-1', CodexSidebarMode.timeline, 240)
+      ..setSidebarScrollOffset('server-2', CodexSidebarMode.projects, 360);
+
+    expect(
+      state.sidebarScrollOffset('server-1', CodexSidebarMode.projects),
+      120,
+    );
+    expect(
+      state.sidebarScrollOffset('server-1', CodexSidebarMode.timeline),
+      240,
+    );
+    expect(
+      state.sidebarScrollOffset('server-2', CodexSidebarMode.projects),
+      360,
+    );
+    state.setSidebarScrollOffset(
+      'server-1',
+      CodexSidebarMode.projects,
+      double.nan,
+    );
+    expect(state.sidebarScrollOffset('server-1', CodexSidebarMode.projects), 0);
+  });
+
   test('CodexState persists selected models per server', () async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -251,10 +279,13 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('codex-projects-more')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.text('Project 7'), findsOneWidget);
 
+    await tester.ensureVisible(projectThreadsMore);
     await tester.tap(projectThreadsMore);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('codex-thread-t15')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t16')), findsNothing);
     expect(
@@ -262,8 +293,10 @@ void main() {
       findsOneWidget,
     );
 
+    await tester.ensureVisible(projectThreadsMore);
     await tester.tap(projectThreadsMore);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('codex-thread-t25')), findsOneWidget);
     expect(find.byKey(const ValueKey('codex-thread-t26')), findsNothing);
     expect(
@@ -271,8 +304,10 @@ void main() {
       findsOneWidget,
     );
 
+    await tester.ensureVisible(projectThreadsMore);
     await tester.tap(projectThreadsMore);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('codex-thread-t26')), findsOneWidget);
     expect(
       find.descendant(of: projectThreadsMore, matching: find.text('Show less')),

@@ -1,7 +1,7 @@
 part of '../session_screen.dart';
 
 class _AnimatedSidebarLayout extends StatefulWidget {
-  static const Duration _duration = Duration(milliseconds: 180);
+  static const Duration _duration = MotifMotion.layoutDuration;
 
   final bool visible;
   final double width;
@@ -40,8 +40,8 @@ class _AnimatedSidebarLayoutState extends State<_AnimatedSidebarLayout>
     );
     _progress = CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+      curve: MotifMotion.enterCurve,
+      reverseCurve: MotifMotion.exitCurve,
     );
   }
 

@@ -221,9 +221,13 @@ void main() {
             content: [CodexTextUserInput(text: 'Run it')],
           ),
           CodexCommandExecutionThreadItem(
-            command: '/bin/zsh -lc "flutter test"',
+            command:
+                '/bin/zsh -lc "flutter test test/motif/codex_service_state_test.dart"',
             commandActions: [
-              CodexUnknownCommandAction(command: 'flutter test'),
+              CodexUnknownCommandAction(
+                command:
+                    'flutter test test/motif/codex_service_state_test.dart',
+              ),
             ],
             cwd: CodexLegacyAppPathString('/work/motif'),
             durationMs: 1,
@@ -260,7 +264,11 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(find.text('Running flutter'));
+    await tester.tap(
+      find.text(
+        'Running flutter test test/motif/codex_service_state_test.dart',
+      ),
+    );
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(
@@ -273,6 +281,236 @@ void main() {
     expect(
       find.descendant(of: group, matching: find.byIcon(Icons.terminal_rounded)),
       findsNWidgets(2),
+    );
+
+    _expandListTile(
+      tester,
+      find.descendant(
+        of: find.byKey(
+          const ValueKey('codex-command-activity-running-command'),
+        ),
+        matching: find.byType(ListTile),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data.contains(
+              r'$ flutter test test/motif/codex_service_state_test.dart',
+            ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody && widget.data.contains('/bin/zsh -lc'),
+      ),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('command activities use semantic titles when data is available', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+    const cwd = CodexLegacyAppPathString('/work/motif');
+    const completed = CodexCommandExecutionStatus.completed;
+    const items = <CodexThreadItem>[
+      CodexCommandExecutionThreadItem(
+        command: 'cat lib/main.dart',
+        commandActions: [
+          CodexReadCommandAction(
+            command: 'cat lib/main.dart',
+            name: 'main.dart',
+            path: CodexLegacyAppPathString('/work/motif/lib/main.dart'),
+          ),
+        ],
+        cwd: cwd,
+        id: 'read-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'ls lib',
+        commandActions: [
+          CodexListFilesCommandAction(command: 'ls lib', path: 'lib'),
+        ],
+        cwd: cwd,
+        id: 'list-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'rg TODO lib',
+        commandActions: [
+          CodexSearchCommandAction(
+            command: 'rg TODO lib',
+            path: 'lib',
+            query: 'TODO',
+          ),
+        ],
+        cwd: cwd,
+        id: 'search-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'flutter test',
+        commandActions: [CodexUnknownCommandAction(command: 'flutter test')],
+        cwd: cwd,
+        id: 'test-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'flutter build macos',
+        commandActions: [
+          CodexUnknownCommandAction(command: 'flutter build macos'),
+        ],
+        cwd: cwd,
+        id: 'build-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'dart format lib',
+        commandActions: [CodexUnknownCommandAction(command: 'dart format lib')],
+        cwd: cwd,
+        id: 'format-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: 'git commit -m done',
+        commandActions: [
+          CodexUnknownCommandAction(command: 'git commit -m done'),
+        ],
+        cwd: cwd,
+        id: 'commit-command',
+        status: completed,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexTurnActivityGroup(
+            state: state,
+            items: items,
+            boundedDetails: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(
+      find.text('Read files, listed files, searched code, and more'),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Read main.dart'), findsOneWidget);
+    expect(find.text('Listed files in lib'), findsOneWidget);
+    expect(find.text('Searched for TODO'), findsOneWidget);
+    expect(find.text('Ran tests'), findsOneWidget);
+    expect(find.text('Built project'), findsOneWidget);
+    expect(find.text('Formatted code'), findsOneWidget);
+    expect(find.text('Committed changes'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('active activity titles include the latest item details', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: Column(
+            children: [
+              CodexTurnActivityGroup(
+                state: state,
+                showLatestItemTitle: true,
+                items: const [
+                  CodexFileChangeThreadItem(
+                    changes: [
+                      CodexFileUpdateChange(
+                        diff: '',
+                        kind: CodexUpdatePatchChangeKind(),
+                        path: '/work/motif/lib/main.dart',
+                      ),
+                    ],
+                    id: 'detailed-file-change',
+                    status: CodexPatchApplyStatus.inProgress,
+                  ),
+                ],
+              ),
+              CodexTurnActivityGroup(
+                state: state,
+                showLatestItemTitle: true,
+                items: const [
+                  CodexMcpToolCallThreadItem(
+                    arguments: {'query': 'Flutter activity progress'},
+                    id: 'detailed-mcp-tool',
+                    server: 'docs',
+                    status: CodexMcpToolCallStatus.inProgress,
+                    tool: 'search',
+                  ),
+                ],
+              ),
+              CodexTurnActivityGroup(
+                state: state,
+                showLatestItemTitle: true,
+                items: const [
+                  CodexCollabAgentToolCallThreadItem(
+                    agentsStates: {},
+                    id: 'detailed-agent-tool',
+                    prompt: 'Review the activity renderer',
+                    receiverThreadIds: [],
+                    senderThreadId: 'root',
+                    status: CodexCollabAgentToolCallStatus.inProgress,
+                    tool: CodexCollabAgentTool.spawnAgent,
+                  ),
+                ],
+              ),
+              CodexTurnActivityGroup(
+                state: state,
+                showLatestItemTitle: true,
+                items: const [
+                  CodexImageGenerationThreadItem(
+                    id: 'detailed-image-generation',
+                    result: '',
+                    revisedPrompt: 'A clear activity timeline',
+                    status: 'inProgress',
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Editing /work/motif/lib/main.dart'), findsOneWidget);
+    expect(
+      find.text('Using docs · search — {"query":"Flutter activity progress"}'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Starting agent — Review the activity renderer'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Generating an image — A clear activity timeline'),
+      findsOneWidget,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -526,13 +764,13 @@ void main() {
       await tester.pump();
 
       final stream = find.byKey(const ValueKey('codex-turn-stream'));
-      expect(tester.widget<CustomScrollView>(stream).reverse, isTrue);
+      expect(tester.widget<CustomScrollView>(stream).reverse, isFalse);
       var position = tester
           .state<ScrollableState>(
             find.descendant(of: stream, matching: find.byType(Scrollable)),
           )
           .position;
-      expect(position.pixels, position.minScrollExtent);
+      expect(position.pixels, position.maxScrollExtent);
       expect(
         tester.getTopLeft(find.text('Question 11')).dy,
         lessThan(tester.getTopLeft(find.text('Response 11')).dy),
@@ -540,7 +778,7 @@ void main() {
 
       await tester.drag(stream, const Offset(0, 400));
       await tester.pump();
-      expect(position.pixels, greaterThan(position.minScrollExtent + 96));
+      expect(position.pixels, lessThan(position.maxScrollExtent - 96));
 
       final nextThreadJson = Map<String, Object?>.from(client.thread.toJson())
         ..['id'] = 'next-thread'
@@ -555,7 +793,7 @@ void main() {
             find.descendant(of: stream, matching: find.byType(Scrollable)),
           )
           .position;
-      expect(position.pixels, position.minScrollExtent);
+      expect(position.pixels, position.maxScrollExtent);
 
       await tester.pumpWidget(const SizedBox.shrink());
       state.dispose();
@@ -640,6 +878,7 @@ void main() {
       await tester.tap(
         find.byKey(const ValueKey('codex-worked-toggle-turn-history')),
       );
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 200));
       expect(
         find.byKey(const ValueKey('codex-activity-turn-history-0')),
@@ -1282,6 +1521,7 @@ Only show **this request**.
     await tester.tap(
       find.byKey(const ValueKey('codex-worked-toggle-diff-turn')),
     );
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
     final activity = find.byKey(const ValueKey('codex-activity-diff-turn-0'));
     final activityIcon = find.descendant(

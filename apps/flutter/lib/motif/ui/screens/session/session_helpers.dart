@@ -88,15 +88,15 @@ extension _SessionScreenTabInputs on _SessionScreenState {
 Route<void> _sessionSwitchRoute(String serverId, String session) {
   return PageRouteBuilder<void>(
     settings: RouteSettings(name: sessionRouteName(serverId, session)),
-    transitionDuration: const Duration(milliseconds: 180),
-    reverseTransitionDuration: const Duration(milliseconds: 120),
+    transitionDuration: MotifMotion.layoutDuration,
+    reverseTransitionDuration: MotifMotion.exitDuration,
     pageBuilder: (_, _, _) =>
         SessionScreen(serverId: serverId, session: session),
     transitionsBuilder: (context, animation, _, child) {
       final curve = CurvedAnimation(
         parent: animation,
-        curve: Curves.easeOutCubic,
-        reverseCurve: Curves.easeInCubic,
+        curve: MotifMotion.enterCurve,
+        reverseCurve: MotifMotion.exitCurve,
       );
       return FadeTransition(
         opacity: curve,

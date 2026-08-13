@@ -184,10 +184,12 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('side-chat-sidebar-toggle')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('side-chat-sidebar')), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('side-chat-sidebar-toggle')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('side-chat-sidebar')), findsOneWidget);
 
     final threadId = collection.selected!.id;

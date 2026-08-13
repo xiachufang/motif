@@ -47,6 +47,27 @@ abstract final class MotifIconSize {
   static const double lg = 24;
 }
 
+/// Semantic motion tokens shared by stock Material widgets and Motif's custom
+/// transitions. Choose a token by interaction type instead of adding durations
+/// and curves directly at call sites.
+abstract final class MotifMotion {
+  static const enterDuration = Duration(milliseconds: 160);
+  static const exitDuration = Duration(milliseconds: 120);
+  static const layoutDuration = Duration(milliseconds: 180);
+  static const disclosureDuration = Duration(milliseconds: 200);
+
+  static const enterCurve = Curves.easeOutCubic;
+  static const exitCurve = Curves.easeInCubic;
+  static const disclosureCurve = Curves.easeIn;
+
+  static const disclosureStyle = AnimationStyle(
+    duration: disclosureDuration,
+    reverseDuration: disclosureDuration,
+    curve: disclosureCurve,
+    reverseCurve: disclosureCurve,
+  );
+}
+
 /// Semantic type scale. Styles carry **no color** — apply one with
 /// `MotifType.body.copyWith(color: c.textPrimary)`. This is the single source
 /// of truth for font size/weight; avoid inline `TextStyle(fontSize:)`.
@@ -62,6 +83,13 @@ abstract final class MotifType {
 
   /// Primary body and list-row titles.
   static const body = TextStyle(fontSize: 15, fontWeight: FontWeight.w400);
+
+  /// Compact sidebar row titles.
+  static const sidebar = TextStyle(
+    fontSize: 14,
+    height: 1,
+    fontWeight: FontWeight.w400,
+  );
 
   /// Buttons, chips, and other interactive labels.
   static const callout = TextStyle(fontSize: 13, fontWeight: FontWeight.w600);
@@ -404,6 +432,9 @@ ThemeData motifTheme(Brightness brightness) {
     highlightColor: Colors.transparent,
     splashColor: Colors.transparent,
     textTheme: textTheme,
+    expansionTileTheme: const ExpansionTileThemeData(
+      expansionAnimationStyle: MotifMotion.disclosureStyle,
+    ),
     appBarTheme: AppBarTheme(
       elevation: 0,
       scrolledUnderElevation: 0,

@@ -117,6 +117,88 @@ void main() {
     },
   );
 
+  test(
+    'reconnect resumes the selected thread and catches up missed turns',
+    () async {
+      final beforeDisconnect = thread(
+        'thread',
+        turns: const [
+          CodexTurn(
+            id: 'turn-1',
+            items: [
+              CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before'),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [beforeDisconnect]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+
+      client.setConnectionState(
+        const CodexConnectionState(
+          phase: CodexConnectionPhase.failed,
+          error: 'socket closed while backgrounded',
+        ),
+      );
+      final afterReconnect = thread(
+        'thread',
+        updatedAt: 2,
+        turns: const [
+          CodexTurn(
+            id: 'turn-1',
+            items: [
+              CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before'),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+          CodexTurn(
+            id: 'turn-2',
+            items: [
+              CodexAgentMessageThreadItem(
+                id: 'answer-2',
+                text: 'While backgrounded',
+              ),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      );
+      client.pages[null] = CodexThreadListResponse(data: [afterReconnect]);
+      client.setConnectionState(
+        const CodexConnectionState(
+          phase: CodexConnectionPhase.connected,
+          response: CodexInitializeResponse(
+            codexHome: CodexV2AbsolutePathBuf('/tmp/codex'),
+            platformFamily: 'unix',
+            platformOs: 'macos',
+            userAgent: 'test-reconnected',
+          ),
+        ),
+      );
+
+      await waitFor(() => state.turns.length == 2);
+      expect(client.resumedThreadIds, ['thread']);
+      expect(client.resumeIncludeTurns, [true]);
+      expect(
+        (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
+        'While backgrounded',
+      );
+
+      await state.ensureThreadResumedForSend('thread');
+      expect(client.resumedThreadIds, ['thread']);
+      await state.close();
+    },
+  );
+
   test('manages threads through app-server APIs', () async {
     final original = thread('managed', updatedAt: 10);
     final client = FakeCodexClient(
@@ -920,6 +1002,7 @@ void main() {
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
       await state.readThread('thread');
+      state.setQueueing(true);
 
       expect(await state.submitMessage('queued', const []), isTrue);
       expect(state.queuedMessages.single.text, 'queued');
@@ -961,6 +1044,7 @@ void main() {
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
       await state.readThread('thread');
+      state.setQueueing(true);
       await state.submitMessage('run next', const []);
 
       client.emit(
@@ -1016,6 +1100,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<CodexThreadForkParams> forkParams = [];
   final List<CodexThreadStartParams> startThreadParams = [];
   final List<String> resumedThreadIds = [];
+  final List<bool> resumeIncludeTurns = [];
   final List<CodexTurnSteerParams> steeredParams = [];
   final List<CodexTurnStartParams> startedParams = [];
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
@@ -1045,6 +1130,11 @@ final class FakeCodexClient extends ChangeNotifier
   Stream<CodexJsonEncodable> get typedMessages => _typed.stream;
 
   void emit(CodexJsonEncodable message) => _typed.add(message);
+
+  void setConnectionState(CodexConnectionState value) {
+    state = value;
+    notifyListeners();
+  }
 
   @override
   Future<void> start() async => notifyListeners();
@@ -1174,6 +1264,7 @@ final class FakeCodexClient extends ChangeNotifier
     bool includeTurns = false,
   }) async {
     resumedThreadIds.add(threadId);
+    resumeIncludeTurns.add(includeTurns);
     final original = pages.values
         .expand((page) => page.data)
         .firstWhere((thread) => thread.id == threadId);

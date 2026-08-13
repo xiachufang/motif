@@ -143,6 +143,7 @@ class CodexState extends _$CodexState {
   final Map<String, String> _selectedReasoningEfforts;
   final Map<String, String?> _selectedPermissions;
   final Map<String, Map<String, CodexSideChatIndex>> _sideChatIndexes;
+  final Map<String, Map<CodexSidebarMode, double>> _sidebarScrollOffsets = {};
   Future<void> _persistProjectSidebars = Future.value();
   Future<void> _persistSelectedModels = Future.value();
   Future<void> _persistSelectedReasoningEfforts = Future.value();
@@ -154,6 +155,25 @@ class CodexState extends _$CodexState {
 
   CodexProjectSidebarPreferences projectSidebar(String serverId) =>
       _projectSidebars[serverId] ?? const CodexProjectSidebarPreferences();
+
+  double sidebarScrollOffset(String serverId, CodexSidebarMode mode) =>
+      _sidebarScrollOffsets[serverId]?[mode] ?? 0;
+
+  void setSidebarScrollOffset(
+    String serverId,
+    CodexSidebarMode mode,
+    double offset,
+  ) {
+    if (serverId.isEmpty) return;
+    final normalized = offset.isFinite && offset > 0 ? offset : 0.0;
+    if (normalized == 0) {
+      final offsets = _sidebarScrollOffsets[serverId];
+      offsets?.remove(mode);
+      if (offsets?.isEmpty == true) _sidebarScrollOffsets.remove(serverId);
+      return;
+    }
+    _sidebarScrollOffsets.putIfAbsent(serverId, () => {})[mode] = normalized;
+  }
 
   Future<void> flushProjectSidebarPreferences() => _persistProjectSidebars;
 

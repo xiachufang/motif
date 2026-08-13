@@ -10,6 +10,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
+import 'codex_motion.dart';
 import 'diff_text_view.dart';
 import 'observation_select.dart';
 
@@ -152,18 +153,20 @@ class CodexActivityTitle extends StatelessWidget {
       builder: (context, liveItem, _) {
         final c = context.motif;
         final style = MotifType.subhead.copyWith(color: c.textSecondary);
-        final latestTitle = _activityTitle(liveItem);
+        final latestTitle = _latestActivityTitle(liveItem);
         final title = showLatestItemTitle && latestTitle.isNotEmpty
             ? latestTitle
             : groupTitle;
-        if (processingLatestItem) {
-          return CodexProcessingSweepText(title, style: style);
-        }
-        return Text(
-          title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: style,
+        return Tooltip(
+          message: title,
+          child: processingLatestItem
+              ? CodexProcessingSweepText(title, style: style)
+              : Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: style,
+                ),
         );
       },
     );
@@ -293,9 +296,12 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
     final totalAdded = files.fold(0, (total, file) => total + file.additions);
     final totalRemoved = files.fold(0, (total, file) => total + file.deletions);
     final hiddenCount = files.length - _collapsedFileCount;
-    final visibleFiles = _expanded
-        ? files
-        : files.take(_collapsedFileCount).toList(growable: false);
+    final visibleFiles = files
+        .take(_collapsedFileCount)
+        .toList(growable: false);
+    final expandableFiles = files
+        .skip(_collapsedFileCount)
+        .toList(growable: false);
 
     return Container(
       key: ValueKey('codex-turn-diff-${widget.turnId}'),
@@ -361,6 +367,24 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
                   ? null
                   : () => widget.onOpenDiff!(document, initialPath: file.path),
             ),
+          CodexMotionExpansion(
+            expanded: _expanded,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final file in expandableFiles)
+                  _TurnDiffFileRow(
+                    file: file,
+                    onOpen: widget.onOpenDiff == null
+                        ? null
+                        : () => widget.onOpenDiff!(
+                            document,
+                            initialPath: file.path,
+                          ),
+                  ),
+              ],
+            ),
+          ),
           if (hiddenCount > 0)
             InkWell(
               key: ValueKey('codex-turn-diff-toggle-${widget.turnId}'),
@@ -374,19 +398,26 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
                 ),
                 child: Row(
                   children: [
-                    Text(
-                      _expanded
-                          ? 'Collapse files'
-                          : 'Show $hiddenCount more ${hiddenCount == 1 ? 'file' : 'files'}',
-                      style: MotifType.subhead.copyWith(color: c.textPrimary),
+                    CodexMotionSwitcher(
+                      offset: const Offset(0, 0.12),
+                      child: Text(
+                        _expanded
+                            ? 'Collapse files'
+                            : 'Show $hiddenCount more ${hiddenCount == 1 ? 'file' : 'files'}',
+                        key: ValueKey(_expanded ? 'collapse' : 'expand'),
+                        style: MotifType.subhead.copyWith(color: c.textPrimary),
+                      ),
                     ),
                     const SizedBox(width: MotifSpacing.sm),
-                    Icon(
-                      _expanded
-                          ? Icons.keyboard_arrow_up_rounded
-                          : Icons.keyboard_arrow_down_rounded,
-                      size: MotifIconSize.md,
-                      color: c.textSecondary,
+                    AnimatedRotation(
+                      turns: _expanded ? 0.5 : 0,
+                      duration: codexExpansionDuration(context),
+                      curve: codexExpansionCurve(context),
+                      child: Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: MotifIconSize.md,
+                        color: c.textSecondary,
+                      ),
                     ),
                   ],
                 ),
@@ -586,7 +617,7 @@ class _CommandActivity extends _$_CommandActivity {
       if (item.cwd.value.trim().isNotEmpty) '`cwd: ${item.cwd.value}`',
       _fenced(
         'shell',
-        '\$ ${item.command}${output.isEmpty ? '' : '\n$output'}',
+        '\$ ${_commandDisplayText(item)}${output.isEmpty ? '' : '\n$output'}',
       ),
     ].join('\n\n');
     return _DetailActivity(
@@ -1210,10 +1241,7 @@ String _groupTitle(List<CodexThreadItem> items) {
   final labels = <String>[];
   for (final item in items) {
     final label = switch (item) {
-      CodexCommandExecutionThreadItem value =>
-        value.status == CodexCommandExecutionStatus.inProgress
-            ? 'running a command'
-            : 'ran a command',
+      CodexCommandExecutionThreadItem value => _commandGroupLabel(value),
       CodexFileChangeThreadItem value =>
         value.status == CodexPatchApplyStatus.inProgress
             ? 'editing files'
@@ -1252,10 +1280,99 @@ String _activityTitle(CodexThreadItem item) => switch (item) {
   _ => _itemType(item),
 };
 
+String _latestActivityTitle(CodexThreadItem item) => switch (item) {
+  CodexCommandExecutionThreadItem value => _fullCommandTitle(value),
+  CodexFileChangeThreadItem value => _fullFileChangeTitle(value),
+  CodexWebSearchThreadItem value => 'Searched the web for ${value.query}',
+  CodexImageViewThreadItem value => 'Viewed image ${value.path.value}',
+  CodexMcpToolCallThreadItem value => _mcpToolProgressTitle(value),
+  CodexDynamicToolCallThreadItem value => _dynamicToolProgressTitle(value),
+  CodexCollabAgentToolCallThreadItem value => _agentToolProgressTitle(value),
+  CodexSubAgentActivityThreadItem value =>
+    'Sub-agent ${value.kind.toJson()} · ${value.agentPath}',
+  CodexImageGenerationThreadItem value => _imageGenerationProgressTitle(value),
+  _ => _activityTitle(item),
+};
+
+String _fullFileChangeTitle(CodexFileChangeThreadItem value) {
+  final verb = value.status == CodexPatchApplyStatus.inProgress
+      ? 'Editing'
+      : 'Edited';
+  final paths = <String>[];
+  for (final change in value.changes) {
+    final path = change.path.trim();
+    if (path.isNotEmpty && !paths.contains(path)) paths.add(path);
+  }
+  return paths.isEmpty ? '$verb files' : '$verb ${paths.join(', ')}';
+}
+
+String _mcpToolProgressTitle(CodexMcpToolCallThreadItem value) {
+  final verb = switch (value.status) {
+    CodexMcpToolCallStatus.inProgress => 'Using',
+    CodexMcpToolCallStatus.completed => 'Used',
+    CodexMcpToolCallStatus.failed => 'Tool failed',
+  };
+  return _withActivityDetail(
+    '$verb ${value.server} · ${value.tool}',
+    _inlineActivityValue(value.arguments),
+  );
+}
+
+String _dynamicToolProgressTitle(CodexDynamicToolCallThreadItem value) {
+  final verb = switch (value.status) {
+    CodexDynamicToolCallStatus.inProgress => 'Using',
+    CodexDynamicToolCallStatus.completed => 'Used',
+    CodexDynamicToolCallStatus.failed => 'Tool failed',
+  };
+  final name =
+      '${value.namespace == null ? '' : '${value.namespace} · '}${value.tool}';
+  return _withActivityDetail(
+    '$verb $name',
+    _inlineActivityValue(value.arguments),
+  );
+}
+
+String _agentToolProgressTitle(CodexCollabAgentToolCallThreadItem value) {
+  final verb = switch (value.tool) {
+    CodexCollabAgentTool.spawnAgent => 'Starting agent',
+    CodexCollabAgentTool.sendInput => 'Sending input to agent',
+    CodexCollabAgentTool.resumeAgent => 'Resuming agent',
+    CodexCollabAgentTool.wait => 'Waiting for agents',
+    CodexCollabAgentTool.closeAgent => 'Closing agent',
+  };
+  return _withActivityDetail(verb, value.prompt?.trim() ?? '');
+}
+
+String _imageGenerationProgressTitle(CodexImageGenerationThreadItem value) {
+  final verb = value.status == 'inProgress'
+      ? 'Generating an image'
+      : 'Generated an image';
+  final prompt = value.revisedPrompt?.trim() ?? '';
+  if (prompt.isNotEmpty) return _withActivityDetail(verb, prompt);
+  final path = value.savedPath?.value.trim() ?? '';
+  return _withActivityDetail(verb, path);
+}
+
+String _withActivityDetail(String title, String detail) =>
+    detail.isEmpty ? title : '$title — $detail';
+
+String _inlineActivityValue(Object? value) {
+  if (value == null) return '';
+  if (value is String) return value.trim();
+  if (value is Map && value.isEmpty || value is List && value.isEmpty) {
+    return '';
+  }
+  try {
+    return jsonEncode(value);
+  } on JsonUnsupportedObjectError {
+    return '$value';
+  }
+}
+
 String? _latestNonReasoningTitle(List<CodexThreadItem> items) {
   for (final item in items.reversed) {
     if (item is CodexReasoningThreadItem) continue;
-    final title = _activityTitle(item);
+    final title = _latestActivityTitle(item);
     if (title.trim().isNotEmpty) return title;
   }
   return null;
@@ -1320,11 +1437,151 @@ String? _reasoningText(CodexReasoningThreadItem? reasoning) {
 }
 
 String _commandTitle(CodexCommandExecutionThreadItem value) {
+  final running = value.status == CodexCommandExecutionStatus.inProgress;
+  switch (_commandActivityKind(value)) {
+    case _CommandActivityKind.read:
+      final action = value.commandActions
+          .whereType<CodexReadCommandAction>()
+          .firstOrNull;
+      final target = action == null
+          ? null
+          : action.name.trim().isNotEmpty
+          ? action.name.trim()
+          : _leaf(action.path.value);
+      return '${running ? 'Reading' : 'Read'} ${target?.isNotEmpty == true ? target : 'files'}';
+    case _CommandActivityKind.listFiles:
+      final action = value.commandActions
+          .whereType<CodexListFilesCommandAction>()
+          .firstOrNull;
+      final path = action?.path?.trim();
+      return path?.isNotEmpty == true
+          ? '${running ? 'Listing' : 'Listed'} files in $path'
+          : '${running ? 'Listing' : 'Listed'} files';
+    case _CommandActivityKind.search:
+      final action = value.commandActions
+          .whereType<CodexSearchCommandAction>()
+          .firstOrNull;
+      final query = action?.query?.trim();
+      return query?.isNotEmpty == true
+          ? '${running ? 'Searching' : 'Searched'} for $query'
+          : '${running ? 'Searching' : 'Searched'} code';
+    case _CommandActivityKind.test:
+      return running ? 'Running tests' : 'Ran tests';
+    case _CommandActivityKind.build:
+      return running ? 'Building project' : 'Built project';
+    case _CommandActivityKind.format:
+      return running ? 'Formatting code' : 'Formatted code';
+    case _CommandActivityKind.commit:
+      return running ? 'Committing changes' : 'Committed changes';
+    case _CommandActivityKind.generic:
+      break;
+  }
   final first = _commandExecutable(value);
-  return value.status == CodexCommandExecutionStatus.inProgress
+  return running
       ? 'Running ${first ?? 'command'}'
       : 'Ran ${first ?? 'command'}';
 }
+
+String _fullCommandTitle(CodexCommandExecutionThreadItem value) {
+  final command = _commandDisplayText(value);
+  final verb = value.status == CodexCommandExecutionStatus.inProgress
+      ? 'Running'
+      : 'Ran';
+  return command.isEmpty ? '$verb command' : '$verb $command';
+}
+
+String _commandDisplayText(CodexCommandExecutionThreadItem value) {
+  final command = _unwrapShellCommand(value.command).trim();
+  if (command.isNotEmpty) return command;
+  return value.commandActions
+          .map(_commandActionText)
+          .where((candidate) => candidate.trim().isNotEmpty)
+          .firstOrNull
+          ?.trim() ??
+      '';
+}
+
+String _commandGroupLabel(CodexCommandExecutionThreadItem value) {
+  final running = value.status == CodexCommandExecutionStatus.inProgress;
+  return switch (_commandActivityKind(value)) {
+    _CommandActivityKind.read => running ? 'reading files' : 'read files',
+    _CommandActivityKind.listFiles =>
+      running ? 'listing files' : 'listed files',
+    _CommandActivityKind.search => running ? 'searching code' : 'searched code',
+    _CommandActivityKind.test => running ? 'running tests' : 'ran tests',
+    _CommandActivityKind.build =>
+      running ? 'building the project' : 'built the project',
+    _CommandActivityKind.format =>
+      running ? 'formatting code' : 'formatted code',
+    _CommandActivityKind.commit =>
+      running ? 'committing changes' : 'committed changes',
+    _CommandActivityKind.generic =>
+      running ? 'running a command' : 'ran a command',
+  };
+}
+
+enum _CommandActivityKind {
+  read,
+  listFiles,
+  search,
+  test,
+  build,
+  format,
+  commit,
+  generic,
+}
+
+_CommandActivityKind _commandActivityKind(
+  CodexCommandExecutionThreadItem value,
+) {
+  for (final action in value.commandActions) {
+    switch (action) {
+      case CodexReadCommandAction():
+        return _CommandActivityKind.read;
+      case CodexListFilesCommandAction():
+        return _CommandActivityKind.listFiles;
+      case CodexSearchCommandAction():
+        return _CommandActivityKind.search;
+      case CodexUnknownCommandAction() || CodexCommandActionUnknown():
+        break;
+    }
+  }
+
+  final command =
+      value.commandActions
+          .map(_commandActionText)
+          .where((candidate) => candidate.trim().isNotEmpty)
+          .firstOrNull ??
+      _unwrapShellCommand(value.command);
+  final normalized = command.trim().replaceAll(RegExp(r'\s+'), ' ');
+  if (_matchesCommand(normalized, r'(?:\S*/)?git\s+commit(?:\s|$)')) {
+    return _CommandActivityKind.commit;
+  }
+  if (_matchesCommand(
+    normalized,
+    r'(?:(?:\S*/)?flutter\s+test|(?:\S*/)?dart\s+test|(?:\S*/)?cargo\s+test|(?:\S*/)?go\s+test|(?:\S*/)?swift\s+test|(?:\S*/)?dotnet\s+test|(?:\S*/)?(?:pytest|jest|vitest|mocha|rspec|phpunit))(?:\s|$)',
+  )) {
+    return _CommandActivityKind.test;
+  }
+  if (_matchesCommand(
+    normalized,
+    r'(?:(?:\S*/)?flutter\s+build|(?:\S*/)?dart\s+compile|(?:\S*/)?cargo\s+(?:build|check)|(?:\S*/)?go\s+build|(?:\S*/)?swift\s+build|(?:\S*/)?dotnet\s+build|(?:\S*/)?(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build)(?:\s|$)',
+  )) {
+    return _CommandActivityKind.build;
+  }
+  if (_matchesCommand(
+    normalized,
+    r'(?:(?:\S*/)?dart\s+format|(?:\S*/)?ruff\s+format|(?:\S*/)?(?:prettier|black|rustfmt|gofmt|clang-format))(?:\s|$)',
+  )) {
+    return _CommandActivityKind.format;
+  }
+  return _CommandActivityKind.generic;
+}
+
+bool _matchesCommand(String command, String commandPattern) => RegExp(
+  '(?:^|(?:&&|\\|\\||;)\\s*)$commandPattern',
+  caseSensitive: false,
+).hasMatch(command);
 
 String _commandActivityTitle(CodexCommandExecutionThreadItem value) =>
     _commandTitle(value);

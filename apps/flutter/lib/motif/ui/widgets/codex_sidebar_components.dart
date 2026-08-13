@@ -1,6 +1,9 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../theme/motif_theme.dart';
+import 'codex_motion.dart';
+
+const double codexSidebarRowHeight = MotifControlSize.sm;
 
 class CodexSidebarHeader extends StatelessWidget {
   const CodexSidebarHeader({
@@ -62,19 +65,25 @@ class CodexSidebarIconButton extends StatelessWidget {
           onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(MotifSpacing.sm),
-            child: busy
-                ? SizedBox.square(
-                    dimension: MotifIconSize.md,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: c.accent,
+            child: CodexMotionSwitcher(
+              animateSize: true,
+              offset: Offset.zero,
+              child: busy
+                  ? SizedBox.square(
+                      key: const ValueKey('busy'),
+                      dimension: MotifIconSize.md,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: c.accent,
+                      ),
+                    )
+                  : Icon(
+                      key: const ValueKey('icon'),
+                      icon,
+                      size: MotifIconSize.md,
+                      color: selected ? c.accent : c.textTertiary,
                     ),
-                  )
-                : Icon(
-                    icon,
-                    size: MotifIconSize.md,
-                    color: selected ? c.accent : c.textTertiary,
-                  ),
+            ),
           ),
         ),
       ),
@@ -145,68 +154,86 @@ class CodexSidebarThreadRow extends StatelessWidget {
         left: indented ? MotifSpacing.xl : MotifSpacing.sm,
         right: MotifSpacing.sm,
       ),
-      child: Material(
-        color: selected ? c.accentFill() : Colors.transparent,
-        borderRadius: BorderRadius.circular(MotifRadius.xs),
-        child: InkWell(
+      child: SizedBox(
+        height: codexSidebarRowHeight,
+        child: Material(
+          color: selected ? c.accentFill() : Colors.transparent,
           borderRadius: BorderRadius.circular(MotifRadius.xs),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: MotifSpacing.md,
-              vertical: MotifSpacing.xs,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: MotifType.body.copyWith(color: c.textPrimary),
-                      ),
-                      if (subtitle?.isNotEmpty == true) ...[
-                        const SizedBox(height: 3),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(MotifRadius.xs),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.md),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                         Text(
-                          subtitle!,
+                          title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: MotifType.subhead.copyWith(
-                            color: c.textTertiary,
+                          style: MotifType.sidebar.copyWith(
+                            color: c.textPrimary,
                           ),
                         ),
+                        if (subtitle?.isNotEmpty == true)
+                          Text(
+                            subtitle!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: MotifType.caption.copyWith(
+                              color: c.textTertiary,
+                              height: 1,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
                       ],
-                    ],
-                  ),
-                ),
-                if (pinned) ...[
-                  const SizedBox(width: MotifSpacing.xs),
-                  Icon(
-                    Icons.push_pin_outlined,
-                    size: MotifIconSize.sm,
-                    color: c.textTertiary,
-                  ),
-                ],
-                if (loading || active) ...[
-                  const SizedBox(width: MotifSpacing.sm),
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: c.accent,
                     ),
                   ),
+                  if (pinned) ...[
+                    const SizedBox(width: MotifSpacing.xs),
+                    Icon(
+                      Icons.push_pin_outlined,
+                      size: MotifIconSize.sm,
+                      color: c.textTertiary,
+                    ),
+                  ],
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxWidth: MotifSpacing.sm + 14,
+                    ),
+                    child: CodexMotionSwitcher(
+                      animateSize: true,
+                      offset: Offset.zero,
+                      child: loading || active
+                          ? Row(
+                              key: const ValueKey('active'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(width: MotifSpacing.sm),
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: c.accent,
+                                  ),
+                                ),
+                              ],
+                            )
+                          : const SizedBox.shrink(key: ValueKey('inactive')),
+                    ),
+                  ),
+                  if (trailing != null) ...[
+                    const SizedBox(width: MotifSpacing.sm),
+                    trailing!,
+                  ],
                 ],
-                if (trailing != null) ...[
-                  const SizedBox(width: MotifSpacing.sm),
-                  trailing!,
-                ],
-              ],
+              ),
             ),
           ),
         ),

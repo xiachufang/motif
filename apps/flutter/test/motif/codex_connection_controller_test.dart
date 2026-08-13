@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show AppLifecycleState;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
@@ -8,6 +9,8 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
+  final binding = TestWidgetsFlutterBinding.ensureInitialized();
+
   test('representative generated protocol messages round-trip', () {
     final requestJson = <String, Object?>{
       'method': 'initialize',
@@ -190,6 +193,187 @@ void main() {
     expect(transport.closeCount, 1);
     await controller.close();
     expect(transport.closeCount, 2);
+  });
+
+  test('automatically reconnects after an established socket closes', () async {
+    _FakeWebSocket respondingSocket(String userAgent) {
+      late final _FakeWebSocket socket;
+      socket = _FakeWebSocket((message) {
+        final json = jsonDecode(message as String) as Map;
+        if (json['method'] != 'initialize') return;
+        scheduleMicrotask(
+          () => socket.addIncoming(
+            jsonEncode({
+              'id': json['id'],
+              'result': {
+                'codexHome': '/tmp/codex',
+                'platformFamily': 'unix',
+                'platformOs': 'linux',
+                'userAgent': userAgent,
+              },
+            }),
+          ),
+        );
+      });
+      return socket;
+    }
+
+    final first = respondingSocket('codex-first');
+    final transport = _RetryTransport([
+      first,
+      respondingSocket('codex-reconnected'),
+    ]);
+    final controller = CodexConnectionController(
+      transport: transport,
+      appVersionProvider: () async => '1.0.0',
+      reconnectDelay: (_) => Duration.zero,
+    );
+
+    await controller.start();
+    expect(controller.state.response?.userAgent, 'codex-first');
+
+    await first.closeIncoming();
+    await _waitFor(
+      () => controller.state.response?.userAgent == 'codex-reconnected',
+    );
+
+    expect(controller.state.phase, CodexConnectionPhase.connected);
+    expect(transport.connectCount, 2);
+    expect(transport.closeCount, 1);
+    await controller.close();
+  });
+
+  test('closing the controller cancels a scheduled reconnect', () async {
+    late final _FakeWebSocket socket;
+    socket = _FakeWebSocket((message) {
+      final json = jsonDecode(message as String) as Map;
+      if (json['method'] != 'initialize') return;
+      scheduleMicrotask(
+        () => socket.addIncoming(
+          jsonEncode({
+            'id': json['id'],
+            'result': {
+              'codexHome': '/tmp/codex',
+              'platformFamily': 'unix',
+              'platformOs': 'linux',
+              'userAgent': 'codex-test',
+            },
+          }),
+        ),
+      );
+    });
+    final transport = _FakeTransport(socket);
+    final controller = CodexConnectionController(
+      transport: transport,
+      appVersionProvider: () async => '1.0.0',
+      reconnectDelay: (_) => const Duration(milliseconds: 20),
+    );
+
+    await controller.start();
+    await socket.closeIncoming();
+    await controller.close();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(transport.connectCount, 1);
+  });
+
+  test('foreground resume actively probes a healthy Codex socket', () async {
+    late final _FakeWebSocket socket;
+    final methods = <Object?>[];
+    socket = _FakeWebSocket((message) {
+      final json = jsonDecode(message as String) as Map;
+      methods.add(json['method']);
+      final result = switch (json['method']) {
+        'initialize' => {
+          'codexHome': '/tmp/codex',
+          'platformFamily': 'unix',
+          'platformOs': 'linux',
+          'userAgent': 'codex-test',
+        },
+        'account/read' => {'account': null, 'requiresOpenaiAuth': false},
+        _ => null,
+      };
+      if (result != null) {
+        scheduleMicrotask(
+          () => socket.addIncoming(
+            jsonEncode({'id': json['id'], 'result': result}),
+          ),
+        );
+      }
+    });
+    final transport = _FakeTransport(socket);
+    final controller = CodexConnectionController(
+      transport: transport,
+      appVersionProvider: () async => '1.0.0',
+    );
+
+    await controller.start();
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await controller.probeOnResume();
+
+    expect(methods, contains('account/read'));
+    expect(transport.connectCount, 1);
+    expect(controller.state.phase, CodexConnectionPhase.connected);
+    await controller.close();
+  });
+
+  test('foreground resume immediately reconnects a half-open socket', () async {
+    late final _FakeWebSocket first;
+    first = _FakeWebSocket((message) {
+      final json = jsonDecode(message as String) as Map;
+      if (json['method'] != 'initialize') return;
+      scheduleMicrotask(
+        () => first.addIncoming(
+          jsonEncode({
+            'id': json['id'],
+            'result': {
+              'codexHome': '/tmp/codex',
+              'platformFamily': 'unix',
+              'platformOs': 'linux',
+              'userAgent': 'codex-first',
+            },
+          }),
+        ),
+      );
+    });
+    late final _FakeWebSocket second;
+    second = _FakeWebSocket((message) {
+      final json = jsonDecode(message as String) as Map;
+      if (json['method'] != 'initialize') return;
+      scheduleMicrotask(
+        () => second.addIncoming(
+          jsonEncode({
+            'id': json['id'],
+            'result': {
+              'codexHome': '/tmp/codex',
+              'platformFamily': 'unix',
+              'platformOs': 'linux',
+              'userAgent': 'codex-reconnected',
+            },
+          }),
+        ),
+      );
+    });
+    final transport = _RetryTransport([first, second]);
+    final controller = CodexConnectionController(
+      transport: transport,
+      appVersionProvider: () async => '1.0.0',
+      reconnectDelay: (_) => const Duration(days: 1),
+      resumeProbeTimeout: const Duration(milliseconds: 10),
+    );
+
+    await controller.start();
+    await controller.probeOnResume();
+
+    expect(transport.connectCount, 2);
+    expect(controller.state.phase, CodexConnectionPhase.connected);
+    expect(controller.state.response?.userAgent, 'codex-reconnected');
+    await controller.close();
   });
 
   test(
@@ -565,10 +749,14 @@ final class _RetryTransport implements CodexTransport {
   _RetryTransport(this.sockets);
   final List<WebSocketChannel> sockets;
   int index = -1;
+  int connectCount = 0;
   int closeCount = 0;
 
   @override
-  Future<void> connect() async => index++;
+  Future<void> connect() async {
+    index++;
+    connectCount++;
+  }
 
   @override
   WebSocketChannel openCodexWebSocket() => sockets[index];
@@ -602,6 +790,7 @@ final class _FakeWebSocket
   final StreamController<Object?> _incoming = StreamController<Object?>();
 
   void addIncoming(Object? message) => _incoming.add(message);
+  Future<void> closeIncoming() => _incoming.close();
 
   @override
   Stream<Object?> get stream => _incoming.stream;
@@ -649,4 +838,14 @@ final class _FakeSink implements WebSocketSink {
 
   @override
   Future<void> get done => _done.future;
+}
+
+Future<void> _waitFor(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 1));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Condition was not met before the deadline');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
 }

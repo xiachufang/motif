@@ -8,6 +8,7 @@ import '../../codex/codex_navigation.dart';
 import '../../codex/codex_service_state.dart';
 import '../../models/resource_documents.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/codex_motion.dart';
 import 'git_diff_panel.dart';
 import 'preview_pane.dart';
 
@@ -71,6 +72,27 @@ class _CodexFilePreviewScreenState extends State<CodexFilePreviewScreen> {
   Widget build(BuildContext context) {
     final c = context.motif;
     final document = _document;
+    final content = _loading
+        ? const Center(
+            key: ValueKey('codex-file-loading'),
+            child: CircularProgressIndicator(),
+          )
+        : _error != null
+        ? Center(
+            key: const ValueKey('codex-file-error'),
+            child: Padding(
+              padding: const EdgeInsets.all(MotifSpacing.lg),
+              child: Text(
+                'Could not read ${widget.path}: $_error',
+                textAlign: TextAlign.center,
+                style: MotifType.body.copyWith(color: c.danger),
+              ),
+            ),
+          )
+        : FilePreviewBody(
+            key: ValueKey('codex-file-content-${document!.path}'),
+            document: document,
+          );
     return Scaffold(
       key: const ValueKey('codex-file-preview-screen'),
       backgroundColor: c.surface,
@@ -90,20 +112,7 @@ class _CodexFilePreviewScreenState extends State<CodexFilePreviewScreen> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(MotifSpacing.lg),
-                child: Text(
-                  'Could not read ${widget.path}: $_error',
-                  textAlign: TextAlign.center,
-                  style: MotifType.body.copyWith(color: c.danger),
-                ),
-              ),
-            )
-          : FilePreviewBody(document: document!),
+      body: CodexMotionSwitcher(child: content),
     );
   }
 }
@@ -196,14 +205,17 @@ class _CodexTurnDiffScreenState extends State<CodexTurnDiffScreen> {
     );
   }
 
-  Widget _diffDocument() => DiffDocumentView(
-    key: ValueKey('codex-turn-diff-document-${_selectedPath ?? 'all'}'),
-    document: widget.document,
-    initialPath: _selectedPath,
-    onOpenFile: (path) {
-      final result = widget.onOpenFile(path);
-      if (result is Future<void>) unawaited(result);
-    },
+  Widget _diffDocument() => CodexMotionSwitcher(
+    offset: Offset.zero,
+    child: DiffDocumentView(
+      key: ValueKey('codex-turn-diff-document-${_selectedPath ?? 'all'}'),
+      document: widget.document,
+      initialPath: _selectedPath,
+      onOpenFile: (path) {
+        final result = widget.onOpenFile(path);
+        if (result is Future<void>) unawaited(result);
+      },
+    ),
   );
 
   Widget _fileSidebar({ValueChanged<String>? onSelected}) {
@@ -242,10 +254,12 @@ class CodexNetworkImageScreen extends StatelessWidget {
     final image = data != null
         ? Image.memory(
             data.contentAsBytes(),
+            frameBuilder: _fadeImageFrame,
             errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
           )
         : Image.network(
             url,
+            frameBuilder: _fadeImageFrame,
             errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
           );
     return Scaffold(
@@ -263,6 +277,21 @@ class CodexNetworkImageScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+Widget _fadeImageFrame(
+  BuildContext context,
+  Widget child,
+  int? frame,
+  bool wasSynchronouslyLoaded,
+) {
+  if (wasSynchronouslyLoaded) return child;
+  return AnimatedOpacity(
+    opacity: frame == null ? 0 : 1,
+    duration: codexMotionDuration(context, CodexMotion.enter),
+    curve: CodexMotion.enterCurve,
+    child: child,
+  );
 }
 
 bool _looksBinary(Uint8List bytes) {

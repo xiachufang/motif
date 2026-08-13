@@ -29,6 +29,23 @@ Only show **this request**.
     expect(parsed.unhandledInputs, isEmpty);
   });
 
+  test('extracts the request from the Codex attachment prompt variant', () {
+    final parsed = parser.parse(const [
+      CodexTextUserInput(
+        text: '''
+# Files mentioned by the user:
+
+## codex-clipboard.png: /tmp/codex-clipboard.png
+
+## My request for Codex:
+Align the start button with the report history.
+''',
+      ),
+    ]);
+
+    expect(parsed.text, 'Align the start button with the report history.');
+  });
+
   test('preserves ordinary text and incomplete attachment prompts', () {
     final ordinary = parser.parse(const [
       CodexTextUserInput(text: 'Hello **Codex**'),

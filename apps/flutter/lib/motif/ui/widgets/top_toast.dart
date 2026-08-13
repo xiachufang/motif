@@ -158,10 +158,10 @@ class _MotifToastPositioned extends StatelessWidget {
           child: Align(
             alignment: Alignment.topCenter,
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 160),
-              reverseDuration: const Duration(milliseconds: 120),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
+              duration: MotifMotion.enterDuration,
+              reverseDuration: MotifMotion.exitDuration,
+              switchInCurve: MotifMotion.enterCurve,
+              switchOutCurve: MotifMotion.exitCurve,
               transitionBuilder: (child, animation) {
                 return FadeTransition(
                   opacity: animation,

@@ -96,10 +96,12 @@ void main() {
     expect(codex.desktopSidebarVisible, isTrue);
     await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     expect(find.byKey(const ValueKey('codex-desktop-sidebar')), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
     await tester.drag(
       find.byKey(const ValueKey('codex-sidebar-resize-handle')),
       const Offset(50, 0),
@@ -301,6 +303,60 @@ void main() {
     expect(find.byType(Drawer), findsNothing);
     expect(serviceState.selectedThread?.id, 'new-thread');
     expect(find.byKey(const ValueKey('codex-thread-detail')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
+  testWidgets('mobile sidebar restores its scroll position after reopening', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(600, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final app = await appState();
+    final codex = CodexState();
+    final serviceState = readyServiceState(
+      threadCount: 30,
+      projectlessThreads: true,
+    );
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: codex,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
+    await tester.pumpAndSettle();
+    final projectList = find.byKey(const ValueKey('codex-project-list'));
+    await tester.drag(projectList, const Offset(0, -360));
+    await tester.pumpAndSettle();
+    final beforeClose = tester.widget<ListView>(projectList).controller!.offset;
+    expect(beforeClose, greaterThan(0));
+
+    tester.state<ScaffoldState>(find.byType(Scaffold).first).closeDrawer();
+    await tester.pumpAndSettle();
+    expect(find.byType(Drawer), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('codex-sidebar-toggle')));
+    await tester.pumpAndSettle();
+    final restored = tester
+        .widget<ListView>(find.byKey(const ValueKey('codex-project-list')))
+        .controller!
+        .offset;
+    expect(restored, closeTo(beforeClose, 0.5));
 
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -880,27 +936,34 @@ Future<AppState> appStateWithServer(TestServerCall call) async {
   return app;
 }
 
-CodexServiceState readyServiceState({ScreenFakeClient? connection}) {
-  final thread = CodexThread(
-    cliVersion: 'test',
-    createdAt: 1,
-    cwd: const CodexV2AbsolutePathBuf('/work/motif'),
-    ephemeral: false,
-    id: 'thread',
-    modelProvider: 'openai',
-    name: 'Thread',
-    preview: '',
-    sessionId: 'thread',
-    source: const CodexSessionSource('cli'),
-    status: const CodexNotLoadedThreadStatus(),
-    turns: const [],
-    updatedAt: 1,
-  );
+CodexServiceState readyServiceState({
+  ScreenFakeClient? connection,
+  int threadCount = 1,
+  bool projectlessThreads = false,
+}) {
+  final threads = [
+    for (var index = 0; index < threadCount; index++)
+      CodexThread(
+        cliVersion: 'test',
+        createdAt: 1,
+        cwd: CodexV2AbsolutePathBuf(projectlessThreads ? '' : '/work/motif'),
+        ephemeral: false,
+        id: index == 0 ? 'thread' : 'thread-$index',
+        modelProvider: 'openai',
+        name: index == 0 ? 'Thread' : 'Thread $index',
+        preview: '',
+        sessionId: index == 0 ? 'thread' : 'thread-$index',
+        source: const CodexSessionSource('cli'),
+        status: const CodexNotLoadedThreadStatus(),
+        turns: const [],
+        updatedAt: index + 1,
+      ),
+  ];
   return CodexServiceState(
       serverId: 'server',
       connection: connection ?? ScreenFakeClient(),
     )
-    ..catalog = buildCodexCatalog([thread], null)
+    ..catalog = buildCodexCatalog(threads, null)
     ..catalogPhase = CodexCatalogPhase.ready;
 }
 

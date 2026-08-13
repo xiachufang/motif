@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -104,7 +105,25 @@ final class CodexRpcException implements Exception {
 }
 
 typedef CodexAppVersionProvider = Future<String> Function();
+typedef CodexReconnectDelay = Duration Function(int attempt);
 typedef _Decoder = Object? Function(Object? value);
+
+Duration _defaultReconnectDelay(int attempt) {
+  const delays = <Duration>[
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 16),
+    Duration(seconds: 30),
+  ];
+  final index = attempt <= 1
+      ? 0
+      : attempt >= delays.length
+      ? delays.length - 1
+      : attempt - 1;
+  return delays[index];
+}
 
 abstract interface class CodexAppServerClient implements Listenable {
   CodexConnectionState get state;
@@ -178,10 +197,22 @@ final class CodexConnectionController extends ChangeNotifier
   CodexConnectionController({
     required this.transport,
     CodexAppVersionProvider? appVersionProvider,
-  }) : _appVersionProvider = appVersionProvider ?? _packageVersion;
+    CodexReconnectDelay? reconnectDelay,
+    this.resumeProbeTimeout = const Duration(seconds: 2),
+  }) : _appVersionProvider = appVersionProvider ?? _packageVersion,
+       _reconnectDelay = reconnectDelay ?? _defaultReconnectDelay {
+    try {
+      _lifecycleListener = AppLifecycleListener(onResume: _onAppResumed);
+    } catch (_) {
+      // Pure unit tests can construct the controller without a widgets binding.
+    }
+  }
 
   final CodexTransport transport;
   final CodexAppVersionProvider _appVersionProvider;
+  final CodexReconnectDelay _reconnectDelay;
+  @visibleForTesting
+  final Duration resumeProbeTimeout;
   @override
   CodexConnectionState state = const CodexConnectionState.connecting();
 
@@ -198,13 +229,32 @@ final class CodexConnectionController extends ChangeNotifier
 
   WebSocketChannel? _socket;
   StreamSubscription<Object?>? _subscription;
+  Future<void>? _startInFlight;
+  Future<void>? _resumeProbeInFlight;
+  Timer? _reconnectTimer;
+  AppLifecycleListener? _lifecycleListener;
   int _nextId = 0;
   int _generation = 0;
+  int _reconnectAttempt = 0;
   bool _closed = false;
   bool _transportOpen = false;
+  bool _connectedOnce = false;
 
   @override
-  Future<void> start() async {
+  Future<void> start() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    final inFlight = _startInFlight;
+    if (inFlight != null) return inFlight;
+    late final Future<void> attempt;
+    attempt = _start().whenComplete(() {
+      if (identical(_startInFlight, attempt)) _startInFlight = null;
+    });
+    _startInFlight = attempt;
+    return attempt;
+  }
+
+  Future<void> _start() async {
     final generation = ++_generation;
     await _releaseConnection();
     if (_closed || generation != _generation) return;
@@ -258,8 +308,62 @@ final class CodexConnectionController extends ChangeNotifier
           response: response,
         ),
       );
+      _connectedOnce = true;
+      _reconnectAttempt = 0;
     } catch (error) {
       _fail(error, generation);
+    }
+  }
+
+  void _onAppResumed() {
+    unawaited(probeOnResume());
+  }
+
+  /// Actively checks the existing app-server WebSocket after the application
+  /// returns to the foreground. A socket can remain locally open after the OS
+  /// suspended networking, so its cached state is not a sufficient liveness
+  /// signal.
+  @visibleForTesting
+  Future<void> probeOnResume() {
+    final running = _resumeProbeInFlight;
+    if (running != null) return running;
+    late final Future<void> probe;
+    probe = _probeOnResume().whenComplete(() {
+      if (identical(_resumeProbeInFlight, probe)) {
+        _resumeProbeInFlight = null;
+      }
+    });
+    _resumeProbeInFlight = probe;
+    return probe;
+  }
+
+  Future<void> _probeOnResume() async {
+    if (_closed) return;
+    if (state.phase != CodexConnectionPhase.connected) {
+      if (state.failureKind == CodexConnectionFailureKind.cliNotFound) return;
+      await start();
+      return;
+    }
+
+    final generation = _generation;
+    final id = ++_nextId;
+    try {
+      await _request<Object?>(
+        id,
+        CodexAccountReadRequest(
+          id: CodexV2RequestId.fromJson(id),
+          params: const CodexGetAccountParams(),
+        ),
+        (_) => null,
+      ).timeout(resumeProbeTimeout);
+      // A JSON-RPC error also proves the full WebSocket and app-server path is
+      // responsive, so only transport errors and timeouts rebuild it.
+    } on CodexRpcException {
+      return;
+    } catch (error) {
+      if (_closed || generation != _generation) return;
+      _fail(error, generation);
+      await start();
     }
   }
 
@@ -621,6 +725,18 @@ final class CodexConnectionController extends ChangeNotifier
             : CodexConnectionFailureKind.connection,
       ),
     );
+    if (_connectedOnce && error is! CodexCliNotFoundException) {
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_closed || _reconnectTimer != null) return;
+    final attempt = ++_reconnectAttempt;
+    _reconnectTimer = Timer(_reconnectDelay(attempt), () {
+      _reconnectTimer = null;
+      if (!_closed) unawaited(start());
+    });
   }
 
   void _setState(CodexConnectionState value) {
@@ -653,6 +769,10 @@ final class CodexConnectionController extends ChangeNotifier
     if (_closed) return;
     _closed = true;
     _generation++;
+    _lifecycleListener?.dispose();
+    _lifecycleListener = null;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     for (final request in _pending.values) {
       if (!request.completer.isCompleted) {
         request.completer.completeError(StateError('Codex connection closed'));

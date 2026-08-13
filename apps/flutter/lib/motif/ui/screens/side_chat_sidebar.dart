@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/codex_motion.dart';
 import '../widgets/codex_sidebar_components.dart';
 
 class SideChatSidebar extends StatelessWidget {
@@ -71,13 +72,18 @@ class SideChatSidebar extends StatelessWidget {
             ),
             Divider(height: 1, color: c.border),
             Expanded(
-              child: collection.creating && entries.isEmpty
-                  ? const Center(child: CircularProgressIndicator())
-                  : ListView(
-                      key: const ValueKey('side-chat-list'),
-                      padding: const EdgeInsets.only(bottom: MotifSpacing.xl),
-                      children: rows,
-                    ),
+              child: CodexMotionSwitcher(
+                child: collection.creating && entries.isEmpty
+                    ? const Center(
+                        key: ValueKey('side-chat-sidebar-loading'),
+                        child: CircularProgressIndicator(),
+                      )
+                    : ListView(
+                        key: const ValueKey('side-chat-list'),
+                        padding: const EdgeInsets.only(bottom: MotifSpacing.xl),
+                        children: rows,
+                      ),
+              ),
             ),
           ],
         ),
@@ -91,7 +97,6 @@ class SideChatSidebar extends StatelessWidget {
     return CodexSidebarThreadRow(
       key: ValueKey('side-chat-${entry.id}'),
       title: entry.name,
-      subtitle: _relativeTime(entry.lastActivityAt),
       selected: collection.selected?.id == entry.id,
       active: active,
       trailing: failed
@@ -118,12 +123,4 @@ String _dateLabel(DateTime value, {DateTime? now}) {
   if (difference == 1) return 'Yesterday';
   String two(int part) => part.toString().padLeft(2, '0');
   return '${date.year}-${two(date.month)}-${two(date.day)}';
-}
-
-String _relativeTime(DateTime value) {
-  final elapsed = DateTime.now().difference(value);
-  if (elapsed.inMinutes < 1) return 'now';
-  if (elapsed.inHours < 1) return '${elapsed.inMinutes}m';
-  if (elapsed.inDays < 1) return '${elapsed.inHours}h';
-  return '${elapsed.inDays}d';
 }
