@@ -10,6 +10,7 @@ if [[ ! -f "$GHOSTTY_DIR/build.zig" ]]; then
   echo "error: Ghostty source is missing at $GHOSTTY_DIR; initialize submodules" >&2
   exit 1
 fi
+GHOSTTY_DIR="$(cd "$GHOSTTY_DIR" && pwd -P)"
 
 shopt -s nullglob
 patches=("$PATCH_DIR"/*.patch)
@@ -18,9 +19,13 @@ if (( ${#patches[@]} == 0 )); then
   exit 1
 fi
 
-if git -C "$GHOSTTY_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if git_dir="$(git -C "$GHOSTTY_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
   patch_backend=git
-  patch_lock="$(git -C "$GHOSTTY_DIR" rev-parse --git-path motif-patch.lock)"
+  # Normalize the path through Bash before using mkdir as a cross-process
+  # mutex. Git for Windows may otherwise spell the same directory differently
+  # depending on the caller's working directory and drive-path representation.
+  git_dir="$(cd "$git_dir" && pwd -P)"
+  patch_lock="$git_dir/motif-patch.lock"
 elif command -v patch >/dev/null 2>&1; then
   # Docker build contexts contain the submodule sources but not the parent
   # repository's .git/modules metadata. The copied submodule .git file points
