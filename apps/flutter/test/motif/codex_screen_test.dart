@@ -1040,8 +1040,10 @@ final class ScreenFakeClient extends ChangeNotifier
   }
 
   @override
-  Future<CodexThreadResumeResponse> resumeThread(String threadId) async =>
-      throw StateError('unused');
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async => throw StateError('unused');
 
   @override
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params) async =>

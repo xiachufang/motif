@@ -2619,17 +2619,19 @@ final class WorkspaceFakeClient extends ChangeNotifier
   );
 
   @override
-  Future<CodexThreadResumeResponse> resumeThread(String threadId) async =>
-      CodexThreadResumeResponse(
-        approvalPolicy: const CodexAskForApproval('on-request'),
-        approvalsReviewer: CodexApprovalsReviewer.user,
-        cwd: thread.cwd,
-        model: 'codex-test',
-        modelProvider: 'openai',
-        reasoningEffort: const CodexReasoningEffort('high'),
-        sandbox: const CodexDangerFullAccessSandboxPolicy(),
-        thread: thread,
-      );
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async => CodexThreadResumeResponse(
+    approvalPolicy: const CodexAskForApproval('on-request'),
+    approvalsReviewer: CodexApprovalsReviewer.user,
+    cwd: thread.cwd,
+    model: 'codex-test',
+    modelProvider: 'openai',
+    reasoningEffort: const CodexReasoningEffort('high'),
+    sandbox: const CodexDangerFullAccessSandboxPolicy(),
+    thread: thread,
+  );
 
   @override
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params) async {

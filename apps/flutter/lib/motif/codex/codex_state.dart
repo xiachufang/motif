@@ -1,12 +1,46 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 part 'codex_state.g.dart';
 
 enum CodexSidebarMode { projects, timeline }
+
+final class CodexSideChatIndex {
+  const CodexSideChatIndex({this.threadIds = const [], this.selectedThreadId});
+
+  final List<String> threadIds;
+  final String? selectedThreadId;
+
+  Map<String, Object?> toJson() => {
+    'threadIds': threadIds,
+    if (selectedThreadId != null) 'selectedThreadId': selectedThreadId,
+  };
+
+  static CodexSideChatIndex fromJson(Object? json) {
+    if (json is! Map) return const CodexSideChatIndex();
+    final ids = <String>[];
+    final seen = <String>{};
+    final rawIds = json['threadIds'];
+    if (rawIds is List) {
+      for (final value in rawIds.whereType<String>()) {
+        final id = value.trim();
+        if (id.isNotEmpty && seen.add(id)) ids.add(id);
+      }
+    }
+    final rawSelected = json['selectedThreadId'];
+    final selected = rawSelected is String && ids.contains(rawSelected)
+        ? rawSelected
+        : null;
+    return CodexSideChatIndex(
+      threadIds: List.unmodifiable(ids),
+      selectedThreadId: selected,
+    );
+  }
+}
 
 final class CodexProjectSidebarPreferences {
   const CodexProjectSidebarPreferences({
@@ -80,9 +114,9 @@ final class CodexProjectSidebarPreferences {
 
 /// Process-wide Codex UI preferences.
 ///
-/// Connection and thread state intentionally live in server-scoped service
-/// state instances instead of this object. Thread workspaces remain isolated
-/// by their hidden ordinary Sessions.
+/// Connection and conversation state live in server-scoped service instances.
+/// This object stores lightweight preferences plus the Side Chat IDs needed to
+/// recover ephemeral conversations while the server's app-server stays alive.
 @ObservableModel()
 class CodexState extends _$CodexState {
   static const _projectSidebarKey = 'motif.codex.projectSidebar.v1';
@@ -90,6 +124,7 @@ class CodexState extends _$CodexState {
   static const _selectedReasoningEffortsKey =
       'motif.codex.selectedReasoningEfforts.v1';
   static const _selectedPermissionsKey = 'motif.codex.selectedPermissions.v1';
+  static const _sideChatIndexesKey = 'motif.codex.sideChatIndexes.v1';
 
   CodexState({
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
@@ -100,16 +135,19 @@ class CodexState extends _$CodexState {
        _selectedModels = _loadSelectedModels(preferences),
        _selectedReasoningEfforts = _loadSelectedReasoningEfforts(preferences),
        _selectedPermissions = _loadSelectedPermissions(preferences),
+       _sideChatIndexes = _loadSideChatIndexes(preferences),
        super(sidebarMode, desktopSidebarVisible, sidebarWidth, preferences);
 
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
   final Map<String, String> _selectedModels;
   final Map<String, String> _selectedReasoningEfforts;
   final Map<String, String?> _selectedPermissions;
+  final Map<String, Map<String, CodexSideChatIndex>> _sideChatIndexes;
   Future<void> _persistProjectSidebars = Future.value();
   Future<void> _persistSelectedModels = Future.value();
   Future<void> _persistSelectedReasoningEfforts = Future.value();
   Future<void> _persistSelectedPermissions = Future.value();
+  Future<void> _persistSideChatIndexes = Future.value();
 
   static Future<CodexState> load() async =>
       CodexState(preferences: await SharedPreferences.getInstance());
@@ -198,6 +236,61 @@ class CodexState extends _$CodexState {
 
   Future<void> flushSelectedPermissionPreferences() =>
       _persistSelectedPermissions;
+
+  CodexSideChatIndex sideChatIndex(String serverId, String parentThreadId) =>
+      _sideChatIndexes[serverId]?[parentThreadId] ?? const CodexSideChatIndex();
+
+  void setSideChatIndex(
+    String serverId,
+    String parentThreadId, {
+    required Iterable<String> threadIds,
+    String? selectedThreadId,
+  }) {
+    if (serverId.isEmpty || parentThreadId.isEmpty) return;
+    final ids = <String>[];
+    final seen = <String>{};
+    for (final value in threadIds) {
+      final id = value.trim();
+      if (id.isNotEmpty && seen.add(id)) ids.add(id);
+    }
+    final selected = selectedThreadId != null && ids.contains(selectedThreadId)
+        ? selectedThreadId
+        : null;
+    if (ids.isEmpty) {
+      final byParent = _sideChatIndexes[serverId];
+      if (byParent == null) return;
+      if (byParent.remove(parentThreadId) == null) return;
+      if (byParent.isEmpty) _sideChatIndexes.remove(serverId);
+    } else {
+      final byParent = _sideChatIndexes.putIfAbsent(serverId, () => {});
+      final current = byParent[parentThreadId];
+      if (current != null &&
+          listEquals(current.threadIds, ids) &&
+          current.selectedThreadId == selected) {
+        return;
+      }
+      byParent[parentThreadId] = CodexSideChatIndex(
+        threadIds: List.unmodifiable(ids),
+        selectedThreadId: selected,
+      );
+    }
+    final store = preferences;
+    if (store == null) return;
+    final payload = jsonEncode({
+      for (final server in _sideChatIndexes.entries)
+        server.key: {
+          for (final parent in server.value.entries)
+            parent.key: parent.value.toJson(),
+        },
+    });
+    unawaited(
+      _persistSideChatIndexes = _persistSideChatIndexes.then((_) async {
+        await store.setString(_sideChatIndexesKey, payload);
+      }),
+    );
+  }
+
+  Future<void> flushSideChatIndexes() => _persistSideChatIndexes;
 
   void _persistPermissionPreferences() {
     final store = preferences;
@@ -338,6 +431,37 @@ class CodexState extends _$CodexState {
               (entry.value as String).isNotEmpty)
             entry.key as String: entry.value as String,
       };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Map<String, Map<String, CodexSideChatIndex>> _loadSideChatIndexes(
+    SharedPreferences? preferences,
+  ) {
+    final raw = preferences?.getString(_sideChatIndexesKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return {};
+      final result = <String, Map<String, CodexSideChatIndex>>{};
+      for (final server in json.entries) {
+        if (server.key is! String ||
+            (server.key as String).isEmpty ||
+            server.value is! Map) {
+          continue;
+        }
+        final byParent = <String, CodexSideChatIndex>{};
+        for (final parent in (server.value as Map).entries) {
+          if (parent.key is! String || (parent.key as String).isEmpty) continue;
+          final index = CodexSideChatIndex.fromJson(parent.value);
+          if (index.threadIds.isNotEmpty) {
+            byParent[parent.key as String] = index;
+          }
+        }
+        if (byParent.isNotEmpty) result[server.key as String] = byParent;
+      }
+      return result;
     } catch (_) {
       return {};
     }

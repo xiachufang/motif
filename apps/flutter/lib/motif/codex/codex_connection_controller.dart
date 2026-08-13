@@ -129,7 +129,10 @@ abstract interface class CodexAppServerClient implements Listenable {
   Future<CodexThreadStartResponse> startThread(CodexThreadStartParams params);
   Future<CodexThreadForkResponse> forkThread(CodexThreadForkParams params);
   Future<CodexThreadUnsubscribeResponse> unsubscribeThread(String threadId);
-  Future<CodexThreadResumeResponse> resumeThread(String threadId);
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  });
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params);
   Future<CodexTurnSteerResponse> steerTurn(CodexTurnSteerParams params);
   Future<CodexTurnInterruptResponse> interruptTurn(
@@ -349,17 +352,19 @@ final class CodexConnectionController extends ChangeNotifier
       );
 
   @override
-  Future<CodexThreadResumeResponse> resumeThread(String threadId) =>
-      _typedRequest(
-        (id) => CodexThreadResumeRequest(
-          id: id,
-          params: CodexThreadResumeParams(
-            threadId: threadId,
-            excludeTurns: true,
-          ),
-        ),
-        CodexThreadResumeResponse.fromJson,
-      );
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) => _typedRequest(
+    (id) => CodexThreadResumeRequest(
+      id: id,
+      params: CodexThreadResumeParams(
+        threadId: threadId,
+        excludeTurns: !includeTurns,
+      ),
+    ),
+    CodexThreadResumeResponse.fromJson,
+  );
 
   @override
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params) =>

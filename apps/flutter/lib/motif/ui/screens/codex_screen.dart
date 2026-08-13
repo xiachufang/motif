@@ -199,7 +199,12 @@ class _CodexScreenState extends State<CodexScreen> {
                 ? Drawer(
                     key: const ValueKey('codex-side-chat-drawer'),
                     width: constraints.maxWidth,
-                    child: _LazySideChatDrawer(controller: widget.controller),
+                    child: _LazySideChatDrawer(
+                      key: ValueKey(
+                        'side-chat-drawer-${chrome.selectedThread!.id}',
+                      ),
+                      controller: widget.controller,
+                    ),
                   )
                 : null,
             body: chrome.setupError != null
@@ -457,7 +462,7 @@ class _CodexScreenState extends State<CodexScreen> {
 }
 
 class _LazySideChatDrawer extends StatefulWidget {
-  const _LazySideChatDrawer({required this.controller});
+  const _LazySideChatDrawer({required this.controller, super.key});
 
   final CodexFeatureController controller;
 

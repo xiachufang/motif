@@ -73,6 +73,46 @@ void main() {
     expect(cleared.hasSelectedPermissionPreference('server-2'), isFalse);
   });
 
+  test('CodexState persists Side Chat indexes per parent thread', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final state = CodexState(preferences: preferences);
+
+    state
+      ..setSideChatIndex(
+        'server-1',
+        'parent-1',
+        threadIds: const ['side-1', 'side-2'],
+        selectedThreadId: 'side-1',
+      )
+      ..setSideChatIndex(
+        'server-1',
+        'parent-2',
+        threadIds: const ['side-3'],
+        selectedThreadId: 'side-3',
+      );
+    await state.flushSideChatIndexes();
+
+    final restored = CodexState(preferences: preferences);
+    expect(restored.sideChatIndex('server-1', 'parent-1').threadIds, [
+      'side-1',
+      'side-2',
+    ]);
+    expect(
+      restored.sideChatIndex('server-1', 'parent-1').selectedThreadId,
+      'side-1',
+    );
+    expect(restored.sideChatIndex('server-1', 'parent-2').threadIds, [
+      'side-3',
+    ]);
+
+    restored.setSideChatIndex('server-1', 'parent-1', threadIds: const []);
+    await restored.flushSideChatIndexes();
+    final cleared = CodexState(preferences: preferences);
+    expect(cleared.sideChatIndex('server-1', 'parent-1').threadIds, isEmpty);
+    expect(cleared.sideChatIndex('server-1', 'parent-2').threadIds, ['side-3']);
+  });
+
   testWidgets('project hierarchy expands independently and switches timeline', (
     tester,
   ) async {
@@ -706,7 +746,10 @@ final class SidebarFakeClient extends ChangeNotifier
   }
 
   @override
-  Future<CodexThreadResumeResponse> resumeThread(String threadId) async {
+  Future<CodexThreadResumeResponse> resumeThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async {
     resumedThreadIds.add(threadId);
     final thread = threads[threadId]!;
     return CodexThreadResumeResponse(
