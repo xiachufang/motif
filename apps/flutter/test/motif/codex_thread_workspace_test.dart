@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/services.dart';
@@ -1399,6 +1401,8 @@ Only show **this request**.
   testWidgets('image picker includes iOS-compatible type identifiers', (
     tester,
   ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     const channel = MethodChannel('plugins.flutter.io/file_selector');
     MethodCall? pickerCall;
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
@@ -1443,6 +1447,53 @@ Only show **this request**.
       'org.webmproject.webp',
     ]);
 
+    debugDefaultTargetPlatformOverride = null;
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('mobile image action opens the system photo library', (
+    tester,
+  ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    const channel = MethodChannel('plugins.flutter.io/image_picker');
+    MethodCall? pickerCall;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+      call,
+    ) async {
+      pickerCall = call;
+      return <String>[];
+    });
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      ),
+    );
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)..queuedMessages = const [];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    tester
+        .widget<PopupMenuButton<String>>(
+          find.byKey(const ValueKey('codex-add-menu')),
+        )
+        .onSelected!('image');
+    await tester.pump();
+
+    expect(pickerCall?.method, 'pickMultiImage');
+    final arguments = pickerCall!.arguments as Map<Object?, Object?>;
+    expect(arguments['requestFullMetadata'], isFalse);
+
+    debugDefaultTargetPlatformOverride = null;
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
   });

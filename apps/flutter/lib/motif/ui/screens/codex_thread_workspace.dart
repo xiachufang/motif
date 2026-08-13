@@ -2,9 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart' as image_picker;
 
 import '../../codex/codex_agent_output_parser.dart';
 import '../../codex/codex_composer_models.dart';
@@ -23,6 +26,22 @@ import '../widgets/top_toast.dart';
 part 'codex_thread_workspace.g.dart';
 
 const _turnTopLevelItemSpacing = MotifSpacing.lg;
+const _imageTypes = XTypeGroup(
+  label: 'Images',
+  extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'],
+  mimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+  uniformTypeIdentifiers: [
+    'public.png',
+    'public.jpeg',
+    'com.compuserve.gif',
+    'org.webmproject.webp',
+  ],
+);
+
+bool get _isMobilePlatform =>
+    !kIsWeb &&
+    (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.android);
 
 typedef CodexTurnActionBuilder =
     Widget Function(
@@ -254,21 +273,12 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   }
 
   Future<void> _pickImages() async {
-    const images = XTypeGroup(
-      label: 'Images',
-      extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'],
-      mimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
-      // iOS file_selector only accepts Uniform Type Identifiers. Without
-      // these, tapping Images throws before the native picker is presented.
-      uniformTypeIdentifiers: [
-        'public.png',
-        'public.jpeg',
-        'com.compuserve.gif',
-        'org.webmproject.webp',
-      ],
-    );
     try {
-      final files = await openFiles(acceptedTypeGroups: const [images]);
+      final files = _isMobilePlatform
+          ? await image_picker.ImagePicker().pickMultiImage(
+              requestFullMetadata: false,
+            )
+          : await openFiles(acceptedTypeGroups: const [_imageTypes]);
       await _addFiles(files, CodexAttachmentKind.image);
     } catch (error) {
       if (mounted) showMotifToast(context, 'Could not select images: $error');
