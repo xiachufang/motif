@@ -5,6 +5,9 @@
 .git
 target
 **/target
+**/.zig-cache
+**/zig-cache
+**/zig-out
 
 # Flutter generated/build artifacts and platform projects not needed for web.
 apps/flutter/build

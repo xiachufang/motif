@@ -45,6 +45,8 @@ COPY apps/flutter/hook ./apps/flutter/hook
 COPY apps/flutter/ghostty ./apps/flutter/ghostty
 COPY apps/flutter/scripts/build_ghostty_wasm.sh ./apps/flutter/scripts/build_ghostty_wasm.sh
 COPY apps/flutter/analysis_options.yaml ./apps/flutter/
+COPY scripts/build_ghostty.sh scripts/apply_ghostty_patches.sh ./scripts/
+COPY patches/ghostty ./patches/ghostty
 
 WORKDIR /src/apps/flutter
 RUN --mount=type=cache,target=/root/.pub-cache \
