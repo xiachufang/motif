@@ -65,6 +65,7 @@ The entrypoint maps environment variables to `motifd` flags.
 | `MOTIFD_LOG` | `info` | `--log` |
 | `MOTIFD_RPC_LOG` | empty | `--rpc-log` |
 | `MOTIFD_PUSH_RELAY_URL` | empty | `--push-relay-url` |
+| `MOTIFD_CODEX_PATH` | empty | Exact Codex CLI executable used by the Codex view |
 
 Auth and encryption are automatic on a network listener (psk-derived bearer +
 self-signed TLS, client pins the cert). There is no token file or
@@ -72,6 +73,10 @@ self-signed TLS, client pins the cert). There is no token file or
 
 Set `MOTIFD_LISTEN=off` or `MOTIFD_LISTEN=none` to omit the TCP listener, for
 example when running Tailscale-only or rendezvous-only.
+
+The image does not bundle the Codex CLI. A derived image can install it under
+`/home/motif/.local/bin/codex` (the standalone installer's normal user-level
+location), or mount it and set `MOTIFD_CODEX_PATH` to that executable.
 
 Tailscale:
 

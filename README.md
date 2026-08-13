@@ -153,6 +153,11 @@ for image tags, configuration, and GHCR details.
 # auto-configures itself to the motifd origin on first launch.
 ```
 
+The Codex view requires a separately installed Codex CLI. `motifd` first checks
+`MOTIFD_CODEX_PATH`, then `PATH`, the standalone install location
+`~/.local/bin/codex`, Homebrew prefixes, and common npm/node-manager locations.
+Set `MOTIFD_CODEX_PATH` to the executable when Codex is installed elsewhere.
+
 On native Windows, run `motifd.exe --listen 127.0.0.1:7777` from PowerShell.
 Keep the packaged `ghostty-vt.dll` beside `motifd.exe`.
 New PTYs prefer PowerShell 7 (`pwsh.exe`) and fall back to Windows PowerShell;
