@@ -55,7 +55,6 @@ void main() {
         },
         stopForwarder: (_) async {},
         forgetLearnedRoute: (_) {},
-        learnRoute: (_, _) => false,
         httpClientFactory: (_, _) => client,
         webSocketConnector:
             ({

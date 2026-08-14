@@ -365,7 +365,6 @@ RpcSessionTransport _newRpc() {
         TransportReady(target: profile, proxy: ProxySettings.none),
     stopForwarder: (_) async {},
     forgetLearnedRoute: (_) {},
-    learnRoute: (_, _) => false,
     httpClientFactory: (_, _) => _PingClient(_httpClientFactory!.call()),
     webSocketConnector:
         ({required uri, required headers, required proxy, required certPin}) =>

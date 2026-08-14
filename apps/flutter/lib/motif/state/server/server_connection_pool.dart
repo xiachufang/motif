@@ -17,6 +17,7 @@ import 'package:http/http.dart' as http;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../net/proxy_client.dart';
@@ -259,7 +260,7 @@ abstract interface class ServerConnectionPool {
 
   Future<void> reconnect({Object? cause});
   Future<void> disconnectAll({bool forgetLearnedRoute = false});
-  Future<void> dispose();
+  Future<void> dispose({bool forgetLearnedRoute = false});
 }
 
 typedef ServerHttpClientFactory =
@@ -275,7 +276,6 @@ typedef ServerRouteResolver =
     Future<TransportResolution> Function(MotifServer server);
 typedef StopServerForwarder = Future<void> Function(String serverId);
 typedef ForgetServerRoute = void Function(String serverId);
-typedef LearnServerRoute = bool Function(MotifServer server, PingInfo ping);
 
 /// The production implementation. Dependencies are callbacks so the routing
 /// policy can be tested without starting real SSH/rendezvous forwarders.
@@ -286,7 +286,6 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
     required ServerRouteResolver resolveRoute,
     required StopServerForwarder stopForwarder,
     required ForgetServerRoute forgetLearnedRoute,
-    required LearnServerRoute learnRoute,
     ServerHttpClientFactory? httpClientFactory,
     ServerWebSocketConnector? webSocketConnector,
     this.healthTtl = const Duration(seconds: 15),
@@ -296,7 +295,6 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
        _resolveRoute = resolveRoute,
        _stopForwarder = stopForwarder,
        _forgetLearnedRoute = forgetLearnedRoute,
-       _learnRoute = learnRoute,
        _httpClientFactory = httpClientFactory ?? _defaultHttpClientFactory,
        _webSocketConnector = webSocketConnector ?? _defaultWebSocketConnector,
        _now = now ?? DateTime.now;
@@ -307,7 +305,6 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
   final ServerRouteResolver _resolveRoute;
   final StopServerForwarder _stopForwarder;
   final ForgetServerRoute _forgetLearnedRoute;
-  final LearnServerRoute _learnRoute;
   final ServerHttpClientFactory _httpClientFactory;
   final ServerWebSocketConnector _webSocketConnector;
   final DateTime Function() _now;
@@ -407,6 +404,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
     MotifServer server, {
     Object? recoveringFrom,
   }) async {
+    final sw = Stopwatch()..start();
     final operation = ++_operationGeneration;
     if (recoveringFrom != null) {
       _emit(phase: ServerConnectionPoolPhase.recovering, error: recoveringFrom);
@@ -416,16 +414,8 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
       _emit(phase: ServerConnectionPoolPhase.resolving, error: null);
     }
 
-    var candidate = await _resolveCandidate(server, operation);
-    var ping = await _probeCandidate(candidate, operation);
-
-    if (_learnRoute(server, ping)) {
-      candidate.retire(force: true);
-      await _stopForwarder(serverId);
-      _checkOperation(operation);
-      candidate = await _resolveCandidate(server, operation);
-      ping = await _probeCandidate(candidate, operation);
-    }
+    final candidate = await _resolveCandidate(server, operation);
+    final ping = await _probeCandidate(candidate, operation);
 
     _checkOperation(operation);
     final previous = _current;
@@ -435,6 +425,12 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
       await _closeSocketsForGeneration(previous.generation);
     }
     _markHealthy(ping: ping);
+    Log.i(
+      'route establish ready server=$serverId generation=${candidate.generation} '
+      'target=${candidate.target.endpoint} took=${sw.elapsedMilliseconds}ms '
+      'prevalidated=${candidate.prevalidatedPing != null}',
+      name: 'motif.resume',
+    );
     return ping;
   }
 
@@ -449,6 +445,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
     } catch (_) {
       // A resolver may have started a forwarder immediately before a global
       // disconnect superseded it. Fence state and clean that late resource.
+      if (resolution case final TransportReady ready) ready.dispose();
       await _stopForwarder(serverId);
       rethrow;
     }
@@ -460,7 +457,10 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
           error: null,
         );
         throw ServerConnectionBlockedException(blocker);
-      case TransportReady(:final target, :final proxy, :final certPin):
+      case final TransportReady ready:
+        final target = ready.target;
+        final proxy = ready.proxy;
+        final certPin = ready.certPin;
         final generation = ++_routeGeneration;
         return _HttpConnectionGeneration(
           generation: generation,
@@ -468,7 +468,10 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
           target: target,
           proxy: proxy,
           certPin: certPin,
-          client: _httpClientFactory(proxy, certPin),
+          client:
+              ready.takePreconnectedClient() ??
+              _httpClientFactory(proxy, certPin),
+          prevalidatedPing: ready.prevalidatedPing,
         );
     }
   }
@@ -482,7 +485,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
       routeGeneration: candidate.generation,
     );
     try {
-      final ping = await _ping(candidate);
+      final ping = candidate.prevalidatedPing ?? await _ping(candidate);
       _checkOperation(operation);
       if (!ping.isMotifServer) {
         throw RpcException(
@@ -871,9 +874,9 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
   }
 
   @override
-  Future<void> dispose() async {
+  Future<void> dispose({bool forgetLearnedRoute = false}) async {
     if (_closed) return;
-    await disconnectAll(forgetLearnedRoute: true);
+    await disconnectAll(forgetLearnedRoute: forgetLearnedRoute);
     _closed = true;
     for (final owner in _owners.toList()) {
       await owner.close();
@@ -891,6 +894,7 @@ final class _HttpConnectionGeneration {
     required this.proxy,
     required this.certPin,
     required this.client,
+    this.prevalidatedPing,
   });
 
   final int generation;
@@ -899,6 +903,7 @@ final class _HttpConnectionGeneration {
   final ProxySettings proxy;
   final Uint8List? certPin;
   final http.Client client;
+  final PingInfo? prevalidatedPing;
   int _inFlight = 0;
   bool _retired = false;
   bool _closed = false;
@@ -1113,7 +1118,6 @@ final class ServerConnectionPoolRegistry {
         resolveRoute: _resolver.resolve,
         stopForwarder: _resolver.stopForwarder,
         forgetLearnedRoute: _resolver.forgetRzvDirect,
-        learnRoute: (server, ping) => _resolver.learnRzvDirect(server, ping),
         httpClientFactory: _httpClientFactory,
         webSocketConnector: _webSocketConnector,
         healthTtl: _healthTtl,
@@ -1132,7 +1136,12 @@ final class ServerConnectionPoolRegistry {
   }
 
   Future<void> remove(String serverId) async {
-    await _pools.remove(serverId)?.dispose();
+    final pool = _pools.remove(serverId);
+    if (pool == null) {
+      _resolver.forgetRzvDirect(serverId);
+      return;
+    }
+    await pool.dispose(forgetLearnedRoute: true);
   }
 
   Future<void> dispose() async {

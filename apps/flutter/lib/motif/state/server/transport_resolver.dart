@@ -5,11 +5,13 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter_observation/flutter_observation.dart';
+import 'package:http/http.dart' as http;
 
 import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../net/proxy_client.dart';
+import '../../net/rpc_error.dart';
 import '../../net/rzv/rzv_forwarder.dart';
 import '../../net/rzv/rzv_protocol.dart';
 import '../../net/ssh/ssh_bootstrapper.dart';
@@ -18,6 +20,7 @@ import '../../net/ssh/ssh_forwarder_handle.dart';
 import '../../net/wsl/wsl_bootstrapper.dart';
 import '../../platform/services.dart';
 import '../connection/connection_state.dart';
+import '../persistence/rzv_route_cache.dart';
 
 typedef SshForwarderFactory =
     SshForwarderHandle Function({
@@ -49,11 +52,35 @@ class TransportReady extends TransportResolution {
   /// without a pin in the pairing QR).
   final Uint8List? certPin;
 
-  const TransportReady({
+  /// A client which already proved this exact route with [prevalidatedPing].
+  /// Ownership transfers to the connection pool through
+  /// [takePreconnectedClient]. Keeping it lets the first real RPC reuse the
+  /// probe's TLS/HTTP connection instead of handshaking again.
+  http.Client? _preconnectedClient;
+  final PingInfo? prevalidatedPing;
+
+  TransportReady({
     required this.target,
     required this.proxy,
     this.certPin,
-  });
+    http.Client? preconnectedClient,
+    this.prevalidatedPing,
+  }) : assert(
+         (preconnectedClient == null) == (prevalidatedPing == null),
+         'a preconnected client and its validated ping transfer together',
+       ),
+       _preconnectedClient = preconnectedClient;
+
+  http.Client? takePreconnectedClient() {
+    final client = _preconnectedClient;
+    _preconnectedClient = null;
+    return client;
+  }
+
+  void dispose() {
+    _preconnectedClient?.close();
+    _preconnectedClient = null;
+  }
 }
 
 class TransportBlocked extends TransportResolution {
@@ -64,24 +91,23 @@ class TransportBlocked extends TransportResolution {
 
 class TransportResolver {
   static const Duration _directProbeTimeout = Duration(seconds: 3);
+  static const Duration _relayProbeTimeout = Duration(seconds: 8);
+  static const Duration _relayFallbackDelay = Duration(milliseconds: 200);
+  static const Duration _initialPromotionBudget = Duration(milliseconds: 300);
 
   final PlatformServices platform;
   final SshForwarderFactory _sshForwarderFactory;
   final SshAutoInitializer _sshAutoInitializer;
   final WslAutoInitializer _wslAutoInitializer;
   final bool _wslSupported;
+  final RzvRouteCache _rzvRouteCache;
+  final http.Client Function(ProxySettings proxy, Uint8List? certPin)
+  _httpClientFactory;
 
   /// Live loopback forwarders for `rendezvous` servers, keyed by server id.
   /// Started lazily on [resolve] and torn down by [stopForwarder] when the
   /// owning connection disconnects or the server is removed.
   final Map<String, RzvForwarder> _rzvForwarders = {};
-
-  /// LAN-direct candidates learned from a rendezvous server's `/ping`, keyed by
-  /// server id. In-memory only (never persisted): each session starts on the
-  /// relay, learns candidates via [learnRzvDirect], then [resolve] probes them
-  /// to upgrade to a direct connection. Cleared by [forgetRzvDirect] on a
-  /// deliberate disconnect — NOT by [stopForwarder], so reconnects stay direct.
-  final Map<String, _RzvDirect> _rzvDirect = {};
 
   /// Live loopback forwarders for `ssh` servers, keyed by server id.
   final Map<String, SshForwarderHandle> _sshForwarders = {};
@@ -98,12 +124,22 @@ class TransportResolver {
     SshAutoInitializer? sshAutoInitializer,
     WslAutoInitializer? wslAutoInitializer,
     bool? wslSupported,
+    RzvRouteCache? rzvRouteCache,
+    http.Client Function(ProxySettings proxy, Uint8List? certPin)?
+    httpClientFactory,
   }) : _sshForwarderFactory = sshForwarderFactory ?? _defaultSshForwarder,
        _sshAutoInitializer = sshAutoInitializer ?? _defaultSshAutoInitialize,
        _wslAutoInitializer = wslAutoInitializer ?? _defaultWslAutoInitialize,
+       _rzvRouteCache = rzvRouteCache ?? RzvRouteCache.memory(),
+       _httpClientFactory = httpClientFactory ?? _defaultHttpClientFactory,
        _wslSupported =
            wslSupported ??
            (!kIsWeb && defaultTargetPlatform == TargetPlatform.windows);
+
+  static http.Client _defaultHttpClientFactory(
+    ProxySettings proxy,
+    Uint8List? certPin,
+  ) => makeHttpClient(proxy, certPin: certPin);
 
   static SshForwarderHandle _defaultSshForwarder({
     required String sshHost,
@@ -213,12 +249,10 @@ class TransportResolver {
   }
 
   /// Record the LAN-direct candidates a rendezvous server advertised over
-  /// `/ping`. Returns `true` only when candidates become available for the
-  /// first time (no entry yet) — the controller uses that as the cue to kick an
-  /// immediate reconnect so [resolve] can upgrade onto the direct path. Repeat
-  /// calls (already direct, or refreshing the same set) return `false` so we
-  /// don't reconnect on a loop. IPv6 candidates are dropped (LAN-direct targets
-  /// IPv4; link-local IPv6 is already filtered server-side).
+  /// `/ping`. The in-memory view updates synchronously and the non-sensitive
+  /// hint is persisted best-effort for the next process launch. IPv6 candidates
+  /// are currently dropped because the direct route does not yet carry a scope
+  /// id for link-local addresses.
   bool learnRzvDirect(MotifServer server, PingInfo? ping) {
     if (server.kind != ServerKind.rendezvous) return false;
     final port = ping?.rzvDirectPort;
@@ -226,12 +260,13 @@ class TransportResolver {
         .where((a) => !a.contains(':'))
         .toList(growable: false);
     if (port == null || port <= 0 || v4.isEmpty) {
-      // The server no longer advertises a usable direct port; drop stale state.
-      _rzvDirect.remove(server.id);
+      // The server explicitly omitted a usable route; discard stale state so a
+      // future advertisement is treated as new again.
+      _rzvRouteCache.remove(server.id);
       return false;
     }
-    final firstTime = !_rzvDirect.containsKey(server.id);
-    _rzvDirect[server.id] = _RzvDirect(port: port, addrs: v4);
+    final firstTime = _rzvRouteCache.lookup(server) == null;
+    _rzvRouteCache.rememberCandidates(server, port: port, addrs: v4);
     return firstTime;
   }
 
@@ -239,38 +274,62 @@ class TransportResolver {
   /// session starts on the relay again. Call on a deliberate disconnect /
   /// server removal — not on the transient forwarder teardown of an upgrade.
   void forgetRzvDirect(String serverId) {
-    _rzvDirect.remove(serverId);
+    _rzvRouteCache.remove(serverId);
   }
+
+  void retainRzvDirect(Set<String> serverIds) =>
+      _rzvRouteCache.retain(serverIds);
 
   /// Probe [addrs] (at [port]) concurrently and resolve to the first that
   /// answers as a motif-server, or `null` if none do within the per-probe
   /// timeout. When [certPin] is set the probe runs over TLS (`https`) pinning
   /// that cert; otherwise plaintext. Never throws.
-  Future<String?> _firstReachableDirect(
+  Future<_ProbedRoute?> _firstReachableDirect(
+    MotifServer server,
     List<String> addrs,
     int port, {
     Uint8List? certPin,
+    required String bearer,
+    Duration timeout = _directProbeTimeout,
+    String reason = 'direct',
   }) {
     if (addrs.isEmpty) return Future.value(null);
     final sw = Stopwatch()..start();
     Log.i(
-      'direct probe begin candidates=${addrs.length} port=$port tls=${certPin != null}',
+      '$reason probe begin candidates=${addrs.length} port=$port '
+      'tls=${certPin != null}',
       name: 'motif.resume',
     );
-    final completer = Completer<String?>();
+    final completer = Completer<_ProbedRoute?>();
     var pending = addrs.length;
     for (final addr in addrs) {
-      _probeDirect(addr, port, certPin: certPin).then((ok) {
-        if (completer.isCompleted) return;
-        if (ok) {
+      final target = server.copyWith(
+        host: addr,
+        port: port,
+        scheme: certPin == null ? 'http' : 'https',
+        token: bearer,
+      );
+      _probeTarget(
+        target,
+        proxy: ProxySettings.none,
+        certPin: certPin,
+        timeout: timeout,
+        routeLabel: '$reason:$addr',
+      ).then((route) {
+        if (completer.isCompleted) {
+          route?.dispose();
+          return;
+        }
+        if (route != null) {
           Log.i(
-            'direct probe hit address=$addr took=${sw.elapsedMilliseconds}ms',
+            '$reason probe hit address=$addr '
+            'took=${sw.elapsedMilliseconds}ms',
             name: 'motif.resume',
           );
-          completer.complete(addr);
+          completer.complete(route);
         } else if (--pending == 0) {
           Log.i(
-            'direct probe miss candidates=${addrs.length} '
+            '$reason probe miss candidates=${addrs.length} '
             'took=${sw.elapsedMilliseconds}ms',
             name: 'motif.resume',
           );
@@ -281,25 +340,56 @@ class TransportResolver {
     return completer.future;
   }
 
-  /// `GET {http,https}://addr:port/ping`, true iff it answers as a
-  /// motif-server. With [certPin] it pins motifd's self-signed cert. Short
-  /// timeout so a dead candidate doesn't stall the connect.
-  Future<bool> _probeDirect(String addr, int port, {Uint8List? certPin}) async {
-    final scheme = certPin == null ? 'http' : 'https';
-    final client = makeHttpClient(ProxySettings.none, certPin: certPin);
+  Future<_ProbedRoute?> _probeTarget(
+    MotifServer target, {
+    required ProxySettings proxy,
+    required Uint8List? certPin,
+    required Duration timeout,
+    required String routeLabel,
+  }) async {
+    final client = _httpClientFactory(proxy, certPin);
+    final sw = Stopwatch()..start();
     try {
       final resp = await client
-          .get(Uri.parse('$scheme://$addr:$port/ping'))
-          .timeout(_directProbeTimeout);
-      if (resp.statusCode != 200) return false;
+          .get(
+            Uri(
+              scheme: target.scheme,
+              host: target.host,
+              port: target.port,
+              path: '/ping',
+            ),
+          )
+          .timeout(timeout);
+      if (resp.statusCode != 200) {
+        throw RpcException('ping HTTP ${resp.statusCode}');
+      }
       final info = PingInfo.fromJson(
         jsonDecode(resp.body) as Map<String, Object?>,
       );
-      return info.isMotifServer;
-    } catch (_) {
-      return false;
-    } finally {
+      if (!info.isMotifServer) {
+        throw RpcException('Not a motif server at ${target.endpoint}');
+      }
+      Log.i(
+        'route probe ready route=$routeLabel '
+        'took=${sw.elapsedMilliseconds}ms',
+        name: 'motif.resume',
+      );
+      return _ProbedRoute(
+        target: target,
+        proxy: proxy,
+        certPin: certPin,
+        client: client,
+        ping: info,
+        label: routeLabel,
+      );
+    } catch (error) {
       client.close();
+      Log.i(
+        'route probe failed route=$routeLabel '
+        'took=${sw.elapsedMilliseconds}ms error=$error',
+        name: 'motif.resume',
+      );
+      return null;
     }
   }
 
@@ -396,9 +486,12 @@ class TransportResolver {
     }
 
     final hit = await _firstReachableDirect(
+      server,
       server.directHosts,
       server.port,
       certPin: certPin,
+      bearer: bearer,
+      reason: 'paired-direct',
     );
     if (hit == null) {
       return _recordFailure(
@@ -408,11 +501,7 @@ class TransportResolver {
             'None of ${server.directHosts.length} advertised address(es) reachable',
       );
     }
-    return TransportReady(
-      target: server.copyWith(host: hit, scheme: scheme, token: bearer),
-      proxy: ProxySettings.none,
-      certPin: certPin,
-    );
+    return hit.takeReady();
   }
 
   /// Bring up (or reuse) a loopback forwarder that pairs with `motifd` through
@@ -462,47 +551,202 @@ class TransportResolver {
         ),
       );
     }
-    final scheme = certPin != null ? 'https' : 'http';
     // psk-derived motifd access bearer, sent on every connection (relay or
     // direct) over its TLS channel.
     final bearer = _authBearer(server.psk);
 
-    // Same-LAN fast path: if this server's direct candidates have been learned
-    // (from a prior connection's /ping), probe them (TLS-pinned) and, on a hit,
-    // dial motifd directly — bypassing the relay entirely. Needs the pin (the
-    // direct port is TLS). Skipped on web (can't reach arbitrary LAN IPs). On a
-    // miss (e.g. we've left the LAN) we fall through to the relay path; the
-    // candidates stay cached so a later reconnect can try again.
-    if (!kIsWeb && certPin != null) {
-      final direct = _rzvDirect[server.id];
-      if (direct != null) {
-        final hit = await _firstReachableDirect(
-          direct.addrs,
-          direct.port,
-          certPin: certPin,
+    try {
+      final cached = !kIsWeb && certPin != null
+          ? _rzvRouteCache.lookup(server)
+          : null;
+      final _ProbedRoute route;
+      if (cached != null) {
+        // Happy-Eyeballs policy: direct gets a small head start, then the relay
+        // is dialed in parallel. A stale LAN hint can therefore delay a remote
+        // client by at most the stagger, not by the full direct timeout.
+        route = await _raceCachedRendezvous(
+          server,
+          relay: relay,
+          token: token,
+          certPin: certPin!,
+          bearer: bearer,
+          hint: cached,
         );
-        if (hit != null) {
-          await stopForwarder(server.id); // release the relay loopback
-          Log.i(
-            'rzv ${server.id}: upgraded to LAN-direct https://$hit:${direct.port}',
-            name: 'motif.rzv',
-          );
-          return TransportReady(
-            target: server.copyWith(
-              host: hit,
-              port: direct.port,
-              scheme: 'https',
-              token: bearer,
-            ),
-            proxy: ProxySettings.none,
-            certPin: certPin,
-          );
+      } else {
+        final relayRoute = await _probeRelayRoute(
+          server,
+          relay: relay,
+          token: token,
+          certPin: certPin,
+          bearer: bearer,
+        );
+        learnRzvDirect(server, relayRoute.ping);
+
+        // On the first-ever connection the relay response is the only source
+        // of LAN candidates. Keep that already healthy relay alive while giving
+        // direct a short promotion window. A miss never tears down/rebuilds the
+        // relay and never blocks startup for the old three-second timeout.
+        final learned = certPin == null ? null : _rzvRouteCache.lookup(server);
+        final promoted = learned == null || kIsWeb
+            ? null
+            : await _firstReachableDirect(
+                server,
+                learned.orderedAddrs,
+                learned.port,
+                certPin: certPin,
+                bearer: bearer,
+                timeout: _initialPromotionBudget,
+                reason: 'rzv-initial-direct',
+              );
+        if (promoted == null) {
+          route = relayRoute;
+        } else {
+          relayRoute.dispose();
+          await stopForwarder(server.id);
+          _rzvRouteCache.rememberSuccess(server, promoted.target.host);
+          route = promoted;
         }
+      }
+
+      if (route.label == 'rzv-relay') {
+        learnRzvDirect(server, route.ping);
+      } else {
+        // A direct `/ping` is allowed to omit its own LAN advertisement. Keep
+        // the relay-learned candidate set and only move the successful address
+        // to the front for the next launch.
+        _rzvRouteCache.rememberSuccess(server, route.target.host);
+      }
+      return route.takeReady();
+    } on _RzvForwarderStartException catch (error) {
+      await stopForwarder(server.id);
+      return _recordFailure(
+        server,
+        statusLabel: 'Rendezvous failed',
+        message: 'Rendezvous forwarder failed to start: ${error.cause}',
+      );
+    }
+  }
+
+  Future<_ProbedRoute> _raceCachedRendezvous(
+    MotifServer server, {
+    required ({String scheme, String host, int port}) relay,
+    required Uint8List token,
+    required Uint8List certPin,
+    required String bearer,
+    required RzvRouteHint hint,
+  }) async {
+    final completer = Completer<_ProbedRoute>();
+    Object? relayError;
+    var directDone = false;
+    var relayDone = false;
+    var relayStarted = false;
+    Timer? relayTimer;
+
+    void win(_ProbedRoute route) {
+      if (completer.isCompleted) {
+        route.dispose();
+      } else {
+        completer.complete(route);
       }
     }
 
-    // Reuse a running forwarder for this server; restart it if the relay
-    // endpoint changed (e.g. the server was re-paired with a new QR).
+    void maybeFail() {
+      if (!completer.isCompleted && directDone && relayDone) {
+        completer.completeError(
+          relayError ??
+              RpcException(
+                'Neither cached direct nor rendezvous relay route responded',
+              ),
+        );
+      }
+    }
+
+    Future<void> startRelay() async {
+      if (relayStarted || completer.isCompleted) return;
+      relayStarted = true;
+      relayTimer?.cancel();
+      try {
+        win(
+          await _probeRelayRoute(
+            server,
+            relay: relay,
+            token: token,
+            certPin: certPin,
+            bearer: bearer,
+          ),
+        );
+      } catch (error) {
+        relayError = error;
+        relayDone = true;
+        maybeFail();
+      }
+    }
+
+    unawaited(
+      _firstReachableDirect(
+        server,
+        hint.orderedAddrs,
+        hint.port,
+        certPin: certPin,
+        bearer: bearer,
+        reason: 'rzv-direct',
+      ).then((direct) {
+        directDone = true;
+        if (direct != null) {
+          win(direct);
+        } else {
+          unawaited(startRelay());
+          maybeFail();
+        }
+      }),
+    );
+    relayTimer = Timer(_relayFallbackDelay, () => unawaited(startRelay()));
+
+    final winner = await completer.future;
+    relayTimer.cancel();
+    if (winner.label.startsWith('rzv-direct')) {
+      // If the delayed relay already started, stopping the forwarder cancels it;
+      // its completion handler disposes any late route without replacing the
+      // direct winner.
+      await stopForwarder(server.id);
+    }
+    return winner;
+  }
+
+  Future<_ProbedRoute> _probeRelayRoute(
+    MotifServer server, {
+    required ({String scheme, String host, int port}) relay,
+    required Uint8List token,
+    required Uint8List? certPin,
+    required String bearer,
+  }) async {
+    final target = await _ensureRendezvousTarget(
+      server,
+      relay: relay,
+      token: token,
+      certPin: certPin,
+      bearer: bearer,
+    );
+    final route = await _probeTarget(
+      target,
+      proxy: ProxySettings.none,
+      certPin: certPin,
+      timeout: _relayProbeTimeout,
+      routeLabel: 'rzv-relay',
+    );
+    if (route == null) {
+      throw RpcException('Rendezvous relay route did not answer as motifd');
+    }
+    return route;
+  }
+
+  Future<MotifServer> _ensureRendezvousTarget(
+    MotifServer server, {
+    required ({String scheme, String host, int port}) relay,
+    required Uint8List token,
+    required Uint8List? certPin,
+    required String bearer,
+  }) async {
     var fwd = _rzvForwarders[server.id];
     if (fwd != null &&
         (fwd.relayHost != relay.host ||
@@ -517,28 +761,16 @@ class TransportResolver {
       relayScheme: relay.scheme,
       token: token,
     );
-
     try {
       if (!fwd.isRunning) await fwd.start();
-    } catch (e) {
-      await stopForwarder(server.id);
-      return _recordFailure(
-        server,
-        statusLabel: 'Rendezvous failed',
-        message: 'Rendezvous forwarder failed to start: $e',
-      );
+    } catch (error) {
+      throw _RzvForwarderStartException(error);
     }
-
-    final target = server.copyWith(
+    return server.copyWith(
       host: '127.0.0.1',
       port: fwd.port,
-      scheme: scheme,
+      scheme: certPin == null ? 'http' : 'https',
       token: bearer,
-    );
-    return TransportReady(
-      target: target,
-      proxy: ProxySettings.none,
-      certPin: certPin,
     );
   }
 
@@ -717,11 +949,45 @@ class TransportResolver {
       : 'WSL initialize failed: $error';
 }
 
-/// LAN-direct candidates for one rendezvous server: the plaintext port plus the
-/// IPv4 addresses to try at it, learned from the server's `/ping`.
-class _RzvDirect {
-  const _RzvDirect({required this.port, required this.addrs});
+final class _ProbedRoute {
+  _ProbedRoute({
+    required this.target,
+    required this.proxy,
+    required this.certPin,
+    required this.client,
+    required this.ping,
+    required this.label,
+  });
 
-  final int port;
-  final List<String> addrs;
+  final MotifServer target;
+  final ProxySettings proxy;
+  final Uint8List? certPin;
+  final http.Client client;
+  final PingInfo ping;
+  final String label;
+  bool _transferred = false;
+
+  TransportReady takeReady() {
+    if (_transferred) throw StateError('probed route already transferred');
+    _transferred = true;
+    return TransportReady(
+      target: target,
+      proxy: proxy,
+      certPin: certPin,
+      preconnectedClient: client,
+      prevalidatedPing: ping,
+    );
+  }
+
+  void dispose() {
+    if (_transferred) return;
+    _transferred = true;
+    client.close();
+  }
+}
+
+final class _RzvForwarderStartException implements Exception {
+  const _RzvForwarderStartException(this.cause);
+
+  final Object cause;
 }

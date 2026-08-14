@@ -26,7 +26,6 @@ DefaultServerConnectionPool fixedRouteConnectionPool(
       TransportReady(target: profile, proxy: ProxySettings.none),
   stopForwarder: (_) async {},
   forgetLearnedRoute: (_) {},
-  learnRoute: (_, _) => false,
   httpClientFactory: httpClientFactory,
   webSocketConnector: webSocketConnector,
   healthTtl: healthTtl,

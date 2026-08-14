@@ -44,6 +44,7 @@ import '../server/push_coordinator.dart';
 import '../server/server_access_controller.dart';
 import '../workspace/workspace_lifecycle_controller.dart';
 import '../workspace/workspace_retention_policy.dart';
+import '../persistence/rzv_route_cache.dart';
 import '../server/server_instance.dart';
 import '../server/server_connection_pool.dart';
 import '../server/server_runtime_state.dart';
@@ -177,6 +178,7 @@ class AppState {
     workspaceConnectionFactory,
     TerminalRuntimePolicy? terminalRuntime,
     WorkspaceRetentionPolicy? workspaceRetentionPolicy,
+    RzvRouteCache? rzvRouteCache,
   }) : startupActiveServerId = servers.activeId,
        _serverTransportFactory = serverTransportFactory,
        _workspaceConnectionFactory = workspaceConnectionFactory,
@@ -184,7 +186,10 @@ class AppState {
        _workspaceRetentionPolicy =
            workspaceRetentionPolicy ?? const MobileWorkspaceRetentionPolicy() {
     shell = AppShellViewModel(sidebar: sessionSidebar);
-    _transportResolver = TransportResolver(platform);
+    _transportResolver = TransportResolver(
+      platform,
+      rzvRouteCache: rzvRouteCache,
+    );
     connectionPools = ServerConnectionPoolRegistry(
       serverProvider: serverById,
       resolver: _transportResolver,
@@ -316,6 +321,7 @@ class AppState {
           : await embeddedServerFactory(prefs, platformServices.secrets),
       terminalRuntime: terminalRuntime,
       workspaceRetentionPolicy: workspaceRetentionPolicy,
+      rzvRouteCache: RzvRouteCache.persistent(prefs),
     );
   }
 
@@ -818,6 +824,9 @@ class AppState {
 
   void _relayStoreChange() {
     _syncServerViewModels();
+    _transportResolver.retainRzvDirect({
+      for (final server in servers.servers) server.id,
+    });
     _pruneInstancesForDeletedServers();
   }
 

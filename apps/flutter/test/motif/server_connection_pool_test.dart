@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/state/server/server_connection_pool.dart';
@@ -92,6 +93,55 @@ void main() {
       '/ping',
     ]);
   });
+
+  test(
+    'reuses resolver probe client and does not ping the route twice',
+    () async {
+      final transferred = _RecordingClient(
+        (request) async => http.StreamedResponse(
+          Stream.value(Uint8List.fromList(utf8.encode('{}'))),
+          200,
+        ),
+      );
+      var fallbackClientCreations = 0;
+      final pool = DefaultServerConnectionPool(
+        serverId: _serverA.id,
+        serverProvider: () => _serverA,
+        resolveRoute: (_) async => TransportReady(
+          target: _serverA,
+          proxy: ProxySettings.none,
+          preconnectedClient: transferred,
+          prevalidatedPing: const PingInfo(
+            service: 'motif-server',
+            version: 'test',
+          ),
+        ),
+        stopForwarder: (_) async {},
+        forgetLearnedRoute: (_) {},
+        httpClientFactory: (_, _) {
+          fallbackClientCreations++;
+          throw StateError('resolver client should be reused');
+        },
+        webSocketConnector:
+            ({
+              required uri,
+              required headers,
+              required proxy,
+              required certPin,
+            }) => _FakeWebSocket(),
+      );
+      addTearDown(pool.dispose);
+
+      final owner = pool.acquire(
+        ownerId: 'home',
+        ownerKind: ConnectionOwnerKind.serverHome,
+      );
+      await owner.rpc('session.list', retry: RpcRetryPolicy.safeOnce);
+
+      expect(fallbackClientCreations, 0);
+      expect(transferred.paths, ['/rpc/session.list']);
+    },
+  );
 
   test(
     'session request headers remain isolated across concurrent owners',
@@ -335,7 +385,6 @@ final class _PoolFixture {
       },
       stopForwarder: (_) async {},
       forgetLearnedRoute: (_) {},
-      learnRoute: (_, _) => false,
       healthTtl: const Duration(minutes: 1),
       httpClientFactory: (_, _) {
         late final _RecordingClient client;

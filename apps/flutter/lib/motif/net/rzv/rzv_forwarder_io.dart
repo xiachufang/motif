@@ -72,6 +72,7 @@ class RzvForwarder {
   }
 
   Future<void> _onLocal(Socket local) async {
+    final sw = Stopwatch()..start();
     final uri = Uri(
       scheme: relayScheme,
       host: relayHost,
@@ -82,6 +83,10 @@ class RzvForwarder {
     try {
       relay = await WebSocket.connect(uri.toString()).timeout(dialTimeout);
       relay.pingInterval = const Duration(seconds: 15);
+      Log.i(
+        'rzv: WSS connected took=${sw.elapsedMilliseconds}ms',
+        name: 'motif.rzv',
+      );
     } catch (e) {
       Log.w('rzv: WSS dial failed: $e', name: 'motif.rzv');
       local.destroy();
@@ -139,6 +144,11 @@ class RzvForwarder {
           if (message.length == 1 && message[0] == RzvProtocol.ctrlPaired) {
             conn.paired = true;
             pairTimer.cancel();
+            Log.i(
+              'rzv: paired took=${sw.elapsedMilliseconds}ms '
+              'buffered=${pending.length}B',
+              name: 'motif.rzv',
+            );
             if (pending.isNotEmpty) conn.writeRelay(pending.takeBytes());
           } else {
             Log.w('rzv: unexpected frame before PAIRED', name: 'motif.rzv');

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -17,6 +16,7 @@ void main() {
 
   late _FakeRelay relay;
   late TransportResolver resolver;
+  final motifds = <HttpServer>[];
 
   setUp(() {
     resolver = TransportResolver(PlatformServices.defaults());
@@ -24,12 +24,18 @@ void main() {
 
   tearDown(() async {
     await relay.stop();
+    for (final motifd in motifds) {
+      await motifd.close(force: true);
+    }
+    motifds.clear();
   });
 
   test(
     'resolves to a loopback target that reaches motifd via the relay',
     () async {
-      relay = await _FakeRelay.start();
+      final motifd = await _fakeMotifd(secure: false);
+      motifds.add(motifd);
+      relay = await _FakeRelay.start(targetPort: motifd.port);
       final s = MotifServer(
         id: 'rzv-1',
         name: 'studio',
@@ -46,14 +52,7 @@ void main() {
       expect(ready.target.scheme, 'http');
       expect(ready.target.port, greaterThan(0));
 
-      // The loopback target really tunnels through the relay: connect to it and
-      // confirm the fake relay echoes (i.e. the forwarder paired and spliced).
-      final client = await Socket.connect('127.0.0.1', ready.target.port);
-      final payload = Uint8List.fromList('via-resolver'.codeUnits);
-      final echo = _collect(client, payload.length);
-      client.add(payload);
-      await client.flush();
-      expect(await echo.timeout(const Duration(seconds: 5)), payload);
+      expect(ready.prevalidatedPing?.isMotifServer, isTrue);
       expect(relay.hellos, hasLength(1));
       expect(
         RzvProtocol.parseHello(relay.hellos.single),
@@ -62,38 +61,40 @@ void main() {
             'wire token is HKDF-derived from the pairing secret, not the raw psk',
       );
 
-      await client.close();
+      ready.dispose();
       await resolver.stopForwarder('rzv-1');
     },
     timeout: const Timeout(Duration(seconds: 15)),
   );
 
-  test(
-    'reuses one forwarder across repeated resolves',
-    () async {
-      relay = await _FakeRelay.start();
-      final s = MotifServer(
-        id: 'rzv-1',
-        name: 'studio',
-        host: 'studio',
-        kind: ServerKind.rendezvous,
-        relay: 'ws://127.0.0.1:${relay.port}',
-        psk: pskB64,
-      );
-      final a = await resolver.resolve(s) as TransportReady;
-      final b = await resolver.resolve(s) as TransportReady;
-      expect(a.target.port, b.target.port, reason: 'same forwarder reused');
-      await resolver.stopForwarder('rzv-1');
-    },
-    timeout: const Timeout(Duration(seconds: 15)),
-  );
+  test('reuses one forwarder across repeated resolves', () async {
+    final motifd = await _fakeMotifd(secure: false);
+    motifds.add(motifd);
+    relay = await _FakeRelay.start(targetPort: motifd.port);
+    final s = MotifServer(
+      id: 'rzv-1',
+      name: 'studio',
+      host: 'studio',
+      kind: ServerKind.rendezvous,
+      relay: 'ws://127.0.0.1:${relay.port}',
+      psk: pskB64,
+    );
+    final a = await resolver.resolve(s) as TransportReady;
+    final b = await resolver.resolve(s) as TransportReady;
+    expect(a.target.port, b.target.port, reason: 'same forwarder reused');
+    a.dispose();
+    b.dispose();
+    await resolver.stopForwarder('rzv-1');
+  }, timeout: const Timeout(Duration(seconds: 15)));
 
   test(
     'with a cert pin in the QR resolves to https + 32-byte certPin',
     () async {
-      relay = await _FakeRelay.start();
+      final motifd = await _fakeMotifd();
+      motifds.add(motifd);
+      relay = await _FakeRelay.start(targetPort: motifd.port);
       final pin = base64Url
-          .encode(Uint8List.fromList(List.generate(32, (i) => i + 1)))
+          .encode(sha256.convert(base64.decode(_certDerB64)).bytes)
           .replaceAll('=', '');
       final s = MotifServer(
         id: 'rzv-pin',
@@ -108,47 +109,44 @@ void main() {
       expect(res.target.scheme, 'https');
       expect(res.certPin, isNotNull);
       expect(res.certPin!.length, 32);
+      res.dispose();
       await resolver.stopForwarder('rzv-pin');
     },
     timeout: const Timeout(Duration(seconds: 15)),
   );
 
-  test(
-    'blocks cleanly on a bad relay address or pairing secret',
-    () async {
-      relay = await _FakeRelay.start();
-      final badRelay = MotifServer(
-        id: 'x',
-        name: 'x',
-        host: 'x',
-        kind: ServerKind.rendezvous,
-        relay: 'https://not-a-websocket-relay.example',
-        psk: pskB64,
-      );
-      final badRelayResult = await resolver.resolve(badRelay);
-      expect(badRelayResult, isA<TransportBlocked>());
-      expect(
-        (badRelayResult as TransportBlocked).blocker.message,
-        contains('relay address'),
-      );
+  test('blocks cleanly on a bad relay address or pairing secret', () async {
+    relay = await _FakeRelay.start();
+    final badRelay = MotifServer(
+      id: 'x',
+      name: 'x',
+      host: 'x',
+      kind: ServerKind.rendezvous,
+      relay: 'https://not-a-websocket-relay.example',
+      psk: pskB64,
+    );
+    final badRelayResult = await resolver.resolve(badRelay);
+    expect(badRelayResult, isA<TransportBlocked>());
+    expect(
+      (badRelayResult as TransportBlocked).blocker.message,
+      contains('relay address'),
+    );
 
-      final badPsk = MotifServer(
-        id: 'y',
-        name: 'y',
-        host: 'y',
-        kind: ServerKind.rendezvous,
-        relay: 'ws://127.0.0.1:${relay.port}',
-        psk: 'too-short',
-      );
-      final badPskResult = await resolver.resolve(badPsk);
-      expect(badPskResult, isA<TransportBlocked>());
-      expect(
-        (badPskResult as TransportBlocked).blocker.message,
-        contains('pairing secret'),
-      );
-    },
-    timeout: const Timeout(Duration(seconds: 15)),
-  );
+    final badPsk = MotifServer(
+      id: 'y',
+      name: 'y',
+      host: 'y',
+      kind: ServerKind.rendezvous,
+      relay: 'ws://127.0.0.1:${relay.port}',
+      psk: 'too-short',
+    );
+    final badPskResult = await resolver.resolve(badPsk);
+    expect(badPskResult, isA<TransportBlocked>());
+    expect(
+      (badPskResult as TransportBlocked).blocker.message,
+      contains('pairing secret'),
+    );
+  }, timeout: const Timeout(Duration(seconds: 15)));
 
   // sha256 of the shared self-signed test cert → the pin (`pk`); and the psk
   // bearer the client must send.
@@ -197,9 +195,73 @@ void main() {
     });
 
     test(
+      'first relay ping promotes a reachable direct route without redialing relay',
+      () async {
+        var relayPings = 0;
+        var directPings = 0;
+        final directMotifd = await _fakeMotifd(onPing: () => directPings++);
+        motifds.add(directMotifd);
+        final relayedMotifd = await _fakeMotifd(
+          rzvDirectPort: directMotifd.port,
+          rzvDirectAddrs: const ['127.0.0.1'],
+          onPing: () => relayPings++,
+        );
+        motifds.add(relayedMotifd);
+        relay = await _FakeRelay.start(targetPort: relayedMotifd.port);
+        final s = rzvServer(relay.port, id: 'rzv-first-direct');
+
+        final res = await resolver.resolve(s) as TransportReady;
+
+        expect(res.target.port, directMotifd.port);
+        expect(relayPings, 1);
+        expect(directPings, 1);
+        expect(
+          relay.hellos,
+          hasLength(1),
+          reason: 'the healthy relay is retained until direct wins',
+        );
+        res.dispose();
+        await resolver.stopForwarder(s.id);
+      },
+    );
+
+    test(
+      'first unreachable direct hint keeps the already-probed relay',
+      () async {
+        final unused = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final unreachablePort = unused.port;
+        await unused.close();
+        var relayPings = 0;
+        final relayedMotifd = await _fakeMotifd(
+          rzvDirectPort: unreachablePort,
+          rzvDirectAddrs: const ['127.0.0.1'],
+          onPing: () => relayPings++,
+        );
+        motifds.add(relayedMotifd);
+        relay = await _FakeRelay.start(targetPort: relayedMotifd.port);
+        final s = rzvServer(relay.port, id: 'rzv-first-fallback');
+
+        final res = await resolver.resolve(s) as TransportReady;
+
+        expect(res.target.port, isNot(unreachablePort));
+        expect(res.prevalidatedPing?.isMotifServer, isTrue);
+        expect(relayPings, 1);
+        expect(
+          relay.hellos,
+          hasLength(1),
+          reason: 'a direct miss must not rebuild the relay tunnel',
+        );
+        res.dispose();
+        await resolver.stopForwarder(s.id);
+      },
+    );
+
+    test(
       'probes a learned candidate and upgrades to a TLS-pinned direct target',
       () async {
-        relay = await _FakeRelay.start();
+        final relayedMotifd = await _fakeMotifd();
+        motifds.add(relayedMotifd);
+        relay = await _FakeRelay.start(targetPort: relayedMotifd.port);
         final motifd = await _fakeMotifd();
         final s = rzvServer(relay.port);
 
@@ -227,6 +289,7 @@ void main() {
         );
 
         await motifd.close(force: true);
+        res.dispose();
         await resolver.stopForwarder(s.id);
       },
     );
@@ -234,7 +297,9 @@ void main() {
     test(
       'falls back to the relay when no candidate answers as motifd',
       () async {
-        relay = await _FakeRelay.start();
+        final relayedMotifd = await _fakeMotifd();
+        motifds.add(relayedMotifd);
+        relay = await _FakeRelay.start(targetPort: relayedMotifd.port);
         // Pinned TLS but the wrong service tag → probe rejects it.
         final impostor = await _fakeMotifd(service: 'something-else');
         final s = rzvServer(relay.port);
@@ -259,21 +324,14 @@ void main() {
           reason: 'relay path carries bearer too',
         );
 
-        // The forwarder dials the relay lazily, on the first local connection —
-        // drive one through to confirm we really fell back to the relay tunnel.
-        final client = await Socket.connect('127.0.0.1', res.target.port);
-        final payload = Uint8List.fromList('fallback'.codeUnits);
-        final echo = _collect(client, payload.length);
-        client.add(payload);
-        await client.flush();
-        expect(await echo.timeout(const Duration(seconds: 5)), payload);
+        expect(res.prevalidatedPing?.isMotifServer, isTrue);
         expect(
           relay.hellos,
           hasLength(1),
           reason: 'forwarder dialed the relay',
         );
 
-        await client.close();
+        res.dispose();
         await impostor.close(force: true);
         await resolver.stopForwarder(s.id);
       },
@@ -344,16 +402,33 @@ void main() {
 Future<HttpServer> _fakeMotifd({
   String service = 'motif-server',
   Duration delay = Duration.zero,
+  bool secure = true,
+  int? rzvDirectPort,
+  List<String> rzvDirectAddrs = const [],
+  void Function()? onPing,
 }) async {
-  final ctx = SecurityContext()
-    ..useCertificateChainBytes(utf8.encode(_certPem))
-    ..usePrivateKeyBytes(utf8.encode(_keyPem));
-  final srv = await HttpServer.bindSecure(InternetAddress.loopbackIPv4, 0, ctx);
+  final HttpServer srv;
+  if (secure) {
+    final ctx = SecurityContext()
+      ..useCertificateChainBytes(utf8.encode(_certPem))
+      ..usePrivateKeyBytes(utf8.encode(_keyPem));
+    srv = await HttpServer.bindSecure(InternetAddress.loopbackIPv4, 0, ctx);
+  } else {
+    srv = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  }
   srv.listen((req) async {
     if (req.uri.path == '/ping') {
+      onPing?.call();
       if (delay > Duration.zero) await Future<void>.delayed(delay);
       req.response.headers.contentType = ContentType.json;
-      req.response.write(jsonEncode({'service': service, 'version': 't'}));
+      req.response.write(
+        jsonEncode({
+          'service': service,
+          'version': 't',
+          'rzv_direct_port': ?rzvDirectPort,
+          if (rzvDirectAddrs.isNotEmpty) 'rzv_direct_addrs': rzvDirectAddrs,
+        }),
+      );
     } else {
       req.response.statusCode = HttpStatus.notFound;
     }
@@ -362,37 +437,21 @@ Future<HttpServer> _fakeMotifd({
   return srv;
 }
 
-Future<Uint8List> _collect(Socket sock, int n) {
-  final out = BytesBuilder();
-  final c = Completer<Uint8List>();
-  late StreamSubscription<Uint8List> sub;
-  sub = sock.listen(
-    (chunk) {
-      out.add(chunk);
-      if (out.length >= n && !c.isCompleted) {
-        c.complete(Uint8List.sublistView(out.toBytes(), 0, n));
-        sub.cancel();
-      }
-    },
-    onError: (Object e) {
-      if (!c.isCompleted) c.completeError(e);
-    },
-  );
-  return c.future;
-}
-
-/// Minimal in-process WebSocket relay + echo peer.
+/// Minimal in-process WebSocket relay. With [targetPort] it pipes the paired
+/// byte stream to a motifd stand-in; otherwise it echoes for low-level tests.
 class _FakeRelay {
-  _FakeRelay(this._server);
+  _FakeRelay(this._server, this.targetPort);
   final HttpServer _server;
+  final int? targetPort;
   final List<Uint8List> hellos = [];
   final List<WebSocket> _sockets = [];
+  final List<Socket> _peers = [];
 
   int get port => _server.port;
 
-  static Future<_FakeRelay> start() async {
+  static Future<_FakeRelay> start({int? targetPort}) async {
     final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final relay = _FakeRelay(s);
+    final relay = _FakeRelay(s, targetPort);
     s.listen(relay._onRequest);
     return relay;
   }
@@ -407,13 +466,30 @@ class _FakeRelay {
     final socket = await WebSocketTransformer.upgrade(request);
     _sockets.add(socket);
     var paired = false;
-    socket.listen((message) {
+    Socket? peer;
+    socket.listen((message) async {
       if (message is! List<int>) return;
       if (paired) {
-        socket.add(message);
+        final target = peer;
+        if (target == null) {
+          socket.add(message);
+        } else {
+          target.add(message);
+          await target.flush();
+        }
         return;
       }
       hellos.add(Uint8List.fromList(message));
+      final target = targetPort;
+      if (target != null) {
+        peer = await Socket.connect(InternetAddress.loopbackIPv4, target);
+        _peers.add(peer!);
+        peer!.listen(
+          socket.add,
+          onError: (_) => socket.close(),
+          onDone: () => socket.close(),
+        );
+      }
       socket.add(const [RzvProtocol.ctrlPaired]);
       paired = true;
     }, onError: (_) {});
@@ -422,6 +498,9 @@ class _FakeRelay {
   Future<void> stop() async {
     for (final socket in _sockets) {
       await socket.close();
+    }
+    for (final peer in _peers) {
+      peer.destroy();
     }
     await _server.close(force: true);
   }
