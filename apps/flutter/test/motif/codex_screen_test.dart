@@ -743,9 +743,9 @@ void main() {
       serverCalls.add(method);
       return const {};
     });
-    final serviceState = readyServiceState();
-    serviceState.selectedThread = serviceState.catalog.allThreads.single;
     final sideChatClient = ScreenFakeClient();
+    final serviceState = readyServiceState(connection: sideChatClient);
+    serviceState.selectedThread = serviceState.catalog.allThreads.single;
 
     await tester.pumpWidget(
       MotifScope(
@@ -757,7 +757,6 @@ void main() {
             app: app,
             codex: CodexState(),
             serviceState: serviceState,
-            connection: sideChatClient,
           ),
         ),
       ),
@@ -885,13 +884,11 @@ final class _CodexTestHost extends StatefulWidget {
     required this.app,
     required this.codex,
     required this.serviceState,
-    this.connection,
   });
 
   final AppState app;
   final CodexState codex;
   final CodexServiceState serviceState;
-  final CodexAppServerClient? connection;
 
   @override
   State<_CodexTestHost> createState() => _CodexTestHostState();
@@ -901,8 +898,7 @@ final class _CodexTestHostState extends State<_CodexTestHost> {
   late final CodexFeatureController _controller = CodexFeatureController(
     serverId: 'server',
     preferences: widget.codex,
-    connectionFactory: () =>
-        widget.connection ?? widget.serviceState.connection,
+    connectionFactory: () => widget.serviceState.connection,
     serviceFactory: () => widget.serviceState,
     controlService: (action) async {
       final method = switch (action) {

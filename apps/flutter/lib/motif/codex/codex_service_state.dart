@@ -2653,6 +2653,22 @@ final class CodexConversationRegistry extends ChangeNotifier {
     return session;
   }
 
+  CodexConversationState registerHydrated(
+    CodexThread thread,
+    CodexTurnsPage page, {
+    required CodexThreadSessionKind kind,
+    String? parentThreadId,
+  }) {
+    final handle = registerThread(
+      thread,
+      kind: kind,
+      parentThreadId: parentThreadId,
+    );
+    final session = _newSession(handle)..openHydratedConversation(thread, page);
+    _sessionChanged(handle, session);
+    return session;
+  }
+
   CodexConversationState? registerResumed(
     CodexThreadResumeResponse response, {
     required CodexThreadSessionKind kind,
@@ -3210,15 +3226,24 @@ final class CodexServiceState extends CodexConversationState {
     if (_closed || readingThreadId == threadId) return;
     final generation = ++_selectionGeneration;
     final previousId = _selectedConversationId;
-    final preview =
+    var preview =
         _threads[threadId] ??
         catalog.allThreads
             .where((candidate) => candidate.id == threadId)
             .firstOrNull;
     if (preview == null) {
-      readError = 'Unknown Codex thread: $threadId';
-      _notify();
-      return;
+      await super.readThread(threadId);
+      if (_closed || generation != _selectionGeneration) return;
+      preview = selectedThread?.id == threadId ? selectedThread : null;
+      if (preview == null) return;
+      conversations.registerHydrated(
+        preview,
+        CodexTurnsPage(
+          data: turns.reversed.toList(growable: false),
+          nextCursor: _olderTurnsCursor,
+        ),
+        kind: CodexThreadSessionKind.persisted,
+      );
     }
     _threads[threadId] = preview;
     conversations.registerThread(

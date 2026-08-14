@@ -253,13 +253,13 @@ final class CodexFeatureController extends ChangeNotifier {
     state?.removeListener(_onServiceChanged);
     final sideChats = _sideChatsByParentThread.values.toList(growable: false);
     _sideChatsByParentThread.clear();
+    await state?.close();
     for (final collection in sideChats) {
       await collection.close();
       collection.dispose();
     }
     await preferences.flushSideChatIndexes();
     await preferences.flushLastOpenedThreadPreferences();
-    await state?.close();
     state?.dispose();
     _service = null;
     viewModel.service = null;
