@@ -3267,7 +3267,9 @@ class _ApprovalCard extends StatefulWidget {
 }
 
 class _ApprovalCardState extends State<_ApprovalCard> {
-  bool _submitting = false;
+  String? _submittingDecision;
+
+  bool get _submitting => _submittingDecision != null;
 
   @override
   Widget build(BuildContext context) {
@@ -3305,36 +3307,60 @@ class _ApprovalCardState extends State<_ApprovalCard> {
               ),
             ],
             const SizedBox(height: MotifSpacing.md),
-            Wrap(
-              alignment: WrapAlignment.end,
-              spacing: MotifSpacing.sm,
-              children: [
-                CodexMotionSwitcher(
-                  animateSize: true,
-                  offset: Offset.zero,
-                  child: _submitting
-                      ? const SizedBox.square(
-                          key: ValueKey('approval-submitting'),
-                          dimension: MotifIconSize.md,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const SizedBox.shrink(key: ValueKey('approval-idle')),
-                ),
-                TextButton(
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 420;
+                final style = compact
+                    ? ButtonStyle(
+                        minimumSize: const WidgetStatePropertyAll(Size(0, 44)),
+                        padding: const WidgetStatePropertyAll(
+                          EdgeInsets.symmetric(horizontal: MotifSpacing.xs),
+                        ),
+                      )
+                    : null;
+                final decline = TextButton(
+                  style: style,
                   onPressed: _submitting ? null : () => _decide('decline'),
-                  child: const Text('Decline'),
-                ),
-                OutlinedButton(
+                  child: _actionChild('decline', 'Decline', compact: compact),
+                );
+                final session = OutlinedButton(
+                  style: style,
                   onPressed: _submitting
                       ? null
                       : () => _decide('acceptForSession'),
-                  child: const Text('Allow for session'),
-                ),
-                FilledButton(
+                  child: _actionChild(
+                    'acceptForSession',
+                    'Allow for session',
+                    compact: compact,
+                  ),
+                );
+                final once = FilledButton(
+                  style: style,
                   onPressed: _submitting ? null : () => _decide('accept'),
-                  child: const Text('Allow once'),
-                ),
-              ],
+                  child: _actionChild('accept', 'Allow once', compact: compact),
+                );
+                if (!compact) {
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      decline,
+                      const SizedBox(width: MotifSpacing.sm),
+                      session,
+                      const SizedBox(width: MotifSpacing.sm),
+                      once,
+                    ],
+                  );
+                }
+                return Row(
+                  children: [
+                    Expanded(flex: 2, child: decline),
+                    const SizedBox(width: MotifSpacing.xs),
+                    Expanded(flex: 4, child: session),
+                    const SizedBox(width: MotifSpacing.xs),
+                    Expanded(flex: 3, child: once),
+                  ],
+                );
+              },
             ),
           ],
         ),
@@ -3342,12 +3368,30 @@ class _ApprovalCardState extends State<_ApprovalCard> {
     );
   }
 
+  Widget _actionChild(String decision, String label, {required bool compact}) {
+    Widget text = Text(label, maxLines: 1, softWrap: false);
+    if (compact) text = FittedBox(fit: BoxFit.scaleDown, child: text);
+    final active = _submittingDecision == decision;
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Opacity(opacity: active ? 0 : 1, child: text),
+        if (active)
+          const SizedBox.square(
+            key: ValueKey('approval-submitting'),
+            dimension: MotifIconSize.sm,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+      ],
+    );
+  }
+
   Future<void> _decide(String decision) async {
-    setState(() => _submitting = true);
+    setState(() => _submittingDecision = decision);
     try {
       await widget.onDecision(decision);
     } finally {
-      if (mounted) setState(() => _submitting = false);
+      if (mounted) setState(() => _submittingDecision = null);
     }
   }
 }

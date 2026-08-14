@@ -784,6 +784,10 @@ void main() {
         ..['id'] = 'next-thread'
         ..['sessionId'] = 'next-thread';
       client.thread = CodexThread.fromJson(nextThreadJson);
+      state.conversations.registerThread(
+        client.thread,
+        kind: CodexThreadSessionKind.persisted,
+      );
       await state.readThread('next-thread');
       await tester.pump();
       await tester.pump();
@@ -2800,7 +2804,12 @@ CodexServiceState workspaceState(WorkspaceFakeClient client) {
     updatedAt: 1,
   );
   client.thread = thread;
-  return CodexServiceState(serverId: 'server', connection: client)
+  final state = CodexServiceState(serverId: 'server', connection: client);
+  state.conversations.registerThread(
+    thread,
+    kind: CodexThreadSessionKind.persisted,
+  );
+  return state
     ..selectedThread = thread
     ..turns = turns
     ..models = const [

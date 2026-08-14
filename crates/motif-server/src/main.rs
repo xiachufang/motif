@@ -104,7 +104,7 @@ struct Args {
     #[arg(long, requires = "rzv_relay")]
     rzv_jwt_file: Option<PathBuf>,
 
-    /// How many idle `accept` waiters to keep parked at the relay (default 2).
+    /// How many idle `accept` waiters to keep parked at the relay (default 4).
     #[arg(long, requires = "rzv_relay")]
     rzv_pool: Option<usize>,
 

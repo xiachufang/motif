@@ -61,7 +61,7 @@ pub struct RzvListenConfig {
     /// private deployments may replace this with a config containing a custom
     /// CA; production defaults to the Web PKI roots.
     pub ws_tls: Arc<rustls::ClientConfig>,
-    /// How many idle `accept` waiters to keep parked. ≥1; defaults to 2 via
+    /// How many idle `accept` waiters to keep parked. ≥1; defaults to 4 via
     /// [`RzvListenConfig::new`].
     pub pool: usize,
     /// When set, motifd terminates **end-to-end TLS** over the relayed pipe
@@ -83,7 +83,7 @@ impl RzvListenConfig {
                     .with_root_certificates(roots)
                     .with_no_client_auth(),
             ),
-            pool: 2,
+            pool: 4,
             tls: None,
         }
     }
