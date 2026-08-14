@@ -5,18 +5,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:motif/motif/models/motif_proto.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/models/settings.dart';
+import 'package:motif/motif/net/proxy_client.dart';
+import 'package:motif/motif/net/rpc_session_transport.dart';
+import 'package:motif/motif/state/server/server_connection_pool.dart';
+import 'package:motif/motif/state/server/transport_resolver.dart';
 import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
   tearDown(() {
-    RpcClient.debugHttpClientFactory = null;
-    RpcClient.debugWebSocketFactory = null;
+    _httpClientFactory = null;
+    _webSocketFactory = null;
   });
 
   test('probes events and PTYs and reopens only a failed PTY stream', () async {
-    RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+    _httpClientFactory = () => MockClient((request) async {
       expect(request.url.path, '/rpc/session.attach');
       return http.Response(
         jsonEncode({'client_id': 'client-1', 'last_seq': 0}),
@@ -26,7 +30,7 @@ void main() {
     });
 
     final sockets = <_FakeWebSocketChannel>[];
-    RpcClient.debugWebSocketFactory = (url) {
+    _webSocketFactory = (url) {
       final path = Uri.parse(url).path;
       late final _FakeWebSocketChannel socket;
       socket = _FakeWebSocketChannel((message) {
@@ -61,8 +65,7 @@ void main() {
       return socket;
     };
 
-    final rpc = RpcClient()
-      ..connect(host: 'localhost', port: 7777, token: 'token');
+    final rpc = _newRpc();
     final emittedEvents = <MotifEvent>[];
     final eventSub = rpc.events.listen(emittedEvents.add);
     await rpc.call('session.attach', {'name': 'dev'});
@@ -100,7 +103,7 @@ void main() {
     () async {
       var attachCalls = 0;
       final validationSessionHeaders = <String?>[];
-      RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+      _httpClientFactory = () => MockClient((request) async {
         if (request.url.path == '/rpc/session.attach') {
           attachCalls++;
           return http.Response(
@@ -117,7 +120,7 @@ void main() {
       });
 
       final sockets = <_FakeWebSocketChannel>[];
-      RpcClient.debugWebSocketFactory = (url) {
+      _webSocketFactory = (url) {
         final uri = Uri.parse(url);
         late final _FakeWebSocketChannel socket;
         socket =
@@ -157,8 +160,7 @@ void main() {
         return socket;
       };
 
-      final rpc = RpcClient()
-        ..connect(host: 'localhost', port: 7777, token: 'token');
+      final rpc = _newRpc();
       final emittedEvents = <MotifEvent>[];
       var eventsDone = false;
       final eventSub = rpc.events.listen(
@@ -214,7 +216,7 @@ void main() {
   );
 
   test('an events socket failure leaves the attachment reusable', () async {
-    RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+    _httpClientFactory = () => MockClient((request) async {
       if (request.url.path == '/rpc/session.attach') {
         return http.Response(
           jsonEncode({'client_id': 'client-1', 'last_seq': 0}),
@@ -228,7 +230,7 @@ void main() {
       return http.Response('', 404);
     });
     final sockets = <_FakeWebSocketChannel>[];
-    RpcClient.debugWebSocketFactory = (url) {
+    _webSocketFactory = (url) {
       final socket = _FakeWebSocketChannel((_) {})
         ..uri = Uri.parse(url)
         ..pathKind = Uri.parse(url).path == '/events'
@@ -238,8 +240,7 @@ void main() {
       return socket;
     };
 
-    final rpc = RpcClient()
-      ..connect(host: 'localhost', port: 7777, token: 'token');
+    final rpc = _newRpc();
     var eventsDone = false;
     var failureCount = 0;
     final eventSub = rpc.events.listen((_) {}, onDone: () => eventsDone = true);
@@ -264,7 +265,7 @@ void main() {
   test(
     'keeps the old session id when resume validation reports expiry',
     () async {
-      RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+      _httpClientFactory = () => MockClient((request) async {
         if (request.url.path == '/rpc/session.attach') {
           return http.Response(
             jsonEncode({'client_id': 'client-1', 'last_seq': 0}),
@@ -284,10 +285,9 @@ void main() {
         }
         return http.Response('', 404);
       });
-      RpcClient.debugWebSocketFactory = (_) => _FakeWebSocketChannel((_) {});
+      _webSocketFactory = (_) => _FakeWebSocketChannel((_) {});
 
-      final rpc = RpcClient()
-        ..connect(host: 'localhost', port: 7777, token: 'token');
+      final rpc = _newRpc();
       await rpc.call('session.attach', {'name': 'dev'});
 
       await expectLater(
@@ -305,7 +305,7 @@ void main() {
   test(
     'captureImage sends the tagged target and returns raw PNG bytes',
     () async {
-      RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+      _httpClientFactory = () => MockClient((request) async {
         if (request.url.path == '/rpc/session.attach') {
           return http.Response(
             jsonEncode({'client_id': 'client-1', 'last_seq': 0}),
@@ -327,10 +327,9 @@ void main() {
           headers: {'content-type': 'image/png'},
         );
       });
-      RpcClient.debugWebSocketFactory = (_) => _FakeWebSocketChannel((_) {});
+      _webSocketFactory = (_) => _FakeWebSocketChannel((_) {});
 
-      final rpc = RpcClient()
-        ..connect(host: 'localhost', port: 7777, token: 'token');
+      final rpc = _newRpc();
       await rpc.call('session.attach', {'name': 'dev'});
       final bytes = await rpc.captureImage(
         const CaptureTarget(
@@ -346,6 +345,66 @@ void main() {
       await rpc.close();
     },
   );
+}
+
+http.Client Function()? _httpClientFactory;
+WebSocketChannel Function(String url)? _webSocketFactory;
+
+RpcSessionTransport _newRpc() {
+  const server = MotifServer(
+    id: 'test-server',
+    name: 'Test server',
+    host: 'localhost',
+    port: 7777,
+    token: 'token',
+  );
+  final pool = DefaultServerConnectionPool(
+    serverId: server.id,
+    serverProvider: () => server,
+    resolveRoute: (profile) async =>
+        TransportReady(target: profile, proxy: ProxySettings.none),
+    stopForwarder: (_) async {},
+    forgetLearnedRoute: (_) {},
+    learnRoute: (_, _) => false,
+    httpClientFactory: (_, _) => _PingClient(_httpClientFactory!.call()),
+    webSocketConnector:
+        ({required uri, required headers, required proxy, required certPin}) =>
+            _webSocketFactory!.call(uri.toString()),
+  );
+  addTearDown(pool.dispose);
+  return RpcSessionTransport(
+    pool.acquire(
+      ownerId: 'session:test',
+      ownerKind: ConnectionOwnerKind.session,
+    ),
+  );
+}
+
+final class _PingClient extends http.BaseClient {
+  _PingClient(this.delegate);
+
+  final http.Client delegate;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    if (request.method == 'GET' && request.url.path == '/ping') {
+      return Future.value(
+        http.StreamedResponse(
+          Stream.value(
+            utf8.encode(
+              jsonEncode({'service': 'motif-server', 'version': 'test'}),
+            ),
+          ),
+          200,
+          headers: const {'content-type': 'application/json'},
+        ),
+      );
+    }
+    return delegate.send(request);
+  }
+
+  @override
+  void close() => delegate.close();
 }
 
 enum _PathKind { unknown, events, pty }

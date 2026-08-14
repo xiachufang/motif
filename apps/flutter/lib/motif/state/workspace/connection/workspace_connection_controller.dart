@@ -4,6 +4,10 @@
 /// are exposed by the focused controllers composed beside it.
 library;
 
+// The public connectionPool argument is stored behind a private transport
+// boundary.
+// ignore_for_file: prefer_initializing_formals
+
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
@@ -11,11 +15,11 @@ import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../../log/log.dart';
 import '../../../models/motif_proto.dart';
-import '../../../models/settings.dart';
-import '../../../net/proxy_client.dart';
 import '../../../net/remote_port_forwarder.dart';
-import '../../../net/rpc_client.dart';
+import '../../../net/rpc_session_transport.dart';
 import '../../../net/transport_error.dart';
+import '../../connection/connection_state.dart';
+import '../../server/server_connection_pool.dart';
 import '../terminal/terminal_runtime_policy.dart';
 import '../remote_port/remote_port_controller.dart';
 import '../session_attachment.dart';
@@ -64,8 +68,9 @@ class WorkspaceConnectionController implements SessionAttachment {
 
   WorkspaceConnectionController({
     required this.session,
+    ServerConnectionPool? connectionPool,
     TerminalRuntimePolicy? runtime,
-  }) {
+  }) : _connectionPool = connectionPool {
     _attachmentRuntime = WorkspaceAttachmentRuntimeController(
       performAttach: _attachSession,
       performRecovery: _reattachExpiredAttachment,
@@ -216,8 +221,30 @@ class WorkspaceConnectionController implements SessionAttachment {
   set _state(WorkspaceConnectionStatus value) => updateConnectionState(value);
   WorkspaceConnectionStatus get state => _state;
 
-  RpcClient? _rpc;
-  void _setRpc(RpcClient? value) {
+  RpcSessionTransport? _rpc;
+  final ServerConnectionPool? _connectionPool;
+  ConnectionBlocker? get connectionBlocker => _connectionPool?.snapshot.blocker;
+
+  /// Ask the shared pool to resolve/probe without learning any route details.
+  /// The short-lived handle is only a reference; closing it leaves the shared
+  /// HTTP generation alive for the Session handle acquired during connect.
+  Future<PingInfo> preparePooledTransport({required bool forceProbe}) async {
+    final pool = _connectionPool;
+    if (pool == null) throw StateError('workspace is not pool-backed');
+    final handle = pool.acquire(
+      ownerId:
+          'session-prepare:${pool.serverId}:$session:'
+          '${DateTime.now().microsecondsSinceEpoch}',
+      ownerKind: ConnectionOwnerKind.session,
+    );
+    try {
+      return await handle.ensureReady(forceProbe: forceProbe);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  void _setRpc(RpcSessionTransport? value) {
     _rpc = value;
     connection.transportAvailable = value != null;
     onRuntimeStatusChanged?.call();
@@ -255,12 +282,7 @@ class WorkspaceConnectionController implements SessionAttachment {
 
   // ─────────────────────────── connect ───────────────────────────
 
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) => _connectImpl(server, force: force, proxy: proxy, certPin: certPin);
+  Future<void> connect({bool force = false}) => _connectImpl(force: force);
 
   Future<void> disconnect() => _disconnectImpl();
 

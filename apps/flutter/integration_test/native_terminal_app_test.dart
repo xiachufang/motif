@@ -7,9 +7,9 @@
 //
 // Skips gracefully (passes) if no server is reachable.
 import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/net/rpc_client.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/server/server_probe.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/ui/app.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,16 +24,19 @@ void main() {
     tester,
   ) async {
     // Probe for a server first.
-    final probe = RpcClient()
-      ..connect(host: '127.0.0.1', port: 7777, token: '');
     try {
-      await probe.ping();
+      await const ServerProbe().ping(
+        const MotifServer(
+          id: 'probe',
+          name: 'Probe',
+          host: '127.0.0.1',
+          port: 7777,
+        ),
+      );
     } catch (_) {
-      await probe.close();
       // No server — nothing to validate end-to-end; pass.
       return;
     }
-    await probe.close();
 
     SharedPreferences.setMockInitialValues({});
     final app = await AppState.load();

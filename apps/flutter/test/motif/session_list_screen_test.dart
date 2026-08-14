@@ -211,11 +211,10 @@ void main() {
     final connectGate = Completer<void>();
     final motif = _CreatingServerFixture(
       live: false,
-      onConnect:
-          (_, _, {required force, required proxy, required certPin}) async {
-            await connectGate.future;
-            return const PingInfo(service: 'motif-server', version: 'test');
-          },
+      onConnect: (_, {required force}) async {
+        await connectGate.future;
+        return const PingInfo(service: 'motif-server', version: 'test');
+      },
     );
 
     await _pumpSessionList(tester, motif);

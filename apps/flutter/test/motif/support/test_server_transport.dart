@@ -1,17 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:motif/motif/models/motif_proto.dart';
-import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/state/server/server_transport.dart';
 
 typedef TestServerConnect =
     Future<PingInfo> Function(
-      TestServerTransport transport,
-      MotifServer server, {
+      TestServerTransport transport, {
       required bool force,
-      required ProxySettings proxy,
-      required Uint8List? certPin,
     });
 
 typedef TestServerCall =
@@ -49,22 +44,11 @@ final class TestServerTransport implements ServerTransport {
   void setLive(bool value) => isLive = value;
 
   @override
-  Future<PingInfo> connect(
-    MotifServer server, {
-    required bool force,
-    required ProxySettings proxy,
-    required Uint8List? certPin,
-  }) async {
+  Future<PingInfo> connect({required bool force}) async {
     connectCalls++;
     connectForces.add(force);
     final ping =
-        await onConnect?.call(
-          this,
-          server,
-          force: force,
-          proxy: proxy,
-          certPin: certPin,
-        ) ??
+        await onConnect?.call(this, force: force) ??
         const PingInfo(service: 'motif-server', version: 'test');
     isLive = true;
     lastPing = ping;

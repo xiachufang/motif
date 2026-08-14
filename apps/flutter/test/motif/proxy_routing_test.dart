@@ -5,52 +5,47 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/state/server/server_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Validates that [RpcClient] tunnels through a **SOCKS5** proxy (the form the
+/// Validates that the one-shot server probe tunnels through a **SOCKS5** proxy
+/// (the form the
 /// tsnet loopback uses) by standing up a minimal local SOCKS5 server that
 /// forwards to the live motifd, then `ping`-ing through it. Self-contained
 /// (no tailnet). Skips if no motifd on 127.0.0.1:7777.
 void main() {
-  test(
-    'RpcClient.ping reaches motifd through a SOCKS5 proxy',
-    () async {
-      final probe = RpcClient()
-        ..connect(host: '127.0.0.1', port: 7777, token: '');
-      try {
-        await probe.ping();
-      } catch (_) {
-        await probe.close();
-        markTestSkipped('no motifd on 127.0.0.1:7777');
-        return;
-      }
-      await probe.close();
+  test('ServerProbe reaches motifd through a SOCKS5 proxy', () async {
+    const target = MotifServer(
+      id: 'proxy-live',
+      name: 'Proxy live',
+      host: '127.0.0.1',
+      port: 7777,
+    );
+    try {
+      await const ServerProbe().ping(target);
+    } catch (_) {
+      markTestSkipped('no motifd on 127.0.0.1:7777');
+      return;
+    }
 
-      final proxy = await _MinimalSocks5.start();
-      try {
-        final rpc = RpcClient()
-          ..connect(
-            host: '127.0.0.1',
-            port: 7777,
-            token: '',
-            proxy: ProxySettings(proxyHost: '127.0.0.1', proxyPort: proxy.port),
-          );
-        final ping = await rpc.ping();
-        expect(
-          ping.isMotifServer,
-          isTrue,
-          reason: 'ping should reach motifd via the SOCKS5 proxy',
-        );
-        expect(proxy.connections, greaterThan(0));
-        await rpc.close();
-      } finally {
-        await proxy.close();
-      }
-    },
-    timeout: const Timeout(Duration(seconds: 20)),
-  );
+    final proxy = await _MinimalSocks5.start();
+    try {
+      final ping = await const ServerProbe().ping(
+        target,
+        proxy: ProxySettings(proxyHost: '127.0.0.1', proxyPort: proxy.port),
+      );
+      expect(
+        ping.isMotifServer,
+        isTrue,
+        reason: 'ping should reach motifd via the SOCKS5 proxy',
+      );
+      expect(proxy.connections, greaterThan(0));
+    } finally {
+      await proxy.close();
+    }
+  }, timeout: const Timeout(Duration(seconds: 20)));
 }
 
 /// Minimal SOCKS5 (no-auth, CONNECT) proxy that relays to the requested host.

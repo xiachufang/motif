@@ -6,8 +6,8 @@ import 'package:flutter/widgets.dart' show AppLifecycleListener;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-import '../net/rpc_client.dart';
-import '../state/server/server_transport.dart';
+import '../net/rpc_session_transport.dart';
+import '../state/server/server_connection_pool.dart';
 import 'protocol/generated/codex_app_server_protocol.dart';
 
 enum CodexConnectionPhase { connecting, initializing, connected, failed }
@@ -53,46 +53,58 @@ abstract interface class CodexTransport {
 }
 
 final class RpcCodexTransport implements CodexTransport {
-  RpcCodexTransport(this._server);
+  RpcCodexTransport(this._pool);
 
-  final RpcServerTransport _server;
-  RpcClient? _rpc;
+  final ServerConnectionPool _pool;
+  ServerConnectionHandle? _handle;
+  ExclusiveWebSocketChannelAdapter? _socket;
 
   @override
   Future<void> connect() async {
-    final rpc = _server.forkClient();
+    final handle = _pool.acquire(
+      ownerId: 'codex:${DateTime.now().microsecondsSinceEpoch}',
+      ownerKind: ConnectionOwnerKind.codex,
+    );
     try {
+      await handle.ensureReady();
       // Starting over HTTP first preserves motifd's structured launch errors.
       // A failed WebSocket upgrade otherwise collapses them into an opaque
       // channel connection exception on both native and web clients.
-      await rpc.call('codex.start');
-      _rpc = rpc;
+      await handle.rpc('codex.start');
+      final connection = await handle.openWebSocket(
+        const ServerWebSocketRequest(path: '/codex'),
+      );
+      _handle = handle;
+      _socket = ExclusiveWebSocketChannelAdapter(connection);
     } on RpcException catch (error) {
-      await rpc.close();
+      await handle.close();
       if (error.code == _codexCliNotFoundErrorCode) {
         throw CodexCliNotFoundException(error.message);
       }
       rethrow;
     } catch (_) {
-      await rpc.close();
+      await handle.close();
       rethrow;
     }
   }
 
   @override
   WebSocketChannel openCodexWebSocket() {
-    final rpc = _rpc;
-    if (rpc == null) {
+    final socket = _socket;
+    if (socket == null) {
       throw const RpcException('codex transport is not connected');
     }
-    return rpc.openRawWebSocket('/codex');
+    return socket;
   }
 
   @override
   Future<void> close() async {
-    final rpc = _rpc;
-    _rpc = null;
-    await rpc?.close();
+    final socket = _socket;
+    final handle = _handle;
+    _socket = null;
+    _handle = null;
+    await socket?.sink.close();
+    await handle?.close();
   }
 }
 

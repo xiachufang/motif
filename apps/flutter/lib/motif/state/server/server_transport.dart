@@ -1,12 +1,9 @@
-import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:http/http.dart' as http;
-
 import '../../models/motif_proto.dart';
-import '../../models/settings.dart';
-import '../../net/proxy_client.dart';
-import '../../net/rpc_client.dart';
+import '../../net/rpc_error.dart';
+import 'server_connection_pool.dart';
 
 /// Server-scoped command transport. It is never attached to a Session and has
 /// no terminal/event streams.
@@ -14,12 +11,7 @@ abstract interface class ServerTransport {
   bool get isLive;
   PingInfo? get lastPing;
 
-  Future<PingInfo> connect(
-    MotifServer server, {
-    required bool force,
-    required ProxySettings proxy,
-    required Uint8List? certPin,
-  });
+  Future<PingInfo> connect({required bool force});
 
   Future<Map<String, Object?>> call(
     String method, [
@@ -40,94 +32,94 @@ final class ServerTransportException implements Exception {
   String toString() => '$cause';
 }
 
-final class RpcServerTransport implements ServerTransport {
-  RpcClient? _rpc;
+/// It owns a server-home handle. HTTP connection ownership,
+/// route details and ping health remain entirely inside [pool].
+final class PoolServerTransport implements ServerTransport {
+  PoolServerTransport(this.pool);
+
+  final ServerConnectionPool pool;
+  ServerConnectionHandle? _handle;
+
+  ServerConnectionHandle get _activeHandle => _handle ??= pool.acquire(
+    ownerId: 'server-home:${pool.serverId}',
+    ownerKind: ConnectionOwnerKind.serverHome,
+  );
 
   @override
-  bool get isLive => _rpc != null;
+  bool get isLive =>
+      _handle?.isClosed == false &&
+      pool.snapshot.phase == ServerConnectionPoolPhase.ready;
 
   @override
-  PingInfo? lastPing;
-
-  RpcClient forkClient() {
-    final rpc = _rpc;
-    if (rpc == null) throw const RpcException('not connected');
-    return rpc.fork();
-  }
+  PingInfo? get lastPing => pool.snapshot.lastPing;
 
   @override
-  Future<PingInfo> connect(
-    MotifServer server, {
-    required bool force,
-    required ProxySettings proxy,
-    required Uint8List? certPin,
-  }) async {
-    if (!force && _rpc != null && lastPing != null) return lastPing!;
-    await close();
-    final rpc = RpcClient()
-      ..connect(
-        host: server.host,
-        port: server.port,
-        scheme: server.scheme,
-        token: server.token,
-        proxy: proxy,
-        certPin: certPin,
-      );
-    try {
-      final ping = await _pingWithRetry(rpc, server);
-      if (!ping.isMotifServer) {
-        throw RpcException('Not a motif server at ${server.endpoint}');
-      }
-      _rpc = rpc;
-      lastPing = ping;
-      return ping;
-    } catch (_) {
-      await rpc.close();
-      rethrow;
-    }
-  }
+  Future<PingInfo> connect({required bool force}) =>
+      _activeHandle.ensureReady(forceProbe: force);
 
-  Future<PingInfo> _pingWithRetry(RpcClient rpc, MotifServer server) async {
-    try {
-      return await rpc.ping();
-    } catch (_) {
-      await Future<void>.delayed(
-        server.kind == ServerKind.tailscale
-            ? const Duration(milliseconds: 900)
-            : const Duration(milliseconds: 350),
-      );
-      return rpc.ping();
-    }
-  }
+  /// Used by the server runtime before its synthetic establish step. Keeping
+  /// this separate lets the existing state machine project resolving/probing
+  /// UI without exposing the resolved target to feature code.
+  Future<PingInfo> ensureReady({required bool forceProbe}) =>
+      _activeHandle.ensureReady(forceProbe: forceProbe);
 
   @override
   Future<Map<String, Object?>> call(
     String method, [
     Map<String, Object?> params = const {},
   ]) async {
-    final rpc = _rpc;
-    if (rpc == null) throw const RpcException('not connected');
-    try {
-      return await rpc.call(method, params);
-    } on http.ClientException catch (error) {
-      throw ServerTransportException(error);
-    } on TimeoutException catch (error) {
-      throw ServerTransportException(error);
-    }
+    final response = await _activeHandle.rpc(
+      method,
+      params: params,
+      retry: _safeServerReadMethods.contains(method)
+          ? RpcRetryPolicy.safeOnce
+          : RpcRetryPolicy.never,
+    );
+    return response.body;
   }
 
   @override
-  Future<String> writeFileBytes(String path, Uint8List data) {
-    final rpc = _rpc;
-    if (rpc == null) throw const RpcException('not connected');
-    return rpc.writeFileBinary(path, data);
+  Future<String> writeFileBytes(String path, Uint8List data) async {
+    final response = await _activeHandle.send(
+      ServerHttpRequest(
+        method: 'POST',
+        path: '/rpc/fs.write',
+        query: {'path': path, 'force': 'true'},
+        headers: const {'Content-Type': 'application/octet-stream'},
+        body: data,
+        timeout: const Duration(seconds: 60),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw RpcException(
+        'fs.write (binary) failed: HTTP ${response.statusCode}',
+      );
+    }
+    return (jsonDecode(response.bodyText) as Map)['sha256'] as String;
   }
 
+  /// Closes only the server-home owner. The shared pool survives recovery and
+  /// feature teardown.
   @override
   Future<void> close() async {
-    final rpc = _rpc;
-    _rpc = null;
-    lastPing = null;
-    await rpc?.close();
+    final handle = _handle;
+    _handle = null;
+    await handle?.close();
+  }
+
+  /// Explicit server disconnect is the one server-home action allowed to tear
+  /// down every owner and route resource.
+  Future<void> disconnectAll({bool forgetLearnedRoute = false}) async {
+    await close();
+    await pool.disconnectAll(forgetLearnedRoute: forgetLearnedRoute);
   }
 }
+
+const _safeServerReadMethods = <String>{
+  'session.list',
+  'fs.list',
+  'fs.read',
+  'fs.stat',
+  'device.get',
+  'device.status',
+};

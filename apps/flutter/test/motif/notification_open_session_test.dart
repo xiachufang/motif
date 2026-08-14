@@ -1,11 +1,8 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
-import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/net/proxy_client.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
@@ -30,6 +27,10 @@ class _NotifWorkspaceConnectionController
 
   @override
   Future<void> attach() async {}
+
+  @override
+  Future<PingInfo> preparePooledTransport({required bool forceProbe}) async =>
+      const PingInfo(service: 'motif-server', version: 'test');
 }
 
 class _ConnectingNotifWorkspaceConnectionController
@@ -47,17 +48,16 @@ class _ConnectingNotifWorkspaceConnectionController
   }
 
   @override
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) async {
+  Future<void> connect({bool force = false}) async {
     connectCalls++;
     updateConnectionState(const ConnConnecting(), live: false);
     await connectGate.future;
     updateConnectionState(const ConnConnected(), live: true);
   }
+
+  @override
+  Future<PingInfo> preparePooledTransport({required bool forceProbe}) async =>
+      const PingInfo(service: 'motif-server', version: 'test');
 
   @override
   Future<void> attach() async {
@@ -82,13 +82,7 @@ Future<AppState> _appWithClient(WorkspaceConnectionController client) async {
     serverTransportFactory: (_) => TestServerTransport(
       live: client is! _ConnectingNotifWorkspaceConnectionController,
       onConnect: client is _ConnectingNotifWorkspaceConnectionController
-          ? (
-              transport,
-              server, {
-              required force,
-              required proxy,
-              certPin,
-            }) async {
+          ? (transport, {required force}) async {
               await client.connectGate.future;
               return const PingInfo(service: 'motif-server', version: 'test');
             }

@@ -42,10 +42,11 @@ lib/
   motif/
     models/                 # wire/domain models (MotifProto port)
     net/
-      rpc_client.dart       # HTTP-RPC + /events + /pty WebSocket transport
+      rpc_session_transport.dart # Session attachment + /events + /pty state
       shell_integration.dart# OSC 133/777/7 parser → ShellEvent stream
       transport.dart        # platform HTTP/WS abstraction (dart:io vs web)
     state/
+      server/server_connection_pool.dart # server-scoped HTTP route/client sharing
       app_state.dart        # top-level app state (servers, settings, commands)
       motif_client.dart     # connection lifecycle + session/pty/view state
       settings_store.dart   # persisted settings (font, theme, quick commands)
@@ -216,7 +217,8 @@ Server encrypts payload; platform notification-service decrypts using the persis
 ## 7. Phased delivery
 
 - **P0 — Foundation (this session):** plan; scaffold `lib/motif`; port models + JSON codec; shell
-  parser; `RpcClient` (dart:io HTTP+WS); `MotifClient` skeleton + events loop; MotifTheme + buttons;
+  parser; route-less `RpcSessionTransport`; connection lifecycle skeleton +
+  events loop; MotifTheme + buttons;
   network-fed `TerminalState` mode. Pure-Dart unit tests for codec + shell parser. `flutter analyze` clean.
 - **P1 — Connect & run a session (macOS first):** Welcome/Connection/SessionList/SessionView wired to
   a real `motifd` (direct server); attach → open `/pty` → render → type. Settings persistence + secure store.

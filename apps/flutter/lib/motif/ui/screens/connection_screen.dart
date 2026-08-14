@@ -4,11 +4,12 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../models/settings.dart';
-import '../../net/rpc_client.dart';
+import '../../net/rpc_error.dart';
 import '../../platform/services.dart';
 import '../../platform/tailscale_support.dart';
 import '../../state/app/app_state.dart';
 import '../../state/connection/connection_state.dart';
+import '../../state/server/server_probe.dart';
 import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
@@ -309,10 +310,11 @@ class _ServerRow extends _$_ServerRow {
   }
 
   Future<_ServerPingIndicator> _pingDirectServer(MotifServer server) async {
-    final rpc = RpcClient()
-      ..connect(host: server.host, port: server.port, token: server.token);
     try {
-      final ping = await rpc.ping().timeout(const Duration(seconds: 5));
+      final ping = await const ServerProbe().ping(
+        server,
+        timeout: const Duration(seconds: 5),
+      );
       if (!ping.isMotifServer) {
         return _ServerPingIndicator.unreachable('Not motifd');
       }
@@ -323,8 +325,6 @@ class _ServerRow extends _$_ServerRow {
       return _ServerPingIndicator.unreachable(e.message);
     } catch (_) {
       return _ServerPingIndicator.unreachable('Ping failed');
-    } finally {
-      await rpc.close();
     }
   }
 
