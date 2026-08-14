@@ -106,7 +106,7 @@ void main() {
       final selected = await collection.ensureInitial();
 
       expect(client.resumed, ['saved-1', 'saved-2']);
-      expect(client.resumeIncludesTurns, everyElement(isTrue));
+      expect(client.resumeIncludesTurns, everyElement(isFalse));
       expect(client.forks, isEmpty);
       expect(collection.entries.map((entry) => entry.id), [
         'saved-2',
@@ -358,6 +358,7 @@ final class _SideChatFakeClient extends ChangeNotifier
   Future<CodexThreadResumeResponse> resumeThread(
     String threadId, {
     bool includeTurns = false,
+    CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
   }) async {
     resumed.add(threadId);
     resumeIncludesTurns.add(includeTurns);
@@ -376,6 +377,9 @@ final class _SideChatFakeClient extends ChangeNotifier
       cwd: thread.cwd,
       model: 'codex-test',
       modelProvider: 'openai',
+      initialTurnsPage: initialTurnsPage == null
+          ? null
+          : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
       thread: thread,
     );

@@ -138,7 +138,7 @@ final class SideChatCollectionController extends ChangeNotifier {
         try {
           final response = await connection.resumeThread(
             id,
-            includeTurns: true,
+            initialTurnsPage: codexThreadResumeInitialTurnsPage,
           );
           if (_closed) {
             await _unsubscribeBestEffort(response.thread.id);

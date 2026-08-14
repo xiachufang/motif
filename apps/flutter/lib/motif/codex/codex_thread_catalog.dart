@@ -413,6 +413,30 @@ String codexPathBasename(String path) {
   return name.isEmpty ? path : name;
 }
 
+bool codexThreadIsManagedWorktree(CodexThread thread, String codexHome) {
+  final cwd = _normalizedCodexPath(thread.cwd.value);
+  final home = _normalizedCodexPath(codexHome);
+  if (cwd.isEmpty || home.isEmpty) return false;
+
+  var worktreesRoot = home == '/' ? '/worktrees' : '$home/worktrees';
+  var candidate = cwd;
+  final windowsPath =
+      RegExp(r'^[A-Za-z]:/').hasMatch(home) || home.startsWith('//');
+  if (windowsPath) {
+    worktreesRoot = worktreesRoot.toLowerCase();
+    candidate = candidate.toLowerCase();
+  }
+  return candidate.startsWith('$worktreesRoot/');
+}
+
+String _normalizedCodexPath(String path) {
+  var normalized = path.trim().replaceAll('\\', '/');
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  return normalized;
+}
+
 bool codexThreadIsActive(CodexThread thread) =>
     thread.status is CodexActiveThreadStatus;
 
@@ -450,6 +474,11 @@ CodexThread codexThreadWithName(CodexThread thread, String? name) {
 
 CodexThread codexThreadWithPreview(CodexThread thread, String preview) {
   final json = thread.toJson()..['preview'] = preview;
+  return CodexThread.fromJson(json);
+}
+
+CodexThread codexThreadWithTurns(CodexThread thread, List<CodexTurn> turns) {
+  final json = thread.toJson()..['turns'] = CodexJson.encode(turns);
   return CodexThread.fromJson(json);
 }
 

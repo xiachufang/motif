@@ -131,12 +131,14 @@ class CodexSidebarThreadRow extends StatelessWidget {
     this.active = false,
     this.pinned = false,
     this.indented = false,
+    this.indicator,
     this.subtitle,
     this.subtitleIcon,
     this.subtitleSpacing = 0,
     this.trailing,
     this.height = codexSidebarRowHeight,
     this.horizontalContentPadding = MotifSpacing.md,
+    this.rightContentPadding,
     super.key,
   });
 
@@ -146,6 +148,7 @@ class CodexSidebarThreadRow extends StatelessWidget {
   final bool active;
   final bool pinned;
   final bool indented;
+  final Widget? indicator;
   final String? subtitle;
   final IconData? subtitleIcon;
   final double subtitleSpacing;
@@ -153,6 +156,7 @@ class CodexSidebarThreadRow extends StatelessWidget {
   final VoidCallback? onTap;
   final double height;
   final double horizontalContentPadding;
+  final double? rightContentPadding;
 
   @override
   Widget build(BuildContext context) {
@@ -171,8 +175,9 @@ class CodexSidebarThreadRow extends StatelessWidget {
             borderRadius: BorderRadius.circular(MotifRadius.xs),
             onTap: onTap,
             child: Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: horizontalContentPadding,
+              padding: EdgeInsets.only(
+                left: horizontalContentPadding,
+                right: rightContentPadding ?? horizontalContentPadding,
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -234,6 +239,7 @@ class CodexSidebarThreadRow extends StatelessWidget {
                     ),
                     child: CodexMotionSwitcher(
                       animateSize: true,
+                      alignment: Alignment.centerRight,
                       offset: Offset.zero,
                       child: loading || active
                           ? Row(
@@ -254,6 +260,10 @@ class CodexSidebarThreadRow extends StatelessWidget {
                           : const SizedBox.shrink(key: ValueKey('inactive')),
                     ),
                   ),
+                  if (indicator != null) ...[
+                    const SizedBox(width: MotifSpacing.sm),
+                    indicator!,
+                  ],
                   if (trailing != null) ...[
                     const SizedBox(width: MotifSpacing.sm),
                     trailing!,

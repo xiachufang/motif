@@ -424,6 +424,18 @@ void main() {
             result = {'data': <Object?>[], 'nextCursor': null};
           case 'thread/read':
             result = {'thread': threadJson('thread-1')};
+          case 'thread/turns/list':
+            result = {
+              'data': [
+                {
+                  'id': 'turn-page-1',
+                  'items': <Object?>[],
+                  'status': 'completed',
+                },
+              ],
+              'nextCursor': 'older',
+              'backwardsCursor': 'newer',
+            };
           case 'thread/name/set':
           case 'thread/archive':
           case 'thread/delete':
@@ -523,6 +535,17 @@ void main() {
       await controller.deleteThread('thread-1');
       expect((await controller.readThread('thread-1')).thread.id, 'thread-1');
       expect(
+        (await controller.listThreadTurns(
+          const CodexThreadTurnsListParams(
+            itemsView: CodexTurnItemsView('full'),
+            limit: 10,
+            sortDirection: CodexSortDirection.desc,
+            threadId: 'thread-1',
+          ),
+        )).data.single.id,
+        'turn-page-1',
+      );
+      expect(
         (await controller.startThread(
           const CodexThreadStartParams(
             cwd: '/work/new-project',
@@ -614,6 +637,17 @@ void main() {
         controller.resumeThread('thread-2', includeTurns: true),
         throwsA(isA<CodexRpcException>()),
       );
+      await expectLater(
+        controller.resumeThread(
+          'thread-3',
+          initialTurnsPage: const CodexThreadResumeInitialTurnsPageParams(
+            itemsView: CodexTurnItemsView('full'),
+            limit: 10,
+            sortDirection: CodexSortDirection.desc,
+          ),
+        ),
+        throwsA(isA<CodexRpcException>()),
+      );
 
       final requests = {
         for (final message in sent)
@@ -634,6 +668,12 @@ void main() {
       expect(requests['thread/delete']?['params'], {'threadId': 'thread-1'});
       expect(requests['thread/read']?['params'], {
         'includeTurns': false,
+        'threadId': 'thread-1',
+      });
+      expect(requests['thread/turns/list']?['params'], {
+        'itemsView': 'full',
+        'limit': 10,
+        'sortDirection': 'desc',
         'threadId': 'thread-1',
       });
       expect(requests['thread/start']?['params'], {
@@ -661,6 +701,15 @@ void main() {
         [
           {'excludeTurns': true, 'threadId': 'thread-1'},
           {'excludeTurns': false, 'threadId': 'thread-2'},
+          {
+            'excludeTurns': true,
+            'initialTurnsPage': {
+              'itemsView': 'full',
+              'limit': 10,
+              'sortDirection': 'desc',
+            },
+            'threadId': 'thread-3',
+          },
         ],
       );
       expect(requests['turn/start']?['params'], {
@@ -708,7 +757,7 @@ void main() {
           .where((request) => request['id'] != null)
           .map((request) => request['id'])
           .toSet();
-      expect(ids, hasLength(25));
+      expect(ids, hasLength(26));
       await controller.close();
     },
   );

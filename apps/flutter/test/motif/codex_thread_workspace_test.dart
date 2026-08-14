@@ -800,6 +800,72 @@ void main() {
     },
   );
 
+  testWidgets('loads an older full turn page from the history control', (
+    tester,
+  ) async {
+    const olderTurn = CodexTurn(
+      id: 'older-turn',
+      items: [
+        CodexAgentMessageThreadItem(id: 'older-answer', text: 'Older answer'),
+      ],
+      status: CodexTurnStatus.completed,
+    );
+    const recentTurn = CodexTurn(
+      id: 'recent-turn',
+      items: [
+        CodexAgentMessageThreadItem(id: 'recent-answer', text: 'Recent answer'),
+      ],
+      status: CodexTurnStatus.completed,
+    );
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..activePlan = null
+      ..queuedMessages = const [];
+    client.turnPages = const {
+      null: CodexThreadTurnsListResponse(
+        data: [recentTurn],
+        nextCursor: 'older-page',
+      ),
+      'older-page': CodexThreadTurnsListResponse(data: [olderTurn]),
+    };
+    await state.readThread('thread');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Recent answer'), findsOneWidget);
+    expect(find.text('Older answer'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('codex-load-older-turns')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex-load-older-turns')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Older answer'), findsOneWidget);
+    expect(client.turnListParams.map((params) => params.cursor), [
+      null,
+      'older-page',
+    ]);
+    expect(
+      client.turnListParams.map((params) => params.itemsView?.value),
+      everyElement('full'),
+    );
+    expect(
+      client.turnListParams.map((params) => params.limit),
+      everyElement(10),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets(
     'renders turns, keeps tool details collapsed, and floats plan and queue',
     (tester) async {
@@ -2797,6 +2863,8 @@ CodexServiceState workspaceState(WorkspaceFakeClient client) {
 final class WorkspaceFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
   late CodexThread thread;
+  Map<String?, CodexThreadTurnsListResponse> turnPages = const {};
+  final List<CodexThreadTurnsListParams> turnListParams = [];
   final List<CodexThreadForkParams> forked = [];
   final List<CodexTurnStartParams> started = [];
   final List<CodexTurnSteerParams> steered = [];
@@ -2863,6 +2931,17 @@ final class WorkspaceFakeClient extends ChangeNotifier
   }) async => CodexThreadReadResponse(thread: thread);
 
   @override
+  Future<CodexThreadTurnsListResponse> listThreadTurns(
+    CodexThreadTurnsListParams params,
+  ) async {
+    turnListParams.add(params);
+    return turnPages[params.cursor] ??
+        CodexThreadTurnsListResponse(
+          data: thread.turns.reversed.toList(growable: false),
+        );
+  }
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async {
@@ -2916,12 +2995,16 @@ final class WorkspaceFakeClient extends ChangeNotifier
   Future<CodexThreadResumeResponse> resumeThread(
     String threadId, {
     bool includeTurns = false,
+    CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
   }) async => CodexThreadResumeResponse(
     approvalPolicy: const CodexAskForApproval('on-request'),
     approvalsReviewer: CodexApprovalsReviewer.user,
     cwd: thread.cwd,
     model: 'codex-test',
     modelProvider: 'openai',
+    initialTurnsPage: initialTurnsPage == null
+        ? null
+        : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
     reasoningEffort: const CodexReasoningEffort('high'),
     sandbox: const CodexDangerFullAccessSandboxPolicy(),
     thread: thread,

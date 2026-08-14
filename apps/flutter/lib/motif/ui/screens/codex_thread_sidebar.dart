@@ -620,6 +620,21 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   }) => CodexSidebarThreadRow(
     key: ValueKey('codex-thread-${thread.id}'),
     title: codexThreadTitle(thread),
+    indicator:
+        codexThreadIsManagedWorktree(
+          thread,
+          serviceState.connection.state.response?.codexHome.value ?? '',
+        )
+        ? Tooltip(
+            message: 'Worktree',
+            child: Icon(
+              Icons.account_tree_outlined,
+              key: ValueKey('codex-thread-worktree-${thread.id}'),
+              size: MotifIconSize.sm,
+              color: context.motif.textTertiary,
+            ),
+          )
+        : null,
     selected: !archived && serviceState.selectedThread?.id == thread.id,
     loading: !archived && serviceState.readingThreadId == thread.id,
     active: codexThreadIsActive(thread),
@@ -630,6 +645,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     subtitleSpacing: subtitleSpacing,
     height: height,
     horizontalContentPadding: horizontalContentPadding,
+    rightContentPadding: MotifSpacing.sm,
     trailing: _ThreadActionsButton(
       thread: thread,
       archived: archived,
@@ -865,7 +881,10 @@ class _ThreadActionsButton extends StatelessWidget {
       ],
       child: const SizedBox.square(
         dimension: 20,
-        child: Icon(Icons.more_horiz, size: MotifIconSize.sm),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Icon(Icons.more_horiz, size: MotifIconSize.sm),
+        ),
       ),
     );
   }
@@ -1039,6 +1058,7 @@ class _ProjectRow extends StatelessWidget {
                 curve: codexExpansionCurve(context),
                 child: Icon(
                   Icons.expand_more,
+                  key: ValueKey('codex-project-toggle-${group.project.id}'),
                   size: MotifIconSize.sm,
                   color: c.textTertiary,
                 ),

@@ -63,7 +63,18 @@ void main() {
 
       await state.readThread('first');
       expect(client.readThreadIds, ['first']);
-      expect(client.readIncludeTurns, [true]);
+      expect(client.readIncludeTurns, [false]);
+      expect(client.turnListParams, hasLength(1));
+      expect(client.turnListParams.single.threadId, 'first');
+      expect(client.turnListParams.single.limit, codexThreadTurnsPageSize);
+      expect(
+        client.turnListParams.single.itemsView?.value,
+        codexThreadTurnsItemsView.value,
+      );
+      expect(
+        client.turnListParams.single.sortDirection,
+        CodexSortDirection.desc,
+      );
       expect(client.resumedThreadIds, isEmpty);
       expect(state.selectedThread?.id, 'first');
 
@@ -187,7 +198,10 @@ void main() {
 
       await waitFor(() => state.turns.length == 2);
       expect(client.resumedThreadIds, ['thread']);
-      expect(client.resumeIncludeTurns, [true]);
+      expect(client.resumeIncludeTurns, [false]);
+      expect(client.resumeInitialTurnsPages, [
+        codexThreadResumeInitialTurnsPage,
+      ]);
       expect(
         (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
         'While backgrounded',
@@ -198,6 +212,69 @@ void main() {
       await state.close();
     },
   );
+
+  test('loads recent turns first and prepends older cursor pages', () async {
+    const oldest = CodexTurn(
+      id: 'turn-1',
+      items: [],
+      status: CodexTurnStatus.completed,
+    );
+    const older = CodexTurn(
+      id: 'turn-2',
+      items: [],
+      status: CodexTurnStatus.completed,
+    );
+    const recent = CodexTurn(
+      id: 'turn-3',
+      items: [],
+      status: CodexTurnStatus.completed,
+    );
+    const latest = CodexTurn(
+      id: 'turn-4',
+      items: [],
+      status: CodexTurnStatus.completed,
+    );
+    final existing = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [existing]),
+      },
+      turnPages: const {
+        'thread': {
+          null: CodexThreadTurnsListResponse(
+            data: [latest, recent],
+            nextCursor: 'older-page',
+          ),
+          'older-page': CodexThreadTurnsListResponse(
+            data: [recent, older, oldest],
+          ),
+        },
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+
+    expect(state.turns.map((turn) => turn.id), ['turn-3', 'turn-4']);
+    expect(state.hasOlderTurns, isTrue);
+
+    expect(await state.loadOlderTurns(), isTrue);
+    expect(state.turns.map((turn) => turn.id), [
+      'turn-1',
+      'turn-2',
+      'turn-3',
+      'turn-4',
+    ]);
+    expect(state.hasOlderTurns, isFalse);
+    expect(client.turnListParams.map((params) => params.cursor), [
+      null,
+      'older-page',
+    ]);
+
+    await state.close();
+  });
 
   test('manages threads through app-server APIs', () async {
     final original = thread('managed', updatedAt: 10);
@@ -1075,12 +1152,14 @@ final class FakeCodexClient extends ChangeNotifier
     implements CodexAppServerClient {
   FakeCodexClient({
     required this.pages,
+    this.turnPages = const {},
     this.globalState,
     this.models = const [],
     this.permissionProfiles = const [],
   });
 
   final Map<String?, CodexThreadListResponse> pages;
+  final Map<String, Map<String?, CodexThreadTurnsListResponse>> turnPages;
   String? globalState;
   final List<CodexModel> models;
   final List<CodexPermissionProfileSummary> permissionProfiles;
@@ -1096,11 +1175,14 @@ final class FakeCodexClient extends ChangeNotifier
   CodexThread? unarchiveResult;
   final List<String> readThreadIds = [];
   final List<bool> readIncludeTurns = [];
+  final List<CodexThreadTurnsListParams> turnListParams = [];
   final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
   final List<CodexThreadForkParams> forkParams = [];
   final List<CodexThreadStartParams> startThreadParams = [];
   final List<String> resumedThreadIds = [];
   final List<bool> resumeIncludeTurns = [];
+  final List<CodexThreadResumeInitialTurnsPageParams?> resumeInitialTurnsPages =
+      [];
   final List<CodexTurnSteerParams> steeredParams = [];
   final List<CodexTurnStartParams> startedParams = [];
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
@@ -1197,6 +1279,21 @@ final class FakeCodexClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadTurnsListResponse> listThreadTurns(
+    CodexThreadTurnsListParams params,
+  ) async {
+    turnListParams.add(params);
+    final configured = turnPages[params.threadId]?[params.cursor];
+    if (configured != null) return configured;
+    final original = pages.values
+        .expand((page) => page.data)
+        .firstWhere((thread) => thread.id == params.threadId);
+    return CodexThreadTurnsListResponse(
+      data: original.turns.reversed.toList(growable: false),
+    );
+  }
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async {
@@ -1262,9 +1359,11 @@ final class FakeCodexClient extends ChangeNotifier
   Future<CodexThreadResumeResponse> resumeThread(
     String threadId, {
     bool includeTurns = false,
+    CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
   }) async {
     resumedThreadIds.add(threadId);
     resumeIncludeTurns.add(includeTurns);
+    resumeInitialTurnsPages.add(initialTurnsPage);
     final original = pages.values
         .expand((page) => page.data)
         .firstWhere((thread) => thread.id == threadId);
@@ -1274,6 +1373,11 @@ final class FakeCodexClient extends ChangeNotifier
       cwd: original.cwd,
       model: 'test',
       modelProvider: 'openai',
+      initialTurnsPage: initialTurnsPage == null
+          ? null
+          : CodexTurnsPage(
+              data: original.turns.reversed.toList(growable: false),
+            ),
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
       thread: original,
     );

@@ -1073,6 +1073,16 @@ final class ScreenFakeClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadTurnsListResponse> listThreadTurns(
+    CodexThreadTurnsListParams params,
+  ) async {
+    final thread = threadReadResponse?.thread ?? (throw StateError('unused'));
+    return CodexThreadTurnsListResponse(
+      data: thread.turns.reversed.toList(growable: false),
+    );
+  }
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async {
@@ -1145,6 +1155,7 @@ final class ScreenFakeClient extends ChangeNotifier
   Future<CodexThreadResumeResponse> resumeThread(
     String threadId, {
     bool includeTurns = false,
+    CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
   }) async => throw StateError('unused');
 
   @override

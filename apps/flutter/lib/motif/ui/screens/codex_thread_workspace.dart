@@ -143,6 +143,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
                 state: state,
                 scrollController: _scroll,
                 onScrollNotification: _onUserScroll,
+                onLoadOlderTurns: _loadOlderTurns,
                 turnActionBuilder: widget.turnActionBuilder,
                 expandedHistoryTurnIds: _expandedHistoryTurnIds,
                 onToggleHistory: _toggleHistory,
@@ -505,12 +506,37 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     });
   }
 
+  Future<void> _loadOlderTurns() async {
+    final state = widget.state;
+    if (state.loadingOlderTurns || !state.hasOlderTurns) return;
+    _followTail = false;
+    final beforeMaxExtent = _scroll.hasClients
+        ? _scroll.position.maxScrollExtent
+        : 0.0;
+    final beforePixels = _scroll.hasClients ? _scroll.position.pixels : 0.0;
+    final threadId = state.selectedThread?.id;
+    final loaded = await state.loadOlderTurns();
+    if (!loaded || !mounted || state.selectedThread?.id != threadId) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final addedExtent = _scroll.position.maxScrollExtent - beforeMaxExtent;
+      final target = (beforePixels + addedExtent).clamp(
+        _scroll.position.minScrollExtent,
+        _scroll.position.maxScrollExtent,
+      );
+      _scroll.jumpTo(target);
+    });
+  }
+
   bool _onUserScroll(ScrollNotification notification) {
     if (notification is ScrollUpdateNotification &&
         notification.dragDetails != null) {
       _followTail =
           notification.metrics.pixels >=
           notification.metrics.maxScrollExtent - 96;
+      if (notification.metrics.pixels <= 240) {
+        unawaited(_loadOlderTurns());
+      }
     }
     return false;
   }
@@ -524,6 +550,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
     required this.state,
     required this.scrollController,
     required this.onScrollNotification,
+    required this.onLoadOlderTurns,
     required this.turnActionBuilder,
     required this.expandedHistoryTurnIds,
     required this.onToggleHistory,
@@ -536,6 +563,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   final CodexConversationState state;
   final ScrollController scrollController;
   final NotificationListenerCallback<ScrollNotification> onScrollNotification;
+  final Future<void> Function() onLoadOlderTurns;
   final CodexTurnActionBuilder turnActionBuilder;
   final Set<String> expandedHistoryTurnIds;
   final ValueChanged<String> onToggleHistory;
@@ -547,6 +575,15 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   Widget build(BuildContext context) {
     final turns = state.viewModel.turns;
     final conversationChildren = <Widget>[
+      if (state.loadingOlderTurns ||
+          state.olderTurnsError != null ||
+          state.hasOlderTurns)
+        _OlderTurnsControl(
+          loading: state.loadingOlderTurns,
+          error: state.olderTurnsError,
+          onLoad: onLoadOlderTurns,
+          onRetry: onLoadOlderTurns,
+        ),
       if (state.readError != null)
         _InlineError(message: state.readError!, onRetry: state.retryRead),
       if (turns.isEmpty) const _EmptyConversation(),
@@ -603,6 +640,43 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _OlderTurnsControl extends StatelessWidget {
+  const _OlderTurnsControl({
+    required this.loading,
+    required this.error,
+    required this.onLoad,
+    required this.onRetry,
+  });
+
+  final bool loading;
+  final String? error;
+  final Future<void> Function() onLoad;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (error != null) {
+      return _InlineError(message: error!, onRetry: onRetry);
+    }
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: MotifSpacing.md),
+        child: loading
+            ? const SizedBox.square(
+                dimension: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : TextButton.icon(
+                key: const ValueKey('codex-load-older-turns'),
+                onPressed: () => unawaited(onLoad()),
+                icon: const Icon(Icons.expand_less),
+                label: const Text('Load earlier messages'),
+              ),
       ),
     );
   }

@@ -298,6 +298,19 @@ void main() {
       tester.getSize(find.byKey(const ValueKey('codex-thread-t1'))).height,
       codexSidebarRowHeight,
     );
+    final projectToggle = find.byKey(const ValueKey('codex-project-toggle-p1'));
+    final threadActionsIcon = find.descendant(
+      of: find.byKey(const ValueKey('codex-thread-actions-t1')),
+      matching: find.byIcon(Icons.more_horiz),
+    );
+    expect(
+      tester.getTopRight(threadActionsIcon).dx,
+      closeTo(
+        tester.getCenter(projectToggle).dx +
+            tester.getSize(projectToggle).width / 2,
+        0.01,
+      ),
+    );
 
     await tester.tap(find.byKey(const ValueKey('codex-projects-more')));
     await tester.pump();
@@ -653,6 +666,81 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
   });
+
+  testWidgets('shows a worktree icon in the right-side status area', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(400, 800);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final worktree = thread(
+      'worktree',
+      name: 'Worktree thread',
+      updatedAt: 20,
+      cwd: '/tmp/codex/worktrees/a1b2/motif',
+    );
+    final checkout = thread(
+      'checkout',
+      name: 'Checkout thread',
+      updatedAt: 10,
+      cwd: '/work/motif',
+    );
+    final client = SidebarFakeClient({
+      worktree.id: worktree,
+      checkout.id: checkout,
+    });
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalog = buildCodexCatalog([worktree, checkout], null)
+      ..catalogPhase = CodexCatalogPhase.ready;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.timeline,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final icon = find.byKey(const ValueKey('codex-thread-worktree-worktree'));
+    expect(icon, findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-thread-worktree-checkout')),
+      findsNothing,
+    );
+    expect(
+      tester.getCenter(find.text('Worktree thread')).dx,
+      lessThan(tester.getCenter(icon).dx),
+    );
+    expect(
+      tester.getTopLeft(icon).dx -
+          tester.getTopRight(find.text('Worktree thread')).dx,
+      greaterThan(MotifSpacing.lg),
+    );
+    expect(
+      tester.getCenter(icon).dx,
+      lessThan(
+        tester
+            .getCenter(
+              find.byKey(const ValueKey('codex-thread-actions-worktree')),
+            )
+            .dx,
+      ),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
 }
 
 final class SidebarFakeClient extends ChangeNotifier
@@ -758,6 +846,13 @@ final class SidebarFakeClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadTurnsListResponse> listThreadTurns(
+    CodexThreadTurnsListParams params,
+  ) async => CodexThreadTurnsListResponse(
+    data: threads[params.threadId]!.turns.reversed.toList(growable: false),
+  );
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async => throw StateError('unused');
@@ -806,6 +901,7 @@ final class SidebarFakeClient extends ChangeNotifier
   Future<CodexThreadResumeResponse> resumeThread(
     String threadId, {
     bool includeTurns = false,
+    CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
   }) async {
     resumedThreadIds.add(threadId);
     final thread = threads[threadId]!;
@@ -815,6 +911,9 @@ final class SidebarFakeClient extends ChangeNotifier
       cwd: thread.cwd,
       model: 'test',
       modelProvider: 'openai',
+      initialTurnsPage: initialTurnsPage == null
+          ? null
+          : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
       thread: thread,
     );
@@ -914,11 +1013,12 @@ CodexThread thread(
   String id, {
   required String name,
   required int updatedAt,
+  String cwd = '/work/motif',
   CodexThreadStatus status = const CodexNotLoadedThreadStatus(),
 }) => CodexThread(
   cliVersion: 'test',
   createdAt: updatedAt,
-  cwd: const CodexV2AbsolutePathBuf('/work/motif'),
+  cwd: CodexV2AbsolutePathBuf(cwd),
   ephemeral: false,
   id: id,
   modelProvider: 'openai',

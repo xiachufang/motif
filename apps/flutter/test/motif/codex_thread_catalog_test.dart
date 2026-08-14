@@ -184,6 +184,44 @@ void main() {
     expect(codexThreadTitle(thread('empty')), 'Untitled thread');
   });
 
+  test('managed worktree detection uses the app-server Codex home', () {
+    expect(
+      codexThreadIsManagedWorktree(
+        thread('worktree', cwd: '/tmp/codex/worktrees/a1b2/motif'),
+        '/tmp/codex',
+      ),
+      isTrue,
+    );
+    expect(
+      codexThreadIsManagedWorktree(
+        thread('checkout', cwd: '/work/motif'),
+        '/tmp/codex',
+      ),
+      isFalse,
+    );
+    expect(
+      codexThreadIsManagedWorktree(
+        thread('root', cwd: '/tmp/codex/worktrees'),
+        '/tmp/codex',
+      ),
+      isFalse,
+    );
+    expect(
+      codexThreadIsManagedWorktree(
+        thread('lookalike', cwd: '/tmp/codex/worktrees-old/a1b2/motif'),
+        '/tmp/codex',
+      ),
+      isFalse,
+    );
+    expect(
+      codexThreadIsManagedWorktree(
+        thread('windows', cwd: r'C:\Users\me\.codex\worktrees\A1B2\motif'),
+        r'c:\users\me\.codex\',
+      ),
+      isTrue,
+    );
+  });
+
   test('timeline labels use local calendar-day boundaries', () {
     final now = DateTime(2026, 8, 11, 0, 5);
     int seconds(DateTime value) => value.millisecondsSinceEpoch ~/ 1000;
