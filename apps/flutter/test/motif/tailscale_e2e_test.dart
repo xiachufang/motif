@@ -3,11 +3,12 @@ library;
 
 import 'dart:io';
 
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/state/server/server_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Full Tailscale hop: RpcClient → tsnet loopback proxy → tailnet → a tsnet
+/// Full Tailscale hop: ServerProbe → tsnet loopback proxy → tailnet → a tsnet
 /// node that forwards to the local motifd. Drive it with the values printed by
 /// the tsnet node (see /tmp/tsnode):
 ///   TS_NODE_IP=100.x.x.x TS_PROXY=127.0.0.1:PORT TS_CRED=... \
@@ -26,25 +27,25 @@ void main() {
         return;
       }
       final parts = proxy.split(':');
-      final rpc = RpcClient()
-        ..connect(
+      final ping = await const ServerProbe().ping(
+        MotifServer(
+          id: 'tailscale-live',
+          name: 'Tailscale live',
           host: ip,
           port: 7777,
-          token: '',
-          proxy: ProxySettings(
-            proxyHost: parts[0],
-            proxyPort: int.parse(parts[1]),
-            username: 'tsnet', // tsnet loopback requires user "tsnet"
-            password: cred, // ...with proxyCred as the password
-          ),
-        );
-      final ping = await rpc.ping();
+        ),
+        proxy: ProxySettings(
+          proxyHost: parts[0],
+          proxyPort: int.parse(parts[1]),
+          username: 'tsnet', // tsnet loopback requires user "tsnet"
+          password: cred, // ...with proxyCred as the password
+        ),
+      );
       expect(
         ping.isMotifServer,
         isTrue,
         reason: 'ping should reach motifd over the tailnet',
       );
-      await rpc.close();
     },
     timeout: const Timeout(Duration(seconds: 30)),
   );

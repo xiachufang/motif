@@ -7,12 +7,13 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/state/server/server_connection_pool.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_attachment_runtime.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 
 import 'support/workspace_connection_fixture.dart';
+import 'support/test_connection_pool.dart';
 
 const _server = MotifServer(
   id: 'local',
@@ -22,39 +23,41 @@ const _server = MotifServer(
 );
 
 void main() {
-  tearDown(() {
-    RpcClient.debugHttpClientFactory = null;
-  });
-
   test('missing fixed workspace session clears its stale snapshot', () async {
-    RpcClient.debugHttpClientFactory = () => MockClient((request) async {
-      if (request.method == 'GET' && request.url.path == '/ping') {
-        return http.Response(
-          jsonEncode({'service': 'motif-server', 'version': 'test'}),
-          200,
-        );
-      }
-      if (request.method == 'POST' &&
-          request.url.path == '/rpc/session.attach') {
-        return http.Response(
-          jsonEncode({'code': -32007, 'message': "session 'dev' not found"}),
-          404,
-        );
-      }
-      if (request.method == 'POST' && request.url.path == '/rpc/session.list') {
-        return http.Response(jsonEncode({'sessions': []}), 200);
-      }
-      return http.Response('', 404);
-    });
+    final motif =
+        _workspaceFor(
+            _server,
+            httpClientFactory: () => MockClient((request) async {
+              if (request.method == 'GET' && request.url.path == '/ping') {
+                return http.Response(
+                  jsonEncode({'service': 'motif-server', 'version': 'test'}),
+                  200,
+                );
+              }
+              if (request.method == 'POST' &&
+                  request.url.path == '/rpc/session.attach') {
+                return http.Response(
+                  jsonEncode({
+                    'code': -32007,
+                    'message': "session 'dev' not found",
+                  }),
+                  404,
+                );
+              }
+              if (request.method == 'POST' &&
+                  request.url.path == '/rpc/session.list') {
+                return http.Response(jsonEncode({'sessions': []}), 200);
+              }
+              return http.Response('', 404);
+            }),
+          )
+          ..lastSeq = 42
+          ..resumeSequence = 42
+          ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+          ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
+          ..activeViewId = 'view-1';
 
-    final motif = WorkspaceConnectionController(session: 'dev')
-      ..lastSeq = 42
-      ..resumeSequence = 42
-      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
-      ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
-      ..activeViewId = 'view-1';
-
-    await motif.connect(_server, force: true);
+    await motif.connect(force: true);
     await Future<void>.delayed(Duration.zero);
 
     expect(motif.state, isA<ConnConnected>());
@@ -68,31 +71,36 @@ void main() {
   });
 
   test('transient reattach failure stays failed for reconnect retry', () async {
-    RpcClient.debugHttpClientFactory = () => MockClient((request) async {
-      if (request.method == 'GET' && request.url.path == '/ping') {
-        return http.Response(
-          jsonEncode({'service': 'motif-server', 'version': 'test'}),
-          200,
-        );
-      }
-      if (request.method == 'POST' &&
-          request.url.path == '/rpc/session.attach') {
-        return http.Response(
-          jsonEncode({'code': -32603, 'message': 'motifd still booting'}),
-          500,
-        );
-      }
-      return http.Response('', 404);
-    });
+    final motif =
+        _workspaceFor(
+            _server,
+            httpClientFactory: () => MockClient((request) async {
+              if (request.method == 'GET' && request.url.path == '/ping') {
+                return http.Response(
+                  jsonEncode({'service': 'motif-server', 'version': 'test'}),
+                  200,
+                );
+              }
+              if (request.method == 'POST' &&
+                  request.url.path == '/rpc/session.attach') {
+                return http.Response(
+                  jsonEncode({
+                    'code': -32603,
+                    'message': 'motifd still booting',
+                  }),
+                  500,
+                );
+              }
+              return http.Response('', 404);
+            }),
+          )
+          ..lastSeq = 42
+          ..resumeSequence = 42
+          ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
+          ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
+          ..activeViewId = 'view-1';
 
-    final motif = WorkspaceConnectionController(session: 'dev')
-      ..lastSeq = 42
-      ..resumeSequence = 42
-      ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
-      ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
-      ..activeViewId = 'view-1';
-
-    await motif.connect(_server, force: true);
+    await motif.connect(force: true);
 
     expect(motif.state, isA<ConnFailed>());
     expect((motif.state as ConnFailed).message, contains('reattach failed'));
@@ -132,8 +140,8 @@ void main() {
       await request.response.close();
     });
 
-    final motif = WorkspaceConnectionController(session: 'dev');
-    await motif.connect(_localServerFor(server));
+    final motif = _workspaceFor(_localServerFor(server));
+    await motif.connect();
     expect(motif.state, isA<ConnAttached>());
 
     // Stop accepting new HTTP connections while retaining the already-open
@@ -144,7 +152,7 @@ void main() {
 
     await expectLater(
       motif.terminal.create(cols: 80, rows: 24),
-      throwsA(isA<SocketException>()),
+      throwsA(isA<UncertainDeliveryException>()),
     );
     expect(motif.state, isA<ConnFailed>());
     expect(
@@ -163,7 +171,7 @@ void main() {
     final ptyOpened = Completer<void>();
     final sockets = <WebSocket>[];
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final motif = WorkspaceConnectionController(session: 'dev');
+    final motif = _workspaceFor(_localServerFor(server));
     addTearDown(() async {
       await motif.disconnect();
       for (final socket in sockets) {
@@ -227,14 +235,7 @@ void main() {
     // This sink represents the terminal surface that stayed mounted while the
     // old transport was reconnecting.
     motif.terminal.registerPtySink('pty-1', (_) {});
-    final localServer = MotifServer(
-      id: 'local-test',
-      name: 'Local test',
-      host: InternetAddress.loopbackIPv4.address,
-      port: server.port,
-    );
-
-    await motif.connect(localServer, force: true);
+    await motif.connect(force: true);
     await ptyOpened.future.timeout(const Duration(seconds: 2));
 
     expect(motif.state, isA<ConnAttached>());
@@ -248,7 +249,7 @@ void main() {
       final ptyListSessionHeaders = <String?>[];
       final eventSockets = <WebSocket>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final motif = WorkspaceConnectionController(session: 'dev');
+      final motif = _workspaceFor(_localServerFor(server));
       addTearDown(() async {
         await motif.disconnect();
         for (final socket in eventSockets) {
@@ -290,7 +291,7 @@ void main() {
         await request.response.close();
       });
 
-      await motif.connect(_localServerFor(server));
+      await motif.connect();
       expect(eventSockets, hasLength(1));
       await eventSockets.first.close();
       await _waitUntil(() => motif.state is ConnFailed);
@@ -313,7 +314,7 @@ void main() {
       final attachSessionHeaders = <String?>[];
       final eventSockets = <WebSocket>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final motif = WorkspaceConnectionController(session: 'dev');
+      final motif = _workspaceFor(_localServerFor(server));
       addTearDown(() async {
         await motif.disconnect();
         for (final socket in eventSockets) {
@@ -361,7 +362,7 @@ void main() {
         await request.response.close();
       });
 
-      await motif.connect(_localServerFor(server));
+      await motif.connect();
       expect(eventSockets, hasLength(1));
       await eventSockets.first.close();
       await _waitUntil(() => motif.state is ConnFailed);
@@ -434,19 +435,12 @@ void main() {
       await request.response.close();
     });
 
-    final motif = WorkspaceConnectionController(session: 'dev')
+    final motif = _workspaceFor(_localServerFor(server))
       ..ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)]
       ..views = const [ViewInfo(id: 'view-1', spec: PtyViewSpec('pty-1'))]
       ..activeViewId = 'view-1';
     addTearDown(motif.disconnect);
-    final localServer = MotifServer(
-      id: 'local-test',
-      name: 'Local test',
-      host: InternetAddress.loopbackIPv4.address,
-      port: server.port,
-    );
-
-    final connecting = motif.connect(localServer, force: true);
+    final connecting = motif.connect(force: true);
     await attachStarted.future;
     expect(motif.state, isA<ConnConnecting>());
     expect(motif.terminal.canInput, isFalse);
@@ -546,16 +540,9 @@ void main() {
       await request.response.close();
     });
 
-    final motif = WorkspaceConnectionController(session: 'dev');
+    final motif = _workspaceFor(_localServerFor(server));
     addTearDown(motif.disconnect);
-    final localServer = MotifServer(
-      id: 'local-test',
-      name: 'Local test',
-      host: InternetAddress.loopbackIPv4.address,
-      port: server.port,
-    );
-
-    await motif.connect(localServer, force: true);
+    await motif.connect(force: true);
     await Future.wait([
       motif.terminal.resizePty('pty-1', 120, 40),
       motif.terminal.resizePty('pty-1', 121, 41),
@@ -568,6 +555,25 @@ void main() {
     expect(motif.state, isA<ConnAttached>());
     expect(motif.terminal.canInput, isTrue);
   });
+}
+
+WorkspaceConnectionController _workspaceFor(
+  MotifServer server, {
+  http.Client Function()? httpClientFactory,
+}) {
+  final pool = fixedRouteConnectionPool(
+    server,
+    httpClientFactory: httpClientFactory == null
+        ? null
+        : (_, _) => httpClientFactory(),
+  );
+  addTearDown(pool.dispose);
+  final motif = WorkspaceConnectionController(
+    session: 'dev',
+    connectionPool: pool,
+  );
+  addTearDown(motif.disconnect);
+  return motif;
 }
 
 MotifServer _localServerFor(HttpServer server) => MotifServer(

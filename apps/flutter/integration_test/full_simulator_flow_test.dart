@@ -11,9 +11,10 @@ import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/connection/connection_state.dart';
+import 'package:motif/motif/state/server/server_probe.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/state/workspace/workspace_instance.dart';
 import 'package:motif/motif/ui/app.dart';
@@ -28,16 +29,19 @@ void main() {
   testWidgets('welcome → server → session → terminal → files → preview → diff', (
     tester,
   ) async {
-    final probe = RpcClient()
-      ..connect(host: '127.0.0.1', port: 7777, token: '');
     try {
-      await probe.ping();
+      await const ServerProbe().ping(
+        const MotifServer(
+          id: 'probe',
+          name: 'Probe',
+          host: '127.0.0.1',
+          port: 7777,
+        ),
+      );
     } catch (_) {
-      await probe.close();
       markTestSkipped('no motifd on 127.0.0.1:7777');
       return;
     }
-    await probe.close();
 
     SharedPreferences.setMockInitialValues({});
     final app = await AppState.load();

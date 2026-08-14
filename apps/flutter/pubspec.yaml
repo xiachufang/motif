@@ -41,6 +41,7 @@ dependencies:
   package_info_plus: ^10.2.0
   web: ^1.1.1
   web_socket_channel: ^3.0.3
+  stream_channel: ^2.1.4
   archive: ^4.0.9
   file_selector: ^1.1.0
   flutter_markdown_plus: ^1.0.9
@@ -98,7 +99,6 @@ dependency_overrides:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  stream_channel: ^2.1.4
   flutter_lints: ^6.0.0
   ffigen: ^21.0.0
   flutter_driver:

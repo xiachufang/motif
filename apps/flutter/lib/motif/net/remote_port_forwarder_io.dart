@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../log/log.dart';
-import 'rpc_client.dart';
+import 'rpc_session_transport.dart';
 
 class RemotePortForwarder {
   RemotePortForwarder._({
@@ -17,7 +17,7 @@ class RemotePortForwarder {
     required this._server,
   });
 
-  final RpcClient rpc;
+  final RpcSessionTransport rpc;
   final String sessionId;
   final String remoteHost;
   final int remotePort;
@@ -33,7 +33,7 @@ class RemotePortForwarder {
       Uri(scheme: localScheme, host: '127.0.0.1', port: localPort, path: '/');
 
   static Future<RemotePortForwarder> start({
-    required RpcClient rpc,
+    required RpcSessionTransport rpc,
     required String sessionId,
     String remoteHost = '127.0.0.1',
     required int remotePort,
@@ -137,7 +137,7 @@ class _ForwardedConnection {
     required this.onDone,
   });
 
-  final RpcClient rpc;
+  final RpcSessionTransport rpc;
   final String sessionId;
   final String remoteHost;
   final int remotePort;
@@ -172,13 +172,17 @@ class _ForwardedConnection {
       cancelOnError: true,
     );
 
-    final ws = rpc.openRawWebSocket(
-      '/tcp',
-      query: {'session': sessionId, 'host': remoteHost, 'port': '$remotePort'},
-    );
-    _ws = ws;
-
+    late final WebSocketChannel ws;
     try {
+      ws = await rpc.openRawWebSocketAsync(
+        '/tcp',
+        query: {
+          'session': sessionId,
+          'host': remoteHost,
+          'port': '$remotePort',
+        },
+      );
+      _ws = ws;
       await ws.ready;
     } catch (e, st) {
       Log.w(

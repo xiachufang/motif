@@ -74,7 +74,8 @@ class _SessionMenuWorkspaceConnectionController
       live: true,
     );
     // Seed a terminal so SessionScreen's attach-if-needed path does not call
-    // createPty (which needs a live RpcClient and would toast + leave a timer).
+    // createPty (which needs a live Session transport and would toast + leave
+    // a timer).
     ptys = const [PtyInfo(id: 'pty-1', cols: 80, rows: 24)];
     views = const [ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1'))];
     activeViewId = 'v1';

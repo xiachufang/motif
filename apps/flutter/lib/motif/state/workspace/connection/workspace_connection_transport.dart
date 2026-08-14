@@ -89,12 +89,7 @@ extension _WorkspaceConnectionControllerConnection
     }
   }
 
-  Future<void> _connectImpl(
-    MotifServer server, {
-    required bool force,
-    required ProxySettings proxy,
-    required Uint8List? certPin,
-  }) async {
+  Future<void> _connectImpl({required bool force}) async {
     if (!force && (_state is ConnConnected || _state is ConnAttached)) return;
     _attachmentRuntime.reset();
     final total = Stopwatch()..start();
@@ -112,19 +107,23 @@ extension _WorkspaceConnectionControllerConnection
 
     _setState(const ConnConnecting());
 
-    final rpc = RpcClient()
-      ..connect(
-        host: server.host,
-        port: server.port,
-        scheme: server.scheme,
-        token: server.token,
-        proxy: proxy,
-        certPin: certPin,
-      );
+    final pool = _connectionPool;
+    if (pool == null) {
+      _setState(const ConnFailed('Workspace connection pool is unavailable'));
+      return;
+    }
+    final rpc = RpcSessionTransport(
+      pool.acquire(
+        ownerId:
+            'session:${pool.serverId}:$session:'
+            '${DateTime.now().microsecondsSinceEpoch}',
+        ownerKind: ConnectionOwnerKind.session,
+      ),
+    );
 
     try {
       stage = Stopwatch()..start();
-      final ping = await _pingWithRetry(rpc, server);
+      final ping = await _pingWithRetry(rpc);
       Log.i(
         'reconnect stage=ping took=${stage.elapsedMilliseconds}ms '
         'session=$session',
@@ -132,13 +131,13 @@ extension _WorkspaceConnectionControllerConnection
       );
       if (!ping.isMotifServer) {
         await rpc.close();
-        _setState(ConnFailed('Not a motif server at ${server.endpoint}'));
+        _setState(ConnFailed('Server did not identify itself as motifd'));
         return;
       }
       lastPing = ping;
     } catch (e) {
       await rpc.close();
-      _setState(ConnFailed(_friendlyError(server, e)));
+      _setState(ConnFailed(_friendlyError(e)));
       return;
     }
 
@@ -193,17 +192,15 @@ extension _WorkspaceConnectionControllerConnection
   bool _isNotAttached(Object error) =>
       error is RpcException && error.code == _kNotAttached;
 
-  Future<PingInfo> _pingWithRetry(RpcClient rpc, MotifServer server) async {
+  Future<PingInfo> _pingWithRetry(RpcSessionTransport rpc) async {
     final sw = Stopwatch()..start();
     try {
       return await rpc.ping();
     } catch (e) {
-      final delay = server.kind == ServerKind.tailscale
-          ? const Duration(milliseconds: 900)
-          : const Duration(milliseconds: 350);
+      const delay = Duration(milliseconds: 350);
       Log.w(
         'ping first attempt failed after=${sw.elapsedMilliseconds}ms '
-        'kind=${server.kind.name} retryDelay=${delay.inMilliseconds}ms',
+        'retryDelay=${delay.inMilliseconds}ms',
         name: 'motif.resume',
         error: e,
       );
@@ -290,7 +287,7 @@ extension _WorkspaceConnectionControllerConnection
     _state = state;
   }
 
-  String _friendlyError(MotifServer server, Object error) {
+  String _friendlyError(Object error) {
     if (error is RpcException) {
       if (error.code != null) {
         return 'Server error ${error.code}: ${error.message}';
@@ -298,21 +295,7 @@ extension _WorkspaceConnectionControllerConnection
       return error.message;
     }
     final message = error.toString();
-    if (server.kind == ServerKind.tailscale) {
-      return "Can't reach ${server.endpoint} over Tailscale. Check MagicDNS "
-          'and that the peer is online.\n$message';
-    }
-    if (server.kind == ServerKind.ssh) {
-      return "Can't reach ${server.endpoint} through the SSH tunnel. Check the "
-          'SSH login, remote motifd host/port, and that motifd is running.\n'
-          '$message';
-    }
-    if (server.kind == ServerKind.wsl) {
-      return "Can't reach 127.0.0.1:${server.port} through WSL. Check that the "
-          'distribution is installed and WSL localhost forwarding is enabled.\n'
-          '$message';
-    }
-    return "Can't reach ${server.endpoint}. Check the host/port and that "
+    return "Can't reach the server. Check its connection settings and that "
         'motifd is running.\n$message';
   }
 }

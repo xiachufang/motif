@@ -1,14 +1,13 @@
-/// Coordinator-style client for the motif protocol.
+/// Route-less Session transport for the motif protocol.
 ///
-/// Ported from `apps/ios/Motif/Native/RpcClient.swift`. RPC is HTTP POST to
+/// Ported from the iOS motif protocol transport. RPC is HTTP POST to
 /// `/rpc/<method>`; the `/events` WebSocket carries server notifications and is
 /// opened lazily after `session.attach`; per-PTY `/pty/<id>` WebSockets stream
 /// raw terminal bytes for whichever PTYs the platform runtime subscribes to.
 ///
-/// Transport is cross-platform: `package:http` for RPC and
-/// `package:web_socket_channel` for the WebSockets (via [connectWebSocket],
-/// which keeps header-based auth on native and degrades to query-string auth on
-/// web where the browser can't set upgrade headers).
+/// HTTP and WebSocket routing are delegated to a server-scoped
+/// [ServerConnectionHandle]. This class owns only Session attachment state,
+/// event/PTTY sockets, resume cursors, and protocol recovery.
 ///
 /// Routing (mirrors the Rust Coordinator):
 ///   - `session.attach` → POST; on success store session id + open `/events`.
@@ -22,26 +21,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../log/log.dart';
 import '../models/motif_event.dart';
 import '../models/motif_proto.dart';
+import '../state/server/server_connection_pool.dart';
 import 'pty_frame_processor.dart';
-import 'proxy_client.dart';
+import 'rpc_error.dart';
 import 'shell_integration.dart';
-import 'ws_channel.dart';
 
 export '../models/motif_event.dart' show MotifEvent;
-
-class RpcException implements Exception {
-  final String message;
-  final int? code;
-  const RpcException(this.message, {this.code});
-  @override
-  String toString() => code == null ? 'rpc: $message' : 'rpc $code: $message';
-}
+export 'rpc_error.dart' show RpcException;
 
 /// PTY close code signalling our resume cursor is unusable.
 const _kCursorTruncated = 4011;
@@ -90,26 +81,10 @@ class _PtyMeta {
   const _PtyMeta({required this.since, required this.replayBytes});
 }
 
-class RpcClient {
-  RpcClient() : _http = _createHttpClient();
+final class RpcSessionTransport {
+  RpcSessionTransport(this._connectionHandle);
 
-  static http.Client Function()? debugHttpClientFactory;
-  static WebSocketChannel Function(String url)? debugWebSocketFactory;
-
-  static http.Client _createHttpClient() =>
-      debugHttpClientFactory?.call() ?? http.Client();
-
-  http.Client _http;
-  ProxySettings _proxy = ProxySettings.none;
-
-  /// rzv end-to-end TLS cert pin (`sha256(cert.der)`), or null for plaintext
-  /// transports. Applied to the RPC http client and every PTY/events WS.
-  Uint8List? _certPin;
-
-  String _host = '';
-  int _port = 0;
-  String _scheme = 'http';
-  String _token = '';
+  final ServerConnectionHandle _connectionHandle;
 
   String? _sessionId;
 
@@ -137,26 +112,11 @@ class RpcClient {
   Stream<MotifEvent> get events => _events.stream;
 
   /// Signals that the current `/events` socket ended unexpectedly. The event
-  /// bus itself stays open so this [RpcClient] can resume the same attachment.
+  /// bus itself stays open so this transport can resume the same attachment.
   Stream<void> get sessionStreamFailures => _sessionStreamFailures.stream;
 
-  bool get isConnected => _host.isNotEmpty;
+  bool get isConnected => !_connectionHandle.isClosed;
   String? get sessionId => _sessionId;
-
-  /// Create an independent control/WS client using the same resolved route.
-  /// This keeps feature-specific sockets from disturbing the server catalog
-  /// transport or another terminal workspace.
-  RpcClient fork() {
-    if (_host.isEmpty) throw const RpcException('not connected');
-    return RpcClient()..connect(
-      host: _host,
-      port: _port,
-      token: _token,
-      scheme: _scheme,
-      proxy: _proxy,
-      certPin: _certPin,
-    );
-  }
 
   /// Actively verify the existing `/events` socket and every currently
   /// streaming PTY socket. Calls made by duplicate lifecycle callbacks join
@@ -304,31 +264,6 @@ class RpcClient {
     }
   }
 
-  Map<String, String> get _authHeaders => {
-    'Authorization': 'Bearer $_token',
-    'X-Motif-Session': ?_sessionId,
-  };
-
-  void connect({
-    required String host,
-    required int port,
-    required String token,
-    String scheme = 'http',
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) {
-    _host = host;
-    _port = port;
-    _scheme = scheme == 'https' ? 'https' : 'http';
-    _token = token;
-    _proxy = proxy;
-    _certPin = certPin;
-    if (proxy.isActive || certPin != null) {
-      _http.close();
-      _http = makeHttpClient(proxy, certPin: certPin);
-    }
-  }
-
   Future<void> close() async {
     await _closeSessionStreams();
     await _resetPtyProcessor();
@@ -337,7 +272,7 @@ class RpcClient {
     if (!_sessionStreamFailures.isClosed) {
       await _sessionStreamFailures.close();
     }
-    _http.close();
+    await _connectionHandle.close();
   }
 
   /// Drop only the current motif Session binding while keeping the HTTP
@@ -353,14 +288,7 @@ class RpcClient {
   // ─────────────────────────── HTTP RPC ───────────────────────────
 
   /// GET /ping — unauthenticated identity probe.
-  Future<PingInfo> ping() async {
-    final uri = _uri('/ping');
-    final resp = await _http.get(uri).timeout(const Duration(seconds: 8));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw RpcException('ping HTTP ${resp.statusCode}');
-    }
-    return PingInfo.fromJson(jsonDecode(resp.body) as Map<String, Object?>);
-  }
+  Future<PingInfo> ping() => _connectionHandle.ensureReady();
 
   /// Generic RPC call. Returns the decoded JSON result (`{}` when empty).
   Future<Map<String, Object?>> call(
@@ -385,40 +313,15 @@ class RpcClient {
     Map<String, Object?> params, {
     Duration? timeout,
   }) async {
-    final uri = _uri('/rpc/$method');
-    final requestTimeout =
-        timeout ??
-        (method == 'fs.write'
-            ? const Duration(seconds: 60)
-            : const Duration(seconds: 30));
-    final resp = await _http
-        .post(
-          uri,
-          headers: {..._authHeaders, 'Content-Type': 'application/json'},
-          body: jsonEncode(params),
-        )
-        .timeout(requestTimeout);
-    final sidHeader = resp.headers['x-motif-session'];
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      try {
-        final err = jsonDecode(resp.body) as Map<String, Object?>;
-        throw RpcException(
-          (err['message'] as String?) ?? 'error',
-          code: (err['code'] as num?)?.toInt(),
-        );
-      } on RpcException {
-        rethrow;
-      } catch (_) {
-        throw RpcException('HTTP ${resp.statusCode}');
-      }
-    }
-    final decoded = resp.body.isEmpty
-        ? <String, Object?>{}
-        : jsonDecode(resp.body);
-    return (
-      decoded is Map ? decoded.cast<String, Object?>() : <String, Object?>{},
-      sidHeader,
+    final response = await _connectionHandle.rpc(
+      method,
+      params: params,
+      scope: _sessionId == null
+          ? const ServerRequestScope()
+          : SessionRequestScope(_sessionId!),
+      timeout: timeout,
     );
+    return (response.body, response.sessionAttachmentId);
   }
 
   Future<Map<String, Object?>> _doAttach(Map<String, Object?> params) async {
@@ -475,31 +378,29 @@ class RpcClient {
     bool force = true,
     String? expectedSha256,
   }) async {
-    final uri = Uri(
-      scheme: _scheme,
-      host: _host,
-      port: _port,
-      path: '/rpc/fs.write',
-      queryParameters: {
-        'path': path,
-        if (force) 'force': 'true',
-        'expected_sha256': ?expectedSha256,
-      },
+    final response = await _connectionHandle.send(
+      ServerHttpRequest(
+        method: 'POST',
+        path: '/rpc/fs.write',
+        query: {
+          'path': path,
+          if (force) 'force': 'true',
+          'expected_sha256': ?expectedSha256,
+        },
+        headers: const {'Content-Type': 'application/octet-stream'},
+        body: data,
+        scope: _sessionId == null
+            ? const ServerRequestScope()
+            : SessionRequestScope(_sessionId!),
+        timeout: const Duration(seconds: 60),
+      ),
     );
-    final resp = await _http
-        .post(
-          uri,
-          headers: {
-            ..._authHeaders,
-            'Content-Type': 'application/octet-stream',
-          },
-          body: data,
-        )
-        .timeout(const Duration(seconds: 60));
-    if (resp.statusCode != 200) {
-      throw RpcException('fs.write (binary) failed: HTTP ${resp.statusCode}');
+    if (response.statusCode != 200) {
+      throw RpcException(
+        'fs.write (binary) failed: HTTP ${response.statusCode}',
+      );
     }
-    return (jsonDecode(resp.body) as Map)['sha256'] as String;
+    return (jsonDecode(response.bodyText) as Map)['sha256'] as String;
   }
 
   /// Binary `capture.take`: JSON target request, raw image/png success body.
@@ -509,24 +410,41 @@ class RpcClient {
     if (_sessionId == null) {
       throw const RpcException('must attach a session before capturing');
     }
-    final uri = _uri('/rpc/capture.take');
-    final resp = await _http
-        .post(
-          uri,
-          headers: {
-            ..._authHeaders,
-            'Content-Type': 'application/json',
-            'Accept': 'image/png',
-          },
-          body: jsonEncode({
-            'target': target.toRequestJson(),
-            'include_cursor': false,
-          }),
-        )
-        .timeout(const Duration(seconds: 30));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    final response = await _connectionHandle.send(
+      ServerHttpRequest(
+        method: 'POST',
+        path: '/rpc/capture.take',
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'image/png',
+        },
+        body: Uint8List.fromList(
+          utf8.encode(
+            jsonEncode({
+              'target': target.toRequestJson(),
+              'include_cursor': false,
+            }),
+          ),
+        ),
+        scope: SessionRequestScope(_sessionId!),
+        timeout: const Duration(seconds: 30),
+      ),
+    );
+    return _decodeCaptureResponse(
+      response.statusCode,
+      response.headers,
+      response.body,
+    );
+  }
+
+  Uint8List _decodeCaptureResponse(
+    int statusCode,
+    Map<String, String> headers,
+    Uint8List body,
+  ) {
+    if (statusCode < 200 || statusCode >= 300) {
       try {
-        final error = jsonDecode(resp.body) as Map<String, Object?>;
+        final error = jsonDecode(utf8.decode(body)) as Map<String, Object?>;
         throw RpcException(
           (error['message'] as String?) ?? 'capture failed',
           code: (error['code'] as num?)?.toInt(),
@@ -534,31 +452,31 @@ class RpcClient {
       } on RpcException {
         rethrow;
       } catch (_) {
-        throw RpcException('capture failed: HTTP ${resp.statusCode}');
+        throw RpcException('capture failed: HTTP $statusCode');
       }
     }
-    final contentType = resp.headers['content-type'] ?? '';
+    final contentType = headers['content-type'] ?? '';
     if (!contentType.toLowerCase().startsWith('image/png')) {
       throw RpcException(
         'capture returned unexpected content type: $contentType',
       );
     }
-    if (resp.bodyBytes.isEmpty) {
+    if (body.isEmpty) {
       throw const RpcException('capture returned an empty image');
     }
-    return resp.bodyBytes;
+    return body;
   }
 
   // ─────────────────────────── /events ───────────────────────────
 
-  String _wsAuthQuery() => 'token=${Uri.encodeQueryComponent(_token)}';
-
   Future<void> _openEvents(int since) async {
     final sid = _sessionId;
     if (sid == null) throw const RpcException('not connected');
-    final url =
-        '$_wsScheme://$_host:$_port/events?session=$sid&since=$since&${_wsAuthQuery()}';
-    final socket = _connectSocket(url);
+    final socket = await _openSocket(
+      '/events',
+      query: {'since': '$since'},
+      scope: SessionRequestScope(sid),
+    );
     final sw = Stopwatch()..start();
     await socket.ready;
     Log.i(
@@ -593,23 +511,17 @@ class RpcClient {
     );
   }
 
-  /// Open a raw WebSocket endpoint on motifd using this client's currently
-  /// resolved transport (direct, tailscale proxy, rendezvous loopback, or SSH
-  /// loopback). Callers own the returned channel.
-  WebSocketChannel openRawWebSocket(
+  /// Open one exclusive socket through the pooled route.
+  Future<WebSocketChannel> openRawWebSocketAsync(
     String path, {
     Map<String, String> query = const {},
-  }) {
-    if (_host.isEmpty) throw const RpcException('not connected');
-    final uri = Uri(
-      scheme: _wsScheme,
-      host: _host,
-      port: _port,
-      path: path,
-      queryParameters: {...query, 'token': _token},
-    );
-    return _connectSocket(uri.toString());
-  }
+  }) => _openSocket(
+    path,
+    query: query,
+    scope: _sessionId == null
+        ? const ServerRequestScope()
+        : SessionRequestScope(_sessionId!),
+  );
 
   void _yieldFrame(Uint8List frame) {
     try {
@@ -629,23 +541,15 @@ class RpcClient {
     if (!_events.isClosed) _events.add(e);
   }
 
-  Uri _uri(String path) =>
-      Uri(scheme: _scheme, host: _host, port: _port, path: path);
-
-  String get _wsScheme => _scheme == 'https' ? 'wss' : 'ws';
-
-  WebSocketChannel _connectSocket(String url) {
-    final debugFactory = debugWebSocketFactory;
-    if (debugFactory != null) return debugFactory(url);
-    return connectWebSocket(
-      url,
-      headers: {'Authorization': 'Bearer $_token'},
-      proxyHost: _proxy.proxyHost,
-      proxyPort: _proxy.proxyPort,
-      proxyUser: _proxy.username,
-      proxyPass: _proxy.password,
-      certPin: _certPin,
+  Future<WebSocketChannel> _openSocket(
+    String path, {
+    required Map<String, String> query,
+    required MotifRequestScope scope,
+  }) async {
+    final connection = await _connectionHandle.openWebSocket(
+      ServerWebSocketRequest(path: path, query: query, scope: scope),
     );
+    return ExclusiveWebSocketChannelAdapter(connection);
   }
 
   // ─────────────────────────── /pty/<id> ───────────────────────────
@@ -793,14 +697,19 @@ class RpcClient {
     String sid,
   ) async {
     final sw = Stopwatch()..start();
-    final sinceQuery = ch.hasCursor ? '&since=${ch.cursor}' : '';
-    final url =
-        '$_wsScheme://$_host:$_port/pty/$ptyId?session=$sid$sinceQuery&pty_frame=v1&pty_compress=zlib&${_wsAuthQuery()}';
     Log.i(
       'ws open pty=$ptyId gen=$generation since=${ch.hasCursor ? ch.cursor : "full"}',
       name: 'motif.rpc',
     );
-    final socket = _connectSocket(url);
+    final socket = await _openSocket(
+      '/pty/$ptyId',
+      query: {
+        if (ch.hasCursor) 'since': '${ch.cursor}',
+        'pty_frame': 'v1',
+        'pty_compress': 'zlib',
+      },
+      scope: SessionRequestScope(sid),
+    );
     try {
       await socket.ready;
     } catch (e, st) {
@@ -867,7 +776,7 @@ class RpcClient {
       ch.awaitingMeta = false;
       final meta = msg is String ? _parsePtyMeta(msg) : null;
       if (meta == null) {
-        unawaited(socket.sink.close(1002, 'invalid PTY metadata'));
+        unawaited(socket.sink.close(4002, 'invalid PTY metadata'));
         return;
       }
       ch.cursor = meta.since;

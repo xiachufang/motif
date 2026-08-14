@@ -4,7 +4,7 @@ import 'package:characters/characters.dart';
 
 import '../../../log/log.dart';
 import '../../../models/motif_proto.dart';
-import '../../../net/rpc_client.dart';
+import '../../../net/rpc_session_transport.dart';
 import '../../runtime/runtime_effect.dart';
 import '../../runtime/runtime_machine.dart';
 import 'view_runtime_state.dart';

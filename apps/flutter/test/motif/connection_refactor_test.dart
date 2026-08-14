@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
@@ -69,6 +67,7 @@ class _RecordingWorkspaceConnectionController
   int suspendCalls = 0;
   int disconnectCalls = 0;
   int probeCalls = 0;
+  int prepareCalls = 0;
   final List<bool> connectForces = [];
   int connectFailuresRemaining = 0;
   bool probeSupported = false;
@@ -84,12 +83,13 @@ class _RecordingWorkspaceConnectionController
   }
 
   @override
-  Future<void> connect(
-    MotifServer server, {
-    bool force = false,
-    ProxySettings proxy = ProxySettings.none,
-    Uint8List? certPin,
-  }) async {
+  Future<PingInfo> preparePooledTransport({required bool forceProbe}) async {
+    prepareCalls++;
+    return const PingInfo(service: 'motif-server', version: 'test');
+  }
+
+  @override
+  Future<void> connect({bool force = false}) async {
     connectCalls++;
     connectForces.add(force);
     if (connectFailuresRemaining > 0) {
@@ -129,20 +129,13 @@ class _RecordingWorkspaceConnectionController
 class _RecordingServerFixture {
   _RecordingServerFixture({this.refreshFailuresRemaining = 0}) {
     transport = TestServerTransport(
-      onConnect:
-          (
-            transport,
-            server, {
-            required force,
-            required proxy,
-            required certPin,
-          }) async {
-            if (connectFailuresRemaining > 0) {
-              connectFailuresRemaining--;
-              throw StateError('motifd unavailable');
-            }
-            return const PingInfo(service: 'motif-server', version: 'test');
-          },
+      onConnect: (transport, {required force}) async {
+        if (connectFailuresRemaining > 0) {
+          connectFailuresRemaining--;
+          throw StateError('motifd unavailable');
+        }
+        return const PingInfo(service: 'motif-server', version: 'test');
+      },
       onCall: (method, [params = const {}]) async {
         if (method != 'session.list') return const {};
         refreshCalls++;
@@ -208,7 +201,7 @@ PlatformServices _platform(_FakeTailscale tailscale) => PlatformServices(
 
 Future<AppState> _appWith({
   required _FakeTailscale tailscale,
-  required _RecordingServerFixture server,
+  _RecordingServerFixture? server,
   WorkspaceConnectionController? workspace,
 }) async {
   SharedPreferences.setMockInitialValues({});
@@ -228,7 +221,7 @@ Future<AppState> _appWith({
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
     platform: _platform(tailscale),
-    serverTransportFactory: (_) => server.transport,
+    serverTransportFactory: server == null ? null : (_) => server.transport,
     workspaceConnectionFactory: workspace == null ? null : (_, _) => workspace,
   );
 }
@@ -637,28 +630,23 @@ void main() {
     });
   });
 
-  test(
-    'blocked Tailscale connect does not call ServerTransport.connect',
-    () async {
-      final tailscale = _FakeTailscale(TailscaleState.stopped);
-      addTearDown(tailscale.close);
-      final server = _RecordingServerFixture();
-      final app = await _appWith(tailscale: tailscale, server: server);
-      addTearDown(app.dispose);
+  test('pool-backed Tailscale connect blocks before server RPC', () async {
+    final tailscale = _FakeTailscale(TailscaleState.stopped);
+    addTearDown(tailscale.close);
+    final app = await _appWith(tailscale: tailscale);
+    addTearDown(app.dispose);
 
-      await app.connectServer('tailnet', force: true);
+    await app.connectServer('tailnet', force: true);
 
-      expect(server.connectCalls, 0);
-      expect(app.connectionStateForServer('tailnet'), isA<ServerBlocked>());
-      expect(
-        app.serverViewState('tailnet').primaryAction,
-        ServerConnectionAction.setupTransport,
-      );
-      final transport = app.transportViewStateForServer('tailnet');
-      expect(transport.status, TransportStatus.setupNeeded);
-      expect(transport.action, TransportAction.setup);
-    },
-  );
+    expect(app.connectionStateForServer('tailnet'), isA<ServerBlocked>());
+    expect(
+      app.serverViewState('tailnet').primaryAction,
+      ServerConnectionAction.setupTransport,
+    );
+    final transport = app.transportViewStateForServer('tailnet');
+    expect(transport.status, TransportStatus.setupNeeded);
+    expect(transport.action, TransportAction.setup);
+  });
 
   test('session data updates notify only their observable property', () async {
     final tailscale = _FakeTailscale(TailscaleState.stopped);
@@ -778,7 +766,6 @@ void main() {
         host: 'motifd.tail.ts.net',
         kind: ServerKind.tailscale,
       ),
-      resolver: TransportResolver(_platform(tailscale)),
     );
     final subscription = observe(
       () => client.state,
@@ -831,7 +818,6 @@ void main() {
           host: 'motifd.tail.ts.net',
           kind: ServerKind.tailscale,
         ),
-        resolver: resolver,
       );
       final subscription = observe(
         () => client.state,
@@ -899,34 +885,8 @@ void main() {
     },
   );
 
-  test('forced reconnect rebuilds SSH forwarder', () async {
-    final tailscale = _FakeTailscale(TailscaleState.stopped);
-    addTearDown(tailscale.close);
+  test('forced reconnect re-enters shared pool readiness', () async {
     final client = _RecordingWorkspaceConnectionController();
-    final forwarders = <_FakeSshForwarder>[];
-    final resolver = TransportResolver(
-      _platform(tailscale),
-      sshForwarderFactory:
-          ({
-            required sshHost,
-            required sshPort,
-            required username,
-            required authMethod,
-            required password,
-            required privateKey,
-            required privateKeyPassphrase,
-            required remoteHost,
-            required remotePort,
-            required connectTimeout,
-          }) {
-            final fwd = _FakeSshForwarder(
-              remoteHost: remoteHost,
-              remotePort: remotePort,
-            );
-            forwarders.add(fwd);
-            return fwd;
-          },
-    );
     final controller = WorkspaceLifecycleController(
       serverId: 'ssh',
       connection: client,
@@ -940,7 +900,6 @@ void main() {
         sshUsername: 'fei',
         sshPassword: 'secret',
       ),
-      resolver: resolver,
     );
     final clientSubscription = observe(
       () => client.state,
@@ -954,8 +913,7 @@ void main() {
 
     await controller.connect(force: true);
     expect(client.connectCalls, 1);
-    expect(forwarders, hasLength(1));
-    expect(forwarders.single.startCalls, 1);
+    expect(client.prepareCalls, 1);
 
     controller.handleTransportFailure(StateError('stale tunnel'));
     await Future<void>.delayed(Duration.zero);
@@ -963,9 +921,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(client.connectCalls, 2);
-    expect(forwarders, hasLength(2));
-    expect(forwarders.first.stopCalls, 1);
-    expect(forwarders.last.startCalls, 1);
+    expect(client.prepareCalls, 2);
     expect(client.connection.phase, WorkspaceConnectionPhase.attached);
   });
 
@@ -986,7 +942,6 @@ void main() {
           host: 'motifd.tail.ts.net',
           kind: ServerKind.tailscale,
         ),
-        resolver: TransportResolver(_platform(tailscale)),
       );
       final clientSubscription = observe(
         () => client.state,
@@ -1035,7 +990,6 @@ void main() {
           host: 'motifd.tail.ts.net',
           kind: ServerKind.tailscale,
         ),
-        resolver: TransportResolver(_platform(tailscale)),
       );
       final clientSubscription = observe(
         () => client.state,
@@ -1077,7 +1031,6 @@ void main() {
         host: 'motifd.tail.ts.net',
         kind: ServerKind.tailscale,
       ),
-      resolver: TransportResolver(_platform(tailscale)),
     );
     final clientSubscription = observe(
       () => client.state,
@@ -1119,7 +1072,6 @@ void main() {
           host: 'motifd.tail.ts.net',
           kind: ServerKind.tailscale,
         ),
-        resolver: TransportResolver(_platform(tailscale)),
         retentionPolicy: const DesktopWorkspaceRetentionPolicy(),
       );
       final clientSubscription = observe(
@@ -1167,7 +1119,6 @@ void main() {
           host: 'motifd.tail.ts.net',
           kind: ServerKind.tailscale,
         ),
-        resolver: TransportResolver(_platform(tailscale)),
       );
       final clientSubscription = observe(
         () => client.state,

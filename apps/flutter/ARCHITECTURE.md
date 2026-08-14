@@ -98,8 +98,9 @@ into a mutual dependency graph.
   and delegate their reactive subtree to generated `ObservationSelect` regions.
 - Long-lived collections use stable `ObservableList`, `ObservableMap`, or
   `ObservableSet` identities and support direct mutation.
-- `RpcClient`, timers, sockets, forwarders, subscriptions, and replay buffers
-  are runtime resources and never enter the ViewModel tree.
+- `ServerConnectionPool`, `RpcSessionTransport`, timers, sockets, forwarders,
+  subscriptions, and replay buffers are runtime resources and never enter the
+  ViewModel tree.
 - `WorkspaceLifecycleController` projects reconnect metadata into the same
   `WorkspaceConnectionViewModel`; it does not keep a parallel access state.
 - Runtime phases, desired intent, retry metadata, generation/request ids, and
@@ -123,7 +124,7 @@ Push E2E key use `SecretStore`.
 UI -> ViewModels + focused feature interfaces
 AppState/registries -> ServerInstance + WorkspaceInstance
 instances/coordinators -> focused controllers -> transport interfaces
-transport implementations -> RpcClient/platform services
+transport implementations -> ServerConnectionPool/platform services
 ViewModels -> immutable DTOs/enums only
 ```
 

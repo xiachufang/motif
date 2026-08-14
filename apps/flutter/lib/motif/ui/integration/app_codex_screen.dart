@@ -44,13 +44,15 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
   }
 
   CodexAppServerClient _createConnection(AppState app) {
-    final transport = app.serverInstance(widget.serverId).transport;
-    if (transport is! RpcServerTransport) {
+    final serverTransport = app.serverInstance(widget.serverId).transport;
+    if (serverTransport is! PoolServerTransport) {
       throw const ServerTransportException(
         'This server transport cannot open Codex.',
       );
     }
-    return CodexConnectionController(transport: RpcCodexTransport(transport));
+    return CodexConnectionController(
+      transport: RpcCodexTransport(serverTransport.pool),
+    );
   }
 
   Future<void> _controlService(AppState app, CodexServiceAction action) async {

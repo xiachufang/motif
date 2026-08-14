@@ -5,11 +5,12 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/proxy_client.dart';
-import 'package:motif/motif/net/rpc_client.dart';
+import 'package:motif/motif/net/rpc_error.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
 import 'package:motif/motif/state/connection/connection_state.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
+import 'package:motif/motif/state/server/server_probe.dart';
 import 'package:motif/motif/ui/screens/connection_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/state/app/motif_scope.dart';
@@ -106,17 +107,10 @@ class _ManualServerFixture implements _ServerFixture {
 class _FailingServerFixture implements _ServerFixture {
   _FailingServerFixture() {
     transport = TestServerTransport(
-      onConnect:
-          (
-            transport,
-            server, {
-            required force,
-            required proxy,
-            required certPin,
-          }) async {
-            attempts++;
-            throw const RpcException('No response');
-          },
+      onConnect: (transport, {required force}) async {
+        attempts++;
+        throw const RpcException('No response');
+      },
     );
   }
 
@@ -185,7 +179,7 @@ void _mockDirectPing(
   Map<String, Object?> body, {
   List<Map<String, Object?>> sessions = const [],
 }) {
-  RpcClient.debugHttpClientFactory = () => MockClient((request) async {
+  ServerProbe.debugHttpClientFactory = (_, _) => MockClient((request) async {
     if (request.method == 'GET' && request.url.path == '/ping') {
       return http.Response(
         jsonEncode(body),
@@ -206,7 +200,7 @@ void _mockDirectPing(
 
 void main() {
   tearDown(() {
-    RpcClient.debugHttpClientFactory = null;
+    ServerProbe.debugHttpClientFactory = null;
   });
 
   testWidgets('shows reachable ping badge for Tailscale servers', (

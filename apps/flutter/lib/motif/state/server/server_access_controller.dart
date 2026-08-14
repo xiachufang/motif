@@ -11,11 +11,11 @@ import '../platform/tailscale_view_model.dart';
 import '../runtime/runtime_effect.dart';
 import '../runtime/runtime_machine.dart';
 import 'server_runtime_state.dart';
+import 'server_connection_pool.dart';
 import 'server_transport.dart';
 import 'server_view_models.dart';
 import 'session_catalog_controller.dart';
 import 'session_catalog_view_model.dart';
-import 'transport_resolver.dart';
 
 sealed class _ServerEvent {
   const _ServerEvent();
@@ -74,11 +74,27 @@ final class _RouteResolved extends _ServerEvent {
   });
 
   final int generation;
-  final TransportResolution resolution;
+  final _PoolReadiness resolution;
   final bool force;
   final bool reconnect;
   final int attempt;
   final bool promotion;
+}
+
+sealed class _PoolReadiness {
+  const _PoolReadiness();
+}
+
+final class _PoolReady extends _PoolReadiness {
+  const _PoolReady(this.profile);
+
+  final MotifServer profile;
+}
+
+final class _PoolBlocked extends _PoolReadiness {
+  const _PoolBlocked(this.blocker);
+
+  final ConnectionBlocker blocker;
 }
 
 final class _TransportEstablished extends _ServerEvent {
@@ -168,18 +184,14 @@ final class _ResolveRoute extends _ServerEffect {
 final class _EstablishTransport extends _ServerEffect {
   const _EstablishTransport({
     required super.generation,
-    required this.ready,
     required this.force,
     required this.reconnect,
     required this.attempt,
-    required this.promotion,
   });
 
-  final TransportReady ready;
   final bool force;
   final bool reconnect;
   final int attempt;
-  final bool promotion;
 
   @override
   Object get key => 'server-control';
@@ -246,7 +258,6 @@ final class ServerAccessController {
   ServerAccessController({
     required this.serverId,
     required this.serverProvider,
-    required this.resolver,
     required this.transport,
     required this.sessions,
     required this.viewModel,
@@ -273,7 +284,6 @@ final class ServerAccessController {
 
   final String serverId;
   final MotifServer? Function() serverProvider;
-  final TransportResolver resolver;
   final ServerTransport transport;
   final SessionCatalogController sessions;
   final ServerAccessViewModel viewModel;
@@ -329,11 +339,16 @@ final class ServerAccessController {
     _machine.dispatch(_ExternalTransportFailure(error));
   }
 
-  void handleTailscaleState(TailscaleState _) {
+  void handleTailscaleState(TailscaleState state) {
     final server = serverProvider();
     if (server == null || server.kind != ServerKind.tailscale) return;
+    final transportState = TransportViewState.tailscale(server, state);
     _machine.dispatch(
-      _TransportAvailabilityChanged(resolver.currentBlocker(server)),
+      _TransportAvailabilityChanged(
+        transportState.isReady
+            ? null
+            : ConnectionBlocker.fromTransport(transportState),
+      ),
     );
   }
 
@@ -350,8 +365,6 @@ final class ServerAccessController {
     }
     _operationWaiters.clear();
     _disconnectWaiters.clear();
-    unawaited(resolver.stopForwarder(serverId));
-    resolver.forgetRzvDirect(serverId);
   }
 
   RuntimeTransition<ServerRuntimeState, _ServerEffect> _reduce(
@@ -501,26 +514,24 @@ final class ServerAccessController {
         return RuntimeTransition(state);
       }
       return switch (event.resolution) {
-        TransportBlocked(:final blocker) => RuntimeTransition(
+        _PoolBlocked(:final blocker) => RuntimeTransition(
           ServerRuntimeBlocked(generation: event.generation, blocker: blocker),
         ),
-        final TransportReady ready => RuntimeTransition(
+        _PoolReady(:final profile) => RuntimeTransition(
           ServerRuntimeEstablishing(
             generation: event.generation,
             attempt: event.attempt,
             reconnect: event.reconnect,
-            target: ready.target,
+            target: profile,
             force: event.force,
             promotion: event.promotion,
           ),
           effects: [
             _EstablishTransport(
               generation: event.generation,
-              ready: ready,
               force: event.force,
               reconnect: event.reconnect,
               attempt: event.attempt,
-              promotion: event.promotion,
             ),
           ],
         ),
@@ -703,8 +714,19 @@ final class ServerAccessController {
       ):
         final server = serverProvider();
         if (server == null) throw StateError('Unknown server: $serverId');
-        if (force || reconnect) await resolver.stopForwarder(server.id);
-        final resolution = await resolver.resolve(server);
+        late final _PoolReadiness resolution;
+        if (transport case final PoolServerTransport pooled) {
+          try {
+            await pooled.ensureReady(forceProbe: force || reconnect);
+            // The real target/proxy/pin stay inside the pool. This ready value
+            // is only a state-machine token for the establish transition.
+            resolution = _PoolReady(server);
+          } on ServerConnectionBlockedException catch (error) {
+            resolution = _PoolBlocked(error.blocker);
+          }
+        } else {
+          resolution = _PoolReady(server);
+        }
         if (!context.isCurrent) return null;
         return _RouteResolved(
           generation: generation,
@@ -716,31 +738,17 @@ final class ServerAccessController {
         );
       case _EstablishTransport(
         :final generation,
-        :final ready,
         :final force,
         :final reconnect,
         :final attempt,
-        :final promotion,
       ):
-        final ping = await transport.connect(
-          ready.target,
-          force: force || reconnect,
-          proxy: ready.proxy,
-          certPin: ready.certPin,
-        );
+        await transport.connect(force: force || reconnect);
         if (!context.isCurrent) return null;
-        final server = serverProvider();
-        final promote =
-            !promotion &&
-            !kIsWeb &&
-            server != null &&
-            server.kind == ServerKind.rendezvous &&
-            resolver.learnRzvDirect(server, ping);
         return _TransportEstablished(
           generation: generation,
           attempt: attempt,
           reconnect: reconnect,
-          promoteRendezvous: promote,
+          promoteRendezvous: false,
         );
       case _LoadCatalog(:final generation):
         final loaded = await sessions.fetch();
@@ -757,12 +765,18 @@ final class ServerAccessController {
         if (!context.isCurrent) return null;
         return _RetryDue(generation: generation, attempt: attempt);
       case _DisconnectTransport(:final generation):
-        await transport.close();
-        await resolver.stopForwarder(serverId);
-        resolver.forgetRzvDirect(serverId);
+        if (transport case final PoolServerTransport pooled) {
+          await pooled.disconnectAll(forgetLearnedRoute: true);
+        } else {
+          await transport.close();
+        }
         return _DisconnectCompleted(generation: generation);
       case _CloseTransport(:final generation):
-        await transport.close();
+        if (transport case final PoolServerTransport pooled) {
+          await pooled.disconnectAll();
+        } else {
+          await transport.close();
+        }
         return _TransportClosed(generation: generation);
     }
   }

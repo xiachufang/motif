@@ -1,4 +1,4 @@
-import 'rpc_client.dart';
+import 'rpc_session_transport.dart';
 
 class RemotePortForwarder {
   RemotePortForwarder._();
@@ -10,7 +10,7 @@ class RemotePortForwarder {
       throw UnsupportedError('remote port forwarding is not available on web');
 
   static Future<RemotePortForwarder> start({
-    required RpcClient rpc,
+    required RpcSessionTransport rpc,
     required String sessionId,
     String remoteHost = '127.0.0.1',
     required int remotePort,

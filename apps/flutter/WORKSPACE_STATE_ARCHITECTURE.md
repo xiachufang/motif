@@ -71,7 +71,8 @@ generation/operation id 共同拒绝迟到结果。可取消 delay 取代 Contro
 Timer，资源仍由 Controller/Service adapter 持有并绑定节点生命周期。
 
 进入 Runtime state 的内容包括 desired connection、连接/刷新阶段、retry attempt、
-request id、pending operation ownership 和可判断的错误。Socket、RpcClient、FFI handle、
+request id、pending operation ownership 和可判断的错误。Socket、
+RpcSessionTransport、ServerConnectionPool、FFI handle、
 Timer 实例、Completer、terminal cells/bytes、Picture cache 与 secret 内容都不是状态节点；
 它们是 effect/resource 层或数据面，由 state 中的 identity/generation 约束。
 
@@ -776,7 +777,8 @@ Immutable protocol DTO 和 enum 可以作为 observable property 的值存在，
 以下对象不是 ViewModel state：
 
 ```text
-RpcClient
+RpcSessionTransport
+ServerConnectionPool
 Timer
 Future / Completer
 StreamSubscription
@@ -851,7 +853,7 @@ flowchart TD
     Features --> Transport[Transport interfaces]
     Features --> VM
 
-    Transport --> Net[RpcClient and network adapters]
+    Transport --> Net[ServerConnectionPool and network adapters]
     Features --> Platform[Platform services]
 
     VM --> Values[Immutable DTOs and enums]

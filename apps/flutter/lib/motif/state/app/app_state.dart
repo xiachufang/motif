@@ -4,6 +4,9 @@
 /// Exposed to the widget tree through an Observation scope.
 library;
 
+// Constructor injection stays public while the stored factories are private.
+// ignore_for_file: prefer_initializing_formals
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui' as ui;
@@ -42,6 +45,7 @@ import '../server/server_access_controller.dart';
 import '../workspace/workspace_lifecycle_controller.dart';
 import '../workspace/workspace_retention_policy.dart';
 import '../server/server_instance.dart';
+import '../server/server_connection_pool.dart';
 import '../server/server_runtime_state.dart';
 import '../server/server_transport.dart';
 import '../server/server_view_models.dart';
@@ -73,14 +77,16 @@ class AppState {
   late final AppShellViewModel shell;
   late final ServerRegistryViewModel serverRegistryViewModel;
   late final AppViewModel viewModel;
-  final ServerTransport Function(MotifServer server) _serverTransportFactory;
+  final ServerTransport Function(MotifServer server)? _serverTransportFactory;
   final WorkspaceConnectionController Function(
     MotifServer server,
     String session,
-  )
+  )?
   _workspaceConnectionFactory;
+  final TerminalRuntimePolicy? _terminalRuntime;
   final WorkspaceRetentionPolicy _workspaceRetentionPolicy;
   late final TransportResolver _transportResolver;
+  late final ServerConnectionPoolRegistry connectionPools;
   late final PushCoordinator _pushCoordinator;
   late final AppRuntimeController _runtime;
   final Map<String, ServerInstance> _serverInstances = {};
@@ -172,18 +178,17 @@ class AppState {
     TerminalRuntimePolicy? terminalRuntime,
     WorkspaceRetentionPolicy? workspaceRetentionPolicy,
   }) : startupActiveServerId = servers.activeId,
-       _serverTransportFactory =
-           serverTransportFactory ?? ((_) => RpcServerTransport()),
-       _workspaceConnectionFactory =
-           workspaceConnectionFactory ??
-           ((_, session) => WorkspaceConnectionController(
-             session: session,
-             runtime: terminalRuntime,
-           )),
+       _serverTransportFactory = serverTransportFactory,
+       _workspaceConnectionFactory = workspaceConnectionFactory,
+       _terminalRuntime = terminalRuntime,
        _workspaceRetentionPolicy =
            workspaceRetentionPolicy ?? const MobileWorkspaceRetentionPolicy() {
     shell = AppShellViewModel(sidebar: sessionSidebar);
     _transportResolver = TransportResolver(platform);
+    connectionPools = ServerConnectionPoolRegistry(
+      serverProvider: serverById,
+      resolver: _transportResolver,
+    );
     serverRegistryViewModel = ServerRegistryViewModel(
       activeServerId: servers.activeId,
       order: ObservableList(),
@@ -416,7 +421,9 @@ class AppState {
     if (profile == null) throw StateError('Unknown server: $serverId');
     _syncServerViewModels();
     final viewModel = serverRegistryViewModel.entries[serverId]!;
-    final transport = _serverTransportFactory(profile);
+    final transport =
+        _serverTransportFactory?.call(profile) ??
+        PoolServerTransport(connectionPools.poolFor(serverId));
     final sessions = SessionCatalogController(
       viewModel: viewModel.sessions,
       transport: SessionCatalogTransport(
@@ -444,7 +451,6 @@ class AppState {
     final access = ServerAccessController(
       serverId: serverId,
       serverProvider: () => serverById(serverId),
-      resolver: _transportResolver,
       transport: transport,
       sessions: sessions,
       viewModel: viewModel.access,
@@ -466,6 +472,9 @@ class AppState {
 
   WorkspaceInstance? existingWorkspace(String serverId, String session) =>
       _workspaces.instanceFor((serverId: serverId, session: session));
+
+  ServerConnectionPool connectionPoolFor(String serverId) =>
+      connectionPools.poolFor(serverId);
 
   WorkspaceInstance workspaceForSession(String serverId, String session) {
     final profile = serverById(serverId);
@@ -539,15 +548,19 @@ class AppState {
   }
 
   WorkspaceInstance _createWorkspace(MotifServer profile, WorkspaceKey key) {
-    final connection = _workspaceConnectionFactory(profile, key.session);
+    final connection =
+        _workspaceConnectionFactory?.call(profile, key.session) ??
+        WorkspaceConnectionController(
+          session: key.session,
+          connectionPool: connectionPools.poolFor(profile.id),
+          runtime: _terminalRuntime,
+        );
     connection.onSessionRenamed = (customName) =>
         _applySessionCustomName(key.serverId, key.session, customName);
-    final resolver = TransportResolver(platform);
     final lifecycle = WorkspaceLifecycleController(
       serverId: profile.id,
       connection: connection,
       serverProvider: () => serverById(profile.id),
-      resolver: resolver,
       retentionPolicy: _workspaceRetentionPolicy,
     );
     final instance = WorkspaceInstance.compose(
@@ -1007,6 +1020,7 @@ class AppState {
   }
 
   void _applyRuntimeLifecycle(bool foreground) {
+    connectionPools.setForeground(foreground);
     if (!foreground) {
       for (final instance in _serverInstances.values) {
         instance.access.handleAppPaused();
@@ -1190,6 +1204,7 @@ class AppState {
       final instance = _serverInstances.remove(id)!;
       _pushCoordinator.removeServer(id);
       unawaited(instance.close().whenComplete(instance.dispose));
+      unawaited(connectionPools.remove(id));
     }
   }
 
@@ -1213,5 +1228,6 @@ class AppState {
       instance.dispose();
     }
     _serverInstances.clear();
+    unawaited(connectionPools.dispose());
   }
 }

@@ -9,7 +9,7 @@ import '../connection/connection_state.dart';
 import '../platform/tailscale_view_model.dart';
 import '../runtime/runtime_effect.dart';
 import '../runtime/runtime_machine.dart';
-import '../server/transport_resolver.dart';
+import '../server/server_connection_pool.dart';
 import 'connection/workspace_connection_controller.dart';
 import 'connection/workspace_connection_view_model.dart';
 import 'workspace_retention_policy.dart';
@@ -87,12 +87,26 @@ final class _RouteResolved extends _WorkspaceEvent {
   });
 
   final int generation;
-  final TransportResolution resolution;
+  final _PoolReadiness resolution;
   final bool force;
   final bool reconnect;
   final int attempt;
   final bool promotion;
   final bool shouldSuspend;
+}
+
+sealed class _PoolReadiness {
+  const _PoolReadiness();
+}
+
+final class _PoolReady extends _PoolReadiness {
+  const _PoolReady();
+}
+
+final class _PoolBlocked extends _PoolReadiness {
+  const _PoolBlocked(this.blocker);
+
+  final ConnectionBlocker blocker;
 }
 
 final class _TransportEstablished extends _WorkspaceEvent {
@@ -179,16 +193,12 @@ final class _ResolveRoute extends _WorkspaceEffect {
 final class _EstablishTransport extends _WorkspaceEffect {
   const _EstablishTransport({
     required super.generation,
-    required this.ready,
     required this.force,
     required this.reconnect,
-    required this.promotion,
   });
 
-  final TransportReady ready;
   final bool force;
   final bool reconnect;
-  final bool promotion;
 
   @override
   Object get key => 'workspace-control';
@@ -263,8 +273,9 @@ final class _SetForeground extends _WorkspaceEffect {
 /// Hierarchical runtime node for one fixed `(serverId, session)` workspace.
 ///
 /// The machine is authoritative for connection intent, focus/app activity,
-/// route resolution, retry and blocking. [WorkspaceConnectionController]
-/// remains the resource adapter that owns RpcClient and feature controllers.
+/// retry and blocking. Route resolution stays inside the server-scoped pool;
+/// [WorkspaceConnectionController] owns only Session protocol state and
+/// feature controllers.
 final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
   static const Duration _reconnectBaseDelay = Duration(milliseconds: 500);
   static const Duration _reconnectMaxDelay = Duration(seconds: 30);
@@ -273,7 +284,6 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
     required this.serverId,
     required this.connection,
     required this.serverProvider,
-    required this.resolver,
     WorkspaceRetentionPolicy? retentionPolicy,
   }) : retentionPolicy =
            retentionPolicy ?? const MobileWorkspaceRetentionPolicy() {
@@ -314,7 +324,6 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
   final String serverId;
   final WorkspaceConnectionController connection;
   final MotifServer? Function() serverProvider;
-  final TransportResolver resolver;
   final WorkspaceRetentionPolicy retentionPolicy;
 
   late final RuntimeMachine<
@@ -367,12 +376,15 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
     return !identical(previous, _machine.state);
   }
 
-  void handleTailscaleState(TailscaleState _) {
+  void handleTailscaleState(TailscaleState state) {
     final server = serverProvider();
     if (server == null || server.kind != ServerKind.tailscale) return;
+    final transport = TransportViewState.tailscale(server, state);
     _machine.dispatch(
       _TransportAvailabilityChanged(
-        blocker: resolver.currentBlocker(server),
+        blocker: transport.isReady
+            ? null
+            : ConnectionBlocker.fromTransport(transport),
         shouldSuspend: connection.isLive || connection.hasTerminalSnapshot,
       ),
     );
@@ -387,10 +399,9 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
 
   @override
   void handleMobileAppResumed() {
-    final server = serverProvider();
     _machine.dispatch(
       _AppResumed(
-        server == null ? null : resolver.currentBlocker(server),
+        connection.connectionBlocker,
         shouldSuspend: connection.isLive || connection.hasTerminalSnapshot,
       ),
     );
@@ -419,8 +430,6 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
     }
     _operationWaiters.clear();
     _disconnectWaiters.clear();
-    unawaited(resolver.stopForwarder(serverId));
-    resolver.forgetRzvDirect(serverId);
   }
 
   RuntimeTransition<WorkspaceRuntimeState, _WorkspaceEffect> _reduce(
@@ -593,7 +602,7 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
         return RuntimeTransition(state);
       }
       return switch (event.resolution) {
-        TransportBlocked(:final blocker) => RuntimeTransition(
+        _PoolBlocked(:final blocker) => RuntimeTransition(
           state.copyWith(
             link: WorkspaceLinkBlocked(
               blocker: blocker,
@@ -608,7 +617,7 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
               ),
           ],
         ),
-        final TransportReady ready => RuntimeTransition(
+        _PoolReady() => RuntimeTransition(
           state.copyWith(
             link: WorkspaceLinkEstablishing(
               attempt: event.attempt,
@@ -621,10 +630,8 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
           effects: [
             _EstablishTransport(
               generation: event.generation,
-              ready: ready,
               force: event.force,
               reconnect: event.reconnect,
-              promotion: event.promotion,
             ),
           ],
         ),
@@ -912,8 +919,17 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
       ):
         final server = serverProvider();
         if (server == null) throw StateError('Unknown server: $serverId');
-        if (force || reconnect) await resolver.stopForwarder(server.id);
-        final resolution = await resolver.resolve(server);
+        late final _PoolReadiness resolution;
+        try {
+          await connection.preparePooledTransport(
+            forceProbe: force || reconnect,
+          );
+          // The real route/proxy/pin stay inside the pool. This value is only
+          // a state-machine token for the establish transition.
+          resolution = const _PoolReady();
+        } on ServerConnectionBlockedException catch (error) {
+          resolution = _PoolBlocked(error.blocker);
+        }
         if (!context.isCurrent) return null;
         return _RouteResolved(
           generation: generation,
@@ -926,30 +942,17 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
         );
       case _EstablishTransport(
         :final generation,
-        :final ready,
         :final force,
         :final reconnect,
-        :final promotion,
       ):
-        await connection.connect(
-          ready.target,
-          force: force || reconnect,
-          proxy: ready.proxy,
-          certPin: ready.certPin,
-        );
+        await connection.connect(force: force || reconnect);
         if (!context.isCurrent) return null;
         final server = serverProvider();
-        final promote =
-            !promotion &&
-            !kIsWeb &&
-            server != null &&
-            server.kind == ServerKind.rendezvous &&
-            resolver.learnRzvDirect(server, connection.lastPing);
         return _TransportEstablished(
           generation: generation,
           status: connection.state,
           transportAvailable: connection.connection.transportAvailable,
-          promoteRendezvous: promote,
+          promoteRendezvous: false,
           serverKind: server?.kind ?? ServerKind.direct,
         );
       case _RecoverTransport(
@@ -967,8 +970,6 @@ final class WorkspaceLifecycleController implements WorkspaceRetentionHost {
         return _RetryDue(generation: generation, attempt: attempt);
       case _DisconnectTransport(:final generation):
         await connection.disconnect();
-        await resolver.stopForwarder(serverId);
-        resolver.forgetRzvDirect(serverId);
         return _DisconnectCompleted(generation: generation);
       case _SuspendTransport(:final generation, :final reason):
         await connection.suspendTransport(reason);

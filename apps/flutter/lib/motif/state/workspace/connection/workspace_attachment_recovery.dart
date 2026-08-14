@@ -3,7 +3,7 @@ part of 'workspace_connection_controller.dart';
 /// Attachment recovery shared by focused feature transports.
 extension _WorkspaceConnectionControllerRecovery
     on WorkspaceConnectionController {
-  Future<RpcClient?> _waitForAttachedRpc() async {
+  Future<RpcSessionTransport?> _waitForAttachedRpc() async {
     if (_attachmentRuntime.isBusy) {
       try {
         await _attachmentRuntime.waitForSettled();
@@ -49,7 +49,7 @@ extension _WorkspaceConnectionControllerRecovery
   }
 
   Future<void> _runAttachedTerminalRpc(
-    Future<void> Function(RpcClient rpc) operation,
+    Future<void> Function(RpcSessionTransport rpc) operation,
   ) async {
     final rpc = await _waitForAttachedRpc();
     if (rpc == null) return;

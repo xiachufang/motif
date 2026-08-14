@@ -417,7 +417,7 @@ class TransportResolver {
 
   /// Bring up (or reuse) a loopback forwarder that pairs with `motifd` through
   /// the relay, then connect to it as if it were a plain local server. The
-  /// rest of the stack (RpcClient/WebSocket) is unaware of the rendezvous hop.
+  /// rest of the stack is unaware of the rendezvous hop.
   Future<TransportResolution> _resolveRendezvous(MotifServer server) async {
     final relay = MotifServer.splitRelayEndpoint(server.relay);
     if (relay == null) {
