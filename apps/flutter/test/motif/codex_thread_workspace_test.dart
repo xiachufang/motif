@@ -784,11 +784,10 @@ void main() {
         ..['id'] = 'next-thread'
         ..['sessionId'] = 'next-thread';
       client.thread = CodexThread.fromJson(nextThreadJson);
-      state.conversations.registerThread(
-        client.thread,
-        kind: CodexThreadSessionKind.persisted,
-      );
+      await state.refreshCatalog(showLoading: false);
       await state.readThread('next-thread');
+      expect(state.selectedThread?.id, 'next-thread');
+      expect(state.viewModel.selectedThread?.id, 'next-thread');
       await tester.pump();
       await tester.pump();
 
@@ -832,6 +831,7 @@ void main() {
       ),
       'older-page': CodexThreadTurnsListResponse(data: [olderTurn]),
     };
+    await state.refreshCatalog(showLoading: false);
     await state.readThread('thread');
 
     await tester.pumpWidget(
@@ -2804,12 +2804,7 @@ CodexServiceState workspaceState(WorkspaceFakeClient client) {
     updatedAt: 1,
   );
   client.thread = thread;
-  final state = CodexServiceState(serverId: 'server', connection: client);
-  state.conversations.registerThread(
-    thread,
-    kind: CodexThreadSessionKind.persisted,
-  );
-  return state
+  return CodexServiceState(serverId: 'server', connection: client)
     ..selectedThread = thread
     ..turns = turns
     ..models = const [
