@@ -343,6 +343,8 @@ void main() {
 
     await tester.tap(find.byTooltip('Add Server'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Enter Manually'));
+    await tester.pumpAndSettle();
     await tester.enterText(_fieldWithLabel('Name'), 'Tailnet');
     await tester.enterText(_fieldWithLabel('Host'), 'motifd.tail.ts.net');
     await tester.pumpAndSettle();
@@ -372,6 +374,8 @@ void main() {
     await _pumpConnectionScreen(tester, app);
 
     await tester.tap(find.byTooltip('Add Server'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enter Manually'));
     await tester.pumpAndSettle();
     expect(find.text('Save without connecting'), findsNothing);
     await tester.enterText(_fieldWithLabel('Name'), 'Tailnet');

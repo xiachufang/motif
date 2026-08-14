@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
@@ -10,21 +9,6 @@ import '../widgets/adaptive_modal.dart';
 import 'rzv_scan_screen.dart';
 
 part 'rzv_pairing_sheet.g.dart';
-
-/// Whether camera QR scanning is available on this platform. mobile_scanner
-/// supports iOS / Android / macOS / web; desktop Linux/Windows fall back to
-/// pasting the link.
-bool get _scanSupported {
-  if (kIsWeb) return true;
-  switch (defaultTargetPlatform) {
-    case TargetPlatform.iOS:
-    case TargetPlatform.android:
-    case TargetPlatform.macOS:
-      return true;
-    default:
-      return false;
-  }
-}
 
 /// Add a rendezvous server by pasting the `motif://pair?...` link that
 /// `motifd --rzv-relay` prints (as a QR + a link). Returns the new server's id
@@ -83,10 +67,10 @@ class _RzvPairingSheet extends _$_RzvPairingSheet {
     TextEditingController controller,
     _RzvPairingViewModel viewModel,
   ) async {
-    final link = await showRzvScanScreen(context);
-    if (link == null || !context.mounted) return;
-    controller.text = link;
-    _onChanged(viewModel, link);
+    final result = await showRzvScanScreen(context);
+    if (result is! RzvScannedLink || !context.mounted) return;
+    controller.text = result.link;
+    _onChanged(viewModel, result.link);
   }
 
   Future<void> _pair(
@@ -140,7 +124,7 @@ class _RzvPairingSheet extends _$_RzvPairingSheet {
             style: MotifType.subhead.copyWith(color: c.textSecondary),
           ),
           const SizedBox(height: MotifSpacing.md),
-          if (_scanSupported) ...[
+          if (rzvScanSupported) ...[
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(

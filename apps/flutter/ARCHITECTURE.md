@@ -3,6 +3,9 @@
 This is the high-level implementation overview. The complete Observable state
 tree, ownership rules, and collection semantics are documented in
 [WORKSPACE_STATE_ARCHITECTURE.md](WORKSPACE_STATE_ARCHITECTURE.md).
+The planned separation of the desktop Client and embedded-Server windows,
+including the Flutter 3.47 experimental-support boundary, is documented in
+[DESKTOP_WINDOW_ARCHITECTURE.md](DESKTOP_WINDOW_ARCHITECTURE.md).
 
 Motif is a Flutter shell around remote motifd servers, the Ghostty terminal
 engine, and optional native platform services. Boundaries are enforced by

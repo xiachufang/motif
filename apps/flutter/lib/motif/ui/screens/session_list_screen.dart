@@ -21,9 +21,9 @@ import '../widgets/observation_select.dart';
 import '../widgets/rename_dialog.dart';
 import '../widgets/tailscale_section.dart';
 import '../widgets/top_toast.dart';
+import 'add_server_flow.dart';
 import 'create_session_dialog.dart';
 import '../integration/app_codex_screen.dart';
-import 'rzv_pairing_sheet.dart';
 import 'server_edit_sheet.dart';
 import 'session_list_settings_sheet.dart';
 import 'session_screen.dart';
@@ -124,17 +124,9 @@ class _SessionListScreenState extends State<SessionListScreen>
   }
 
   Future<void> _addAndConnectServer() async {
-    final result = await showServerEditSheet(context, connectOnSave: true);
+    final result = await showAddServerFlow(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
     await _connectServer(result.server);
-  }
-
-  Future<void> _pairAndConnectServer() async {
-    final id = await showRzvPairingSheet(context);
-    if (id == null || !mounted) return;
-    final server = readObservationScope<AppState>(context).serverById(id);
-    if (server == null) return;
-    await _connectServer(server);
   }
 
   Future<void> _connectServer(MotifServer server) async {
@@ -158,7 +150,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         await showServerEditSheet(context, existing: server);
         return;
       case ServerKind.rendezvous:
-        await _pairAndConnectServer();
+        await showServerEditSheet(context, existing: server);
         return;
       case ServerKind.direct:
         return;
@@ -199,7 +191,6 @@ class _SessionListScreenState extends State<SessionListScreen>
                 key: const ValueKey('session-list-empty'),
                 app: app,
                 onAddServer: _addAndConnectServer,
-                onPairServer: _pairAndConnectServer,
                 onConnectServer: _connectServer,
                 onSetupTransport: _setupTransport,
               )
@@ -712,14 +703,12 @@ class _ServerHeaderActions extends _$_ServerHeaderActions {
 class _SessionListEmptyState extends _$_SessionListEmptyState {
   final AppState app;
   final Future<void> Function() onAddServer;
-  final Future<void> Function() onPairServer;
   final Future<void> Function(MotifServer server) onConnectServer;
   final Future<void> Function(MotifServer server) onSetupTransport;
 
   const _SessionListEmptyState({
     required this.app,
     required this.onAddServer,
-    required this.onPairServer,
     required this.onConnectServer,
     required this.onSetupTransport,
     super.key,
@@ -818,11 +807,6 @@ class _SessionListEmptyState extends _$_SessionListEmptyState {
                         icon: const Icon(Icons.info_outline),
                         label: const Text('Details'),
                       ),
-                    OutlinedButton.icon(
-                      onPressed: () => unawaited(onPairServer()),
-                      icon: const Icon(Icons.qr_code_2),
-                      label: const Text('Pair with Link'),
-                    ),
                     OutlinedButton.icon(
                       onPressed: () => openConnectionManager(context),
                       icon: const Icon(Icons.tune),

@@ -17,7 +17,7 @@ import '../widgets/connection_details_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/motif_status_badge.dart';
 import '../widgets/tailscale_section.dart';
-import 'rzv_pairing_sheet.dart';
+import 'add_server_flow.dart';
 import 'server_edit_sheet.dart';
 
 part 'connection_screen.g.dart';
@@ -27,29 +27,11 @@ part 'connection_screen.g.dart';
 class ConnectionScreen extends _$ConnectionScreen {
   const ConnectionScreen({super.key});
 
-  Future<void> _addServer(
-    BuildContext context,
-    AppState app, {
-    ServerKind? initialKind,
-  }) async {
-    final result = await showServerEditSheet(
-      context,
-      initialKind: initialKind,
-      connectOnSave: true,
-    );
+  Future<void> _addServer(BuildContext context, AppState app) async {
+    final result = await showAddServerFlow(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
     if (!context.mounted) return;
     await _connectServer(context, app, result.server);
-  }
-
-  /// Pair a rendezvous server from a scanned/pasted `motif://pair` link, then
-  /// connect to it.
-  Future<void> _pairServer(BuildContext context, AppState app) async {
-    final id = await showRzvPairingSheet(context);
-    if (id == null || !context.mounted) return;
-    final server = app.serverById(id);
-    if (server == null) return;
-    await _connectServer(context, app, server);
   }
 
   Future<void> _connectServer(
@@ -61,7 +43,7 @@ class ConnectionScreen extends _$ConnectionScreen {
     if (context.mounted &&
         app.serverViewState(server.id).primaryAction ==
             ServerConnectionAction.setupTransport) {
-      _setupTransport(context, app, server);
+      _setupTransport(context, server);
     }
   }
 
@@ -87,7 +69,7 @@ class ConnectionScreen extends _$ConnectionScreen {
         unawaited(app.disconnectServer(server.id));
         return;
       case ServerConnectionAction.setupTransport:
-        _setupTransport(context, app, server);
+        _setupTransport(context, server);
         return;
       case ServerConnectionAction.openSessions:
         _openSessions(context);
@@ -95,7 +77,7 @@ class ConnectionScreen extends _$ConnectionScreen {
     }
   }
 
-  void _setupTransport(BuildContext context, AppState app, MotifServer server) {
+  void _setupTransport(BuildContext context, MotifServer server) {
     switch (server.kind) {
       case ServerKind.tailscale:
         if (tailscaleSupported) showTailscaleConnectionSheet(context);
@@ -105,7 +87,7 @@ class ConnectionScreen extends _$ConnectionScreen {
         unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.rendezvous:
-        unawaited(_pairServer(context, app));
+        unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.direct:
         return;
@@ -141,11 +123,6 @@ class ConnectionScreen extends _$ConnectionScreen {
             headerTrailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  icon: const Icon(Icons.qr_code_2),
-                  tooltip: 'Pair with link',
-                  onPressed: () => unawaited(_pairServer(context, app)),
-                ),
                 IconButton(
                   icon: const Icon(Icons.add),
                   tooltip: 'Add Server',

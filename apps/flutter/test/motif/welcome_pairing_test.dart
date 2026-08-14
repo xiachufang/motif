@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/test_server_transport.dart';
 
 void main() {
-  testWidgets('first-run welcome screen can open the pairing sheet', (
+  testWidgets('first-run welcome screen opens the unified add flow', (
     tester,
   ) async {
     SharedPreferences.setMockInitialValues({});
@@ -26,12 +26,12 @@ void main() {
     await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
     await tester.pump();
 
-    expect(find.text('Scan or paste a pairing link'), findsOneWidget);
+    expect(find.text('Add Server'), findsOneWidget);
 
-    await tester.tap(find.text('Scan or paste a pairing link'));
+    await tester.tap(find.text('Add Server'));
     await tester.pumpAndSettle();
 
-    // The pairing sheet is up.
-    expect(find.text('Pair with a server'), findsOneWidget);
+    expect(find.text('Scan QR Code'), findsOneWidget);
+    expect(find.text('Enter Manually'), findsOneWidget);
   });
 }

@@ -10,7 +10,7 @@ import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/tailscale_section.dart';
-import 'rzv_pairing_sheet.dart';
+import 'add_server_flow.dart';
 import 'server_edit_sheet.dart';
 
 part 'welcome_screen.g.dart';
@@ -20,16 +20,9 @@ part 'welcome_screen.g.dart';
 class WelcomeScreen extends _$WelcomeScreen {
   const WelcomeScreen({super.key});
 
-  Future<void> _connectServer(
-    BuildContext context, {
-    ServerKind? initialKind,
-  }) async {
+  Future<void> _connectServer(BuildContext context) async {
     final app = readObservationScope<AppState>(context);
-    final result = await showServerEditSheet(
-      context,
-      initialKind: initialKind,
-      connectOnSave: true,
-    );
+    final result = await showAddServerFlow(context, connectOnSave: true);
     if (result == null || !result.connectAfterSave) return;
     await app.connectServerAndRefresh(result.server.id, force: true);
     if (context.mounted &&
@@ -37,13 +30,6 @@ class WelcomeScreen extends _$WelcomeScreen {
             ServerConnectionAction.setupTransport) {
       _setupTransport(context, result.server);
     }
-  }
-
-  Future<void> _pairServer(BuildContext context) async {
-    final app = readObservationScope<AppState>(context);
-    final id = await showRzvPairingSheet(context);
-    if (id == null || !context.mounted) return;
-    await app.connectServerAndRefresh(id, force: true);
   }
 
   void _setupTransport(BuildContext context, MotifServer server) {
@@ -56,7 +42,7 @@ class WelcomeScreen extends _$WelcomeScreen {
         unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.rendezvous:
-        unawaited(_pairServer(context));
+        unawaited(showServerEditSheet(context, existing: server));
         return;
       case ServerKind.direct:
         return;
@@ -118,21 +104,10 @@ class WelcomeScreen extends _$WelcomeScreen {
                     color: c.accent,
                     size: MotifIconSize.md,
                   ),
-                  title: 'Connect a Server',
+                  title: 'Add Server',
                   titleColor: c.accent,
                   titleWeight: FontWeight.w700,
                   onTap: () => unawaited(_connectServer(context)),
-                ),
-                MotifSectionRow(
-                  leading: Icon(
-                    Icons.qr_code_2,
-                    color: c.accent,
-                    size: MotifIconSize.md,
-                  ),
-                  title: 'Scan or paste a pairing link',
-                  titleColor: c.accent,
-                  titleWeight: FontWeight.w700,
-                  onTap: () => unawaited(_pairServer(context)),
                 ),
               ],
             ),

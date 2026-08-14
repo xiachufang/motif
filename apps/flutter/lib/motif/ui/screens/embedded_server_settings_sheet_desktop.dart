@@ -1,6 +1,6 @@
-/// Settings for the *embedded* motifd server (desktop only). Lets the user
-/// configure and Start/Stop the in-process server the app runs from the tray —
-/// the native-screen replacement for the Tauri menu-bar app's settings webview.
+/// Read-only status and transactional settings for the embedded motifd server
+/// (desktop only). The page owns lifecycle controls; the Dialog keeps edits in
+/// a draft until the user explicitly saves them.
 library;
 
 import 'dart:async';
@@ -15,6 +15,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../platform/desktop_launch_desktop.dart';
 import '../../state/embedded/embedded_server_service.dart';
+import '../../state/embedded/embedded_server_runtime_state.dart';
 import '../../state/app/motif_scope.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
@@ -37,18 +38,20 @@ enum _TsAuth { browser, authKey }
 
 enum _PushRelayHealth { idle, checking, healthy, failed }
 
-class EmbeddedServerSettingsSheet extends StatefulWidget {
+const double _serverPageMaxWidth = 820;
+
+class EmbeddedServerSettingsDialog extends StatefulWidget {
   final Future<bool> Function(String address)? pushRelayHealthChecker;
 
-  const EmbeddedServerSettingsSheet({super.key, this.pushRelayHealthChecker});
+  const EmbeddedServerSettingsDialog({super.key, this.pushRelayHealthChecker});
 
   @override
-  State<EmbeddedServerSettingsSheet> createState() =>
-      _EmbeddedServerSettingsSheetState();
+  State<EmbeddedServerSettingsDialog> createState() =>
+      _EmbeddedServerSettingsDialogState();
 }
 
-class _EmbeddedServerSettingsSheetState
-    extends State<EmbeddedServerSettingsSheet> {
+class _EmbeddedServerSettingsDialogState
+    extends State<EmbeddedServerSettingsDialog> {
   late final TextEditingController _port;
   late final TextEditingController _tsHostname;
   late final TextEditingController _tsAuthkey;
@@ -60,12 +63,11 @@ class _EmbeddedServerSettingsSheetState
   // Derived UI state for the two Tailscale axes (see the enum docs above).
   late _TsControl _tsControl;
   late _TsAuth _tsAuth;
+  late EmbeddedServerConfig _draft;
   bool _tailscaleExpanded = false;
-  Timer? _restartPromptTimer;
-  bool _restartPromptShowing = false;
-  bool _restartPromptDeferred = false;
-  bool _restartPromptPendingOnBlur = false;
   bool _rzvJwtObscured = true;
+  bool _saving = false;
+  String? _saveError;
   _PushRelayHealth _pushRelayHealth = _PushRelayHealth.idle;
   int _pushRelayHealthCheckId = 0;
   EmbeddedServerService get _svc =>
@@ -75,6 +77,7 @@ class _EmbeddedServerSettingsSheetState
   void initState() {
     super.initState();
     final c = _svc.config;
+    _draft = c;
     _port = TextEditingController(text: '${c.port}');
     _tsHostname = TextEditingController(text: c.tsHostname);
     _tsAuthkey = TextEditingController(text: c.tsAuthkey);
@@ -97,147 +100,193 @@ class _EmbeddedServerSettingsSheetState
     _rzvRelay.dispose();
     _rzvJwt.dispose();
     _pushRelayUrl.dispose();
-    _restartPromptTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _save(
-    EmbeddedServerConfig next, {
-    bool restartRequired = false,
-    bool restartOnBlur = false,
-  }) async {
-    final svc = _svc;
-    final previous = svc.config;
-    await svc.updateConfig(next);
-    if (!restartRequired || !_restartRelevantChanged(previous, next)) return;
-    if (restartOnBlur) {
-      _markRestartPromptPending(svc);
-      return;
-    }
-    _scheduleRestartPrompt(svc);
-  }
-
-  bool _restartRelevantChanged(
-    EmbeddedServerConfig previous,
-    EmbeddedServerConfig next,
-  ) {
-    return previous.listenMode != next.listenMode ||
-        previous.port != next.port ||
-        previous.tsEnabled != next.tsEnabled ||
-        previous.tsHostname != next.tsHostname ||
-        previous.tsAuthkey != next.tsAuthkey ||
-        previous.tsControlUrl != next.tsControlUrl ||
-        previous.rzvEnabled != next.rzvEnabled ||
-        previous.rzvRelay != next.rzvRelay ||
-        previous.rzvJwt != next.rzvJwt ||
-        previous.pushRelayUrl != next.pushRelayUrl ||
-        previous.allowScreenCapture != next.allowScreenCapture;
+  void _updateDraft(EmbeddedServerConfig next) {
+    if (!mounted) return;
+    setState(() {
+      _draft = next;
+      _saveError = null;
+    });
   }
 
   bool _serverIsActive(EmbeddedServerService svc) {
     return svc.status.running || svc.status.starting;
   }
 
-  void _scheduleRestartPrompt(EmbeddedServerService svc) {
-    _restartPromptTimer?.cancel();
-    if (!_serverIsActive(svc)) {
-      _restartPromptDeferred = false;
-      _restartPromptPendingOnBlur = false;
-      return;
-    }
-    if (_restartPromptShowing || _restartPromptDeferred) return;
-    _restartPromptPendingOnBlur = false;
-    _restartPromptTimer = Timer(Duration.zero, () {
-      if (!mounted) return;
-      unawaited(_showRestartPrompt());
-    });
-  }
-
-  void _markRestartPromptPending(EmbeddedServerService svc) {
-    if (!_serverIsActive(svc)) {
-      _restartPromptPendingOnBlur = false;
-      return;
-    }
-    if (_restartPromptShowing || _restartPromptDeferred) return;
-    _restartPromptPendingOnBlur = true;
-  }
-
-  void _showPendingRestartPrompt() {
-    if (!_restartPromptPendingOnBlur) return;
-    _restartPromptPendingOnBlur = false;
-    _scheduleRestartPrompt(_svc);
-  }
-
-  Future<void> _showRestartPrompt() async {
-    final svc = _svc;
-    if (_restartPromptShowing ||
-        _restartPromptDeferred ||
-        !_serverIsActive(svc)) {
-      return;
-    }
-    _restartPromptShowing = true;
-    _restartPromptPendingOnBlur = false;
-    final restart = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Restart server?'),
-        content: const Text(
-          'This setting is saved, but the running server needs to restart '
-          'before it takes effect.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Later'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Restart'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) return;
-    _restartPromptShowing = false;
-    if (restart == true) {
-      await _restartServer(svc);
-    } else {
-      _restartPromptDeferred = true;
-    }
-  }
-
-  Future<void> _startServer(EmbeddedServerService svc) async {
-    _restartPromptTimer?.cancel();
-    _restartPromptDeferred = false;
-    _restartPromptPendingOnBlur = false;
-    await svc.start();
-  }
-
-  Future<void> _stopServer(EmbeddedServerService svc) async {
-    _restartPromptTimer?.cancel();
-    _restartPromptDeferred = false;
-    _restartPromptPendingOnBlur = false;
-    await svc.stop();
-  }
-
   Future<void> _restartServer(EmbeddedServerService svc) async {
-    _restartPromptTimer?.cancel();
-    _restartPromptDeferred = false;
-    _restartPromptPendingOnBlur = false;
     await svc.stop();
     await svc.start();
+  }
+
+  EmbeddedServerConfig _normalizedDraft() {
+    final port = int.tryParse(_port.text.trim());
+    return _draft.copyWith(
+      port: port ?? _draft.port,
+      tsHostname: _tsHostname.text.trim(),
+      tsAuthkey: _tsAuth == _TsAuth.authKey ? _tsAuthkey.text.trim() : '',
+      tsControlUrl: _tsControl == _TsControl.custom
+          ? _tsControlUrl.text.trim()
+          : '',
+      rzvRelay: _rzvRelay.text.trim(),
+      rzvJwt: _rzvJwt.text.trim(),
+      pushRelayUrl: _pushRelayUrl.text.trim(),
+    );
+  }
+
+  String? _validateDraft(EmbeddedServerConfig next) {
+    final port = int.tryParse(_port.text.trim());
+    if (port == null || port < 1 || port > 65535) {
+      return 'Port must be between 1 and 65535.';
+    }
+    if (next.rzvEnabled && next.rzvRelay.isEmpty) {
+      return 'Relay address is required when Relay is enabled.';
+    }
+    if (next.rzvEnabled && next.rzvJwt.isEmpty) {
+      return 'Relay owner JWT is required when Relay is enabled.';
+    }
+    if (next.tsEnabled &&
+        _tsControl == _TsControl.custom &&
+        next.tsControlUrl.isEmpty) {
+      return 'A Headscale control URL is required.';
+    }
+    return null;
+  }
+
+  Future<void> _applySettings() async {
+    if (_saving) return;
+    final svc = _svc;
+    final next = _normalizedDraft();
+    final validationError = _validateDraft(next);
+    if (validationError != null) {
+      setState(() => _saveError = validationError);
+      return;
+    }
+
+    if (_configsEqual(svc.config, next)) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    final restart = _serverIsActive(svc);
+    if (restart) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Save and restart Server?'),
+          content: const Text(
+            'The new settings require a restart. Restarting closes every '
+            'current Terminal and stops all running Codex Threads. Their '
+            'current running state cannot be recovered.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Back to settings'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Save and restart'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+    }
+
+    setState(() {
+      _saving = true;
+      _saveError = null;
+    });
+    try {
+      await svc.updateConfig(next);
+      if (restart) await _restartServer(svc);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _saveError = _friendlyError(error);
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) => ObservationSelect<Object?>(
     selector: () => null,
-    builder: (context, _, _) => _buildContent(context),
+    builder: (context, _, _) {
+      final c = context.motif;
+      return Dialog(
+        clipBehavior: Clip.antiAlias,
+        backgroundColor: c.background,
+        surfaceTintColor: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(
+            minWidth: 520,
+            maxWidth: 620,
+            maxHeight: 720,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const AdaptiveModalHeader(
+                title: 'Server Settings',
+                showCloseButton: false,
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  keyboardDismissBehavior:
+                      ScrollViewKeyboardDismissBehavior.onDrag,
+                  padding: const EdgeInsets.fromLTRB(
+                    MotifSpacing.lg,
+                    MotifSpacing.md,
+                    MotifSpacing.lg,
+                    MotifSpacing.lg,
+                  ),
+                  child: _buildContent(context),
+                ),
+              ),
+              Divider(height: 1, color: c.border),
+              Padding(
+                padding: const EdgeInsets.all(MotifSpacing.md),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: _saving
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: MotifSpacing.sm),
+                    FilledButton(
+                      onPressed: _saving
+                          ? null
+                          : () => unawaited(_applySettings()),
+                      child: _saving
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Save'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
   );
 
   Widget _buildContent(BuildContext context) {
     final svc = ObservationScope.of<EmbeddedServerService>(context);
-    final cfg = svc.config;
+    final cfg = _draft;
     final status = svc.status;
     final c = context.motif;
 
@@ -245,11 +294,9 @@ class _EmbeddedServerSettingsSheetState
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _serverSection(svc, status, c),
-        const SizedBox(height: MotifSpacing.lg),
         _listenSection(cfg, c),
         const SizedBox(height: MotifSpacing.lg),
-        _pairingSection(cfg, status, c),
+        _relaySettingsSection(cfg, c),
         const SizedBox(height: MotifSpacing.lg),
         _notificationsSection(cfg, status, c),
         if (defaultTargetPlatform != TargetPlatform.windows) ...[
@@ -266,16 +313,13 @@ class _EmbeddedServerSettingsSheetState
               subtitle: cfg.allowScreenCapture
                   ? 'Attached clients may capture this desktop or a window'
                   : 'Remote screen capture is disabled',
-              onTap: () => _save(
+              onTap: () => _updateDraft(
                 cfg.copyWith(allowScreenCapture: !cfg.allowScreenCapture),
-                restartRequired: true,
               ),
               trailing: Switch(
                 value: cfg.allowScreenCapture,
-                onChanged: (value) => _save(
-                  cfg.copyWith(allowScreenCapture: value),
-                  restartRequired: true,
-                ),
+                onChanged: (value) =>
+                    _updateDraft(cfg.copyWith(allowScreenCapture: value)),
               ),
             ),
             MotifSectionRow(
@@ -284,187 +328,25 @@ class _EmbeddedServerSettingsSheetState
               subtitle: cfg.autostart
                   ? 'Server starts automatically with Motif'
                   : 'Start manually from this page or the tray',
-              onTap: () => _save(cfg.copyWith(autostart: !cfg.autostart)),
+              onTap: () =>
+                  _updateDraft(cfg.copyWith(autostart: !cfg.autostart)),
               trailing: Switch(
                 value: cfg.autostart,
-                onChanged: (v) => _save(cfg.copyWith(autostart: v)),
+                onChanged: (v) => _updateDraft(cfg.copyWith(autostart: v)),
               ),
             ),
           ],
         ),
-      ],
-    );
-  }
-
-  // ── Server status + Start/Stop ──
-
-  Widget _serverSection(
-    EmbeddedServerService svc,
-    EmbeddedServerStatus status,
-    MotifColors c,
-  ) {
-    final running = status.running;
-    final starting = status.starting;
-    final (label, color) = switch (status.phase) {
-      EmbeddedRunState.running => ('Running', c.success),
-      EmbeddedRunState.starting => ('Starting…', c.warning),
-      EmbeddedRunState.failed => ('Failed', c.danger),
-      EmbeddedRunState.stopped => ('Stopped', c.textTertiary),
-    };
-
-    return MotifSection(
-      title: 'Server',
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(MotifSpacing.lg),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  _IconTile(icon: Icons.dns_outlined, color: c.accent),
-                  const SizedBox(width: MotifSpacing.md),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Local Server',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: MotifType.title.copyWith(
-                            color: c.textPrimary,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _statusSubtitle(status) ??
-                              'Ready to serve sessions from this computer',
-                          // Single line keeps this block's height constant as
-                          // the status updates, so the page doesn't reflow (and
-                          // yank a bottom-pinned scroll) every poll.
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: MotifType.subhead.copyWith(
-                            color: c.textSecondary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: MotifSpacing.md),
-                  _StatusPill(label: label, color: color, starting: starting),
-                ],
-              ),
-              if (status.running) ...[
-                const SizedBox(height: MotifSpacing.md),
-                _statusChips(status),
-              ],
-              if (status.error != null) ...[
-                const SizedBox(height: MotifSpacing.md),
-                _InlineNotice(
-                  icon: Icons.error_outline,
-                  text: status.error!,
-                  color: c.danger,
-                ),
-              ],
-              const SizedBox(height: MotifSpacing.lg),
-              Row(
-                children: [
-                  Expanded(
-                    child: running || starting
-                        ? OutlinedButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.play_arrow),
-                            label: const Text('Start'),
-                          )
-                        : FilledButton.icon(
-                            onPressed: () => unawaited(_startServer(svc)),
-                            icon: const Icon(Icons.play_arrow),
-                            label: const Text('Start'),
-                          ),
-                  ),
-                  const SizedBox(width: MotifSpacing.md),
-                  Expanded(
-                    child: running || starting
-                        ? FilledButton.icon(
-                            onPressed: () => unawaited(_stopServer(svc)),
-                            icon: const Icon(Icons.stop),
-                            label: const Text('Stop'),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: c.danger,
-                              foregroundColor: c.textOnAccent,
-                              // styleFrom regenerates a non-transparent overlay
-                              // from the colors above; pass transparent so it
-                              // stays feedback-free like the themed buttons.
-                              overlayColor: Colors.transparent,
-                            ),
-                          )
-                        : OutlinedButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.stop),
-                            label: const Text('Stop'),
-                          ),
-                  ),
-                ],
-              ),
-            ],
+        if (_saveError != null) ...[
+          const SizedBox(height: MotifSpacing.lg),
+          _InlineNotice(
+            icon: Icons.error_outline,
+            text: _saveError!,
+            color: c.danger,
           ),
-        ),
+        ],
       ],
     );
-  }
-
-  Widget _statusChips(EmbeddedServerStatus status) {
-    final chips = <Widget>[];
-    for (final addr in status.boundAddrs) {
-      chips.add(_InfoChip(icon: Icons.link_outlined, label: addr));
-    }
-    chips.add(
-      _InfoChip(
-        icon: Icons.terminal_outlined,
-        label:
-            '${status.sessionCount} session${status.sessionCount == 1 ? '' : 's'}',
-      ),
-    );
-    if (status.tailscaleState != null) {
-      chips.add(
-        _InfoChip(
-          icon: Icons.hub_outlined,
-          label: 'Tailscale ${status.tailscaleState}',
-        ),
-      );
-    }
-    // A single horizontal row (scrolls if it overflows) instead of a Wrap, so
-    // the block's height stays constant as bound addresses / session count /
-    // tailscale state change — otherwise the row count flips and reflows the
-    // page, jittering a bottom-pinned scroll.
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (var i = 0; i < chips.length; i++) ...[
-            if (i > 0) const SizedBox(width: MotifSpacing.sm),
-            chips[i],
-          ],
-        ],
-      ),
-    );
-  }
-
-  String? _statusSubtitle(EmbeddedServerStatus status) {
-    if (!status.running) return null;
-    final endpointCount = status.boundAddrs.length;
-    final endpoints = switch (endpointCount) {
-      0 =>
-        status.tailscaleState == null
-            ? 'No active endpoints'
-            : 'Tailscale ${status.tailscaleState}',
-      1 => '1 active endpoint',
-      _ => '$endpointCount active endpoints',
-    };
-    return '$endpoints · ${status.sessionCount} session${status.sessionCount == 1 ? '' : 's'}';
   }
 
   // ── Listen mode + port ──
@@ -494,10 +376,8 @@ class _EmbeddedServerSettingsSheetState
                   ),
                 ],
                 selected: {cfg.listenMode},
-                onSelectionChanged: (next) => _save(
-                  cfg.copyWith(listenMode: next.first),
-                  restartRequired: true,
-                ),
+                onSelectionChanged: (next) =>
+                    _updateDraft(cfg.copyWith(listenMode: next.first)),
               ),
               const SizedBox(height: MotifSpacing.md),
               _ModeSummary(
@@ -517,14 +397,9 @@ class _EmbeddedServerSettingsSheetState
           onChanged: () {
             final p = int.tryParse(_port.text.trim());
             if (p != null && p > 0 && p < 65536) {
-              _save(
-                cfg.copyWith(port: p),
-                restartRequired: true,
-                restartOnBlur: true,
-              );
+              _updateDraft(cfg.copyWith(port: p));
             }
           },
-          onFocusLost: _showPendingRestartPrompt,
         ),
       ],
     );
@@ -575,14 +450,11 @@ class _EmbeddedServerSettingsSheetState
               subtitle: cfg.tsEnabled
                   ? 'Tailnet access is configured for this server'
                   : 'Reach this server from your tailnet',
-              onTap: () => _save(
-                cfg.copyWith(tsEnabled: !cfg.tsEnabled),
-                restartRequired: true,
-              ),
+              onTap: () =>
+                  _updateDraft(cfg.copyWith(tsEnabled: !cfg.tsEnabled)),
               trailing: Switch(
                 value: cfg.tsEnabled,
-                onChanged: (v) =>
-                    _save(cfg.copyWith(tsEnabled: v), restartRequired: true),
+                onChanged: (v) => _updateDraft(cfg.copyWith(tsEnabled: v)),
               ),
             ),
             if (cfg.tsEnabled)
@@ -610,12 +482,9 @@ class _EmbeddedServerSettingsSheetState
                 _tsHostname,
                 'Hostname',
                 'defaults to motifd-<host>',
-                onChanged: () => _save(
+                onChanged: () => _updateDraft(
                   cfg.copyWith(tsHostname: _tsHostname.text.trim()),
-                  restartRequired: true,
-                  restartOnBlur: true,
                 ),
-                onFocusLost: _showPendingRestartPrompt,
               ),
             ],
           ),
@@ -652,7 +521,7 @@ class _EmbeddedServerSettingsSheetState
           onTap: () {
             _tsControlUrl.clear();
             setState(() => _tsControl = _TsControl.official);
-            _save(cfg.copyWith(tsControlUrl: ''), restartRequired: true);
+            _updateDraft(cfg.copyWith(tsControlUrl: ''));
           },
         ),
         _tsRadio(
@@ -667,12 +536,9 @@ class _EmbeddedServerSettingsSheetState
             _tsControlUrl,
             'Control URL',
             'https://headscale.example.com',
-            onChanged: () => _save(
+            onChanged: () => _updateDraft(
               cfg.copyWith(tsControlUrl: _tsControlUrl.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
             ),
-            onFocusLost: _showPendingRestartPrompt,
           ),
       ],
     );
@@ -699,7 +565,7 @@ class _EmbeddedServerSettingsSheetState
           onTap: () {
             _tsAuthkey.clear();
             setState(() => _tsAuth = _TsAuth.browser);
-            _save(cfg.copyWith(tsAuthkey: ''), restartRequired: true);
+            _updateDraft(cfg.copyWith(tsAuthkey: ''));
           },
         ),
         _tsRadio(
@@ -715,12 +581,8 @@ class _EmbeddedServerSettingsSheetState
             'Auth key',
             'tskey-…',
             obscure: true,
-            onChanged: () => _save(
-              cfg.copyWith(tsAuthkey: _tsAuthkey.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
-            ),
-            onFocusLost: _showPendingRestartPrompt,
+            onChanged: () =>
+                _updateDraft(cfg.copyWith(tsAuthkey: _tsAuthkey.text.trim())),
           ),
         if (_tsAuth == _TsAuth.browser && status.authUrl != null)
           MotifSectionRow(
@@ -752,54 +614,26 @@ class _EmbeddedServerSettingsSheetState
     );
   }
 
-  // ── Pairing (QR + link) + optional relay ──
+  // ── Rendezvous relay ──
 
-  Widget _pairingSection(
-    EmbeddedServerConfig cfg,
-    EmbeddedServerStatus status,
-    MotifColors c,
-  ) {
-    final pairingUri = status.pairingUri;
-    final relayError = _relayErrorText(cfg, status);
+  Widget _relaySettingsSection(EmbeddedServerConfig cfg, MotifColors c) {
     return MotifSection(
-      title: 'Pairing',
+      title: 'Connection Relay',
       footer:
-          'Pair a device by scanning this QR (or copying the link). It is the '
-          'only credential — the connection is encrypted and the device pins '
-          'this server. On the LAN it connects directly; enable a relay to also '
-          'reach it without direct connectivity.',
+          'Use a rendezvous relay to reach this Server without direct network '
+          'connectivity. The pairing QR appears on the Server page while it is '
+          'running.',
       children: [
-        if (pairingUri != null)
-          _pairingQr(pairingUri, c)
-        else
-          MotifSectionRow(
-            leading: Icon(Icons.info_outline, color: c.textTertiary),
-            title: status.running
-                ? 'Use LAN or a relay to generate the QR.'
-                : 'Start the server to generate the QR.',
-            titleColor: c.textSecondary,
-            titleWeight: FontWeight.w400,
-          ),
         MotifSectionRow(
-          leading: Icon(
-            Icons.cloud_outlined,
-            color: relayError == null ? c.accent : c.danger,
-          ),
-          title: 'Pair over a relay',
-          subtitle:
-              relayError ??
-              (cfg.rzvEnabled
-                  ? 'Reach it without direct connectivity'
-                  : 'Off — pair directly on the LAN'),
-          subtitleColor: relayError == null ? null : c.danger,
-          onTap: () => _save(
-            cfg.copyWith(rzvEnabled: !cfg.rzvEnabled),
-            restartRequired: true,
-          ),
+          leading: Icon(Icons.cloud_outlined, color: c.accent),
+          title: 'Enable connection Relay',
+          subtitle: cfg.rzvEnabled
+              ? 'Reach this Server without direct connectivity'
+              : 'Relay access is disabled',
+          onTap: () => _updateDraft(cfg.copyWith(rzvEnabled: !cfg.rzvEnabled)),
           trailing: Switch(
             value: cfg.rzvEnabled,
-            onChanged: (v) =>
-                _save(cfg.copyWith(rzvEnabled: v), restartRequired: true),
+            onChanged: (v) => _updateDraft(cfg.copyWith(rzvEnabled: v)),
           ),
         ),
         if (cfg.rzvEnabled) ...[
@@ -807,12 +641,8 @@ class _EmbeddedServerSettingsSheetState
             _rzvRelay,
             'Relay address',
             'host:port of your WSS rendezvous relay',
-            onChanged: () => _save(
-              cfg.copyWith(rzvRelay: _rzvRelay.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
-            ),
-            onFocusLost: _showPendingRestartPrompt,
+            onChanged: () =>
+                _updateDraft(cfg.copyWith(rzvRelay: _rzvRelay.text.trim())),
           ),
           _field(
             _rzvJwt,
@@ -820,12 +650,8 @@ class _EmbeddedServerSettingsSheetState
             'Stored in the system credential vault',
             obscure: _rzvJwtObscured,
             suffix: _rzvJwtActions(),
-            onChanged: () => _save(
-              cfg.copyWith(rzvJwt: _rzvJwt.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
-            ),
-            onFocusLost: _showPendingRestartPrompt,
+            onChanged: () =>
+                _updateDraft(cfg.copyWith(rzvJwt: _rzvJwt.text.trim())),
           ),
         ],
       ],
@@ -867,64 +693,6 @@ class _EmbeddedServerSettingsSheetState
     );
   }
 
-  String? _relayErrorText(
-    EmbeddedServerConfig cfg,
-    EmbeddedServerStatus status,
-  ) {
-    if (!cfg.rzvEnabled) return null;
-    final relayError = status.relayError;
-    if (relayError != null && relayError.trim().isNotEmpty) {
-      return embeddedRelayErrorMessage(relayError);
-    }
-    // Missing/invalid JWT is rejected before the local server reaches Running,
-    // so it arrives through the lifecycle error rather than relay_error.
-    final startError = status.error;
-    if (startError == null || startError.trim().isEmpty) return null;
-    final lower = startError.toLowerCase();
-    if (!lower.contains('relay') && !lower.contains('jwt')) return null;
-    return embeddedRelayErrorMessage(startError);
-  }
-
-  Widget _pairingQr(String uri, MotifColors c) {
-    return Padding(
-      padding: const EdgeInsets.all(MotifSpacing.md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(MotifSpacing.md),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(MotifRadius.xs),
-            ),
-            child: QrImageView(
-              data: uri,
-              size: 220,
-              backgroundColor: Colors.white,
-            ),
-          ),
-          const SizedBox(height: MotifSpacing.sm),
-          Text(
-            'Scan in the Motif app on another device, or copy the link.',
-            textAlign: TextAlign.center,
-            style: MotifType.caption.copyWith(color: c.textSecondary),
-          ),
-          const SizedBox(height: MotifSpacing.xs),
-          TextButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: uri));
-              if (mounted) {
-                showMotifToast(context, 'Pairing link copied');
-              }
-            },
-            icon: const Icon(Icons.copy, size: 16),
-            label: const Text('Copy pairing link'),
-          ),
-        ],
-      ),
-    );
-  }
-
   // ── Push notifications ──
 
   Widget _notificationsSection(
@@ -944,14 +712,9 @@ class _EmbeddedServerSettingsSheetState
           onChanged: () {
             _pushRelayHealthCheckId += 1;
             setState(() => _pushRelayHealth = _PushRelayHealth.idle);
-            _save(
-              cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()),
-              restartRequired: true,
-              restartOnBlur: true,
-            );
+            _updateDraft(cfg.copyWith(pushRelayUrl: _pushRelayUrl.text.trim()));
           },
           onFocusLost: () {
-            _showPendingRestartPrompt();
             unawaited(_checkPushRelayHealth());
           },
         ),
@@ -1088,10 +851,7 @@ class _EmbeddedServerSettingsSheetState
       // disable Reset even when the health state was already idle.
       setState(() {});
     }
-    await _save(
-      cfg.copyWith(pushRelayUrl: kDefaultPushRelayAddress),
-      restartRequired: true,
-    );
+    _updateDraft(cfg.copyWith(pushRelayUrl: kDefaultPushRelayAddress));
     if (!mounted) return;
     unawaited(_checkPushRelayHealth());
   }
@@ -1630,19 +1390,56 @@ class _ModeSummary extends StatelessWidget {
   }
 }
 
-Future<void> showEmbeddedServerSettingsSheet(BuildContext context) {
-  return showAdaptiveModal<void>(
-    context,
-    builder: (_) => const AdaptiveModal(
-      title: 'Local Server',
-      content: EmbeddedServerSettingsSheet(),
-    ),
+Future<void> showEmbeddedServerSettingsDialog(BuildContext context) {
+  return showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => const EmbeddedServerSettingsDialog(),
   );
 }
 
-/// Full-page form of the embedded-server settings, for the desktop shell's
-/// "Server" view. Same content as the sheet, given room to breathe (and a
-/// bigger pairing QR).
+bool _configsEqual(EmbeddedServerConfig a, EmbeddedServerConfig b) {
+  return a.listenMode == b.listenMode &&
+      a.port == b.port &&
+      a.tsEnabled == b.tsEnabled &&
+      a.tsHostname == b.tsHostname &&
+      a.tsAuthkey == b.tsAuthkey &&
+      a.tsControlUrl == b.tsControlUrl &&
+      a.rzvEnabled == b.rzvEnabled &&
+      a.rzvRelay == b.rzvRelay &&
+      a.rzvJwt == b.rzvJwt &&
+      a.pushRelayUrl == b.pushRelayUrl &&
+      a.autostart == b.autostart &&
+      a.allowScreenCapture == b.allowScreenCapture;
+}
+
+String? _relayErrorText(
+  EmbeddedServerConfig config,
+  EmbeddedServerStatus status,
+) {
+  if (!config.rzvEnabled) return null;
+  final relayError = status.relayError;
+  if (relayError != null && relayError.trim().isNotEmpty) {
+    return embeddedRelayErrorMessage(relayError);
+  }
+  final startError = status.error;
+  if (startError == null || startError.trim().isEmpty) return null;
+  final lower = startError.toLowerCase();
+  if (!lower.contains('relay') && !lower.contains('jwt')) return null;
+  return embeddedRelayErrorMessage(startError);
+}
+
+String? _relayPairingUri(EmbeddedServerStatus status) {
+  final value = status.pairingUri;
+  if (value == null) return null;
+  final uri = Uri.tryParse(value);
+  final relay = uri?.queryParameters['rzv'];
+  return relay == null || relay.isEmpty ? null : value;
+}
+
+/// Read-only status and controls for this computer's embedded motifd. Editing
+/// happens in [EmbeddedServerSettingsDialog], where changes remain a local
+/// draft until the user explicitly saves them.
 @ObservationWidget()
 class EmbeddedServerPage extends _$EmbeddedServerPage {
   const EmbeddedServerPage({super.key});
@@ -1650,38 +1447,539 @@ class EmbeddedServerPage extends _$EmbeddedServerPage {
   @PlainState(name: 'scrollController')
   ScrollController createScrollController() => ScrollController();
 
+  Future<void> _start(
+    BuildContext context,
+    EmbeddedServerService service,
+  ) async {
+    try {
+      await service.start();
+    } catch (error) {
+      if (context.mounted) showMotifToast(context, _friendlyError(error));
+    }
+  }
+
+  Future<void> _stop(
+    BuildContext context,
+    EmbeddedServerService service,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Stop Server?'),
+        content: const Text(
+          'Stopping the Server closes every current Terminal and stops all '
+          'running Codex Threads. Their current running state cannot be '
+          'recovered.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: dialogContext.motif.danger,
+              foregroundColor: dialogContext.motif.textOnAccent,
+              overlayColor: Colors.transparent,
+            ),
+            child: const Text('Stop Server'),
+          ),
+        ],
+      ),
+    );
+    if (!context.mounted || confirmed != true) return;
+    try {
+      await service.stop();
+    } catch (error) {
+      if (context.mounted) showMotifToast(context, _friendlyError(error));
+    }
+  }
+
   @override
   Widget build(
     BuildContext context, {
     required ScrollController scrollController,
   }) {
+    final service = ObservationScope.of<EmbeddedServerService>(context);
+    final config = service.config;
+    final status = service.status;
+    final lifecycle = service.runtimeState.lifecycle;
+    final running = lifecycle is EmbeddedServerRunning || status.running;
+
     return Scaffold(
       backgroundColor: context.motif.background,
       body: SafeArea(
         top: false,
-        child: NotificationListener<ScrollStartNotification>(
-          onNotification: (_) {
-            // A focused TextField can call showOnScreen again when the
-            // two-second server-status poll rebuilds the form, yanking the
-            // page back to that field. Scrolling means the user is leaving the
-            // editor, so release focus before the next status snapshot.
-            FocusManager.instance.primaryFocus?.unfocus();
-            return false;
-          },
-          child: ListView(
-            controller: scrollController,
-            primary: false,
-            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: const EdgeInsets.fromLTRB(
-              MotifSpacing.lg,
-              MotifSpacing.lg,
-              MotifSpacing.lg,
-              MotifSpacing.xl,
+        child: CustomScrollView(
+          controller: scrollController,
+          primary: false,
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.only(top: MotifSpacing.lg),
+              sliver: SliverToBoxAdapter(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxWidth: _serverPageMaxWidth,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: MotifSpacing.lg,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _ServerOverview(
+                            config: config,
+                            status: status,
+                            lifecycle: lifecycle,
+                          ),
+                          if (running && config.rzvEnabled) ...[
+                            const SizedBox(height: MotifSpacing.lg),
+                            _RelayPairingSection(
+                              config: config,
+                              status: status,
+                            ),
+                          ],
+                          const SizedBox(height: MotifSpacing.lg),
+                          _ServerPageActions(
+                            lifecycle: lifecycle,
+                            onStart: () => unawaited(_start(context, service)),
+                            onStop: () => unawaited(_stop(context, service)),
+                            onSettings: () => unawaited(
+                              showEmbeddedServerSettingsDialog(context),
+                            ),
+                          ),
+                          const SizedBox(height: MotifSpacing.xl),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            children: const [EmbeddedServerSettingsSheet()],
-          ),
+          ],
         ),
       ),
+    );
+  }
+}
+
+class _ServerOverview extends StatelessWidget {
+  final EmbeddedServerConfig config;
+  final EmbeddedServerStatus status;
+  final EmbeddedServerLifecycleState lifecycle;
+
+  const _ServerOverview({
+    required this.config,
+    required this.status,
+    required this.lifecycle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final running = lifecycle is EmbeddedServerRunning || status.running;
+    final busy =
+        lifecycle is EmbeddedServerStarting ||
+        lifecycle is EmbeddedServerStopping;
+    final (label, color) = switch (lifecycle) {
+      EmbeddedServerRunning() => ('Running', c.success),
+      EmbeddedServerStarting() => ('Starting…', c.warning),
+      EmbeddedServerStopping() => ('Stopping…', c.warning),
+      EmbeddedServerFailed() => ('Failed', c.danger),
+      EmbeddedServerUnavailable() => ('Unavailable', c.danger),
+      EmbeddedServerStopped() => ('Stopped', c.textTertiary),
+    };
+
+    return MotifSection(
+      title: 'Server',
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(MotifSpacing.lg),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  _IconTile(icon: Icons.dns_outlined, color: c.accent),
+                  const SizedBox(width: MotifSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Local Server',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: MotifType.title.copyWith(
+                            color: c.textPrimary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _subtitle(running),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: MotifType.subhead.copyWith(
+                            color: c.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: MotifSpacing.md),
+                  _StatusPill(label: label, color: color, starting: busy),
+                ],
+              ),
+              if (running) ...[
+                const SizedBox(height: MotifSpacing.md),
+                _statusChips(),
+              ],
+              if (status.error != null) ...[
+                const SizedBox(height: MotifSpacing.md),
+                _InlineNotice(
+                  icon: Icons.error_outline,
+                  text: status.error!,
+                  color: c.danger,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _subtitle(bool running) {
+    if (!running) {
+      final mode = config.listenMode == EmbeddedListenMode.loopback
+          ? '127.0.0.1'
+          : '0.0.0.0';
+      return 'Configured for $mode:${config.port}';
+    }
+    final endpointCount = status.boundAddrs.length;
+    final endpoints = switch (endpointCount) {
+      0 => 'No active connections',
+      1 => '1 active connection',
+      _ => '$endpointCount active connections',
+    };
+    return '$endpoints · ${status.sessionCount} Terminal${status.sessionCount == 1 ? '' : 's'}';
+  }
+
+  Widget _statusChips() {
+    final chips = <Widget>[
+      for (final address in status.boundAddrs)
+        _InfoChip(
+          icon: _endpointPresentation(address).icon,
+          label: _endpointPresentation(address).label,
+        ),
+      _InfoChip(
+        icon: Icons.terminal_outlined,
+        label:
+            '${status.sessionCount} Terminal${status.sessionCount == 1 ? '' : 's'}',
+      ),
+      if (status.tailscaleState != null)
+        _InfoChip(
+          icon: Icons.hub_outlined,
+          label: 'Tailscale ${status.tailscaleState}',
+        ),
+    ];
+    return Wrap(
+      spacing: MotifSpacing.sm,
+      runSpacing: MotifSpacing.sm,
+      children: chips,
+    );
+  }
+
+  ({IconData icon, String label}) _endpointPresentation(String address) {
+    if (address.startsWith('tcp://')) {
+      return (
+        icon: Icons.lan_outlined,
+        label: address.substring('tcp://'.length),
+      );
+    }
+    if (address.startsWith('rzv://')) {
+      var relay = address.substring('rzv://'.length);
+      if (relay.startsWith('wss://')) relay = relay.substring('wss://'.length);
+      return (icon: Icons.cloud_outlined, label: 'Relay · $relay');
+    }
+    if (address.startsWith('tailscale://')) {
+      return (
+        icon: Icons.hub_outlined,
+        label: 'Tailscale · ${address.substring('tailscale://'.length)}',
+      );
+    }
+    return (icon: Icons.link_outlined, label: address);
+  }
+}
+
+class _RelayPairingSection extends StatelessWidget {
+  final EmbeddedServerConfig config;
+  final EmbeddedServerStatus status;
+
+  const _RelayPairingSection({required this.config, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final uri = _relayPairingUri(status);
+    final error = _relayErrorText(config, status);
+    return MotifSection(
+      title: 'Relay',
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(MotifSpacing.lg),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final qr = uri == null
+                  ? _PairingQrUnavailable(color: c.textTertiary)
+                  : _PairingQr(uri: uri);
+              final details = _RelayPairingDetails(
+                relay: config.rzvRelay,
+                uri: uri,
+                error: error,
+              );
+              if (constraints.maxWidth < 560) {
+                return Column(
+                  children: [
+                    qr,
+                    const SizedBox(height: MotifSpacing.lg),
+                    details,
+                  ],
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  qr,
+                  const SizedBox(width: MotifSpacing.xl),
+                  Expanded(child: details),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PairingQr extends StatelessWidget {
+  final String uri;
+
+  const _PairingQr({required this.uri});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      padding: const EdgeInsets.all(MotifSpacing.sm),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(MotifRadius.sm),
+        border: Border.all(color: c.border),
+      ),
+      child: QrImageView(data: uri, size: 188, backgroundColor: Colors.white),
+    );
+  }
+}
+
+class _PairingQrUnavailable extends StatelessWidget {
+  final Color color;
+
+  const _PairingQrUnavailable({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 206,
+      height: 206,
+      decoration: BoxDecoration(
+        color: context.motif.subtleFill,
+        borderRadius: BorderRadius.circular(MotifRadius.sm),
+        border: Border.all(color: context.motif.border),
+      ),
+      child: Icon(Icons.qr_code_2_outlined, size: 54, color: color),
+    );
+  }
+}
+
+class _RelayPairingDetails extends StatelessWidget {
+  final String relay;
+  final String? uri;
+  final String? error;
+
+  const _RelayPairingDetails({
+    required this.relay,
+    required this.uri,
+    required this.error,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final healthy = error == null && uri != null;
+    final tone = healthy ? c.success : c.danger;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _IconTile(
+              icon: healthy
+                  ? Icons.cloud_done_outlined
+                  : Icons.cloud_off_outlined,
+              color: tone,
+            ),
+            const SizedBox(width: MotifSpacing.sm),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    healthy ? 'Ready to pair' : 'Relay unavailable',
+                    style: MotifType.body.copyWith(
+                      color: c.textPrimary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _displayRelayAddress(relay),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: MotifType.subhead.copyWith(color: c.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+            _StatusPill(
+              label: healthy ? 'Connected' : 'Error',
+              color: tone,
+              starting: false,
+            ),
+          ],
+        ),
+        const SizedBox(height: MotifSpacing.lg),
+        if (error != null)
+          _InlineNotice(
+            icon: Icons.error_outline,
+            text: error!,
+            color: c.danger,
+          )
+        else
+          Text(
+            'Scan the code with Motif on another device to connect through '
+            'the Relay.',
+            style: MotifType.subhead.copyWith(color: c.textSecondary),
+          ),
+        const SizedBox(height: MotifSpacing.md),
+        OutlinedButton.icon(
+          onPressed: uri == null
+              ? null
+              : () async {
+                  await Clipboard.setData(ClipboardData(text: uri!));
+                  if (context.mounted) {
+                    showMotifToast(context, 'Pairing link copied');
+                  }
+                },
+          icon: const Icon(Icons.copy_outlined, size: 16),
+          label: const Text('Copy pairing link'),
+        ),
+      ],
+    );
+  }
+}
+
+String _displayRelayAddress(String value) {
+  final trimmed = value.trim();
+  final uri = Uri.tryParse(
+    trimmed.contains('://') ? trimmed : 'wss://$trimmed',
+  );
+  if (uri == null || uri.host.isEmpty) return trimmed;
+  return uri.hasPort ? '${uri.host}:${uri.port}' : uri.host;
+}
+
+class _ServerPageActions extends StatelessWidget {
+  final EmbeddedServerLifecycleState lifecycle;
+  final VoidCallback onStart;
+  final VoidCallback onStop;
+  final VoidCallback onSettings;
+
+  const _ServerPageActions({
+    required this.lifecycle,
+    required this.onStart,
+    required this.onStop,
+    required this.onSettings,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final running = lifecycle is EmbeddedServerRunning;
+    final busy =
+        lifecycle is EmbeddedServerStarting ||
+        lifecycle is EmbeddedServerStopping;
+    final unavailable = lifecycle is EmbeddedServerUnavailable;
+
+    final Widget lifecycleButton;
+    if (busy) {
+      lifecycleButton = OutlinedButton.icon(
+        onPressed: null,
+        icon: const SizedBox.square(
+          dimension: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        label: Text(
+          lifecycle is EmbeddedServerStopping ? 'Stopping…' : 'Starting…',
+        ),
+      );
+    } else if (running) {
+      lifecycleButton = OutlinedButton.icon(
+        onPressed: onStop,
+        icon: const Icon(Icons.stop),
+        label: const Text('Stop Server'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: c.danger,
+          side: BorderSide(color: c.danger.withValues(alpha: 0.45)),
+          overlayColor: Colors.transparent,
+        ),
+      );
+    } else {
+      lifecycleButton = FilledButton.icon(
+        onPressed: unavailable ? null : onStart,
+        icon: const Icon(Icons.play_arrow),
+        label: const Text('Start Server'),
+      );
+    }
+
+    final settingsButton = OutlinedButton.icon(
+      onPressed: onSettings,
+      icon: const Icon(Icons.settings_outlined),
+      label: const Text('Settings'),
+    );
+
+    if (MediaQuery.sizeOf(context).width < 500) {
+      return Row(
+        children: [
+          Expanded(child: lifecycleButton),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(child: settingsButton),
+        ],
+      );
+    }
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      children: [
+        SizedBox(width: 156, child: lifecycleButton),
+        const SizedBox(width: MotifSpacing.sm),
+        SizedBox(width: 156, child: settingsButton),
+      ],
     );
   }
 }

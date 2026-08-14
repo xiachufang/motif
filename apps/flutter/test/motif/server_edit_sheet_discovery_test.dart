@@ -288,6 +288,56 @@ void main() {
     expect(saved.pubKey, nextPubKey);
   });
 
+  testWidgets('new Relay server accepts only a complete pairing link', (
+    tester,
+  ) async {
+    if (kIsWeb) return;
+
+    final app = await _app();
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.dark),
+          home: const Scaffold(body: ServerEditSheet()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Relay'));
+    await tester.pumpAndSettle();
+
+    expect(_fieldWithLabel('Pairing Link'), findsOneWidget);
+    expect(find.byType(TextField), findsOneWidget);
+    expect(_fieldWithLabel('Name'), findsNothing);
+    expect(_fieldWithLabel('Host'), findsNothing);
+    expect(_fieldWithLabel('Port'), findsNothing);
+
+    final link = Uri(
+      scheme: 'motif',
+      host: 'pair',
+      queryParameters: {
+        'v': '1',
+        'rzv': 'relay.example.com:9999',
+        'psk': _base64Key(21),
+        'pk': _base64Key(22),
+        'name': 'Studio Relay',
+      },
+    ).toString();
+    await tester.enterText(_fieldWithLabel('Pairing Link'), link);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    final saved = app.servers.servers.single;
+    expect(saved.kind, ServerKind.rendezvous);
+    expect(saved.name, 'Studio Relay');
+    expect(saved.relay, 'relay.example.com:9999');
+    expect(saved.psk, _base64Key(21));
+    expect(saved.pubKey, _base64Key(22));
+  });
+
   testWidgets('editing a paired direct server preserves pairing fields', (
     tester,
   ) async {

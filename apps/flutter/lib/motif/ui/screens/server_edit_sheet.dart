@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../models/settings.dart';
+import '../../net/rzv/pairing_payload.dart';
 import '../../net/ssh/ssh_config_discovery.dart';
 import '../../platform/services.dart';
 import '../../platform/tailscale_support.dart';
@@ -49,6 +50,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   late final TextEditingController _sshPrivateKeyPassphrase;
   late final TextEditingController _wslDistribution;
   late final TextEditingController _relay;
+  late final TextEditingController _relayLink;
   late final TextEditingController _psk;
   late final TextEditingController _pubKey;
   late final TextEditingController _directHosts;
@@ -74,6 +76,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
 
   bool get _supportsTailscale => tailscaleSupported;
   bool get _supportsSsh => !kIsWeb;
+  bool get _supportsRendezvous => !kIsWeb;
   bool get _supportsWsl =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
 
@@ -94,6 +97,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     );
     _wslDistribution = TextEditingController(text: e?.wslDistribution ?? '');
     _relay = TextEditingController(text: e?.relay ?? '');
+    _relayLink = TextEditingController();
     _psk = TextEditingController(text: e?.psk ?? '');
     _pubKey = TextEditingController(text: e?.pubKey ?? '');
     _directHosts = TextEditingController(
@@ -107,6 +111,8 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     } else if (existingKind == ServerKind.ssh && !_supportsSsh) {
       _kind = ServerKind.direct;
     } else if (existingKind == ServerKind.wsl && !_supportsWsl) {
+      _kind = ServerKind.direct;
+    } else if (existingKind == ServerKind.rendezvous && !_supportsRendezvous) {
       _kind = ServerKind.direct;
     } else {
       // Direct is no longer offered as a choice for new servers. Windows
@@ -142,6 +148,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     _sshPrivateKeyPassphrase.dispose();
     _wslDistribution.dispose();
     _relay.dispose();
+    _relayLink.dispose();
     _psk.dispose();
     _pubKey.dispose();
     _directHosts.dispose();
@@ -149,6 +156,9 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
   }
 
   bool get _valid {
+    if (_kind == ServerKind.rendezvous) {
+      return _relayPairingPayload != null;
+    }
     final motifdPort = int.tryParse(_port.text.trim());
     final base =
         _name.text.trim().isNotEmpty &&
@@ -218,32 +228,35 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     final existing = widget.existing;
     final id = existing?.id ?? 'srv-${DateTime.now().microsecondsSinceEpoch}';
     final isDirect = _kind == ServerKind.direct;
+    final isRendezvous = _kind == ServerKind.rendezvous;
     final directHosts = isDirect
         ? _directHostsForSave(existing)
         : const <String>[];
-    final server = MotifServer(
-      id: id,
-      name: _name.text.trim(),
-      host: _host.text.trim(),
-      port: int.parse(_port.text.trim()),
-      scheme: isDirect
-          ? _schemeForDirectSave(existing, directHosts)
-          : existing?.scheme ?? 'http',
-      token: '',
-      kind: _kind,
-      psk: isDirect ? _psk.text.trim() : '',
-      pubKey: isDirect ? _pubKey.text.trim() : '',
-      directHosts: directHosts,
-      sshHost: _sshHost.text.trim(),
-      sshPort: int.tryParse(_sshPort.text.trim()) ?? 22,
-      sshUsername: _sshUsername.text.trim(),
-      sshAuthMethod: _sshAuthMethod,
-      sshPassword: _sshPassword.text,
-      sshPrivateKey: _sshPrivateKey.text,
-      sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
-      sshAutoInitialize: _sshAutoInitialize,
-      wslDistribution: _wslDistribution.text.trim(),
-    );
+    final server = isRendezvous
+        ? _relayPairingPayload!.toServer(id: id)
+        : MotifServer(
+            id: id,
+            name: _name.text.trim(),
+            host: _host.text.trim(),
+            port: int.parse(_port.text.trim()),
+            scheme: isDirect
+                ? _schemeForDirectSave(existing, directHosts)
+                : existing?.scheme ?? 'http',
+            token: '',
+            kind: _kind,
+            psk: isDirect ? _psk.text.trim() : '',
+            pubKey: isDirect ? _pubKey.text.trim() : '',
+            directHosts: directHosts,
+            sshHost: _sshHost.text.trim(),
+            sshPort: int.tryParse(_sshPort.text.trim()) ?? 22,
+            sshUsername: _sshUsername.text.trim(),
+            sshAuthMethod: _sshAuthMethod,
+            sshPassword: _sshPassword.text,
+            sshPrivateKey: _sshPrivateKey.text,
+            sshPrivateKeyPassphrase: _sshPrivateKeyPassphrase.text,
+            sshAutoInitialize: _sshAutoInitialize,
+            wslDistribution: _wslDistribution.text.trim(),
+          );
     if (existing == null) {
       await store.add(server);
     } else {
@@ -292,6 +305,30 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       _name.text.trim().isNotEmpty &&
       MotifServer.splitRelayEndpoint(_relay.text.trim()) != null &&
       _pairingFieldsValid(pskRequired: true);
+
+  MotifPairingPayload? get _relayPairingPayload {
+    final value = _relayLink.text.trim();
+    if (value.isEmpty) return null;
+    try {
+      final payload = MotifPairingPayload.parse(value);
+      return payload.isRendezvous ? payload : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  String? _relayLinkError() {
+    final value = _relayLink.text.trim();
+    if (value.isEmpty) return null;
+    try {
+      final payload = MotifPairingPayload.parse(value);
+      return payload.isRendezvous
+          ? null
+          : 'This is a direct pairing link, not a Relay link';
+    } on FormatException catch (error) {
+      return error.message;
+    }
+  }
 
   String? _keyFieldError(String value, {bool required = false}) {
     if (value.isEmpty) return required ? 'Required' : null;
@@ -410,6 +447,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     if (next == ServerKind.tailscale && !_supportsTailscale) return;
     if (next == ServerKind.ssh && !_supportsSsh) return;
     if (next == ServerKind.wsl && !_supportsWsl) return;
+    if (next == ServerKind.rendezvous && !_supportsRendezvous) return;
     setState(() {
       _kind = next;
       if (_kind == ServerKind.wsl) {
@@ -637,7 +675,7 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
       return AdaptivePanel(
         title: title,
         actions: [
-          TextButton(
+          FilledButton(
             onPressed: _valid && !_saving
                 ? () => _save(connectAfterSave: widget.connectOnSave)
                 : null,
@@ -653,7 +691,10 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
             MotifSpacing.xl,
           ),
           children: [
-            if (_supportsTailscale || _supportsSsh || _supportsWsl) ...[
+            if (_supportsTailscale ||
+                _supportsSsh ||
+                _supportsWsl ||
+                _supportsRendezvous) ...[
               _reachViaSection(),
               const SizedBox(height: MotifSpacing.xl),
             ],
@@ -663,28 +704,32 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
               _discoverySection(context),
               const SizedBox(height: MotifSpacing.xl),
             ],
-            MotifSection(
-              title: 'Name',
-              dividerIndent: MotifSpacing.lg,
-              children: [_field(_name, 'Name', 'e.g. Dev box')],
-            ),
-            const SizedBox(height: MotifSpacing.xl),
-            if (_kind == ServerKind.ssh) ...[
-              _sshLoginSection(),
+            if (_kind == ServerKind.rendezvous)
+              _relayLinkSection()
+            else ...[
+              MotifSection(
+                title: 'Name',
+                dividerIndent: MotifSpacing.lg,
+                children: [_field(_name, 'Name', 'e.g. Dev box')],
+              ),
               const SizedBox(height: MotifSpacing.xl),
-              _sshAuthSection(),
-              const SizedBox(height: MotifSpacing.xl),
-              _sshMotifdSection(),
-              const SizedBox(height: MotifSpacing.xl),
-            ],
-            if (_kind == ServerKind.wsl) ...[
-              _wslSection(),
-              const SizedBox(height: MotifSpacing.xl),
-            ],
-            _motifdAddressSection(),
-            if (_kind == ServerKind.direct) ...[
-              const SizedBox(height: MotifSpacing.xl),
-              _pairingFieldsSection(),
+              if (_kind == ServerKind.ssh) ...[
+                _sshLoginSection(),
+                const SizedBox(height: MotifSpacing.xl),
+                _sshAuthSection(),
+                const SizedBox(height: MotifSpacing.xl),
+                _sshMotifdSection(),
+                const SizedBox(height: MotifSpacing.xl),
+              ],
+              if (_kind == ServerKind.wsl) ...[
+                _wslSection(),
+                const SizedBox(height: MotifSpacing.xl),
+              ],
+              _motifdAddressSection(),
+              if (_kind == ServerKind.direct) ...[
+                const SizedBox(height: MotifSpacing.xl),
+                _pairingFieldsSection(),
+              ],
             ],
           ],
         ),
@@ -726,6 +771,26 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
     );
   }
 
+  Widget _relayLinkSection() {
+    return MotifSection(
+      title: 'Relay',
+      footer:
+          'Paste the complete motif://pair link printed by motifd. It contains the Relay address and pairing credentials.',
+      dividerIndent: MotifSpacing.lg,
+      children: [
+        _field(
+          _relayLink,
+          'Pairing Link',
+          'motif://pair?v=1&rzv=…',
+          keyboard: TextInputType.url,
+          minLines: 1,
+          maxLines: 3,
+          errorText: _relayLinkError(),
+        ),
+      ],
+    );
+  }
+
   Widget _reachViaSection() {
     final segments = <ButtonSegment<ServerKind>>[
       // Direct is no longer offered when adding a server. Only surface it while
@@ -754,6 +819,12 @@ class _ServerEditSheetState extends State<ServerEditSheet> {
           value: ServerKind.tailscale,
           icon: Icon(Icons.hub_outlined, size: 16),
           label: Text('Tailscale'),
+        ),
+      if (_supportsRendezvous)
+        const ButtonSegment(
+          value: ServerKind.rendezvous,
+          icon: Icon(Icons.cell_tower_outlined, size: 16),
+          label: Text('Relay'),
         ),
     ];
     return MotifSection(

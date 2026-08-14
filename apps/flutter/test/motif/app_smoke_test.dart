@@ -86,7 +86,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Welcome to motif'), findsOneWidget);
-    expect(find.text('Connect a Server'), findsOneWidget);
+    expect(find.text('Add Server'), findsOneWidget);
   });
 
   testWidgets('with a configured server, shows the session browser', (

@@ -1,264 +1,287 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:motif/motif/state/app/motif_scope.dart';
 import 'package:motif/motif/state/embedded/embedded_server_service.dart';
 import 'package:motif/motif/ui/screens/embedded_server_settings_sheet_desktop.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/top_toast.dart';
-import 'package:motif/motif/state/app/motif_scope.dart';
 
 void main() {
-  testWidgets('renders condensed embedded server settings without overflow', (
+  testWidgets('server page keeps actions directly after its content', (
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      config: const EmbeddedServerConfig(
+        listenMode: EmbeddedListenMode.lan,
+        rzvEnabled: true,
+        rzvRelay: 'relay.example.com',
+        rzvJwt: 'owner.jwt',
+      ),
       status: const EmbeddedServerStatus(
-        running: true,
-        boundAddrs: ['tcp://0.0.0.0:7777', 'tailscale://*:7777'],
-        sessionCount: 1,
-        tailscaleState: 'Running',
+        pairingUri: 'motif://pair?v=1&rzv=relay.example.com&psk=abc',
       ),
     );
-    final errors = await _captureFlutterErrors(tester, () async {
-      await _pumpSettings(tester, service);
-    });
-    await tester.pumpAndSettle();
 
-    expect(find.text('Local Server'), findsOneWidget);
-    expect(find.text('Running'), findsWidgets);
-    expect(find.text('Loopback'), findsOneWidget);
-    expect(find.text('LAN'), findsOneWidget);
-    expect(
-      find.text('PAIRING'),
-      findsOneWidget,
-    ); // MotifSection uppercases titles
-    expect(find.text('Pair over a relay'), findsOneWidget);
-    expect(find.text('NOTIFICATIONS'), findsOneWidget);
-    expect(find.text('Push relay'), findsOneWidget);
-    expect(find.text(kDefaultPushRelayAddress), findsWidgets);
-    expect(find.text('Health'), findsOneWidget);
-    expect(errors, isEmpty);
-  });
-
-  testWidgets('server page keeps its scroll position across status polls', (
-    tester,
-  ) async {
-    final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
-      status: const EmbeddedServerStatus(
-        running: true,
-        boundAddrs: ['tcp://0.0.0.0:7777', 'rzv://wss://relay.example.com'],
-        sessionCount: 1,
-        pairingUri: 'motif://pair?v=1&host=127.0.0.1&port=7777&psk=abc',
-      ),
-    );
     await _pumpPage(tester, service);
 
-    final portField = find.byWidgetPredicate(
-      (widget) => widget is TextField && widget.decoration?.labelText == 'Port',
+    expect(find.text('Local Server'), findsOneWidget);
+    expect(find.text('Stopped'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byType(Switch), findsNothing);
+    expect(find.text('RELAY'), findsNothing);
+    expect(find.text('Copy pairing link'), findsNothing);
+    expect(find.text('Start Server'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Start Server')).dy,
+      greaterThan(tester.getTopLeft(find.text('Local Server')).dy),
     );
-    await tester.tap(portField);
-    final portFocus = tester
-        .widget<EditableText>(
-          find.descendant(of: portField, matching: find.byType(EditableText)),
-        )
-        .focusNode;
-    expect(portFocus.hasFocus, isTrue);
+    expect(tester.getTopLeft(find.text('Start Server')).dy, lessThan(300));
+  });
 
-    final list = find.byType(ListView);
-    await tester.sendEventToBinding(
-      PointerScrollEvent(
-        position: tester.getCenter(list),
-        scrollDelta: const Offset(0, 700),
+  testWidgets('shows Relay QR only while the Server is running', (
+    tester,
+  ) async {
+    const pairingUri = 'motif://pair?v=1&rzv=relay.example.com&psk=abc&pk=def';
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(
+        rzvEnabled: true,
+        rzvRelay: 'relay.example.com',
+        rzvJwt: 'owner.jwt',
       ),
+      status: const EmbeddedServerStatus(pairingUri: pairingUri),
     );
-    await tester.pumpAndSettle();
+    String? clipboardText;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboardText =
+                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          }
+          return null;
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null),
+    );
 
-    expect(portFocus.hasFocus, isFalse);
-    final controller = tester.widget<ListView>(list).controller!;
-    final beforePoll = controller.offset;
-    expect(beforePoll, greaterThan(0));
+    await _pumpPage(tester, service);
+    expect(find.text('RELAY'), findsNothing);
 
     service.setStatus(
       const EmbeddedServerStatus(
         running: true,
-        boundAddrs: ['tcp://0.0.0.0:7777', 'rzv://wss://relay.example.com'],
-        sessionCount: 2,
-        pairingUri: 'motif://pair?v=1&host=127.0.0.1&port=7777&psk=abc',
+        boundAddrs: ['tcp://127.0.0.1:7777'],
+        pairingUri: pairingUri,
       ),
     );
     await tester.pump();
 
-    expect(controller.offset, closeTo(beforePoll, 0.1));
+    expect(find.text('RELAY'), findsOneWidget);
+    expect(find.text('relay.example.com'), findsOneWidget);
+    expect(find.text('Copy pairing link'), findsOneWidget);
+
+    await tester.tap(find.text('Copy pairing link'));
+    await tester.pump();
+    expect(clipboardText, pairingUri);
   });
 
-  testWidgets('does not expose coding-agent hooks in notifications', (
+  testWidgets('Relay page remains compact without overflow when narrow', (
     tester,
   ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(
+        rzvEnabled: true,
+        rzvRelay: 'wss://relay.example.com',
+        rzvJwt: 'owner.jwt',
+      ),
+      status: const EmbeddedServerStatus(
+        running: true,
+        boundAddrs: ['tcp://127.0.0.1:7777', 'rzv://wss://relay.example.com'],
+        pairingUri: 'motif://pair?v=1&rzv=relay.example.com&psk=abc&pk=def',
+      ),
+    );
+
+    final errors = await _captureFlutterErrors(tester, () async {
+      await _pumpPage(tester, service, size: const Size(460, 760));
+    });
+
+    expect(find.text('RELAY'), findsOneWidget);
+    expect(find.text('Copy pairing link'), findsOneWidget);
+    expect(errors, isEmpty);
+  });
+
+  testWidgets('settings Dialog renders configuration and explicit actions', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      status: const EmbeddedServerStatus(),
+    );
+    final errors = await _captureFlutterErrors(tester, () async {
+      await _pumpSettings(tester, service);
+    });
+
+    expect(find.text('Server Settings'), findsOneWidget);
+    expect(find.text('Loopback'), findsOneWidget);
+    expect(find.text('LAN'), findsOneWidget);
+    expect(find.text('CONNECTION RELAY'), findsOneWidget);
+    expect(find.text('NOTIFICATIONS'), findsOneWidget);
+    expect(find.text('Cancel'), findsOneWidget);
+    expect(find.text('Save'), findsOneWidget);
+    expect(find.text('Local Server'), findsNothing);
+    expect(errors, isEmpty);
+  });
+
+  testWidgets('Cancel discards the settings draft', (tester) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(),
-      status: const EmbeddedServerStatus(running: true),
+      status: const EmbeddedServerStatus(),
     );
-    await _pumpSettings(tester, service);
+    await _pumpPage(tester, service);
+
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.enterText(_fieldWithLabel('Port'), '8888');
+    await tester.pump();
+
+    expect(service.config.port, 7777);
+    await tester.tap(find.text('Cancel'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Claude Code and Codex hooks'), findsNothing);
-    expect(
-      find.byKey(const ValueKey('install-coding-agent-hooks')),
-      findsNothing,
-    );
-    expect(
-      find.byKey(const ValueKey('remove-coding-agent-hooks')),
-      findsNothing,
-    );
-  });
-
-  testWidgets('prompts to restart immediately for option changes', (
-    tester,
-  ) async {
-    final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
-      status: const EmbeddedServerStatus(running: true),
-    );
-    await _pumpSettings(tester, service);
-
-    await tester.tap(find.text('Loopback'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Restart server?'), findsOneWidget);
-    await tester.tap(find.text('Restart'));
-    await tester.pumpAndSettle();
-
-    expect(service.config.listenMode, EmbeddedListenMode.loopback);
-    expect(service.stopCount, 1);
-    expect(service.startCount, 1);
-  });
-
-  testWidgets('prompts to restart text-field changes only after blur', (
-    tester,
-  ) async {
-    final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
-      status: const EmbeddedServerStatus(running: true),
-    );
-    await _pumpSettings(tester, service);
-
-    final portField = find.byWidgetPredicate(
-      (widget) => widget is TextField && widget.decoration?.labelText == 'Port',
-    );
-    await tester.tap(portField);
-    await tester.enterText(portField, '8888');
-    await tester.pump(const Duration(seconds: 1));
-
-    expect(service.config.port, 8888);
-    expect(find.text('Restart server?'), findsNothing);
-
-    FocusManager.instance.primaryFocus?.unfocus();
-    await tester.pumpAndSettle();
-
-    expect(find.text('Restart server?'), findsOneWidget);
-    await tester.tap(find.text('Later'));
-    await tester.pumpAndSettle();
-
+    expect(service.config.port, 7777);
     expect(service.stopCount, 0);
     expect(service.startCount, 0);
   });
 
-  testWidgets('saves editable push relay address and restarts after blur', (
+  testWidgets('Save persists settings without starting a stopped Server', (
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
-      status: const EmbeddedServerStatus(running: true),
-    );
-    var checkedAddress = '';
-    await _pumpSettings(
-      tester,
-      service,
-      pushRelayHealthChecker: (address) async {
-        checkedAddress = address;
-        return true;
-      },
-    );
-
-    final relayField = find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField && widget.decoration?.labelText == 'Push relay',
-    );
-    await tester.tap(relayField);
-    await tester.enterText(relayField, 'relay.example.com');
-    await tester.pump(const Duration(seconds: 1));
-
-    expect(service.config.pushRelayUrl, 'relay.example.com');
-    expect(checkedAddress, isEmpty);
-    expect(find.text('Restart server?'), findsNothing);
-
-    FocusManager.instance.primaryFocus?.unfocus();
-    await tester.pumpAndSettle();
-
-    expect(find.text('Restart server?'), findsOneWidget);
-    expect(checkedAddress, 'relay.example.com');
-    expect(find.text('OK'), findsOneWidget);
-  });
-
-  testWidgets('resets the push relay and checks its health', (tester) async {
-    final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(pushRelayUrl: 'relay.example.com'),
+      config: const EmbeddedServerConfig(),
       status: const EmbeddedServerStatus(),
     );
-    var checkedAddress = '';
-    await _pumpSettings(
-      tester,
-      service,
-      pushRelayHealthChecker: (address) async {
-        checkedAddress = address;
-        return true;
-      },
-    );
+    await _pumpSettings(tester, service);
 
-    await tester.tap(find.text('Reset'));
+    await tester.enterText(_fieldWithLabel('Port'), '8888');
+    await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
 
-    expect(service.config.pushRelayUrl, kDefaultPushRelayAddress);
-    expect(checkedAddress, kDefaultPushRelayAddress);
-    expect(find.text('OK'), findsOneWidget);
-    final relayField = tester.widget<TextField>(
-      find.byWidgetPredicate(
-        (widget) =>
-            widget is TextField && widget.decoration?.labelText == 'Push relay',
-      ),
-    );
-    expect(relayField.controller?.text, kDefaultPushRelayAddress);
+    expect(service.config.port, 8888);
+    expect(service.stopCount, 0);
+    expect(service.startCount, 0);
   });
 
-  testWidgets('shows JWT verification failure in the relay row', (
+  testWidgets('Save confirms and restarts a running Server', (tester) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(),
+      status: const EmbeddedServerStatus(running: true, sessionCount: 2),
+    );
+    await _pumpSettings(tester, service);
+
+    await tester.enterText(_fieldWithLabel('Port'), '8888');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Save and restart Server?'), findsOneWidget);
+    expect(find.textContaining('every current Terminal'), findsOneWidget);
+    expect(find.textContaining('running Codex Threads'), findsOneWidget);
+    expect(service.config.port, 7777);
+
+    await tester.tap(find.text('Back to settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Server Settings'), findsOneWidget);
+    expect(service.config.port, 7777);
+
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Save and restart'));
+    await tester.pumpAndSettle();
+
+    expect(service.config.port, 8888);
+    expect(service.stopCount, 1);
+    expect(service.startCount, 1);
+  });
+
+  testWidgets('Relay settings are validated before saving', (tester) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(),
+      status: const EmbeddedServerStatus(),
+    );
+    await _pumpSettings(tester, service);
+
+    await tester.tap(find.text('Enable connection Relay'));
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+
+    expect(
+      find.text('Relay address is required when Relay is enabled.'),
+      findsOneWidget,
+    );
+    expect(service.config.rzvEnabled, isFalse);
+  });
+
+  testWidgets('stopping the Server requires destructive confirmation', (
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(rzvEnabled: true),
+      config: const EmbeddedServerConfig(),
+      status: const EmbeddedServerStatus(running: true, sessionCount: 1),
+    );
+    await _pumpPage(tester, service);
+
+    await tester.tap(find.text('Stop Server'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stop Server?'), findsOneWidget);
+    expect(find.textContaining('running Codex Threads'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(service.stopCount, 0);
+
+    await tester.tap(find.text('Stop Server'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Stop Server').last);
+    await tester.pumpAndSettle();
+    expect(service.stopCount, 1);
+  });
+
+  testWidgets('shows Relay connection errors on the running page', (
+    tester,
+  ) async {
+    final service = _FakeEmbeddedServerService(
+      config: const EmbeddedServerConfig(
+        rzvEnabled: true,
+        rzvRelay: 'relay.example.com',
+        rzvJwt: 'owner.jwt',
+      ),
       status: const EmbeddedServerStatus(
         running: true,
         relayError: 'rzv WebSocket upgrade: HTTP error: 401 Unauthorized',
       ),
     );
-    await _pumpSettings(tester, service);
+    await _pumpPage(tester, service);
 
-    expect(find.text('Pair over a relay'), findsOneWidget);
+    expect(find.text('RELAY'), findsOneWidget);
     expect(
       find.text('JWT verification failed — check the Relay owner JWT.'),
       findsOneWidget,
     );
-    expect(find.text('Reach it without direct connectivity'), findsNothing);
   });
 
-  testWidgets('reveals and copies the Relay owner JWT', (tester) async {
+  testWidgets('reveals and copies the Relay owner JWT in settings', (
+    tester,
+  ) async {
     const jwt = 'header.payload.signature';
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(rzvEnabled: true, rzvJwt: jwt),
+      config: const EmbeddedServerConfig(
+        rzvEnabled: true,
+        rzvRelay: 'relay.example.com',
+        rzvJwt: jwt,
+      ),
       status: const EmbeddedServerStatus(),
     );
     String? clipboardText;
@@ -276,50 +299,23 @@ void main() {
     );
 
     await _pumpSettings(tester, service);
-
-    final jwtFieldFinder = find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField &&
-          widget.decoration?.labelText == 'Relay owner JWT',
-    );
-    expect(tester.widget<TextField>(jwtFieldFinder).obscureText, isTrue);
+    final jwtField = _fieldWithLabel('Relay owner JWT');
+    expect(tester.widget<TextField>(jwtField).obscureText, isTrue);
 
     await tester.tap(find.byTooltip('Show Relay owner JWT'));
     await tester.pump();
-
-    expect(tester.widget<TextField>(jwtFieldFinder).obscureText, isFalse);
-    expect(find.byTooltip('Hide Relay owner JWT'), findsOneWidget);
+    expect(tester.widget<TextField>(jwtField).obscureText, isFalse);
 
     await tester.tap(find.byTooltip('Copy Relay owner JWT'));
     await tester.pump();
-
     expect(clipboardText, jwt);
-    expect(find.text('Relay owner JWT copied'), findsOneWidget);
   });
 
-  testWidgets('shows connection failure in the relay row', (tester) async {
+  testWidgets('checks the Push Relay health without saving the draft', (
+    tester,
+  ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(rzvEnabled: true),
-      status: const EmbeddedServerStatus(
-        running: true,
-        relayError: 'Connection refused (os error 61)',
-      ),
-    );
-    await _pumpSettings(tester, service);
-
-    expect(find.text('Pair over a relay'), findsOneWidget);
-    expect(
-      find.text(
-        'Unable to connect to the relay — check its address and your network.',
-      ),
-      findsOneWidget,
-    );
-    expect(find.text('Reach it without direct connectivity'), findsNothing);
-  });
-
-  testWidgets('checks push relay health from the field action', (tester) async {
-    final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      config: const EmbeddedServerConfig(),
       status: const EmbeddedServerStatus(),
     );
     final health = Completer<bool>();
@@ -333,57 +329,17 @@ void main() {
       },
     );
 
+    await tester.ensureVisible(find.text('Health'));
     await tester.tap(find.text('Health'));
     await tester.pump();
-
     expect(checkedAddress, kDefaultPushRelayAddress);
     expect(find.text('Checking'), findsOneWidget);
 
     health.complete(true);
     await tester.pumpAndSettle();
-
     expect(find.text('OK'), findsOneWidget);
+    expect(service.config.pushRelayUrl, kDefaultPushRelayAddress);
   });
-
-  testWidgets(
-    'opens registered push tokens from server settings and tests one',
-    (tester) async {
-      const token =
-          'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
-      final service = _FakeEmbeddedServerService(
-        config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
-        status: const EmbeddedServerStatus(running: true),
-        pushTokens: const [
-          RegisteredPushToken(
-            deviceToken: token,
-            platform: 'ios',
-            environment: 'sandbox',
-            registeredAt: 1710000000000,
-          ),
-        ],
-      );
-      await _pumpSettings(tester, service);
-
-      await tester.tap(find.text('Registered push tokens'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Registered Push Tokens'), findsOneWidget);
-      expect(find.text(token), findsOneWidget);
-      expect(find.text('ios · sandbox'), findsOneWidget);
-
-      await tester.tap(find.byTooltip('Refresh push tokens'));
-      await tester.pumpAndSettle();
-
-      expect(tester.takeException(), isNull);
-      expect(service.pushTokenListCount, 2);
-
-      await tester.tap(find.text('Test'));
-      await tester.pumpAndSettle();
-
-      expect(service.testedTokens, [token]);
-      expect(find.text('Test push sent'), findsOneWidget);
-    },
-  );
 
   testWidgets('keeps Tailscale details collapsed until opened', (tester) async {
     final service = _FakeEmbeddedServerService(
@@ -394,27 +350,29 @@ void main() {
       status: const EmbeddedServerStatus(),
     );
     await _pumpSettings(tester, service);
-    await tester.pumpAndSettle();
 
-    expect(find.text('Tailscale settings'), findsOneWidget);
+    await tester.ensureVisible(find.text('Tailscale settings'));
     expect(find.text('motif-dev · Official · Browser login'), findsOneWidget);
     expect(find.text('CONTROL SERVER'), findsNothing);
     expect(find.text('SIGN-IN'), findsNothing);
 
     await tester.tap(find.text('Tailscale settings'));
     await tester.pumpAndSettle();
-
     expect(find.text('CONTROL SERVER'), findsOneWidget);
     expect(find.text('SIGN-IN'), findsOneWidget);
   });
 }
+
+Finder _fieldWithLabel(String label) => find.byWidgetPredicate(
+  (widget) => widget is TextField && widget.decoration?.labelText == label,
+);
 
 Future<void> _pumpSettings(
   WidgetTester tester,
   EmbeddedServerService service, {
   Future<bool> Function(String address)? pushRelayHealthChecker,
 }) async {
-  tester.view.physicalSize = const Size(900, 1200);
+  tester.view.physicalSize = const Size(900, 900);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -426,24 +384,21 @@ Future<void> _pumpSettings(
         theme: motifTheme(Brightness.light),
         builder: (context, child) =>
             MotifToastHost(child: child ?? const SizedBox.shrink()),
-        home: Scaffold(
-          body: SingleChildScrollView(
-            padding: const EdgeInsets.all(MotifSpacing.lg),
-            child: EmbeddedServerSettingsSheet(
-              pushRelayHealthChecker: pushRelayHealthChecker,
-            ),
-          ),
+        home: EmbeddedServerSettingsDialog(
+          pushRelayHealthChecker: pushRelayHealthChecker,
         ),
       ),
     ),
   );
+  await tester.pump();
 }
 
 Future<void> _pumpPage(
   WidgetTester tester,
-  EmbeddedServerService service,
-) async {
-  tester.view.physicalSize = const Size(900, 600);
+  EmbeddedServerService service, {
+  Size size = const Size(900, 600),
+}) async {
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -453,6 +408,8 @@ Future<void> _pumpPage(
       value: service,
       child: MaterialApp(
         theme: motifTheme(Brightness.light),
+        builder: (context, child) =>
+            MotifToastHost(child: child ?? const SizedBox.shrink()),
         home: const EmbeddedServerPage(),
       ),
     ),
@@ -476,20 +433,11 @@ Future<List<FlutterErrorDetails>> _captureFlutterErrors(
 }
 
 class _FakeEmbeddedServerService extends EmbeddedServerService {
-  final List<RegisteredPushToken> pushTokens;
   int startCount = 0;
   int stopCount = 0;
-  int pushTokenListCount = 0;
-  final List<String> testedTokens = [];
-  CodingAgentHooksStatus agentHooksStatus = const CodingAgentHooksStatus();
-  int installAgentHooksCount = 0;
-  int uninstallAgentHooksCount = 0;
 
-  _FakeEmbeddedServerService({
-    required super.config,
-    required super.status,
-    this.pushTokens = const [],
-  }) : super(available: true);
+  _FakeEmbeddedServerService({required super.config, required super.status})
+    : super(available: true);
 
   @override
   String generateToken() => 'generated-token';
@@ -510,35 +458,11 @@ class _FakeEmbeddedServerService extends EmbeddedServerService {
   List<String> tailLogs([int n = 200]) => const [];
 
   @override
-  Future<List<RegisteredPushToken>> registeredPushTokens() async {
-    pushTokenListCount += 1;
-    return pushTokens;
-  }
+  Future<List<RegisteredPushToken>> registeredPushTokens() async => const [];
 
   @override
-  Future<PushTestResult> sendTestPush(String deviceToken) async {
-    testedTokens.add(deviceToken);
-    return const PushTestResult(sent: true);
-  }
-
-  @override
-  Future<CodingAgentHooksStatus> codingAgentHooksStatus() async =>
-      agentHooksStatus;
-
-  @override
-  Future<CodingAgentHooksStatus> installCodingAgentHooks() async {
-    installAgentHooksCount += 1;
-    return agentHooksStatus = const CodingAgentHooksStatus(
-      claudeInstalled: true,
-      codexInstalled: true,
-    );
-  }
-
-  @override
-  Future<CodingAgentHooksStatus> uninstallCodingAgentHooks() async {
-    uninstallAgentHooksCount += 1;
-    return agentHooksStatus = const CodingAgentHooksStatus();
-  }
+  Future<PushTestResult> sendTestPush(String deviceToken) async =>
+      const PushTestResult(sent: true);
 
   @override
   Future<void> updateConfig(EmbeddedServerConfig next) async {
