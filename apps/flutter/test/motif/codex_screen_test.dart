@@ -113,15 +113,19 @@ void main() {
     app.dispose();
   });
 
-  test('restores the last opened thread when its catalog is ready', () async {
+  test('restores the last opened thread before its catalog is ready', () async {
     SharedPreferences.setMockInitialValues({});
     final sharedPreferences = await SharedPreferences.getInstance();
     final preferences = CodexState(preferences: sharedPreferences)
       ..setLastOpenedThreadId('server', 'thread');
     final client = ScreenFakeClient();
     final serviceState = readyServiceState(connection: client);
+    final persistedThread = serviceState.catalog.allThreads.single;
+    serviceState
+      ..catalog = const CodexCatalogSnapshot.empty()
+      ..catalogPhase = CodexCatalogPhase.loading;
     client.threadReadResponse = CodexThreadReadResponse(
-      thread: serviceState.catalog.allThreads.single,
+      thread: persistedThread,
     );
     final controller = CodexFeatureController(
       serverId: 'server',
@@ -136,6 +140,7 @@ void main() {
 
     expect(client.readThreadIds, ['thread']);
     expect(serviceState.selectedThread?.id, 'thread');
+    expect(serviceState.catalogPhase, CodexCatalogPhase.loading);
     expect(preferences.lastOpenedThreadId('server'), 'thread');
 
     await controller.close();

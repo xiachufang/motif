@@ -41,6 +41,7 @@ final class CodexFeatureController extends ChangeNotifier {
   bool _closed = false;
   String? _lastObservedThreadId;
   String? _pendingRestoreThreadId;
+  String? _failedRestoreThreadId;
   bool _restoringThread = false;
 
   CodexServiceState? get service => _service;
@@ -174,6 +175,7 @@ final class CodexFeatureController extends ChangeNotifier {
     final state = _service;
     if (state != null) {
       _syncSelectedThreadPreference(state);
+      _resolveFailedThreadRestore(state);
       _maybeRestoreLastOpenedThread(state);
     }
     notifyListeners();
@@ -185,6 +187,7 @@ final class CodexFeatureController extends ChangeNotifier {
     if (threadId != null) {
       _lastObservedThreadId = threadId;
       _pendingRestoreThreadId = null;
+      _failedRestoreThreadId = null;
       preferences.setLastOpenedThreadId(serverId, threadId);
     } else if (_lastObservedThreadId != null) {
       _lastObservedThreadId = null;
@@ -197,20 +200,42 @@ final class CodexFeatureController extends ChangeNotifier {
     if (threadId == null ||
         _restoringThread ||
         state.selectedThread != null ||
-        state.catalogPhase != CodexCatalogPhase.ready) {
+        state.connectionState.phase != CodexConnectionPhase.connected) {
       return;
     }
     _pendingRestoreThreadId = null;
-    if (!state.catalog.allThreads.any((thread) => thread.id == threadId)) {
-      preferences.setLastOpenedThreadId(serverId, null);
+    _restoringThread = true;
+    unawaited(_restoreLastOpenedThread(state, threadId));
+  }
+
+  Future<void> _restoreLastOpenedThread(
+    CodexServiceState state,
+    String threadId,
+  ) async {
+    try {
+      await state.readThread(threadId);
+      if (_closed || preferences.lastOpenedThreadId(serverId) != threadId) {
+        return;
+      }
+      if (state.selectedThread?.id != threadId) {
+        _failedRestoreThreadId = threadId;
+        _resolveFailedThreadRestore(state);
+      }
+    } finally {
+      _restoringThread = false;
+    }
+  }
+
+  void _resolveFailedThreadRestore(CodexServiceState state) {
+    final threadId = _failedRestoreThreadId;
+    if (threadId == null || state.catalogPhase != CodexCatalogPhase.ready) {
       return;
     }
-    _restoringThread = true;
-    unawaited(
-      state.readThread(threadId).whenComplete(() {
-        _restoringThread = false;
-      }),
-    );
+    _failedRestoreThreadId = null;
+    if (preferences.lastOpenedThreadId(serverId) == threadId &&
+        !state.catalog.allThreads.any((thread) => thread.id == threadId)) {
+      preferences.setLastOpenedThreadId(serverId, null);
+    }
   }
 
   Future<void> close() async {

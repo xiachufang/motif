@@ -1807,6 +1807,45 @@ void main() {
     expect(motif.closedViews, isEmpty);
   });
 
+  testWidgets('new terminal inherits the active PTY cwd', (tester) async {
+    final motif = _ShortcutWorkspaceConnectionController()
+      ..ptys = const [
+        PtyInfo(id: 'pty-1', cwd: '/work/first', cols: 80, rows: 24),
+        PtyInfo(id: 'pty-2', cwd: '/work/current', cols: 100, rows: 30),
+      ]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'v2', spec: PtyViewSpec('pty-2')),
+      ]
+      ..activeViewId = 'v2';
+
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyT);
+
+    final created = motif.terminal.viewModel.ptys.last;
+    expect(created.cwd, '/work/current');
+    expect((created.cols, created.rows), (100, 30));
+  });
+
+  testWidgets('new terminal uses the default cwd without an active PTY', (
+    tester,
+  ) async {
+    final motif = _ShortcutWorkspaceConnectionController()
+      ..ptys = const [
+        PtyInfo(id: 'pty-1', cwd: '/work/inactive', cols: 80, rows: 24),
+      ]
+      ..views = const [
+        ViewInfo(id: 'v1', spec: PtyViewSpec('pty-1')),
+        ViewInfo(id: 'preview', spec: PreviewViewSpec('/work/readme.md')),
+      ]
+      ..activeViewId = 'preview';
+
+    await _pumpSession(tester, const Size(1024, 768), motif: motif);
+    await _sendPrimaryShortcut(tester, LogicalKeyboardKey.keyT);
+
+    expect(motif.terminal.viewModel.ptys.last.cwd, isNull);
+  });
+
   testWidgets('Chrome-style tab shortcuts create close and switch tabs', (
     tester,
   ) async {

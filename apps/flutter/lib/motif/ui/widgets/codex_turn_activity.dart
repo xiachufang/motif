@@ -26,6 +26,7 @@ const _inlineDiffVerticalBorder = 2.0;
 const _diffBodyMaxHeight =
     _inlineDiffMaxHeight - _inlineDiffHeaderHeight - _inlineDiffVerticalBorder;
 const _activityTitleGap = 4.0;
+const _activityTitleMaxLines = 1;
 const _processingSweepDuration = Duration(milliseconds: 1600);
 const _processingSweepPause = Duration(milliseconds: 450);
 final _processingSweepPeriod = _processingSweepDuration + _processingSweepPause;
@@ -163,7 +164,7 @@ class CodexActivityTitle extends StatelessWidget {
               ? CodexProcessingSweepText(title, style: style)
               : Text(
                   title,
-                  maxLines: 2,
+                  maxLines: _activityTitleMaxLines,
                   overflow: TextOverflow.ellipsis,
                   style: style,
                 ),
@@ -216,7 +217,7 @@ class _CodexProcessingSweepTextState extends State<CodexProcessingSweepText>
     if (MediaQuery.disableAnimationsOf(context)) {
       return Text(
         widget.text,
-        maxLines: 2,
+        maxLines: _activityTitleMaxLines,
         overflow: TextOverflow.ellipsis,
         style: widget.style,
       );
@@ -249,7 +250,7 @@ class _CodexProcessingSweepTextState extends State<CodexProcessingSweepText>
               ),
               child: Text(
                 widget.text,
-                maxLines: 2,
+                maxLines: _activityTitleMaxLines,
                 overflow: TextOverflow.ellipsis,
                 style: widget.style,
               ),
@@ -673,6 +674,8 @@ class _FileChangeActivity extends StatelessWidget {
               ),
         title: Text(
           _fileChangeActivityTitle(item),
+          maxLines: _activityTitleMaxLines,
+          overflow: TextOverflow.ellipsis,
           style: MotifType.subhead.copyWith(color: c.textSecondary),
         ),
         children: [
@@ -1055,7 +1058,7 @@ class _DetailActivity extends StatelessWidget {
             : Icon(icon, size: MotifIconSize.sm, color: c.textTertiary),
         title: Text(
           title,
-          maxLines: 2,
+          maxLines: _activityTitleMaxLines,
           overflow: TextOverflow.ellipsis,
           style: MotifType.subhead.copyWith(color: c.textSecondary),
         ),
@@ -1228,6 +1231,8 @@ class _ActivityRow extends StatelessWidget {
           Expanded(
             child: Text(
               title,
+              maxLines: _activityTitleMaxLines,
+              overflow: TextOverflow.ellipsis,
               style: MotifType.subhead.copyWith(color: c.textSecondary),
             ),
           ),
@@ -1436,52 +1441,6 @@ String? _reasoningText(CodexReasoningThreadItem? reasoning) {
   return null;
 }
 
-String _commandTitle(CodexCommandExecutionThreadItem value) {
-  final running = value.status == CodexCommandExecutionStatus.inProgress;
-  switch (_commandActivityKind(value)) {
-    case _CommandActivityKind.read:
-      final action = value.commandActions
-          .whereType<CodexReadCommandAction>()
-          .firstOrNull;
-      final target = action == null
-          ? null
-          : action.name.trim().isNotEmpty
-          ? action.name.trim()
-          : _leaf(action.path.value);
-      return '${running ? 'Reading' : 'Read'} ${target?.isNotEmpty == true ? target : 'files'}';
-    case _CommandActivityKind.listFiles:
-      final action = value.commandActions
-          .whereType<CodexListFilesCommandAction>()
-          .firstOrNull;
-      final path = action?.path?.trim();
-      return path?.isNotEmpty == true
-          ? '${running ? 'Listing' : 'Listed'} files in $path'
-          : '${running ? 'Listing' : 'Listed'} files';
-    case _CommandActivityKind.search:
-      final action = value.commandActions
-          .whereType<CodexSearchCommandAction>()
-          .firstOrNull;
-      final query = action?.query?.trim();
-      return query?.isNotEmpty == true
-          ? '${running ? 'Searching' : 'Searched'} for $query'
-          : '${running ? 'Searching' : 'Searched'} code';
-    case _CommandActivityKind.test:
-      return running ? 'Running tests' : 'Ran tests';
-    case _CommandActivityKind.build:
-      return running ? 'Building project' : 'Built project';
-    case _CommandActivityKind.format:
-      return running ? 'Formatting code' : 'Formatted code';
-    case _CommandActivityKind.commit:
-      return running ? 'Committing changes' : 'Committed changes';
-    case _CommandActivityKind.generic:
-      break;
-  }
-  final first = _commandExecutable(value);
-  return running
-      ? 'Running ${first ?? 'command'}'
-      : 'Ran ${first ?? 'command'}';
-}
-
 String _fullCommandTitle(CodexCommandExecutionThreadItem value) {
   final command = _commandDisplayText(value);
   final verb = value.status == CodexCommandExecutionStatus.inProgress
@@ -1584,7 +1543,7 @@ bool _matchesCommand(String command, String commandPattern) => RegExp(
 ).hasMatch(command);
 
 String _commandActivityTitle(CodexCommandExecutionThreadItem value) =>
-    _commandTitle(value);
+    _fullCommandTitle(value);
 
 String _fileChangeActivityTitle(CodexFileChangeThreadItem value) {
   final verb = value.status == CodexPatchApplyStatus.inProgress
@@ -1599,17 +1558,6 @@ String _fileChangeActivityTitle(CodexFileChangeThreadItem value) {
   final visible = names.take(2).join(', ');
   final remaining = names.length - 2;
   return '$verb $visible${remaining > 0 ? ' and $remaining more' : ''}';
-}
-
-String? _commandExecutable(CodexCommandExecutionThreadItem value) {
-  final parsed = value.commandActions
-      .map(_commandActionText)
-      .where((command) => command.trim().isNotEmpty)
-      .firstOrNull;
-  final command = parsed ?? _unwrapShellCommand(value.command);
-  final token = _firstShellToken(command);
-  if (token == null) return null;
-  return token.replaceAll('\\', '/').split('/').last;
 }
 
 String _commandActionText(CodexCommandAction action) => switch (action) {
@@ -1633,42 +1581,6 @@ String _unwrapShellCommand(String command) {
     return payload.substring(1, payload.length - 1);
   }
   return payload;
-}
-
-String? _firstShellToken(String command) {
-  final trimmed = command.trimLeft();
-  if (trimmed.isEmpty) return null;
-  final buffer = StringBuffer();
-  String? quote;
-  var escaped = false;
-  for (final codeUnit in trimmed.codeUnits) {
-    final char = String.fromCharCode(codeUnit);
-    if (escaped) {
-      buffer.write(char);
-      escaped = false;
-      continue;
-    }
-    if (char == r'\') {
-      escaped = true;
-      continue;
-    }
-    if (quote != null) {
-      if (char == quote) {
-        quote = null;
-      } else {
-        buffer.write(char);
-      }
-      continue;
-    }
-    if (char == "'" || char == '"') {
-      quote = char;
-      continue;
-    }
-    if (RegExp(r'\s').hasMatch(char)) break;
-    buffer.write(char);
-  }
-  final token = buffer.toString();
-  return token.isEmpty ? null : token;
 }
 
 String _duration(int milliseconds) {

@@ -315,7 +315,7 @@ void main() {
     state.dispose();
   });
 
-  testWidgets('command activities use semantic titles when data is available', (
+  testWidgets('command activities display the complete command', (
     tester,
   ) async {
     final client = WorkspaceFakeClient();
@@ -411,13 +411,13 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('Read main.dart'), findsOneWidget);
-    expect(find.text('Listed files in lib'), findsOneWidget);
-    expect(find.text('Searched for TODO'), findsOneWidget);
-    expect(find.text('Ran tests'), findsOneWidget);
-    expect(find.text('Built project'), findsOneWidget);
-    expect(find.text('Formatted code'), findsOneWidget);
-    expect(find.text('Committed changes'), findsOneWidget);
+    expect(find.text('Ran cat lib/main.dart'), findsOneWidget);
+    expect(find.text('Ran ls lib'), findsOneWidget);
+    expect(find.text('Ran rg TODO lib'), findsOneWidget);
+    expect(find.text('Ran flutter test'), findsOneWidget);
+    expect(find.text('Ran flutter build macos'), findsOneWidget);
+    expect(find.text('Ran dart format lib'), findsOneWidget);
+    expect(find.text('Ran git commit -m done'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -894,7 +894,7 @@ void main() {
       expect(collapsedActivity.minTileHeight, 32);
       expect(collapsedActivity.visualDensity?.vertical, -4);
       expect(find.text('Ran a command, edited files'), findsOneWidget);
-      expect(find.text('Ran rg'), findsNothing);
+      expect(find.text('Ran rg TODO'), findsNothing);
       expect(find.text(r'$ rg TODO'), findsNothing);
       await tester.ensureVisible(find.text('Ran a command, edited files'));
       await tester.pump();
@@ -904,7 +904,7 @@ void main() {
         find.byKey(const ValueKey('codex-activity-group-scroll')),
         findsNothing,
       );
-      expect(find.text('Ran rg'), findsOneWidget);
+      expect(find.text('Ran rg TODO'), findsOneWidget);
       expect(find.textContaining('exit 0'), findsNothing);
       expect(find.text('Edited a.dart'), findsOneWidget);
       expect(find.text('Edited b.dart'), findsOneWidget);
@@ -1454,7 +1454,10 @@ Only show **this request**.
 
     _expandListTile(
       tester,
-      find.ancestor(of: find.text('Ran sh'), matching: find.byType(ListTile)),
+      find.ancestor(
+        of: find.text('Ran sh long-task.sh'),
+        matching: find.byType(ListTile),
+      ),
     );
     await tester.pump(const Duration(milliseconds: 300));
     final detailScroll = find.byKey(

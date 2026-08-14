@@ -6,7 +6,11 @@ extension _SessionScreenMenuActions on _SessionScreenState {
   Future<void> _newPty({bool quietWhileReconnecting = false}) async {
     try {
       final (cols, rows) = _preferredPtySize();
-      await _terminalController.create(cols: cols, rows: rows);
+      await _terminalController.create(
+        cwd: _currentPtyCwd(),
+        cols: cols,
+        rows: rows,
+      );
       _focusTerminalAfterTabSwitch();
     } catch (e) {
       final connectionStillAttached =
@@ -15,6 +19,25 @@ extension _SessionScreenMenuActions on _SessionScreenState {
         showMotifToast(context, 'New terminal failed: $e');
       }
     }
+  }
+
+  String? _currentPtyCwd() {
+    final activeViewId = _workspaceState.views.activeViewId;
+    if (activeViewId == null) return null;
+
+    String? activePtyId;
+    for (final view in _workspaceState.views.items) {
+      if (view.id == activeViewId && view.spec is PtyViewSpec) {
+        activePtyId = (view.spec as PtyViewSpec).ptyId;
+        break;
+      }
+    }
+    if (activePtyId == null) return null;
+
+    for (final pty in _terminalController.viewModel.ptys) {
+      if (pty.id == activePtyId) return pty.cwd;
+    }
+    return null;
   }
 
   Future<void> _showRemotePortMappings(RemotePortController controller) async {
