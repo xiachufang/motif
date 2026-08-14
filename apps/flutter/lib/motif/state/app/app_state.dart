@@ -142,6 +142,23 @@ class AppState {
     });
   }
 
+  /// Open a Codex thread from a notification tap. Thread navigation takes
+  /// precedence over the session fallback carried by the same push payload.
+  void requestOpenCodexThread({
+    required String serverId,
+    required String threadId,
+  }) {
+    final trimmed = threadId.trim();
+    if (serverId.isEmpty || trimmed.isEmpty) return;
+    observationTransaction(() {
+      shell.viewMode = AppViewMode.client;
+      shell.pendingSessionOpen = PendingSessionOpen(
+        serverId: serverId,
+        threadId: trimmed,
+      );
+    });
+  }
+
   /// Take and clear the pending open, or `null` if none.
   PendingSessionOpen? takePendingSessionOpen() {
     final pending = shell.pendingSessionOpen;
@@ -221,6 +238,7 @@ class AppState {
       serverExists: (id) => serverById(id) != null,
       showNotification: _showServerNotification,
       requestOpenSession: requestOpenSession,
+      requestOpenThread: requestOpenCodexThread,
     );
     _runtime = AppRuntimeController(
       connectStartupServer: _connectStartupServerEffect,

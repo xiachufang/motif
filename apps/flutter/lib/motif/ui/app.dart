@@ -9,6 +9,7 @@ import '../models/settings.dart';
 import '../platform/desktop_window.dart';
 import '../state/app/app_state.dart';
 import '../state/app/motif_scope.dart';
+import 'integration/app_codex_screen.dart';
 import 'screens/connection_screen.dart';
 import 'screens/session_list_screen.dart';
 import 'screens/session_screen.dart';
@@ -389,8 +390,8 @@ class _Root extends _$_Root {
   }
 }
 
-/// Watches [AppState.pendingSessionOpen] and pushes [SessionScreen] on the
-/// nearest navigator (the nested client navigator on desktop, the root one
+/// Watches [AppState.pendingSessionOpen] and opens its Session or Codex target
+/// on the nearest navigator (the nested client navigator on desktop, the root one
 /// elsewhere). Stays mounted under the home route so taps from a live session
 /// still navigate.
 final class _PendingSessionOpenCoordinator {
@@ -438,7 +439,14 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
     if (pending == null) return;
     coordinator.opening = true;
     try {
-      final routeName = sessionRouteName(pending.serverId, pending.session);
+      final threadId = pending.threadId;
+      if (threadId != null && threadId.isNotEmpty) {
+        await _openPendingThread(context, app, pending, threadId);
+        return;
+      }
+      final session = pending.session;
+      if (session == null || session.isEmpty) return;
+      final routeName = sessionRouteName(pending.serverId, session);
       if (app.serverById(pending.serverId) == null) return;
       if (_topRouteName(context) == routeName) {
         _activateNotificationView(app, pending);
@@ -459,7 +467,7 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
         showMotifToast(context, 'Could not connect to the notification server');
         return;
       }
-      app.workspaceForSession(pending.serverId, pending.session);
+      app.workspaceForSession(pending.serverId, session);
       // The visible route may have changed while the connection was opening.
       final topRouteName = _topRouteName(context);
       if (topRouteName == routeName) {
@@ -472,7 +480,7 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
         settings: RouteSettings(name: routeName),
         builder: (_) => SessionScreen(
           serverId: pending.serverId,
-          session: pending.session,
+          session: session,
           initialViewId: pending.viewId,
         ),
       );
@@ -489,10 +497,47 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
     }
   }
 
+  Future<void> _openPendingThread(
+    BuildContext context,
+    AppState app,
+    PendingSessionOpen pending,
+    String threadId,
+  ) async {
+    if (app.serverById(pending.serverId) == null) return;
+    if (app.servers.activeId != pending.serverId) {
+      await app.servers.setActive(pending.serverId);
+      if (!context.mounted) return;
+    }
+    final connected = await app.ensureServerConnectedAndRefresh(
+      pending.serverId,
+      makeActive: false,
+    );
+    if (!context.mounted) return;
+    if (!connected) {
+      showMotifToast(context, 'Could not connect to the notification server');
+      return;
+    }
+
+    final nav = Navigator.of(context);
+    final topRouteName = _topRouteName(context);
+    final route = MaterialPageRoute<void>(
+      settings: RouteSettings(name: 'codex/${pending.serverId}'),
+      fullscreenDialog: true,
+      builder: (_) =>
+          AppCodexScreen(serverId: pending.serverId, initialThreadId: threadId),
+    );
+    if (topRouteName?.startsWith('codex/') ?? false) {
+      unawaited(nav.pushReplacement<void, void>(route));
+    } else {
+      unawaited(nav.push<void>(route));
+    }
+  }
+
   void _activateNotificationView(AppState app, PendingSessionOpen pending) {
     final viewId = pending.viewId;
-    if (viewId == null || viewId.isEmpty) return;
-    final workspace = app.existingWorkspace(pending.serverId, pending.session);
+    final session = pending.session;
+    if (viewId == null || viewId.isEmpty || session == null) return;
+    final workspace = app.existingWorkspace(pending.serverId, session);
     if (workspace == null ||
         !workspace.viewModel.views.items.any((view) => view.id == viewId)) {
       return;

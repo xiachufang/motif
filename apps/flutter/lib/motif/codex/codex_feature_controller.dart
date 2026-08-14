@@ -6,6 +6,7 @@ import 'codex_connection_controller.dart';
 import 'codex_feature_view_model.dart';
 import 'codex_service_state.dart';
 import 'codex_state.dart';
+import 'protocol/generated/codex_app_server_protocol.dart';
 import 'side_chat_collection_controller.dart';
 
 enum CodexServiceAction { restart, stop }
@@ -23,6 +24,7 @@ final class CodexFeatureController extends ChangeNotifier {
     required this.connectionFactory,
     required this.controlService,
     this.serviceFactory,
+    this.initialThreadId,
   });
 
   final String serverId;
@@ -30,6 +32,7 @@ final class CodexFeatureController extends ChangeNotifier {
   final CodexConnectionFactory connectionFactory;
   final CodexServiceControl controlService;
   final CodexServiceFactory? serviceFactory;
+  final String? initialThreadId;
   final CodexFeatureViewModel viewModel = CodexFeatureViewModel();
 
   CodexServiceState? _service;
@@ -44,6 +47,7 @@ final class CodexFeatureController extends ChangeNotifier {
   String? _failedRestoreThreadId;
   bool _restoringThread = false;
   String? _visibleSideChatParentId;
+  SideChatCollectionController? _pendingInitialSideChat;
 
   CodexServiceState? get service => _service;
   SideChatCollectionController? get sideChats {
@@ -53,10 +57,20 @@ final class CodexFeatureController extends ChangeNotifier {
         : _sideChatsByParentThread[parentThreadId];
   }
 
+  SideChatCollectionController? takePendingInitialSideChat() {
+    final pending = _pendingInitialSideChat;
+    _pendingInitialSideChat = null;
+    return pending;
+  }
+
   Future<void> start() async {
     if (_started || _closed) return;
     _started = true;
-    _pendingRestoreThreadId = preferences.lastOpenedThreadId(serverId);
+    final requestedThreadId = initialThreadId?.trim();
+    final hasRequestedThread = requestedThreadId?.isNotEmpty == true;
+    _pendingRestoreThreadId = hasRequestedThread
+        ? null
+        : preferences.lastOpenedThreadId(serverId);
     try {
       final state =
           serviceFactory?.call() ??
@@ -88,16 +102,59 @@ final class CodexFeatureController extends ChangeNotifier {
       viewModel.setupError = null;
       state.addListener(_onServiceChanged);
       _syncSelectedThreadPreference(state);
-      _maybeRestoreLastOpenedThread(state);
+      if (!hasRequestedThread) _maybeRestoreLastOpenedThread(state);
       notifyListeners();
       await state.start();
-      _maybeRestoreLastOpenedThread(state);
+      if (hasRequestedThread) {
+        await _openRequestedThread(state, requestedThreadId!);
+      } else {
+        _maybeRestoreLastOpenedThread(state);
+      }
     } catch (error) {
       if (_closed) return;
       setupError = '$error';
       viewModel.setupError = setupError;
       notifyListeners();
     }
+  }
+
+  Future<void> _openRequestedThread(
+    CodexServiceState state,
+    String threadId,
+  ) async {
+    final catalogTarget = state.catalog.allThreads
+        .where((thread) => thread.id == threadId)
+        .firstOrNull;
+    if (catalogTarget != null && !catalogTarget.ephemeral) {
+      await state.readThread(threadId);
+      return;
+    }
+
+    late CodexThread targetThread;
+    try {
+      targetThread = (await state.connection.readThread(threadId)).thread;
+    } catch (_) {
+      // Let the regular service state surface stale/missing notification
+      // targets without turning the entire Codex screen into a setup failure.
+      await state.readThread(threadId);
+      return;
+    }
+    if (_closed) return;
+    final parentId = targetThread.ephemeral
+        ? (targetThread.parentThreadId ?? targetThread.forkedFromId)?.trim()
+        : null;
+    if (parentId == null || parentId.isEmpty) {
+      await state.readThread(threadId);
+      return;
+    }
+
+    await state.readThread(parentId);
+    if (_closed || state.selectedThread?.id != parentId) return;
+    final collection = openSideChats();
+    final sideChat = await collection?.openExisting(threadId);
+    if (_closed || sideChat == null) return;
+    _pendingInitialSideChat = collection;
+    notifyListeners();
   }
 
   SideChatCollectionController? openSideChats() {

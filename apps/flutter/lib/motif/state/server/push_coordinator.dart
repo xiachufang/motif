@@ -16,6 +16,8 @@ typedef PushSessionRequest =
       required String session,
       String? viewId,
     });
+typedef PushThreadRequest =
+    void Function({required String serverId, required String threadId});
 typedef PushNotificationSink =
     void Function(String serverId, MotifNotification notification);
 typedef PushServerEndpoint = ({
@@ -63,7 +65,13 @@ final class _ServerRemoved extends _PushEvent {
 final class _HandlersWired extends _PushEvent {
   const _HandlersWired(this.pendingOpen);
 
-  final ({String? session, String? instanceId, String? viewId})? pendingOpen;
+  final ({
+    String? session,
+    String? instanceId,
+    String? viewId,
+    String? threadId,
+  })?
+  pendingOpen;
 }
 
 final class _ServerRegistered extends _PushEvent {
@@ -96,11 +104,13 @@ final class _NotificationOpenReceived extends _PushEvent {
     required this.session,
     this.instanceId,
     this.viewId,
+    this.threadId,
   });
 
   final String? session;
   final String? instanceId;
   final String? viewId;
+  final String? threadId;
 }
 
 final class _ForegroundNotificationDecoded extends _PushEvent {
@@ -203,6 +213,7 @@ final class PushCoordinator {
     required this.serverExists,
     required this.showNotification,
     required this.requestOpenSession,
+    required this.requestOpenThread,
   }) {
     _machine = RuntimeMachine<PushRuntimeState, _PushEvent, _PushEffect>(
       initialState: const PushRuntimeState.initial(),
@@ -225,6 +236,7 @@ final class PushCoordinator {
   final bool Function(String serverId) serverExists;
   final PushNotificationSink showNotification;
   final PushSessionRequest requestOpenSession;
+  final PushThreadRequest requestOpenThread;
 
   late final RuntimeMachine<PushRuntimeState, _PushEvent, _PushEffect> _machine;
   final Map<String, List<Completer<void>>> _registrationWaiters = {};
@@ -516,12 +528,13 @@ final class PushCoordinator {
         service.onEncryptedPayload((e, n) {
           _machine.dispatch(_EncryptedPayloadReceived(e, n));
         });
-        service.onNotificationOpen(({session, instanceId, viewId}) {
+        service.onNotificationOpen(({session, instanceId, viewId, threadId}) {
           _machine.dispatch(
             _NotificationOpenReceived(
               session: session,
               instanceId: instanceId,
               viewId: viewId,
+              threadId: threadId,
             ),
           );
         });
@@ -589,6 +602,7 @@ final class PushCoordinator {
         final instanceId = motif['instance_id'] as String;
         final sessionId = motif['session_id'] as String?;
         final viewId = motif['view_id'] as String?;
+        final threadId = motif['thread_id'] as String?;
         if (settings.isMuted(sessionId ?? '')) return null;
         final serverId = serverIdsByInstanceId[instanceId];
         if (serverId == null) return null;
@@ -599,6 +613,7 @@ final class PushCoordinator {
             body: (obj['body'] as String?) ?? '',
             sessionId: sessionId,
             viewId: viewId,
+            threadId: threadId,
             kind: motif['kind'] as String,
           ),
         );
@@ -616,18 +631,21 @@ final class PushCoordinator {
         :final session,
         :final instanceId,
         :final viewId,
+        :final threadId,
       ):
-        _openSessionFromNotification(
+        _openFromNotification(
           session: session,
           instanceId: instanceId,
           viewId: viewId,
+          threadId: threadId,
           serverIdsByInstanceId: transition.current.serverIdsByInstanceId,
         );
       case _HandlersWired(:final pendingOpen) when pendingOpen != null:
-        _openSessionFromNotification(
+        _openFromNotification(
           session: pendingOpen.session,
           instanceId: pendingOpen.instanceId,
           viewId: pendingOpen.viewId,
+          threadId: pendingOpen.threadId,
           serverIdsByInstanceId: transition.current.serverIdsByInstanceId,
         );
       default:
@@ -640,18 +658,24 @@ final class PushCoordinator {
       .where((candidate) => candidate.serverId == serverId)
       .firstOrNull;
 
-  void _openSessionFromNotification({
+  void _openFromNotification({
     required String? session,
     required String? instanceId,
     required String? viewId,
+    required String? threadId,
     required Map<String, String> serverIdsByInstanceId,
   }) {
     final sessionId = session?.trim();
-    if (sessionId == null ||
-        sessionId.isEmpty ||
-        instanceId == null ||
+    final targetThreadId = threadId?.trim();
+    if ((sessionId == null || sessionId.isEmpty) &&
+        (targetThreadId == null || targetThreadId.isEmpty)) {
+      return;
+    }
+    if (instanceId == null ||
         instanceId.isEmpty ||
-        settings.isMuted(sessionId)) {
+        (sessionId != null &&
+            sessionId.isNotEmpty &&
+            settings.isMuted(sessionId))) {
       return;
     }
     var serverId = serverIdsByInstanceId[instanceId];
@@ -660,7 +684,11 @@ final class PushCoordinator {
       serverId = persisted;
     }
     if (serverId == null || serverId.isEmpty) return;
-    requestOpenSession(serverId: serverId, session: sessionId, viewId: viewId);
+    if (targetThreadId != null && targetThreadId.isNotEmpty) {
+      requestOpenThread(serverId: serverId, threadId: targetThreadId);
+      return;
+    }
+    requestOpenSession(serverId: serverId, session: sessionId!, viewId: viewId);
   }
 
   String? _deviceToken(PushServerRegistrationState registration) =>

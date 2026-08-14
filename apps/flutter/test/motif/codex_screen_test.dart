@@ -147,6 +147,95 @@ void main() {
     controller.dispose();
   });
 
+  test('notification thread overrides the last opened thread', () async {
+    SharedPreferences.setMockInitialValues({});
+    final sharedPreferences = await SharedPreferences.getInstance();
+    final preferences = CodexState(preferences: sharedPreferences)
+      ..setLastOpenedThreadId('server', 'old-thread');
+    final client = ScreenFakeClient();
+    final serviceState = readyServiceState(connection: client);
+    final target = serviceState.catalog.allThreads.single;
+    client.threadReadResponse = CodexThreadReadResponse(thread: target);
+    final controller = CodexFeatureController(
+      serverId: 'server',
+      preferences: preferences,
+      connectionFactory: () => client,
+      serviceFactory: () => serviceState,
+      controlService: (_) async {},
+      initialThreadId: target.id,
+    );
+
+    await controller.start();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.readThreadIds, [target.id]);
+    expect(serviceState.selectedThread?.id, target.id);
+    expect(preferences.lastOpenedThreadId('server'), target.id);
+
+    await controller.close();
+    controller.dispose();
+  });
+
+  test(
+    'notification side chat opens its parent before the side chat',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final sharedPreferences = await SharedPreferences.getInstance();
+      final preferences = CodexState(preferences: sharedPreferences);
+      final client = ScreenFakeClient();
+      final serviceState = readyServiceState(connection: client);
+      final parent = serviceState.catalog.allThreads.single;
+      final sideChat = CodexThread(
+        cliVersion: 'test',
+        createdAt: 2,
+        cwd: parent.cwd,
+        ephemeral: true,
+        forkedFromId: parent.id,
+        id: 'side-chat-notification',
+        modelProvider: 'openai',
+        parentThreadId: parent.id,
+        preview: '',
+        sessionId: 'side-chat-notification',
+        source: const CodexSessionSource('cli'),
+        status: const CodexIdleThreadStatus(),
+        turns: const [],
+        updatedAt: 2,
+      );
+      client
+        ..threadReadResponses[sideChat.id] = CodexThreadReadResponse(
+          thread: sideChat,
+        )
+        ..threadReadResponses[parent.id] = CodexThreadReadResponse(
+          thread: parent,
+        )
+        ..threadResumeResponses[sideChat.id] = _resumeResponse(sideChat);
+      final controller = CodexFeatureController(
+        serverId: 'server',
+        preferences: preferences,
+        connectionFactory: () => client,
+        serviceFactory: () => serviceState,
+        controlService: (_) async {},
+        initialThreadId: sideChat.id,
+      );
+
+      await controller.start();
+
+      expect(client.readThreadIds, [sideChat.id, parent.id]);
+      expect(client.resumedThreadIds, [sideChat.id]);
+      expect(serviceState.selectedThread?.id, parent.id);
+      final collection = controller.takePendingInitialSideChat();
+      expect(collection?.parentThreadId, parent.id);
+      expect(collection?.selected?.id, sideChat.id);
+      expect(
+        preferences.sideChatIndex('server', parent.id).selectedThreadId,
+        sideChat.id,
+      );
+
+      await controller.close();
+      controller.dispose();
+    },
+  );
+
   testWidgets('restores and records the server model preference', (
     tester,
   ) async {
@@ -997,6 +1086,20 @@ CodexServiceState readyServiceState({
     ..catalogPhase = CodexCatalogPhase.ready;
 }
 
+CodexThreadResumeResponse _resumeResponse(CodexThread thread) =>
+    CodexThreadResumeResponse(
+      approvalPolicy: const CodexAskForApproval('on-request'),
+      approvalsReviewer: CodexApprovalsReviewer.user,
+      cwd: thread.cwd,
+      initialTurnsPage: CodexTurnsPage(
+        data: thread.turns.reversed.toList(growable: false),
+      ),
+      model: 'codex-test',
+      modelProvider: 'openai',
+      sandbox: const CodexDangerFullAccessSandboxPolicy(),
+      thread: thread,
+    );
+
 final class ScreenFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
   ScreenFakeClient({this.files = const {}});
@@ -1009,6 +1112,9 @@ final class ScreenFakeClient extends ChangeNotifier
       StreamController<CodexJsonEncodable>.broadcast();
   final List<CodexThreadForkParams> forkParams = [];
   final List<String> readThreadIds = [];
+  final List<String> resumedThreadIds = [];
+  final Map<String, CodexThreadReadResponse> threadReadResponses = {};
+  final Map<String, CodexThreadResumeResponse> threadResumeResponses = {};
   CodexThreadReadResponse? threadReadResponse;
 
   @override
@@ -1065,14 +1171,19 @@ final class ScreenFakeClient extends ChangeNotifier
     bool includeTurns = false,
   }) async {
     readThreadIds.add(threadId);
-    return threadReadResponse ?? (throw StateError('unused'));
+    return threadReadResponses[threadId] ??
+        threadReadResponse ??
+        (throw StateError('unused'));
   }
 
   @override
   Future<CodexThreadTurnsListResponse> listThreadTurns(
     CodexThreadTurnsListParams params,
   ) async {
-    final thread = threadReadResponse?.thread ?? (throw StateError('unused'));
+    final thread =
+        threadReadResponses[params.threadId]?.thread ??
+        threadReadResponse?.thread ??
+        (throw StateError('unused'));
     return CodexThreadTurnsListResponse(
       data: thread.turns.reversed.toList(growable: false),
     );
@@ -1152,7 +1263,10 @@ final class ScreenFakeClient extends ChangeNotifier
     String threadId, {
     bool includeTurns = false,
     CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
-  }) async => throw StateError('unused');
+  }) async {
+    resumedThreadIds.add(threadId);
+    return threadResumeResponses[threadId] ?? (throw StateError('unused'));
+  }
 
   @override
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params) async =>

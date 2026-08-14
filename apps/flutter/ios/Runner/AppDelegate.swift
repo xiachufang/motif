@@ -104,7 +104,7 @@ import UserNotifications
   }
 
   // User tapped a system notification (background / cold start). NSE already
-  // decrypted and stashed session / instance_id into userInfo.
+  // decrypted and stashed the navigation target / instance_id into userInfo.
   override func userNotificationCenter(
     _ center: UNUserNotificationCenter,
     didReceive response: UNNotificationResponse,
@@ -140,6 +140,9 @@ import UserNotifications
     }
     if let viewId = userInfo["view_id"] as? String, !viewId.isEmpty {
       payload["view_id"] = viewId
+    }
+    if let threadId = userInfo["thread_id"] as? String, !threadId.isEmpty {
+      payload["thread_id"] = threadId
     }
     guard !payload.isEmpty else { return }
     if let channel = pushChannel {

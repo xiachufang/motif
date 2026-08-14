@@ -48,8 +48,23 @@ class _CodexScreenState extends State<CodexScreen> {
   @override
   void initState() {
     super.initState();
-    unawaited(widget.controller.start());
+    unawaited(_startController());
     unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
+  }
+
+  Future<void> _startController() async {
+    await widget.controller.start();
+    if (!mounted) return;
+    final collection = widget.controller.takePendingInitialSideChat();
+    if (collection == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (MediaQuery.sizeOf(context).width < _mobileBreakpoint) {
+        _scaffoldKey.currentState?.openEndDrawer();
+      } else {
+        unawaited(_showSideChat(collection));
+      }
+    });
   }
 
   @override
@@ -499,12 +514,17 @@ class _CodexScreenState extends State<CodexScreen> {
     }
     final collection = widget.controller.openSideChats();
     if (collection == null) return;
+    await _showSideChat(collection);
+  }
+
+  Future<void> _showSideChat(SideChatCollectionController collection) async {
     widget.controller.setSideChatOpening(true);
     try {
       await Navigator.of(context).push<void>(
         MaterialPageRoute<void>(
           settings: RouteSettings(
-            name: 'side-chat/${widget.controller.serverId}/${thread.id}',
+            name:
+                'side-chat/${widget.controller.serverId}/${collection.parentThreadId}',
           ),
           builder: (_) => SideChatScreen(collection: collection),
         ),

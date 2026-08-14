@@ -646,6 +646,7 @@ class MotifNotification {
   final String body;
   final String? sessionId;
   final String? viewId;
+  final String? threadId;
   final String kind;
 
   const MotifNotification({
@@ -653,6 +654,7 @@ class MotifNotification {
     required this.body,
     this.sessionId,
     this.viewId,
+    this.threadId,
     required this.kind,
   });
 
@@ -662,6 +664,7 @@ class MotifNotification {
         body: (j['body'] as String?) ?? '',
         sessionId: _asString(j['session_id']),
         viewId: _asString(j['view_id']),
+        threadId: _asString(j['thread_id']),
         kind: (j['kind'] as String?) ?? '',
       );
 }

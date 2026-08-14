@@ -18,7 +18,12 @@ class ApnsPushService implements PushService {
   Future<String?>? _tokenRequest;
   String? _cachedToken;
   void Function(String e, String n)? _encryptedHandler;
-  void Function({required String? session, String? instanceId, String? viewId})?
+  void Function({
+    required String? session,
+    String? instanceId,
+    String? viewId,
+    String? threadId,
+  })?
   _openHandler;
 
   @override
@@ -93,6 +98,7 @@ class ApnsPushService implements PushService {
             session: args['session'] as String?,
             instanceId: args['instance_id'] as String?,
             viewId: args['view_id'] as String?,
+            threadId: args['thread_id'] as String?,
           );
       }
       return null;
@@ -111,6 +117,7 @@ class ApnsPushService implements PushService {
       required String? session,
       String? instanceId,
       String? viewId,
+      String? threadId,
     })
     handler,
   ) {
@@ -119,7 +126,9 @@ class ApnsPushService implements PushService {
   }
 
   @override
-  Future<({String? session, String? instanceId, String? viewId})?>
+  Future<
+    ({String? session, String? instanceId, String? viewId, String? threadId})?
+  >
   takePendingNotificationOpen() async {
     if (!isSupported) return null;
     try {
@@ -131,12 +140,19 @@ class ApnsPushService implements PushService {
       final session = args['session'] as String?;
       final instanceId = args['instance_id'] as String?;
       final viewId = args['view_id'] as String?;
+      final threadId = args['thread_id'] as String?;
       if ((session == null || session.isEmpty) &&
           (instanceId == null || instanceId.isEmpty) &&
-          (viewId == null || viewId.isEmpty)) {
+          (viewId == null || viewId.isEmpty) &&
+          (threadId == null || threadId.isEmpty)) {
         return null;
       }
-      return (session: session, instanceId: instanceId, viewId: viewId);
+      return (
+        session: session,
+        instanceId: instanceId,
+        viewId: viewId,
+        threadId: threadId,
+      );
     } on MissingPluginException {
       return null;
     } on PlatformException {

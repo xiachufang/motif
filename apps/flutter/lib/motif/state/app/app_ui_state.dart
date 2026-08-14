@@ -10,17 +10,19 @@ enum AppViewMode { client, server }
 
 enum AppLifecyclePhase { foreground, background }
 
-/// Request to open a session from an in-app notification / push tap.
+/// Request to open a session or Codex thread from a notification / push tap.
 final class PendingSessionOpen {
   const PendingSessionOpen({
     required this.serverId,
-    required this.session,
+    this.session,
     this.viewId,
+    this.threadId,
   });
 
   final String serverId;
-  final String session;
+  final String? session;
   final String? viewId;
+  final String? threadId;
 }
 
 @ObservableModel()

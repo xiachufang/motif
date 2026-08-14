@@ -9,6 +9,7 @@ import 'package:motif/motif/state/workspace/connection/workspace_connection_cont
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
 import 'package:motif/motif/ui/app.dart';
+import 'package:motif/motif/ui/integration/app_codex_screen.dart';
 import 'package:motif/motif/ui/screens/session_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/notification_banner.dart';
@@ -170,6 +171,33 @@ void main() {
     expect(screen.serverId, 'server-1');
     expect(screen.session, 'work');
     expect(client.viewsController.viewModel.activeViewId, 'v2');
+  });
+
+  testWidgets('banner tap opens the named Codex thread', (tester) async {
+    final client = _NotifWorkspaceConnectionController();
+    final app = await _appWithClient(client);
+    addTearDown(app.dispose);
+    final workspace = app.workspaceForSession('server-1', 'work');
+
+    await tester.pumpWidget(MotifScope(appState: app, child: const MotifApp()));
+    await tester.pump();
+
+    workspace.viewModel.presence.latestNotification = const MotifNotification(
+      title: 'Codex needs your input',
+      body: 'Approve command?',
+      threadId: 'thread-42',
+      kind: 'codex_needs_input',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Codex needs your input'));
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppCodexScreen), findsOneWidget);
+    final screen = tester.widget<AppCodexScreen>(find.byType(AppCodexScreen));
+    expect(screen.serverId, 'server-1');
+    expect(screen.initialThreadId, 'thread-42');
+    expect(workspace.viewModel.presence.latestNotification, isNull);
   });
 
   testWidgets('banner tap switches tab in the visible session', (tester) async {

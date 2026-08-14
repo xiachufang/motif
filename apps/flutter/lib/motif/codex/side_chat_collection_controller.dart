@@ -263,6 +263,67 @@ final class SideChatCollectionController extends ChangeNotifier {
     });
   }
 
+  /// Restores an existing side chat and makes it the selected entry. This is
+  /// used by notification deep links, where the target may not have been
+  /// persisted in the local side-chat index yet.
+  Future<SideChatEntry?> openExisting(String threadId) async {
+    final id = threadId.trim();
+    if (_closed || id.isEmpty) return null;
+    final existing = _entries.where((entry) => entry.id == id).firstOrNull;
+    if (existing != null) {
+      await select(id);
+      return existing;
+    }
+
+    if (_entries.isEmpty) {
+      if (!_restorableThreadIds.contains(id)) {
+        _restorableThreadIds = [..._restorableThreadIds, id];
+      }
+      _restorableSelectedId = id;
+      return ensureInitial();
+    }
+
+    try {
+      await _ensureConnected();
+      if (_closed) return null;
+      final response = await connection.resumeThread(
+        id,
+        initialTurnsPage: codexThreadResumeInitialTurnsPage,
+      );
+      if (_closed || !_isExpectedSideChat(response.thread, id)) return null;
+      final conversation = registry.registerResumed(
+        response,
+        kind: CodexThreadSessionKind.sideChat,
+        parentThreadId: parentThreadId,
+      );
+      final ids = _restorableThreadIds.contains(id)
+          ? _restorableThreadIds
+          : [..._restorableThreadIds, id];
+      _restorableThreadIds = ids;
+      _sequence = ids.length > _sequence ? ids.length : _sequence;
+      final entry = _addEntry(
+        id: id,
+        index: ids.indexOf(id) + 1,
+        lastActivityAt: _threadActivityAt(response.thread),
+        conversation: conversation,
+      );
+      final previousId = _selectedId;
+      _selectedId = id;
+      _restorableSelectedId = id;
+      _updateVisibility(previousId, id);
+      _publishIndex();
+      error = null;
+      notifyListeners();
+      return entry;
+    } catch (value) {
+      if (!_closed) {
+        error = '$value';
+        notifyListeners();
+      }
+      return null;
+    }
+  }
+
   Future<SideChatEntry?> _createSideChat() async {
     try {
       await _ensureConnected();

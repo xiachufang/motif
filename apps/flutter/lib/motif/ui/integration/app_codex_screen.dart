@@ -16,9 +16,14 @@ import '../screens/session_screen.dart';
 /// App composition boundary for Codex. The feature receives only its own
 /// controller and emits workspace requests back through a callback.
 final class AppCodexScreen extends StatefulWidget {
-  const AppCodexScreen({required this.serverId, super.key});
+  const AppCodexScreen({
+    required this.serverId,
+    this.initialThreadId,
+    super.key,
+  });
 
   final String serverId;
+  final String? initialThreadId;
 
   @override
   State<AppCodexScreen> createState() => _AppCodexScreenState();
@@ -40,6 +45,7 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
       preferences: preferences,
       connectionFactory: () => _createConnection(app),
       controlService: (action) => _controlService(app, action),
+      initialThreadId: widget.initialThreadId,
     );
   }
 

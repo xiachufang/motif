@@ -37,7 +37,7 @@ final class NotificationBannerCoordinator {
 
 /// Top-anchored in-app banner for server `notification` events (mirrors the iOS
 /// LiveNotificationBanner). Auto-dismisses after a few seconds; tap opens the
-/// named session when present, otherwise dismisses.
+/// named Codex thread or session when present, otherwise dismisses.
 @ObservationWidget()
 class NotificationBannerHost extends _$NotificationBannerHost {
   final AppState app;
@@ -62,9 +62,12 @@ class NotificationBannerHost extends _$NotificationBannerHost {
     MotifNotification notification,
   ) {
     coordinator.cancel();
+    final threadId = notification.threadId?.trim();
     final sessionId = notification.sessionId?.trim();
     app.consumeNotification(key);
-    if (sessionId != null && sessionId.isNotEmpty) {
+    if (threadId != null && threadId.isNotEmpty) {
+      app.requestOpenCodexThread(serverId: key.serverId, threadId: threadId);
+    } else if (sessionId != null && sessionId.isNotEmpty) {
       app.requestOpenSession(
         serverId: key.serverId,
         session: sessionId,

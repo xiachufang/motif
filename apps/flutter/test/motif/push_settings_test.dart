@@ -287,6 +287,7 @@ void main() {
             'instance_id': 'instance-2',
             'session_id': 'work',
             'view_id': 'view-2',
+            'thread_id': 'thread-2',
             'kind': 'finished',
           },
         }),
@@ -298,6 +299,7 @@ void main() {
     expect(notification?.title, 'Ready');
     expect(notification?.sessionId, 'work');
     expect(notification?.viewId, 'view-2');
+    expect(notification?.threadId, 'thread-2');
     expect(notification?.kind, 'finished');
 
     app.dispose();
@@ -375,6 +377,41 @@ void main() {
     app.dispose();
   });
 
+  test('system notification open routes to its Codex thread', () async {
+    SharedPreferences.setMockInitialValues({
+      'motif.servers.v1':
+          '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+      'activeServerID': 's1',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final platformPush = _FakePushService();
+    final client = _PushServerFixture('instance-1');
+    final app = AppState(
+      servers: ServerStore(prefs),
+      terminalSettings: TerminalSettingsStore(prefs),
+      commands: QuickCommandStore(prefs),
+      push: PushSettingsStore(prefs),
+      platform: PlatformServices(
+        tailscale: NoopTailscaleService(),
+        speech: NoopSpeechService(),
+        push: platformPush,
+      ),
+      serverTransportFactory: (_) => _pushTransport(client),
+    );
+    app.serverInstance('s1');
+    await app.registerForPush(serverId: 's1');
+
+    platformPush.emitNotificationOpen(
+      instanceId: 'instance-1',
+      threadId: 'thread-42',
+    );
+
+    expect(app.pendingSessionOpen?.serverId, 's1');
+    expect(app.pendingSessionOpen?.threadId, 'thread-42');
+    expect(app.pendingSessionOpen?.session, isNull);
+    app.dispose();
+  });
+
   test(
     'cold-start pending notification open is drained on AppState init',
     () async {
@@ -390,6 +427,7 @@ void main() {
           session: 'boot-session',
           instanceId: 'instance-1',
           viewId: 'view-boot',
+          threadId: null,
         );
       final client = _PushServerFixture('instance-1');
       final app = AppState(
@@ -429,6 +467,7 @@ void main() {
         session: 'nightly',
         instanceId: 'instance-2',
         viewId: null,
+        threadId: null,
       );
     final app = AppState(
       servers: ServerStore(prefs),
@@ -484,9 +523,15 @@ class _FakePushService implements PushService {
   int unregisterCount = 0;
   Completer<void>? registrationGate;
   void Function(String e, String n)? _handler;
-  void Function({required String? session, String? instanceId, String? viewId})?
+  void Function({
+    required String? session,
+    String? instanceId,
+    String? viewId,
+    String? threadId,
+  })?
   _openHandler;
-  ({String? session, String? instanceId, String? viewId})? pendingOpen;
+  ({String? session, String? instanceId, String? viewId, String? threadId})?
+  pendingOpen;
 
   @override
   bool get isSupported => true;
@@ -519,6 +564,7 @@ class _FakePushService implements PushService {
       required String? session,
       String? instanceId,
       String? viewId,
+      String? threadId,
     })
     handler,
   ) {
@@ -526,7 +572,9 @@ class _FakePushService implements PushService {
   }
 
   @override
-  Future<({String? session, String? instanceId, String? viewId})?>
+  Future<
+    ({String? session, String? instanceId, String? viewId, String? threadId})?
+  >
   takePendingNotificationOpen() async {
     final pending = pendingOpen;
     pendingOpen = null;
@@ -543,11 +591,13 @@ class _FakePushService implements PushService {
     String? session,
     String? instanceId,
     String? viewId,
+    String? threadId,
   }) {
     _openHandler?.call(
       session: session,
       instanceId: instanceId,
       viewId: viewId,
+      threadId: threadId,
     );
   }
 }
