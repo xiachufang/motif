@@ -100,7 +100,7 @@ jobs:
             -e MOTIFD_PSK="$PSK" \
             "$TAG"
           # Self-signed TLS -> curl -k; /ping is unauthenticated.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             curl -fsSk https://127.0.0.1:8080/ping >/dev/null && break
             sleep 1
           done
@@ -113,6 +113,14 @@ jobs:
             -d '{}' https://127.0.0.1:8080/rpc/session.list)
           echo "ping=$ping noauth=$noauth auth=$auth"
           test "$ping" = 200 && test "$noauth" = 401 && test "$auth" = 200
+          # The review image must expose the standalone Codex CLI to the same
+          # non-root user motifd launches it as. Exercise the app-server entry
+          # point as well as the version so a partial install cannot publish.
+          codex_version=$(docker exec smoke codex --version)
+          expected_codex=$(docker exec smoke printenv MOTIF_CODEX_VERSION)
+          echo "codex=$codex_version"
+          test "$codex_version" = "codex-cli $expected_codex"
+          docker exec smoke codex app-server --help >/dev/null
           # No tailscale linked into the --no-default-features binary.
           test "$(docker exec smoke sh -c 'grep -c tailscale /proc/1/maps || true')" = 0
           docker rm -f smoke

@@ -15,8 +15,13 @@ review" 被拒。为此我们维护一个无 Tailscale、硬化过的 motifd 镜
 
 `ghcr.io/xiachufang/motifd-review:latest`。CI 用 `cargo build --no-default-features`
 构建,**完全不链接 motif-tailscale / 不需要 Go**(tailscale 现在是可选 feature,见
-[`tailscale.md`](./tailscale.md))。镜像里只有 Rust + Zig 构建链,运行时是 debian-slim +
-非 root + 预置 demo git 仓库。
+[`tailscale.md`](./tailscale.md))。构建时还会通过 OpenAI 官方 standalone installer
+安装与 Motif 协议快照匹配的 Codex CLI；版本由 Docker build arg `CODEX_RELEASE`
+控制。运行时是 debian-slim + 非 root + 预置 demo git 仓库，不需要 Node/npm。
+
+镜像 smoke test 会同时验证 `codex --version` 和 `codex app-server --help`。Codex
+认证不会烘焙进镜像；如需让审核服务器实际执行 Codex task，仍需在运行时为 demo
+用户提供独立的 Codex 登录状态或 API 凭据。
 
 硬化点(`run-review.sh` 与持久部署都套用):
 - 非 root(uid 10001)、`--cap-drop=ALL`、`--security-opt=no-new-privileges`、`--read-only`
@@ -54,6 +59,11 @@ cd ~/motif-review
 mkdir -p data && chmod 777 data
 #    可选:固定 psk(否则首启自动生成并存进 data/)
 [ -s psk ] || (head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > psk)
+#    如需在 review server 上运行 Codex，把专用审核凭据放进持久目录。
+#    容器以 uid 10001 运行，因此目录和文件也归它所有；不要把凭据烘焙进镜像。
+sudo install -d -o 10001 -g 10001 -m 0700 codex
+sudo install -o 10001 -g 10001 -m 0600 /path/to/config.toml codex/config.toml
+sudo install -o 10001 -g 10001 -m 0600 /path/to/auth.json codex/auth.json
 
 # 2) 隔离网络(固定子网,匹配防火墙规则)
 docker network create --subnet 172.31.244.0/24 motif-review-net   # 已存在则跳过
@@ -83,6 +93,7 @@ docker run -d --name motifd-review --restart unless-stopped \
   --tmpfs /home/demo:rw,nosuid,nodev,mode=1777,size=128m \
   --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777,size=4m \
   -v "$HOME/motif-review/data:/data" \
+  -v "$HOME/motif-review/codex:/home/demo/.codex" \
   --pids-limit=256 --memory=512m --memory-swap=512m --cpus=1 \
   ghcr.io/xiachufang/motifd-review:latest
 ```
@@ -114,3 +125,7 @@ reviewer 连上后:开终端(服务器上跑真实 shell)、浏览文件树、�
   cleanup 跑完再建网络,否则竞态报 "network not found"。
 - `--bind 0.0.0.0` `--advertise <公网IP>`:直接公网 TLS 直连(自行放行端口),打印
   `motif://pair` 链接的 review-notes 块。`--tunnel` 已不需要(motifd 自带 TLS)。
+- `--codex-config ~/.codex/config.toml --codex-auth ~/.codex/auth.json`:把指定文件
+  以 `0600` 导入一次性 Docker volume，并挂载到容器的 `/home/demo/.codex`。退出时
+  volume 会随容器清理，宿主机原文件不会被修改。审核链接持有者能打开真实 shell，
+  因此只能使用专门的临时审核凭据，并在审核窗口结束后撤销。

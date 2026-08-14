@@ -23,7 +23,8 @@
 #
 # Usage:
 #   deploy/review/run-review.sh [--build] [--egress restricted|none] [--port N]
-#                  [--bind ADDR] [--advertise HOST] [--image NAME] [--workspace-size SIZE]
+#                  [--bind ADDR] [--advertise HOST] [--image NAME]
+#                  [--workspace-size SIZE] [--codex-config FILE] [--codex-auth FILE]
 #
 #   --build            docker build the image first (from repo root)
 #   --egress none      drop ALL container egress (default: restricted = block
@@ -37,6 +38,8 @@
 #                      detected public IP for a 0.0.0.0 bind)
 #   --image NAME       image tag (default motifd:review)
 #   --workspace-size   tmpfs size for /home/demo/work (default 128m)
+#   --codex-config     import config.toml into /home/demo/.codex/config.toml
+#   --codex-auth       import auth.json into /home/demo/.codex/auth.json
 #
 set -euo pipefail
 
@@ -49,6 +52,8 @@ ADVERTISE=""             # host put in the motif://pair link (default: BIND or
                          # just where the client dials, not a trust anchor.
 EGRESS="restricted"      # restricted | none
 WORKSPACE_SIZE="128m"
+CODEX_CONFIG=""
+CODEX_AUTH=""
 DO_BUILD=0
 DO_TUNNEL=0
 NET_SUBNET="172.31.244.0/24"   # private, unlikely to collide; used in fw rules
@@ -65,7 +70,9 @@ while [ $# -gt 0 ]; do
         --advertise) ADVERTISE="${2:?}"; shift ;;
         --image) IMAGE="${2:?}"; shift ;;
         --workspace-size) WORKSPACE_SIZE="${2:?}"; shift ;;
-        -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+        --codex-config) CODEX_CONFIG="${2:?--codex-config requires a file}"; shift ;;
+        --codex-auth) CODEX_AUTH="${2:?--codex-auth requires a file}"; shift ;;
+        -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
     shift
@@ -106,6 +113,7 @@ fi
 # ---- cleanup --------------------------------------------------------------
 FW_RULES=()           # exact rule specs we inserted, for precise removal
 TUNNEL_PID=""
+CODEX_VOLUME=""
 cleanup() {
     set +e
     [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null
@@ -115,6 +123,7 @@ cleanup() {
         $SUDO iptables -D ${FW_RULES[$i]} 2>/dev/null
     done
     docker network rm "$NET_NAME" >/dev/null 2>&1
+    [ -n "$CODEX_VOLUME" ] && docker volume rm -f "$CODEX_VOLUME" >/dev/null 2>&1
     echo "cleaned up." >&2
 }
 trap cleanup EXIT INT TERM
@@ -126,6 +135,52 @@ if [ "$DO_BUILD" -eq 1 ]; then
 fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || {
     echo "image '$IMAGE' not found — run with --build first." >&2; exit 1; }
+
+# ---- optional Codex home -------------------------------------------------
+# Host Codex credentials are normally mode 0600 and owned by a different UID
+# from the container's demo user. Import the requested files into a private,
+# per-run Docker volume instead of weakening their host permissions. The volume
+# is mounted at the real Codex home and removed by cleanup on exit.
+CODEX_MOUNT_ARGS=()
+CODEX_FILES=()
+if [ -n "$CODEX_CONFIG" ] || [ -n "$CODEX_AUTH" ]; then
+    CODEX_INPUT_MOUNTS=()
+    if [ -n "$CODEX_CONFIG" ]; then
+        [ -f "$CODEX_CONFIG" ] && [ -r "$CODEX_CONFIG" ] || {
+            echo "--codex-config must be a readable file: $CODEX_CONFIG" >&2; exit 1; }
+        CODEX_CONFIG="$(cd "$(dirname "$CODEX_CONFIG")" && pwd -P)/$(basename "$CODEX_CONFIG")"
+        CODEX_INPUT_MOUNTS+=(--mount "type=bind,src=${CODEX_CONFIG},dst=/codex-input/config.toml,readonly")
+        CODEX_FILES+=(config.toml)
+    fi
+    if [ -n "$CODEX_AUTH" ]; then
+        [ -f "$CODEX_AUTH" ] && [ -r "$CODEX_AUTH" ] || {
+            echo "--codex-auth must be a readable file: $CODEX_AUTH" >&2; exit 1; }
+        CODEX_AUTH="$(cd "$(dirname "$CODEX_AUTH")" && pwd -P)/$(basename "$CODEX_AUTH")"
+        CODEX_INPUT_MOUNTS+=(--mount "type=bind,src=${CODEX_AUTH},dst=/codex-input/auth.json,readonly")
+        CODEX_FILES+=(auth.json)
+    fi
+
+    CODEX_VOLUME="${CTR_NAME}-codex-$$"
+    docker volume create "$CODEX_VOLUME" >/dev/null
+    docker run --rm \
+        --user 0:0 \
+        --entrypoint /bin/sh \
+        --mount "type=volume,src=${CODEX_VOLUME},dst=/codex-home" \
+        "${CODEX_INPUT_MOUNTS[@]}" \
+        "$IMAGE" -c '
+            set -eu
+            install -d -o 10001 -g 10001 -m 0700 /codex-home
+            if [ -f /codex-input/config.toml ]; then
+                install -o 10001 -g 10001 -m 0600 /codex-input/config.toml /codex-home/config.toml
+            fi
+            if [ -f /codex-input/auth.json ]; then
+                install -o 10001 -g 10001 -m 0600 /codex-input/auth.json /codex-home/auth.json
+            fi
+        '
+    CODEX_MOUNT_ARGS=(--mount "type=volume,src=${CODEX_VOLUME},dst=/home/demo/.codex")
+    echo "==> Codex home: imported ${CODEX_FILES[*]} (ephemeral; removed on exit)" >&2
+    echo "    WARNING: anyone with the review link can read these credentials." >&2
+fi
 
 # ---- isolated network -----------------------------------------------------
 docker network rm "$NET_NAME" >/dev/null 2>&1 || true
@@ -192,6 +247,7 @@ docker run -d --rm \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
     --tmpfs "/home/demo:rw,nosuid,nodev,mode=1777,size=${WORKSPACE_SIZE}" \
     --tmpfs /run:rw,noexec,nosuid,nodev,mode=1777,size=4m \
+    "${CODEX_MOUNT_ARGS[@]}" \
     --pids-limit=256 \
     --memory=512m --memory-swap=512m \
     --cpus=1 \

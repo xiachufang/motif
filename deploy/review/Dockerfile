@@ -18,6 +18,10 @@
 #         launcher applies the cap-drop / read-only / network-isolation that
 #         makes exposing a remote shell survivable)
 
+# Keep the bundled CLI aligned with the protocol snapshot used by Motif. The
+# build arg makes deliberate upgrades possible without editing this file.
+ARG CODEX_RELEASE=0.147.0
+
 ############################  builder  ############################
 FROM rust:1-bookworm AS builder
 
@@ -67,8 +71,31 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp /src/target/release/motifd /usr/local/bin/motifd \
  && strip /usr/local/bin/motifd || true
 
+########################  Codex installer  ########################
+FROM debian:bookworm-slim AS codex-installer
+
+ARG CODEX_RELEASE
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL --proto '=https' --tlsv1.2 \
+      https://chatgpt.com/codex/install.sh \
+      -o /tmp/install-codex.sh; \
+    HOME=/root \
+      CODEX_HOME=/opt/codex \
+      CODEX_INSTALL_DIR=/usr/local/bin \
+      CODEX_NON_INTERACTIVE=1 \
+      CODEX_RELEASE="${CODEX_RELEASE}" \
+      sh /tmp/install-codex.sh; \
+    test "$(/usr/local/bin/codex --version)" = "codex-cli ${CODEX_RELEASE}"; \
+    rm /tmp/install-codex.sh
+
 ############################  runtime  ############################
 FROM debian:bookworm-slim AS runtime
+
+ARG CODEX_RELEASE
 
 # Runtime needs: a shell for PTYs (bash), git (motifd shells out for diff/status),
 # tini as PID 1 so reaped PTY children don't zombie, ca-certificates for any
@@ -97,11 +124,17 @@ RUN set -eux; \
     chown -R demo:demo /opt/demo-seed
 
 COPY --from=builder /usr/local/bin/motifd /usr/local/bin/motifd
+COPY --from=codex-installer /opt/codex /opt/codex
+COPY --from=codex-installer /usr/local/bin/codex /usr/local/bin/codex
 COPY deploy/review/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/motifd
+RUN chmod 0755 \
+    /usr/local/bin/entrypoint.sh \
+    /usr/local/bin/motifd \
+    /usr/local/bin/codex
 
 ENV SHELL=/bin/bash \
     HOME=/home/demo \
+    MOTIF_CODEX_VERSION=${CODEX_RELEASE} \
     MOTIFD_LOG=info \
     MOTIFD_LISTEN=0.0.0.0:8080
 EXPOSE 8080

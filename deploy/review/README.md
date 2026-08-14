@@ -33,6 +33,20 @@ network, and firewall rules.
 Default `--bind 127.0.0.1` is local-only (loopback). For a public reviewer use
 `--bind 0.0.0.0` and open the port in your firewall/security group.
 
+To let the review server run Codex with an existing configuration, pass either
+or both files explicitly:
+
+```sh
+deploy/review/run-review.sh --build \
+  --codex-config "$HOME/.codex/config.toml" \
+  --codex-auth "$HOME/.codex/auth.json"
+```
+
+The launcher imports them with mode `0600` into an ephemeral Docker volume
+mounted at `/home/demo/.codex`; the source files are not modified, and the
+volume is deleted on exit. The review link grants a real shell, so use only
+disposable review credentials and revoke them after the review window.
+
 ## Isolation applied (run-review.sh)
 
 - non-root, `--cap-drop=ALL`, `--security-opt=no-new-privileges`
