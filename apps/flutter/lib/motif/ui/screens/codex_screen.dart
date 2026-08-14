@@ -382,11 +382,19 @@ class _CodexScreenState extends State<CodexScreen> {
             : KeyedSubtree(
                 key: ValueKey('codex-thread-${selectedThread.id}'),
                 child: CodexThreadWorkspace(
-                  state: state,
-                  onOpenFile: (path) => _openFile(state, path),
-                  onOpenImage: (path) => _openFile(state, path, image: true),
-                  onOpenTurnDiff: (document, {initialPath}) =>
-                      _openTurnDiff(state, document, initialPath: initialPath),
+                  state: state.selectedConversation ?? state,
+                  onOpenFile: (path) =>
+                      _openFile(state.selectedConversation ?? state, path),
+                  onOpenImage: (path) => _openFile(
+                    state.selectedConversation ?? state,
+                    path,
+                    image: true,
+                  ),
+                  onOpenTurnDiff: (document, {initialPath}) => _openTurnDiff(
+                    state.selectedConversation ?? state,
+                    document,
+                    initialPath: initialPath,
+                  ),
                 ),
               ),
       CodexConnectionPhase.failed => _MainSurface(

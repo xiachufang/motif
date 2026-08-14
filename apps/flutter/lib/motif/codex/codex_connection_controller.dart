@@ -17,6 +17,7 @@ enum CodexConnectionFailureKind { connection, cliNotFound }
 final class CodexConnectionState {
   const CodexConnectionState({
     required this.phase,
+    this.epoch = 0,
     this.response,
     this.error,
     this.failureKind = CodexConnectionFailureKind.connection,
@@ -26,6 +27,7 @@ final class CodexConnectionState {
     : this(phase: CodexConnectionPhase.connecting);
 
   final CodexConnectionPhase phase;
+  final int epoch;
   final CodexInitializeResponse? response;
   final String? error;
   final CodexConnectionFailureKind failureKind;
@@ -251,6 +253,7 @@ final class CodexConnectionController extends ChangeNotifier
   AppLifecycleListener? _lifecycleListener;
   int _nextId = 0;
   int _generation = 0;
+  int _connectionEpoch = 0;
   int _reconnectAttempt = 0;
   bool _closed = false;
   bool _transportOpen = false;
@@ -321,6 +324,7 @@ final class CodexConnectionController extends ChangeNotifier
       _setState(
         CodexConnectionState(
           phase: CodexConnectionPhase.connected,
+          epoch: ++_connectionEpoch,
           response: response,
         ),
       );

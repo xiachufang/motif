@@ -129,7 +129,7 @@ void main() {
   );
 
   test(
-    'reconnect resumes the selected thread and catches up missed turns',
+    'reconnect re-reads an unsubscribed selected thread and catches up turns',
     () async {
       final beforeDisconnect = thread(
         'thread',
@@ -197,11 +197,9 @@ void main() {
       );
 
       await waitFor(() => state.turns.length == 2);
-      expect(client.resumedThreadIds, ['thread']);
-      expect(client.resumeIncludeTurns, [false]);
-      expect(client.resumeInitialTurnsPages, [
-        codexThreadResumeInitialTurnsPage,
-      ]);
+      expect(client.resumedThreadIds, isEmpty);
+      expect(client.readThreadIds, ['thread', 'thread']);
+      expect(client.turnListParams, hasLength(2));
       expect(
         (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
         'While backgrounded',
@@ -212,6 +210,101 @@ void main() {
       await state.close();
     },
   );
+
+  test('keeps active hidden sessions and evicts completed ones', () async {
+    final first = thread('first', updatedAt: 20);
+    final second = thread('second', updatedAt: 10);
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [first, second]),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('first');
+    client.emit(
+      const CodexTurnStartedNotification2(
+        params: CodexTurnStartedNotification(
+          threadId: 'first',
+          turn: CodexTurn(
+            id: 'active-turn',
+            items: [],
+            status: CodexTurnStatus.inProgress,
+          ),
+        ),
+      ),
+    );
+    await waitFor(
+      () => state.conversations.sessionFor('first')?.activeTurn != null,
+    );
+
+    await state.readThread('second');
+    await state.conversations.evictIdleSessions(force: true);
+    expect(state.conversations.sessionFor('first'), isNotNull);
+
+    client.emit(
+      const CodexTurnCompletedNotification2(
+        params: CodexTurnCompletedNotification(
+          threadId: 'first',
+          turn: CodexTurn(
+            id: 'active-turn',
+            items: [],
+            status: CodexTurnStatus.completed,
+          ),
+        ),
+      ),
+    );
+    await waitFor(
+      () => state.conversations.sessionFor('first')?.activeTurn == null,
+    );
+    await state.conversations.evictIdleSessions(force: true);
+    expect(state.conversations.sessionFor('first'), isNull);
+    expect(state.conversations.idleRetention, const Duration(minutes: 5));
+    await state.close();
+  });
+
+  test('recreates an evicted subscribed session when a turn starts', () async {
+    final first = thread('first', updatedAt: 20);
+    final second = thread('second', updatedAt: 10);
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [first, second]),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('first');
+    await state.ensureThreadResumedForSend('first');
+    await state.readThread('second');
+    await state.conversations.evictIdleSessions(force: true);
+    expect(state.conversations.sessionFor('first'), isNull);
+
+    client.emit(
+      const CodexTurnStartedNotification2(
+        params: CodexTurnStartedNotification(
+          threadId: 'first',
+          turn: CodexTurn(
+            id: 'background-turn',
+            items: [],
+            status: CodexTurnStatus.inProgress,
+          ),
+        ),
+      ),
+    );
+    await waitFor(
+      () =>
+          state.conversations.sessionFor('first')?.activeTurn?.id ==
+          'background-turn',
+    );
+
+    expect(client.resumedThreadIds, ['first']);
+    expect(client.readThreadIds.where((id) => id == 'first'), hasLength(2));
+    await state.close();
+  });
 
   test('loads recent turns first and prepends older cursor pages', () async {
     const oldest = CodexTurn(
@@ -630,7 +723,10 @@ void main() {
     await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
     await state.readThread(source.id);
 
-    expect(await state.forkThreadAtTurn('turn-1'), isTrue);
+    expect(
+      await state.selectedConversation!.forkThreadAtTurn('turn-1'),
+      isTrue,
+    );
     expect(client.forkParams.single.threadId, 'source');
     expect(client.forkParams.single.lastTurnId, 'turn-1');
     expect(state.selectedThread?.id, 'forked-source');

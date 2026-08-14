@@ -87,6 +87,7 @@ void main() {
 
       expect(transport.connectCount, 1);
       expect(controller.state.phase, CodexConnectionPhase.connected);
+      expect(controller.state.epoch, 1);
       expect(controller.state.response?.platformOs, 'macos');
       expect(sent.map((message) => message['method']), [
         'initialize',
@@ -189,6 +190,7 @@ void main() {
 
     await controller.retry();
     expect(controller.state.phase, CodexConnectionPhase.connected);
+    expect(controller.state.epoch, 1);
     expect(controller.state.response?.userAgent, 'codex-retry');
     expect(transport.closeCount, 1);
     await controller.close();
@@ -238,6 +240,7 @@ void main() {
     );
 
     expect(controller.state.phase, CodexConnectionPhase.connected);
+    expect(controller.state.epoch, 2);
     expect(transport.connectCount, 2);
     expect(transport.closeCount, 1);
     await controller.close();

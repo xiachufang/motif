@@ -21,6 +21,8 @@ enum CodexCatalogPhase { idle, loading, ready, failed }
 
 enum CodexConversationFeature { goals }
 
+typedef CodexForkThreadDelegate = Future<bool> Function(String lastTurnId);
+
 const codexThreadTurnsPageSize = 10;
 const codexThreadTurnsItemsView = CodexTurnItemsView('full');
 const codexThreadResumeInitialTurnsPage =
@@ -64,6 +66,8 @@ class CodexConversationState extends ChangeNotifier {
     required this.serverId,
     required this.connection,
     this.connectionLease = const CodexOwnedConnectionLease(),
+    this.listenToConnectionMessages = true,
+    this.recoverOnReconnect = true,
     Set<CodexConversationFeature> features = const {
       CodexConversationFeature.goals,
     },
@@ -73,15 +77,19 @@ class CodexConversationState extends ChangeNotifier {
          turns: ObservableList<CodexTurnViewModel>(),
        ) {
     connection.addListener(_onConnectionChanged);
-    _typedSubscription = connection.typedMessages.listen(
-      _onTypedMessage,
-      onError: (_) {},
-    );
+    if (listenToConnectionMessages) {
+      _typedSubscription = connection.typedMessages.listen(
+        applyTypedMessage,
+        onError: (_) {},
+      );
+    }
   }
 
   final String serverId;
   final CodexAppServerClient connection;
   final CodexConnectionLease connectionLease;
+  final bool listenToConnectionMessages;
+  final bool recoverOnReconnect;
   final Set<CodexConversationFeature> features;
   final CodexConversationViewModel viewModel;
 
@@ -137,7 +145,7 @@ class CodexConversationState extends ChangeNotifier {
   final Map<_CodexDeltaKey, StringBuffer> _pendingDeltas = {};
   final Set<String> _streamingItemIds = {};
   final Map<String, CodexItemViewModel> _itemViewModelsById = {};
-  late final StreamSubscription<CodexJsonEncodable> _typedSubscription;
+  StreamSubscription<CodexJsonEncodable>? _typedSubscription;
   CodexGlobalStateData? _globalState;
   CodexInitializeResponse? _loadedInitializeResponse;
   Timer? _deltaFlushTimer;
@@ -169,6 +177,7 @@ class CodexConversationState extends ChangeNotifier {
   String? _olderTurnsCursor;
   String? _viewModelThreadId;
   Object? _catalogFingerprint;
+  CodexForkThreadDelegate? _forkThreadDelegate;
 
   static const Duration deltaFlushInterval = Duration(milliseconds: 33);
 
@@ -206,6 +215,9 @@ class CodexConversationState extends ChangeNotifier {
   bool get hasOlderTurns =>
       _turnPaginationThreadId == selectedThread?.id &&
       _olderTurnsCursor != null;
+
+  bool isThreadResumed(String threadId) =>
+      _resumedThreads.containsKey(threadId);
 
   Future<void> start() => connection.start();
 
@@ -504,12 +516,46 @@ class CodexConversationState extends ChangeNotifier {
     );
   }
 
+  /// Opens a new thread that is already subscribed by `thread/start`.
+  void openStartedConversation(CodexThreadStartResponse response) {
+    _openSubscribedConversation(
+      thread: response.thread,
+      model: response.model,
+      reasoningEffort: response.reasoningEffort,
+      activePermissionProfile: response.activePermissionProfile,
+    );
+  }
+
+  /// Rebuilds an evicted local session from a bounded snapshot while keeping
+  /// the app-server subscription owned by the registry unchanged.
+  void openHydratedConversation(CodexThread thread, CodexTurnsPage page) {
+    _openConversation(thread: thread, initialTurnsPage: page, resumed: false);
+  }
+
   void _openSubscribedConversation({
     required CodexThread thread,
     CodexTurnsPage? initialTurnsPage,
     required String model,
     required CodexReasoningEffort? reasoningEffort,
     required CodexActivePermissionProfile? activePermissionProfile,
+  }) {
+    _openConversation(
+      thread: thread,
+      initialTurnsPage: initialTurnsPage,
+      resumed: true,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      activePermissionProfile: activePermissionProfile,
+    );
+  }
+
+  void _openConversation({
+    required CodexThread thread,
+    required bool resumed,
+    CodexTurnsPage? initialTurnsPage,
+    String? model,
+    CodexReasoningEffort? reasoningEffort,
+    CodexActivePermissionProfile? activePermissionProfile,
   }) {
     if (_closed) return;
     final loadedTurns = initialTurnsPage == null
@@ -519,7 +565,7 @@ class CodexConversationState extends ChangeNotifier {
         ? thread
         : codexThreadWithTurns(thread, loadedTurns);
     _threads[openedThread.id] = openedThread;
-    _resumedThreads[openedThread.id] = openedThread;
+    if (resumed) _resumedThreads[openedThread.id] = openedThread;
     selectedThread = openedThread;
     turns = loadedTurns;
     if (initialTurnsPage == null) {
@@ -539,9 +585,13 @@ class CodexConversationState extends ChangeNotifier {
     queuedMessages = const [];
     _serverRequests.clear();
     pendingServerRequests = const [];
-    selectedModelId = model;
-    selectedReasoningEffort = reasoningEffort?.value;
-    selectedPermissionId = activePermissionProfile?.id;
+    if (model != null) selectedModelId = model;
+    if (reasoningEffort != null) {
+      selectedReasoningEffort = reasoningEffort.value;
+    }
+    if (activePermissionProfile != null) {
+      selectedPermissionId = activePermissionProfile.id;
+    }
     _notify();
     unawaited(_loadModels());
     unawaited(_loadCollaborationModes());
@@ -608,6 +658,7 @@ class CodexConversationState extends ChangeNotifier {
       _rebuildCatalog();
       _notify();
       unawaited(_loadThreadConfiguration(thread));
+      didOpenStartedThread(response);
       return true;
     } catch (error) {
       if (!_closed) createThreadError = '$error';
@@ -675,6 +726,7 @@ class CodexConversationState extends ChangeNotifier {
       _rebuildCatalog();
       _notify();
       unawaited(_loadThreadConfiguration(thread));
+      didOpenStartedThread(response);
       return true;
     } catch (error) {
       if (!_closed) createThreadError = '$error';
@@ -696,6 +748,24 @@ class CodexConversationState extends ChangeNotifier {
   /// Forks the selected thread through [lastTurnId], then opens the new
   /// in-memory thread returned by app-server.
   Future<bool> forkThreadAtTurn(String lastTurnId) async {
+    final delegate = _forkThreadDelegate;
+    if (delegate != null) {
+      if (_closed || forkingTurnId != null) return false;
+      forkingTurnId = lastTurnId;
+      forkError = null;
+      _notify();
+      try {
+        return await delegate(lastTurnId);
+      } catch (error) {
+        if (!_closed) forkError = '$error';
+        return false;
+      } finally {
+        if (!_closed && forkingTurnId == lastTurnId) {
+          forkingTurnId = null;
+          _notify();
+        }
+      }
+    }
     final source = selectedThread;
     if (_closed || source == null || forkingTurnId != null) return false;
     final sourceProject = _projectForThread(source.id);
@@ -760,6 +830,7 @@ class CodexConversationState extends ChangeNotifier {
       _rebuildCatalog();
       _notify();
       unawaited(_loadThreadConfiguration(thread));
+      didOpenForkedThread(response);
       return true;
     } catch (error) {
       if (!_closed) forkError = '$error';
@@ -770,6 +841,18 @@ class CodexConversationState extends ChangeNotifier {
         _notify();
       }
     }
+  }
+
+  /// Hook for a catalog-owning subclass to adopt a newly started session.
+  @protected
+  void didOpenStartedThread(CodexThreadStartResponse response) {}
+
+  /// Hook for a catalog-owning subclass to adopt a newly forked session.
+  @protected
+  void didOpenForkedThread(CodexThreadForkResponse response) {}
+
+  void configureForkThreadDelegate(CodexForkThreadDelegate? delegate) {
+    _forkThreadDelegate = delegate;
   }
 
   void selectModel(String modelId) {
@@ -1565,7 +1648,9 @@ class CodexConversationState extends ChangeNotifier {
     final state = connection.state;
     if (state.phase != CodexConnectionPhase.connected) {
       _connectionGeneration++;
-      if (_loadedInitializeResponse != null && selectedThread != null) {
+      if (recoverOnReconnect &&
+          _loadedInitializeResponse != null &&
+          selectedThread != null) {
         _recoverSelectedThreadOnConnect = true;
       }
       _readGeneration++;
@@ -1679,7 +1764,7 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
-  void _onTypedMessage(CodexJsonEncodable message) {
+  void applyTypedMessage(CodexJsonEncodable message) {
     if (_closed) return;
     if (!_isDeltaNotification(message)) _flushPendingDeltas();
     switch (message) {
@@ -1714,9 +1799,12 @@ class CodexConversationState extends ChangeNotifier {
         if (!_threads.containsKey(params.threadId)) {
           unawaited(refreshCatalog(showLoading: false));
         }
-      case CodexThreadClosedNotification2():
+      case CodexThreadClosedNotification2(:final params):
         // Closing unloads a thread from app-server memory; its persisted
         // catalog entry remains available and must stay in the sidebar.
+        final threadId = params.threadId;
+        _resumedThreads.remove(threadId);
+        _pendingThreadResumes.remove(threadId);
         break;
       case CodexThreadGoalUpdatedNotification2(:final params)
           when supports(CodexConversationFeature.goals) &&
@@ -2431,7 +2519,7 @@ class CodexConversationState extends ChangeNotifier {
     _deltaFlushTimer?.cancel();
     _deltaFlushTimer = null;
     _pendingDeltas.clear();
-    await _typedSubscription.cancel();
+    await _typedSubscription?.cancel();
     connection.removeListener(_onConnectionChanged);
     await connectionLease.release(connection);
   }
@@ -2443,11 +2531,821 @@ class CodexConversationState extends ChangeNotifier {
   }
 }
 
-/// Runtime state for the one persisted Codex service exposed by a Motif
-/// server. Its catalog API is intentionally absent from Side Chat widgets;
-/// those widgets depend on [CodexConversationState] instead.
+enum CodexThreadSessionKind { persisted, sideChat }
+
+final class CodexThreadHandle {
+  CodexThreadHandle({
+    required this.thread,
+    required this.kind,
+    required this.lastActivityAt,
+    this.parentThreadId,
+    this.subscribedEpoch,
+  });
+
+  CodexThread thread;
+  final CodexThreadSessionKind kind;
+  final String? parentThreadId;
+  DateTime lastActivityAt;
+  int? subscribedEpoch;
+  bool wasSubscribed = false;
+  DateTime? idleSince;
+  Timer? evictionTimer;
+  final Set<String> visibilityOwners = <String>{};
+}
+
+typedef CodexConversationSessionFactory =
+    CodexConversationState Function(CodexThreadSessionKind kind);
+typedef CodexGlobalMessageHandler = void Function(CodexJsonEncodable message);
+
+/// Owns the lightweight handle and optional heavy conversation session for
+/// every thread opened on one app-server connection.
+final class CodexConversationRegistry extends ChangeNotifier {
+  CodexConversationRegistry({
+    required this.serverId,
+    required this.connection,
+    required this.sessionFactory,
+    this.globalMessageHandler,
+    this.idleRetention = const Duration(minutes: 5),
+  }) : _connectionEpoch = connection.state.epoch {
+    connection.addListener(_onConnectionChanged);
+    _typedSubscription = connection.typedMessages.listen(
+      _onTypedMessage,
+      onError: (_) {},
+    );
+  }
+
+  final String serverId;
+  final CodexAppServerClient connection;
+  final Duration idleRetention;
+  final CodexConversationSessionFactory sessionFactory;
+  final CodexGlobalMessageHandler? globalMessageHandler;
+  final Map<String, CodexThreadHandle> _handles = {};
+  final Map<String, CodexConversationState> _sessions = {};
+  final Map<String, VoidCallback> _sessionListeners = {};
+  final Map<String, Future<CodexConversationState>> _pendingSessions = {};
+  final Map<String, List<CodexJsonEncodable>> _pendingEvents = {};
+  late final StreamSubscription<CodexJsonEncodable> _typedSubscription;
+  int _connectionEpoch;
+  bool _connectionWasInterrupted = false;
+  bool _closed = false;
+
+  Iterable<CodexThreadHandle> get handles => _handles.values;
+
+  CodexThreadHandle? handleFor(String threadId) => _handles[threadId];
+
+  CodexConversationState? sessionFor(String threadId) => _sessions[threadId];
+
+  CodexThreadHandle registerThread(
+    CodexThread thread, {
+    required CodexThreadSessionKind kind,
+    String? parentThreadId,
+    bool subscribed = false,
+  }) {
+    final existing = _handles[thread.id];
+    if (existing != null) {
+      existing.thread = thread;
+      existing.lastActivityAt = _threadActivityAt(thread);
+      if (subscribed) {
+        existing
+          ..wasSubscribed = true
+          ..subscribedEpoch = _currentConnectedEpoch;
+      }
+      return existing;
+    }
+    final handle = CodexThreadHandle(
+      thread: thread,
+      kind: kind,
+      parentThreadId: parentThreadId,
+      lastActivityAt: _threadActivityAt(thread),
+      subscribedEpoch: subscribed ? _currentConnectedEpoch : null,
+    )..wasSubscribed = subscribed;
+    _handles[thread.id] = handle;
+    notifyListeners();
+    return handle;
+  }
+
+  CodexConversationState registerFork(
+    CodexThreadForkResponse response, {
+    required CodexThreadSessionKind kind,
+    String? parentThreadId,
+  }) {
+    final handle = registerThread(
+      response.thread,
+      kind: kind,
+      parentThreadId: parentThreadId,
+      subscribed: true,
+    );
+    final session = _newSession(handle);
+    session.openSubscribedConversation(response);
+    _sessionChanged(handle, session);
+    return session;
+  }
+
+  CodexConversationState registerStarted(CodexThreadStartResponse response) {
+    final handle = registerThread(
+      response.thread,
+      kind: CodexThreadSessionKind.persisted,
+      subscribed: true,
+    );
+    final session = _newSession(handle);
+    session.openStartedConversation(response);
+    _sessionChanged(handle, session);
+    return session;
+  }
+
+  CodexConversationState? registerResumed(
+    CodexThreadResumeResponse response, {
+    required CodexThreadSessionKind kind,
+    String? parentThreadId,
+    bool createSession = true,
+  }) {
+    final handle = registerThread(
+      response.thread,
+      kind: kind,
+      parentThreadId: parentThreadId,
+      subscribed: true,
+    );
+    if (!createSession) return null;
+    final session = _newSession(handle);
+    session.openResumedConversation(response);
+    _sessionChanged(handle, session);
+    return session;
+  }
+
+  Future<CodexConversationState> ensureSession(String threadId) {
+    final current = _sessions[threadId];
+    if (current != null) return Future.value(current);
+    final pending = _pendingSessions[threadId];
+    if (pending != null) return pending;
+    final handle = _handles[threadId];
+    if (handle == null) {
+      return Future.error(StateError('Unknown Codex thread: $threadId'));
+    }
+    late final Future<CodexConversationState> future;
+    future = _hydrateSession(handle).whenComplete(() {
+      if (identical(_pendingSessions[threadId], future)) {
+        _pendingSessions.remove(threadId);
+      }
+    });
+    _pendingSessions[threadId] = future;
+    return future;
+  }
+
+  Future<CodexConversationState> _hydrateSession(
+    CodexThreadHandle handle,
+  ) async {
+    await _ensureConnected();
+    _ensureHydrationCurrent(handle);
+    final epoch = _currentConnectedEpoch!;
+    late final CodexConversationState session;
+    final canHydrateWithoutResume =
+        handle.kind == CodexThreadSessionKind.persisted &&
+        (!handle.wasSubscribed || handle.subscribedEpoch == epoch);
+    if (canHydrateWithoutResume ||
+        (handle.wasSubscribed && handle.subscribedEpoch == epoch)) {
+      final response = await connection.readThread(handle.thread.id);
+      final page = await connection.listThreadTurns(
+        CodexThreadTurnsListParams(
+          itemsView: codexThreadTurnsItemsView,
+          limit: codexThreadTurnsPageSize,
+          sortDirection: CodexSortDirection.desc,
+          threadId: handle.thread.id,
+        ),
+      );
+      _ensureHydrationCurrent(handle, epoch: epoch);
+      handle.thread = response.thread;
+      session = _newSession(handle)
+        ..openHydratedConversation(
+          response.thread,
+          CodexTurnsPage(
+            backwardsCursor: page.backwardsCursor,
+            data: page.data,
+            nextCursor: page.nextCursor,
+          ),
+        );
+    } else {
+      final response = await connection.resumeThread(
+        handle.thread.id,
+        initialTurnsPage: codexThreadResumeInitialTurnsPage,
+      );
+      _validateThread(handle, response.thread);
+      _ensureHydrationCurrent(handle, epoch: epoch);
+      handle
+        ..thread = response.thread
+        ..wasSubscribed = true
+        ..subscribedEpoch = epoch;
+      session = _newSession(handle)..openResumedConversation(response);
+    }
+    _replayPendingEvents(handle.thread.id, session);
+    _sessionChanged(handle, session);
+    return session;
+  }
+
+  void _ensureHydrationCurrent(CodexThreadHandle handle, {int? epoch}) {
+    if (_closed || !identical(_handles[handle.thread.id], handle)) {
+      throw StateError('Codex thread session is no longer registered');
+    }
+    if (epoch != null && _currentConnectedEpoch != epoch) {
+      throw StateError('Codex connection changed while loading the thread');
+    }
+  }
+
+  void acquireVisibility(String threadId, String owner) {
+    final handle = _handles[threadId];
+    if (handle == null || !handle.visibilityOwners.add(owner)) return;
+    handle
+      ..idleSince = null
+      ..evictionTimer?.cancel();
+    handle.evictionTimer = null;
+  }
+
+  void releaseVisibility(String threadId, String owner) {
+    final handle = _handles[threadId];
+    if (handle == null || !handle.visibilityOwners.remove(owner)) return;
+    _scheduleEviction(handle);
+  }
+
+  Future<void> evictIdleSessions({bool force = false}) async {
+    for (final handle in _handles.values.toList(growable: false)) {
+      if (_sessions[handle.thread.id] == null || _retainsSession(handle)) {
+        continue;
+      }
+      if (force || _idleExpired(handle)) await _evict(handle);
+    }
+  }
+
+  CodexConversationState _newSession(CodexThreadHandle handle) {
+    final existing = _sessions[handle.thread.id];
+    if (existing != null) return existing;
+    final session = sessionFactory(handle.kind);
+    void listener() => _sessionChanged(handle, session);
+    _sessions[handle.thread.id] = session;
+    _sessionListeners[handle.thread.id] = listener;
+    session.addListener(listener);
+    return session;
+  }
+
+  void _sessionChanged(
+    CodexThreadHandle handle,
+    CodexConversationState session,
+  ) {
+    if (_closed || !identical(_sessions[handle.thread.id], session)) return;
+    final thread = session.selectedThread;
+    if (thread != null) handle.thread = thread;
+    if (_sessionHasActivity(session)) {
+      handle
+        ..lastActivityAt = DateTime.now()
+        ..idleSince = null
+        ..evictionTimer?.cancel();
+      handle.evictionTimer = null;
+    } else {
+      _scheduleEviction(handle);
+    }
+    if (session.isThreadResumed(handle.thread.id)) {
+      handle
+        ..wasSubscribed = true
+        ..subscribedEpoch = _currentConnectedEpoch;
+    }
+    notifyListeners();
+  }
+
+  bool _sessionHasActivity(CodexConversationState session) =>
+      session.activeTurn != null ||
+      session.sending ||
+      session.queuedMessages.isNotEmpty ||
+      session.pendingServerRequests.isNotEmpty ||
+      session.loadingOlderTurns;
+
+  bool _retainsSession(CodexThreadHandle handle) {
+    if (handle.visibilityOwners.isNotEmpty) return true;
+    final session = _sessions[handle.thread.id];
+    return session != null && _sessionHasActivity(session);
+  }
+
+  void _scheduleEviction(CodexThreadHandle handle) {
+    if (_sessions[handle.thread.id] == null || _retainsSession(handle)) return;
+    handle.idleSince ??= DateTime.now();
+    if (handle.evictionTimer != null) return;
+    final remaining =
+        idleRetention - DateTime.now().difference(handle.idleSince!);
+    if (remaining <= Duration.zero) {
+      unawaited(_evict(handle));
+      return;
+    }
+    handle.evictionTimer = Timer(remaining, () {
+      handle.evictionTimer = null;
+      if (!_closed && !_retainsSession(handle) && _idleExpired(handle)) {
+        unawaited(_evict(handle));
+      }
+    });
+  }
+
+  bool _idleExpired(CodexThreadHandle handle) {
+    final since = handle.idleSince;
+    return since != null && DateTime.now().difference(since) >= idleRetention;
+  }
+
+  Future<void> _evict(CodexThreadHandle handle) async {
+    final id = handle.thread.id;
+    if (_retainsSession(handle)) return;
+    handle
+      ..evictionTimer?.cancel()
+      ..evictionTimer = null
+      ..idleSince = null;
+    final session = _sessions.remove(id);
+    final listener = _sessionListeners.remove(id);
+    if (session == null) return;
+    if (listener != null) session.removeListener(listener);
+    await session.close();
+    session.dispose();
+    if (!_closed) notifyListeners();
+  }
+
+  Future<void> _ensureConnected() async {
+    if (connection.state.phase == CodexConnectionPhase.connected) return;
+    await connection.start();
+    if (connection.state.phase != CodexConnectionPhase.connected) {
+      throw StateError(connection.state.error ?? 'Could not connect to Codex');
+    }
+  }
+
+  int? get _currentConnectedEpoch =>
+      connection.state.phase == CodexConnectionPhase.connected
+      ? _connectionEpoch
+      : null;
+
+  void _onConnectionChanged() {
+    if (_closed) return;
+    final state = connection.state;
+    if (state.phase != CodexConnectionPhase.connected) {
+      _connectionWasInterrupted = true;
+      return;
+    }
+    final nextEpoch = state.epoch > 0
+        ? state.epoch
+        : _connectionWasInterrupted
+        ? _connectionEpoch + 1
+        : _connectionEpoch;
+    _connectionWasInterrupted = false;
+    if (_connectionEpoch == nextEpoch) return;
+    _connectionEpoch = nextEpoch;
+    unawaited(_restoreSubscriptions(nextEpoch));
+  }
+
+  Future<void> _restoreSubscriptions(int epoch) async {
+    final ordered = _handles.values.toList(growable: false)
+      ..sort((a, b) {
+        final aPriority = _retainsSession(a) ? 0 : 1;
+        final bPriority = _retainsSession(b) ? 0 : 1;
+        return aPriority.compareTo(bPriority);
+      });
+    for (final handle in ordered) {
+      if (!_isCurrentEpoch(epoch)) return;
+      try {
+        final session = _sessions[handle.thread.id];
+        if (!handle.wasSubscribed) {
+          if (session != null &&
+              handle.kind == CodexThreadSessionKind.persisted) {
+            final response = await connection.readThread(handle.thread.id);
+            final page = await connection.listThreadTurns(
+              CodexThreadTurnsListParams(
+                itemsView: codexThreadTurnsItemsView,
+                limit: codexThreadTurnsPageSize,
+                sortDirection: CodexSortDirection.desc,
+                threadId: handle.thread.id,
+              ),
+            );
+            if (!_isCurrentEpoch(epoch)) return;
+            handle.thread = response.thread;
+            session.openHydratedConversation(
+              response.thread,
+              CodexTurnsPage(
+                backwardsCursor: page.backwardsCursor,
+                data: page.data,
+                nextCursor: page.nextCursor,
+              ),
+            );
+          }
+          continue;
+        }
+        final response = await connection.resumeThread(
+          handle.thread.id,
+          initialTurnsPage: session == null
+              ? null
+              : codexThreadResumeInitialTurnsPage,
+        );
+        _validateThread(handle, response.thread);
+        if (!_isCurrentEpoch(epoch)) return;
+        handle
+          ..thread = response.thread
+          ..subscribedEpoch = epoch;
+        if (session != null) session.openResumedConversation(response);
+      } catch (_) {
+        if (!_isCurrentEpoch(epoch)) return;
+        handle.subscribedEpoch = null;
+      }
+    }
+    if (!_closed) notifyListeners();
+  }
+
+  bool _isCurrentEpoch(int epoch) =>
+      !_closed &&
+      connection.state.phase == CodexConnectionPhase.connected &&
+      _connectionEpoch == epoch;
+
+  void _onTypedMessage(CodexJsonEncodable message) {
+    if (_closed) return;
+    globalMessageHandler?.call(message);
+    final threadId = _messageThreadId(message);
+    final handle = threadId == null ? null : _handles[threadId];
+    if (handle != null && _isConversationActivityMessage(message)) {
+      handle.lastActivityAt = DateTime.now();
+    }
+    if (threadId == null) {
+      for (final session in _sessions.values.toList(growable: false)) {
+        session.applyTypedMessage(message);
+      }
+    } else {
+      _sessions[threadId]?.applyTypedMessage(message);
+    }
+    if (_updateHandleMetadata(message) && !_closed) notifyListeners();
+    if (threadId == null || _sessions.containsKey(threadId)) return;
+    if (handle == null || !_isConversationActivityMessage(message)) return;
+    final events = _pendingEvents.putIfAbsent(threadId, () => []);
+    if (events.length < 64) events.add(message);
+    unawaited(
+      ensureSession(
+        threadId,
+      ).then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+    );
+  }
+
+  bool _updateHandleMetadata(CodexJsonEncodable message) {
+    switch (message) {
+      case CodexThreadStartedNotification2(:final params):
+        if (!params.thread.ephemeral) {
+          registerThread(params.thread, kind: CodexThreadSessionKind.persisted);
+        }
+        return false;
+      case CodexThreadStatusChangedNotification2(:final params):
+        final handle = _handles[params.threadId];
+        if (handle != null) {
+          handle.thread = codexThreadWithStatus(handle.thread, params.status);
+          return true;
+        }
+        return false;
+      case CodexThreadNameUpdatedNotification2(:final params):
+        final handle = _handles[params.threadId];
+        if (handle != null) {
+          handle.thread = codexThreadWithName(handle.thread, params.threadName);
+          return true;
+        }
+        return false;
+      case CodexThreadClosedNotification2(:final params):
+        final handle = _handles[params.threadId];
+        if (handle != null) {
+          handle
+            ..wasSubscribed = false
+            ..subscribedEpoch = null;
+          return true;
+        }
+        return false;
+      case CodexThreadArchivedNotification2(:final params):
+        unawaited(removeThread(params.threadId));
+        return false;
+      case CodexThreadDeletedNotification2(:final params):
+        unawaited(removeThread(params.threadId));
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  void _replayPendingEvents(String threadId, CodexConversationState session) {
+    final events = _pendingEvents.remove(threadId);
+    if (events == null) return;
+    for (final event in events) {
+      session.applyTypedMessage(event);
+    }
+  }
+
+  void _validateThread(CodexThreadHandle handle, CodexThread thread) {
+    if (handle.kind != CodexThreadSessionKind.sideChat) return;
+    if (!thread.ephemeral ||
+        (thread.parentThreadId != handle.parentThreadId &&
+            thread.forkedFromId != handle.parentThreadId)) {
+      throw StateError('Unexpected Side Chat thread: ${thread.id}');
+    }
+  }
+
+  Future<void> removeThread(String threadId) async {
+    final handle = _handles.remove(threadId);
+    handle?.evictionTimer?.cancel();
+    _pendingSessions.remove(threadId);
+    _pendingEvents.remove(threadId);
+    final session = _sessions.remove(threadId);
+    final listener = _sessionListeners.remove(threadId);
+    if (session != null) {
+      if (listener != null) session.removeListener(listener);
+      await session.close();
+      session.dispose();
+    }
+    if (!_closed) notifyListeners();
+  }
+
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    connection.removeListener(_onConnectionChanged);
+    await _typedSubscription.cancel();
+    for (final handle in _handles.values) {
+      handle.evictionTimer?.cancel();
+    }
+    final sessions = _sessions.entries.toList(growable: false);
+    _sessions.clear();
+    _sessionListeners.clear();
+    for (final entry in sessions) {
+      await entry.value.close();
+      entry.value.dispose();
+    }
+    _handles.clear();
+    _pendingEvents.clear();
+  }
+
+  @override
+  void dispose() {
+    unawaited(close());
+    super.dispose();
+  }
+}
+
+String? _messageThreadId(CodexJsonEncodable message) {
+  final json = message.toJson();
+  if (json is! Map) return null;
+  final direct = json['threadId'];
+  if (direct is String) return direct;
+  final params = json['params'];
+  if (params is Map && params['threadId'] is String) {
+    return params['threadId'] as String;
+  }
+  return null;
+}
+
+bool _isConversationActivityMessage(CodexJsonEncodable message) =>
+    message is CodexTurnStartedNotification2 ||
+    message is CodexTurnCompletedNotification2 ||
+    message is CodexTurnPlanUpdatedNotification2 ||
+    message is CodexTurnDiffUpdatedNotification2 ||
+    message is CodexItemStartedNotification2 ||
+    message is CodexItemCompletedNotification2 ||
+    message is CodexItemAgentMessageDeltaNotification ||
+    message is CodexItemPlanDeltaNotification ||
+    message is CodexItemCommandExecutionOutputDeltaNotification ||
+    message is CodexItemReasoningSummaryTextDeltaNotification ||
+    message is CodexItemReasoningTextDeltaNotification ||
+    message is CodexItemToolRequestUserInputRequest ||
+    message is CodexItemCommandExecutionRequestApprovalRequest ||
+    message is CodexItemFileChangeRequestApprovalRequest ||
+    message is CodexItemPermissionsRequestApprovalRequest;
+
+DateTime _threadActivityAt(CodexThread thread) {
+  final seconds =
+      thread.recencyAt ??
+      (thread.updatedAt == 0 ? thread.createdAt : thread.updatedAt);
+  return DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
+}
+
+/// Runtime state for the persisted catalog and the currently selected session.
 final class CodexServiceState extends CodexConversationState {
-  CodexServiceState({required super.serverId, required super.connection});
+  CodexServiceState({required super.serverId, required super.connection})
+    : super(listenToConnectionMessages: false, recoverOnReconnect: false) {
+    conversations = CodexConversationRegistry(
+      serverId: serverId,
+      connection: connection,
+      sessionFactory: _createConversationSession,
+      globalMessageHandler: applyTypedMessage,
+    )..addListener(_onRegistryChanged);
+  }
+
+  late final CodexConversationRegistry conversations;
+  CodexConversationState? selectedConversation;
+  String? _selectedConversationId;
+  int _selectionGeneration = 0;
+  bool _registryClosed = false;
+
+  CodexConversationState _createConversationSession(
+    CodexThreadSessionKind kind,
+  ) =>
+      CodexConversationState(
+          serverId: serverId,
+          connection: connection,
+          connectionLease: const CodexSharedConnectionLease(),
+          listenToConnectionMessages: false,
+          recoverOnReconnect: false,
+          features: kind == CodexThreadSessionKind.persisted
+              ? const {CodexConversationFeature.goals}
+              : const {},
+        )
+        ..configureModelPreference(
+          preferredModelId: _preferredModelId,
+          onSelected: (modelId) {
+            _preferredModelId = modelId;
+            _onModelSelected?.call(modelId);
+          },
+        )
+        ..configureReasoningEffortPreference(
+          preferredReasoningEffort: _preferredReasoningEffort,
+          onSelected: (effort) {
+            _preferredReasoningEffort = effort;
+            _onReasoningEffortSelected?.call(effort);
+          },
+          onInvalidated: () {
+            _preferredReasoningEffort = null;
+            _onReasoningEffortPreferenceInvalidated?.call();
+          },
+        )
+        ..configurePermissionPreference(
+          hasPreference: _hasPermissionPreference,
+          preferredPermissionId: _preferredPermissionId,
+          onSelected: (permissionId) {
+            _hasPermissionPreference = true;
+            _preferredPermissionId = permissionId;
+            _onPermissionSelected?.call(permissionId);
+          },
+          onInvalidated: () {
+            _hasPermissionPreference = false;
+            _preferredPermissionId = null;
+            _onPermissionPreferenceInvalidated?.call();
+          },
+        )
+        ..configureForkThreadDelegate(
+          kind == CodexThreadSessionKind.persisted ? forkThreadAtTurn : null,
+        );
+
+  @override
+  Future<void> readThread(String threadId) => selectThread(threadId);
+
+  @override
+  Future<CodexThread> ensureThreadResumedForSend(String threadId) {
+    final session = conversations.sessionFor(threadId);
+    return session == null
+        ? super.ensureThreadResumedForSend(threadId)
+        : session.ensureThreadResumedForSend(threadId);
+  }
+
+  @override
+  bool get hasOlderTurns =>
+      selectedConversation?.hasOlderTurns ?? super.hasOlderTurns;
+
+  @override
+  Future<bool> loadOlderTurns() async {
+    final session = selectedConversation;
+    if (session == null) return super.loadOlderTurns();
+    final loaded = await session.loadOlderTurns();
+    _syncSelectedConversation();
+    return loaded;
+  }
+
+  Future<void> selectThread(String threadId) async {
+    if (_closed || readingThreadId == threadId) return;
+    final generation = ++_selectionGeneration;
+    final previousId = _selectedConversationId;
+    final preview =
+        _threads[threadId] ??
+        catalog.allThreads
+            .where((candidate) => candidate.id == threadId)
+            .firstOrNull;
+    if (preview == null) {
+      readError = 'Unknown Codex thread: $threadId';
+      _notify();
+      return;
+    }
+    _threads[threadId] = preview;
+    conversations.registerThread(
+      preview,
+      kind: CodexThreadSessionKind.persisted,
+    );
+    if (previousId != null && previousId != threadId) {
+      conversations.releaseVisibility(previousId, 'main');
+    }
+    conversations.acquireVisibility(threadId, 'main');
+    _selectedConversationId = threadId;
+    selectedThread = preview;
+    final cached = conversations.sessionFor(threadId);
+    if (cached != null) {
+      selectedConversation = cached;
+      readingThreadId = null;
+      readError = null;
+      _syncSelectedConversation();
+      return;
+    }
+    selectedConversation = null;
+    turns = preview.turns;
+    _resetTurnPagination();
+    goal = null;
+    goalError = null;
+    activePlan = null;
+    awaitingPlanDecisionItemId = null;
+    activeDiff = null;
+    sendError = null;
+    queuedMessages = const [];
+    _serverRequests.clear();
+    pendingServerRequests = const [];
+    readingThreadId = threadId;
+    readError = null;
+    _notify();
+    try {
+      final session = await conversations.ensureSession(threadId);
+      if (_closed || generation != _selectionGeneration) return;
+      selectedConversation = session;
+      _syncSelectedConversation();
+    } catch (error) {
+      if (_closed || generation != _selectionGeneration) return;
+      readError = '$error';
+    } finally {
+      if (!_closed && generation == _selectionGeneration) {
+        readingThreadId = null;
+        _notify();
+      }
+    }
+  }
+
+  @override
+  void didOpenStartedThread(CodexThreadStartResponse response) {
+    final session = conversations.registerStarted(response);
+    _adoptConversation(response.thread.id, session);
+  }
+
+  @override
+  void didOpenForkedThread(CodexThreadForkResponse response) {
+    final session = conversations.registerFork(
+      response,
+      kind: CodexThreadSessionKind.persisted,
+    );
+    _adoptConversation(response.thread.id, session);
+  }
+
+  void _adoptConversation(
+    String threadId,
+    CodexConversationState conversation,
+  ) {
+    final previousId = _selectedConversationId;
+    if (previousId != null && previousId != threadId) {
+      conversations.releaseVisibility(previousId, 'main');
+    }
+    conversations.acquireVisibility(threadId, 'main');
+    _selectedConversationId = threadId;
+    selectedConversation = conversation;
+    _syncSelectedConversation();
+  }
+
+  void _onRegistryChanged() {
+    if (_closed) return;
+    _syncSelectedConversation();
+  }
+
+  void _syncSelectedConversation() {
+    final id = _selectedConversationId;
+    if (id == null) return;
+    final session = conversations.sessionFor(id);
+    if (session == null) {
+      if (identical(selectedConversation, session)) return;
+      selectedConversation = null;
+      return;
+    }
+    selectedConversation = session;
+    final thread = session.selectedThread;
+    if (thread != null) {
+      _threads[thread.id] = thread;
+      selectedThread = thread;
+    }
+    turns = session.turns;
+    models = session.models;
+    permissionProfiles = session.permissionProfiles;
+    collaborationModes = session.collaborationModes;
+    skills = session.skills;
+    plugins = session.plugins;
+    selectedModelId = session.selectedModelId;
+    selectedReasoningEffort = session.selectedReasoningEffort;
+    selectedPermissionId = session.selectedPermissionId;
+    configurationError = session.configurationError;
+    goal = session.goal;
+    goalLoading = session.goalLoading;
+    goalError = session.goalError;
+    _rebuildCatalog();
+    _notify();
+  }
+
+  @override
+  Future<void> close() async {
+    if (!_registryClosed) {
+      _registryClosed = true;
+      conversations.removeListener(_onRegistryChanged);
+      await conversations.close();
+      conversations.dispose();
+    }
+    await super.close();
+  }
 }
 
 String _joinCodexPath(String root, String child) {

@@ -54,7 +54,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
           final sidebar = SideChatSidebar(
             collection: widget.collection,
             onSelected: (threadId) {
-              widget.collection.select(threadId);
+              unawaited(widget.collection.select(threadId));
               if (_scaffoldKey.currentState?.isEndDrawerOpen == true) {
                 Navigator.of(context).pop();
               }
@@ -145,49 +145,17 @@ class _SideChatScreenState extends State<SideChatScreen> {
   }
 
   Widget _conversationSurface(SideChatCollectionController collection) {
-    final entries = collection.entries;
-    final selectedId = collection.selected?.id;
-    final selectedIndex = entries.indexWhere((entry) => entry.id == selectedId);
-    if (selectedIndex != -1) {
-      return Stack(
-        key: const ValueKey('side-chat-conversations'),
-        fit: StackFit.expand,
-        children: [
-          for (var index = 0; index < entries.length; index++)
-            TickerMode(
-              enabled: index == selectedIndex,
-              child: IgnorePointer(
-                ignoring: index != selectedIndex,
-                child: ExcludeSemantics(
-                  excluding: index != selectedIndex,
-                  child: AnimatedOpacity(
-                    key: ValueKey('side-chat-surface-${entries[index].id}'),
-                    opacity: index == selectedIndex ? 1 : 0,
-                    duration: codexMotionDuration(context, CodexMotion.enter),
-                    curve: CodexMotion.enterCurve,
-                    child: CodexThreadWorkspace(
-                      key: ValueKey('side-chat-workspace-${entries[index].id}'),
-                      state: entries[index].conversation,
-                      turnActionBuilder: _emptyTurnAction,
-                      onOpenFile: (path) =>
-                          _openFile(entries[index].conversation, path),
-                      onOpenImage: (path) => _openFile(
-                        entries[index].conversation,
-                        path,
-                        image: true,
-                      ),
-                      onOpenTurnDiff: (document, {initialPath}) =>
-                          _openTurnDiff(
-                            entries[index].conversation,
-                            document,
-                            initialPath: initialPath,
-                          ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
+    final selected = collection.selected;
+    final conversation = collection.selectedConversation;
+    if (selected != null && conversation != null) {
+      return CodexThreadWorkspace(
+        key: ValueKey('side-chat-workspace-${selected.id}'),
+        state: conversation,
+        turnActionBuilder: _emptyTurnAction,
+        onOpenFile: (path) => _openFile(conversation, path),
+        onOpenImage: (path) => _openFile(conversation, path, image: true),
+        onOpenTurnDiff: (document, {initialPath}) =>
+            _openTurnDiff(conversation, document, initialPath: initialPath),
       );
     }
     final state = collection.connectionState;

@@ -13,69 +13,123 @@ final class SideChatEntry {
   SideChatEntry({
     required this.id,
     required this.index,
-    required this.conversation,
+    required this.registry,
     required this.lastActivityAt,
     required this.activitySignature,
   });
 
   final String id;
   final int index;
-  final CodexConversationState conversation;
+  final CodexConversationRegistry registry;
   DateTime lastActivityAt;
   String activitySignature;
 
   String get name => 'Side Chat $index';
+  CodexConversationState? get conversationOrNull => registry.sessionFor(id);
+  CodexConversationState get conversation =>
+      conversationOrNull ??
+      (throw StateError('Side Chat session is not currently loaded: $id'));
   CodexThreadStatus get status =>
-      conversation.selectedThread?.status ?? const CodexNotLoadedThreadStatus();
+      conversationOrNull?.selectedThread?.status ??
+      registry.handleFor(id)?.thread.status ??
+      const CodexNotLoadedThreadStatus();
 }
 
-/// Owns all temporary forks for one parent thread and the independent
-/// app-server connection that keeps them alive.
+/// Owns the lightweight Side Chat index for one parent thread. Conversation
+/// sessions and app-server subscriptions belong to the shared registry.
 final class SideChatCollectionController extends ChangeNotifier {
-  SideChatCollectionController({
+  factory SideChatCollectionController({
+    required String serverId,
+    required String parentThreadId,
+    CodexConversationRegistry? registry,
+    CodexAppServerClient? connection,
+    String? preferredModelId,
+    ValueChanged<String?>? onModelSelected,
+    String? preferredReasoningEffort,
+    ValueChanged<String?>? onReasoningEffortSelected,
+    VoidCallback? onReasoningEffortPreferenceInvalidated,
+    bool hasPermissionPreference = false,
+    String? preferredPermissionId,
+    ValueChanged<String?>? onPermissionSelected,
+    VoidCallback? onPermissionPreferenceInvalidated,
+    List<String> initialThreadIds = const [],
+    String? initialSelectedThreadId,
+    SideChatIndexChanged? onIndexChanged,
+  }) {
+    final resolvedConnection = registry?.connection ?? connection;
+    if (resolvedConnection == null) {
+      throw ArgumentError('A conversation registry or connection is required');
+    }
+    final ownsRegistry = registry == null;
+    final resolvedRegistry =
+        registry ??
+        CodexConversationRegistry(
+          serverId: serverId,
+          connection: resolvedConnection,
+          sessionFactory: (_) =>
+              CodexConversationState(
+                  serverId: serverId,
+                  connection: resolvedConnection,
+                  connectionLease: const CodexSharedConnectionLease(),
+                  listenToConnectionMessages: false,
+                  recoverOnReconnect: false,
+                  features: const <CodexConversationFeature>{},
+                )
+                ..configureModelPreference(
+                  preferredModelId: preferredModelId,
+                  onSelected: onModelSelected,
+                )
+                ..configureReasoningEffortPreference(
+                  preferredReasoningEffort: preferredReasoningEffort,
+                  onSelected: onReasoningEffortSelected,
+                  onInvalidated: onReasoningEffortPreferenceInvalidated,
+                )
+                ..configurePermissionPreference(
+                  hasPreference: hasPermissionPreference,
+                  preferredPermissionId: preferredPermissionId,
+                  onSelected: onPermissionSelected,
+                  onInvalidated: onPermissionPreferenceInvalidated,
+                ),
+        );
+    return SideChatCollectionController._(
+      ownsRegistry,
+      serverId: serverId,
+      parentThreadId: parentThreadId,
+      registry: resolvedRegistry,
+      initialThreadIds: initialThreadIds,
+      initialSelectedThreadId: initialSelectedThreadId,
+      onIndexChanged: onIndexChanged,
+    );
+  }
+
+  SideChatCollectionController._(
+    this._ownsRegistry, {
     required this.serverId,
     required this.parentThreadId,
-    required this.connection,
-    this.preferredModelId,
-    this.onModelSelected,
-    this.preferredReasoningEffort,
-    this.onReasoningEffortSelected,
-    this.onReasoningEffortPreferenceInvalidated,
-    this.hasPermissionPreference = false,
-    this.preferredPermissionId,
-    this.onPermissionSelected,
-    this.onPermissionPreferenceInvalidated,
-    this.initialThreadIds = const [],
-    this.initialSelectedThreadId,
-    this.onIndexChanged,
+    required this.registry,
+    required List<String> initialThreadIds,
+    required String? initialSelectedThreadId,
+    required this.onIndexChanged,
   }) {
     _restorableThreadIds = _normalizedIds(initialThreadIds);
     _restorableSelectedId =
         _restorableThreadIds.contains(initialSelectedThreadId)
         ? initialSelectedThreadId
         : null;
-    _wasConnected = connection.state.phase == CodexConnectionPhase.connected;
+    registry.addListener(_onRegistryChanged);
     connection.addListener(_onConnectionChanged);
   }
 
   final String serverId;
   final String parentThreadId;
-  final CodexAppServerClient connection;
-  final String? preferredModelId;
-  final ValueChanged<String?>? onModelSelected;
-  String? preferredReasoningEffort;
-  final ValueChanged<String?>? onReasoningEffortSelected;
-  final VoidCallback? onReasoningEffortPreferenceInvalidated;
-  final ValueChanged<String?>? onPermissionSelected;
-  final VoidCallback? onPermissionPreferenceInvalidated;
-  final List<String> initialThreadIds;
-  final String? initialSelectedThreadId;
+  final CodexConversationRegistry registry;
   final SideChatIndexChanged? onIndexChanged;
-  bool hasPermissionPreference;
-  String? preferredPermissionId;
+  final bool _ownsRegistry;
+
+  CodexAppServerClient get connection => registry.connection;
+  CodexConnectionState get connectionState => connection.state;
 
   final List<SideChatEntry> _entries = [];
-  final Map<String, VoidCallback> _conversationListeners = {};
   late List<String> _restorableThreadIds;
   String? _restorableSelectedId;
   Future<SideChatEntry?>? _initialization;
@@ -83,11 +137,11 @@ final class SideChatCollectionController extends ChangeNotifier {
   String? _selectedId;
   String? error;
   var _started = false;
-  var _wasConnected = false;
   var _closed = false;
+  var _visible = true;
   var _sequence = 0;
 
-  CodexConnectionState get connectionState => connection.state;
+  String get _visibilityOwner => 'side-chat:$parentThreadId';
 
   List<SideChatEntry> get entries {
     final result = _entries.toList(growable: false);
@@ -107,11 +161,17 @@ final class SideChatCollectionController extends ChangeNotifier {
     return _entries.where((entry) => entry.id == id).firstOrNull;
   }
 
+  CodexConversationState? get selectedConversation {
+    final id = _selectedId;
+    return id == null ? null : registry.sessionFor(id);
+  }
+
   bool get creating => _initialization != null || _creation != null;
 
   Future<SideChatEntry?> ensureInitial() {
     if (_entries.isNotEmpty) {
-      return Future.value(selected ?? _entries.first);
+      final entry = selected ?? _entries.first;
+      return _ensureEntrySession(entry);
     }
     final inFlight = _initialization;
     if (inFlight != null) return inFlight;
@@ -130,56 +190,55 @@ final class SideChatCollectionController extends ChangeNotifier {
     final ids = List<String>.of(_restorableThreadIds);
     if (ids.isEmpty) return createSideChat();
 
-    final restored = <CodexThreadResumeResponse>[];
     try {
       await _ensureConnected();
       if (_closed) return null;
+      final restoredIds = <String>[];
       for (final id in ids) {
         try {
+          final createSession =
+              id == _restorableSelectedId ||
+              (_restorableSelectedId == null && restoredIds.isEmpty);
           final response = await connection.resumeThread(
             id,
-            initialTurnsPage: codexThreadResumeInitialTurnsPage,
+            initialTurnsPage: createSession
+                ? codexThreadResumeInitialTurnsPage
+                : null,
           );
-          if (_closed) {
-            await _unsubscribeBestEffort(response.thread.id);
-            return null;
-          }
-          if (!_isExpectedSideChat(response.thread, id)) {
-            await _unsubscribeBestEffort(response.thread.id);
-            continue;
-          }
-          restored.add(response);
+          if (_closed) return null;
+          if (!_isExpectedSideChat(response.thread, id)) continue;
+          final conversation = registry.registerResumed(
+            response,
+            kind: CodexThreadSessionKind.sideChat,
+            parentThreadId: parentThreadId,
+            createSession: createSession,
+          );
+          _addEntry(
+            id: response.thread.id,
+            index: restoredIds.length + 1,
+            lastActivityAt: _threadActivityAt(response.thread),
+            conversation: conversation,
+          );
+          restoredIds.add(response.thread.id);
         } catch (value) {
           if (!_isMissingThreadError(value)) rethrow;
         }
       }
       if (_closed) return null;
-      final restoredIds = <String>[];
-      for (final response in restored) {
-        _addEntry(
-          id: response.thread.id,
-          index: restoredIds.length + 1,
-          conversation: _conversation()..openResumedConversation(response),
-          lastActivityAt: _threadActivityAt(response.thread),
-        );
-        restoredIds.add(response.thread.id);
-      }
       _restorableThreadIds = restoredIds;
       _sequence = restoredIds.length;
       _selectedId = restoredIds.contains(_restorableSelectedId)
           ? _restorableSelectedId
           : restoredIds.firstOrNull;
       _restorableSelectedId = _selectedId;
+      _updateVisibility(null, _selectedId);
       _publishIndex();
       if (_entries.isNotEmpty) {
         error = null;
         notifyListeners();
-        return selected ?? _entries.first;
+        return await _ensureEntrySession(selected ?? _entries.first);
       }
     } catch (value) {
-      for (final response in restored) {
-        await _unsubscribeBestEffort(response.thread.id);
-      }
       if (!_closed) {
         error = '$value';
         notifyListeners();
@@ -215,17 +274,21 @@ final class SideChatCollectionController extends ChangeNotifier {
           excludeTurns: true,
         ),
       );
-      if (_closed) {
-        await _unsubscribeBestEffort(response.thread.id);
-        return null;
-      }
+      if (_closed) return null;
+      final conversation = registry.registerFork(
+        response,
+        kind: CodexThreadSessionKind.sideChat,
+        parentThreadId: parentThreadId,
+      );
       final entry = _addEntry(
         id: response.thread.id,
         index: ++_sequence,
-        conversation: _conversation()..openSubscribedConversation(response),
         lastActivityAt: DateTime.now(),
+        conversation: conversation,
       );
+      final previousId = _selectedId;
       _selectedId = entry.id;
+      _updateVisibility(previousId, entry.id);
       _restorableThreadIds = _entriesByIndex
           .map((candidate) => candidate.id)
           .toList(growable: false);
@@ -243,59 +306,21 @@ final class SideChatCollectionController extends ChangeNotifier {
     }
   }
 
-  CodexConversationState _conversation() =>
-      CodexConversationState(
-          serverId: serverId,
-          connection: connection,
-          connectionLease: const CodexSharedConnectionLease(),
-          features: const <CodexConversationFeature>{},
-        )
-        ..configureModelPreference(
-          preferredModelId: preferredModelId,
-          onSelected: onModelSelected,
-        )
-        ..configureReasoningEffortPreference(
-          preferredReasoningEffort: preferredReasoningEffort,
-          onSelected: (effort) {
-            preferredReasoningEffort = effort;
-            onReasoningEffortSelected?.call(effort);
-          },
-          onInvalidated: () {
-            preferredReasoningEffort = null;
-            onReasoningEffortPreferenceInvalidated?.call();
-          },
-        )
-        ..configurePermissionPreference(
-          hasPreference: hasPermissionPreference,
-          preferredPermissionId: preferredPermissionId,
-          onSelected: (permissionId) {
-            hasPermissionPreference = true;
-            preferredPermissionId = permissionId;
-            onPermissionSelected?.call(permissionId);
-          },
-          onInvalidated: () {
-            hasPermissionPreference = false;
-            preferredPermissionId = null;
-            onPermissionPreferenceInvalidated?.call();
-          },
-        );
-
   SideChatEntry _addEntry({
     required String id,
     required int index,
-    required CodexConversationState conversation,
+    required CodexConversationState? conversation,
     required DateTime lastActivityAt,
   }) {
+    final existing = _entries.where((entry) => entry.id == id).firstOrNull;
+    if (existing != null) return existing;
     final entry = SideChatEntry(
       id: id,
       index: index,
-      conversation: conversation,
+      registry: registry,
       lastActivityAt: lastActivityAt,
       activitySignature: _activitySignature(conversation),
     );
-    void listener() => _onConversationChanged(entry);
-    _conversationListeners[entry.id] = listener;
-    conversation.addListener(listener);
     _entries.add(entry);
     return entry;
   }
@@ -313,78 +338,91 @@ final class SideChatCollectionController extends ChangeNotifier {
     }
   }
 
-  void select(String threadId) {
-    if (_selectedId == threadId ||
-        !_entries.any((entry) => entry.id == threadId)) {
-      return;
+  Future<void> select(String threadId) async {
+    if (_closed || !_entries.any((entry) => entry.id == threadId)) return;
+    final previousId = _selectedId;
+    if (previousId != threadId) {
+      _selectedId = threadId;
+      _restorableSelectedId = threadId;
+      _updateVisibility(previousId, threadId);
+      _publishIndex();
+      notifyListeners();
     }
-    _selectedId = threadId;
-    _restorableSelectedId = threadId;
-    _publishIndex();
-    notifyListeners();
+    final entry = selected;
+    if (entry != null) await _ensureEntrySession(entry);
   }
 
-  void _onConversationChanged(SideChatEntry entry) {
-    if (_closed) return;
-    if (entry.conversation.selectedThread == null) {
-      final listener = _conversationListeners.remove(entry.id);
-      if (listener != null) entry.conversation.removeListener(listener);
-      _entries.remove(entry);
-      if (_selectedId == entry.id) {
-        _selectedId = entries.firstOrNull?.id;
+  Future<SideChatEntry?> _ensureEntrySession(SideChatEntry entry) async {
+    try {
+      await registry.ensureSession(entry.id);
+      if (_closed) return null;
+      error = null;
+      notifyListeners();
+      return entry;
+    } catch (value) {
+      if (!_closed) {
+        error = '$value';
+        notifyListeners();
       }
+      return null;
+    }
+  }
+
+  void setVisible(bool value) {
+    if (_closed || _visible == value) return;
+    _visible = value;
+    final id = _selectedId;
+    if (id == null) return;
+    if (value) {
+      registry.acquireVisibility(id, _visibilityOwner);
+      unawaited(_ensureEntrySession(selected!));
+    } else {
+      registry.releaseVisibility(id, _visibilityOwner);
+    }
+  }
+
+  void _updateVisibility(String? previousId, String? nextId) {
+    if (!_visible || previousId == nextId) return;
+    if (previousId != null) {
+      registry.releaseVisibility(previousId, _visibilityOwner);
+    }
+    if (nextId != null) {
+      registry.acquireVisibility(nextId, _visibilityOwner);
+    }
+  }
+
+  void _onRegistryChanged() {
+    if (_closed) return;
+    var indexChanged = false;
+    for (final entry in _entries.toList(growable: false)) {
+      final handle = registry.handleFor(entry.id);
+      if (handle == null) {
+        _entries.remove(entry);
+        if (_selectedId == entry.id) _selectedId = null;
+        indexChanged = true;
+        continue;
+      }
+      final conversation = entry.conversationOrNull;
+      final nextSignature = _activitySignature(conversation);
+      if (entry.activitySignature != nextSignature) {
+        entry.activitySignature = nextSignature;
+        entry.lastActivityAt = handle.lastActivityAt;
+      }
+    }
+    if (indexChanged) {
+      _selectedId ??= entries.firstOrNull?.id;
       _restorableThreadIds = _entriesByIndex
           .map((candidate) => candidate.id)
           .toList(growable: false);
       _restorableSelectedId = _selectedId;
+      _updateVisibility(null, _selectedId);
       _publishIndex();
-      unawaited(
-        entry.conversation.close().whenComplete(entry.conversation.dispose),
-      );
-      notifyListeners();
-      return;
-    }
-    final next = _activitySignature(entry.conversation);
-    if (entry.activitySignature != next) {
-      entry.activitySignature = next;
-      entry.lastActivityAt = DateTime.now();
     }
     notifyListeners();
   }
 
   void _onConnectionChanged() {
-    if (_closed) return;
-    final phase = connection.state.phase;
-    if (phase == CodexConnectionPhase.connected) {
-      _wasConnected = true;
-    } else if (_wasConnected && _entries.isNotEmpty) {
-      _wasConnected = false;
-      unawaited(_expireConversations());
-    }
-    notifyListeners();
-  }
-
-  Future<void> _expireConversations() async {
-    final expired = List<SideChatEntry>.of(_entries);
-    _entries.clear();
-    _selectedId = null;
-    error = 'Side Chats expired because the Codex connection restarted.';
-    for (final entry in expired) {
-      final listener = _conversationListeners.remove(entry.id);
-      if (listener != null) entry.conversation.removeListener(listener);
-      await entry.conversation.close();
-      entry.conversation.dispose();
-    }
     if (!_closed) notifyListeners();
-  }
-
-  Future<void> _unsubscribeBestEffort(String threadId) async {
-    if (connection.state.phase != CodexConnectionPhase.connected) return;
-    try {
-      await connection.unsubscribeThread(threadId);
-    } catch (_) {
-      // Closing the socket below also releases app-server subscriptions.
-    }
   }
 
   bool _isExpectedSideChat(CodexThread thread, String expectedId) =>
@@ -413,21 +451,19 @@ final class SideChatCollectionController extends ChangeNotifier {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    registry.removeListener(_onRegistryChanged);
     connection.removeListener(_onConnectionChanged);
-    final current = List<SideChatEntry>.of(_entries);
-    for (final entry in current) {
-      await _unsubscribeBestEffort(entry.id);
-    }
-    for (final entry in current) {
-      final listener = _conversationListeners.remove(entry.id);
-      if (listener != null) entry.conversation.removeListener(listener);
-      await entry.conversation.close();
-      entry.conversation.dispose();
+    if (_visible && _selectedId != null) {
+      registry.releaseVisibility(_selectedId!, _visibilityOwner);
     }
     _entries.clear();
     _selectedId = null;
-    await connection.close();
-    connection.dispose();
+    if (_ownsRegistry) {
+      await registry.close();
+      registry.dispose();
+      await connection.close();
+      connection.dispose();
+    }
   }
 
   @override
@@ -437,7 +473,8 @@ final class SideChatCollectionController extends ChangeNotifier {
   }
 }
 
-String _activitySignature(CodexConversationState state) {
+String _activitySignature(CodexConversationState? state) {
+  if (state == null) return 'evicted';
   final itemCount = state.turns.fold<int>(
     0,
     (total, turn) => total + turn.items.length,

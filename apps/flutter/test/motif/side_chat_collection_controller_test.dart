@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
+import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/codex/side_chat_collection_controller.dart';
 import 'package:motif/motif/ui/screens/side_chat_screen.dart';
@@ -62,12 +63,12 @@ void main() {
       expect(collection.entries.first.id, first.id);
 
       await collection.close();
-      expect(client.unsubscribed, containsAll([first.id, second!.id]));
+      expect(client.unsubscribed, isEmpty);
       expect(client.closed, isTrue);
     },
   );
 
-  test('a connection restart expires all ephemeral conversations', () async {
+  test('a connection restart keeps ephemeral conversation handles', () async {
     final client = _SideChatFakeClient();
     final collection = SideChatCollectionController(
       serverId: 'server',
@@ -78,11 +79,49 @@ void main() {
     await collection.ensureInitial();
     expect(collection.entries, hasLength(1));
     client.changePhase(CodexConnectionPhase.connecting);
-    await _waitFor(() => collection.entries.isEmpty);
 
-    expect(collection.error, contains('expired'));
+    expect(collection.entries, hasLength(1));
+    expect(collection.error, isNull);
     await collection.close();
   });
+
+  test(
+    'closing a shared collection keeps its socket and subscription',
+    () async {
+      final client = _SideChatFakeClient();
+      final registry = CodexConversationRegistry(
+        serverId: 'server',
+        connection: client,
+        sessionFactory: (_) => CodexConversationState(
+          serverId: 'server',
+          connection: client,
+          connectionLease: const CodexSharedConnectionLease(),
+          listenToConnectionMessages: false,
+          recoverOnReconnect: false,
+          features: const {},
+        ),
+      );
+      final collection = SideChatCollectionController(
+        serverId: 'server',
+        parentThreadId: 'parent-thread',
+        registry: registry,
+      );
+
+      final entry = await collection.ensureInitial();
+      await collection.close();
+
+      expect(entry, isNotNull);
+      expect(client.unsubscribed, isEmpty);
+      expect(client.closed, isFalse);
+      expect(registry.handleFor(entry!.id)?.wasSubscribed, isTrue);
+      expect(registry.sessionFor(entry.id), isNotNull);
+
+      await registry.close();
+      registry.dispose();
+      await client.close();
+      client.dispose();
+    },
+  );
 
   test(
     'restores indexed ephemeral conversations and the selected one',

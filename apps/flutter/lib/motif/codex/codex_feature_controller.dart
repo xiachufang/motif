@@ -43,6 +43,7 @@ final class CodexFeatureController extends ChangeNotifier {
   String? _pendingRestoreThreadId;
   String? _failedRestoreThreadId;
   bool _restoringThread = false;
+  String? _visibleSideChatParentId;
 
   CodexServiceState? get service => _service;
   SideChatCollectionController? get sideChats {
@@ -101,7 +102,9 @@ final class CodexFeatureController extends ChangeNotifier {
 
   SideChatCollectionController? openSideChats() {
     if (_closed) return null;
-    final thread = _service?.selectedThread;
+    final state = _service;
+    if (state == null) return null;
+    final thread = state.selectedThread;
     if (thread == null) return null;
     var collection = _sideChatsByParentThread[thread.id];
     if (collection == null) {
@@ -109,23 +112,7 @@ final class CodexFeatureController extends ChangeNotifier {
       collection = SideChatCollectionController(
         serverId: serverId,
         parentThreadId: thread.id,
-        connection: connectionFactory(),
-        preferredModelId: preferences.selectedModelId(serverId),
-        onModelSelected: (modelId) =>
-            preferences.setSelectedModelId(serverId, modelId),
-        preferredReasoningEffort: preferences.selectedReasoningEffort(serverId),
-        onReasoningEffortSelected: (effort) =>
-            preferences.setSelectedReasoningEffort(serverId, effort),
-        onReasoningEffortPreferenceInvalidated: () =>
-            preferences.clearSelectedReasoningEffort(serverId),
-        hasPermissionPreference: preferences.hasSelectedPermissionPreference(
-          serverId,
-        ),
-        preferredPermissionId: preferences.selectedPermissionId(serverId),
-        onPermissionSelected: (permissionId) =>
-            preferences.setSelectedPermissionId(serverId, permissionId),
-        onPermissionPreferenceInvalidated: () =>
-            preferences.clearSelectedPermissionId(serverId),
+        registry: state.conversations,
         initialThreadIds: stored.threadIds,
         initialSelectedThreadId: stored.selectedThreadId,
         onIndexChanged: (threadIds, selectedThreadId) =>
@@ -139,14 +126,35 @@ final class CodexFeatureController extends ChangeNotifier {
       _sideChatsByParentThread[thread.id] = collection;
       notifyListeners();
     }
+    _showSideChatCollection(collection);
     return collection;
   }
 
   void setSideChatOpening(bool value) {
-    if (sideChatOpening == value || _closed) return;
+    if (_closed) return;
+    if (!value) {
+      final parentId = _visibleSideChatParentId;
+      if (parentId != null) {
+        _sideChatsByParentThread[parentId]?.setVisible(false);
+        _visibleSideChatParentId = null;
+      }
+    } else {
+      final collection = sideChats;
+      if (collection != null) _showSideChatCollection(collection);
+    }
+    if (sideChatOpening == value) return;
     sideChatOpening = value;
     viewModel.sideChatOpening = value;
     notifyListeners();
+  }
+
+  void _showSideChatCollection(SideChatCollectionController collection) {
+    final previousId = _visibleSideChatParentId;
+    if (previousId != null && previousId != collection.parentThreadId) {
+      _sideChatsByParentThread[previousId]?.setVisible(false);
+    }
+    _visibleSideChatParentId = collection.parentThreadId;
+    collection.setVisible(true);
   }
 
   Future<bool> runServiceAction(CodexServiceAction action) async {
