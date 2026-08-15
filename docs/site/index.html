@@ -3,23 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Motif | Remote development sessions</title>
+    <title>Motif | Remote development with Terminal and Codex</title>
     <meta
       name="description"
-      content="Motif is an open-source, self-hosted remote terminal client and motifd server for long-lived remote development sessions."
+      content="Motif is an open-source, self-hosted remote development workspace for long-lived terminals, files, git, and Codex threads on every device."
     />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Motif | Remote development sessions" />
+    <meta property="og:title" content="Motif | Remote development with Terminal and Codex" />
     <meta
       property="og:description"
-      content="Open-source, self-hosted remote terminal, files, and git in one long-lived session. Attach from iOS, macOS, Android, Web, Linux, and Windows."
+      content="Open-source, self-hosted terminal, files, git, and Codex in one long-lived workspace. Attach from iOS, macOS, Android, Web, Linux, and Windows."
     />
     <meta property="og:image" content="./assets/motif-hero.png" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Motif | Remote development sessions" />
+    <meta name="twitter:title" content="Motif | Remote development with Terminal and Codex" />
     <meta
       name="twitter:description"
-      content="Open-source, self-hosted remote terminal, files, and git in one long-lived session."
+      content="Open-source, self-hosted terminal, files, git, and Codex in one long-lived workspace."
     />
     <meta name="twitter:image" content="./assets/motif-hero.png" />
     <link rel="icon" type="image/png" href="./assets/motif-icon.png" />
@@ -54,11 +54,11 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-bg" aria-hidden="true"></div>
         <div class="hero-content">
-          <p class="eyebrow" data-i18n="hero.eyebrow">Remote terminal, files, and git in one live session</p>
+          <p class="eyebrow" data-i18n="hero.eyebrow">Remote terminal, files, git, and Codex in one live workspace</p>
           <h1 id="hero-title" data-i18n="hero.title">Motif</h1>
           <p class="hero-copy" data-i18n="hero.copy">
-            Run your workdir, shells, file operations, and git state on one machine.
-            Attach from any lightweight client and see the same session.
+            Keep your workdir, terminals, files, git state, and Codex threads on one machine.
+            Attach from any client and continue the same work.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
             <a class="primary-button" href="https://apps.apple.com/app/motif-ssh-terminal/id6778351644" target="_blank" rel="noopener" data-i18n="hero.ctaAppStore">Download on the App Store</a>
@@ -95,10 +95,10 @@
           </div>
           <div class="intro-copy">
             <p data-i18n="intro.copy1">
-              Motif combines a Rust server named motifd with Flutter clients. The server owns the workdir, PTY pool, filesystem operations, and git diff. Clients are thin surfaces that attach, detach, and reconnect.
+              Motif combines a Rust server named motifd with Flutter clients. The server owns the workdir, PTY pool, filesystem operations, git diff, and an optional Codex app-server bridge. Clients are thin surfaces that attach, detach, and reconnect.
             </p>
             <p data-i18n="intro.copy2">
-              The result feels like code-server plus tmux attach: open the same session from your laptop, phone, tablet, desktop app, or browser and keep seeing the same file tree, terminals, and diff.
+              The result feels like code-server plus tmux attach, with Codex alongside it: open the same workspace from a laptop, phone, tablet, desktop app, or browser and continue terminals, files, diffs, and agent threads.
             </p>
           </div>
         </div>
@@ -110,10 +110,24 @@
             <p class="section-kicker" data-i18n="features.kicker">Everything in the session</p>
             <h2 id="features-title" data-i18n="features.title">Core features</h2>
             <p data-i18n="features.copy">
-              Motif focuses on the daily remote development loop: terminals, files, diffs, connection setup, and cross-device continuity.
+              Motif covers the daily remote development loop: terminals, files, diffs, Codex, connectivity, and cross-device continuity.
             </p>
           </div>
           <div class="feature-grid">
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7.5 12 5l4 2.5v5L12 15l-4-2.5z"/><path d="M12 15v4M5 17l3-1.5M19 17l-3-1.5"/><circle cx="5" cy="18" r="1.5"/><circle cx="12" cy="20" r="1.5"/><circle cx="19" cy="18" r="1.5"/></svg>
+              </span>
+              <h3 data-i18n="feature.codex.title">Codex workspace</h3>
+              <p data-i18n="feature.codex.copy">Run the Codex CLI on the motifd host and stream conversations, commands, diffs, plans, and approvals to every client.</p>
+            </article>
+            <article class="feature-card">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v10H9l-4 4z"/><path d="M9 9h6M9 12h4"/></svg>
+              </span>
+              <h3 data-i18n="feature.sidechat.title">Threads, forks, and Side Chat</h3>
+              <p data-i18n="feature.sidechat.copy">Resume persistent threads, fork from a turn, or explore a temporary branch without rewriting the main conversation.</p>
+            </article>
             <article class="feature-card">
               <span class="feature-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 8 9 12 5 16"/><line x1="12" y1="16" x2="19" y2="16"/></svg>
@@ -198,6 +212,7 @@
               <h3 data-i18n="feature.push.title">Encrypted push notifications</h3>
               <p data-i18n="feature.push.copy">E2E push uses AES-256-GCM and native APNs paths without Firebase in the iOS flow.</p>
             </article>
+            <span class="feature-grid-filler" aria-hidden="true"></span>
           </div>
         </div>
       </section>
@@ -208,7 +223,7 @@
             <p class="section-kicker" data-i18n="screenshots.kicker">Product walkthrough</p>
             <h2 id="screenshots-title" data-i18n="screenshots.title">Every core workflow, captured from a live review server.</h2>
             <p data-i18n="screenshots.copy">
-              These are real macOS and iPhone captures connected to a public motifd review server: session management, terminal attach, files, git diff, mobile input helpers, settings, and the embedded server view.
+              These are real macOS and iPhone captures connected to a motifd review server: workspaces, terminal attach, files, git diff, Codex threads, Side Chat, settings, and the embedded server view.
             </p>
           </div>
           <div class="screenshot-gallery">
@@ -269,37 +284,55 @@
             <div class="phone-strip" aria-label="iPhone workflow screenshots">
               <figure class="screenshot-card screenshot-card-phone">
                 <div class="screenshot-frame">
-                  <img src="./assets/motif-iphone-sessions.png" alt="Motif iPhone session list showing docs-demo and a sessions on hk.hq review" width="1206" height="2622" loading="lazy" />
+                  <img src="./assets/motif-iphone-workspaces.png" alt="Motif iPhone workspaces view listing active projects on a connected motifd server" width="1320" height="2868" loading="lazy" />
                 </div>
                 <figcaption>
-                  <strong data-i18n="screenshots.iphoneSessions.title">Mobile session list</strong>
-                  <span data-i18n="screenshots.iphoneSessions.copy">Reconnect from your phone and see the same server state, including attached clients.</span>
+                  <strong data-i18n="screenshots.iphoneWorkspaces.title">Every workspace, one connection</strong>
+                  <span data-i18n="screenshots.iphoneWorkspaces.copy">Reconnect from your phone and see every long-lived workspace on the selected server.</span>
                 </figcaption>
               </figure>
               <figure class="screenshot-card screenshot-card-phone">
                 <div class="screenshot-frame">
-                  <img src="./assets/motif-iphone-terminal.png" alt="Motif iPhone terminal with quick command row, photo attach button, voice input, and send button" width="1206" height="2622" loading="lazy" />
+                  <img src="./assets/motif-iphone-codex.png" alt="Motif iPhone Codex workspace showing a release review conversation with code changes" width="1320" height="2868" loading="lazy" />
                 </div>
                 <figcaption>
-                  <strong data-i18n="screenshots.iphoneTerminal.title">Mobile terminal input</strong>
+                  <strong data-i18n="screenshots.iphoneCodex.title">Codex on the go</strong>
+                  <span data-i18n="screenshots.iphoneCodex.copy">Review a release, inspect changes, and continue a Codex task from the same remote workdir.</span>
+                </figcaption>
+              </figure>
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-codex-threads.png" alt="Motif iPhone Codex thread sidebar showing searchable persistent conversations" width="1320" height="2868" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneThreads.title">Codex thread sidebar</strong>
+                  <span data-i18n="screenshots.iphoneThreads.copy">Browse, search, resume, and organize persistent Codex threads without losing the active conversation.</span>
+                </figcaption>
+              </figure>
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-sidechat.png" alt="Motif iPhone Side Chat exploring a parallel question beside the main Codex thread" width="1320" height="2868" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneSideChat.title">Explore in Side Chat</strong>
+                  <span data-i18n="screenshots.iphoneSideChat.copy">Investigate a parallel question without appending messages to the main Codex thread.</span>
+                </figcaption>
+              </figure>
+              <figure class="screenshot-card screenshot-card-phone">
+                <div class="screenshot-frame">
+                  <img src="./assets/motif-iphone-terminal.png" alt="Motif iPhone terminal with useful command output and mobile input controls" width="1320" height="2868" loading="lazy" />
+                </div>
+                <figcaption>
+                  <strong data-i18n="screenshots.iphoneTerminal.title">A real mobile terminal</strong>
                   <span data-i18n="screenshots.iphoneTerminal.copy">Use quick keys, reusable commands, photo attach, voice input, and send controls from the phone.</span>
                 </figcaption>
               </figure>
               <figure class="screenshot-card screenshot-card-phone">
                 <div class="screenshot-frame">
-                  <img src="./assets/motif-iphone-files.png" alt="Motif iPhone file browser showing src and README.md inside motif-docs-demo" width="1206" height="2622" loading="lazy" />
+                  <img src="./assets/motif-iphone-git.png" alt="Motif iPhone git view showing meaningful working changes before release" width="1320" height="2868" loading="lazy" />
                 </div>
                 <figcaption>
-                  <strong data-i18n="screenshots.iphoneFiles.title">Mobile files</strong>
-                  <span data-i18n="screenshots.iphoneFiles.copy">Open the remote file tree on iPhone for quick inspection and file-level actions.</span>
-                </figcaption>
-              </figure>
-              <figure class="screenshot-card screenshot-card-phone">
-                <div class="screenshot-frame">
-                  <img src="./assets/motif-iphone-git-diff.png" alt="Motif iPhone app showing a working git diff for README.md and src/session.js" width="1206" height="2622" loading="lazy" />
-                </div>
-                <figcaption>
-                  <strong data-i18n="screenshots.iphoneGit.title">iPhone git review</strong>
+                  <strong data-i18n="screenshots.iphoneGit.title">Review changes before shipping</strong>
                   <span data-i18n="screenshots.iphoneGit.copy">The same diff is readable on mobile, including working/staged tabs and per-file patch text.</span>
                 </figcaption>
               </figure>
@@ -373,7 +406,7 @@
               <span role="cell" class="compare-motif yes" aria-label="Yes">✓</span>
             </div>
             <div class="compare-row" role="row">
-              <span role="rowheader" data-i18n="compare.row8">AI agent helpers: image upload, completion hooks</span>
+              <span role="rowheader" data-i18n="compare.row8">Codex threads, persistent forks, and Side Chat</span>
               <span role="cell" class="no" aria-label="No">—</span>
               <span role="cell" class="no" aria-label="No">—</span>
               <span role="cell" class="no" aria-label="No">—</span>
@@ -599,7 +632,7 @@ docker inspect --format '{{.State.Health.Status}}' motif-rzv</code></pre>
             </details>
             <details>
               <summary data-i18n="faq.q4">Is Motif an AI agent?</summary>
-              <p data-i18n="faq.a4">No. The current product is a remote development surface, not an LLM agent. It focuses on sessions, terminals, files, git, and connectivity.</p>
+              <p data-i18n="faq.a4">Motif is not a model or account provider. It integrates the Codex CLI already installed and authenticated on your motifd host, then gives you a remote client for its threads and tools.</p>
             </details>
             <details>
               <summary data-i18n="faq.q5">Which platforms are supported?</summary>

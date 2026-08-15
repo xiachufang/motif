@@ -3,7 +3,8 @@
 A remote dev agent in the spirit of code-server + `tmux attach`: a long-lived
 **Session** on a host (workdir + PTY pool + git + file ops) that multiple
 lightweight clients can attach to and see *completely mirrored* — same file
-tree, same terminals, same diff. v1 is single-user, no LLM.
+tree, same terminals, same diff. v1 is single-user and can optionally expose a
+Codex workspace backed by the Codex CLI installed on the `motifd` host.
 
 See [`docs/prd.md`](docs/prd.md) for the full design.
 
@@ -26,6 +27,7 @@ apps/
 
 docs/                    architecture + protocol
 ├─ usage.md              how to use Motif as a remote server or local desktop server
+├─ codex.md              Codex setup, threads, forks, and Side Chat workflows
 ├─ prd.md                product / architecture
 ├─ rpc.md                JSON-RPC method + event catalog (TUI and web share it)
 ├─ web-client.md         web SPA details
@@ -153,10 +155,17 @@ for image tags, configuration, and GHCR details.
 # auto-configures itself to the motifd origin on first launch.
 ```
 
-The Codex view requires a separately installed Codex CLI. `motifd` first checks
-`MOTIFD_CODEX_PATH`, then `PATH`, the standalone install location
-`~/.local/bin/codex`, Homebrew prefixes, and common npm/node-manager locations.
-Set `MOTIFD_CODEX_PATH` to the executable when Codex is installed elsewhere.
+The Codex view is separate from terminal sessions. It uses `codex app-server`
+on the `motifd` host to provide streamed conversations, persistent thread
+history, forks, approvals, and Side Chats in Motif. Install and authenticate the
+Codex CLI for the same OS user that runs `motifd`; Codex usage follows that
+account or API key rather than Motif itself.
+
+`motifd` first checks `MOTIFD_CODEX_PATH`, then `PATH`, the standalone install
+location `~/.local/bin/codex`, Homebrew prefixes, and common npm/node-manager
+locations. Set `MOTIFD_CODEX_PATH` when Codex is installed elsewhere. See
+[`docs/codex.md`](docs/codex.md) for setup, authentication, thread, and Side
+Chat details.
 
 On native Windows, run `motifd.exe --listen 127.0.0.1:7777` from PowerShell.
 Keep the packaged `ghostty-vt.dll` beside `motifd.exe`.

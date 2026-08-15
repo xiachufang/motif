@@ -297,7 +297,31 @@ Loopback 模式保持明文、无鉴权（只给本机用）。
 - 如果电脑睡眠、关机或 App 退出，embedded server 就不可用；需要长久在线时用
   “跑在 server 上”的 daemon 模式。
 
-## 4. 常见连接选择
+## 4. Codex、Thread 与 Side Chat
+
+Motif 的 **Terminal** 与 **Codex** 是独立入口。Terminal attach 到服务端 PTY；
+Codex 页面通过 `motifd` 启动并连接同机的 `codex app-server`，让 Codex 直接在
+服务端工作目录中运行。
+
+使用前需要在运行 `motifd` 的系统用户下安装并登录 Codex CLI：
+
+```bash
+codex --version
+codex login
+codex login status
+```
+
+如果 daemon 的 `PATH` 找不到 Codex，设置
+`MOTIFD_CODEX_PATH=/absolute/path/to/codex` 后重启 `motifd`。连接 server 后，从
+Session 列表打开 **Codex**，即可创建或恢复工作区 Thread。左侧 Threads sidebar
+用于浏览历史对话；回复下的 fork 操作可从某个 turn 建立新的持久 Thread。
+
+主 Thread 里的 **Side Chat** 适合临时探索旁支问题。每个 Side Chat 都有独立对话，
+不会把消息追加回主 Thread，但仍使用同一个服务端工作目录，因此获准执行的文件
+修改依然会影响项目。完整安装、认证、安全说明和排错步骤见
+[`codex.md`](./codex.md)。
+
+## 5. 常见连接选择
 
 | 连接方式 | Server 模式 | 电脑模式 | 备注 |
 | --- | --- | --- | --- |
@@ -308,7 +332,7 @@ Loopback 模式保持明文、无鉴权（只给本机用）。
 | Rendezvous relay | `--rzv-relay` | Pair over a relay | 适合扫码配对和无直连网络（端到端 TLS pin + psk bearer） |
 | Browser same-origin | `motifd` 内嵌 Web UI | Tray Open in Browser | Web client 与 RPC/WS 共用同一个 origin |
 
-## 5. 快速排错
+## 6. 快速排错
 
 - 打不开 Web UI：先确认 `motifd` 是否在监听，浏览器访问 `/ping` 应返回 Motif server 信息。
 - App 显示 `No ping`：host/port 可能不对，或当前网络到不了 server；配对链接里的 pin/psk

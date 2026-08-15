@@ -400,14 +400,14 @@ textarea {
 .phone-strip {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   align-items: start;
 }
 
 .screenshot-card-phone .screenshot-frame {
   background: var(--surface);
-  aspect-ratio: 1206 / 2622;
+  aspect-ratio: 1320 / 2868;
 }
 
 .screenshot-card figcaption {
@@ -634,6 +634,12 @@ h3 {
 /* first column has no left border */
 .feature-card:nth-child(3n + 1) {
   border-left: 0;
+}
+
+/* Complete the last desktop row when it contains only two feature cards. */
+.feature-grid-filler {
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
 }
 
 .feature-icon {
@@ -1231,6 +1237,10 @@ details p {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .feature-grid-filler {
+    display: none;
+  }
+
   .feature-card:nth-child(-n + 3) {
     border-top: 1px solid var(--line);
   }
@@ -1425,6 +1435,12 @@ details p {
 
   .footer-links {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 430px) {
+  .phone-strip {
+    grid-template-columns: 1fr;
   }
 }
 
