@@ -39,6 +39,7 @@ make release-tag BUMP=major      # 1.3.2 -> 2.0.0
 
    Pushing the tag triggers:
    - `release-desktop` → Linux + Windows desktop apps
+   - `release-android` → arm64 Android APK
    - `release-macos-signed` → signed + notarized macOS `.dmg`
    - `release-motifd` → Linux + macOS `motifd` binaries
    - `review-image` / `motifd-image` / `rendezvous-image` / `push-relay-image` → Docker images
@@ -49,8 +50,8 @@ make release-tag BUMP=major      # 1.3.2 -> 2.0.0
 
 **After pushing**, verify: watch the Actions tab go green, then check the new
 Release has the desktop `.tar.gz`s, the `motifd` `.tar.gz`s, `MANIFEST.txt`, and
-the signed and notarized macOS `.dmg`. Verify the iOS build separately in Xcode
-Cloud / App Store Connect.
+the arm64 Android `.apk`, and the signed and notarized macOS `.dmg`. Verify the
+iOS build separately in Xcode Cloud / App Store Connect.
 
 ## Dry run before tagging
 
@@ -63,6 +64,7 @@ platform — same commands the CI runs, output in `dist/release/`:
 make release-flutter-macos      # signed + notarized; local Keychain or five CI credential env vars
 make release-flutter-linux      # or release-flutter-windows
 make release-motifd-macos       # or release-motifd-linux
+(cd apps/flutter && flutter build apk --release --target-platform android-arm64 --split-per-abi)
 make release-manifest
 ```
 
