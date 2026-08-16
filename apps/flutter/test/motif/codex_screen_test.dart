@@ -291,6 +291,69 @@ void main() {
     app.dispose();
   });
 
+  testWidgets('shows the saved effort when the last thread is restored', (
+    tester,
+  ) async {
+    final app = await appState();
+    final codex = CodexState()
+      ..setLastOpenedThreadId('server', 'thread')
+      ..setSelectedReasoningEffort('server', 'xhigh');
+    final client = ScreenFakeClient(
+      models: const [
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('medium'),
+          description: 'Default model',
+          displayName: 'Default',
+          hidden: false,
+          id: 'default-model',
+          isDefault: true,
+          model: 'default-model',
+          supportedReasoningEfforts: [
+            CodexReasoningEffortOption(
+              description: 'Medium',
+              reasoningEffort: CodexReasoningEffort('medium'),
+            ),
+            CodexReasoningEffortOption(
+              description: 'Extra high',
+              reasoningEffort: CodexReasoningEffort('xhigh'),
+            ),
+          ],
+        ),
+      ],
+    );
+    final serviceState = readyServiceState(connection: client);
+    final restoredThread = serviceState.catalog.allThreads.single;
+    client.threadReadResponse = CodexThreadReadResponse(thread: restoredThread);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: codex,
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: codex,
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('codex-model-settings-label')),
+          )
+          .data,
+      contains('Xhigh'),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
   testWidgets('restores and records the server permission preference', (
     tester,
   ) async {
@@ -1102,9 +1165,10 @@ CodexThreadResumeResponse _resumeResponse(CodexThread thread) =>
 
 final class ScreenFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
-  ScreenFakeClient({this.files = const {}});
+  ScreenFakeClient({this.files = const {}, this.models = const []});
 
   final Map<String, String> files;
+  final List<CodexModel> models;
   final List<String> readPaths = [];
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
@@ -1285,7 +1349,7 @@ final class ScreenFakeClient extends ChangeNotifier
   @override
   Future<CodexModelListResponse> listModels(
     CodexModelListParams params,
-  ) async => const CodexModelListResponse(data: []);
+  ) async => CodexModelListResponse(data: models);
 
   @override
   Future<CodexPermissionProfileListResponse> listPermissionProfiles(

@@ -503,6 +503,71 @@ void main() {
     await state.close();
   });
 
+  test('restores a reasoning effort preference in a hydrated thread', () async {
+    final existing = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [existing]),
+      },
+      models: const [
+        CodexModel(
+          defaultReasoningEffort: CodexReasoningEffort('medium'),
+          description: 'Default model',
+          displayName: 'Default',
+          hidden: false,
+          id: 'default-model',
+          isDefault: true,
+          model: 'default-model',
+          supportedReasoningEfforts: [
+            CodexReasoningEffortOption(
+              description: 'Medium',
+              reasoningEffort: CodexReasoningEffort('medium'),
+            ),
+            CodexReasoningEffortOption(
+              description: 'Extra high',
+              reasoningEffort: CodexReasoningEffort('xhigh'),
+            ),
+          ],
+        ),
+      ],
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configureReasoningEffortPreference(preferredReasoningEffort: 'xhigh');
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    await waitFor(() => state.selectedConversation?.models.isNotEmpty == true);
+
+    expect(state.selectedConversation?.selectedReasoningEffort, 'xhigh');
+    expect(state.selectedReasoningEffort, 'xhigh');
+    await state.close();
+  });
+
+  test('records reasoning effort restored by a lazy thread resume', () async {
+    final existing = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [existing]),
+      },
+      resumeReasoningEffort: const CodexReasoningEffort('xhigh'),
+    );
+    final recorded = <String?>[];
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..configureReasoningEffortPreference(onSelected: recorded.add);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    expect(recorded, isEmpty);
+
+    await state.ensureThreadResumedForSend('thread');
+
+    expect(state.selectedReasoningEffort, 'xhigh');
+    expect(recorded, ['xhigh']);
+    await state.close();
+  });
+
   test('restores and records a permission preference', () async {
     final existing = thread('thread');
     final client = FakeCodexClient(
@@ -1252,6 +1317,7 @@ final class FakeCodexClient extends ChangeNotifier
     this.globalState,
     this.models = const [],
     this.permissionProfiles = const [],
+    this.resumeReasoningEffort,
   });
 
   final Map<String?, CodexThreadListResponse> pages;
@@ -1259,6 +1325,7 @@ final class FakeCodexClient extends ChangeNotifier
   String? globalState;
   final List<CodexModel> models;
   final List<CodexPermissionProfileSummary> permissionProfiles;
+  final CodexReasoningEffort? resumeReasoningEffort;
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
   final StreamController<CodexJsonEncodable> _typed =
@@ -1469,6 +1536,7 @@ final class FakeCodexClient extends ChangeNotifier
       cwd: original.cwd,
       model: 'test',
       modelProvider: 'openai',
+      reasoningEffort: resumeReasoningEffort,
       initialTurnsPage: initialTurnsPage == null
           ? null
           : CodexTurnsPage(

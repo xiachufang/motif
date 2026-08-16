@@ -1585,6 +1585,11 @@ class CodexConversationState extends ChangeNotifier {
       }
       if (!_effortSelectionTouched) {
         selectedReasoningEffort = response.reasoningEffort?.value;
+        final restoredEffort = selectedReasoningEffort?.trim();
+        if (restoredEffort != null && restoredEffort.isNotEmpty) {
+          _preferredReasoningEffort = restoredEffort;
+          _onReasoningEffortSelected?.call(restoredEffort);
+        }
       }
       if (!_permissionSelectionTouched) {
         selectedPermissionId = response.activePermissionProfile?.id;
