@@ -13,6 +13,7 @@ pub mod auth;
 pub mod capture;
 pub mod codex_app_server;
 pub mod codex_observer;
+mod codex_process_registry;
 pub mod codex_service;
 pub mod codex_ws;
 pub mod config;
@@ -595,13 +596,41 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
     })
 }
 
-/// Run the server until Ctrl-C, then shut down gracefully. The `motifd`
-/// binary's entry point; embedders should use [`start`] instead.
+/// Reap Motif-managed Codex app-servers whose owning motifd process no longer
+/// exists. Standalone and embedded hosts call this at each server start.
+pub fn cleanup_orphaned_codex_app_servers() {
+    codex_process_registry::cleanup_orphans();
+}
+
+/// Run the server until Ctrl-C/SIGTERM, then shut down gracefully. The
+/// `motifd` binary's entry point; embedders should use [`start`] instead.
 pub async fn serve(cfg: ServerConfig) -> anyhow::Result<()> {
     let running = start(cfg).await?;
+    let signal = shutdown_signal().await?;
+    tracing::info!(signal, "shutdown signal received; shutting down");
+    running.shutdown().await
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() -> anyhow::Result<&'static str> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("installing SIGTERM handler")?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.context("waiting for ctrl-c")?;
+            Ok("SIGINT")
+        }
+        signal = terminate.recv() => {
+            signal.context("SIGTERM handler closed")?;
+            Ok("SIGTERM")
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> anyhow::Result<&'static str> {
     tokio::signal::ctrl_c()
         .await
         .context("waiting for ctrl-c")?;
-    tracing::info!("ctrl-c received; shutting down");
-    running.shutdown().await
+    Ok("Ctrl-C")
 }

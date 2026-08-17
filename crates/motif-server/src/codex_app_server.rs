@@ -17,6 +17,8 @@ use tokio::sync::watch;
 
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_POLL: Duration = Duration::from_millis(75);
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+const SHUTDOWN_KILL_GRACE: Duration = Duration::from_millis(250);
 const CODEX_PATH_ENV: &str = "MOTIFD_CODEX_PATH";
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +73,7 @@ struct Inner {
     exited: AtomicBool,
     stopping: AtomicBool,
     exit_tx: watch::Sender<bool>,
+    registration: Mutex<Option<crate::codex_process_registry::Registration>>,
     #[cfg(windows)]
     job: Mutex<Option<crate::windows_job::ProcessJob>>,
 }
@@ -105,6 +108,21 @@ impl CodexAppServer {
 
         let mut child = command.spawn().map_err(CodexLaunchError::Spawn)?;
         let pid = child.id();
+        #[cfg(windows)]
+        let job = match crate::windows_job::ProcessJob::assign(pid) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                terminate_child(&mut child, pid);
+                return Err(CodexLaunchError::Setup(error));
+            }
+        };
+        let registration = match crate::codex_process_registry::register(pid, address) {
+            Ok(registration) => Some(registration),
+            Err(error) => {
+                tracing::warn!(pid, %error, "could not persist Codex process ownership record");
+                None
+            }
+        };
         tracing::info!(
             service = service_label,
             program = %codex.display(),
@@ -116,19 +134,8 @@ impl CodexAppServer {
         drain_output(stdout, service_label.to_string(), "stdout");
         drain_output(stderr, service_label.to_string(), "stderr");
 
-        #[cfg(windows)]
-        let job = match crate::windows_job::ProcessJob::assign(pid) {
-            Ok(job) => Some(job),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(CodexLaunchError::Setup(error));
-            }
-        };
-
-        wait_ready(&mut child, address).map_err(|error| {
+        wait_ready(&mut child, address).inspect_err(|_| {
             terminate_child(&mut child, pid);
-            error
         })?;
 
         let (exit_tx, _) = watch::channel(false);
@@ -139,6 +146,7 @@ impl CodexAppServer {
             exited: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             exit_tx,
+            registration: Mutex::new(registration),
             #[cfg(windows)]
             job: Mutex::new(job),
         });
@@ -179,6 +187,7 @@ impl CodexAppServer {
                 exited: AtomicBool::new(false),
                 stopping: AtomicBool::new(false),
                 exit_tx,
+                registration: Mutex::new(None),
                 #[cfg(windows)]
                 job: Mutex::new(None),
             }),
@@ -348,16 +357,19 @@ impl Inner {
         if let Some(job) = self.job.lock().as_ref() {
             job.terminate();
         }
-        #[cfg(unix)]
-        if let Some(pid) = self.pid {
-            unsafe {
-                // The child starts a fresh process group, so a negative pid
-                // covers every descendant spawned by app-server.
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
+        let terminated = match (self.pid, self.child.lock().as_mut()) {
+            (Some(pid), Some(child)) => terminate_child(child, pid),
+            _ => true,
+        };
+        self.mark_exited(terminated);
+    }
+
+    fn mark_exited(&self, remove_registration: bool) {
+        if !self.exited.swap(true, Ordering::AcqRel) {
+            self.exit_tx.send_replace(true);
         }
-        if let Some(child) = self.child.lock().as_mut() {
-            let _ = child.kill();
+        if remove_registration {
+            self.registration.lock().take();
         }
     }
 }
@@ -375,15 +387,20 @@ fn spawn_monitor(inner: Arc<Inner>, service_label: String) {
             };
             match result {
                 Ok(Some(status)) => {
-                    inner.exited.store(true, Ordering::Release);
-                    inner.exit_tx.send_replace(true);
-                    tracing::warn!(service = %service_label, %status, "codex app-server exited");
+                    inner.mark_exited(true);
+                    if inner.stopping.load(Ordering::Acquire) {
+                        tracing::info!(service = %service_label, %status, "codex app-server stopped");
+                    } else {
+                        tracing::warn!(service = %service_label, %status, "codex app-server exited");
+                    }
                     return;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(100)),
                 Err(error) => {
-                    inner.exited.store(true, Ordering::Release);
-                    inner.exit_tx.send_replace(true);
+                    // Keep the ownership record when the status check itself
+                    // fails: the next motifd start can still validate and reap
+                    // a child that may have survived.
+                    inner.mark_exited(false);
                     tracing::warn!(service = %service_label, %error, "codex app-server status check failed");
                     return;
                 }
@@ -426,13 +443,70 @@ fn readyz(address: SocketAddr) -> bool {
     response[..n].starts_with(b"HTTP/1.1 200") || response[..n].starts_with(b"HTTP/1.0 200")
 }
 
-fn terminate_child(child: &mut Child, pid: u32) {
+fn terminate_child(child: &mut Child, pid: u32) -> bool {
     #[cfg(unix)]
     unsafe {
+        // The child starts a fresh process group, so a negative pid covers
+        // every descendant spawned by app-server.
         libc::kill(-(pid as i32), libc::SIGTERM);
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    let root_exited = wait_for_child(child, SHUTDOWN_GRACE);
+    #[cfg(unix)]
+    {
+        if process_group_exists(pid) {
+            unsafe {
+                // Kill the whole group, not just the app-server root: a
+                // descendant that ignored SIGTERM must not survive motifd.
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+        let root_reaped = if root_exited {
+            true
+        } else {
+            let _ = child.kill();
+            child.wait().is_ok()
+        };
+        root_reaped && wait_for_process_group(pid, SHUTDOWN_KILL_GRACE)
+    }
+    #[cfg(not(unix))]
+    {
+        if root_exited {
+            true
+        } else {
+            let _ = child.kill();
+            child.wait().is_ok()
+        }
+    }
+}
+
+fn wait_for_child(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn process_group_exists(pid: u32) -> bool {
+    let result = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+fn wait_for_process_group(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_group_exists(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !process_group_exists(pid)
 }
 
 fn drain_output<R: Read + Send + 'static>(
@@ -508,5 +582,25 @@ mod tests {
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
 
         assert_eq!(find_executable([file]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_child_kills_the_dedicated_process_group() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            // Both the shell and its child ignore the graceful signal, forcing
+            // terminate_child to exercise its whole-group SIGKILL fallback.
+            .arg("trap '' TERM; sleep 30 & wait")
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(terminate_child(&mut child, pid));
+        assert!(!process_group_exists(pid));
     }
 }

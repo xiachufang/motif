@@ -90,6 +90,7 @@ tracing-subscriber = { workspace = true }
 time               = { workspace = true }
 dirs               = { workspace = true }
 which              = { workspace = true }
+sysinfo            = { workspace = true }
 xcap               = { workspace = true, optional = true }
 
 # Shell integration: bootstrap scripts embedded at compile time + per-PTY

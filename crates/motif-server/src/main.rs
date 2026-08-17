@@ -147,6 +147,7 @@ fn main() -> anyhow::Result<()> {
 async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     motif_server::init_tracing(&args.log, args.rpc_log.as_deref())?;
+    motif_server::cleanup_orphaned_codex_app_servers();
 
     let listen = args.listen;
     // A non-loopback --listen is a network-reachable surface: encrypt + auth it.

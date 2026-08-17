@@ -138,6 +138,11 @@ async fn do_start(cfg: MenuConfig) -> Result<(), String> {
         *s = ServerState::Starting;
     }
 
+    // A previous Flutter host may have been killed before it could call the
+    // graceful stop FFI. Reap only app-servers whose recorded motifd owner is
+    // gone; unregistered Codex processes are never touched.
+    motif_server::cleanup_orphaned_codex_app_servers();
+
     // Build the server config up front so obvious mistakes fail fast (and
     // reset the state) rather than after a spawn.
     let built = match cfg.to_server_config(&st.tsnet_dir) {
