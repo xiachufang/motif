@@ -626,7 +626,7 @@ class _CommandActivity extends _$_CommandActivity {
       title: _commandActivityTitle(item),
       detail: streaming ? null : detail,
       child: streaming
-          ? CodexStreamingText(
+          ? CodexStreamingMarkdown(
               detail,
               style: MotifType.monoSmall.copyWith(
                 color: context.motif.textSecondary,

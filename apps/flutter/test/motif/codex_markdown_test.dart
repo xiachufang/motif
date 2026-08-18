@@ -144,6 +144,61 @@ Inline `token`.
     final second = tester.getRect(find.text('Two'));
     expect(second.top - first.bottom, MotifSpacing.sm);
   });
+
+  testWidgets('streaming Markdown preserves stable blocks and recovers', (
+    tester,
+  ) async {
+    var source = 'First **block**\n\nSecond';
+    late StateSetter update;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              update = setState;
+              return CodexStreamingMarkdown(source);
+            },
+          ),
+        ),
+      ),
+    );
+
+    Finder markdownWithData(String data) => find.byWidgetPredicate(
+      (widget) => widget is MarkdownBody && widget.data == data,
+    );
+
+    final stable = markdownWithData('First **block**\n\n');
+    expect(stable, findsOneWidget);
+    expect(markdownWithData('Second'), findsOneWidget);
+    final stableElement = tester.element(stable);
+
+    update(() => source += ' grows');
+    await tester.pump();
+
+    expect(identical(tester.element(stable), stableElement), isTrue);
+    expect(markdownWithData('Second grows'), findsOneWidget);
+
+    update(() => source += '\n\n```dart\nfinal value = 1;');
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('codex-markdown-code-block')),
+      findsOneWidget,
+    );
+
+    update(() => source += '\n```\n\nAfter **bold**');
+    await tester.pump();
+
+    expect(find.text('After bold'), findsOneWidget);
+
+    update(() => source = 'Replacement *content*');
+    await tester.pump();
+
+    expect(stable, findsNothing);
+    expect(markdownWithData('Replacement *content*'), findsOneWidget);
+    expect(find.text('Replacement content'), findsOneWidget);
+  });
 }
 
 Iterable<TextSpan> _flatten(TextSpan span) sync* {

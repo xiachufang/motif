@@ -8,19 +8,238 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/motif_theme.dart';
 import 'syntax_highlight.dart';
 
-/// Lightweight renderer used while a protocol item is still streaming.
+/// Incremental Markdown renderer used while a protocol item is streaming.
 ///
-/// Full Markdown parsing and syntax highlighting are intentionally deferred
-/// until item completion. A surrounding [SelectionArea] still makes this text
-/// selectable without creating a separate selection tree per update.
-class CodexStreamingText extends StatelessWidget {
-  const CodexStreamingText(this.data, {required this.style, super.key});
+/// Only the unfinished tail is reparsed for an append-only update. Blocks that
+/// can be parsed independently are committed behind stable widget identities,
+/// so their Markdown trees and selections survive subsequent deltas. A source
+/// rewrite (for example after reconnecting to a corrected snapshot) discards
+/// the checkpoints and resumes parsing from the replacement source.
+class CodexStreamingMarkdown extends StatefulWidget {
+  const CodexStreamingMarkdown(
+    this.data, {
+    super.key,
+    this.style,
+    this.selectable = true,
+    this.softLineBreak = true,
+    this.fitContent = false,
+    this.blockSpacing = MotifSpacing.lg,
+    this.onTapFileLink,
+    this.imageBuilder,
+  });
 
   final String data;
-  final TextStyle style;
+  final TextStyle? style;
+  final bool selectable;
+  final bool softLineBreak;
+  final bool fitContent;
+  final double blockSpacing;
+  final ValueChanged<String>? onTapFileLink;
+  final MarkdownImageBuilder? imageBuilder;
 
   @override
-  Widget build(BuildContext context) => Text(data, style: style);
+  State<CodexStreamingMarkdown> createState() => _CodexStreamingMarkdownState();
+}
+
+class _CodexStreamingMarkdownState extends State<CodexStreamingMarkdown> {
+  final _document = _IncrementalMarkdownDocument();
+  final _callbacks = _StreamingMarkdownCallbacks();
+  final Map<int, Widget> _stableWidgets = <int, Widget>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _callbacks.update(widget);
+    _document.update(widget.data);
+  }
+
+  @override
+  void didUpdateWidget(CodexStreamingMarkdown oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _callbacks.update(widget);
+    if (oldWidget.style != widget.style ||
+        oldWidget.selectable != widget.selectable ||
+        oldWidget.softLineBreak != widget.softLineBreak ||
+        oldWidget.fitContent != widget.fitContent ||
+        oldWidget.blockSpacing != widget.blockSpacing ||
+        (oldWidget.imageBuilder == null) != (widget.imageBuilder == null)) {
+      _stableWidgets.clear();
+    }
+    _document.update(widget.data);
+    final liveIds = _document.stableBlocks.map((block) => block.id).toSet();
+    _stableWidgets.removeWhere((id, _) => !liveIds.contains(id));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = <Widget>[
+      for (final block in _document.stableBlocks)
+        _stableWidgets.putIfAbsent(
+          block.id,
+          () => _markdown(
+            block.source,
+            ValueKey('codex-streaming-markdown-block-${block.id}'),
+          ),
+        ),
+      if (_document.pendingSource.trim().isNotEmpty)
+        _markdown(
+          _document.pendingSource,
+          const ValueKey('codex-streaming-markdown-tail'),
+        ),
+    ];
+    if (sections.isEmpty) return const SizedBox.shrink();
+    if (sections.length == 1) return sections.single;
+    return Column(
+      crossAxisAlignment: widget.fitContent
+          ? CrossAxisAlignment.start
+          : CrossAxisAlignment.stretch,
+      children: [
+        for (var index = 0; index < sections.length; index++) ...[
+          if (index > 0) SizedBox(height: widget.blockSpacing),
+          sections[index],
+        ],
+      ],
+    );
+  }
+
+  Widget _markdown(String source, Key key) => CodexMarkdown(
+    source,
+    key: key,
+    style: widget.style,
+    selectable: widget.selectable,
+    softLineBreak: widget.softLineBreak,
+    fitContent: widget.fitContent,
+    blockSpacing: widget.blockSpacing,
+    onTapFileLink: _callbacks.openFile,
+    imageBuilder: widget.imageBuilder == null ? null : _callbacks.buildImage,
+  );
+}
+
+final class _StreamingMarkdownCallbacks {
+  ValueChanged<String>? _onTapFileLink;
+  MarkdownImageBuilder? _imageBuilder;
+
+  void update(CodexStreamingMarkdown widget) {
+    _onTapFileLink = widget.onTapFileLink;
+    _imageBuilder = widget.imageBuilder;
+  }
+
+  void openFile(String href) => _onTapFileLink?.call(href);
+
+  Widget buildImage(Uri uri, String? title, String? alt) =>
+      _imageBuilder?.call(uri, title, alt) ?? const SizedBox.shrink();
+}
+
+final class _IncrementalMarkdownDocument {
+  static final RegExp _blankLine = RegExp(r'\n[ \t]*\n');
+  static final RegExp _referenceDefinition = RegExp(
+    r'^ {0,3}\[[^\n]+?\]:[ \t]*\S',
+    multiLine: true,
+  );
+
+  final List<_StableMarkdownBlock> stableBlocks = <_StableMarkdownBlock>[];
+  String pendingSource = '';
+  String _source = '';
+  int _nextBlockId = 0;
+  int _examinedBoundaryEnd = 0;
+
+  void update(String nextSource) {
+    if (nextSource == _source) return;
+    if (!nextSource.startsWith(_source)) {
+      _restart(nextSource);
+      return;
+    }
+
+    final delta = nextSource.substring(_source.length);
+    _source = nextSource;
+    pendingSource += delta;
+
+    // A late reference definition can change links in an earlier block. Roll
+    // back the checkpoints so the full dependency is reparsed and then find a
+    // new safe boundary after it.
+    if (stableBlocks.isNotEmpty && _referenceDefinition.hasMatch(delta)) {
+      _restart(nextSource);
+      return;
+    }
+    _commitStablePrefix();
+  }
+
+  void _restart(String source) {
+    stableBlocks.clear();
+    _source = source;
+    pendingSource = source;
+    _examinedBoundaryEnd = 0;
+    _commitStablePrefix();
+  }
+
+  void _commitStablePrefix() {
+    while (true) {
+      final boundaries = _blankLine
+          .allMatches(pendingSource)
+          .where((match) => match.end > _examinedBoundaryEnd)
+          .toList();
+      if (boundaries.isEmpty) return;
+      final wholeSignature = _nodeSignatures(pendingSource);
+      if (wholeSignature == null) return;
+
+      var committed = false;
+      for (final boundary in boundaries) {
+        final prefix = pendingSource.substring(0, boundary.end);
+        final suffix = pendingSource.substring(boundary.end);
+        // Revisit the trailing boundary after the next non-whitespace delta.
+        if (suffix.trim().isEmpty) return;
+        final prefixSignature = _nodeSignatures(prefix);
+        final suffixSignature = _nodeSignatures(suffix);
+        if (prefixSignature == null || suffixSignature == null) return;
+        _examinedBoundaryEnd = boundary.end;
+        if (!_sameSignatures(wholeSignature, [
+          ...prefixSignature,
+          ...suffixSignature,
+        ])) {
+          continue;
+        }
+        stableBlocks.add(
+          _StableMarkdownBlock(id: _nextBlockId++, source: prefix),
+        );
+        pendingSource = suffix;
+        _examinedBoundaryEnd = 0;
+        committed = true;
+        break;
+      }
+      if (!committed) return;
+    }
+  }
+
+  List<String>? _nodeSignatures(String source) {
+    try {
+      final document = md.Document(
+        extensionSet: md.ExtensionSet.gitHubFlavored,
+        encodeHtml: false,
+      );
+      return [
+        for (final node in document.parse(source)) md.renderToHtml([node]),
+      ];
+    } on Object {
+      // Partial protocol text must remain renderable. Keep it in the mutable
+      // tail and retry when a later delta completes the construct.
+      return null;
+    }
+  }
+
+  bool _sameSignatures(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+}
+
+final class _StableMarkdownBlock {
+  const _StableMarkdownBlock({required this.id, required this.source});
+
+  final int id;
+  final String source;
 }
 
 /// Motif-styled Markdown for text received from or sent to Codex.

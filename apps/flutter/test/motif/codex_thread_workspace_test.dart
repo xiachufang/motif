@@ -776,6 +776,29 @@ void main() {
         lessThan(tester.getTopLeft(find.text('Response 11')).dy),
       );
 
+      await tester.drag(stream, const Offset(0, 40));
+      await tester.pump();
+      final anchoredPixels = position.pixels;
+      expect(anchoredPixels, lessThan(position.maxScrollExtent));
+
+      client.emit(
+        const CodexItemAgentMessageDeltaNotification(
+          params: CodexAgentMessageDeltaNotification(
+            delta:
+                '\n\nA newly streamed paragraph that makes the response taller '
+                'without taking the viewport away from the reader.',
+            itemId: 'scroll-agent-11',
+            threadId: 'thread',
+            turnId: 'scroll-turn-11',
+          ),
+        ),
+      );
+      await tester.pump(
+        CodexConversationState.deltaFlushInterval +
+            const Duration(milliseconds: 20),
+      );
+      expect(position.pixels, closeTo(anchoredPixels, 0.01));
+
       await tester.drag(stream, const Offset(0, 400));
       await tester.pump();
       expect(position.pixels, lessThan(position.maxScrollExtent - 96));
@@ -2071,7 +2094,7 @@ Only show **this request**.
     state.dispose();
   });
 
-  testWidgets('streaming agent text defers full Markdown parsing', (
+  testWidgets('streaming agent text renders Markdown incrementally', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -2104,15 +2127,14 @@ Only show **this request**.
           const Duration(milliseconds: 20),
     );
 
-    expect(find.byType(CodexStreamingText), findsOneWidget);
-    expect(find.text('Partial response **more**'), findsOneWidget);
+    expect(find.byType(CodexStreamingMarkdown), findsOneWidget);
     expect(
       find.byWidgetPredicate(
         (widget) =>
             widget is MarkdownBody &&
             widget.data == 'Partial response **more**',
       ),
-      findsNothing,
+      findsOneWidget,
     );
 
     client.emit(

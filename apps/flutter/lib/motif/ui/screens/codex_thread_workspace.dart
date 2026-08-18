@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart' as image_picker;
 
@@ -529,12 +530,26 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   }
 
   bool _onUserScroll(ScrollNotification notification) {
-    if (notification is ScrollUpdateNotification &&
-        notification.dragDetails != null) {
-      _followTail =
-          notification.metrics.pixels >=
-          notification.metrics.maxScrollExtent - 96;
-      if (notification.metrics.pixels <= 240) {
+    if (notification is UserScrollNotification) {
+      switch (notification.direction) {
+        case ScrollDirection.forward:
+          // Pause immediately on any user-initiated upward movement. Waiting
+          // until the viewport is 96 px from the tail lets a fast stream undo
+          // short touch and trackpad gestures before they can accumulate.
+          _followTail = false;
+        case ScrollDirection.reverse:
+          if (notification.metrics.pixels >=
+              notification.metrics.maxScrollExtent - 96) {
+            _followTail = true;
+          }
+        case ScrollDirection.idle:
+          if (notification.metrics.pixels >=
+              notification.metrics.maxScrollExtent - 1) {
+            _followTail = true;
+          }
+      }
+      if (notification.direction != ScrollDirection.idle &&
+          notification.metrics.pixels <= 240) {
         unawaited(_loadOlderTurns());
       }
     }
@@ -1194,7 +1209,7 @@ class _CollapsedPlanCard extends _$_CollapsedPlanCard {
                     physics: const NeverScrollableScrollPhysics(),
                     child: IgnorePointer(
                       child: streaming
-                          ? CodexStreamingText(
+                          ? CodexStreamingMarkdown(
                               plan.text,
                               key: ValueKey('codex-plan-preview-${plan.id}'),
                               style: MotifType.body.copyWith(
@@ -1516,7 +1531,20 @@ class _AgentMessage extends _$_AgentMessage {
     final visibleText = const CodexAgentOutputParser().parse(item.text);
     if (visibleText.trim().isEmpty) return const SizedBox.shrink();
     final style = MotifType.body.copyWith(color: c.textPrimary, height: 1.55);
-    if (streaming) return CodexStreamingText(visibleText, style: style);
+    if (streaming) {
+      return CodexStreamingMarkdown(
+        visibleText,
+        style: style,
+        onTapFileLink: onOpenFile == null
+            ? null
+            : (href) => _openMarkdownFile(state, onOpenFile!, href),
+        imageBuilder: (uri, _, _) => _CodexMarkdownImage(
+          state: state,
+          uri: uri,
+          onOpenImage: onOpenImage,
+        ),
+      );
+    }
     return CodexMarkdown(
       visibleText,
       style: style,
