@@ -52,6 +52,18 @@ class RzvForwarder {
       _onLocal,
       onError: (Object e) =>
           Log.w('rzv forwarder accept error: $e', name: 'motif.rzv'),
+      onDone: () {
+        // iOS may invalidate loopback listeners while the app is suspended.
+        // Do not leave the closed socket looking reusable: the resolver will
+        // call start() and bind a fresh port on the next foreground probe.
+        if (identical(_server, s)) {
+          _server = null;
+          Log.w(
+            'rzv forwarder listener closed unexpectedly port=${s.port}',
+            name: 'motif.rzv',
+          );
+        }
+      },
     );
     Log.i(
       'rzv forwarder 127.0.0.1:${s.port} -> '
@@ -80,8 +92,16 @@ class RzvForwarder {
       path: '/v2/connect',
     );
     WebSocket relay;
+    // WebSocket.connect otherwise uses a process-global HttpClient. Give each
+    // relay dial its own client so a timed-out handshake can be force-cancelled
+    // and a retry cannot inherit stale connection/DNS state. Once upgraded,
+    // the WebSocket owns the detached socket and the HttpClient can be closed.
+    final dialClient = HttpClient();
     try {
-      relay = await WebSocket.connect(uri.toString()).timeout(dialTimeout);
+      relay = await WebSocket.connect(
+        uri.toString(),
+        customClient: dialClient,
+      ).timeout(dialTimeout);
       relay.pingInterval = const Duration(seconds: 15);
       Log.i(
         'rzv: WSS connected took=${sw.elapsedMilliseconds}ms',
@@ -91,6 +111,8 @@ class RzvForwarder {
       Log.w('rzv: WSS dial failed: $e', name: 'motif.rzv');
       local.destroy();
       return;
+    } finally {
+      dialClient.close(force: true);
     }
 
     final conn = _Conn(local, relay);

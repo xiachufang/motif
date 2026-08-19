@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb, listEquals;
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:http/http.dart' as http;
 
@@ -624,6 +624,13 @@ class TransportResolver {
         statusLabel: 'Rendezvous failed',
         message: 'Rendezvous forwarder failed to start: ${error.cause}',
       );
+    } catch (_) {
+      // A failed relay probe must not leave its loopback listener or any
+      // half-paired WSS route cached. Forced retries can arrive while the pool
+      // has no current generation, so without this cleanup they would keep
+      // reusing the failed in-process route until the app restarted.
+      await stopForwarder(server.id);
+      rethrow;
     }
   }
 
@@ -751,7 +758,8 @@ class TransportResolver {
     if (fwd != null &&
         (fwd.relayHost != relay.host ||
             fwd.relayPort != relay.port ||
-            fwd.relayScheme != relay.scheme)) {
+            fwd.relayScheme != relay.scheme ||
+            !listEquals(fwd.token, token))) {
       await stopForwarder(server.id);
       fwd = null;
     }

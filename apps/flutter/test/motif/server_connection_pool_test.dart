@@ -289,6 +289,35 @@ void main() {
     },
   );
 
+  test('socket loss while backgrounded defers recovery until resume', () async {
+    final fixture = _PoolFixture(_serverA);
+    addTearDown(fixture.dispose);
+    final owner = fixture.pool.acquire(
+      ownerId: 'session',
+      ownerKind: ConnectionOwnerKind.session,
+    );
+    await owner.openWebSocket(const ServerWebSocketRequest(path: '/events'));
+    fixture.pool.setForeground(false);
+    fixture.pingFailuresRemaining = 1;
+
+    await fixture.sockets.single.closeFromServer();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(fixture.clients, hasLength(1));
+    expect(
+      fixture.pingFailuresRemaining,
+      1,
+      reason: 'background socket loss must not start route recovery',
+    );
+
+    fixture.pool.setForeground(true);
+    await _waitFor(() => fixture.clients.length == 2);
+
+    expect(fixture.pingFailuresRemaining, 0);
+    expect(fixture.pool.snapshot.phase, ServerConnectionPoolPhase.ready);
+  });
+
   test(
     'failed route ping after socket loss retires the whole generation',
     () async {

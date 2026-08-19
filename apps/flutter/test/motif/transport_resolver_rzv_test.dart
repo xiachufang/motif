@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/models/settings.dart';
 import 'package:motif/motif/net/rzv/rzv_protocol.dart';
@@ -85,6 +87,85 @@ void main() {
     a.dispose();
     b.dispose();
     await resolver.stopForwarder('rzv-1');
+  }, timeout: const Timeout(Duration(seconds: 15)));
+
+  test('failed relay probe is discarded before retry', () async {
+    relay = await _FakeRelay.start();
+    final probedPorts = <int>[];
+    var probes = 0;
+    resolver = TransportResolver(
+      PlatformServices.defaults(),
+      httpClientFactory: (_, _) => MockClient((request) async {
+        probedPorts.add(request.url.port);
+        probes++;
+        return http.Response(
+          jsonEncode({
+            'service': probes == 1 ? 'not-motifd' : 'motif-server',
+            'version': 'test',
+          }),
+          200,
+        );
+      }),
+    );
+    final s = MotifServer(
+      id: 'rzv-retry',
+      name: 'studio',
+      host: 'studio',
+      kind: ServerKind.rendezvous,
+      relay: 'ws://127.0.0.1:${relay.port}',
+      psk: pskB64,
+    );
+
+    await expectLater(
+      resolver.resolve(s),
+      throwsA(
+        isA<Exception>().having(
+          (error) => '$error',
+          'message',
+          contains('did not answer as motifd'),
+        ),
+      ),
+    );
+    final ready = await resolver.resolve(s) as TransportReady;
+
+    expect(probedPorts, hasLength(2));
+    expect(
+      probedPorts[1],
+      isNot(probedPorts[0]),
+      reason: 'retry must use a newly-created loopback forwarder',
+    );
+    ready.dispose();
+    await resolver.stopForwarder(s.id);
+  });
+
+  test('pairing secret change replaces the cached forwarder', () async {
+    final motifd = await _fakeMotifd(secure: false);
+    motifds.add(motifd);
+    relay = await _FakeRelay.start(targetPort: motifd.port);
+    final first = MotifServer(
+      id: 'rzv-repaired',
+      name: 'studio',
+      host: 'studio',
+      kind: ServerKind.rendezvous,
+      relay: 'ws://127.0.0.1:${relay.port}',
+      psk: pskB64,
+    );
+    final nextPsk = Uint8List.fromList(List.generate(32, (i) => 255 - i));
+    final second = first.copyWith(
+      psk: base64Url.encode(nextPsk).replaceAll('=', ''),
+    );
+
+    final firstReady = await resolver.resolve(first) as TransportReady;
+    firstReady.dispose();
+    final secondReady = await resolver.resolve(second) as TransportReady;
+
+    expect(relay.hellos, hasLength(2));
+    expect(
+      RzvProtocol.parseHello(relay.hellos.last),
+      RzvProtocol.deriveToken(nextPsk),
+    );
+    secondReady.dispose();
+    await resolver.stopForwarder(first.id);
   }, timeout: const Timeout(Duration(seconds: 15)));
 
   test(

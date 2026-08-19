@@ -749,6 +749,10 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
   ) {
     owner._sockets.remove(connection);
     if (locallyClosed || _closed) return;
+    // iOS can invalidate sockets while the process is suspended. Defer route
+    // probing until setForeground(true), which performs one coalesced health
+    // check instead of starting network work that cannot finish in background.
+    if (!_foreground) return;
     final current = _current;
     if (current == null || current.generation != connection.routeGeneration) {
       return;
