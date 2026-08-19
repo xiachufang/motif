@@ -262,23 +262,10 @@ CodexCatalogSnapshot buildCodexCatalog(
   final groups = <CodexProjectGroup>[];
   for (final projectId in orderedProjectIds) {
     final project = globalState.projects[projectId]!;
-    final members = projectThreads[projectId]!;
-    final memberById = {for (final thread in members) thread.id: thread};
-    final orderedMembers = <CodexThread>[];
-    for (final id in globalState.projectThreadOrders[projectId] ?? const []) {
-      final thread = memberById.remove(id);
-      if (thread != null) orderedMembers.add(thread);
-    }
-    final remaining = memberById.values.toList()
+    final members = projectThreads[projectId]!
       ..sort(compareCodexThreadsByRecency);
-    orderedMembers.addAll(remaining);
     groups.add(
-      CodexProjectGroup(
-        project: project,
-        threads: List.unmodifiable(
-          _applyThreadPlacements(orderedMembers, insertBeforeByThreadId),
-        ),
-      ),
+      CodexProjectGroup(project: project, threads: List.unmodifiable(members)),
     );
   }
   projectless.sort(compareCodexThreadsByRecency);
@@ -324,9 +311,7 @@ CodexCatalogSnapshot _buildCwdCatalog(
             name: codexPathBasename(entry.key),
             rootPaths: [entry.key],
           ),
-          threads: List.unmodifiable(
-            _applyThreadPlacements(members, insertBeforeByThreadId),
-          ),
+          threads: List.unmodifiable(members),
         );
       }).toList()..sort((a, b) {
         final recency = compareCodexThreadsByRecency(

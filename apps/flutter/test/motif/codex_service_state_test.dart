@@ -871,8 +871,8 @@ void main() {
     expect(client.startThreadParams.single.permissions, 'full-access');
     expect(state.selectedThread?.id, 'new-thread');
     expect(state.catalog.projects.single.threads.map((value) => value.id), [
-      'before',
       'new-thread',
+      'before',
       'current',
       'after',
     ]);
@@ -889,7 +889,7 @@ void main() {
     );
     expect(codexThreadTitle(state.selectedThread!), 'Fix observer race');
     expect(
-      codexThreadTitle(state.catalog.projects.single.threads[1]),
+      codexThreadTitle(state.catalog.projects.single.threads.first),
       'Fix observer race',
     );
 
@@ -904,14 +904,14 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(codexThreadTitle(state.selectedThread!), 'Observer rollout fix');
     expect(
-      codexThreadTitle(state.catalog.projects.single.threads[1]),
+      codexThreadTitle(state.catalog.projects.single.threads.first),
       'Observer rollout fix',
     );
     await state.close();
   });
 
   test(
-    'places externally started and refresh-discovered threads before current',
+    'sorts externally started and refresh-discovered project threads by recency',
     () async {
       final before = thread('before', updatedAt: 30);
       final current = thread('current', updatedAt: 20);
@@ -956,14 +956,13 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
       expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
-        'before',
         'external',
+        'before',
         'current',
         'after',
       ]);
 
-      // A duplicate notification updates the thread but must not place it a
-      // second time relative to the current selection.
+      // A duplicate notification updates the thread without duplicating it.
       client.emit(
         CodexThreadStartedNotification2(
           params: CodexThreadStartedNotification(thread: external),
@@ -977,9 +976,9 @@ void main() {
       );
       await state.refreshCatalog(showLoading: false);
       expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
-        'before',
-        'external',
         'refreshed',
+        'external',
+        'before',
         'current',
         'after',
       ]);

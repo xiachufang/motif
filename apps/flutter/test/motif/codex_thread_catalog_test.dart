@@ -102,6 +102,40 @@ void main() {
     );
   });
 
+  test('project threads use recency instead of persisted sidebar order', () {
+    final global = CodexGlobalStateData.tryParse(
+      jsonEncode({
+        'local-projects': {
+          'motif': {
+            'id': 'motif',
+            'name': 'Motif',
+            'rootPaths': ['/work/motif'],
+          },
+        },
+        'project-order': ['motif'],
+        'thread-project-assignments': {
+          'old': {'projectKind': 'local', 'projectId': 'motif'},
+          'new': {'projectKind': 'local', 'projectId': 'motif'},
+        },
+        'sidebar-project-thread-orders': {
+          'motif': {
+            'threadIds': ['old', 'new'],
+          },
+        },
+      }),
+    );
+
+    final snapshot = buildCodexCatalog([
+      thread('old', cwd: '/work/motif', updatedAt: 10),
+      thread('new', cwd: '/work/motif', updatedAt: 5, recencyAt: 20),
+    ], global);
+
+    expect(snapshot.projects.single.threads.map((thread) => thread.id), [
+      'new',
+      'old',
+    ]);
+  });
+
   test('unassigned threads inherit a project from an exact root path', () {
     final global = CodexGlobalStateData.tryParse(
       jsonEncode({
@@ -147,7 +181,7 @@ void main() {
     expect(snapshot.projectNameForThread('ordered-collision'), 'Second');
   });
 
-  test('local placements insert before an anchor only in the same group', () {
+  test('project recency order ignores temporary placements', () {
     final snapshot = buildCodexCatalog(
       [
         thread('before', cwd: '/work', updatedAt: 40),
@@ -168,7 +202,7 @@ void main() {
       for (final group in snapshot.projects)
         group.project.id: group.threads.map((thread) => thread.id).toList(),
     };
-    expect(groups['cwd:/work'], ['before', 'new', 'current']);
+    expect(groups['cwd:/work'], ['new', 'before', 'current']);
     expect(groups['cwd:/other'], ['other-newest', 'other-new']);
   });
 
@@ -256,6 +290,7 @@ CodexThread thread(
   String? name,
   String preview = '',
   int updatedAt = 1,
+  int? recencyAt,
   bool ephemeral = false,
   CodexThreadStatus status = const CodexNotLoadedThreadStatus(),
 }) => CodexThread(
@@ -267,6 +302,7 @@ CodexThread thread(
   modelProvider: 'openai',
   name: name,
   preview: preview,
+  recencyAt: recencyAt,
   sessionId: id,
   source: const CodexSessionSource('cli'),
   status: status,
