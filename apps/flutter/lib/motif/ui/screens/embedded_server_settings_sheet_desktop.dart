@@ -624,29 +624,49 @@ class _EmbeddedServerSettingsDialogState
           'connectivity. The pairing QR appears on the Server page while it is '
           'running.',
       children: [
-        _tsRadio(
-          c,
-          selected: cfg.rzvMode == EmbeddedRelayMode.free,
-          title: 'Free',
-          subtitle: kDefaultRzvRelayAddress,
-          onTap: () =>
-              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.free)),
-        ),
-        _tsRadio(
-          c,
-          selected: cfg.rzvMode == EmbeddedRelayMode.custom,
-          title: 'Custom',
-          subtitle: 'Use your own Relay address and owner JWT',
-          onTap: () =>
-              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.custom)),
-        ),
-        _tsRadio(
-          c,
-          selected: cfg.rzvMode == EmbeddedRelayMode.off,
-          title: 'Off',
-          subtitle: 'Do not use a connection Relay',
-          onTap: () =>
-              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.off)),
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: MotifSpacing.md,
+            vertical: MotifSpacing.sm,
+          ),
+          child: DropdownButtonFormField<EmbeddedRelayMode>(
+            key: ValueKey('relay-mode-${cfg.rzvMode.name}'),
+            initialValue: cfg.rzvMode,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: 'Relay mode',
+              helperText: switch (cfg.rzvMode) {
+                EmbeddedRelayMode.free => kDefaultRzvRelayAddress,
+                EmbeddedRelayMode.custom =>
+                  'Use your own Relay address and owner JWT',
+                EmbeddedRelayMode.off => 'Connection Relay is disabled',
+              },
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              isDense: true,
+            ),
+            items: const [
+              DropdownMenuItem(
+                value: EmbeddedRelayMode.free,
+                child: Text('Free'),
+              ),
+              DropdownMenuItem(
+                value: EmbeddedRelayMode.custom,
+                child: Text('Custom'),
+              ),
+              DropdownMenuItem(
+                value: EmbeddedRelayMode.off,
+                child: Text('Off'),
+              ),
+            ],
+            onChanged: (mode) {
+              if (mode != null) {
+                _updateDraft(cfg.copyWith(rzvMode: mode));
+              }
+            },
+          ),
         ),
         if (cfg.rzvMode == EmbeddedRelayMode.custom) ...[
           _field(

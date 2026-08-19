@@ -129,6 +129,7 @@ void main() {
     expect(find.text('Loopback'), findsOneWidget);
     expect(find.text('LAN'), findsOneWidget);
     expect(find.text('CONNECTION RELAY'), findsOneWidget);
+    expect(find.byKey(const ValueKey('relay-mode-free')), findsOneWidget);
     expect(find.text('Free'), findsOneWidget);
     expect(find.text(kDefaultRzvRelayAddress), findsOneWidget);
     expect(find.text('NOTIFICATIONS'), findsOneWidget);
@@ -215,7 +216,10 @@ void main() {
     );
     await _pumpSettings(tester, service);
 
-    await tester.tap(find.text('Custom'));
+    await tester.tap(find.byKey(const ValueKey('relay-mode-free')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Custom').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Save'));
     await tester.pump();
 
