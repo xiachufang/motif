@@ -1442,11 +1442,18 @@ String? _reasoningText(CodexReasoningThreadItem? reasoning) {
 }
 
 String _fullCommandTitle(CodexCommandExecutionThreadItem value) {
-  final command = _commandDisplayText(value);
+  final command = _commandTitleText(value);
   final verb = value.status == CodexCommandExecutionStatus.inProgress
       ? 'Running'
       : 'Ran';
   return command.isEmpty ? '$verb command' : '$verb $command';
+}
+
+String _commandTitleText(CodexCommandExecutionThreadItem value) {
+  final command = _commandDisplayText(
+    value,
+  ).replaceAll(RegExp(r'\s+'), ' ').trim();
+  return _shortenShellExecutablePaths(command);
 }
 
 String _commandDisplayText(CodexCommandExecutionThreadItem value) {
@@ -1575,13 +1582,189 @@ String _unwrapShellCommand(String command) {
   ).firstMatch(trimmed);
   if (match == null) return trimmed;
   final payload = match.group(1)!.trim();
-  if (payload.length < 2) return payload;
-  final quote = payload[0];
-  if ((quote == "'" || quote == '"') && payload.endsWith(quote)) {
-    return payload.substring(1, payload.length - 1);
-  }
-  return payload;
+  return _unquoteShellWord(payload) ?? payload;
 }
+
+/// Decodes a shell-quoted value only when the complete input is one word.
+///
+/// Shell launchers serialize the command passed to `-c` as a single argument.
+/// Merely removing its first and last quote leaves sequences such as
+/// `'"'"'` visible in activity text, while parsing multiple words here would
+/// incorrectly discard meaningful argument quotes.
+String? _unquoteShellWord(String input) {
+  if (input.length < 2) return null;
+  final output = StringBuffer();
+  String? quote;
+  var escaped = false;
+  var encoded = false;
+
+  for (var index = 0; index < input.length; index++) {
+    final character = input[index];
+    if (escaped) {
+      if (quote == '"' && !r'"\$`'.contains(character)) {
+        output.write(r'\');
+      }
+      if (character != '\n') output.write(character);
+      escaped = false;
+      continue;
+    }
+    if (quote == "'") {
+      if (character == "'") {
+        quote = null;
+      } else {
+        output.write(character);
+      }
+      continue;
+    }
+    if (quote == '"') {
+      if (character == '"') {
+        quote = null;
+      } else if (character == r'\') {
+        escaped = true;
+      } else {
+        output.write(character);
+      }
+      continue;
+    }
+    if (character == "'" || character == '"') {
+      quote = character;
+      encoded = true;
+      continue;
+    }
+    if (character == r'\') {
+      escaped = true;
+      encoded = true;
+      continue;
+    }
+    if (RegExp(r'\s').hasMatch(character)) return null;
+    output.write(character);
+  }
+
+  if (!encoded || escaped || quote != null) return null;
+  return output.toString();
+}
+
+String _shortenShellExecutablePaths(String command) {
+  if (command.isEmpty) return command;
+  // Keep arguments intact, but turn `/path/to/flutter test ...` into
+  // `flutter test ...` for each command in a chain or pipeline.
+  final replacements = <({int start, int end, String value})>[];
+  var offset = 0;
+  var expectsExecutable = true;
+
+  while (offset < command.length) {
+    final token = _nextShellDisplayToken(command, offset);
+    if (token == null) break;
+    offset = token.end;
+    if (token.operator) {
+      expectsExecutable =
+          token.value == '&&' ||
+          token.value == '||' ||
+          token.value == ';' ||
+          token.value == '|';
+      continue;
+    }
+    if (!expectsExecutable) continue;
+    if (RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(token.value)) {
+      continue;
+    }
+
+    final normalized = token.value.replaceAll(r'\', '/');
+    final executable = normalized.split('/').last;
+    if (executable.isNotEmpty &&
+        (normalized.contains('/') || token.source != executable)) {
+      replacements.add((start: token.start, end: token.end, value: executable));
+    }
+    expectsExecutable = false;
+  }
+
+  if (replacements.isEmpty) return command;
+  final result = StringBuffer();
+  var copiedThrough = 0;
+  for (final replacement in replacements) {
+    result
+      ..write(command.substring(copiedThrough, replacement.start))
+      ..write(replacement.value);
+    copiedThrough = replacement.end;
+  }
+  result.write(command.substring(copiedThrough));
+  return result.toString();
+}
+
+({int start, int end, String source, String value, bool operator})?
+_nextShellDisplayToken(String command, int offset) {
+  while (offset < command.length && RegExp(r'\s').hasMatch(command[offset])) {
+    offset++;
+  }
+  if (offset >= command.length) return null;
+
+  final start = offset;
+  if (_isShellDisplayOperator(command[offset])) {
+    offset++;
+    if (offset < command.length && command[offset] == command[start]) {
+      offset++;
+    }
+    final source = command.substring(start, offset);
+    return (
+      start: start,
+      end: offset,
+      source: source,
+      value: source,
+      operator: true,
+    );
+  }
+
+  final value = StringBuffer();
+  String? quote;
+  var escaped = false;
+  while (offset < command.length) {
+    final character = command[offset];
+    if (escaped) {
+      value.write(character);
+      escaped = false;
+      offset++;
+      continue;
+    }
+    if (quote != null) {
+      if (character == quote) {
+        quote = null;
+      } else if (quote == '"' && character == r'\') {
+        escaped = true;
+      } else {
+        value.write(character);
+      }
+      offset++;
+      continue;
+    }
+    if (character == "'" || character == '"') {
+      quote = character;
+      offset++;
+      continue;
+    }
+    if (character == r'\') {
+      escaped = true;
+      offset++;
+      continue;
+    }
+    if (RegExp(r'\s').hasMatch(character) ||
+        _isShellDisplayOperator(character)) {
+      break;
+    }
+    value.write(character);
+    offset++;
+  }
+  if (escaped) value.write(r'\');
+  return (
+    start: start,
+    end: offset,
+    source: command.substring(start, offset),
+    value: value.toString(),
+    operator: false,
+  );
+}
+
+bool _isShellDisplayOperator(String character) =>
+    character == '&' || character == '|' || character == ';';
 
 String _duration(int milliseconds) {
   if (milliseconds < 1000) return '${milliseconds}ms';

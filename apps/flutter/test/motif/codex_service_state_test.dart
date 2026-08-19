@@ -1219,7 +1219,7 @@ void main() {
   );
 
   test(
-    'queues during an active turn and can steer the queued message',
+    'queues during an active turn and shows steer before confirmation',
     () async {
       final active = thread(
         'thread',
@@ -1246,16 +1246,53 @@ void main() {
       expect(state.queuedMessages.single.text, 'queued');
       expect(client.resumedThreadIds, ['thread']);
 
-      expect(
-        await state.steerQueuedMessage(state.queuedMessages.single.id),
-        isTrue,
+      final steerGate = Completer<CodexTurnSteerResponse>();
+      client.steerGate = steerGate;
+      final steer = state.steerQueuedMessage(state.queuedMessages.single.id);
+      await waitFor(() => client.steeredParams.isNotEmpty);
+
+      final params = client.steeredParams.single;
+      final clientId = params.clientUserMessageId;
+      expect(clientId, isNotNull);
+      final optimistic = state.activeTurn!.items
+          .whereType<CodexUserMessageThreadItem>()
+          .single;
+      expect(optimistic.clientId, clientId);
+      expect((optimistic.content.single as CodexTextUserInput).text, 'queued');
+      expect(state.queuedMessages, hasLength(1));
+
+      client.emit(
+        CodexItemStartedNotification2(
+          params: CodexItemStartedNotification(
+            item: CodexUserMessageThreadItem(
+              clientId: clientId,
+              content: const [CodexTextUserInput(text: 'queued')],
+              id: 'server-user-message',
+            ),
+            startedAtMs: 1,
+            threadId: 'thread',
+            turnId: 'turn-1',
+          ),
+        ),
       );
+      await waitFor(
+        () =>
+            state.activeTurn!.items
+                .whereType<CodexUserMessageThreadItem>()
+                .single
+                .id ==
+            'server-user-message',
+      );
+      expect(
+        state.activeTurn!.items.whereType<CodexUserMessageThreadItem>(),
+        hasLength(1),
+      );
+
+      steerGate.complete(const CodexTurnSteerResponse(turnId: 'turn-1'));
+      expect(await steer, isTrue);
       expect(state.queuedMessages, isEmpty);
-      expect(client.steeredParams.single.expectedTurnId, 'turn-1');
-      expect(
-        (client.steeredParams.single.input.single as CodexTextUserInput).text,
-        'queued',
-      );
+      expect(params.expectedTurnId, 'turn-1');
+      expect((params.input.single as CodexTextUserInput).text, 'queued');
       await state.close();
     },
   );
@@ -1354,6 +1391,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> readPaths = [];
   final List<String> unwatchedIds = [];
   Object? listError;
+  Completer<CodexTurnSteerResponse>? steerGate;
   bool closed = false;
   bool disposed = false;
 
@@ -1562,6 +1600,8 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexTurnSteerResponse> steerTurn(CodexTurnSteerParams params) async {
     steeredParams.add(params);
+    final gate = steerGate;
+    if (gate != null) return gate.future;
     return const CodexTurnSteerResponse(turnId: 'turn-1');
   }
 

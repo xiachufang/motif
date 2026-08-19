@@ -126,6 +126,8 @@ class CodexState extends _$CodexState {
   static const _selectedPermissionsKey = 'motif.codex.selectedPermissions.v1';
   static const _sideChatIndexesKey = 'motif.codex.sideChatIndexes.v1';
   static const _lastOpenedThreadsKey = 'motif.codex.lastOpenedThreads.v1';
+  static const _composerDraftsKey = 'motif.codex.composerDrafts.v1';
+  static const _composerDraftPersistenceDelay = Duration(milliseconds: 250);
 
   CodexState({
     CodexSidebarMode sidebarMode = CodexSidebarMode.projects,
@@ -138,6 +140,7 @@ class CodexState extends _$CodexState {
        _selectedPermissions = _loadSelectedPermissions(preferences),
        _sideChatIndexes = _loadSideChatIndexes(preferences),
        _lastOpenedThreads = _loadStringMap(preferences, _lastOpenedThreadsKey),
+       _composerDrafts = _loadComposerDrafts(preferences),
        super(sidebarMode, desktopSidebarVisible, sidebarWidth, preferences);
 
   final Map<String, CodexProjectSidebarPreferences> _projectSidebars;
@@ -146,6 +149,7 @@ class CodexState extends _$CodexState {
   final Map<String, String?> _selectedPermissions;
   final Map<String, Map<String, CodexSideChatIndex>> _sideChatIndexes;
   final Map<String, String> _lastOpenedThreads;
+  final Map<String, Map<String, String>> _composerDrafts;
   final Map<String, Map<CodexSidebarMode, double>> _sidebarScrollOffsets = {};
   Future<void> _persistProjectSidebars = Future.value();
   Future<void> _persistSelectedModels = Future.value();
@@ -153,6 +157,8 @@ class CodexState extends _$CodexState {
   Future<void> _persistSelectedPermissions = Future.value();
   Future<void> _persistSideChatIndexes = Future.value();
   Future<void> _persistLastOpenedThreads = Future.value();
+  Future<void> _persistComposerDrafts = Future.value();
+  Timer? _composerDraftPersistTimer;
 
   static Future<CodexState> load() async =>
       CodexState(preferences: await SharedPreferences.getInstance());
@@ -339,6 +345,56 @@ class CodexState extends _$CodexState {
 
   Future<void> flushLastOpenedThreadPreferences() => _persistLastOpenedThreads;
 
+  String? composerDraft(String serverId, String threadId) =>
+      _composerDrafts[serverId]?[threadId];
+
+  void setComposerDraft(String serverId, String threadId, String value) {
+    if (serverId.isEmpty || threadId.isEmpty) return;
+    if (value.isEmpty) {
+      final byThread = _composerDrafts[serverId];
+      if (byThread == null || byThread.remove(threadId) == null) return;
+      if (byThread.isEmpty) _composerDrafts.remove(serverId);
+    } else {
+      final byThread = _composerDrafts.putIfAbsent(serverId, () => {});
+      if (byThread[threadId] == value) return;
+      byThread[threadId] = value;
+    }
+    _scheduleComposerDraftPersistence();
+  }
+
+  void clearComposerDraft(String serverId, String threadId) =>
+      setComposerDraft(serverId, threadId, '');
+
+  Future<void> flushComposerDraftPreferences() {
+    if (_composerDraftPersistTimer != null) {
+      _composerDraftPersistTimer!.cancel();
+      _composerDraftPersistTimer = null;
+      _queueComposerDraftPersistence();
+    }
+    return _persistComposerDrafts;
+  }
+
+  void _scheduleComposerDraftPersistence() {
+    if (preferences == null) return;
+    _composerDraftPersistTimer?.cancel();
+    _composerDraftPersistTimer = Timer(
+      _composerDraftPersistenceDelay,
+      _queueComposerDraftPersistence,
+    );
+  }
+
+  void _queueComposerDraftPersistence() {
+    _composerDraftPersistTimer = null;
+    final store = preferences;
+    if (store == null) return;
+    final payload = jsonEncode(_composerDrafts);
+    unawaited(
+      _persistComposerDrafts = _persistComposerDrafts.then((_) async {
+        await store.setString(_composerDraftsKey, payload);
+      }),
+    );
+  }
+
   void _persistPermissionPreferences() {
     final store = preferences;
     if (store == null) return;
@@ -512,6 +568,38 @@ class CodexState extends _$CodexState {
           }
         }
         if (byParent.isNotEmpty) result[server.key as String] = byParent;
+      }
+      return result;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Map<String, Map<String, String>> _loadComposerDrafts(
+    SharedPreferences? preferences,
+  ) {
+    final raw = preferences?.getString(_composerDraftsKey);
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final json = jsonDecode(raw);
+      if (json is! Map) return {};
+      final result = <String, Map<String, String>>{};
+      for (final server in json.entries) {
+        if (server.key is! String ||
+            (server.key as String).isEmpty ||
+            server.value is! Map) {
+          continue;
+        }
+        final byThread = <String, String>{};
+        for (final thread in (server.value as Map).entries) {
+          if (thread.key is String &&
+              (thread.key as String).isNotEmpty &&
+              thread.value is String &&
+              (thread.value as String).isNotEmpty) {
+            byThread[thread.key as String] = thread.value as String;
+          }
+        }
+        if (byThread.isNotEmpty) result[server.key as String] = byThread;
       }
       return result;
     } catch (_) {

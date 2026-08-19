@@ -15,6 +15,7 @@ import '../../codex/codex_composer_models.dart';
 import '../../codex/codex_navigation.dart';
 import '../../codex/codex_observation_view_models.dart';
 import '../../codex/codex_service_state.dart';
+import '../../codex/codex_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
@@ -60,6 +61,7 @@ typedef _ConversationScrollSnapshot = ({
 class CodexThreadWorkspace extends StatefulWidget {
   const CodexThreadWorkspace({
     required this.state,
+    this.codexState,
     this.turnActionBuilder = _persistentForkAction,
     this.onOpenFile,
     this.onOpenImage,
@@ -68,6 +70,7 @@ class CodexThreadWorkspace extends StatefulWidget {
   });
 
   final CodexConversationState state;
+  final CodexState? codexState;
   final CodexTurnActionBuilder turnActionBuilder;
   final CodexOpenFile? onOpenFile;
   final CodexOpenImage? onOpenImage;
@@ -77,7 +80,8 @@ class CodexThreadWorkspace extends StatefulWidget {
   State<CodexThreadWorkspace> createState() => _CodexThreadWorkspaceState();
 }
 
-class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
+class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
+    with WidgetsBindingObserver {
   final TextEditingController _composer = TextEditingController();
   final TextEditingController _planFeedback = TextEditingController();
   final FocusNode _composerFocus = FocusNode();
@@ -96,10 +100,18 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   String? _scrollThreadId;
   bool _followTail = true;
   bool _scrollScheduled = false;
+  CodexState? _draftState;
+  String? _draftServerId;
+  String? _draftThreadId;
+  bool _restoringDraft = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _bindComposerDraft();
+    _composer.addListener(_onComposerChanged);
+    _composerFocus.addListener(_onComposerFocusChanged);
     _scrollThreadId = widget.state.viewModel.selectedThread?.id;
     _bindScrollUpdates();
     _scheduleScrollToBottom();
@@ -108,6 +120,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   @override
   void didUpdateWidget(CodexThreadWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _rebindComposerDraftIfNeeded();
     if (!identical(oldWidget.state, widget.state)) {
       _scrollThreadId = widget.state.viewModel.selectedThread?.id;
       _bindScrollUpdates();
@@ -118,6 +131,14 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _composer.removeListener(_onComposerChanged);
+    _composerFocus.removeListener(_onComposerFocusChanged);
+    _persistBoundComposerDraft();
+    final draftState = _draftState;
+    if (draftState != null) {
+      unawaited(draftState.flushComposerDraftPreferences());
+    }
     _composer.dispose();
     _planFeedback.dispose();
     _composerFocus.dispose();
@@ -125,6 +146,58 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
     _scrollSubscription?.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    _scheduleScrollToBottom();
+  }
+
+  void _rebindComposerDraftIfNeeded() {
+    final nextState = widget.codexState;
+    final nextServerId = widget.state.serverId;
+    final nextThreadId = widget.state.selectedThread?.id;
+    if (identical(nextState, _draftState) &&
+        nextServerId == _draftServerId &&
+        nextThreadId == _draftThreadId) {
+      return;
+    }
+    _persistBoundComposerDraft();
+    _bindComposerDraft();
+  }
+
+  void _bindComposerDraft() {
+    _draftState = widget.codexState;
+    _draftServerId = widget.state.serverId;
+    _draftThreadId = widget.state.selectedThread?.id;
+    final draft = switch ((_draftState, _draftServerId, _draftThreadId)) {
+      (final state?, final serverId?, final threadId?) =>
+        state.composerDraft(serverId, threadId) ?? '',
+      _ => '',
+    };
+    _restoringDraft = true;
+    _composer.value = TextEditingValue(
+      text: draft,
+      selection: TextSelection.collapsed(offset: draft.length),
+    );
+    _restoringDraft = false;
+  }
+
+  void _onComposerChanged() {
+    if (_restoringDraft) return;
+    _persistBoundComposerDraft();
+  }
+
+  void _onComposerFocusChanged() {
+    if (_composerFocus.hasFocus) _showLatestContent();
+  }
+
+  void _persistBoundComposerDraft() {
+    final state = _draftState;
+    final serverId = _draftServerId;
+    final threadId = _draftThreadId;
+    if (state == null || serverId == null || threadId == null) return;
+    state.setComposerDraft(serverId, threadId, _composer.text);
   }
 
   @override
@@ -410,7 +483,8 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
       _attachments = const [];
       _references = const [];
     });
-    _composerFocus.requestFocus();
+    _composerFocus.unfocus();
+    _showLatestContent();
   }
 
   void _toggleGoalMode() {
@@ -461,6 +535,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace> {
   void _scrollToBottom() {
     if (!mounted || !_scroll.hasClients) return;
     _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  void _showLatestContent() {
+    _followTail = true;
+    _scheduleScrollToBottom();
   }
 
   void _bindScrollUpdates() {
@@ -759,6 +838,7 @@ List<Widget> _turnSliverChildren({
         .skip(leadingEnd)
         .take(historyEnd - leadingEnd)
         .toList(growable: false);
+    final hasExpandableHistory = history.any(_isExpandableHistoryItem);
     final responseItems = responseIndex == -1
         ? const <CodexThreadItem>[]
         : items.skip(responseIndex).toList(growable: false);
@@ -778,29 +858,64 @@ List<Widget> _turnSliverChildren({
         _WorkedHeader(
           turn: turn,
           expanded: historyExpanded,
-          onTap: history.isEmpty ? null : onToggleHistory,
+          onTap: hasExpandableHistory ? onToggleHistory : null,
         ),
       );
     if (history.isNotEmpty) {
-      result.add(
-        CodexMotionExpansion(
-          key: ValueKey('codex-worked-history-${turn.id}'),
-          expanded: historyExpanded,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: _turnContent(
+      final collapsedItems = <CodexThreadItem>[];
+      var collapsedGroup = 0;
+
+      void flushCollapsedItems() {
+        if (!collapsedItems.any(_isExpandableHistoryItem)) {
+          collapsedItems.clear();
+          return;
+        }
+        final group = collapsedGroup++;
+        result.add(
+          CodexMotionExpansion(
+            key: ValueKey(
+              group == 0
+                  ? 'codex-worked-history-${turn.id}'
+                  : 'codex-worked-history-${turn.id}-$group',
+            ),
+            expanded: historyExpanded,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: _turnContent(
+                state,
+                turn,
+                List.of(collapsedItems),
+                groupKeyPrefix: group == 0 ? 'history' : 'history-$group',
+                boundedActivity: false,
+                onOpenFile: onOpenFile,
+                onOpenImage: onOpenImage,
+                onOpenTurnDiff: onOpenTurnDiff,
+              ),
+            ),
+          ),
+        );
+        collapsedItems.clear();
+      }
+
+      for (final item in history) {
+        if (item is CodexUserMessageThreadItem) {
+          flushCollapsedItems();
+          result.addAll(
+            _turnContent(
               state,
               turn,
-              history,
-              groupKeyPrefix: 'history',
-              boundedActivity: false,
+              [item],
+              groupKeyPrefix: 'history-user',
               onOpenFile: onOpenFile,
               onOpenImage: onOpenImage,
               onOpenTurnDiff: onOpenTurnDiff,
             ),
-          ),
-        ),
-      );
+          );
+        } else {
+          collapsedItems.add(item);
+        }
+      }
+      flushCollapsedItems();
     }
     result.addAll(
       _turnContent(
@@ -1084,6 +1199,13 @@ bool _isVisibleTextBoundary(CodexThreadItem item) => switch (item) {
   CodexAgentMessageThreadItem value => value.text.trim().isNotEmpty,
   CodexPlanThreadItem value => value.text.trim().isNotEmpty,
   _ => false,
+};
+
+bool _isExpandableHistoryItem(CodexThreadItem item) => switch (item) {
+  CodexUserMessageThreadItem() || CodexReasoningThreadItem() => false,
+  CodexAgentMessageThreadItem value => value.text.trim().isNotEmpty,
+  CodexPlanThreadItem value => value.text.trim().isNotEmpty,
+  _ => true,
 };
 
 class _ThreadItemView extends StatelessWidget {

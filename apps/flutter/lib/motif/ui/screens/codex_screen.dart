@@ -398,6 +398,7 @@ class _CodexScreenState extends State<CodexScreen> {
                 key: ValueKey('codex-thread-${selectedThread.id}'),
                 child: CodexThreadWorkspace(
                   state: state.selectedConversation ?? state,
+                  codexState: widget.controller.preferences,
                   onOpenFile: (path) =>
                       _openFile(state.selectedConversation ?? state, path),
                   onOpenImage: (path) => _openFile(
@@ -526,7 +527,10 @@ class _CodexScreenState extends State<CodexScreen> {
             name:
                 'side-chat/${widget.controller.serverId}/${collection.parentThreadId}',
           ),
-          builder: (_) => SideChatScreen(collection: collection),
+          builder: (_) => SideChatScreen(
+            collection: collection,
+            codexState: widget.controller.preferences,
+          ),
         ),
       );
     } finally {
@@ -580,7 +584,11 @@ class _LazySideChatDrawerState extends State<_LazySideChatDrawer> {
         child: const Center(child: CircularProgressIndicator()),
       );
     }
-    return SideChatScreen(collection: collection, manageWindowTitle: false);
+    return SideChatScreen(
+      collection: collection,
+      codexState: widget.controller.preferences,
+      manageWindowTitle: false,
+    );
   }
 }
 

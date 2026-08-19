@@ -153,6 +153,7 @@ class CodexConversationState extends ChangeNotifier {
   int _readGeneration = 0;
   int _connectionGeneration = 0;
   int _queueSequence = 0;
+  int _clientUserMessageSequence = 0;
   int _attachmentSequence = 0;
   bool _closed = false;
   bool _attachmentDirectoryReady = false;
@@ -1345,6 +1346,8 @@ class CodexConversationState extends ChangeNotifier {
   }) async {
     final thread = selectedThread;
     if (_closed || thread == null || sending) return false;
+    String? optimisticItemId;
+    String? optimisticTurnId;
     sending = true;
     sendError = null;
     _notify();
@@ -1353,8 +1356,21 @@ class CodexConversationState extends ChangeNotifier {
       await ensureThreadResumedForSend(thread.id);
       final active = activeTurn;
       if (steer && active != null) {
+        final clientUserMessageId = _nextClientUserMessageId();
+        optimisticItemId = 'optimistic-$clientUserMessageId';
+        optimisticTurnId = active.id;
+        _upsertItem(
+          active.id,
+          CodexUserMessageThreadItem(
+            clientId: clientUserMessageId,
+            content: input,
+            id: optimisticItemId,
+          ),
+        );
+        _notify();
         await connection.steerTurn(
           CodexTurnSteerParams(
+            clientUserMessageId: clientUserMessageId,
             expectedTurnId: active.id,
             input: input,
             threadId: thread.id,
@@ -1378,7 +1394,12 @@ class CodexConversationState extends ChangeNotifier {
       }
       return true;
     } catch (error) {
-      if (!_closed) sendError = '$error';
+      if (!_closed) {
+        if (optimisticItemId != null && optimisticTurnId != null) {
+          _removeItem(optimisticTurnId, optimisticItemId);
+        }
+        sendError = '$error';
+      }
       return false;
     } finally {
       if (!_closed) {
@@ -1387,6 +1408,10 @@ class CodexConversationState extends ChangeNotifier {
       }
     }
   }
+
+  String _nextClientUserMessageId() =>
+      'motif-${DateTime.now().microsecondsSinceEpoch}-'
+      '${++_clientUserMessageSequence}';
 
   Future<List<CodexUserInput>> _prepareInputs(
     CodexQueuedMessage message,
@@ -2105,9 +2130,19 @@ class CodexConversationState extends ChangeNotifier {
   void _upsertItem(String turnId, CodexThreadItem item) {
     _updateTurnItems(turnId, (items) {
       final updated = items.toList(growable: true);
-      final index = updated.indexWhere(
+      var index = updated.indexWhere(
         (candidate) => _threadItemId(candidate) == _threadItemId(item),
       );
+      if (index == -1 && item is CodexUserMessageThreadItem) {
+        final clientId = item.clientId;
+        if (clientId != null) {
+          index = updated.indexWhere(
+            (candidate) =>
+                candidate is CodexUserMessageThreadItem &&
+                candidate.clientId == clientId,
+          );
+        }
+      }
       if (index == -1) {
         updated.add(item);
       } else {
@@ -2115,6 +2150,15 @@ class CodexConversationState extends ChangeNotifier {
       }
       return updated;
     });
+  }
+
+  void _removeItem(String turnId, String itemId) {
+    _updateTurnItems(
+      turnId,
+      (items) => items
+          .where((candidate) => _threadItemId(candidate) != itemId)
+          .toList(growable: false),
+    );
   }
 
   void _appendAgentDelta(String turnId, String itemId, String delta) {

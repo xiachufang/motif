@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_service_state.dart';
+import '../../codex/codex_state.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';
 import '../../models/resource_documents.dart';
@@ -17,11 +18,13 @@ import 'side_chat_sidebar.dart';
 class SideChatScreen extends StatefulWidget {
   const SideChatScreen({
     required this.collection,
+    this.codexState,
     this.manageWindowTitle = true,
     super.key,
   });
 
   final SideChatCollectionController collection;
+  final CodexState? codexState;
   final bool manageWindowTitle;
 
   @override
@@ -151,6 +154,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
       return CodexThreadWorkspace(
         key: ValueKey('side-chat-workspace-${selected.id}'),
         state: conversation,
+        codexState: widget.codexState,
         turnActionBuilder: _emptyTurnAction,
         onOpenFile: (path) => _openFile(conversation, path),
         onOpenImage: (path) => _openFile(conversation, path, image: true),

@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
+import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
@@ -16,6 +17,7 @@ import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
 import 'package:motif/motif/ui/widgets/diff_text_view.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets('active plan details and diff use separate hit targets', (
@@ -126,11 +128,78 @@ void main() {
 
       expect(client.started, hasLength(1));
       expect(tester.widget<TextField>(input).controller?.text, isEmpty);
+      expect(tester.widget<TextField>(input).focusNode?.hasFocus, isFalse);
 
       await tester.pumpWidget(const SizedBox.shrink());
       state.dispose();
     },
   );
+
+  testWidgets('composer draft survives workspace rebuilds and app reloads', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final store = await SharedPreferences.getInstance();
+    final preferences = CodexState(preferences: store);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..activePlan = null
+      ..queuedMessages = const [];
+    state.synchronizeViewModel();
+
+    Widget workspace(CodexState codexState, String layout) => MaterialApp(
+      theme: motifTheme(Brightness.light),
+      home: Scaffold(
+        body: CodexThreadWorkspace(
+          key: ValueKey('codex-workspace-$layout'),
+          state: state,
+          codexState: codexState,
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(workspace(preferences, 'portrait'));
+    await tester.pump();
+    final input = find.byKey(const ValueKey('codex-composer-input'));
+    await tester.enterText(input, 'Keep this draft across rotation');
+    await tester.pump();
+
+    expect(
+      preferences.composerDraft('server', 'thread'),
+      'Keep this draft across rotation',
+    );
+    expect(preferences.composerDraft('server', 'another-thread'), isNull);
+
+    await tester.pumpWidget(workspace(preferences, 'landscape'));
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(input).controller?.text,
+      'Keep this draft across rotation',
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await preferences.flushComposerDraftPreferences();
+    final restored = CodexState(preferences: store);
+    await tester.pumpWidget(workspace(restored, 'reloaded'));
+    await tester.pump();
+
+    expect(
+      tester.widget<TextField>(input).controller?.text,
+      'Keep this draft across rotation',
+    );
+
+    await tester.tap(find.byKey(const ValueKey('codex-send')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(restored.composerDraft('server', 'thread'), isNull);
+    await restored.flushComposerDraftPreferences();
+    expect(
+      CodexState(preferences: store).composerDraft('server', 'thread'),
+      isNull,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
 
   testWidgets('context compaction transitions without a Thinking fallback', (
     tester,
@@ -315,7 +384,7 @@ void main() {
     state.dispose();
   });
 
-  testWidgets('command activities display the complete command', (
+  testWidgets('command activities display friendly shell commands', (
     tester,
   ) async {
     final client = WorkspaceFakeClient();
@@ -390,6 +459,27 @@ void main() {
         id: 'commit-command',
         status: completed,
       ),
+      CodexCommandExecutionThreadItem(
+        command:
+            r"""/bin/zsh -lc '"/Users/developer/flutter/bin/flutter" test "test/widget smoke_test.dart"'""",
+        commandActions: [
+          CodexUnknownCommandAction(
+            command:
+                '"/Users/developer/flutter/bin/flutter" test '
+                '"test/widget smoke_test.dart"',
+          ),
+        ],
+        cwd: cwd,
+        id: 'absolute-executable-command',
+        status: completed,
+      ),
+      CodexCommandExecutionThreadItem(
+        command: r"""/bin/zsh -lc 'git commit -m '"'"'fix shell title'"'"''""",
+        commandActions: [],
+        cwd: cwd,
+        id: 'shell-quoted-command',
+        status: completed,
+      ),
     ];
 
     await tester.pumpWidget(
@@ -418,6 +508,11 @@ void main() {
     expect(find.text('Ran flutter build macos'), findsOneWidget);
     expect(find.text('Ran dart format lib'), findsOneWidget);
     expect(find.text('Ran git commit -m done'), findsOneWidget);
+    expect(
+      find.text('Ran flutter test "test/widget smoke_test.dart"'),
+      findsOneWidget,
+    );
+    expect(find.text("Ran git commit -m 'fix shell title'"), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -825,6 +920,79 @@ void main() {
       state.dispose();
     },
   );
+
+  testWidgets('composer focus and send keep the latest content visible', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 700);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetViewInsets);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = List.generate(
+        12,
+        (index) => CodexTurn(
+          id: 'focus-scroll-turn-$index',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'focus-scroll-user-$index',
+              content: [CodexTextUserInput(text: 'Question $index')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'focus-scroll-agent-$index',
+              text: 'Response $index',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      )
+      ..activePlan = null
+      ..queuedMessages = const [];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final stream = find.byKey(const ValueKey('codex-turn-stream'));
+    final input = find.byKey(const ValueKey('codex-composer-input'));
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(of: stream, matching: find.byType(Scrollable)),
+        )
+        .position;
+    await tester.drag(stream, const Offset(0, 500));
+    await tester.pump();
+    expect(position.pixels, lessThan(position.maxScrollExtent));
+
+    await tester.tap(input);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+    await tester.pump();
+    await tester.pump();
+    expect(position.pixels, position.maxScrollExtent);
+
+    await tester.drag(stream, const Offset(0, 500));
+    await tester.pump();
+    expect(position.pixels, lessThan(position.maxScrollExtent));
+    await tester.enterText(input, 'Send and return to the latest message');
+    await tester.tap(find.byKey(const ValueKey('codex-send')));
+    await tester.pump(const Duration(milliseconds: 100));
+    tester.view.viewInsets = FakeViewPadding.zero;
+    await tester.pump();
+    await tester.pump();
+
+    expect(tester.widget<TextField>(input).focusNode?.hasFocus, isFalse);
+    expect(position.pixels, position.maxScrollExtent);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
 
   testWidgets('loads an older full turn page from the history control', (
     tester,
@@ -1308,6 +1476,83 @@ void main() {
       state.dispose();
     },
   );
+
+  testWidgets('completed turns keep mid-turn user messages visible', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          durationMs: 3000,
+          id: 'steered-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'initial-user',
+              content: [CodexTextUserInput(text: 'Start the task')],
+            ),
+            CodexCommandExecutionThreadItem(
+              aggregatedOutput: 'first',
+              command: 'first command',
+              commandActions: [],
+              cwd: CodexLegacyAppPathString('/work/motif'),
+              id: 'first-command',
+              status: CodexCommandExecutionStatus.completed,
+            ),
+            CodexUserMessageThreadItem(
+              id: 'steer-user',
+              content: [CodexTextUserInput(text: 'Use the other approach')],
+            ),
+            CodexCommandExecutionThreadItem(
+              aggregatedOutput: 'second',
+              command: 'second command',
+              commandActions: [],
+              cwd: CodexLegacyAppPathString('/work/motif'),
+              id: 'second-command',
+              status: CodexCommandExecutionStatus.completed,
+            ),
+            CodexAgentMessageThreadItem(id: 'answer', text: 'Done'),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ]
+      ..activePlan = null
+      ..queuedMessages = const [];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('codex-user-message-initial-user')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('codex-user-message-steer-user')),
+      findsOneWidget,
+    );
+    expect(find.text('Use the other approach'), findsOneWidget);
+    expect(find.text('Ran a command'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('codex-worked-toggle-steered-turn')),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Ran a command'), findsNWidgets(2));
+    expect(
+      find.byKey(const ValueKey('codex-user-message-steer-user')),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
 
   testWidgets('shows only the request from an injected attachment prompt', (
     tester,
@@ -2165,6 +2410,65 @@ Only show **this request**.
     state.dispose();
   });
 
+  testWidgets('steer is visible before the server confirms it', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 900);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)..queuedMessages = const [];
+    final steerGate = Completer<CodexTurnSteerResponse>();
+    client.steerGate = steerGate;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final submitted = state.submitMessage('Visible steer', const []);
+    await tester.pump();
+
+    expect(client.steered, hasLength(1));
+    expect(state.sending, isTrue);
+    expect(find.text('Visible steer'), findsOneWidget);
+    final clientId = client.steered.single.clientUserMessageId;
+    expect(clientId, isNotNull);
+    expect(
+      find.byKey(ValueKey('codex-user-message-optimistic-$clientId')),
+      findsOneWidget,
+    );
+
+    client.emit(
+      CodexItemStartedNotification2(
+        params: CodexItemStartedNotification(
+          item: CodexUserMessageThreadItem(
+            clientId: clientId,
+            content: const [CodexTextUserInput(text: 'Visible steer')],
+            id: 'server-steer',
+          ),
+          startedAtMs: 2,
+          threadId: 'thread',
+          turnId: 'turn-1',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Visible steer'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-user-message-server-steer')),
+      findsOneWidget,
+    );
+
+    steerGate.complete(const CodexTurnSteerResponse(turnId: 'turn-1'));
+    expect(await submitted, isTrue);
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets('goal uses the composer for its objective', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1000, 900);
@@ -2894,6 +3198,7 @@ final class WorkspaceFakeClient extends ChangeNotifier
   final List<CodexThreadForkParams> forked = [];
   final List<CodexTurnStartParams> started = [];
   final List<CodexTurnSteerParams> steered = [];
+  Completer<CodexTurnSteerResponse>? steerGate;
   final List<CodexThreadGoalSetParams> goalsSet = [];
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
       [];
@@ -3051,6 +3356,8 @@ final class WorkspaceFakeClient extends ChangeNotifier
   @override
   Future<CodexTurnSteerResponse> steerTurn(CodexTurnSteerParams params) async {
     steered.add(params);
+    final gate = steerGate;
+    if (gate != null) return gate.future;
     return CodexTurnSteerResponse(turnId: params.expectedTurnId);
   }
 
