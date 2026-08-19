@@ -40,6 +40,14 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 const FORWARD_CHUNK_BYTES: usize = 16 * 1024;
 
+/// Drop a parked waiter after this many keepalive PINGs have gone unanswered.
+///
+/// A half-open WebSocket can continue accepting writes after its remote peer
+/// has changed networks or gone to sleep. Without an acknowledgement bound the
+/// stale waiter stays at the front of the FIFO and can be paired with clients
+/// even after motifd has parked a fresh accept pool behind it.
+const MAX_UNANSWERED_PINGS: u64 = 3;
+
 pub type Token = [u8; TOKEN_LEN];
 
 /// Simpler bandwidth shape used by plans. Upload is client -> motifd and
@@ -710,15 +718,33 @@ pub fn parse_hello(frame: &[u8]) -> anyhow::Result<Token> {
 }
 
 async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keepalive: Duration) {
-    let mut tick = tokio::time::interval(if keepalive.is_zero() {
-        Duration::from_secs(3600)
-    } else {
+    let ping_enabled = !keepalive.is_zero();
+    let mut pings_sent = 0u64;
+    let mut pongs_read = 0u64;
+
+    // Speak first so a dead waiter is bounded by exactly the configured number
+    // of keepalive periods instead of one additional initial idle period.
+    if ping_enabled {
+        if peer.socket.send(Message::Ping(Bytes::new())).await.is_err() {
+            return;
+        }
+        pings_sent += 1;
+    }
+
+    let mut tick = tokio::time::interval(if ping_enabled {
         keepalive
+    } else {
+        Duration::from_secs(3600)
     });
+    // The first interval tick is immediate; the initial PING above already
+    // represents it.
     tick.tick().await;
 
     loop {
         tokio::select! {
+            // Prefer a just-arrived partner or PONG over the deadline when both
+            // become ready in the same scheduler turn.
+            biased;
             partner = &mut rx => {
                 if let Ok(partner) = partner {
                     splice(peer, partner, keepalive).await;
@@ -729,15 +755,28 @@ async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keep
                 Some(Ok(Message::Ping(payload))) => {
                     if peer.socket.send(Message::Pong(payload)).await.is_err() { return; }
                 }
-                Some(Ok(Message::Pong(_))) => {}
+                Some(Ok(Message::Pong(_))) => {
+                    pongs_read = pongs_read.saturating_add(1);
+                }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 Some(Ok(Message::Binary(_))) | Some(Ok(Message::Text(_))) => {
                     let _ = peer.socket.send(Message::Close(None)).await;
                     return;
                 }
             },
-            _ = tick.tick(), if !keepalive.is_zero() => {
+            _ = tick.tick(), if ping_enabled => {
+                let unanswered = pings_sent.saturating_sub(pongs_read);
+                if unanswered >= MAX_UNANSWERED_PINGS {
+                    tracing::debug!(
+                        ?peer.role,
+                        unanswered,
+                        "rzv parked waiter missed keepalives; closing half-open WebSocket"
+                    );
+                    let _ = peer.socket.send(Message::Close(None)).await;
+                    return;
+                }
                 if peer.socket.send(Message::Ping(Bytes::new())).await.is_err() { return; }
+                pings_sent += 1;
             }
         }
     }

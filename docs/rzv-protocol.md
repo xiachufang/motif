@@ -60,6 +60,9 @@ ciphertext.
 
 Keepalive exclusively uses native WebSocket Ping/Pong control frames. The old
 MRZV `0x01`/`0x02` PING/PONG application bytes do not exist in v2.
+The relay drops a parked waiter after three consecutive keepalive PINGs go
+unanswered, preventing half-open accept sockets from remaining ahead of a
+newly parked motifd pool.
 
 motifd keeps a configurable pool of `/v2/accept` WebSockets parked at the relay
 and replaces each one after pairing. A client opens one `/v2/connect`

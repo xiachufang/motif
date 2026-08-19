@@ -25,6 +25,10 @@ struct Claims<'a> {
 }
 
 pub async fn start_relay() -> TestRelay {
+    start_relay_with_keepalive(Duration::from_secs(1)).await
+}
+
+pub async fn start_relay_with_keepalive(keepalive: Duration) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
     let key = tmp.path().join("jwt.key");
     std::fs::write(&key, b"test-rendezvous-secret").unwrap();
@@ -68,7 +72,7 @@ pub async fn start_relay() -> TestRelay {
     let hub = Hub::new(
         HubConfig {
             park_ttl: Duration::from_secs(30),
-            keepalive: Duration::from_secs(1),
+            keepalive,
         },
         auth,
     );
