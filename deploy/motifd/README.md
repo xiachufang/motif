@@ -98,7 +98,7 @@ Rendezvous:
 | `MOTIFD_RZV_JWT_FILE` | `--rzv-jwt-file` |
 | `MOTIFD_RZV_POOL` | `--rzv-pool` |
 
-The owner JWT file is required for the WSS Upgrade and relay-side per-user
+The owner JWT file is required for the WSS Upgrade and relay-side plan
 bandwidth limit. The pairing secret is `MOTIFD_PSK` / `MOTIFD_PSK_FILE`
 (shared by the relay and direct paths). Rendezvous end-to-end TLS is always on.
 

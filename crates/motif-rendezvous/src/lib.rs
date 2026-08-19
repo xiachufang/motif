@@ -42,14 +42,6 @@ const FORWARD_CHUNK_BYTES: usize = 16 * 1024;
 
 pub type Token = [u8; TOKEN_LEN];
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RateConfig {
-    pub client_to_server_bytes_per_sec: u64,
-    pub server_to_client_bytes_per_sec: u64,
-    pub burst_bytes: u64,
-}
-
 /// Simpler bandwidth shape used by plans. Upload is client -> motifd and
 /// download is motifd -> client. Burst capacity is derived as one second of
 /// traffic so deployments only have two numbers to tune.
@@ -72,21 +64,9 @@ impl BandwidthConfig {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanConfig {
-    per_user: BandwidthConfig,
+    per_installation: BandwidthConfig,
     #[serde(default)]
     total: Option<BandwidthConfig>,
-}
-
-impl RateConfig {
-    fn validate(&self, subject: &str) -> anyhow::Result<()> {
-        if self.client_to_server_bytes_per_sec == 0
-            || self.server_to_client_bytes_per_sec == 0
-            || self.burst_bytes == 0
-        {
-            anyhow::bail!("rate for {subject} must use positive byte rates and burst_bytes");
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,9 +100,6 @@ struct FreeIssuerFileConfig {
 #[serde(deny_unknown_fields)]
 struct AuthFileConfig {
     jwt: JwtFileConfig,
-    #[serde(default)]
-    users: HashMap<String, RateConfig>,
-    #[serde(default)]
     plans: HashMap<String, PlanConfig>,
     #[serde(default)]
     free_issuer: Option<FreeIssuerFileConfig>,
@@ -136,16 +113,16 @@ struct Claims {
 }
 
 #[derive(Clone)]
-pub struct AuthenticatedUser {
+pub struct AuthenticatedPrincipal {
     pub subject: Arc<str>,
-    limiter: Arc<UserLimiter>,
-    global_limiter: Option<Arc<UserLimiter>>,
+    limiter: Arc<BandwidthLimiter>,
+    global_limiter: Option<Arc<BandwidthLimiter>>,
 }
 
 struct PlanRuntime {
-    per_user: BandwidthConfig,
-    global_limiter: Option<Arc<UserLimiter>>,
-    users: Mutex<HashMap<String, Weak<UserLimiter>>>,
+    per_installation: BandwidthConfig,
+    global_limiter: Option<Arc<BandwidthLimiter>>,
+    installations: Mutex<HashMap<String, Weak<BandwidthLimiter>>>,
 }
 
 struct FreeIssuer {
@@ -159,11 +136,11 @@ struct FreeIssuer {
     refresh_ttl_secs: u64,
 }
 
-/// JWT verifier plus the authoritative local user→rate table.
+/// JWT verifier plus plan bandwidth policies. The signed `sub` is an opaque
+/// installation/principal identifier, not a configured local user record.
 pub struct Authenticator {
     decoding_key: DecodingKey,
     validation: Validation,
-    users: HashMap<String, AuthenticatedUser>,
     plans: HashMap<String, PlanRuntime>,
     free_issuer: Option<Arc<FreeIssuer>>,
 }
@@ -174,8 +151,8 @@ impl Authenticator {
             std::fs::read(path).with_context(|| format!("read auth config {}", path.display()))?;
         let mut cfg: AuthFileConfig = serde_json::from_slice(&raw)
             .with_context(|| format!("parse auth config {}", path.display()))?;
-        if cfg.users.is_empty() && cfg.plans.is_empty() {
-            anyhow::bail!("auth config must contain at least one user or plan");
+        if cfg.plans.is_empty() {
+            anyhow::bail!("auth config must contain at least one plan");
         }
 
         if cfg.jwt.verification_key.is_relative() {
@@ -217,78 +194,40 @@ impl Authenticator {
         } else {
             None
         };
-        Self::new_with_plans(
+        Self::new(
             algorithm,
             access_decoding_key,
             &cfg.jwt.issuer,
             &cfg.jwt.audience,
-            cfg.users,
             cfg.plans,
             free_issuer,
         )
     }
 
-    #[cfg(test)]
     fn new(
         algorithm: Algorithm,
         decoding_key: DecodingKey,
         issuer: &str,
         audience: &str,
-        rates: HashMap<String, RateConfig>,
-    ) -> anyhow::Result<Self> {
-        Self::new_with_plans(
-            algorithm,
-            decoding_key,
-            issuer,
-            audience,
-            rates,
-            HashMap::new(),
-            None,
-        )
-    }
-
-    fn new_with_plans(
-        algorithm: Algorithm,
-        decoding_key: DecodingKey,
-        issuer: &str,
-        audience: &str,
-        rates: HashMap<String, RateConfig>,
         plan_configs: HashMap<String, PlanConfig>,
         free_issuer: Option<Arc<FreeIssuer>>,
     ) -> anyhow::Result<Self> {
-        let mut users = HashMap::with_capacity(rates.len());
-        for (subject, rate) in rates {
-            if subject.trim().is_empty() {
-                anyhow::bail!("auth config contains an empty user subject");
-            }
-            rate.validate(&subject)?;
-            users.insert(
-                subject.clone(),
-                AuthenticatedUser {
-                    subject: Arc::from(subject),
-                    limiter: Arc::new(UserLimiter::new(rate)),
-                    global_limiter: None,
-                },
-            );
-        }
-
         let mut plans = HashMap::with_capacity(plan_configs.len());
         for (name, cfg) in plan_configs {
             if name.trim().is_empty() {
                 anyhow::bail!("auth config contains an empty plan name");
             }
-            cfg.per_user.validate(&format!("plan {name}.per_user"))?;
+            cfg.per_installation
+                .validate(&format!("plan {name}.per_installation"))?;
             if let Some(total) = cfg.total {
                 total.validate(&format!("plan {name}.total"))?;
             }
             plans.insert(
                 name,
                 PlanRuntime {
-                    per_user: cfg.per_user,
-                    global_limiter: cfg
-                        .total
-                        .map(|rate| Arc::new(UserLimiter::new_bandwidth(rate))),
-                    users: Mutex::new(HashMap::new()),
+                    per_installation: cfg.per_installation,
+                    global_limiter: cfg.total.map(|rate| Arc::new(BandwidthLimiter::new(rate))),
+                    installations: Mutex::new(HashMap::new()),
                 },
             );
         }
@@ -302,40 +241,34 @@ impl Authenticator {
         Ok(Self {
             decoding_key,
             validation,
-            users,
             plans,
             free_issuer,
         })
     }
 
-    fn authenticate(&self, headers: &HeaderMap) -> anyhow::Result<AuthenticatedUser> {
+    fn authenticate(&self, headers: &HeaderMap) -> anyhow::Result<AuthenticatedPrincipal> {
         let token = bearer_token(headers)
             .ok_or_else(|| anyhow::anyhow!("Authorization must use Bearer"))?;
         let data = decode::<Claims>(token, &self.decoding_key, &self.validation)
             .context("JWT rejected")?;
-        if let Some(user) = self.users.get(&data.claims.sub) {
-            return Ok(user.clone());
-        }
-        let plan_name = data
-            .claims
-            .plan
-            .ok_or_else(|| anyhow::anyhow!("JWT subject is not configured and has no plan"))?;
+        // Tokens issued before plans existed remain valid and use Free.
+        let plan_name = data.claims.plan.as_deref().unwrap_or("free");
         let plan = self
             .plans
-            .get(&plan_name)
+            .get(plan_name)
             .ok_or_else(|| anyhow::anyhow!("JWT plan is not configured"))?;
         let limiter = {
-            let mut users = plan.users.lock();
-            users.retain(|_, limiter| limiter.strong_count() > 0);
-            if let Some(limiter) = users.get(&data.claims.sub).and_then(Weak::upgrade) {
+            let mut installations = plan.installations.lock();
+            installations.retain(|_, limiter| limiter.strong_count() > 0);
+            if let Some(limiter) = installations.get(&data.claims.sub).and_then(Weak::upgrade) {
                 limiter
             } else {
-                let limiter = Arc::new(UserLimiter::new_bandwidth(plan.per_user));
-                users.insert(data.claims.sub.clone(), Arc::downgrade(&limiter));
+                let limiter = Arc::new(BandwidthLimiter::new(plan.per_installation));
+                installations.insert(data.claims.sub.clone(), Arc::downgrade(&limiter));
                 limiter
             }
         };
-        Ok(AuthenticatedUser {
+        Ok(AuthenticatedPrincipal {
             subject: Arc::from(data.claims.sub),
             limiter,
             global_limiter: plan.global_limiter.clone(),
@@ -524,7 +457,7 @@ enum Role {
 struct Peer {
     socket: WebSocket,
     role: Role,
-    user: Option<AuthenticatedUser>,
+    principal: Option<AuthenticatedPrincipal>,
 }
 
 struct Waiter {
@@ -582,9 +515,9 @@ impl Hub {
         self: Arc<Self>,
         socket: WebSocket,
         role: Role,
-        user: Option<AuthenticatedUser>,
+        principal: Option<AuthenticatedPrincipal>,
     ) {
-        match read_hello(socket, role, user).await {
+        match read_hello(socket, role, principal).await {
             Ok((token, peer)) => {
                 self.pair_or_park(token, peer).await;
             }
@@ -706,8 +639,8 @@ async fn accept_upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let user = match hub.auth.authenticate(&headers) {
-        Ok(user) => user,
+    let principal = match hub.auth.authenticate(&headers) {
+        Ok(principal) => principal,
         Err(e) => {
             tracing::warn!(error = %e, "rzv accept JWT rejected");
             return (StatusCode::UNAUTHORIZED, "invalid rendezvous JWT").into_response();
@@ -715,7 +648,7 @@ async fn accept_upgrade(
     };
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Accept, Some(user)))
+        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Accept, Some(principal)))
 }
 
 async fn connect_upgrade(State(hub): State<Arc<Hub>>, ws: WebSocketUpgrade) -> Response {
@@ -727,7 +660,7 @@ async fn connect_upgrade(State(hub): State<Arc<Hub>>, ws: WebSocketUpgrade) -> R
 async fn read_hello(
     mut socket: WebSocket,
     role: Role,
-    user: Option<AuthenticatedUser>,
+    principal: Option<AuthenticatedPrincipal>,
 ) -> anyhow::Result<(Token, Peer)> {
     let token = tokio::time::timeout(HELLO_TIMEOUT, async {
         loop {
@@ -743,7 +676,14 @@ async fn read_hello(
     })
     .await
     .map_err(|_| anyhow::anyhow!("HELLO timed out"))??;
-    Ok((token, Peer { socket, role, user }))
+    Ok((
+        token,
+        Peer {
+            socket,
+            role,
+            principal,
+        },
+    ))
 }
 
 pub fn build_hello(token: &Token) -> Vec<u8> {
@@ -809,8 +749,8 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
         (Role::Connect, Role::Accept) => (b, a),
         _ => return,
     };
-    let Some(user) = accept.user.take() else {
-        tracing::warn!("rzv paired accept without authenticated user");
+    let Some(principal) = accept.principal.take() else {
+        tracing::warn!("rzv paired accept without authenticated principal");
         return;
     };
 
@@ -837,8 +777,8 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
         connect_rx,
         accept_tx,
         DirectionLimiters {
-            user: Arc::clone(&user.limiter.client_to_server),
-            global: user
+            installation: Arc::clone(&principal.limiter.client_to_server),
+            global: principal
                 .global_limiter
                 .as_ref()
                 .map(|limiter| Arc::clone(&limiter.client_to_server)),
@@ -849,8 +789,8 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
         accept_rx,
         connect_tx,
         DirectionLimiters {
-            user: Arc::clone(&user.limiter.server_to_client),
-            global: user
+            installation: Arc::clone(&principal.limiter.server_to_client),
+            global: principal
                 .global_limiter
                 .as_ref()
                 .map(|limiter| Arc::clone(&limiter.server_to_client)),
@@ -859,7 +799,7 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
     );
     let (c2s, s2c) = tokio::join!(c2s, s2c);
     tracing::debug!(
-        subject = %user.subject,
+        subject = %principal.subject,
         client_to_server = c2s.unwrap_or_default(),
         server_to_client = s2c.unwrap_or_default(),
         "rzv websocket splice closed"
@@ -915,16 +855,16 @@ async fn pump(
 }
 
 struct DirectionLimiters {
-    user: Arc<TokenBucket>,
+    installation: Arc<TokenBucket>,
     global: Option<Arc<TokenBucket>>,
 }
 
 impl DirectionLimiters {
     fn max_chunk(&self, remaining: usize) -> usize {
-        let user = self.user.max_chunk(remaining);
+        let installation = self.installation.max_chunk(remaining);
         self.global
             .as_ref()
-            .map_or(user, |global| global.max_chunk(user))
+            .map_or(installation, |global| global.max_chunk(installation))
     }
 
     async fn consume(&self, bytes: usize) {
@@ -934,30 +874,17 @@ impl DirectionLimiters {
         if let Some(global) = &self.global {
             global.consume(bytes).await;
         }
-        self.user.consume(bytes).await;
+        self.installation.consume(bytes).await;
     }
 }
 
-struct UserLimiter {
+struct BandwidthLimiter {
     client_to_server: Arc<TokenBucket>,
     server_to_client: Arc<TokenBucket>,
 }
 
-impl UserLimiter {
-    fn new(cfg: RateConfig) -> Self {
-        Self {
-            client_to_server: Arc::new(TokenBucket::new(
-                cfg.client_to_server_bytes_per_sec,
-                cfg.burst_bytes,
-            )),
-            server_to_client: Arc::new(TokenBucket::new(
-                cfg.server_to_client_bytes_per_sec,
-                cfg.burst_bytes,
-            )),
-        }
-    }
-
-    fn new_bandwidth(cfg: BandwidthConfig) -> Self {
+impl BandwidthLimiter {
+    fn new(cfg: BandwidthConfig) -> Self {
         Self {
             client_to_server: Arc::new(TokenBucket::new(
                 cfg.upload_bytes_per_sec,
@@ -1054,21 +981,23 @@ mod tests {
     }
 
     #[test]
-    fn jwt_maps_to_configured_user() {
-        let rates = HashMap::from([(
-            "user-1".to_string(),
-            RateConfig {
-                client_to_server_bytes_per_sec: 100,
-                server_to_client_bytes_per_sec: 200,
-                burst_bytes: 10,
-            },
-        )]);
+    fn legacy_jwt_without_plan_defaults_to_free() {
         let auth = Authenticator::new(
             Algorithm::HS256,
             DecodingKey::from_secret(b"test secret"),
             "issuer",
             "relay",
-            rates,
+            HashMap::from([(
+                "free".to_string(),
+                PlanConfig {
+                    per_installation: BandwidthConfig {
+                        upload_bytes_per_sec: 100,
+                        download_bytes_per_sec: 200,
+                    },
+                    total: None,
+                },
+            )]),
+            None,
         )
         .unwrap();
         let jwt = encode(
@@ -1076,7 +1005,7 @@ mod tests {
             &TestClaims {
                 iss: "issuer",
                 aud: "relay",
-                sub: "user-1",
+                sub: "legacy-installation",
                 plan: None,
                 exp: 4_102_444_800,
             },
@@ -1090,22 +1019,21 @@ mod tests {
         );
         let first = auth.authenticate(&headers).unwrap();
         let second = auth.authenticate(&headers).unwrap();
-        assert_eq!(&*first.subject, "user-1");
+        assert_eq!(&*first.subject, "legacy-installation");
         assert!(Arc::ptr_eq(&first.limiter, &second.limiter));
     }
 
     #[test]
-    fn plan_jwt_gets_dynamic_user_and_shared_global_limiters() {
-        let auth = Authenticator::new_with_plans(
+    fn plan_jwt_gets_per_installation_and_shared_global_limiters() {
+        let auth = Authenticator::new(
             Algorithm::HS256,
             DecodingKey::from_secret(b"test secret"),
             "issuer",
             "relay",
-            HashMap::new(),
             HashMap::from([(
-                "free".to_string(),
+                "pro".to_string(),
                 PlanConfig {
-                    per_user: BandwidthConfig {
+                    per_installation: BandwidthConfig {
                         upload_bytes_per_sec: 100,
                         download_bytes_per_sec: 200,
                     },
@@ -1125,7 +1053,7 @@ mod tests {
                     iss: "issuer",
                     aud: "relay",
                     sub,
-                    plan: Some("free"),
+                    plan: Some("pro"),
                     exp: 4_102_444_800,
                 },
                 &EncodingKey::from_secret(b"test secret"),

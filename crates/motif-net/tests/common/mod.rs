@@ -38,11 +38,12 @@ pub async fn start_relay() -> TestRelay {
                 "audience": "motif-rendezvous-test",
                 "verification_key": key
             },
-            "users": {
-                "test-owner": {
-                    "client_to_server_bytes_per_sec": 10000000,
-                    "server_to_client_bytes_per_sec": 10000000,
-                    "burst_bytes": 1000000
+            "plans": {
+                "free": {
+                    "per_installation": {
+                        "upload_bytes_per_sec": 10000000,
+                        "download_bytes_per_sec": 10000000
+                    }
                 }
             }
         }))

@@ -9,9 +9,7 @@ use motif_rendezvous::{health_check, Authenticator, Hub, HubConfig};
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
-#[command(
-    about = "Motif rendezvous relay — JWT-authenticated WebSocket relay with per-user limits"
-)]
+#[command(about = "Motif rendezvous relay — JWT-authenticated WebSocket relay with plan limits")]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -20,7 +18,7 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:8765")]
     listen: SocketAddr,
 
-    /// JSON JWT verifier and user bandwidth configuration.
+    /// JSON JWT verifier and plan bandwidth configuration.
     #[arg(long)]
     auth_config: Option<PathBuf>,
 

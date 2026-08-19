@@ -12,7 +12,7 @@
   },
   "plans": {
     "free": {
-      "per_user": {
+      "per_installation": {
         "upload_bytes_per_sec": 1048576,
         "download_bytes_per_sec": 5242880
       },
@@ -20,13 +20,12 @@
         "upload_bytes_per_sec": 104857600,
         "download_bytes_per_sec": 524288000
       }
-    }
-  },
-  "users": {
-    "existing-owner": {
-      "client_to_server_bytes_per_sec": 1048576,
-      "server_to_client_bytes_per_sec": 5242880,
-      "burst_bytes": 262144
+    },
+    "pro": {
+      "per_installation": {
+        "upload_bytes_per_sec": 5242880,
+        "download_bytes_per_sec": 5242880
+      }
     }
   }
 }

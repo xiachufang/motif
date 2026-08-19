@@ -95,7 +95,7 @@ struct Args {
     advertise_host: Option<String>,
 
     /// Rendezvous relay address (`host:port` or `wss://...`) to park WSS
-    /// `accept` waiters at. Requires an owner JWT for relay-side per-user
+    /// `accept` waiters at. Requires an owner JWT for relay-side plan
     /// bandwidth limits. The WSS payload remains end-to-end TLS ciphertext.
     #[arg(long, requires = "rzv_jwt_file")]
     rzv_relay: Option<String>,

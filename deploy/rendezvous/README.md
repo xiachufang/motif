@@ -7,8 +7,8 @@ binary messages containing the existing end-to-end TLS stream.
 
 motifd authenticates its owner with a JWT in the `/v2/accept` WebSocket
 Upgrade. Native clients use `/v2/connect` and do not need an account JWT.
-Legacy owner JWTs are mapped through `users[sub]`; auto-managed Free JWTs carry
-`sub=<installation id>` and `plan=free` and are mapped through `plans.free`.
+Auto-managed Free JWTs carry `sub=<installation id>` and `plan=free`. Older
+JWTs without a `plan` claim remain valid and are treated as Free.
 
 ## Required files
 
@@ -33,7 +33,7 @@ Copy the tracked [`auth.example.json`](./auth.example.json) to
   },
   "plans": {
     "free": {
-      "per_user": {
+      "per_installation": {
         "upload_bytes_per_sec": 1048576,
         "download_bytes_per_sec": 5242880
       },
@@ -41,13 +41,12 @@ Copy the tracked [`auth.example.json`](./auth.example.json) to
         "upload_bytes_per_sec": 104857600,
         "download_bytes_per_sec": 524288000
       }
-    }
-  },
-  "users": {
-    "existing-owner": {
-      "client_to_server_bytes_per_sec": 1048576,
-      "server_to_client_bytes_per_sec": 5242880,
-      "burst_bytes": 262144
+    },
+    "pro": {
+      "per_installation": {
+        "upload_bytes_per_sec": 5242880,
+        "download_bytes_per_sec": 5242880
+      }
     }
   }
 }
@@ -64,18 +63,16 @@ For ES256, the online signing key must use unencrypted PKCS#8 PEM (`BEGIN
 PRIVATE KEY`); keep it mode `0600`. The public key and existing signatures do
 not change when converting an SEC1 key with `openssl pkcs8 -topk8 -nocrypt`.
 
-`plans.free.per_user` is shared by all simultaneous connections belonging to
-one installation. `plans.free.total` is one global bucket shared by every Free
-installation and connection. Upload means client→motifd; download means
-motifd→client. There is intentionally no connection-count setting. Burst
-capacity for plans is derived internally as one second of bandwidth.
+`plans.free.per_installation` is shared by all simultaneous connections
+belonging to one installation. `plans.free.total` is one global bucket shared
+by every Free installation and connection. Upload means client→motifd;
+download means motifd→client. There is intentionally no users table and no
+connection-count setting. Burst capacity is derived as one second of bandwidth.
 
-The `users` object remains supported for old manually issued JWTs. Those JWTs
-do not need a `plan` claim and continue to use the legacy rate shape. Unknown
-subjects/plans are rejected, and bandwidth values in JWT claims are ignored.
-Additional plans such as `pro` or `team` use the same `per_user`/optional
-`total` shape; a trusted external issuer selects them with the JWT `plan`
-claim. The built-in anonymous token endpoints issue only `plan=free`.
+Additional plans use the same `per_installation`/optional `total` shape. A
+trusted issuer selects one with the JWT `plan` claim. Unknown plans are
+rejected, while an old JWT with no `plan` uses Free. The built-in anonymous
+token endpoints issue only `plan=free`; `add-user.sh` defaults to `plan=pro`.
 
 Supported algorithms are `HS256`, `RS256`, `ES256`, and `EdDSA`; asymmetric
 signing is recommended. JWTs must contain valid `iss`, `aud`, `exp`, and `sub`
@@ -102,14 +99,11 @@ owner JWT required) and `/v2/connect` (native client, no account JWT).
 
 ## Add or rotate an owner
 
-The repository includes a Node.js-based helper that updates the local
-`auth.json` atomically and signs an ES256 owner JWT with the local issuer key:
+The repository includes a Node.js-based helper that signs an ES256 owner JWT
+with the local issuer key. It defaults to the configured `pro` plan:
 
 ```sh
 ./deploy/rendezvous/add-user.sh user-456 \
-  --client-to-server 1048576 \
-  --server-to-client 5242880 \
-  --burst-bytes 262144 \
   --ttl-days 30 \
   --output deploy/motifd/secrets/rendezvous/user-456.jwt
 ```
@@ -120,11 +114,10 @@ By default it reads:
 - `deploy/rendezvous/secrets/issuer/jwt-private.pem`
 
 Without `--output`, the JWT is written to stdout and status messages go to
-stderr. Existing users are rejected unless `--replace` is supplied. Run
-`./deploy/rendezvous/add-user.sh --help` for all rate, key, and path options.
-
-Restart Rvz after changing `auth.json`; it loads the user table only at startup.
-If an existing motifd JWT file is replaced, restart motifd as well.
+stderr. Use `--plan NAME` to select another configured plan and `--replace` to
+overwrite an existing output file. The script validates `auth.json` but does
+not modify it because Rvz has no subject records. Run
+`./deploy/rendezvous/add-user.sh --help` for all options.
 
 ## Run
 

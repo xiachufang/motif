@@ -5,9 +5,7 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 auth_config="$script_dir/secrets/relay/auth.json"
 private_key="$script_dir/secrets/issuer/jwt-private.pem"
-client_to_server=10485760
-server_to_client=10485760
-burst_bytes=1048576
+plan="pro"
 ttl_days=30
 output_file=""
 key_id=""
@@ -17,28 +15,26 @@ node_bin="${NODE_BIN:-node}"
 
 usage() {
   cat <<'EOF'
-Add an owner to the rendezvous auth config and issue an ES256 JWT.
+Issue an ES256 owner JWT for a configured rendezvous plan.
 
 Usage:
   deploy/rendezvous/add-user.sh SUBJECT [options]
 
 Options:
-  --auth-config PATH       Auth config to update
-                           (default: deploy/rendezvous/secrets/relay/auth.json)
-  --private-key PATH       ES256 private key used to sign the JWT
-                           (default: deploy/rendezvous/secrets/issuer/jwt-private.pem)
-  --client-to-server N     Client-to-server limit in bytes/sec (default: 10485760)
-  --server-to-client N     Server-to-client limit in bytes/sec (default: 10485760)
-  --burst-bytes N          Token-bucket burst in bytes (default: 1048576)
-  --ttl-days N             JWT lifetime in days (default: 30)
-  --kid VALUE              Optional JWT key ID
-  --output PATH            Write the JWT to PATH with mode 0600 instead of stdout
-  --replace                Replace an existing user's rates and reissue its JWT
-  -h, --help               Show this help
+  --auth-config PATH  Auth config used for issuer/audience/plan validation
+                      (default: deploy/rendezvous/secrets/relay/auth.json)
+  --private-key PATH  ES256 private key used to sign the JWT
+                      (default: deploy/rendezvous/secrets/issuer/jwt-private.pem)
+  --plan NAME         Plan claim to issue (default: pro)
+  --ttl-days N        JWT lifetime in days (default: 30)
+  --kid VALUE         Optional JWT key ID
+  --output PATH       Write the JWT to PATH with mode 0600 instead of stdout
+  --replace           Allow overwriting an existing output file
+  -h, --help          Show this help
 
-The auth config is replaced atomically. Restart the relay after adding or
-changing a user so it reloads auth.json. Restart motifd after replacing the JWT
-file it uses.
+Rvz has no users table. SUBJECT becomes the JWT sub, while the selected plan
+defines per-installation and global bandwidth. The auth config is validated but
+is not modified.
 EOF
 }
 
@@ -65,19 +61,9 @@ while (($# > 0)); do
       private_key="$2"
       shift 2
       ;;
-    --client-to-server)
+    --plan)
       take_value "$1" "$#"
-      client_to_server="$2"
-      shift 2
-      ;;
-    --server-to-client)
-      take_value "$1" "$#"
-      server_to_client="$2"
-      shift 2
-      ;;
-    --burst-bytes)
-      take_value "$1" "$#"
-      burst_bytes="$2"
+      plan="$2"
       shift 2
       ;;
     --ttl-days)
@@ -118,11 +104,8 @@ done
   usage >&2
   exit 2
 }
-
-for value_name in client_to_server server_to_client burst_bytes ttl_days; do
-  value="${!value_name}"
-  [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$value_name must be a positive integer"
-done
+[[ "$ttl_days" =~ ^[1-9][0-9]*$ ]] || die "ttl_days must be a positive integer"
+[[ -n "$plan" && "$plan" == "${plan//[[:space:]]/}" ]] || die "plan must be non-empty and contain no whitespace"
 
 command -v -- "$node_bin" >/dev/null 2>&1 || die "Node.js is required (set NODE_BIN to override)"
 [[ -f "$auth_config" ]] || die "auth config not found: $auth_config"
@@ -134,9 +117,7 @@ umask 077
   "$auth_config" \
   "$private_key" \
   "$subject" \
-  "$client_to_server" \
-  "$server_to_client" \
-  "$burst_bytes" \
+  "$plan" \
   "$ttl_days" \
   "$key_id" \
   "$output_file" \
@@ -145,47 +126,24 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const [
-  authPath,
-  privateKeyPath,
-  subject,
-  clientToServerRaw,
-  serverToClientRaw,
-  burstBytesRaw,
-  ttlDaysRaw,
-  keyId,
-  outputPath,
-  replaceRaw,
-] = process.argv.slice(2);
-
+const [authPath, privateKeyPath, subject, plan, ttlDaysRaw, keyId, outputPath, replaceRaw] =
+  process.argv.slice(2);
 const replace = replaceRaw === 'true';
-
-function positiveSafeInteger(raw, name) {
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive safe integer`);
-  }
-  return value;
+const ttlDays = Number(ttlDaysRaw);
+if (!Number.isSafeInteger(ttlDays) || ttlDays <= 0) {
+  throw new Error('TTL days must be a positive safe integer');
 }
+const ttlSeconds = ttlDays * 24 * 60 * 60;
+if (!Number.isSafeInteger(ttlSeconds)) throw new Error('TTL days is too large');
 
 if (subject.length === 0 || subject.trim() !== subject) {
-  throw new Error('subject must be non-empty and have no leading or trailing whitespace');
+  throw new Error('subject must be non-empty and have no surrounding whitespace');
 }
 if (/[\u0000-\u001f\u007f]/u.test(subject)) {
   throw new Error('subject must not contain control characters');
 }
 
-const clientToServer = positiveSafeInteger(clientToServerRaw, 'client-to-server rate');
-const serverToClient = positiveSafeInteger(serverToClientRaw, 'server-to-client rate');
-const burstBytes = positiveSafeInteger(burstBytesRaw, 'burst bytes');
-const ttlDays = positiveSafeInteger(ttlDaysRaw, 'TTL days');
-const ttlSeconds = ttlDays * 24 * 60 * 60;
-if (!Number.isSafeInteger(ttlSeconds)) {
-  throw new Error('TTL days is too large');
-}
-
-const authRaw = fs.readFileSync(authPath, 'utf8');
-const auth = JSON.parse(authRaw);
+const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
 if (!auth.jwt || auth.jwt.algorithm !== 'ES256') {
   throw new Error('auth config must use jwt.algorithm = ES256');
 }
@@ -195,31 +153,24 @@ if (typeof auth.jwt.issuer !== 'string' || auth.jwt.issuer.length === 0) {
 if (typeof auth.jwt.audience !== 'string' || auth.jwt.audience.length === 0) {
   throw new Error('auth config has no JWT audience');
 }
-if (!auth.users || typeof auth.users !== 'object' || Array.isArray(auth.users)) {
-  throw new Error('auth config has no users object');
+if (!auth.plans || typeof auth.plans !== 'object' || Array.isArray(auth.plans)) {
+  throw new Error('auth config has no plans object');
 }
-
-const alreadyExists = Object.prototype.hasOwnProperty.call(auth.users, subject);
-if (alreadyExists && !replace) {
-  throw new Error(`user ${JSON.stringify(subject)} already exists; pass --replace to update it`);
+if (!Object.prototype.hasOwnProperty.call(auth.plans, plan)) {
+  throw new Error(`plan ${JSON.stringify(plan)} is not configured`);
 }
 
 if (outputPath) {
-  const outputParent = path.dirname(outputPath);
-  const outputParentStat = fs.statSync(outputParent, {throwIfNoEntry: false});
-  if (!outputParentStat || !outputParentStat.isDirectory()) {
-    throw new Error(`output directory does not exist: ${outputParent}`);
-  }
+  const parent = path.dirname(outputPath);
+  const stat = fs.statSync(parent, {throwIfNoEntry: false});
+  if (!stat || !stat.isDirectory()) throw new Error(`output directory does not exist: ${parent}`);
   if (fs.existsSync(outputPath) && !replace) {
     throw new Error(`output already exists: ${outputPath}; pass --replace to overwrite it`);
   }
 }
 
-const privateKeyPem = fs.readFileSync(privateKeyPath);
-const privateKey = crypto.createPrivateKey(privateKeyPem);
-if (privateKey.asymmetricKeyType !== 'ec') {
-  throw new Error('private key is not an EC key');
-}
+const privateKey = crypto.createPrivateKey(fs.readFileSync(privateKeyPath));
+if (privateKey.asymmetricKeyType !== 'ec') throw new Error('private key is not an EC key');
 const curve = privateKey.asymmetricKeyDetails?.namedCurve;
 if (curve && curve !== 'prime256v1' && curve !== 'P-256') {
   throw new Error(`private key must use P-256, got ${curve}`);
@@ -232,6 +183,7 @@ const claims = {
   iss: auth.jwt.issuer,
   aud: auth.jwt.audience,
   sub: subject,
+  plan,
   iat: now,
   exp: now + ttlSeconds,
   jti: crypto.randomUUID(),
@@ -247,25 +199,13 @@ if (signature.length !== 64) {
 }
 const token = `${signingInput}.${signature.toString('base64url')}`;
 
-Object.defineProperty(auth.users, subject, {
-  value: {
-    client_to_server_bytes_per_sec: clientToServer,
-    server_to_client_bytes_per_sec: serverToClient,
-    burst_bytes: burstBytes,
-  },
-  enumerable: true,
-  configurable: true,
-  writable: true,
-});
-
-function atomicWrite(targetPath, data, mode) {
+function atomicWrite(targetPath, data) {
   const temporaryPath = path.join(
     path.dirname(targetPath),
     `.${path.basename(targetPath)}.tmp-${process.pid}-${crypto.randomUUID()}`,
   );
   try {
-    fs.writeFileSync(temporaryPath, data, {encoding: 'utf8', mode, flag: 'wx'});
-    fs.chmodSync(temporaryPath, mode);
+    fs.writeFileSync(temporaryPath, data, {encoding: 'utf8', mode: 0o600, flag: 'wx'});
     fs.renameSync(temporaryPath, targetPath);
   } finally {
     try {
@@ -276,18 +216,14 @@ function atomicWrite(targetPath, data, mode) {
   }
 }
 
-const authMode = fs.statSync(authPath).mode & 0o777;
-atomicWrite(authPath, `${JSON.stringify(auth, null, 2)}\n`, authMode);
-
 if (outputPath) {
-  atomicWrite(outputPath, `${token}\n`, 0o600);
+  atomicWrite(outputPath, `${token}\n`);
   console.error(`JWT written to ${outputPath}`);
 } else {
   process.stdout.write(`${token}\n`);
 }
-
 console.error(
-  `${alreadyExists ? 'Updated' : 'Added'} rendezvous user ${JSON.stringify(subject)}; ` +
-  `JWT expires ${new Date(claims.exp * 1000).toISOString()}`,
+  `Issued ${JSON.stringify(plan)} JWT for ${JSON.stringify(subject)}; ` +
+    `expires ${new Date(claims.exp * 1000).toISOString()}`,
 );
 NODE

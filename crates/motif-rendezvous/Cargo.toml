@@ -4,7 +4,7 @@ version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
-description = "Motif rendezvous relay — JWT-authenticated WebSocket pairing with per-user bandwidth limits."
+description = "Motif rendezvous relay — JWT-authenticated WebSocket pairing with plan bandwidth limits."
 
 [[bin]]
 name = "motif-rendezvous"
