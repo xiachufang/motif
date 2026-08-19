@@ -11,14 +11,14 @@
       "version": "1.0.68"
     },
     "macos-arm64": {
-      "file": "motifd-1.0.67-50-macos-arm64.tar.gz",
-      "publishedAt": "2026-08-17T06:47:21Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.67",
-      "sha256": "4deed3cee10b27f57316260cf14fd0d840801e9ebc6031d7a9394aeea76e39e8",
-      "size": 29019029,
-      "tag": "v1.0.67",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.67/motifd-1.0.67-50-macos-arm64.tar.gz",
-      "version": "1.0.67"
+      "file": "motifd-1.0.68-51-macos-arm64.tar.gz",
+      "publishedAt": "2026-08-19T04:20:57Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.68",
+      "sha256": "4df711d25e16bd791d02a5bbfd27ea231fe01e87192b22171a873aef4841fa01",
+      "size": 29022326,
+      "tag": "v1.0.68",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.68/motifd-1.0.68-51-macos-arm64.tar.gz",
+      "version": "1.0.68"
     },
     "windows-x86_64": {
       "file": "motifd-1.0.67-50-windows-x86_64.tar.gz",
@@ -34,5 +34,5 @@
   "channel": "stable",
   "product": "motifd",
   "schema": 1,
-  "updatedAt": "2026-08-19T04:20:56Z"
+  "updatedAt": "2026-08-19T04:20:57Z"
 }
