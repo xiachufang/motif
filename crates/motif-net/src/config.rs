@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Where the server should accept connections. At least one of `tcp` /
 /// `tailscale` / `rendezvous` must be `Some` — `Listener::bind` rejects the
@@ -56,7 +56,7 @@ pub struct RzvListenConfig {
     /// The 32-byte rendezvous token (derived one-way from the pairing secret).
     pub token: [u8; 32],
     /// Owner JWT sent only in the WSS Upgrade request to `/v2/accept`.
-    pub jwt: String,
+    pub jwt: RzvJwt,
     /// Public-root configuration for the outer WSS connection. Tests and
     /// private deployments may replace this with a config containing a custom
     /// CA; production defaults to the Web PKI roots.
@@ -70,6 +70,28 @@ pub struct RzvListenConfig {
     pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
+/// Cloneable live owner credential. Relay pumps read it before every park, so
+/// an embedding host can refresh a JWT without restarting motifd or dropping
+/// active sessions.
+#[derive(Clone)]
+pub struct RzvJwt(Arc<RwLock<String>>);
+
+impl RzvJwt {
+    pub fn get(&self) -> String {
+        self.0
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn set(&self, jwt: impl Into<String>) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = jwt.into();
+    }
+}
+
 impl RzvListenConfig {
     pub fn new(url: impl Into<String>, token: [u8; 32], jwt: impl Into<String>) -> Self {
         let roots =
@@ -77,7 +99,7 @@ impl RzvListenConfig {
         Self {
             url: url.into(),
             token,
-            jwt: jwt.into(),
+            jwt: RzvJwt(Arc::new(RwLock::new(jwt.into()))),
             ws_tls: Arc::new(
                 rustls::ClientConfig::builder()
                     .with_root_certificates(roots)
@@ -86,6 +108,10 @@ impl RzvListenConfig {
             pool: 4,
             tls: None,
         }
+    }
+
+    pub fn jwt_handle(&self) -> RzvJwt {
+        self.jwt.clone()
     }
 }
 

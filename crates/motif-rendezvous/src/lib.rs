@@ -10,22 +10,24 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// First WebSocket binary message: `MRZV`, version, token.
 pub const MAGIC: [u8; 4] = *b"MRZV";
@@ -46,6 +48,33 @@ pub struct RateConfig {
     pub client_to_server_bytes_per_sec: u64,
     pub server_to_client_bytes_per_sec: u64,
     pub burst_bytes: u64,
+}
+
+/// Simpler bandwidth shape used by plans. Upload is client -> motifd and
+/// download is motifd -> client. Burst capacity is derived as one second of
+/// traffic so deployments only have two numbers to tune.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BandwidthConfig {
+    pub upload_bytes_per_sec: u64,
+    pub download_bytes_per_sec: u64,
+}
+
+impl BandwidthConfig {
+    fn validate(&self, name: &str) -> anyhow::Result<()> {
+        if self.upload_bytes_per_sec == 0 || self.download_bytes_per_sec == 0 {
+            anyhow::bail!("bandwidth for {name} must use positive upload/download rates");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanConfig {
+    per_user: BandwidthConfig,
+    #[serde(default)]
+    total: Option<BandwidthConfig>,
 }
 
 impl RateConfig {
@@ -69,22 +98,65 @@ struct JwtFileConfig {
     verification_key: PathBuf,
 }
 
+fn default_access_ttl_secs() -> u64 {
+    7 * 24 * 60 * 60
+}
+
+fn default_refresh_ttl_secs() -> u64 {
+    365 * 24 * 60 * 60
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FreeIssuerFileConfig {
+    signing_key: PathBuf,
+    #[serde(default = "default_access_ttl_secs")]
+    access_ttl_secs: u64,
+    #[serde(default = "default_refresh_ttl_secs")]
+    refresh_ttl_secs: u64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthFileConfig {
     jwt: JwtFileConfig,
+    #[serde(default)]
     users: HashMap<String, RateConfig>,
+    #[serde(default)]
+    plans: HashMap<String, PlanConfig>,
+    #[serde(default)]
+    free_issuer: Option<FreeIssuerFileConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
+    #[serde(default)]
+    plan: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct AuthenticatedUser {
     pub subject: Arc<str>,
     limiter: Arc<UserLimiter>,
+    global_limiter: Option<Arc<UserLimiter>>,
+}
+
+struct PlanRuntime {
+    per_user: BandwidthConfig,
+    global_limiter: Option<Arc<UserLimiter>>,
+    users: Mutex<HashMap<String, Weak<UserLimiter>>>,
+}
+
+struct FreeIssuer {
+    algorithm: Algorithm,
+    encoding_key: EncodingKey,
+    decoding_key: DecodingKey,
+    issuer: String,
+    access_audience: String,
+    refresh_audience: String,
+    access_ttl_secs: u64,
+    refresh_ttl_secs: u64,
 }
 
 /// JWT verifier plus the authoritative local user→rate table.
@@ -92,6 +164,8 @@ pub struct Authenticator {
     decoding_key: DecodingKey,
     validation: Validation,
     users: HashMap<String, AuthenticatedUser>,
+    plans: HashMap<String, PlanRuntime>,
+    free_issuer: Option<Arc<FreeIssuer>>,
 }
 
 impl Authenticator {
@@ -100,8 +174,8 @@ impl Authenticator {
             std::fs::read(path).with_context(|| format!("read auth config {}", path.display()))?;
         let mut cfg: AuthFileConfig = serde_json::from_slice(&raw)
             .with_context(|| format!("parse auth config {}", path.display()))?;
-        if cfg.users.is_empty() {
-            anyhow::bail!("auth config must contain at least one user");
+        if cfg.users.is_empty() && cfg.plans.is_empty() {
+            anyhow::bail!("auth config must contain at least one user or plan");
         }
 
         if cfg.jwt.verification_key.is_relative() {
@@ -115,22 +189,72 @@ impl Authenticator {
             )
         })?;
         let algorithm = parse_algorithm(&cfg.jwt.algorithm)?;
-        let decoding_key = decoding_key(algorithm, &key)?;
-        Self::new(
+        let access_decoding_key = decoding_key(algorithm, &key)?;
+        let free_issuer = if let Some(mut issuer) = cfg.free_issuer {
+            if !cfg.plans.contains_key("free") {
+                anyhow::bail!("free_issuer requires a plans.free bandwidth policy");
+            }
+            if issuer.access_ttl_secs == 0 || issuer.refresh_ttl_secs == 0 {
+                anyhow::bail!("free_issuer token TTLs must be positive");
+            }
+            if issuer.signing_key.is_relative() {
+                let base = path.parent().unwrap_or_else(|| Path::new("."));
+                issuer.signing_key = base.join(&issuer.signing_key);
+            }
+            let signing_key = std::fs::read(&issuer.signing_key).with_context(|| {
+                format!("read JWT signing key {}", issuer.signing_key.display())
+            })?;
+            Some(Arc::new(FreeIssuer {
+                algorithm,
+                encoding_key: encoding_key(algorithm, &signing_key)?,
+                decoding_key: decoding_key(algorithm, &key)?,
+                issuer: cfg.jwt.issuer.clone(),
+                access_audience: cfg.jwt.audience.clone(),
+                refresh_audience: format!("{}-refresh", cfg.jwt.audience),
+                access_ttl_secs: issuer.access_ttl_secs,
+                refresh_ttl_secs: issuer.refresh_ttl_secs,
+            }))
+        } else {
+            None
+        };
+        Self::new_with_plans(
             algorithm,
-            decoding_key,
+            access_decoding_key,
             &cfg.jwt.issuer,
             &cfg.jwt.audience,
             cfg.users,
+            cfg.plans,
+            free_issuer,
         )
     }
 
+    #[cfg(test)]
     fn new(
         algorithm: Algorithm,
         decoding_key: DecodingKey,
         issuer: &str,
         audience: &str,
         rates: HashMap<String, RateConfig>,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_plans(
+            algorithm,
+            decoding_key,
+            issuer,
+            audience,
+            rates,
+            HashMap::new(),
+            None,
+        )
+    }
+
+    fn new_with_plans(
+        algorithm: Algorithm,
+        decoding_key: DecodingKey,
+        issuer: &str,
+        audience: &str,
+        rates: HashMap<String, RateConfig>,
+        plan_configs: HashMap<String, PlanConfig>,
+        free_issuer: Option<Arc<FreeIssuer>>,
     ) -> anyhow::Result<Self> {
         let mut users = HashMap::with_capacity(rates.len());
         for (subject, rate) in rates {
@@ -143,6 +267,28 @@ impl Authenticator {
                 AuthenticatedUser {
                     subject: Arc::from(subject),
                     limiter: Arc::new(UserLimiter::new(rate)),
+                    global_limiter: None,
+                },
+            );
+        }
+
+        let mut plans = HashMap::with_capacity(plan_configs.len());
+        for (name, cfg) in plan_configs {
+            if name.trim().is_empty() {
+                anyhow::bail!("auth config contains an empty plan name");
+            }
+            cfg.per_user.validate(&format!("plan {name}.per_user"))?;
+            if let Some(total) = cfg.total {
+                total.validate(&format!("plan {name}.total"))?;
+            }
+            plans.insert(
+                name,
+                PlanRuntime {
+                    per_user: cfg.per_user,
+                    global_limiter: cfg
+                        .total
+                        .map(|rate| Arc::new(UserLimiter::new_bandwidth(rate))),
+                    users: Mutex::new(HashMap::new()),
                 },
             );
         }
@@ -157,23 +303,43 @@ impl Authenticator {
             decoding_key,
             validation,
             users,
+            plans,
+            free_issuer,
         })
     }
 
     fn authenticate(&self, headers: &HeaderMap) -> anyhow::Result<AuthenticatedUser> {
-        let value = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| anyhow::anyhow!("missing Authorization header"))?;
-        let token = value
-            .strip_prefix("Bearer ")
+        let token = bearer_token(headers)
             .ok_or_else(|| anyhow::anyhow!("Authorization must use Bearer"))?;
         let data = decode::<Claims>(token, &self.decoding_key, &self.validation)
             .context("JWT rejected")?;
-        self.users
-            .get(&data.claims.sub)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("JWT subject is not configured"))
+        if let Some(user) = self.users.get(&data.claims.sub) {
+            return Ok(user.clone());
+        }
+        let plan_name = data
+            .claims
+            .plan
+            .ok_or_else(|| anyhow::anyhow!("JWT subject is not configured and has no plan"))?;
+        let plan = self
+            .plans
+            .get(&plan_name)
+            .ok_or_else(|| anyhow::anyhow!("JWT plan is not configured"))?;
+        let limiter = {
+            let mut users = plan.users.lock();
+            users.retain(|_, limiter| limiter.strong_count() > 0);
+            if let Some(limiter) = users.get(&data.claims.sub).and_then(Weak::upgrade) {
+                limiter
+            } else {
+                let limiter = Arc::new(UserLimiter::new_bandwidth(plan.per_user));
+                users.insert(data.claims.sub.clone(), Arc::downgrade(&limiter));
+                limiter
+            }
+        };
+        Ok(AuthenticatedUser {
+            subject: Arc::from(data.claims.sub),
+            limiter,
+            global_limiter: plan.global_limiter.clone(),
+        })
     }
 }
 
@@ -197,6 +363,16 @@ fn decoding_key(algorithm: Algorithm, key: &[u8]) -> anyhow::Result<DecodingKey>
     }
 }
 
+fn encoding_key(algorithm: Algorithm, key: &[u8]) -> anyhow::Result<EncodingKey> {
+    match algorithm {
+        Algorithm::HS256 => Ok(EncodingKey::from_secret(trim_ascii(key))),
+        Algorithm::RS256 => EncodingKey::from_rsa_pem(key).context("parse RSA private key"),
+        Algorithm::ES256 => EncodingKey::from_ec_pem(key).context("parse EC private key"),
+        Algorithm::EdDSA => EncodingKey::from_ed_pem(key).context("parse Ed25519 private key"),
+        _ => unreachable!("algorithm allowlist handled above"),
+    }
+}
+
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
     let start = bytes
         .iter()
@@ -208,6 +384,121 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
         .map(|i| i + 1)
         .unwrap_or(start);
     &bytes[start..end]
+}
+
+#[derive(Serialize)]
+struct AccessClaims<'a> {
+    iss: &'a str,
+    aud: &'a str,
+    sub: &'a str,
+    plan: &'static str,
+    iat: u64,
+    exp: u64,
+    jti: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RefreshClaims {
+    iss: String,
+    aud: String,
+    sub: String,
+    plan: String,
+    token_use: String,
+    iat: u64,
+    exp: u64,
+    jti: String,
+}
+
+#[derive(Serialize)]
+struct InstallationTokenResponse {
+    installation_id: String,
+    access_token: String,
+    access_expires_at: u64,
+    refresh_token: String,
+    refresh_expires_at: u64,
+}
+
+impl FreeIssuer {
+    fn register(&self) -> anyhow::Result<InstallationTokenResponse> {
+        let installation_id = format!("inst_{}", random_id()?);
+        self.issue(&installation_id)
+    }
+
+    fn refresh(&self, token: &str) -> anyhow::Result<InstallationTokenResponse> {
+        let mut validation = Validation::new(self.algorithm);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.refresh_audience]);
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        validation.leeway = 30;
+        let claims = decode::<RefreshClaims>(token, &self.decoding_key, &validation)
+            .context("refresh JWT rejected")?
+            .claims;
+        if claims.plan != "free" || claims.token_use != "refresh" {
+            anyhow::bail!("refresh JWT has the wrong token type");
+        }
+        self.issue(&claims.sub)
+    }
+
+    fn issue(&self, installation_id: &str) -> anyhow::Result<InstallationTokenResponse> {
+        let now = unix_time()?;
+        let access_expires_at = now
+            .checked_add(self.access_ttl_secs)
+            .context("access token expiry overflow")?;
+        let refresh_expires_at = now
+            .checked_add(self.refresh_ttl_secs)
+            .context("refresh token expiry overflow")?;
+        let header = Header::new(self.algorithm);
+        let access_token = encode(
+            &header,
+            &AccessClaims {
+                iss: &self.issuer,
+                aud: &self.access_audience,
+                sub: installation_id,
+                plan: "free",
+                iat: now,
+                exp: access_expires_at,
+                jti: random_id()?,
+            },
+            &self.encoding_key,
+        )
+        .context("sign access JWT")?;
+        let refresh_token = encode(
+            &header,
+            &RefreshClaims {
+                iss: self.issuer.clone(),
+                aud: self.refresh_audience.clone(),
+                sub: installation_id.to_string(),
+                plan: "free".to_string(),
+                token_use: "refresh".to_string(),
+                iat: now,
+                exp: refresh_expires_at,
+                jti: random_id()?,
+            },
+            &self.encoding_key,
+        )
+        .context("sign refresh JWT")?;
+        Ok(InstallationTokenResponse {
+            installation_id: installation_id.to_string(),
+            access_token,
+            access_expires_at,
+            refresh_token,
+            refresh_expires_at,
+        })
+    }
+}
+
+fn unix_time() -> anyhow::Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before Unix epoch")?
+        .as_secs())
+}
+
+fn random_id() -> anyhow::Result<String> {
+    let mut bytes = [0u8; 18];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("secure random generator failed: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 pub struct HubConfig {
@@ -275,6 +566,8 @@ impl Hub {
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
             .route("/health", get(|| async { "ok" }))
+            .route("/v1/free/installations", post(register_free_installation))
+            .route("/v1/free/token", post(refresh_free_token))
             .route("/v2/accept", get(accept_upgrade))
             .route("/v2/connect", get(connect_upgrade))
             .with_state(Arc::clone(self))
@@ -365,6 +658,47 @@ impl Hub {
     pub fn parked_tokens(&self) -> usize {
         self.inner.lock().len()
     }
+}
+
+async fn register_free_installation(State(hub): State<Arc<Hub>>) -> Response {
+    let Some(issuer) = &hub.auth.free_issuer else {
+        return (StatusCode::NOT_FOUND, "free relay registration is disabled").into_response();
+    };
+    match issuer.register() {
+        Ok(tokens) => (StatusCode::CREATED, Json(tokens)).into_response(),
+        Err(error) => {
+            tracing::error!(%error, "issue free relay credentials");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not issue credentials",
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn refresh_free_token(State(hub): State<Arc<Hub>>, headers: HeaderMap) -> Response {
+    let Some(issuer) = &hub.auth.free_issuer else {
+        return (StatusCode::NOT_FOUND, "free relay registration is disabled").into_response();
+    };
+    let Some(token) = bearer_token(&headers) else {
+        return (StatusCode::UNAUTHORIZED, "invalid refresh token").into_response();
+    };
+    match issuer.refresh(token) {
+        Ok(tokens) => (StatusCode::OK, Json(tokens)).into_response(),
+        Err(error) => {
+            tracing::warn!(%error, "free relay refresh rejected");
+            (StatusCode::UNAUTHORIZED, "invalid refresh token").into_response()
+        }
+    }
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
 }
 
 async fn accept_upgrade(
@@ -502,13 +836,25 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
     let c2s = pump(
         connect_rx,
         accept_tx,
-        Arc::clone(&user.limiter.client_to_server),
+        DirectionLimiters {
+            user: Arc::clone(&user.limiter.client_to_server),
+            global: user
+                .global_limiter
+                .as_ref()
+                .map(|limiter| Arc::clone(&limiter.client_to_server)),
+        },
         keepalive,
     );
     let s2c = pump(
         accept_rx,
         connect_tx,
-        Arc::clone(&user.limiter.server_to_client),
+        DirectionLimiters {
+            user: Arc::clone(&user.limiter.server_to_client),
+            global: user
+                .global_limiter
+                .as_ref()
+                .map(|limiter| Arc::clone(&limiter.server_to_client)),
+        },
         keepalive,
     );
     let (c2s, s2c) = tokio::join!(c2s, s2c);
@@ -523,7 +869,7 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
 async fn pump(
     mut input: SplitStream<WebSocket>,
     mut output: SplitSink<WebSocket, Message>,
-    limiter: Arc<TokenBucket>,
+    limiters: DirectionLimiters,
     keepalive: Duration,
 ) -> anyhow::Result<u64> {
     let mut total = 0u64;
@@ -540,8 +886,8 @@ async fn pump(
                 Some(Ok(Message::Binary(payload))) => {
                     let mut offset = 0;
                     while offset < payload.len() {
-                        let n = limiter.max_chunk(payload.len() - offset);
-                        limiter.consume(n).await;
+                        let n = limiters.max_chunk(payload.len() - offset);
+                        limiters.consume(n).await;
                         output
                             .send(Message::Binary(payload.slice(offset..offset + n)))
                             .await?;
@@ -568,6 +914,30 @@ async fn pump(
     }
 }
 
+struct DirectionLimiters {
+    user: Arc<TokenBucket>,
+    global: Option<Arc<TokenBucket>>,
+}
+
+impl DirectionLimiters {
+    fn max_chunk(&self, remaining: usize) -> usize {
+        let user = self.user.max_chunk(remaining);
+        self.global
+            .as_ref()
+            .map_or(user, |global| global.max_chunk(user))
+    }
+
+    async fn consume(&self, bytes: usize) {
+        // Consume the shared bucket first. Sequential acquisition can be a
+        // little conservative under saturation but never lets either the
+        // per-installation or global plan limit be exceeded.
+        if let Some(global) = &self.global {
+            global.consume(bytes).await;
+        }
+        self.user.consume(bytes).await;
+    }
+}
+
 struct UserLimiter {
     client_to_server: Arc<TokenBucket>,
     server_to_client: Arc<TokenBucket>,
@@ -583,6 +953,19 @@ impl UserLimiter {
             server_to_client: Arc::new(TokenBucket::new(
                 cfg.server_to_client_bytes_per_sec,
                 cfg.burst_bytes,
+            )),
+        }
+    }
+
+    fn new_bandwidth(cfg: BandwidthConfig) -> Self {
+        Self {
+            client_to_server: Arc::new(TokenBucket::new(
+                cfg.upload_bytes_per_sec,
+                cfg.upload_bytes_per_sec.max(FORWARD_CHUNK_BYTES as u64),
+            )),
+            server_to_client: Arc::new(TokenBucket::new(
+                cfg.download_bytes_per_sec,
+                cfg.download_bytes_per_sec.max(FORWARD_CHUNK_BYTES as u64),
             )),
         }
     }
@@ -665,6 +1048,8 @@ mod tests {
         iss: &'a str,
         aud: &'a str,
         sub: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan: Option<&'a str>,
         exp: usize,
     }
 
@@ -692,6 +1077,7 @@ mod tests {
                 iss: "issuer",
                 aud: "relay",
                 sub: "user-1",
+                plan: None,
                 exp: 4_102_444_800,
             },
             &EncodingKey::from_secret(b"test secret"),
@@ -706,6 +1092,93 @@ mod tests {
         let second = auth.authenticate(&headers).unwrap();
         assert_eq!(&*first.subject, "user-1");
         assert!(Arc::ptr_eq(&first.limiter, &second.limiter));
+    }
+
+    #[test]
+    fn plan_jwt_gets_dynamic_user_and_shared_global_limiters() {
+        let auth = Authenticator::new_with_plans(
+            Algorithm::HS256,
+            DecodingKey::from_secret(b"test secret"),
+            "issuer",
+            "relay",
+            HashMap::new(),
+            HashMap::from([(
+                "free".to_string(),
+                PlanConfig {
+                    per_user: BandwidthConfig {
+                        upload_bytes_per_sec: 100,
+                        download_bytes_per_sec: 200,
+                    },
+                    total: Some(BandwidthConfig {
+                        upload_bytes_per_sec: 1000,
+                        download_bytes_per_sec: 2000,
+                    }),
+                },
+            )]),
+            None,
+        )
+        .unwrap();
+        let token = |sub: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &TestClaims {
+                    iss: "issuer",
+                    aud: "relay",
+                    sub,
+                    plan: Some("free"),
+                    exp: 4_102_444_800,
+                },
+                &EncodingKey::from_secret(b"test secret"),
+            )
+            .unwrap()
+        };
+        let authenticate = |jwt: String| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {jwt}").parse().unwrap(),
+            );
+            auth.authenticate(&headers).unwrap()
+        };
+
+        let first = authenticate(token("installation-1"));
+        let same = authenticate(token("installation-1"));
+        let other = authenticate(token("installation-2"));
+        assert!(Arc::ptr_eq(&first.limiter, &same.limiter));
+        assert!(!Arc::ptr_eq(&first.limiter, &other.limiter));
+        assert!(Arc::ptr_eq(
+            first.global_limiter.as_ref().unwrap(),
+            other.global_limiter.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn free_issuer_rotates_refresh_and_issues_plan_claim() {
+        let issuer = FreeIssuer {
+            algorithm: Algorithm::HS256,
+            encoding_key: EncodingKey::from_secret(b"test secret"),
+            decoding_key: DecodingKey::from_secret(b"test secret"),
+            issuer: "issuer".into(),
+            access_audience: "relay".into(),
+            refresh_audience: "relay-refresh".into(),
+            access_ttl_secs: 600,
+            refresh_ttl_secs: 3600,
+        };
+        let registered = issuer.register().unwrap();
+        let refreshed = issuer.refresh(&registered.refresh_token).unwrap();
+        assert_eq!(refreshed.installation_id, registered.installation_id);
+        assert_ne!(refreshed.refresh_token, registered.refresh_token);
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&["issuer"]);
+        validation.set_audience(&["relay"]);
+        let access = decode::<Claims>(
+            &refreshed.access_token,
+            &DecodingKey::from_secret(b"test secret"),
+            &validation,
+        )
+        .unwrap();
+        assert_eq!(access.claims.plan.as_deref(), Some("free"));
     }
 
     #[tokio::test(start_paused = true)]

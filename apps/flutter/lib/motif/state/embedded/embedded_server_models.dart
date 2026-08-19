@@ -13,9 +13,16 @@ const String kEmbeddedServerId = 'embedded-local';
 /// this bare host and expands it to `https://<host>/v1/push`.
 const String kDefaultPushRelayAddress = 'motif-push-relay.slothease.com';
 
+/// Public rendezvous relay used by the auto-managed Free option.
+const String kDefaultRzvRelayAddress = 'motif-relay.slothease.com';
+
 /// How the embedded server should listen. Mirrors the Rust `ListenMode`
 /// (serialized lowercase) in the desktop implementation.
 enum EmbeddedListenMode { loopback, lan }
+
+/// Connection Relay policy. Existing enabled/JWT configurations migrate to
+/// [custom]; fresh installs use [free].
+enum EmbeddedRelayMode { free, custom, off }
 
 @immutable
 class EmbeddedServerConfig {
@@ -25,7 +32,7 @@ class EmbeddedServerConfig {
   final String tsHostname;
   final String tsAuthkey;
   final String tsControlUrl;
-  final bool rzvEnabled;
+  final EmbeddedRelayMode rzvMode;
   final String rzvRelay;
 
   /// Loaded from the platform credential store on desktop. This value is
@@ -42,7 +49,7 @@ class EmbeddedServerConfig {
     this.tsHostname = '',
     this.tsAuthkey = '',
     this.tsControlUrl = '',
-    this.rzvEnabled = false,
+    this.rzvMode = EmbeddedRelayMode.free,
     this.rzvRelay = '',
     this.rzvJwt = '',
     this.pushRelayUrl = kDefaultPushRelayAddress,
@@ -57,7 +64,7 @@ class EmbeddedServerConfig {
     String? tsHostname,
     String? tsAuthkey,
     String? tsControlUrl,
-    bool? rzvEnabled,
+    EmbeddedRelayMode? rzvMode,
     String? rzvRelay,
     String? rzvJwt,
     String? pushRelayUrl,
@@ -70,13 +77,21 @@ class EmbeddedServerConfig {
     tsHostname: tsHostname ?? this.tsHostname,
     tsControlUrl: tsControlUrl ?? this.tsControlUrl,
     tsAuthkey: tsAuthkey ?? this.tsAuthkey,
-    rzvEnabled: rzvEnabled ?? this.rzvEnabled,
+    rzvMode: rzvMode ?? this.rzvMode,
     rzvRelay: rzvRelay ?? this.rzvRelay,
     rzvJwt: rzvJwt ?? this.rzvJwt,
     pushRelayUrl: pushRelayUrl ?? this.pushRelayUrl,
     autostart: autostart ?? this.autostart,
     allowScreenCapture: allowScreenCapture ?? this.allowScreenCapture,
   );
+
+  bool get rzvEnabled => rzvMode != EmbeddedRelayMode.off;
+
+  String get effectiveRzvRelay => switch (rzvMode) {
+    EmbeddedRelayMode.free => kDefaultRzvRelayAddress,
+    EmbeddedRelayMode.custom => rzvRelay.trim(),
+    EmbeddedRelayMode.off => '',
+  };
 }
 
 enum EmbeddedRunState { stopped, starting, running, failed }

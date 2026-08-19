@@ -45,6 +45,9 @@ class LibMotifEmbed {
   late final _Stop _stop = _lib.lookupFunction<_StopNative, _Stop>(
     'motif_embed_stop',
   );
+  late final _Start _updateRzvJwt = _lib.lookupFunction<_StartNative, _Start>(
+    'motif_embed_update_rzv_jwt',
+  );
   late final _StrOut _statusJson = _lib.lookupFunction<_StrOutNative, _StrOut>(
     'motif_embed_status_json',
   );
@@ -90,6 +93,9 @@ class LibMotifEmbed {
 
   /// Stop the embedded server. Idempotent. 0 on success.
   int stop() => _stop();
+
+  /// Update the owner JWT used by future Relay parks without restarting.
+  int updateRzvJwt(String jwt) => _withStr(jwt, (p) => _updateRzvJwt(p));
 
   /// Current status as a JSON string (the `StatusDto` shape).
   String statusJson() => _consume(_statusJson());

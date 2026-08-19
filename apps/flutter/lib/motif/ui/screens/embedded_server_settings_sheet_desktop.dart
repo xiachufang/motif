@@ -140,11 +140,11 @@ class _EmbeddedServerSettingsDialogState
     if (port == null || port < 1 || port > 65535) {
       return 'Port must be between 1 and 65535.';
     }
-    if (next.rzvEnabled && next.rzvRelay.isEmpty) {
-      return 'Relay address is required when Relay is enabled.';
+    if (next.rzvMode == EmbeddedRelayMode.custom && next.rzvRelay.isEmpty) {
+      return 'Relay address is required for a Custom Relay.';
     }
-    if (next.rzvEnabled && next.rzvJwt.isEmpty) {
-      return 'Relay owner JWT is required when Relay is enabled.';
+    if (next.rzvMode == EmbeddedRelayMode.custom && next.rzvJwt.isEmpty) {
+      return 'Relay owner JWT is required for a Custom Relay.';
     }
     if (next.tsEnabled &&
         _tsControl == _TsControl.custom &&
@@ -624,19 +624,31 @@ class _EmbeddedServerSettingsDialogState
           'connectivity. The pairing QR appears on the Server page while it is '
           'running.',
       children: [
-        MotifSectionRow(
-          leading: Icon(Icons.cloud_outlined, color: c.accent),
-          title: 'Enable connection Relay',
-          subtitle: cfg.rzvEnabled
-              ? 'Reach this Server without direct connectivity'
-              : 'Relay access is disabled',
-          onTap: () => _updateDraft(cfg.copyWith(rzvEnabled: !cfg.rzvEnabled)),
-          trailing: Switch(
-            value: cfg.rzvEnabled,
-            onChanged: (v) => _updateDraft(cfg.copyWith(rzvEnabled: v)),
-          ),
+        _tsRadio(
+          c,
+          selected: cfg.rzvMode == EmbeddedRelayMode.free,
+          title: 'Free',
+          subtitle: kDefaultRzvRelayAddress,
+          onTap: () =>
+              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.free)),
         ),
-        if (cfg.rzvEnabled) ...[
+        _tsRadio(
+          c,
+          selected: cfg.rzvMode == EmbeddedRelayMode.custom,
+          title: 'Custom',
+          subtitle: 'Use your own Relay address and owner JWT',
+          onTap: () =>
+              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.custom)),
+        ),
+        _tsRadio(
+          c,
+          selected: cfg.rzvMode == EmbeddedRelayMode.off,
+          title: 'Off',
+          subtitle: 'Do not use a connection Relay',
+          onTap: () =>
+              _updateDraft(cfg.copyWith(rzvMode: EmbeddedRelayMode.off)),
+        ),
+        if (cfg.rzvMode == EmbeddedRelayMode.custom) ...[
           _field(
             _rzvRelay,
             'Relay address',
@@ -1405,7 +1417,7 @@ bool _configsEqual(EmbeddedServerConfig a, EmbeddedServerConfig b) {
       a.tsHostname == b.tsHostname &&
       a.tsAuthkey == b.tsAuthkey &&
       a.tsControlUrl == b.tsControlUrl &&
-      a.rzvEnabled == b.rzvEnabled &&
+      a.rzvMode == b.rzvMode &&
       a.rzvRelay == b.rzvRelay &&
       a.rzvJwt == b.rzvJwt &&
       a.pushRelayUrl == b.pushRelayUrl &&
@@ -1420,6 +1432,15 @@ String? _relayErrorText(
   if (!config.rzvEnabled) return null;
   final relayError = status.relayError;
   if (relayError != null && relayError.trim().isNotEmpty) {
+    final lower = relayError.toLowerCase();
+    if (config.rzvMode == EmbeddedRelayMode.free &&
+        (lower.contains('jwt') ||
+            lower.contains('401') ||
+            lower.contains('403') ||
+            lower.contains('unauthorized') ||
+            lower.contains('forbidden'))) {
+      return 'Free Relay credentials are being refreshed automatically.';
+    }
     return embeddedRelayErrorMessage(relayError);
   }
   final startError = status.error;
@@ -1740,7 +1761,7 @@ class _RelayPairingSection extends StatelessWidget {
                   ? _PairingQrUnavailable(color: c.textTertiary)
                   : _PairingQr(uri: uri);
               final details = _RelayPairingDetails(
-                relay: config.rzvRelay,
+                relay: config.effectiveRzvRelay,
                 uri: uri,
                 error: error,
               );

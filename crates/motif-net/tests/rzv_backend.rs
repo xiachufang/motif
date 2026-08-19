@@ -104,6 +104,32 @@ async fn rzv_backend_reports_rejected_owner_jwt() {
 }
 
 #[tokio::test]
+async fn rzv_backend_uses_refreshed_owner_jwt_without_rebind() {
+    let relay = common::start_relay().await;
+    let mut config = RzvListenConfig::new(
+        format!("ws://{}", relay.addr),
+        [6u8; 32],
+        "expired-owner-jwt",
+    );
+    config.pool = 1;
+    let jwt = config.jwt_handle();
+    let listener = motif_net::Listener::bind(&ListenConfig {
+        tcp: None,
+        tcp_tls: None,
+        tailscale: None,
+        rendezvous: Some(config),
+    })
+    .await
+    .unwrap();
+    let mut status = listener.rendezvous_status().expect("rzv status");
+
+    wait_for_rzv_status(&mut status, |s| s.error.is_some()).await;
+    jwt.set(relay.jwt);
+    let connected = wait_for_rzv_status(&mut status, |s| s.connected).await;
+    assert_eq!(connected.error, None);
+}
+
+#[tokio::test]
 async fn rzv_backend_reports_unreachable_relay() {
     let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = probe.local_addr().unwrap();

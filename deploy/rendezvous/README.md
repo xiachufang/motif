@@ -6,15 +6,17 @@ dial out; the relay pairs their WebSockets by an opaque token and forwards
 binary messages containing the existing end-to-end TLS stream.
 
 motifd authenticates its owner with a JWT in the `/v2/accept` WebSocket
-Upgrade. The relay maps JWT `sub` to a local rate configuration and aggregates
-all of that user's connections into independent client→server and
-server→client token buckets. Clients use `/v2/connect` and do not need an
-account JWT.
+Upgrade. Native clients use `/v2/connect` and do not need an account JWT.
+Legacy owner JWTs are mapped through `users[sub]`; auto-managed Free JWTs carry
+`sub=<installation id>` and `plan=free` and are mapped through `plans.free`.
 
 ## Required files
 
 Rvz does not load a TLS certificate. It requires an auth configuration and the
-JWT verification key referenced by that configuration:
+JWT keys referenced by that configuration.
+
+Copy the tracked [`auth.example.json`](./auth.example.json) to
+`secrets/relay/auth.json`; the complete shape is:
 
 ```json
 {
@@ -24,8 +26,25 @@ JWT verification key referenced by that configuration:
     "audience": "motif-rendezvous",
     "verification_key": "jwt-public.pem"
   },
+  "free_issuer": {
+    "signing_key": "../issuer/jwt-private.pem",
+    "access_ttl_secs": 604800,
+    "refresh_ttl_secs": 31536000
+  },
+  "plans": {
+    "free": {
+      "per_user": {
+        "upload_bytes_per_sec": 1048576,
+        "download_bytes_per_sec": 5242880
+      },
+      "total": {
+        "upload_bytes_per_sec": 104857600,
+        "download_bytes_per_sec": 524288000
+      }
+    }
+  },
   "users": {
-    "user-123": {
+    "existing-owner": {
       "client_to_server_bytes_per_sec": 1048576,
       "server_to_client_bytes_per_sec": 5242880,
       "burst_bytes": 262144
@@ -34,12 +53,78 @@ JWT verification key referenced by that configuration:
 }
 ```
 
-`verification_key` is resolved relative to the JSON file. Supported algorithms
-are `HS256`, `RS256`, `ES256`, and `EdDSA`; asymmetric signing is recommended.
-All rates and `burst_bytes` must be positive. Unknown JWT subjects are rejected.
+Key paths are resolved relative to the JSON file. The checked-out deployment
+layout is therefore:
 
-The JWT must contain valid `iss`, `aud`, `exp`, and `sub` claims. Bandwidth
-values in JWT claims are ignored.
+- `deploy/rendezvous/secrets/relay/auth.json`
+- `deploy/rendezvous/secrets/relay/jwt-public.pem`
+- `deploy/rendezvous/secrets/issuer/jwt-private.pem`
+
+For ES256, the online signing key must use unencrypted PKCS#8 PEM (`BEGIN
+PRIVATE KEY`); keep it mode `0600`. The public key and existing signatures do
+not change when converting an SEC1 key with `openssl pkcs8 -topk8 -nocrypt`.
+
+`plans.free.per_user` is shared by all simultaneous connections belonging to
+one installation. `plans.free.total` is one global bucket shared by every Free
+installation and connection. Upload means client→motifd; download means
+motifd→client. There is intentionally no connection-count setting. Burst
+capacity for plans is derived internally as one second of bandwidth.
+
+The `users` object remains supported for old manually issued JWTs. Those JWTs
+do not need a `plan` claim and continue to use the legacy rate shape. Unknown
+subjects/plans are rejected, and bandwidth values in JWT claims are ignored.
+Additional plans such as `pro` or `team` use the same `per_user`/optional
+`total` shape; a trusted external issuer selects them with the JWT `plan`
+claim. The built-in anonymous token endpoints issue only `plan=free`.
+
+Supported algorithms are `HS256`, `RS256`, `ES256`, and `EdDSA`; asymmetric
+signing is recommended. JWTs must contain valid `iss`, `aud`, `exp`, and `sub`
+claims.
+
+## Free client credentials
+
+When `free_issuer` is configured, Rvz also exposes two HTTP endpoints on the
+same HTTPS origin:
+
+- `POST /v1/free/installations` creates an anonymous installation and returns
+  an access JWT plus refresh JWT.
+- `POST /v1/free/token` accepts the refresh JWT as `Authorization: Bearer ...`,
+  rotates it, and returns a new access JWT.
+
+The Flutter app stores both in the system credential vault. It refreshes the
+access JWT 24 hours before expiry and updates the running motifd Relay pumps
+without restarting active sessions. The defaults above make access JWTs valid
+for 7 days and refresh JWTs valid for 365 days. Change `access_ttl_secs` and
+`refresh_ttl_secs` to tune expiry; both must be positive.
+
+These are in addition to the two WebSocket endpoints: `/v2/accept` (motifd,
+owner JWT required) and `/v2/connect` (native client, no account JWT).
+
+## Add or rotate an owner
+
+The repository includes a Node.js-based helper that updates the local
+`auth.json` atomically and signs an ES256 owner JWT with the local issuer key:
+
+```sh
+./deploy/rendezvous/add-user.sh user-456 \
+  --client-to-server 1048576 \
+  --server-to-client 5242880 \
+  --burst-bytes 262144 \
+  --ttl-days 30 \
+  --output deploy/motifd/secrets/rendezvous/user-456.jwt
+```
+
+By default it reads:
+
+- `deploy/rendezvous/secrets/relay/auth.json`
+- `deploy/rendezvous/secrets/issuer/jwt-private.pem`
+
+Without `--output`, the JWT is written to stdout and status messages go to
+stderr. Existing users are rejected unless `--replace` is supplied. Run
+`./deploy/rendezvous/add-user.sh --help` for all rate, key, and path options.
+
+Restart Rvz after changing `auth.json`; it loads the user table only at startup.
+If an existing motifd JWT file is replaced, restart motifd as well.
 
 ## Run
 
@@ -61,11 +146,15 @@ docker run -d --name motif-rzv --restart=unless-stopped \
   ghcr.io/<owner>/motif-rendezvous:latest
 ```
 
+The mounted directory must contain `relay/` and `issuer/` as shown above. The
+container runs as UID/GID `10001`; make the private key readable only by that
+identity (for a bind mount, typically owner `10001:10001` and mode `0600`).
+
 The image defaults to:
 
 ```text
 --listen 0.0.0.0:8765
---auth-config /run/secrets/auth.json
+--auth-config /run/secrets/relay/auth.json
 ```
 
 Do not expose port 8765 directly to the public Internet. Bind it to loopback,
@@ -110,7 +199,8 @@ Other flags:
 
 ## Connect motifd
 
-Place the owner JWT in a mode-0600 file and start motifd:
+For a custom/self-hosted Relay, place the owner JWT in a mode-0600 file and
+start motifd:
 
 ```sh
 motifd \
@@ -161,4 +251,7 @@ WantedBy=multi-user.target
   inner pinned TLS protects motif application traffic from both proxy and Rvz.
 - JWTs remain bearer credentials if copied from disk. Prefer short expiry,
   protect motifd's JWT file, and rotate/revoke credentials when compromised.
+- The anonymous refresh credential is stateless. Rotating the issuer key
+  invalidates all Free refresh tokens; individual revocation would require a
+  persistent installation registry.
 - WebSocket compression is disabled; keepalive uses native Ping/Pong only.

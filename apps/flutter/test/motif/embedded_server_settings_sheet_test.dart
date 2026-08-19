@@ -16,7 +16,7 @@ void main() {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
         listenMode: EmbeddedListenMode.lan,
-        rzvEnabled: true,
+        rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'relay.example.com',
         rzvJwt: 'owner.jwt',
       ),
@@ -48,7 +48,7 @@ void main() {
     const pairingUri = 'motif://pair?v=1&rzv=relay.example.com&psk=abc&pk=def';
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
-        rzvEnabled: true,
+        rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'relay.example.com',
         rzvJwt: 'owner.jwt',
       ),
@@ -94,7 +94,7 @@ void main() {
   ) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
-        rzvEnabled: true,
+        rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'wss://relay.example.com',
         rzvJwt: 'owner.jwt',
       ),
@@ -129,6 +129,8 @@ void main() {
     expect(find.text('Loopback'), findsOneWidget);
     expect(find.text('LAN'), findsOneWidget);
     expect(find.text('CONNECTION RELAY'), findsOneWidget);
+    expect(find.text('Free'), findsOneWidget);
+    expect(find.text(kDefaultRzvRelayAddress), findsOneWidget);
     expect(find.text('NOTIFICATIONS'), findsOneWidget);
     expect(find.text('Cancel'), findsOneWidget);
     expect(find.text('Save'), findsOneWidget);
@@ -213,15 +215,15 @@ void main() {
     );
     await _pumpSettings(tester, service);
 
-    await tester.tap(find.text('Enable connection Relay'));
+    await tester.tap(find.text('Custom'));
     await tester.tap(find.text('Save'));
     await tester.pump();
 
     expect(
-      find.text('Relay address is required when Relay is enabled.'),
+      find.text('Relay address is required for a Custom Relay.'),
       findsOneWidget,
     );
-    expect(service.config.rzvEnabled, isFalse);
+    expect(service.config.rzvMode, EmbeddedRelayMode.free);
   });
 
   testWidgets('stopping the Server requires destructive confirmation', (
@@ -254,7 +256,7 @@ void main() {
   ) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
-        rzvEnabled: true,
+        rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'relay.example.com',
         rzvJwt: 'owner.jwt',
       ),
@@ -278,7 +280,7 @@ void main() {
     const jwt = 'header.payload.signature';
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
-        rzvEnabled: true,
+        rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'relay.example.com',
         rzvJwt: jwt,
       ),
@@ -302,10 +304,14 @@ void main() {
     final jwtField = _fieldWithLabel('Relay owner JWT');
     expect(tester.widget<TextField>(jwtField).obscureText, isTrue);
 
+    await tester.ensureVisible(find.byTooltip('Show Relay owner JWT'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Show Relay owner JWT'));
     await tester.pump();
     expect(tester.widget<TextField>(jwtField).obscureText, isFalse);
 
+    await tester.ensureVisible(find.byTooltip('Copy Relay owner JWT'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Copy Relay owner JWT'));
     await tester.pump();
     expect(clipboardText, jwt);

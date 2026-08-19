@@ -60,6 +60,9 @@ struct EmbedState {
     /// `motif://pair` link for the current rzv-enabled run, surfaced to the
     /// host UI via the status snapshot. `None` when rzv is off or stopped.
     pairing_uri: Mutex<Option<String>>,
+    /// Live owner credential for rendezvous pumps. Replaced on every start
+    /// and updated in place when the Flutter host refreshes a Free JWT.
+    rzv_jwt: Mutex<Option<motif_server::RzvJwt>>,
     /// Custom Tailscale control URL (Headscale) for the current run, if set.
     /// Used to recognize Headscale auth URLs in the log ring during startup
     /// (they're on this host, not login.tailscale.com). `None` for official
@@ -155,6 +158,7 @@ async fn do_start(cfg: MenuConfig) -> Result<(), String> {
     let server_cfg = built.server;
     // Surface the pairing link (if rzv is on) for the host's QR.
     *st.pairing_uri.lock().await = built.pairing_uri;
+    *st.rzv_jwt.lock().await = built.rzv_jwt;
     // Remember a custom (Headscale) control URL so the startup log-ring scrape
     // can recognize its auth URL; empty/official → None.
     *st.ts_control_url.lock().await = {
@@ -167,10 +171,14 @@ async fn do_start(cfg: MenuConfig) -> Result<(), String> {
         let result = motif_server::start(server_cfg).await;
         let mut s = st.server.lock().await;
         if matches!(&*s, ServerState::Starting) {
-            *s = match result {
-                Ok(rs) => ServerState::Running(rs),
-                Err(e) => ServerState::Failed(format!("{e:#}")),
-            };
+            match result {
+                Ok(rs) => *s = ServerState::Running(rs),
+                Err(e) => {
+                    *s = ServerState::Failed(format!("{e:#}"));
+                    drop(s);
+                    *st.rzv_jwt.lock().await = None;
+                }
+            }
         } else {
             // The host stopped (or restarted) while we were bringing up. If we
             // nonetheless got a live server, shut it back down so it doesn't
@@ -195,6 +203,7 @@ async fn do_stop() -> Result<(), String> {
         std::mem::replace(&mut *s, ServerState::Stopped)
     };
     *st.pairing_uri.lock().await = None;
+    *st.rzv_jwt.lock().await = None;
     *st.ts_control_url.lock().await = None;
     if let ServerState::Running(rs) = taken {
         rs.shutdown().await.map_err(|e| format!("{e:#}"))?;
@@ -451,6 +460,7 @@ pub unsafe extern "C" fn motif_embed_init(log_dir: *const c_char) -> c_int {
         log_ring,
         tsnet_dir,
         pairing_uri: Mutex::new(None),
+        rzv_jwt: Mutex::new(None),
         ts_control_url: Mutex::new(None),
     });
     0
@@ -503,6 +513,32 @@ pub extern "C" fn motif_embed_stop() -> c_int {
             -1
         }
     }
+}
+
+/// Replace the rendezvous owner JWT used for future `/v2/accept` parks.
+/// Existing paired streams are unaffected. Returns -1 when no rendezvous
+/// backend is active or the input is null/invalid UTF-8.
+///
+/// # Safety
+/// `jwt` must be null or a valid NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn motif_embed_update_rzv_jwt(jwt: *const c_char) -> c_int {
+    let Some(jwt) = cstr_to_str(jwt) else {
+        return -1;
+    };
+    if jwt.trim().is_empty() {
+        return -1;
+    }
+    rt().block_on(async {
+        let handle = state().rzv_jwt.lock().await.clone();
+        match handle {
+            Some(handle) => {
+                handle.set(jwt.trim());
+                0
+            }
+            None => -1,
+        }
+    })
 }
 
 /// Current status as JSON (the `StatusDto` shape). Never null on success;

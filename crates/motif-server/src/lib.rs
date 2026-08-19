@@ -63,6 +63,7 @@ fn local_timer() -> LocalTime<&'static [time::format_description::FormatItem<'st
 }
 
 pub use config::{RzvListenConfig, ServerConfig, TailscaleListenConfig};
+pub use motif_net::RzvJwt;
 pub use ws::RzvDirectInfo;
 
 /// Default embedded-tsnet hostname (`motifd-<sanitized system hostname>`).

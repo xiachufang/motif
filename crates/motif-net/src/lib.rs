@@ -19,7 +19,7 @@ pub mod dialer;
 pub mod listener;
 pub mod stream;
 
-pub use config::{DialTarget, ListenConfig, RzvListenConfig, TailscaleListenConfig};
+pub use config::{DialTarget, ListenConfig, RzvJwt, RzvListenConfig, TailscaleListenConfig};
 pub use dialer::{dial, NetError};
 pub use listener::{Listener, PeerAddr, RzvStatus};
 pub use stream::Stream;

@@ -8,6 +8,23 @@ EmbeddedListenMode _listenModeFromWire(Object? value) => switch (value) {
   _ => EmbeddedListenMode.loopback,
 };
 
+EmbeddedRelayMode _relayModeFromWire(
+  Object? value,
+  Map<String, Object?> rendezvous, {
+  required bool hasPersistedRendezvous,
+}) => switch (value) {
+  'free' => EmbeddedRelayMode.free,
+  'custom' => EmbeddedRelayMode.custom,
+  'off' => EmbeddedRelayMode.off,
+  // Legacy configs used only `enabled`. Preserve an explicitly configured
+  // owner JWT/address as Custom and preserve an explicit opt-out as Off.
+  _ when rendezvous['enabled'] is bool =>
+    rendezvous['enabled'] == true
+        ? EmbeddedRelayMode.custom
+        : EmbeddedRelayMode.off,
+  _ => hasPersistedRendezvous ? EmbeddedRelayMode.off : EmbeddedRelayMode.free,
+};
+
 Map<String, Object?> _jsonObject(Object? value) {
   if (value is! Map) return const {};
   return <String, Object?>{
@@ -33,7 +50,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
       'authkey': tsAuthkey,
       'control_url': tsControlUrl,
     },
-    'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay},
+    'rzv': {'mode': rzvMode.name, 'relay': rzvRelay},
     'push_relay_url': pushRelayUrl,
     'autostart': autostart,
     'allow_screen_capture': allowScreenCapture,
@@ -49,7 +66,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
       'authkey': tsAuthkey,
       'control_url': tsControlUrl,
     },
-    'rzv': {'enabled': rzvEnabled, 'relay': rzvRelay, 'jwt': rzvJwt},
+    'rzv': {'enabled': rzvEnabled, 'relay': effectiveRzvRelay, 'jwt': rzvJwt},
     'push_relay_url': pushRelayUrl,
     'autostart': autostart,
     'allow_screen_capture': allowScreenCapture,
@@ -70,7 +87,11 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> json) {
     tsHostname: _jsonString(tailscale['hostname'], defaults.tsHostname),
     tsAuthkey: _jsonString(tailscale['authkey'], defaults.tsAuthkey),
     tsControlUrl: _jsonString(tailscale['control_url'], defaults.tsControlUrl),
-    rzvEnabled: _jsonBool(rendezvous['enabled'], defaults.rzvEnabled),
+    rzvMode: _relayModeFromWire(
+      rendezvous['mode'],
+      rendezvous,
+      hasPersistedRendezvous: json['rzv'] is Map,
+    ),
     rzvRelay: _jsonString(rendezvous['relay'], defaults.rzvRelay),
     rzvJwt: _jsonString(rendezvous['jwt'], defaults.rzvJwt),
     pushRelayUrl: _jsonString(json['push_relay_url'], defaults.pushRelayUrl),

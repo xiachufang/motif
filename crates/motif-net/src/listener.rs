@@ -286,7 +286,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
         let event_tx = event_tx.clone();
         let url = c.url.clone();
         let token = c.token;
-        let jwt = c.jwt.clone();
+        let jwt = c.jwt_handle();
         let ws_tls = c.ws_tls.clone();
         let tls = c.tls.clone();
         pumps.push(tokio::spawn(async move {
@@ -294,9 +294,17 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
             let mut backoff = Duration::from_millis(250);
             loop {
                 let connected_tx = event_tx.clone();
-                match park_accept(&url, &token, &jwt, ws_tls.clone(), tls.clone(), move || {
-                    let _ = connected_tx.send(RzvPumpEvent::Connected(index));
-                })
+                let current_jwt = jwt.get();
+                match park_accept(
+                    &url,
+                    &token,
+                    &current_jwt,
+                    ws_tls.clone(),
+                    tls.clone(),
+                    move || {
+                        let _ = connected_tx.send(RzvPumpEvent::Connected(index));
+                    },
+                )
                 .await
                 {
                     Ok(stream) => {

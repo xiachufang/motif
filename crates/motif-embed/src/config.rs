@@ -72,6 +72,7 @@ pub struct RzvConfig {
 pub struct BuiltServerConfig {
     pub server: ServerConfig,
     pub pairing_uri: Option<String>,
+    pub rzv_jwt: Option<motif_server::RzvJwt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +151,7 @@ impl MenuConfig {
         // persisted psk: the TLS identity (→ pin), the relay token, the access
         // bearer, and a single `motif://pair` link (rzv form or direct form).
         let mut rendezvous = None;
+        let mut rzv_jwt = None;
         let mut listen_tls = None;
         let mut rzv_direct = None;
         let mut token = None;
@@ -180,6 +182,7 @@ impl MenuConfig {
                     self.rzv.jwt.trim().to_string(),
                 );
                 c.tls = Some(identity.server_config.clone());
+                rzv_jwt = Some(c.jwt_handle());
                 rendezvous = Some(c);
                 pairing_uri = Some(motif_server::rzv::pair_uri(
                     &relay,
@@ -255,6 +258,7 @@ impl MenuConfig {
                 allow_screen_capture: self.allow_screen_capture,
             },
             pairing_uri,
+            rzv_jwt,
         })
     }
 }

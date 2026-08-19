@@ -17,6 +17,7 @@ import 'embedded_server_runtime_controller.dart';
 import 'embedded_server_runtime_state.dart';
 import 'embedded_server_serialization.dart';
 import 'embedded_server_service.dart';
+import 'free_relay_credentials.dart';
 import '../persistence/serialization.dart';
 
 const String _kConfigKey = 'motif.embedded.v1';
@@ -34,11 +35,19 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   final SharedPreferences _prefs;
   final SecretStore _secrets;
   final LibMotifEmbed? _lib;
+  final FreeRelayCredentialManager _freeRelayCredentials;
+  Timer? _freeRelayRefreshTimer;
+  DateTime? _nextFreeRelayRecovery;
+  bool _freeRelayRecoveryInFlight = false;
 
   late final EmbeddedServerRuntimeController _runtime;
 
-  DesktopEmbeddedServerService._(this._prefs, this._secrets, LibMotifEmbed? lib)
-    : _lib = lib,
+  DesktopEmbeddedServerService._(
+    this._prefs,
+    this._secrets,
+    LibMotifEmbed? lib,
+    this._freeRelayCredentials,
+  ) : _lib = lib,
       super(available: lib != null, config: _loadConfig(_prefs)) {
     _runtime = EmbeddedServerRuntimeController(
       available: lib != null,
@@ -89,7 +98,12 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
         } catch (_) {}
       }
     }
-    final svc = DesktopEmbeddedServerService._(prefs, secrets, lib);
+    final svc = DesktopEmbeddedServerService._(
+      prefs,
+      secrets,
+      lib,
+      FreeRelayCredentialManager(secrets),
+    );
     await svc._loadRzvJwtAndMigrate();
     if (svc.available && svc.config.autostart) {
       unawaited(svc.start());
@@ -151,6 +165,10 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
       }
     }
     final applied = next.copyWith(rzvJwt: jwt);
+    if (applied.rzvMode != EmbeddedRelayMode.free) {
+      _freeRelayRefreshTimer?.cancel();
+      _freeRelayRefreshTimer = null;
+    }
     await _persistNonSecretConfig(applied);
     return applied;
   }
@@ -169,8 +187,48 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   ) async {
     final lib = _lib;
     if (lib == null) return status;
-    lib.start(jsonEncode(config.toRuntimeJson()));
+    var runtimeConfig = config;
+    if (config.rzvMode == EmbeddedRelayMode.free) {
+      final credentials = await _freeRelayCredentials.ensureValid(
+        config.effectiveRzvRelay,
+      );
+      runtimeConfig = config.copyWith(rzvJwt: credentials.accessToken);
+      _scheduleFreeRelayRefresh(credentials);
+    }
+    lib.start(jsonEncode(runtimeConfig.toRuntimeJson()));
     return _readStatus(force: true) ?? status;
+  }
+
+  void _scheduleFreeRelayRefresh(FreeRelayCredentials credentials) {
+    _freeRelayRefreshTimer?.cancel();
+    final refreshAt = DateTime.fromMillisecondsSinceEpoch(
+      credentials.accessExpiresAt * 1000,
+      isUtc: true,
+    ).subtract(kFreeRelayRefreshBeforeExpiry);
+    var delay = refreshAt.difference(DateTime.now().toUtc());
+    if (delay < const Duration(minutes: 1)) delay = const Duration(minutes: 1);
+    _freeRelayRefreshTimer = Timer(
+      delay,
+      () => unawaited(_refreshFreeRelayJwt()),
+    );
+  }
+
+  Future<void> _refreshFreeRelayJwt() async {
+    if (config.rzvMode != EmbeddedRelayMode.free) return;
+    try {
+      final credentials = await _freeRelayCredentials.ensureValid(
+        config.effectiveRzvRelay,
+        forceRefresh: true,
+      );
+      _lib?.updateRzvJwt(credentials.accessToken);
+      _nextFreeRelayRecovery = null;
+      _scheduleFreeRelayRefresh(credentials);
+    } catch (_) {
+      _freeRelayRefreshTimer = Timer(
+        const Duration(minutes: 15),
+        () => unawaited(_refreshFreeRelayJwt()),
+      );
+    }
   }
 
   /// Stop the embedded server. Idempotent.
@@ -180,6 +238,8 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   Future<EmbeddedServerStatus> _stopNative(RuntimeEffectContext context) async {
     final lib = _lib;
     if (lib == null) return status;
+    _freeRelayRefreshTimer?.cancel();
+    _freeRelayRefreshTimer = null;
     lib.stop();
     return _readStatus(force: true) ?? status;
   }
@@ -281,7 +341,32 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
 
   Future<EmbeddedServerStatus?> _probeStatus(
     RuntimeEffectContext context,
-  ) async => _readStatus(force: false);
+  ) async {
+    final next = _readStatus(force: false);
+    final relayError = next?.relayError?.toLowerCase();
+    final now = DateTime.now();
+    final authenticationFailed =
+        relayError != null &&
+        (relayError.contains('jwt') ||
+            relayError.contains('401') ||
+            relayError.contains('403') ||
+            relayError.contains('unauthorized') ||
+            relayError.contains('forbidden'));
+    if (config.rzvMode == EmbeddedRelayMode.free &&
+        authenticationFailed &&
+        !_freeRelayRecoveryInFlight &&
+        (_nextFreeRelayRecovery == null ||
+            !now.isBefore(_nextFreeRelayRecovery!))) {
+      _freeRelayRecoveryInFlight = true;
+      _nextFreeRelayRecovery = now.add(const Duration(minutes: 15));
+      unawaited(
+        _refreshFreeRelayJwt().whenComplete(
+          () => _freeRelayRecoveryInFlight = false,
+        ),
+      );
+    }
+    return next;
+  }
 
   EmbeddedServerStatus? _readStatus({required bool force}) {
     final lib = _lib;
@@ -312,6 +397,8 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
 
   @override
   void dispose() {
+    _freeRelayRefreshTimer?.cancel();
+    _freeRelayCredentials.dispose();
     _runtime.dispose();
     super.dispose();
   }

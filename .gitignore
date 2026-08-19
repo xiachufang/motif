@@ -33,8 +33,8 @@ apps/ios/Motif.xcodeproj/
 apps/ios/Motif/Resources/web/
 apps/ios/vendor
 
-# Push relay secrets — APNs .p8 auth key must never be committed.
-secrets/
+# Local deployment secrets must never be committed.
+/deploy/*/secrets/
 *.p8
 
 # Local Codex credentials used by the App Review container.

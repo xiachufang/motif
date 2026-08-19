@@ -35,10 +35,27 @@ void main() {
     expect(config.listenMode, EmbeddedListenMode.lan);
     expect(config.port, 7777);
     expect(config.rzvEnabled, isTrue);
+    expect(config.rzvMode, EmbeddedRelayMode.custom);
     expect(config.rzvRelay, 'us.allsunday.io:8765');
     expect(config.autostart, isTrue);
     expect(config.pushRelayUrl, kDefaultPushRelayAddress);
     expect(config.allowScreenCapture, isFalse);
+  });
+
+  test('fresh config defaults to the public Free Relay', () {
+    const config = EmbeddedServerConfig();
+
+    expect(config.rzvMode, EmbeddedRelayMode.free);
+    expect(config.effectiveRzvRelay, kDefaultRzvRelayAddress);
+    expect((config.toRuntimeJson()['rzv'] as Map)['enabled'], isTrue);
+  });
+
+  test('migrates an explicitly disabled legacy Relay to Off', () {
+    final config = embeddedServerConfigFromJson({
+      'rzv': {'enabled': false, 'relay': ''},
+    });
+
+    expect(config.rzvMode, EmbeddedRelayMode.off);
   });
 
   test('uses defaults for missing or malformed values', () {
@@ -84,7 +101,7 @@ void main() {
 
   test('persisted embedded config excludes the relay JWT', () {
     const config = EmbeddedServerConfig(
-      rzvEnabled: true,
+      rzvMode: EmbeddedRelayMode.custom,
       rzvRelay: 'wss://relay.example.com',
       rzvJwt: 'header.payload.signature',
     );

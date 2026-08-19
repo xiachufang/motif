@@ -142,6 +142,13 @@ tailscale-only 由 tailnet ACL 把门（无 `--listen` 时不用 psk/bearer）�
 
 **通过 rendezvous relay 配对：**
 
+桌面 App 的 Server Settings → Connection Relay 默认选择 **Free**，使用
+`motif-relay.slothease.com`。App 会匿名注册 installation，把 access/refresh JWT
+存进系统凭据库，并在 access JWT 到期前自动刷新；不需要手工复制 JWT。已有的 Relay
+地址和 owner JWT 配置会继续作为 **Custom** 使用，也可以选择 **Off**。
+
+直接运行 `motifd` 或使用自建 Relay 时仍可手工配置：
+
 ```bash
 ./target/release/motifd \
   --rzv-relay relay.example.com:9999 \

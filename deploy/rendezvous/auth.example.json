@@ -1,0 +1,32 @@
+{
+  "jwt": {
+    "algorithm": "ES256",
+    "issuer": "motif-auth",
+    "audience": "motif-rendezvous",
+    "verification_key": "jwt-public.pem"
+  },
+  "free_issuer": {
+    "signing_key": "../issuer/jwt-private.pem",
+    "access_ttl_secs": 604800,
+    "refresh_ttl_secs": 31536000
+  },
+  "plans": {
+    "free": {
+      "per_user": {
+        "upload_bytes_per_sec": 1048576,
+        "download_bytes_per_sec": 5242880
+      },
+      "total": {
+        "upload_bytes_per_sec": 104857600,
+        "download_bytes_per_sec": 524288000
+      }
+    }
+  },
+  "users": {
+    "existing-owner": {
+      "client_to_server_bytes_per_sec": 1048576,
+      "server_to_client_bytes_per_sec": 5242880,
+      "burst_bytes": 262144
+    }
+  }
+}

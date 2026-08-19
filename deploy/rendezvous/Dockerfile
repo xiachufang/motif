@@ -40,4 +40,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=3s --retries=3 \
     CMD ["motif-rendezvous", "healthcheck", "--addr", "127.0.0.1:8765"]
 
 ENTRYPOINT ["motif-rendezvous"]
-CMD ["--listen", "0.0.0.0:8765", "--auth-config", "/run/secrets/auth.json"]
+CMD ["--listen", "0.0.0.0:8765", "--auth-config", "/run/secrets/relay/auth.json"]
