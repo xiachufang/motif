@@ -77,27 +77,28 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
-          mkdir -p .tmp-rzv
-          printf '%s\n' 'ci-rendezvous-secret' > .tmp-rzv/jwt.key
-          cat > .tmp-rzv/auth.json <<'JSON'
+          mkdir -p .tmp-rzv/relay
+          printf '%s\n' 'ci-rendezvous-secret' > .tmp-rzv/relay/jwt.key
+          cat > .tmp-rzv/relay/auth.json <<'JSON'
           {
             "jwt": {
               "algorithm": "HS256",
               "issuer": "ci",
               "audience": "ci-rzv",
-              "verification_key": "/run/secrets/jwt.key"
+              "verification_key": "jwt.key"
             },
-            "users": {
-              "ci-user": {
-                "client_to_server_bytes_per_sec": 1048576,
-                "server_to_client_bytes_per_sec": 1048576,
-                "burst_bytes": 65536
+            "plans": {
+              "free": {
+                "per_installation": {
+                  "upload_bytes_per_sec": 1048576,
+                  "download_bytes_per_sec": 1048576
+                }
               }
             }
           }
           JSON
-          chmod 755 .tmp-rzv
-          chmod 644 .tmp-rzv/*
+          chmod 755 .tmp-rzv .tmp-rzv/relay
+          chmod 644 .tmp-rzv/relay/*
           docker run -d --name rzv-smoke -p 127.0.0.1:8765:8765 \
             -v "$PWD/.tmp-rzv:/run/secrets:ro" "$TAG"
           for i in $(seq 1 20); do
