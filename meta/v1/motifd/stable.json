@@ -1,14 +1,14 @@
 {
   "assets": {
     "linux-x86_64": {
-      "file": "motifd-1.0.69-52-linux-x86_64.tar.gz",
-      "publishedAt": "2026-08-19T09:21:47Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.69",
-      "sha256": "1317e7ffe695480a68b8679b74b655e0483e487ce5600943fcac77d947d5612a",
-      "size": 30107200,
-      "tag": "v1.0.69",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.69/motifd-1.0.69-52-linux-x86_64.tar.gz",
-      "version": "1.0.69"
+      "file": "motifd-1.0.70-53-linux-x86_64.tar.gz",
+      "publishedAt": "2026-08-19T12:31:33Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.70",
+      "sha256": "02ee79d55bdaa51670a0f1faf134d9ef9fc507602f5e29a617d01317e17d389e",
+      "size": 30107116,
+      "tag": "v1.0.70",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.70/motifd-1.0.70-53-linux-x86_64.tar.gz",
+      "version": "1.0.70"
     },
     "macos-arm64": {
       "file": "motifd-1.0.69-52-macos-arm64.tar.gz",
@@ -34,5 +34,5 @@
   "channel": "stable",
   "product": "motifd",
   "schema": 1,
-  "updatedAt": "2026-08-19T09:21:50Z"
+  "updatedAt": "2026-08-19T12:31:34Z"
 }
