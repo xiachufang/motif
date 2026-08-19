@@ -35,6 +35,7 @@ void main() {
               "version": "1.0.36",
               "tag": "v1.0.36",
               "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.36",
+              "file": "Motif-linux.tar.gz",
               "url": "https://github.com/xiachufang/motif/releases/download/v1.0.36/Motif-linux.tar.gz",
               "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "size": 123
@@ -50,6 +51,12 @@ void main() {
       result.update?.releaseUrl.toString(),
       'https://github.com/xiachufang/motif/releases/tag/v1.0.36',
     );
+    expect(
+      result.update?.downloadUrl.toString(),
+      'https://github.com/xiachufang/motif/releases/download/v1.0.36/Motif-linux.tar.gz',
+    );
+    expect(result.update?.fileName, 'Motif-linux.tar.gz');
+    expect(result.update?.size, 123);
   });
 
   test('does not offer the same or an older release', () async {
@@ -65,6 +72,7 @@ void main() {
               "version": "1.0.35",
               "tag": "v1.0.35",
               "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.35",
+              "file": "Motif-linux.tar.gz",
               "url": "https://github.com/xiachufang/motif/releases/download/v1.0.35/Motif-linux.tar.gz",
               "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
               "size": 123
@@ -91,6 +99,7 @@ void main() {
               "version": "1.0.36-rc.1",
               "tag": "v1.0.36-rc.1",
               "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.36-rc.1",
+              "file": "Motif-linux.tar.gz",
               "url": "https://github.com/xiachufang/motif/releases/download/v1.0.36-rc.1/Motif-linux.tar.gz",
               "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
               "size": 123
@@ -116,6 +125,7 @@ void main() {
               "version": "1.0.99",
               "tag": "v1.0.99",
               "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.99",
+              "file": "Motif-notarized.dmg",
               "url": "https://github.com/xiachufang/motif/releases/download/v1.0.99/Motif.dmg",
               "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "size": 123
@@ -136,6 +146,13 @@ void main() {
       releaseUrl: Uri.parse(
         'https://github.com/xiachufang/motif/releases/tag/v1.0.36',
       ),
+      downloadUrl: Uri.parse(
+        'https://github.com/xiachufang/motif/releases/download/v1.0.36/Motif-linux.tar.gz',
+      ),
+      fileName: 'Motif-linux.tar.gz',
+      sha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      size: 123,
       title: 'Motif 1.0.36',
     );
     final firstPresentationClosed = Completer<void>();
@@ -165,6 +182,13 @@ void main() {
       releaseUrl: Uri.parse(
         'https://github.com/xiachufang/motif/releases/tag/v1.0.36',
       ),
+      downloadUrl: Uri.parse(
+        'https://github.com/xiachufang/motif/releases/download/v1.0.36/Motif-linux.tar.gz',
+      ),
+      fileName: 'Motif-linux.tar.gz',
+      sha256:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      size: 123,
       title: 'Motif 1.0.36',
     );
     final newer = DesktopUpdate(
@@ -172,6 +196,13 @@ void main() {
       releaseUrl: Uri.parse(
         'https://github.com/xiachufang/motif/releases/tag/v1.0.37',
       ),
+      downloadUrl: Uri.parse(
+        'https://github.com/xiachufang/motif/releases/download/v1.0.37/Motif-linux.tar.gz',
+      ),
+      fileName: 'Motif-linux.tar.gz',
+      sha256:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      size: 123,
       title: 'Motif 1.0.37',
     );
 

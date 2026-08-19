@@ -55,7 +55,9 @@ metadata-only artifact.
 ## Consumers
 
 - The desktop update checker reads the current platform's entry from
-  `app/stable.json`. It still opens the GitHub Release page for manual install.
+  `app/stable.json`, downloads that exact asset into Downloads (or a temporary
+  fallback), verifies its declared size and SHA-256, and opens it with the
+  platform shell. The GitHub Release page remains available as a fallback.
 - SSH auto-initialize reads `motifd/stable.json`, selects the remote platform,
   and verifies the archive checksum. If the server cannot download or verify
   it, the App downloads and verifies the archive locally before uploading it

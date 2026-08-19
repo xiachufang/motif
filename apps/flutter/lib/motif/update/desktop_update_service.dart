@@ -1,6 +1,6 @@
 /// Lightweight desktop release checking backed by the per-platform stable
-/// manifest on GitHub Pages. This deliberately only discovers a new version;
-/// it never downloads or changes the installed application.
+/// manifest on GitHub Pages. Downloads are performed separately after the
+/// user accepts an update.
 library;
 
 import 'dart:async';
@@ -22,11 +22,19 @@ class DesktopUpdate {
   const DesktopUpdate({
     required this.version,
     required this.releaseUrl,
+    required this.downloadUrl,
+    required this.fileName,
+    required this.sha256,
+    required this.size,
     required this.title,
   });
 
   final String version;
   final Uri releaseUrl;
+  final Uri downloadUrl;
+  final String fileName;
+  final String sha256;
+  final int size;
   final String title;
 }
 
@@ -128,12 +136,14 @@ class DesktopUpdateChecker {
       final tag = asset['tag'];
       final releasePage = asset['releasePage'];
       final downloadUrl = asset['url'];
+      final fileName = asset['file'];
       final checksum = asset['sha256'];
       final size = asset['size'];
       if (version is! String ||
           tag is! String ||
           releasePage is! String ||
           downloadUrl is! String ||
+          fileName is! String ||
           checksum is! String ||
           size is! int ||
           size <= 0 ||
@@ -155,7 +165,9 @@ class DesktopUpdateChecker {
           releaseUri.host != 'github.com' ||
           downloadUri == null ||
           downloadUri.scheme != 'https' ||
-          downloadUri.host != 'github.com') {
+          downloadUri.host != 'github.com' ||
+          !_isExpectedDownload(downloadUri, tag, fileName) ||
+          !_isExpectedPlatformFile(platform, fileName)) {
         Log.w(
           'Unable to compare or open stable app metadata',
           name: 'motif.update',
@@ -175,6 +187,10 @@ class DesktopUpdateChecker {
         DesktopUpdate(
           version: latestVersion.display,
           releaseUrl: releaseUri,
+          downloadUrl: downloadUri,
+          fileName: fileName,
+          sha256: checksum,
+          size: size,
           title: tag,
         ),
       );
@@ -197,6 +213,28 @@ class DesktopUpdateChecker {
     } finally {
       if (ownsClient) requestClient.close();
     }
+  }
+
+  static bool _isExpectedDownload(Uri uri, String tag, String fileName) {
+    final segments = uri.pathSegments;
+    return segments.length == 6 &&
+        segments[0] == 'xiachufang' &&
+        segments[1] == 'motif' &&
+        segments[2] == 'releases' &&
+        segments[3] == 'download' &&
+        segments[4] == tag &&
+        segments[5] == fileName;
+  }
+
+  static bool _isExpectedPlatformFile(String platform, String fileName) {
+    if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9._+()-]*$').hasMatch(fileName)) {
+      return false;
+    }
+    return switch (platform) {
+      'macos-arm64' => fileName.endsWith('-notarized.dmg'),
+      'linux-x86_64' || 'windows-x86_64' => fileName.endsWith('.tar.gz'),
+      _ => false,
+    };
   }
 }
 
