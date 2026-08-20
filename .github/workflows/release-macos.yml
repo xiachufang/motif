@@ -5,7 +5,12 @@ name: release-macos-signed
 on:
   push:
     tags: ['v*']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to repair and publish (for example v1.0.71)
+        required: false
+        type: string
 
 concurrency:
   group: release-macos-signed-${{ github.ref }}
@@ -34,10 +39,18 @@ jobs:
           targets: aarch64-apple-darwin
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '1.25.5'
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Assert repair tag matches pubspec version
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]; exit}' apps/flutter/pubspec.yaml)"
+          test "$RELEASE_TAG" = "v$version"
 
       # The Makefile imports both signing and notarization credentials into one
       # temporary keychain and owns the complete release lifecycle.
@@ -60,15 +73,15 @@ jobs:
           if-no-files-found: error
 
       - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/release/Motif-*-notarized.dmg
           fail_on_unmatched_files: true
 
       - name: Publish stable app metadata
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -78,4 +91,5 @@ jobs:
           python3 scripts/publish_release_metadata.py \
             --product app \
             --platform macos-arm64 \
-            --artifact "$artifact"
+            --artifact "$artifact" \
+            --tag "${{ inputs.release_tag || github.ref_name }}"
