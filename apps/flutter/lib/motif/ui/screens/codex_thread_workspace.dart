@@ -240,6 +240,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
     BuildContext context,
     CodexConversationState state,
   ) {
+    final projectedExternalActiveTurn = state.projectedExternalActiveTurn;
     final decisionPlan = _decisionPlan(state);
     final queueKey = Object.hashAll(
       state.queuedMessages.map((message) => message.id),
@@ -302,7 +303,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                 CodexMotionSwitcher(
                   animateSize: true,
                   alignment: Alignment.bottomCenter,
-                  child: decisionPlan != null
+                  child: projectedExternalActiveTurn != null
+                      ? const _ExternalThreadActiveNotice(
+                          key: ValueKey('codex-external-thread-active'),
+                        )
+                      : decisionPlan != null
                       ? _PlanDecisionPanel(
                           key: const ValueKey('codex-plan-decision'),
                           sending: state.sending,
@@ -793,12 +798,47 @@ List<Widget> _turnSliverChildren({
   final result = <Widget>[];
   final response = items
       .whereType<CodexAgentMessageThreadItem>()
-      .where((item) => item.text.trim().isNotEmpty)
+      .where(_isFinalAnswerMessage)
       .lastOrNull;
+  final activeForDisplay =
+      turn.status == CodexTurnStatus.inProgress ||
+      state.projectedExternalActiveTurn?.id == turn.id;
+  var leadingEnd = 0;
+  while (leadingEnd < items.length &&
+      items[leadingEnd] is CodexUserMessageThreadItem) {
+    leadingEnd++;
+  }
 
   result.add(const SizedBox(height: MotifSpacing.md));
 
-  if (turn.status == CodexTurnStatus.inProgress) {
+  if (activeForDisplay) {
+    result.addAll(
+      _turnContent(
+        state,
+        turn,
+        items.take(leadingEnd),
+        groupKeyPrefix: 'leading',
+        activeForDisplay: false,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
+        onOpenTurnDiff: onOpenTurnDiff,
+      ),
+    );
+    result.add(
+      _WorkingStatus(key: ValueKey('codex-turn-status-${turn.id}'), turn: turn),
+    );
+    result.addAll(
+      _turnContent(
+        state,
+        turn,
+        items.skip(leadingEnd),
+        activeForDisplay: true,
+        onOpenFile: onOpenFile,
+        onOpenImage: onOpenImage,
+        onOpenTurnDiff: onOpenTurnDiff,
+      ),
+    );
+  } else if (response == null) {
     result.addAll(
       _turnContent(
         state,
@@ -809,39 +849,32 @@ List<Widget> _turnSliverChildren({
         onOpenTurnDiff: onOpenTurnDiff,
       ),
     );
-  } else {
-    var leadingEnd = 0;
-    while (leadingEnd < items.length &&
-        items[leadingEnd] is CodexUserMessageThreadItem) {
-      leadingEnd++;
+    if (turn.status == CodexTurnStatus.interrupted) {
+      result.add(
+        _TurnTimingStatus(
+          key: ValueKey('codex-turn-status-${turn.id}'),
+          label: _workedLabel(turn),
+          turnId: turn.id,
+        ),
+      );
     }
+  } else {
     var responseIndex = -1;
     for (var index = items.length - 1; index >= leadingEnd; index--) {
       final item = items[index];
-      if (item is CodexAgentMessageThreadItem && item.text.trim().isNotEmpty) {
+      if (item is CodexAgentMessageThreadItem && _isFinalAnswerMessage(item)) {
         responseIndex = index;
         break;
       }
     }
-    if (responseIndex == -1) {
-      for (var index = items.length - 1; index >= leadingEnd; index--) {
-        final item = items[index];
-        if (item is CodexPlanThreadItem && item.text.trim().isNotEmpty) {
-          responseIndex = index;
-          break;
-        }
-      }
-    }
-    final historyEnd = responseIndex == -1 ? items.length : responseIndex;
+    final historyEnd = responseIndex;
     final leading = items.take(leadingEnd).toList(growable: false);
     final history = items
         .skip(leadingEnd)
         .take(historyEnd - leadingEnd)
         .toList(growable: false);
     final hasExpandableHistory = history.any(_isExpandableHistoryItem);
-    final responseItems = responseIndex == -1
-        ? const <CodexThreadItem>[]
-        : items.skip(responseIndex).toList(growable: false);
+    final responseItems = items.skip(responseIndex).toList(growable: false);
     result
       ..addAll(
         _turnContent(
@@ -962,11 +995,14 @@ List<Widget> _turnContent(
   Iterable<CodexThreadItem> items, {
   String groupKeyPrefix = 'active',
   bool boundedActivity = true,
+  bool? activeForDisplay,
   CodexOpenFile? onOpenFile,
   CodexOpenImage? onOpenImage,
   CodexOpenTurnDiff? onOpenTurnDiff,
 }) {
   final itemList = items.toList(growable: false);
+  final isActive =
+      activeForDisplay ?? turn.status == CodexTurnStatus.inProgress;
   final latestVisibleItem = itemList.lastOrNull;
   final result = <Widget>[];
   final activity = <CodexThreadItem>[];
@@ -976,7 +1012,7 @@ List<Widget> _turnContent(
   void flushActivity() {
     if (activity.isEmpty) return;
     final reasoningIsLatest =
-        turn.status == CodexTurnStatus.inProgress &&
+        isActive &&
         latestVisibleItem is CodexReasoningThreadItem &&
         identical(activity.last, latestVisibleItem);
     final visibleActivity = [
@@ -1014,10 +1050,9 @@ List<Widget> _turnContent(
           key: ValueKey(groupKey),
           state: state,
           items: List.unmodifiable(visibleActivity),
-          showLatestItemTitle: turn.status == CodexTurnStatus.inProgress,
+          showLatestItemTitle: isActive,
           processingLatestItem:
-              turn.status == CodexTurnStatus.inProgress &&
-              identical(visibleActivity.last, latestVisibleItem),
+              isActive && identical(visibleActivity.last, latestVisibleItem),
           boundedDetails: boundedActivity,
           onOpenFile: onOpenFile,
           onOpenImage: onOpenImage,
@@ -1032,7 +1067,7 @@ List<Widget> _turnContent(
     // Reasoning participates in the active activity group's collapsed title,
     // but remains absent from completed turn history and has no expanded body.
     if (item is CodexReasoningThreadItem) {
-      if (turn.status == CodexTurnStatus.inProgress) activity.add(item);
+      if (isActive) activity.add(item);
       continue;
     }
     if (item is CodexContextCompactionThreadItem) {
@@ -1075,8 +1110,7 @@ List<Widget> _turnContent(
     }
   }
   flushActivity();
-  if (turn.status == CodexTurnStatus.inProgress &&
-      !bottomHasProgressOrAssistant) {
+  if (isActive && !bottomHasProgressOrAssistant) {
     result.add(
       Padding(
         key: ValueKey('codex-turn-thinking-${turn.id}'),
@@ -1151,6 +1185,115 @@ class _WorkedHeader extends StatelessWidget {
   }
 }
 
+class _WorkingStatus extends StatefulWidget {
+  const _WorkingStatus({required this.turn, super.key});
+
+  final CodexTurn turn;
+
+  @override
+  State<_WorkingStatus> createState() => _WorkingStatusState();
+}
+
+class _WorkingStatusState extends State<_WorkingStatus>
+    with WidgetsBindingObserver {
+  Timer? _timer;
+  late int _fallbackStartedAtMs;
+  late int _elapsedMs;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _resetElapsed();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  @override
+  void didUpdateWidget(covariant _WorkingStatus oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.turn.id != widget.turn.id ||
+        oldWidget.turn.startedAt != widget.turn.startedAt) {
+      _resetElapsed();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _syncWithWallClock();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _resetElapsed() {
+    _fallbackStartedAtMs = DateTime.now().millisecondsSinceEpoch;
+    _elapsedMs = _wallClockElapsed();
+  }
+
+  void _tick() {
+    if (!mounted) return;
+    final tickElapsed = _elapsedMs + const Duration(seconds: 1).inMilliseconds;
+    final wallElapsed = _wallClockElapsed();
+    setState(() {
+      _elapsedMs = wallElapsed > tickElapsed ? wallElapsed : tickElapsed;
+    });
+  }
+
+  void _syncWithWallClock() {
+    if (!mounted) return;
+    setState(() => _elapsedMs = _wallClockElapsed());
+  }
+
+  int _wallClockElapsed() {
+    final startedAtMs = widget.turn.startedAt == null
+        ? _fallbackStartedAtMs
+        : _timestampMilliseconds(widget.turn.startedAt!);
+    final elapsed = DateTime.now().millisecondsSinceEpoch - startedAtMs;
+    return elapsed < 0 ? 0 : elapsed;
+  }
+
+  @override
+  Widget build(BuildContext context) => _TurnTimingStatus(
+    label: _durationLabel('Working for', _elapsedMs),
+    turnId: widget.turn.id,
+  );
+}
+
+class _TurnTimingStatus extends StatelessWidget {
+  const _TurnTimingStatus({
+    required this.label,
+    required this.turnId,
+    super.key,
+  });
+
+  final String label;
+  final String turnId;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: MotifSpacing.sm),
+      margin: const EdgeInsets.only(
+        top: MotifSpacing.xl,
+        bottom: MotifSpacing.md,
+      ),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: c.border)),
+      ),
+      child: Text(
+        label,
+        key: ValueKey('codex-turn-time-$turnId'),
+        style: MotifType.subhead.copyWith(color: c.textTertiary),
+      ),
+    );
+  }
+}
+
 class _ContextCompactionItem extends StatelessWidget {
   const _ContextCompactionItem({required this.state, required this.item});
 
@@ -1200,6 +1343,9 @@ bool _isVisibleTextBoundary(CodexThreadItem item) => switch (item) {
   CodexPlanThreadItem value => value.text.trim().isNotEmpty,
   _ => false,
 };
+
+bool _isFinalAnswerMessage(CodexAgentMessageThreadItem item) =>
+    item.text.trim().isNotEmpty && item.phase?.value == 'final_answer';
 
 bool _isExpandableHistoryItem(CodexThreadItem item) => switch (item) {
   CodexUserMessageThreadItem() || CodexReasoningThreadItem() => false,
@@ -2234,6 +2380,52 @@ class _QueuedMessageCard extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExternalThreadActiveNotice extends StatelessWidget {
+  const _ExternalThreadActiveNotice({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Container(
+      padding: const EdgeInsets.all(MotifSpacing.md),
+      decoration: BoxDecoration(
+        color: c.surface,
+        border: Border.all(color: c.borderStrong),
+        borderRadius: BorderRadius.circular(MotifRadius.lg),
+        boxShadow: MotifElevation.overlay(c.shadow),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.devices_rounded,
+            size: MotifIconSize.md,
+            color: c.textSecondary,
+          ),
+          const SizedBox(width: MotifSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'This thread is active elsewhere',
+                  style: MotifType.subhead.copyWith(color: c.textPrimary),
+                ),
+                const SizedBox(height: MotifSpacing.xs),
+                Text(
+                  'Motif will update it automatically. You can send a message '
+                  'when the other turn finishes.',
+                  style: MotifType.callout.copyWith(color: c.textSecondary),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -3649,7 +3841,7 @@ void _insertNewline(TextEditingController controller) {
 
 String _workedLabel(CodexTurn turn) {
   final prefix = switch (turn.status) {
-    CodexTurnStatus.interrupted => 'You stopped after',
+    CodexTurnStatus.interrupted => 'Stopped after',
     CodexTurnStatus.failed => 'Failed after',
     _ => 'Worked for',
   };
@@ -3661,12 +3853,16 @@ String _workedLabel(CodexTurn turn) {
           : null);
   if (duration == null) {
     return switch (turn.status) {
-      CodexTurnStatus.interrupted => 'You stopped',
+      CodexTurnStatus.interrupted => 'Stopped',
       CodexTurnStatus.failed => 'Failed',
       _ => 'Worked',
     };
   }
-  final seconds = (duration < 0 ? 0 : duration) ~/ 1000;
+  return _durationLabel(prefix, duration);
+}
+
+String _durationLabel(String prefix, int durationMs) {
+  final seconds = (durationMs < 0 ? 0 : durationMs) ~/ 1000;
   if (seconds < 60) return '$prefix ${seconds}s';
   final minutes = seconds ~/ 60;
   final remaining = seconds % 60;

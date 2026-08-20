@@ -10,6 +10,7 @@ import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_state.dart';
+import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
@@ -613,6 +614,250 @@ void main() {
   });
 
   testWidgets(
+    'active turn timing grows and becomes stopped timing when interrupted',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final startedAt =
+          DateTime.now().millisecondsSinceEpoch -
+          const Duration(minutes: 2, seconds: 44).inMilliseconds;
+      final state = workspaceState(client)
+        ..turns = [
+          CodexTurn(
+            id: 'timed-turn',
+            items: const [
+              CodexUserMessageThreadItem(
+                id: 'timed-user',
+                content: [CodexTextUserInput(text: 'Run the task')],
+              ),
+              CodexAgentMessageThreadItem(
+                id: 'timed-commentary',
+                phase: CodexMessagePhase('commentary'),
+                text: 'I am working on it.',
+              ),
+            ],
+            startedAt: startedAt,
+            status: CodexTurnStatus.inProgress,
+          ),
+        ]
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Working for 2m 44s'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Working for 2m 45s'), findsOneWidget);
+
+      state.turns = const [
+        CodexTurn(
+          durationMs: 165000,
+          id: 'timed-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'timed-user',
+              content: [CodexTextUserInput(text: 'Run the task')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'timed-commentary',
+              phase: CodexMessagePhase('commentary'),
+              text: 'I am working on it.',
+            ),
+          ],
+          status: CodexTurnStatus.interrupted,
+        ),
+      ];
+      state.synchronizeViewModel();
+      await tester.pump();
+
+      expect(find.text('Stopped after 2m 45s'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-worked-toggle-timed-turn')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('codex-turn-status-timed-turn')),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets(
+    'externally active persisted turn stays working and blocks the composer',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final startedAt =
+          DateTime.now().millisecondsSinceEpoch -
+          const Duration(minutes: 2, seconds: 44).inMilliseconds;
+      final state = workspaceState(client)
+        ..turns = [
+          CodexTurn(
+            id: 'external-turn',
+            items: const [
+              CodexUserMessageThreadItem(
+                id: 'external-user',
+                content: [CodexTextUserInput(text: 'Run elsewhere')],
+              ),
+              CodexAgentMessageThreadItem(
+                id: 'external-commentary',
+                phase: CodexMessagePhase('commentary'),
+                text: 'Still working in another session.',
+              ),
+            ],
+            startedAt: startedAt,
+            status: CodexTurnStatus.interrupted,
+          ),
+        ]
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+
+      expect(state.activeTurn, isNull);
+      expect(state.projectedExternalActiveTurn?.id, 'external-turn');
+      expect(await state.submitMessage('Do not send', const []), isFalse);
+      expect(client.started, isEmpty);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Working for 2m 44s'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-external-thread-active')),
+        findsOneWidget,
+      );
+      expect(find.text('This thread is active elsewhere'), findsOneWidget);
+      expect(find.byKey(const ValueKey('codex-composer')), findsNothing);
+      expect(find.byKey(const ValueKey('codex-composer-input')), findsNothing);
+      expect(find.byKey(const ValueKey('codex-stop')), findsNothing);
+
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Working for 2m 45s'), findsOneWidget);
+
+      state.turns = [
+        CodexTurn(
+          completedAt: startedAt + 165000,
+          durationMs: 165000,
+          id: 'external-turn',
+          items: const [
+            CodexUserMessageThreadItem(
+              id: 'external-user',
+              content: [CodexTextUserInput(text: 'Run elsewhere')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'external-commentary',
+              phase: CodexMessagePhase('commentary'),
+              text: 'Still working in another session.',
+            ),
+          ],
+          startedAt: startedAt,
+          status: CodexTurnStatus.interrupted,
+        ),
+      ];
+      state.synchronizeViewModel();
+      state.notifyListeners();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(state.projectedExternalActiveTurn, isNull);
+      expect(find.text('Stopped after 2m 45s'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-worked-toggle-external-turn')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('codex-external-thread-active')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('codex-composer')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-composer-input')),
+        findsOneWidget,
+      );
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets(
+    'stale external-active lease stops working state and restores composer',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final startedAt =
+          DateTime.now().millisecondsSinceEpoch -
+          const Duration(minutes: 2).inMilliseconds;
+      final state = workspaceState(
+        client,
+        externalActiveLeaseDuration: const Duration(seconds: 1),
+      );
+      state
+        ..selectedThread = codexThreadWithStatus(
+          state.selectedThread!,
+          const CodexIdleThreadStatus(),
+        )
+        ..turns = [
+          CodexTurn(
+            id: 'stale-external-turn',
+            items: const [
+              CodexAgentMessageThreadItem(
+                id: 'external-commentary',
+                phase: CodexMessagePhase('commentary'),
+                text: 'Last observed progress.',
+              ),
+            ],
+            startedAt: startedAt,
+            status: CodexTurnStatus.interrupted,
+          ),
+        ]
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Working for 2m'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-external-thread-active')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('codex-composer')), findsNothing);
+
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+
+      expect(state.projectedExternalActiveTurn, isNull);
+      expect(find.text('Stopped'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-external-thread-active')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('codex-composer')), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets(
     'active turn falls back to Thinking until assistant text starts',
     (tester) async {
       final client = WorkspaceFakeClient();
@@ -650,6 +895,20 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Working'), findsNothing);
+      expect(
+        tester
+            .getTopLeft(
+              find.byKey(const ValueKey('codex-turn-status-thinking-turn')),
+            )
+            .dy,
+        lessThan(
+          tester
+              .getTopLeft(
+                find.byKey(const ValueKey('codex-turn-thinking-thinking-turn')),
+              )
+              .dy,
+        ),
+      );
 
       state.turns = const [
         CodexTurn(
@@ -1065,7 +1324,7 @@ void main() {
     'renders turns, keeps tool details collapsed, and floats plan and queue',
     (tester) async {
       tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = const Size(1000, 820);
+      tester.view.physicalSize = const Size(1000, 900);
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final client = WorkspaceFakeClient();
@@ -1401,6 +1660,7 @@ void main() {
           items: [
             CodexAgentMessageThreadItem(
               id: 'active-agent',
+              phase: CodexMessagePhase('final_answer'),
               text: 'Partial response',
             ),
             CodexReasoningThreadItem(
@@ -1444,6 +1704,7 @@ void main() {
             items: const [
               CodexAgentMessageThreadItem(
                 id: 'active-agent',
+                phase: CodexMessagePhase('final_answer'),
                 text: 'Partial response',
               ),
             ],
@@ -1465,12 +1726,68 @@ void main() {
         expect(
           find.text(
             status == CodexTurnStatus.interrupted
-                ? 'You stopped after 6s'
+                ? 'Stopped after 6s'
                 : 'Failed after 6s',
           ),
           findsOneWidget,
         );
       }
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets(
+    'terminal turns without a final answer do not show worked history',
+    (tester) async {
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..turns = const [
+          CodexTurn(
+            durationMs: 3000,
+            id: 'commentary-only-turn',
+            items: [
+              CodexUserMessageThreadItem(
+                id: 'commentary-only-user',
+                content: [CodexTextUserInput(text: 'Inspect the project')],
+              ),
+              CodexAgentMessageThreadItem(
+                id: 'commentary-only-agent',
+                phase: CodexMessagePhase('commentary'),
+                text: 'I am checking the files.',
+              ),
+              CodexCommandExecutionThreadItem(
+                aggregatedOutput: 'done',
+                command: 'rg TODO',
+                commandActions: [],
+                cwd: CodexLegacyAppPathString('/work/motif'),
+                id: 'commentary-only-command',
+                status: CodexCommandExecutionStatus.completed,
+              ),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ]
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        find.byKey(const ValueKey('codex-worked-toggle-commentary-only-turn')),
+        findsNothing,
+      );
+      expect(find.text('Worked for 3s'), findsNothing);
+      expect(find.text('I am checking the files.'), findsOneWidget);
+      expect(find.text('Ran a command'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       state.dispose();
@@ -1511,7 +1828,11 @@ void main() {
               id: 'second-command',
               status: CodexCommandExecutionStatus.completed,
             ),
-            CodexAgentMessageThreadItem(id: 'answer', text: 'Done'),
+            CodexAgentMessageThreadItem(
+              id: 'answer',
+              phase: CodexMessagePhase('final_answer'),
+              text: 'Done',
+            ),
           ],
           status: CodexTurnStatus.completed,
         ),
@@ -1844,6 +2165,7 @@ Only show **this request**.
             ),
             const CodexAgentMessageThreadItem(
               id: 'diff-agent',
+              phase: CodexMessagePhase('final_answer'),
               text: 'Edited.',
             ),
           ],
@@ -2294,6 +2616,7 @@ Only show **this request**.
           items: [
             CodexAgentMessageThreadItem(
               id: 'git-directive-message',
+              phase: CodexMessagePhase('final_answer'),
               text:
                   'Finished successfully.\n\n'
                   '::git-stage{cwd="/work/motif"}\n'
@@ -3018,7 +3341,10 @@ void _expandListTile(WidgetTester tester, Finder finder) {
   tester.widget<ListTile>(finder).onTap!.call();
 }
 
-CodexServiceState workspaceState(WorkspaceFakeClient client) {
+CodexServiceState workspaceState(
+  WorkspaceFakeClient client, {
+  Duration externalActiveLeaseDuration = const Duration(seconds: 60),
+}) {
   final turns = <CodexTurn>[
     const CodexTurn(
       completedAt: 1754973480,
@@ -3090,6 +3416,7 @@ CodexServiceState workspaceState(WorkspaceFakeClient client) {
         CodexContextCompactionThreadItem(id: 'compaction-1'),
         CodexAgentMessageThreadItem(
           id: 'agent',
+          phase: CodexMessagePhase('final_answer'),
           text: 'I am **working** on it.',
         ),
       ],
@@ -3130,7 +3457,11 @@ CodexServiceState workspaceState(WorkspaceFakeClient client) {
     updatedAt: 1,
   );
   client.thread = thread;
-  return CodexServiceState(serverId: 'server', connection: client)
+  return CodexServiceState(
+      serverId: 'server',
+      connection: client,
+      externalActiveLeaseDuration: externalActiveLeaseDuration,
+    )
     ..selectedThread = thread
     ..turns = turns
     ..models = const [

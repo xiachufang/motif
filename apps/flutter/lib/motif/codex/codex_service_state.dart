@@ -68,6 +68,7 @@ class CodexConversationState extends ChangeNotifier {
     this.connectionLease = const CodexOwnedConnectionLease(),
     this.listenToConnectionMessages = true,
     this.recoverOnReconnect = true,
+    this.externalActiveLeaseDuration = const Duration(seconds: 60),
     Set<CodexConversationFeature> features = const {
       CodexConversationFeature.goals,
     },
@@ -90,6 +91,7 @@ class CodexConversationState extends ChangeNotifier {
   final CodexConnectionLease connectionLease;
   final bool listenToConnectionMessages;
   final bool recoverOnReconnect;
+  final Duration externalActiveLeaseDuration;
   final Set<CodexConversationFeature> features;
   final CodexConversationViewModel viewModel;
 
@@ -110,6 +112,7 @@ class CodexConversationState extends ChangeNotifier {
   List<CodexTurn> get turns => _turns;
   set turns(List<CodexTurn> value) {
     _turns = List.unmodifiable(value);
+    _updateExternalActiveLease();
     if (!_applyingDeltas) _syncTurnsViewModel();
   }
 
@@ -149,6 +152,9 @@ class CodexConversationState extends ChangeNotifier {
   CodexGlobalStateData? _globalState;
   CodexInitializeResponse? _loadedInitializeResponse;
   Timer? _deltaFlushTimer;
+  Timer? _externalActiveLeaseTimer;
+  String? _externalActiveFingerprint;
+  String? _externalActiveLeaseTurnId;
   int _refreshGeneration = 0;
   int _readGeneration = 0;
   int _connectionGeneration = 0;
@@ -199,6 +205,53 @@ class CodexConversationState extends ChangeNotifier {
       if (turn.status == CodexTurnStatus.inProgress) return turn;
     }
     return null;
+  }
+
+  /// The persisted projection used by a separate app-server reports an
+  /// externally running turn as `interrupted` until it has terminal timing.
+  /// Keep this separate from [activeTurn] so Motif never tries to steer or
+  /// interrupt a turn owned by another Codex session.
+  CodexTurn? get projectedExternalActiveTurn {
+    final candidate = _externalActiveCandidate;
+    if (candidate == null) return null;
+    if (selectedThread?.status is CodexActiveThreadStatus) return candidate;
+    return _externalActiveLeaseTurnId == candidate.id ? candidate : null;
+  }
+
+  CodexTurn? get _externalActiveCandidate {
+    if (activeTurn != null) return null;
+    final latest = turns.lastOrNull;
+    if (latest == null ||
+        latest.status != CodexTurnStatus.interrupted ||
+        latest.startedAt == null ||
+        latest.completedAt != null ||
+        latest.durationMs != null) {
+      return null;
+    }
+    return latest;
+  }
+
+  void _updateExternalActiveLease() {
+    final candidate = _externalActiveCandidate;
+    if (candidate == null) {
+      _externalActiveFingerprint = null;
+      _externalActiveLeaseTurnId = null;
+      _externalActiveLeaseTimer?.cancel();
+      _externalActiveLeaseTimer = null;
+      return;
+    }
+
+    final fingerprint = jsonEncode(candidate.toJson());
+    if (_externalActiveFingerprint == fingerprint) return;
+    _externalActiveFingerprint = fingerprint;
+    _externalActiveLeaseTurnId = candidate.id;
+    _externalActiveLeaseTimer?.cancel();
+    _externalActiveLeaseTimer = Timer(externalActiveLeaseDuration, () {
+      _externalActiveLeaseTimer = null;
+      if (_closed || _externalActiveLeaseTurnId != candidate.id) return;
+      _externalActiveLeaseTurnId = null;
+      _notify();
+    });
   }
 
   CodexModel? get selectedModel {
@@ -531,6 +584,63 @@ class CodexConversationState extends ChangeNotifier {
   /// the app-server subscription owned by the registry unchanged.
   void openHydratedConversation(CodexThread thread, CodexTurnsPage page) {
     _openConversation(thread: thread, initialTurnsPage: page, resumed: false);
+  }
+
+  /// Applies a newer persisted snapshot without resetting transient composer,
+  /// approval, or queue state.
+  ///
+  /// A visible persisted thread can be changed by another Codex client. Those
+  /// changes arrive through a file watch rather than this connection's normal
+  /// turn notifications, so the newest bounded page is merged into any older
+  /// pages the user has already loaded.
+  void refreshPersistedSnapshot(CodexThread thread, CodexTurnsPage page) {
+    if (_closed || selectedThread?.id != thread.id) return;
+    _flushPendingDeltas();
+
+    final recent = page.data.reversed.toList(growable: false);
+    final recentIds = recent.map((turn) => turn.id).toSet();
+    final currentById = {for (final turn in turns) turn.id: turn};
+    final firstOverlap = turns.indexWhere(
+      (turn) => recentIds.contains(turn.id),
+    );
+    final merged = <CodexTurn>[
+      if (firstOverlap < 0) ...turns else ...turns.take(firstOverlap),
+      for (final persisted in recent)
+        _preferPersistedTurn(currentById[persisted.id], persisted),
+      if (firstOverlap >= 0)
+        ...turns
+            .skip(firstOverlap)
+            .where((turn) => !recentIds.contains(turn.id)),
+    ];
+    final seen = <String>{};
+    final deduplicated = merged
+        .where((turn) => seen.add(turn.id))
+        .toList(growable: false);
+    final refreshed = codexThreadWithTurns(thread, deduplicated);
+    _threads[thread.id] = refreshed;
+    selectedThread = refreshed;
+    turns = deduplicated;
+    if (firstOverlap <= 0) {
+      _setTurnPagination(thread.id, page.nextCursor);
+    }
+    _notify();
+  }
+
+  CodexTurn _preferPersistedTurn(CodexTurn? current, CodexTurn persisted) {
+    if (current == null) return persisted;
+    if (current.status != CodexTurnStatus.inProgress &&
+        persisted.status == CodexTurnStatus.inProgress) {
+      return current;
+    }
+    if (persisted.status != CodexTurnStatus.inProgress) return persisted;
+
+    // A local delta notification may race slightly ahead of the rollout file.
+    // Keep the richer in-progress representation until the persisted snapshot
+    // catches up, preventing streamed text from briefly moving backwards.
+    return jsonEncode(current.toJson()).length >
+            jsonEncode(persisted.toJson()).length
+        ? current
+        : persisted;
   }
 
   void _openSubscribedConversation({
@@ -1292,6 +1402,11 @@ class CodexConversationState extends ChangeNotifier {
     if (text.trim().isEmpty && attachments.isEmpty && references.isEmpty) {
       return false;
     }
+    if (projectedExternalActiveTurn != null) {
+      sendError = 'This thread is active in another Codex session.';
+      _notify();
+      return false;
+    }
     final message = CodexQueuedMessage(
       id: 'queued-${++_queueSequence}',
       text: text,
@@ -1346,6 +1461,11 @@ class CodexConversationState extends ChangeNotifier {
   }) async {
     final thread = selectedThread;
     if (_closed || thread == null || sending) return false;
+    if (projectedExternalActiveTurn != null) {
+      sendError = 'This thread is active in another Codex session.';
+      _notify();
+      return false;
+    }
     String? optimisticItemId;
     String? optimisticTurnId;
     sending = true;
@@ -1354,6 +1474,10 @@ class CodexConversationState extends ChangeNotifier {
     try {
       final input = await _prepareInputs(message);
       await ensureThreadResumedForSend(thread.id);
+      if (projectedExternalActiveTurn != null) {
+        sendError = 'This thread is active in another Codex session.';
+        return false;
+      }
       final active = activeTurn;
       if (steer && active != null) {
         final clientUserMessageId = _nextClientUserMessageId();
@@ -2567,6 +2691,8 @@ class CodexConversationState extends ChangeNotifier {
     _readGeneration++;
     _deltaFlushTimer?.cancel();
     _deltaFlushTimer = null;
+    _externalActiveLeaseTimer?.cancel();
+    _externalActiveLeaseTimer = null;
     _pendingDeltas.clear();
     await _typedSubscription?.cancel();
     connection.removeListener(_onConnectionChanged);
@@ -3182,20 +3308,40 @@ DateTime _threadActivityAt(CodexThread thread) {
 
 /// Runtime state for the persisted catalog and the currently selected session.
 final class CodexServiceState extends CodexConversationState {
-  CodexServiceState({required super.serverId, required super.connection})
-    : super(listenToConnectionMessages: false, recoverOnReconnect: false) {
+  CodexServiceState({
+    required super.serverId,
+    required super.connection,
+    super.externalActiveLeaseDuration,
+    this.selectedThreadActivePollInterval = const Duration(seconds: 1),
+    this.selectedThreadIdlePollInterval = const Duration(seconds: 5),
+  }) : super(listenToConnectionMessages: false, recoverOnReconnect: false) {
     conversations = CodexConversationRegistry(
       serverId: serverId,
       connection: connection,
       sessionFactory: _createConversationSession,
       globalMessageHandler: applyTypedMessage,
     )..addListener(_onRegistryChanged);
+    connection.addListener(_onSelectedThreadWatchConnectionChanged);
   }
 
+  static const Duration selectedThreadRefreshDebounce = Duration(
+    milliseconds: 250,
+  );
+
+  final Duration selectedThreadActivePollInterval;
+  final Duration selectedThreadIdlePollInterval;
   late final CodexConversationRegistry conversations;
   CodexConversationState? selectedConversation;
   String? _selectedConversationId;
   int _selectionGeneration = 0;
+  int _selectedThreadWatchGeneration = 0;
+  int _selectedThreadRefreshGeneration = 0;
+  String? _selectedThreadWatchId;
+  String? _selectedThreadWatchThreadId;
+  String? _selectedThreadWatchPath;
+  Object? _selectedThreadWatchConnectionToken;
+  Timer? _selectedThreadRefreshTimer;
+  Timer? _selectedThreadPollTimer;
   bool _registryClosed = false;
 
   CodexConversationState _createConversationSession(
@@ -3207,6 +3353,7 @@ final class CodexServiceState extends CodexConversationState {
           connectionLease: const CodexSharedConnectionLease(),
           listenToConnectionMessages: false,
           recoverOnReconnect: false,
+          externalActiveLeaseDuration: externalActiveLeaseDuration,
           features: kind == CodexThreadSessionKind.persisted
               ? const {CodexConversationFeature.goals}
               : const {},
@@ -3275,6 +3422,7 @@ final class CodexServiceState extends CodexConversationState {
     if (_closed || readingThreadId == threadId) return;
     final generation = ++_selectionGeneration;
     final previousId = _selectedConversationId;
+    var hydratedDuringSelection = false;
     var preview =
         _threads[threadId] ??
         catalog.allThreads
@@ -3293,6 +3441,7 @@ final class CodexServiceState extends CodexConversationState {
         ),
         kind: CodexThreadSessionKind.persisted,
       );
+      hydratedDuringSelection = true;
     }
     _threads[threadId] = preview;
     conversations.registerThread(
@@ -3305,12 +3454,20 @@ final class CodexServiceState extends CodexConversationState {
     conversations.acquireVisibility(threadId, 'main');
     _selectedConversationId = threadId;
     selectedThread = preview;
+    if (previousId != threadId) _replaceSelectedThreadWatch(null);
     final cached = conversations.sessionFor(threadId);
     if (cached != null) {
       selectedConversation = cached;
       readingThreadId = null;
       readError = null;
       _syncSelectedConversation();
+      if (!hydratedDuringSelection) {
+        await _refreshCachedConversationOnEntry(
+          threadId: threadId,
+          selectionGeneration: generation,
+          conversation: cached,
+        );
+      }
       return;
     }
     selectedConversation = null;
@@ -3378,6 +3535,16 @@ final class CodexServiceState extends CodexConversationState {
     _syncSelectedConversation();
   }
 
+  @override
+  void applyTypedMessage(CodexJsonEncodable message) {
+    super.applyTypedMessage(message);
+    if (message case CodexFsChangedNotification2(
+      :final params,
+    ) when params.watchId == _selectedThreadWatchId) {
+      _scheduleSelectedThreadRefresh(selectedThreadRefreshDebounce);
+    }
+  }
+
   void _syncSelectedConversation() {
     final id = _selectedConversationId;
     if (id == null) return;
@@ -3392,6 +3559,7 @@ final class CodexServiceState extends CodexConversationState {
     if (thread != null) {
       _threads[thread.id] = thread;
       selectedThread = thread;
+      _replaceSelectedThreadWatch(thread);
     }
     turns = session.turns;
     models = session.models;
@@ -3410,8 +3578,242 @@ final class CodexServiceState extends CodexConversationState {
     _notify();
   }
 
+  void _onSelectedThreadWatchConnectionChanged() {
+    if (_closed) return;
+    if (connection.state.phase != CodexConnectionPhase.connected) {
+      _selectedThreadWatchGeneration++;
+      _selectedThreadRefreshGeneration++;
+      _selectedThreadRefreshTimer?.cancel();
+      _selectedThreadRefreshTimer = null;
+      _selectedThreadPollTimer?.cancel();
+      _selectedThreadPollTimer = null;
+      _selectedThreadWatchId = null;
+      _selectedThreadWatchThreadId = null;
+      _selectedThreadWatchPath = null;
+      _selectedThreadWatchConnectionToken = null;
+      return;
+    }
+    _replaceSelectedThreadWatch(selectedConversation?.selectedThread);
+  }
+
+  void _replaceSelectedThreadWatch(CodexThread? thread) {
+    final path = thread?.path?.trim();
+    final normalizedPath = path == null || path.isEmpty ? null : path;
+    final connectionToken = _currentWatchConnectionToken;
+    if (_selectedThreadWatchThreadId == thread?.id &&
+        _selectedThreadWatchPath == normalizedPath &&
+        _selectedThreadWatchConnectionToken == connectionToken) {
+      return;
+    }
+
+    final generation = ++_selectedThreadWatchGeneration;
+    _selectedThreadRefreshGeneration++;
+    _selectedThreadRefreshTimer?.cancel();
+    _selectedThreadRefreshTimer = null;
+    _selectedThreadPollTimer?.cancel();
+    _selectedThreadPollTimer = null;
+    final previousWatchId = _selectedThreadWatchId;
+    final watchId = normalizedPath == null || connectionToken == null
+        ? null
+        : 'motif-selected-thread-$generation';
+    _selectedThreadWatchId = watchId;
+    _selectedThreadWatchThreadId = thread?.id;
+    _selectedThreadWatchPath = normalizedPath;
+    _selectedThreadWatchConnectionToken = connectionToken;
+    unawaited(
+      _installSelectedThreadWatch(
+        generation: generation,
+        previousWatchId: previousWatchId,
+        watchId: watchId,
+        path: normalizedPath,
+      ),
+    );
+  }
+
+  Object? get _currentWatchConnectionToken {
+    final state = connection.state;
+    if (state.phase != CodexConnectionPhase.connected) return null;
+    return state.epoch > 0 ? state.epoch : state.response;
+  }
+
+  Future<void> _installSelectedThreadWatch({
+    required int generation,
+    required String? previousWatchId,
+    required String? watchId,
+    required String? path,
+  }) async {
+    if (previousWatchId != null) {
+      try {
+        await connection.unwatchFile(previousWatchId);
+      } catch (_) {
+        // A selection can change while its connection is being replaced.
+      }
+    }
+    if (_closed ||
+        generation != _selectedThreadWatchGeneration ||
+        watchId == null ||
+        path == null) {
+      return;
+    }
+    try {
+      await connection.watchFile(path, watchId);
+    } catch (_) {
+      if (!_closed &&
+          generation == _selectedThreadWatchGeneration &&
+          _selectedThreadWatchId == watchId) {
+        _scheduleSelectedThreadRefresh(Duration.zero);
+      }
+      return;
+    }
+    if (_closed ||
+        generation != _selectedThreadWatchGeneration ||
+        _selectedThreadWatchId != watchId) {
+      try {
+        await connection.unwatchFile(watchId);
+      } catch (_) {
+        // The watch disappeared with its connection.
+      }
+      return;
+    }
+    // Close the read-before-watch race without parsing the rollout locally.
+    // The watch is only a change signal; snapshots still come from app-server.
+    _scheduleSelectedThreadRefresh(Duration.zero);
+  }
+
+  void _scheduleSelectedThreadRefresh(Duration delay) {
+    final threadId = _selectedThreadWatchThreadId;
+    final connectionToken = _selectedThreadWatchConnectionToken;
+    if (_closed || threadId == null || connectionToken == null) return;
+    final generation = ++_selectedThreadRefreshGeneration;
+    _selectedThreadRefreshTimer?.cancel();
+    _selectedThreadPollTimer?.cancel();
+    _selectedThreadPollTimer = null;
+    _selectedThreadRefreshTimer = Timer(delay, () {
+      _selectedThreadRefreshTimer = null;
+      unawaited(
+        _refreshSelectedThreadSnapshot(
+          threadId: threadId,
+          connectionToken: connectionToken,
+          generation: generation,
+        ),
+      );
+    });
+  }
+
+  Future<void> _refreshSelectedThreadSnapshot({
+    required String threadId,
+    required Object connectionToken,
+    required int generation,
+  }) async {
+    try {
+      final snapshot = await _readPersistedThreadSnapshot(threadId);
+      if (_closed ||
+          generation != _selectedThreadRefreshGeneration ||
+          _selectedThreadWatchConnectionToken != connectionToken ||
+          _selectedThreadWatchThreadId != threadId ||
+          _selectedConversationId != threadId) {
+        return;
+      }
+      final session = selectedConversation;
+      if (session == null || session.selectedThread?.id != threadId) return;
+      session.refreshPersistedSnapshot(snapshot.thread, snapshot.page);
+    } catch (_) {
+      // Live refresh is best-effort; the existing snapshot remains usable.
+    } finally {
+      if (!_closed &&
+          _selectedThreadWatchConnectionToken == connectionToken &&
+          _selectedThreadWatchThreadId == threadId &&
+          _selectedConversationId == threadId) {
+        _scheduleSelectedThreadPoll(_selectedThreadPollInterval);
+      }
+    }
+  }
+
+  Duration get _selectedThreadPollInterval =>
+      activeTurn != null || projectedExternalActiveTurn != null
+      ? selectedThreadActivePollInterval
+      : selectedThreadIdlePollInterval;
+
+  void _scheduleSelectedThreadPoll(Duration delay) {
+    if (_closed ||
+        connection.state.phase != CodexConnectionPhase.connected ||
+        _selectedThreadWatchThreadId == null ||
+        _selectedThreadWatchConnectionToken == null ||
+        _selectedConversationId != _selectedThreadWatchThreadId ||
+        _selectedThreadRefreshTimer != null) {
+      return;
+    }
+    _selectedThreadPollTimer?.cancel();
+    _selectedThreadPollTimer = Timer(delay, () {
+      _selectedThreadPollTimer = null;
+      _scheduleSelectedThreadRefresh(Duration.zero);
+    });
+  }
+
+  Future<void> _refreshCachedConversationOnEntry({
+    required String threadId,
+    required int selectionGeneration,
+    required CodexConversationState conversation,
+  }) async {
+    try {
+      final snapshot = await _readPersistedThreadSnapshot(threadId);
+      if (_closed ||
+          selectionGeneration != _selectionGeneration ||
+          _selectedConversationId != threadId ||
+          !identical(selectedConversation, conversation)) {
+        return;
+      }
+      conversation.refreshPersistedSnapshot(snapshot.thread, snapshot.page);
+    } catch (_) {
+      // Cached content remains usable when the best-effort entry refresh
+      // fails. A later file change or reconnect will retry it.
+    }
+  }
+
+  Future<({CodexThread thread, CodexTurnsPage page})>
+  _readPersistedThreadSnapshot(String threadId) async {
+    final results = await Future.wait<Object>([
+      connection.readThread(threadId),
+      connection.listThreadTurns(
+        CodexThreadTurnsListParams(
+          itemsView: codexThreadTurnsItemsView,
+          limit: codexThreadTurnsPageSize,
+          sortDirection: CodexSortDirection.desc,
+          threadId: threadId,
+        ),
+      ),
+    ]);
+    final response = results[0] as CodexThreadReadResponse;
+    final page = results[1] as CodexThreadTurnsListResponse;
+    return (
+      thread: response.thread,
+      page: CodexTurnsPage(
+        backwardsCursor: page.backwardsCursor,
+        data: page.data,
+        nextCursor: page.nextCursor,
+      ),
+    );
+  }
+
   @override
   Future<void> close() async {
+    connection.removeListener(_onSelectedThreadWatchConnectionChanged);
+    _selectedThreadWatchGeneration++;
+    _selectedThreadRefreshGeneration++;
+    _selectedThreadRefreshTimer?.cancel();
+    _selectedThreadRefreshTimer = null;
+    _selectedThreadPollTimer?.cancel();
+    _selectedThreadPollTimer = null;
+    final watchId = _selectedThreadWatchId;
+    _selectedThreadWatchId = null;
+    if (watchId != null &&
+        connection.state.phase == CodexConnectionPhase.connected) {
+      try {
+        await connection.unwatchFile(watchId);
+      } catch (_) {
+        // The socket may close while the service is being disposed.
+      }
+    }
     if (!_registryClosed) {
       _registryClosed = true;
       conversations.removeListener(_onRegistryChanged);

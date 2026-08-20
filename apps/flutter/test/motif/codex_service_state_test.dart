@@ -211,6 +211,269 @@ void main() {
     },
   );
 
+  test(
+    'refreshes a visible thread when another client changes its file',
+    () async {
+      final initial = thread(
+        'thread',
+        path: '/tmp/codex/thread.jsonl',
+        turns: const [
+          CodexTurn(
+            id: 'turn-1',
+            items: [
+              CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before'),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [initial]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+      await waitFor(() => client.watchedPaths.isNotEmpty);
+      await waitFor(() => client.readThreadIds.length == 2);
+      expect(client.readThreadIds, ['thread', 'thread']);
+
+      final changed = thread(
+        'thread',
+        path: '/tmp/codex/thread.jsonl',
+        updatedAt: 2,
+        turns: const [
+          CodexTurn(
+            id: 'turn-1',
+            items: [
+              CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before'),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+          CodexTurn(
+            id: 'turn-2',
+            items: [
+              CodexAgentMessageThreadItem(
+                id: 'answer-2',
+                text: 'Continued on the computer',
+              ),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      );
+      client.pages[null] = CodexThreadListResponse(data: [changed]);
+      client.emit(
+        CodexFsChangedNotification2(
+          params: CodexFsChangedNotification(
+            changedPaths: const [
+              CodexV2AbsolutePathBuf('/tmp/codex/thread.jsonl'),
+            ],
+            watchId: client.watchIds.single,
+          ),
+        ),
+      );
+
+      await waitFor(() => state.turns.length == 2);
+      expect(client.readThreadIds, ['thread', 'thread', 'thread']);
+      expect(client.watchedPaths, ['/tmp/codex/thread.jsonl']);
+      expect(client.resumedThreadIds, isEmpty);
+      expect(
+        (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
+        'Continued on the computer',
+      );
+
+      final watchId = client.watchIds.single;
+      await state.close();
+      expect(client.unwatchedIds, contains(watchId));
+    },
+  );
+
+  test('polls a visible thread when the file watch misses changes', () async {
+    final initial = thread(
+      'thread',
+      path: '/tmp/codex/thread.jsonl',
+      turns: const [
+        CodexTurn(
+          id: 'turn-1',
+          items: [CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before')],
+          status: CodexTurnStatus.completed,
+        ),
+      ],
+    );
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [initial]),
+      },
+    );
+    final state = CodexServiceState(
+      serverId: 'server',
+      connection: client,
+      selectedThreadActivePollInterval: const Duration(milliseconds: 10),
+      selectedThreadIdlePollInterval: const Duration(milliseconds: 20),
+    );
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    await waitFor(() => client.readThreadIds.length == 2);
+
+    final changed = thread(
+      'thread',
+      path: '/tmp/codex/thread.jsonl',
+      updatedAt: 2,
+      turns: const [
+        CodexTurn(
+          id: 'turn-1',
+          items: [CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before')],
+          status: CodexTurnStatus.completed,
+        ),
+        CodexTurn(
+          id: 'turn-2',
+          items: [
+            CodexAgentMessageThreadItem(
+              id: 'answer-2',
+              text: 'Found by polling',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ],
+    );
+    client.pages[null] = CodexThreadListResponse(data: [changed]);
+
+    await waitFor(() => state.turns.length == 2);
+    expect(client.readThreadIds.length, greaterThanOrEqualTo(3));
+    expect(
+      (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
+      'Found by polling',
+    );
+
+    await state.close();
+  });
+
+  test('expires an unchanged external-active projection', () async {
+    final selected = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [selected]),
+      },
+    );
+    final state = CodexConversationState(
+      serverId: 'server',
+      connection: client,
+      externalActiveLeaseDuration: const Duration(milliseconds: 20),
+    )..selectedThread = selected;
+    const unchanged = CodexTurn(
+      id: 'external-turn',
+      items: [
+        CodexAgentMessageThreadItem(
+          id: 'commentary',
+          phase: CodexMessagePhase('commentary'),
+          text: 'Working elsewhere',
+        ),
+      ],
+      startedAt: 1,
+      status: CodexTurnStatus.interrupted,
+    );
+
+    state.turns = const [unchanged];
+    expect(state.projectedExternalActiveTurn?.id, 'external-turn');
+
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(state.projectedExternalActiveTurn, isNull);
+
+    // Polling the same persisted snapshot must not revive a stale lease.
+    state.turns = const [unchanged];
+    expect(state.projectedExternalActiveTurn, isNull);
+
+    state.turns = const [
+      CodexTurn(
+        id: 'external-turn',
+        items: [
+          CodexAgentMessageThreadItem(
+            id: 'commentary',
+            phase: CodexMessagePhase('commentary'),
+            text: 'Working elsewhere',
+          ),
+          CodexCommandExecutionThreadItem(
+            aggregatedOutput: '',
+            command: 'flutter test',
+            commandActions: [],
+            cwd: CodexLegacyAppPathString('/work/motif'),
+            id: 'command',
+            status: CodexCommandExecutionStatus.inProgress,
+          ),
+        ],
+        startedAt: 1,
+        status: CodexTurnStatus.interrupted,
+      ),
+    ];
+    expect(state.projectedExternalActiveTurn?.id, 'external-turn');
+
+    await state.close();
+  });
+
+  test('re-reads a cached thread whenever it is entered again', () async {
+    final first = thread(
+      'first',
+      turns: const [
+        CodexTurn(
+          id: 'turn-1',
+          items: [CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before')],
+          status: CodexTurnStatus.completed,
+        ),
+      ],
+    );
+    final second = thread('second');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [first, second]),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('first');
+    await state.readThread('second');
+
+    final refreshedFirst = thread(
+      'first',
+      updatedAt: 2,
+      turns: const [
+        CodexTurn(
+          id: 'turn-1',
+          items: [CodexAgentMessageThreadItem(id: 'answer-1', text: 'Before')],
+          status: CodexTurnStatus.completed,
+        ),
+        CodexTurn(
+          id: 'turn-2',
+          items: [
+            CodexAgentMessageThreadItem(id: 'answer-2', text: 'While away'),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ],
+    );
+    client.pages[null] = CodexThreadListResponse(
+      data: [refreshedFirst, second],
+    );
+
+    await state.readThread('first');
+
+    expect(client.readThreadIds, ['first', 'second', 'first']);
+    expect(state.turns.map((turn) => turn.id), ['turn-1', 'turn-2']);
+    expect(
+      (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
+      'While away',
+    );
+    await state.close();
+  });
+
   test('keeps active hidden sessions and evicts completed ones', () async {
     final first = thread('first', updatedAt: 20);
     final second = thread('second', updatedAt: 10);
@@ -1387,6 +1650,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
       [];
   final List<String> watchedPaths = [];
+  final List<String> watchIds = [];
   final List<String> readPaths = [];
   final List<String> unwatchedIds = [];
   Object? listError;
@@ -1675,6 +1939,7 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexFsWatchResponse> watchFile(String path, String watchId) async {
     watchedPaths.add(path);
+    watchIds.add(watchId);
     return CodexFsWatchResponse(path: CodexV2AbsolutePathBuf(path));
   }
 
@@ -1700,6 +1965,7 @@ CodexThread thread(
   String id, {
   int updatedAt = 1,
   bool ephemeral = false,
+  String? path,
   List<CodexTurn> turns = const [],
 }) => CodexThread(
   cliVersion: 'test',
@@ -1709,6 +1975,7 @@ CodexThread thread(
   id: id,
   modelProvider: 'openai',
   name: id,
+  path: path,
   preview: '',
   sessionId: id,
   source: const CodexSessionSource('cli'),
