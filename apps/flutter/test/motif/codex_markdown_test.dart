@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/rendering.dart' show SelectedContent;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:motif/motif/ui/theme/codex_typography.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 
@@ -83,7 +84,7 @@ Inline `token`.
       find.descendant(of: block, matching: find.byType(SelectableText)),
     );
     final blockSpans = _flatten(blockText.textSpan!);
-    expect(blockText.textSpan?.style?.fontSize, MotifType.body.fontSize);
+    expect(blockText.textSpan?.style?.fontSize, CodexType.body.fontSize);
     expect(
       blockSpans.map((span) => span.style?.backgroundColor),
       everyElement(isNull),

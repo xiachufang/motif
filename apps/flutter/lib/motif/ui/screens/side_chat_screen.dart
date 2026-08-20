@@ -10,6 +10,7 @@ import '../../codex/side_chat_collection_controller.dart';
 import '../../models/resource_documents.dart';
 import '../../platform/services.dart';
 import '../../platform/window_title.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
 import 'codex_resource_screens.dart';
@@ -262,7 +263,7 @@ class _SideChatFailure extends StatelessWidget {
             Text(
               message,
               textAlign: TextAlign.center,
-              style: MotifType.body.copyWith(color: c.textSecondary),
+              style: CodexType.body.copyWith(color: c.textSecondary),
             ),
             const SizedBox(height: MotifSpacing.lg),
             OutlinedButton(onPressed: onRetry, child: const Text('Try again')),

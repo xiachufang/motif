@@ -21,6 +21,66 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const SHUTDOWN_KILL_GRACE: Duration = Duration::from_millis(250);
 const CODEX_PATH_ENV: &str = "MOTIFD_CODEX_PATH";
 
+// Unix has no portable parent-death signal (and macOS has no equivalent of
+// Linux's PR_SET_PDEATHSIG). Run Codex under a tiny process-group leader whose
+// stdin is a lifetime pipe owned by motifd. If motifd exits without running
+// Drop, the pipe reaches EOF and the guard terminates the complete group.
+//
+// Codex itself receives /dev/null as stdin; only the guard may consume the
+// lifetime pipe. Positional arguments carry the executable and its arguments,
+// so no user-controlled path is interpolated into this script.
+#[cfg(unix)]
+const UNIX_CHILD_GUARD: &str = r#"
+guard_pid=$$
+app_pid=
+watch_pid=
+
+graceful_group() {
+    trap '' HUP INT TERM
+    if [ -n "$app_pid" ]; then
+        kill -TERM -- "-$guard_pid" 2>/dev/null || true
+        wait "$app_pid" 2>/dev/null || true
+    fi
+    exit 143
+}
+
+orphaned_group() {
+    trap '' HUP INT TERM USR1
+    if [ -n "$app_pid" ]; then
+        kill -TERM -- "-$guard_pid" 2>/dev/null || true
+        (
+            sleep 0.5
+            kill -KILL -- "-$guard_pid" 2>/dev/null || true
+        ) &
+        killer_pid=$!
+        wait "$app_pid" 2>/dev/null || true
+        kill -KILL "$killer_pid" 2>/dev/null || true
+    fi
+    exit 143
+}
+
+trap graceful_group HUP INT TERM
+trap orphaned_group USR1
+# POSIX shells attach /dev/null to an asynchronous command's stdin when job
+# control is disabled. Preserve motifd's lifetime pipe on a separate fd before
+# starting either background job, otherwise the watcher observes EOF at once.
+exec 3<&0
+"$@" 3<&- </dev/null &
+app_pid=$!
+(
+    IFS= read -r _ <&3 || true
+    kill -USR1 "$guard_pid" 2>/dev/null || true
+) &
+watch_pid=$!
+exec 3<&-
+
+wait "$app_pid"
+status=$?
+kill -KILL "$watch_pid" 2>/dev/null || true
+wait "$watch_pid" 2>/dev/null || true
+exit "$status"
+"#;
+
 #[derive(Debug, thiserror::Error)]
 pub enum CodexLaunchError {
     #[error("could not allocate a loopback port for codex app-server: {0}")]
@@ -97,14 +157,15 @@ impl CodexAppServer {
             .arg("--listen")
             .arg(&listen)
             .current_dir(workdir)
-            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            command.process_group(0);
+            command.stdin(Stdio::piped()).process_group(0);
         }
+        #[cfg(not(unix))]
+        command.stdin(Stdio::null());
 
         let mut child = command.spawn().map_err(CodexLaunchError::Spawn)?;
         let pid = child.id();
@@ -329,6 +390,17 @@ fn codex_executable_names() -> &'static [&'static str] {
 }
 
 fn codex_command(program: &Path) -> Command {
+    #[cfg(unix)]
+    {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(UNIX_CHILD_GUARD)
+            .arg("motif-codex-guard")
+            .arg(program);
+        return command;
+    }
+
     #[cfg(windows)]
     if program
         .extension()
@@ -339,6 +411,7 @@ fn codex_command(program: &Path) -> Command {
         return command;
     }
 
+    #[allow(unreachable_code)]
     Command::new(program)
 }
 
@@ -602,5 +675,31 @@ mod tests {
 
         assert!(terminate_child(&mut child, pid));
         assert!(!process_group_exists(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lifetime_pipe_kills_group_when_owner_disappears() {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = codex_command(Path::new("/bin/sh"));
+        command
+            .arg("-c")
+            // Ignore TERM so the guard must exercise its group-wide KILL
+            // fallback after the lifetime pipe closes.
+            .arg("trap '' TERM; sleep 30 & wait")
+            .stdin(Stdio::piped())
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        std::thread::sleep(Duration::from_millis(100));
+
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "guard must stay alive while its owner keeps the lifetime pipe open"
+        );
+        drop(child.stdin.take());
+        assert!(wait_for_child(&mut child, Duration::from_secs(2)));
+        assert!(wait_for_process_group(pid, Duration::from_secs(1)));
     }
 }

@@ -20,6 +20,7 @@ import '../../log/log.dart';
 import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../net/rzv/pairing_payload.dart';
+import '../../platform/desktop_window.dart';
 import '../../platform/web_launch.dart';
 import '../../platform/services.dart';
 import '../../terminal/terminal_palette.dart';
@@ -1214,6 +1215,18 @@ class AppState {
     final instance = existingServerInstance(serverId);
     if (instance == null || !instance.isLive) return;
     await _refreshServerCatalog(instance);
+  }
+
+  /// Stop the process-owned embedded server before terminating the desktop
+  /// host. Every Dart-driven quit path goes through here; the native macOS
+  /// termination callback remains the fallback for Dock/App-menu termination.
+  Future<void> quitDesktop() async {
+    final embedded = embeddedServer;
+    if (embedded != null &&
+        (embedded.status.running || embedded.status.starting)) {
+      await embedded.stop();
+    }
+    await DesktopWindow.quit();
   }
 
   Future<void> _refreshServerCatalog(ServerInstance instance) async {

@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
 import '../widgets/codex_sidebar_components.dart';
@@ -46,7 +47,7 @@ class SideChatSidebar extends StatelessWidget {
           child: Text(
             'No Side Chats',
             textAlign: TextAlign.center,
-            style: MotifType.body.copyWith(color: c.textTertiary),
+            style: CodexType.body.copyWith(color: c.textTertiary),
           ),
         ),
       );

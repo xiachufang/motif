@@ -10,6 +10,17 @@ import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 
 void main() {
+  test('uses a five-minute external-active lease by default', () async {
+    final state = CodexConversationState(
+      serverId: 'server',
+      connection: FakeCodexClient(pages: const {}),
+    );
+
+    expect(state.externalActiveLeaseDuration, const Duration(minutes: 5));
+
+    await state.close();
+  });
+
   test(
     'paginates, reads on selection, lazily resumes for send, and disposes',
     () async {

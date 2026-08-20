@@ -506,7 +506,10 @@ pub unsafe extern "C" fn motif_embed_start(config_json: *const c_char) -> c_int 
 /// graceful shutdown errored.
 #[no_mangle]
 pub extern "C" fn motif_embed_stop() -> c_int {
-    match rt().block_on(do_stop()) {
+    let (Some(runtime), Some(_)) = (RT.get(), STATE.get()) else {
+        return 0;
+    };
+    match runtime.block_on(do_stop()) {
         Ok(()) => 0,
         Err(e) => {
             tracing::warn!(error = %e, "motif_embed_stop failed");

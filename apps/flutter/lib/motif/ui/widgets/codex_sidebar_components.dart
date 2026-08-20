@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import 'codex_motion.dart';
 
@@ -112,7 +113,7 @@ class CodexSidebarSectionHeading extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: MotifType.headline.copyWith(color: c.textTertiary),
+              style: CodexType.headline.copyWith(color: c.textTertiary),
             ),
           ),
           ?trailing,

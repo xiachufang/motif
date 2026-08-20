@@ -121,7 +121,7 @@ Map<ShortcutActivator, VoidCallback> _desktopWindowShortcuts(
     },
     if (isMac)
       const SingleActivator(LogicalKeyboardKey.keyQ, meta: true): () {
-        unawaited(DesktopWindow.quit());
+        unawaited(readObservationScope<AppState>(context).quitDesktop());
       },
   };
 }

@@ -7,6 +7,7 @@ import '../../codex/codex_service_state.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
 import '../widgets/codex_sidebar_components.dart';
@@ -1138,7 +1139,7 @@ class _EmptyCatalog extends StatelessWidget {
       child: Text(
         label,
         textAlign: TextAlign.center,
-        style: MotifType.body.copyWith(color: c.textTertiary),
+        style: CodexType.body.copyWith(color: c.textTertiary),
       ),
     );
   }

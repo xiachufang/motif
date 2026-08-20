@@ -5,6 +5,7 @@ import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import 'syntax_highlight.dart';
 
@@ -275,7 +276,7 @@ class CodexMarkdown extends StatelessWidget {
     final parentSelection = SelectionContainer.maybeOf(context);
     final usesParentSelection = selectable && parentSelection != null;
     final buildsSelectableText = selectable && !usesParentSelection;
-    final body = (style ?? MotifType.body).copyWith(
+    final body = (style ?? CodexType.body).copyWith(
       color: style?.color ?? c.textPrimary,
       height: style?.height ?? 1.5,
     );
@@ -308,7 +309,7 @@ class CodexMarkdown extends StatelessWidget {
         ),
         h1: MotifType.display.copyWith(color: c.textPrimary, height: 1.3),
         h2: MotifType.title.copyWith(color: c.textPrimary, height: 1.35),
-        h3: MotifType.headline.copyWith(color: c.textPrimary, height: 1.4),
+        h3: CodexType.headline.copyWith(color: c.textPrimary, height: 1.4),
         h4: MotifType.callout.copyWith(color: c.textPrimary, height: 1.4),
         h5: MotifType.callout.copyWith(color: c.textSecondary, height: 1.4),
         h6: MotifType.caption.copyWith(color: c.textSecondary, height: 1.4),

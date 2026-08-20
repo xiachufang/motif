@@ -15,6 +15,7 @@ import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.d
 import 'package:motif/motif/models/resource_documents.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
+import 'package:motif/motif/ui/theme/codex_typography.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
 import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
@@ -3097,7 +3098,7 @@ Only show **this request**.
     final bullets = find.text('•');
     expect(bullets, findsNWidgets(2));
     final marker = tester.widget<Text>(bullets.first);
-    expect(marker.style?.fontSize, MotifType.body.fontSize);
+    expect(marker.style?.fontSize, CodexType.body.fontSize);
     expect(marker.style?.fontWeight, FontWeight.w700);
     final orderedMarkerRect = tester.getRect(find.text('1.'));
     final orderedItemRect = tester.getRect(find.text('Ordered item'));

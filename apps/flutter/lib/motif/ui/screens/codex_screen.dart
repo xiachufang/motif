@@ -13,6 +13,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../../platform/services.dart';
 import '../../platform/window_title.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
 import '../widgets/observation_select.dart';
@@ -620,7 +621,7 @@ class _CodexAppBarTitle extends StatelessWidget {
       codexThreadTitle(thread),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: MotifType.headline.copyWith(color: c.textPrimary),
+      style: CodexType.headline.copyWith(color: c.textPrimary),
     );
   }
 }

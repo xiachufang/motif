@@ -299,6 +299,19 @@ mod tests {
         );
         assert_eq!(
             motif_listen_address(&command(&[
+                "/bin/sh",
+                "-c",
+                "guard script",
+                "motif-codex-guard",
+                "/opt/homebrew/bin/codex",
+                "app-server",
+                "--listen",
+                "ws://127.0.0.1:61145",
+            ])),
+            Some("127.0.0.1:61145".parse().unwrap())
+        );
+        assert_eq!(
+            motif_listen_address(&command(&[
                 "codex",
                 "-c",
                 "features.code_mode_host=true",

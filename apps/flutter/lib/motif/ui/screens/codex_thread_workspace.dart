@@ -21,6 +21,7 @@ import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
 import '../../platform/services.dart';
 import '../../platform/speech_locale.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_motion.dart';
@@ -1612,7 +1613,7 @@ class _CollapsedPlanCard extends _$_CollapsedPlanCard {
                   Expanded(
                     child: Text(
                       'Plan',
-                      style: MotifType.body.copyWith(color: c.textSecondary),
+                      style: CodexType.body.copyWith(color: c.textSecondary),
                     ),
                   ),
                   Icon(
@@ -1640,7 +1641,7 @@ class _CollapsedPlanCard extends _$_CollapsedPlanCard {
                           ? CodexStreamingMarkdown(
                               plan.text,
                               key: ValueKey('codex-plan-preview-${plan.id}'),
-                              style: MotifType.body.copyWith(
+                              style: CodexType.body.copyWith(
                                 color: c.textPrimary,
                                 height: 1.55,
                               ),
@@ -1648,7 +1649,7 @@ class _CollapsedPlanCard extends _$_CollapsedPlanCard {
                           : CodexMarkdown(
                               plan.text,
                               key: ValueKey('codex-plan-preview-${plan.id}'),
-                              style: MotifType.body.copyWith(
+                              style: CodexType.body.copyWith(
                                 color: c.textPrimary,
                                 height: 1.55,
                               ),
@@ -1686,7 +1687,7 @@ class _PlanDetailScreen extends StatelessWidget {
                 constraints: const BoxConstraints(maxWidth: 860),
                 child: CodexMarkdown(
                   plan.text,
-                  style: MotifType.body.copyWith(
+                  style: CodexType.body.copyWith(
                     color: c.textPrimary,
                     height: 1.55,
                   ),
@@ -1771,7 +1772,7 @@ class _UserMessage extends StatelessWidget {
                   CodexMarkdown(
                     parsed.text,
                     fitContent: true,
-                    style: MotifType.body.copyWith(color: c.textPrimary),
+                    style: CodexType.body.copyWith(color: c.textPrimary),
                     onTapFileLink: onOpenFile == null
                         ? null
                         : (href) => _openMarkdownFile(state, onOpenFile!, href),
@@ -1958,7 +1959,7 @@ class _AgentMessage extends _$_AgentMessage {
     final c = context.motif;
     final visibleText = const CodexAgentOutputParser().parse(item.text);
     if (visibleText.trim().isEmpty) return const SizedBox.shrink();
-    final style = MotifType.body.copyWith(color: c.textPrimary, height: 1.55);
+    final style = CodexType.body.copyWith(color: c.textPrimary, height: 1.55);
     if (streaming) {
       return CodexStreamingMarkdown(
         visibleText,
@@ -2163,7 +2164,7 @@ class _PlanDecisionPanel extends StatelessWidget {
               Expanded(
                 child: Text(
                   'Implement this plan?',
-                  style: MotifType.headline.copyWith(color: c.textPrimary),
+                  style: CodexType.headline.copyWith(color: c.textPrimary),
                 ),
               ),
               IconButton(
@@ -2221,7 +2222,7 @@ class _PlanDecisionPanel extends StatelessWidget {
                     Expanded(
                       child: Text(
                         'Yes, implement this plan',
-                        style: MotifType.body.copyWith(color: c.textPrimary),
+                        style: CodexType.body.copyWith(color: c.textPrimary),
                       ),
                     ),
                     Icon(
@@ -2252,7 +2253,7 @@ class _PlanDecisionPanel extends StatelessWidget {
                   minLines: 1,
                   maxLines: 3,
                   textInputAction: TextInputAction.send,
-                  style: MotifType.body.copyWith(color: c.textPrimary),
+                  style: CodexType.body.copyWith(color: c.textPrimary),
                   decoration: const InputDecoration(
                     hintText: 'No, tell Codex what to change',
                     border: InputBorder.none,
@@ -2509,7 +2510,7 @@ class _QueuedMessageCard extends StatelessWidget {
           Expanded(
             child: CodexMarkdown(
               message.text.trim().isEmpty ? 'Attachment' : message.text,
-              style: MotifType.body.copyWith(color: c.textPrimary),
+              style: CodexType.body.copyWith(color: c.textPrimary),
             ),
           ),
           TextButton.icon(
@@ -2772,19 +2773,24 @@ class _Composer extends StatelessWidget {
                       : stopActiveTurn
                       ? state.interruptActiveTurn
                       : onSubmit,
-                  style: context.iconButtonStyle().copyWith(
-                    foregroundColor: WidgetStateProperty.resolveWith(
-                      (states) => states.contains(WidgetState.disabled)
-                          ? c.textTertiary
-                          : c.textOnAccent,
-                    ),
-                    backgroundColor: WidgetStateProperty.resolveWith(
-                      (states) => states.contains(WidgetState.disabled)
-                          ? c.subtleFill
-                          : c.accent,
-                    ),
-                    shape: const WidgetStatePropertyAll(CircleBorder()),
-                  ),
+                  style: context
+                      .iconButtonStyle(
+                        fixedSize: const Size.square(MotifControlSize.sm),
+                        minimumSize: const Size.square(MotifControlSize.sm),
+                      )
+                      .copyWith(
+                        foregroundColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.disabled)
+                              ? c.textTertiary
+                              : c.textOnAccent,
+                        ),
+                        backgroundColor: WidgetStateProperty.resolveWith(
+                          (states) => states.contains(WidgetState.disabled)
+                              ? c.subtleFill
+                              : c.accent,
+                        ),
+                        shape: const WidgetStatePropertyAll(CircleBorder()),
+                      ),
                   icon: CodexMotionSwitcher(
                     offset: Offset.zero,
                     child: state.sending || state.goalLoading
@@ -3106,7 +3112,7 @@ class _ComposerMenuRow extends StatelessWidget {
             child: Text.rich(
               TextSpan(
                 children: [
-                  TextSpan(text: label, style: MotifType.body),
+                  TextSpan(text: label, style: CodexType.body),
                   if (description != null && description!.trim().isNotEmpty)
                     TextSpan(
                       text: '  $description',
@@ -3364,7 +3370,7 @@ class _PermissionMenuRow extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: MotifType.body.copyWith(
+            style: CodexType.body.copyWith(
               color: danger ? c.danger : c.textPrimary,
             ),
           ),
@@ -3560,13 +3566,13 @@ class _ModelMenuCategory extends StatelessWidget {
       width: 236,
       child: Row(
         children: [
-          Expanded(child: Text(label, style: MotifType.body)),
+          Expanded(child: Text(label, style: CodexType.body)),
           Flexible(
             child: Text(
               value,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: MotifType.body.copyWith(color: c.textTertiary),
+              style: CodexType.body.copyWith(color: c.textTertiary),
             ),
           ),
         ],
@@ -3587,7 +3593,7 @@ class _ModelMenuChoice extends StatelessWidget {
       width: 256,
       child: Row(
         children: [
-          Expanded(child: Text(label, style: MotifType.body)),
+          Expanded(child: Text(label, style: CodexType.body)),
           const SizedBox(width: MotifSpacing.sm),
           SizedBox(
             width: MotifIconSize.sm,
@@ -3773,7 +3779,7 @@ class _QuestionnaireCardState extends State<_QuestionnaireCard> {
               children: [
                 Icon(Icons.quiz_outlined, color: c.accent),
                 const SizedBox(width: MotifSpacing.sm),
-                Text('Codex has a question', style: MotifType.headline),
+                Text('Codex has a question', style: CodexType.headline),
               ],
             ),
             const SizedBox(height: MotifSpacing.md),
@@ -3786,7 +3792,7 @@ class _QuestionnaireCardState extends State<_QuestionnaireCard> {
               const SizedBox(height: MotifSpacing.xs),
               CodexMarkdown(
                 question.question,
-                style: MotifType.body.copyWith(color: c.textPrimary),
+                style: CodexType.body.copyWith(color: c.textPrimary),
               ),
               const SizedBox(height: MotifSpacing.sm),
               if (question.options case final options?)
@@ -3913,14 +3919,14 @@ class _ApprovalCardState extends State<_ApprovalCard> {
               children: [
                 Icon(widget.icon, color: c.warning),
                 const SizedBox(width: MotifSpacing.sm),
-                Expanded(child: Text(widget.title, style: MotifType.headline)),
+                Expanded(child: Text(widget.title, style: CodexType.headline)),
               ],
             ),
             if (widget.reason?.trim().isNotEmpty == true) ...[
               const SizedBox(height: MotifSpacing.sm),
               CodexMarkdown(
                 widget.reason!,
-                style: MotifType.body.copyWith(color: c.textPrimary),
+                style: CodexType.body.copyWith(color: c.textPrimary),
               ),
             ],
             if (widget.detail?.trim().isNotEmpty == true) ...[

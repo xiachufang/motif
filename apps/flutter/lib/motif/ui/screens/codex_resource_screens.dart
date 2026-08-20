@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../codex/codex_navigation.dart';
 import '../../codex/codex_service_state.dart';
 import '../../models/resource_documents.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
 import 'git_diff_panel.dart';
@@ -85,7 +86,7 @@ class _CodexFilePreviewScreenState extends State<CodexFilePreviewScreen> {
               child: Text(
                 'Could not read ${widget.path}: $_error',
                 textAlign: TextAlign.center,
-                style: MotifType.body.copyWith(color: c.danger),
+                style: CodexType.body.copyWith(color: c.danger),
               ),
             ),
           )

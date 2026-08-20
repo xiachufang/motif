@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -30,12 +31,15 @@ class _RecordingDesktopWindowDelegate extends NoopDesktopWindowDelegate {
 }
 
 class _DelayedEmbeddedServerService extends EmbeddedServerService {
-  _DelayedEmbeddedServerService()
+  _DelayedEmbeddedServerService({this.stopGate})
     : super(
         available: true,
         config: const EmbeddedServerConfig(),
         status: const EmbeddedServerStatus(starting: true),
       );
+
+  final Completer<void>? stopGate;
+  int stopCalls = 0;
 
   void becomeReady(int port) {
     statusState = EmbeddedServerStatus(
@@ -56,7 +60,11 @@ class _DelayedEmbeddedServerService extends EmbeddedServerService {
   Future<void> start() async {}
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop() async {
+    stopCalls++;
+    await stopGate?.future;
+    statusState = const EmbeddedServerStatus();
+  }
 
   @override
   Future<List<RegisteredPushToken>> registeredPushTokens() async => const [];
@@ -202,12 +210,15 @@ void main() {
     try {
       SharedPreferences.setMockInitialValues({});
       final prefs = await SharedPreferences.getInstance();
+      final stopGate = Completer<void>();
+      final embedded = _DelayedEmbeddedServerService(stopGate: stopGate);
       final app = AppState(
         servers: ServerStore(prefs),
         terminalSettings: TerminalSettingsStore(prefs),
         commands: QuickCommandStore(prefs),
         push: PushSettingsStore(prefs),
         platform: PlatformServices.defaults(),
+        embeddedServer: embedded,
       );
       addTearDown(app.dispose);
 
@@ -220,6 +231,12 @@ void main() {
       await tester.sendKeyDownEvent(LogicalKeyboardKey.keyQ);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.keyQ);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+
+      expect(embedded.stopCalls, 1);
+      expect(desktop.quitCalls, 0);
+
+      stopGate.complete();
       await tester.pump();
 
       expect(desktop.quitCalls, 1);

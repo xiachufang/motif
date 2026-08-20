@@ -8,6 +8,7 @@ import '../../codex/codex_navigation.dart';
 import '../../codex/codex_service_state.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
+import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import 'codex_markdown.dart';
 import 'codex_motion.dart';
@@ -348,7 +349,7 @@ class _CodexTurnDiffSummaryState extends State<CodexTurnDiffSummary> {
                       children: [
                         Text(
                           'Edited ${files.length} ${files.length == 1 ? 'file' : 'files'}',
-                          style: MotifType.headline.copyWith(
+                          style: CodexType.headline.copyWith(
                             color: c.textPrimary,
                           ),
                         ),

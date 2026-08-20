@@ -68,7 +68,7 @@ class CodexConversationState extends ChangeNotifier {
     this.connectionLease = const CodexOwnedConnectionLease(),
     this.listenToConnectionMessages = true,
     this.recoverOnReconnect = true,
-    this.externalActiveLeaseDuration = const Duration(seconds: 60),
+    this.externalActiveLeaseDuration = const Duration(minutes: 5),
     Set<CodexConversationFeature> features = const {
       CodexConversationFeature.goals,
     },

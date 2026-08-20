@@ -39,6 +39,7 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
   Timer? _freeRelayRefreshTimer;
   DateTime? _nextFreeRelayRecovery;
   bool _freeRelayRecoveryInFlight = false;
+  bool _disposed = false;
 
   late final EmbeddedServerRuntimeController _runtime;
 
@@ -397,7 +398,15 @@ class DesktopEmbeddedServerService extends EmbeddedServerService {
 
   @override
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _freeRelayRefreshTimer?.cancel();
+    // Dart dispose cannot be async, but the native stop ABI is synchronous.
+    // This covers widget/app-state teardown and hot-restart disposal without
+    // leaving the process-owned app-server alive.
+    try {
+      _lib?.stop();
+    } catch (_) {}
     _freeRelayCredentials.dispose();
     _runtime.dispose();
     super.dispose();
