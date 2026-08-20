@@ -19,6 +19,8 @@ import '../../codex/codex_state.dart';
 import '../../codex/codex_user_input_parser.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
+import '../../platform/services.dart';
+import '../../platform/speech_locale.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_motion.dart';
@@ -62,6 +64,7 @@ class CodexThreadWorkspace extends StatefulWidget {
   const CodexThreadWorkspace({
     required this.state,
     this.codexState,
+    this.speechService,
     this.turnActionBuilder = _persistentForkAction,
     this.onOpenFile,
     this.onOpenImage,
@@ -71,6 +74,7 @@ class CodexThreadWorkspace extends StatefulWidget {
 
   final CodexConversationState state;
   final CodexState? codexState;
+  final SpeechService? speechService;
   final CodexTurnActionBuilder turnActionBuilder;
   final CodexOpenFile? onOpenFile;
   final CodexOpenImage? onOpenImage;
@@ -104,6 +108,14 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   String? _draftServerId;
   String? _draftThreadId;
   bool _restoringDraft = false;
+  bool _recording = false;
+  bool _voiceBusy = false;
+  bool _ignoreVoiceFinal = false;
+  String _asrBase = '';
+  String _lastAsrText = '';
+  int _voiceSession = 0;
+  Timer? _recordingTimer;
+  Duration _recordingDuration = Duration.zero;
 
   @override
   void initState() {
@@ -132,6 +144,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _voiceSession += 1;
+    _recordingTimer?.cancel();
+    if (_recording || _voiceBusy) {
+      unawaited(widget.speechService?.stop());
+    }
     _composer.removeListener(_onComposerChanged);
     _composerFocus.removeListener(_onComposerFocusChanged);
     _persistBoundComposerDraft();
@@ -151,6 +168,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   @override
   void didChangeMetrics() {
     _scheduleScrollToBottom();
+  }
+
+  @override
+  void didChangeLocales(List<Locale>? locales) {
+    if (mounted) setState(() {});
   }
 
   void _rebindComposerDraftIfNeeded() {
@@ -185,7 +207,132 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
 
   void _onComposerChanged() {
     if (_restoringDraft) return;
+    if (_recording && _composer.text != _lastAsrText) {
+      _ignoreVoiceFinal = true;
+      unawaited(_stopVoiceInput());
+    }
     _persistBoundComposerDraft();
+  }
+
+  Future<void> _toggleVoiceInput() async {
+    if (_voiceBusy) return;
+    if (_recording) {
+      await _stopVoiceInput();
+      return;
+    }
+
+    if (!supportsDoubaoSpeechInput(
+      WidgetsBinding.instance.platformDispatcher.locale,
+    )) {
+      return;
+    }
+    final speech = widget.speechService;
+    if (speech == null || !speech.isAvailable) return;
+    final session = ++_voiceSession;
+    _asrBase = _composer.text;
+    _lastAsrText = _composer.text;
+    _ignoreVoiceFinal = false;
+    setState(() => _voiceBusy = true);
+    var failed = false;
+    try {
+      await speech.start(
+        onPartial: (partial) {
+          if (!mounted || session != _voiceSession || _ignoreVoiceFinal) return;
+          _replaceAsrText(_mergeAsr(_asrBase, partial));
+        },
+        onError: (error) {
+          if (!mounted || session != _voiceSession) return;
+          failed = true;
+          _ignoreVoiceFinal = true;
+          if (_recording) unawaited(speech.stop());
+          setState(() {
+            _voiceBusy = false;
+            _recording = false;
+          });
+          _stopRecordingClock();
+          showMotifToast(context, 'Voice input: $error');
+        },
+      );
+      if (!mounted || session != _voiceSession || failed) return;
+      setState(() {
+        _voiceBusy = false;
+        _recording = true;
+      });
+      _startRecordingClock();
+    } catch (error) {
+      if (!mounted || session != _voiceSession) return;
+      setState(() {
+        _voiceBusy = false;
+        _recording = false;
+      });
+      _stopRecordingClock();
+      showMotifToast(context, 'Voice input unavailable: $error');
+    }
+  }
+
+  Future<void> _cancelVoiceInput() async {
+    _ignoreVoiceFinal = true;
+    _replaceAsrText(_asrBase);
+    await _stopVoiceInput();
+  }
+
+  Future<void> _stopVoiceInput() async {
+    if (_voiceBusy || !_recording) return;
+    final speech = widget.speechService;
+    if (speech == null) return;
+    final session = _voiceSession;
+    setState(() => _voiceBusy = true);
+    try {
+      final finalText = await speech.stop();
+      if (!mounted || session != _voiceSession) return;
+      if (!_ignoreVoiceFinal && finalText.isNotEmpty) {
+        _replaceAsrText(_mergeAsr(_asrBase, finalText));
+      }
+    } catch (error) {
+      if (mounted && session == _voiceSession) {
+        showMotifToast(context, 'Voice input: $error');
+      }
+    } finally {
+      if (mounted && session == _voiceSession) {
+        _voiceSession += 1;
+        setState(() {
+          _voiceBusy = false;
+          _recording = false;
+        });
+        _stopRecordingClock();
+        _ignoreVoiceFinal = false;
+      }
+    }
+  }
+
+  void _startRecordingClock() {
+    _recordingTimer?.cancel();
+    _recordingDuration = Duration.zero;
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+      setState(() {
+        _recordingDuration = Duration(seconds: timer.tick);
+      });
+    });
+  }
+
+  void _stopRecordingClock() {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+  }
+
+  void _replaceAsrText(String text) {
+    _lastAsrText = text;
+    _composer.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
+  String _mergeAsr(String base, String text) {
+    if (base.isEmpty) return text;
+    if (text.isEmpty) return base;
+    return base.codeUnits.last <= 0x20 ? '$base$text' : '$base $text';
   }
 
   void _onComposerFocusChanged() {
@@ -322,6 +469,17 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                           state: state,
                           controller: _composer,
                           focusNode: _composerFocus,
+                          voiceAvailable:
+                              supportsDoubaoSpeechInput(
+                                WidgetsBinding
+                                    .instance
+                                    .platformDispatcher
+                                    .locale,
+                              ) &&
+                              widget.speechService?.isAvailable == true,
+                          recording: _recording,
+                          voiceBusy: _voiceBusy,
+                          recordingDuration: _recordingDuration,
                           attachments: _attachments,
                           references: _references,
                           onAddImages: _pickImages,
@@ -332,6 +490,8 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                           onToggleGoal: _toggleGoalMode,
                           onTogglePlan: _togglePlanMode,
                           onRemoveGoal: _removeGoal,
+                          onCancelVoiceInput: _cancelVoiceInput,
+                          onToggleVoiceInput: _toggleVoiceInput,
                           onSubmit: _submit,
                         ),
                 ),
@@ -2438,6 +2598,10 @@ class _Composer extends StatelessWidget {
     required this.state,
     required this.controller,
     required this.focusNode,
+    required this.voiceAvailable,
+    required this.recording,
+    required this.voiceBusy,
+    required this.recordingDuration,
     required this.attachments,
     required this.references,
     required this.onAddImages,
@@ -2448,6 +2612,8 @@ class _Composer extends StatelessWidget {
     required this.onToggleGoal,
     required this.onTogglePlan,
     required this.onRemoveGoal,
+    required this.onCancelVoiceInput,
+    required this.onToggleVoiceInput,
     required this.onSubmit,
     super.key,
   });
@@ -2455,6 +2621,10 @@ class _Composer extends StatelessWidget {
   final CodexConversationState state;
   final TextEditingController controller;
   final FocusNode focusNode;
+  final bool voiceAvailable;
+  final bool recording;
+  final bool voiceBusy;
+  final Duration recordingDuration;
   final List<CodexPendingAttachment> attachments;
   final List<CodexComposerReference> references;
   final Future<void> Function() onAddImages;
@@ -2465,6 +2635,8 @@ class _Composer extends StatelessWidget {
   final VoidCallback onToggleGoal;
   final VoidCallback onTogglePlan;
   final VoidCallback onRemoveGoal;
+  final Future<void> Function() onCancelVoiceInput;
+  final Future<void> Function() onToggleVoiceInput;
   final Future<void> Function() onSubmit;
 
   @override
@@ -2631,6 +2803,40 @@ class _Composer extends StatelessWidget {
                           ),
                   ),
                 );
+                final voice = voiceAvailable && !recording
+                    ? IconButton(
+                        key: const ValueKey('codex-voice-input'),
+                        tooltip: voiceBusy
+                            ? 'Starting voice input'
+                            : 'Voice input',
+                        onPressed: voiceBusy
+                            ? null
+                            : () => unawaited(onToggleVoiceInput()),
+                        style: context.iconButtonStyle(
+                          foregroundColor: c.textPrimary,
+                          backgroundColor: Colors.transparent,
+                          fixedSize: const Size.square(MotifControlSize.sm),
+                          minimumSize: const Size.square(MotifControlSize.sm),
+                        ),
+                        icon: voiceBusy
+                            ? SizedBox.square(
+                                dimension: MotifIconSize.md,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: c.textSecondary,
+                                ),
+                              )
+                            : const Icon(Icons.mic_none_rounded),
+                      )
+                    : null;
+                final recordingControls = recording
+                    ? _VoiceRecordingControls(
+                        duration: recordingDuration,
+                        busy: voiceBusy,
+                        onCancel: onCancelVoiceInput,
+                        onConfirm: onToggleVoiceInput,
+                      )
+                    : null;
                 if (compactActions) {
                   return Row(
                     children: [
@@ -2641,14 +2847,22 @@ class _Composer extends StatelessWidget {
                           child: selections,
                         ),
                       ),
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxWidth: constraints.maxWidth * 0.46,
+                      if (recordingControls != null)
+                        recordingControls
+                      else ...[
+                        ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: constraints.maxWidth * 0.46,
+                          ),
+                          child: _ModelSettingsSelector(state: state),
                         ),
-                        child: _ModelSettingsSelector(state: state),
-                      ),
-                      const SizedBox(width: MotifSpacing.xs),
-                      send,
+                        const SizedBox(width: MotifSpacing.xs),
+                        if (voice != null) ...[
+                          voice,
+                          const SizedBox(width: MotifSpacing.xs),
+                        ],
+                        send,
+                      ],
                     ],
                   );
                 }
@@ -2657,9 +2871,17 @@ class _Composer extends StatelessWidget {
                     add,
                     selections,
                     const Spacer(),
-                    _ModelSettingsSelector(state: state),
-                    const SizedBox(width: MotifSpacing.xs),
-                    send,
+                    if (recordingControls != null)
+                      recordingControls
+                    else ...[
+                      _ModelSettingsSelector(state: state),
+                      const SizedBox(width: MotifSpacing.xs),
+                      if (voice != null) ...[
+                        voice,
+                        const SizedBox(width: MotifSpacing.xs),
+                      ],
+                      send,
+                    ],
                   ],
                 );
               },
@@ -2681,6 +2903,70 @@ class _Composer extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _VoiceRecordingControls extends StatelessWidget {
+  const _VoiceRecordingControls({
+    required this.duration,
+    required this.busy,
+    required this.onCancel,
+    required this.onConfirm,
+  });
+
+  final Duration duration;
+  final bool busy;
+  final Future<void> Function() onCancel;
+  final Future<void> Function() onConfirm;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final minutes = duration.inMinutes.toString().padLeft(2, '0');
+    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$minutes:$seconds',
+          key: const ValueKey('codex-voice-duration'),
+          style: MotifType.mono.copyWith(color: c.textSecondary),
+        ),
+        const SizedBox(width: MotifSpacing.sm),
+        IconButton(
+          key: const ValueKey('codex-voice-cancel'),
+          tooltip: 'Cancel voice input',
+          onPressed: busy ? null : () => unawaited(onCancel()),
+          style: context.iconButtonStyle(
+            fixedSize: const Size.square(MotifControlSize.sm),
+            minimumSize: const Size.square(MotifControlSize.sm),
+          ),
+          icon: const Icon(Icons.close_rounded),
+        ),
+        const SizedBox(width: MotifSpacing.xs),
+        IconButton.filled(
+          key: const ValueKey('codex-voice-input'),
+          tooltip: busy ? 'Finishing voice input' : 'Finish voice input',
+          onPressed: busy ? null : () => unawaited(onConfirm()),
+          style: context
+              .iconButtonStyle(
+                fixedSize: const Size.square(MotifControlSize.sm),
+                minimumSize: const Size.square(MotifControlSize.sm),
+              )
+              .copyWith(
+                foregroundColor: WidgetStatePropertyAll(c.textOnAccent),
+                backgroundColor: WidgetStatePropertyAll(c.accent),
+                shape: const WidgetStatePropertyAll(CircleBorder()),
+              ),
+          icon: busy
+              ? const SizedBox.square(
+                  dimension: MotifIconSize.md,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.check_rounded),
+        ),
+      ],
     );
   }
 }

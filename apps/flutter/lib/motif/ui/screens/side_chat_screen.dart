@@ -8,6 +8,7 @@ import '../../codex/codex_state.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../codex/side_chat_collection_controller.dart';
 import '../../models/resource_documents.dart';
+import '../../platform/services.dart';
 import '../../platform/window_title.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
@@ -19,12 +20,14 @@ class SideChatScreen extends StatefulWidget {
   const SideChatScreen({
     required this.collection,
     this.codexState,
+    this.speechService,
     this.manageWindowTitle = true,
     super.key,
   });
 
   final SideChatCollectionController collection;
   final CodexState? codexState;
+  final SpeechService? speechService;
   final bool manageWindowTitle;
 
   @override
@@ -155,6 +158,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
         key: ValueKey('side-chat-workspace-${selected.id}'),
         state: conversation,
         codexState: widget.codexState,
+        speechService: widget.speechService,
         turnActionBuilder: _emptyTurnAction,
         onOpenFile: (path) => _openFile(conversation, path),
         onOpenImage: (path) => _openFile(conversation, path, image: true),

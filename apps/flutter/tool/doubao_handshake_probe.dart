@@ -256,7 +256,7 @@ Future<void> main(List<String> argv) async {
     final encoder = opus.SimpleOpusEncoder(
       sampleRate: DoubaoConstants.sampleRate,
       channels: DoubaoConstants.channels,
-      application: opus.Application.voip,
+      application: opus.Application.audio,
     );
     Uint8List? pcm;
     if (pcmArg.isNotEmpty) {
@@ -265,6 +265,7 @@ Future<void> main(List<String> argv) async {
     final totalFrames = pcm != null
         ? pcm.length ~/ DoubaoConstants.bytesPerFrame
         : 400; // 8s of 20ms frames
+    final audioStartTimestampMs = DateTime.now().millisecondsSinceEpoch;
     for (var i = 0; i < totalFrames; i++) {
       final samples = Int16List(DoubaoConstants.samplesPerFrame);
       if (pcm != null) {
@@ -291,7 +292,8 @@ Future<void> main(List<String> argv) async {
           audio: Uint8List.fromList(frame),
           requestId: requestId,
           frameState: i == 0 ? FrameState.first : FrameState.middle,
-          timestampMs: DateTime.now().millisecondsSinceEpoch,
+          timestampMs:
+              audioStartTimestampMs + i * DoubaoConstants.frameDurationMs,
         ),
       );
       await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -304,7 +306,9 @@ Future<void> main(List<String> argv) async {
         ),
         requestId: requestId,
         frameState: FrameState.last,
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        timestampMs:
+            audioStartTimestampMs +
+            totalFrames * DoubaoConstants.frameDurationMs,
       ),
     );
     ws.add(AsrMessageBuilder.finishSession(requestId: requestId, token: token));

@@ -22,6 +22,7 @@ import '../../models/motif_proto.dart';
 import '../../models/settings.dart';
 import '../../platform/desktop_window.dart';
 import '../../platform/apple_input_document.dart';
+import '../../platform/speech_locale.dart';
 import '../../platform/window_title.dart';
 import '../../session/session_feature_runtime.dart';
 import '../../state/dependency_scope.dart';

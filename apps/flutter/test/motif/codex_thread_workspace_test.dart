@@ -13,6 +13,7 @@ import 'package:motif/motif/codex/codex_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/models/resource_documents.dart';
+import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/ui/screens/codex_thread_workspace.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_markdown.dart';
@@ -135,6 +136,129 @@ void main() {
       state.dispose();
     },
   );
+
+  testWidgets(
+    'voice input appends partial text and replaces it with final text',
+    (tester) async {
+      tester.binding.platformDispatcher.localeTestValue = const Locale(
+        'zh',
+        'CN',
+      );
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(580, 820);
+      addTearDown(tester.binding.platformDispatcher.clearLocaleTestValue);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..turns = const []
+        ..activePlan = null
+        ..queuedMessages = const [];
+      state.synchronizeViewModel();
+      final speech = _FakeSpeechService(finalText: '最终结果');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(
+            body: CodexThreadWorkspace(state: state, speechService: speech),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final input = find.byKey(const ValueKey('codex-composer-input'));
+      final voice = find.byKey(const ValueKey('codex-voice-input'));
+      await tester.enterText(input, '已有内容');
+      await tester.tap(voice);
+      await tester.pump();
+
+      expect(speech.starts, 1);
+      expect(
+        find.byKey(const ValueKey('codex-voice-duration')),
+        findsOneWidget,
+      );
+      expect(find.text('00:00'), findsOneWidget);
+      expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-model-settings-label')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('codex-send')), findsNothing);
+
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('00:02'), findsOneWidget);
+
+      speech.emitPartial('中间结果');
+      await tester.pump();
+      expect(tester.widget<TextField>(input).controller?.text, '已有内容 中间结果');
+
+      await tester.tap(voice);
+      await tester.pump();
+
+      expect(speech.stops, 1);
+      expect(tester.widget<TextField>(input).controller?.text, '已有内容 最终结果');
+      expect(
+        find.byKey(const ValueKey('codex-model-settings-label')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('codex-send')), findsOneWidget);
+
+      await tester.tap(voice);
+      await tester.pump();
+      speech.emitPartial('不要保留');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('codex-voice-cancel')));
+      await tester.pump();
+
+      expect(speech.stops, 2);
+      expect(tester.widget<TextField>(input).controller?.text, '已有内容 最终结果');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets('voice input follows the system language', (tester) async {
+    tester.binding.platformDispatcher.localeTestValue = const Locale(
+      'en',
+      'US',
+    );
+    addTearDown(tester.binding.platformDispatcher.clearLocaleTestValue);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const []
+      ..activePlan = null
+      ..queuedMessages = const [];
+    state.synchronizeViewModel();
+    final speech = _FakeSpeechService(finalText: '最终结果');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: CodexThreadWorkspace(state: state, speechService: speech),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('codex-voice-input')), findsNothing);
+
+    tester.binding.platformDispatcher.localeTestValue =
+        const Locale.fromSubtags(
+          languageCode: 'zh',
+          scriptCode: 'Hant',
+          countryCode: 'TW',
+        );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('codex-voice-input')), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
 
   testWidgets('composer draft survives workspace rebuilds and app reloads', (
     tester,
@@ -3519,6 +3643,36 @@ CodexServiceState workspaceState(
         attachments: [],
       ),
     ];
+}
+
+final class _FakeSpeechService implements SpeechService {
+  _FakeSpeechService({required this.finalText});
+
+  final String finalText;
+  void Function(String partial)? _onPartial;
+  int starts = 0;
+  int stops = 0;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<void> start({
+    required void Function(String partial) onPartial,
+    void Function(double level)? onLevel,
+    void Function(Object error)? onError,
+  }) async {
+    starts += 1;
+    _onPartial = onPartial;
+  }
+
+  void emitPartial(String text) => _onPartial?.call(text);
+
+  @override
+  Future<String> stop() async {
+    stops += 1;
+    return finalText;
+  }
 }
 
 final class WorkspaceFakeClient extends ChangeNotifier

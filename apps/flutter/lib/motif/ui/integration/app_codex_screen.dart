@@ -90,6 +90,7 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
     }
     return CodexScreen(
       controller: controller,
+      speechService: app.platform.speech,
       onWorkspaceRequested: (request) => CodexSessionCoordinator.open(
         context,
         app: app,

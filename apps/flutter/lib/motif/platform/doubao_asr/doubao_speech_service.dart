@@ -12,6 +12,7 @@ import 'package:record/record.dart';
 import '../../log/log.dart';
 import '../services.dart';
 import 'asr_protocol.dart';
+import 'doubao_audio_frames.dart';
 import 'doubao_constants.dart';
 import 'doubao_credentials.dart';
 
@@ -85,7 +86,12 @@ class _DoubaoASR {
   DeviceCredentials? _credentials;
 
   String _requestId = '';
-  final List<int> _pcmBuffer = <int>[];
+  final DoubaoPcmFrameBuffer _pcmBuffer = DoubaoPcmFrameBuffer(
+    frameSize: DoubaoConstants.bytesPerFrame,
+  );
+  final DoubaoAudioFrameClock _audioFrameClock = DoubaoAudioFrameClock(
+    frameDurationMs: DoubaoConstants.frameDurationMs,
+  );
   bool _didSendFirstFrame = false;
   bool _canSendAudio = false;
   bool _isRunning = false;
@@ -109,6 +115,7 @@ class _DoubaoASR {
     _committedSegments.clear();
     _currentInterim = '';
     _pcmBuffer.clear();
+    _audioFrameClock.reset();
     _didSendFirstFrame = false;
     _canSendAudio = false;
     _sessionFailed = false;
@@ -124,7 +131,10 @@ class _DoubaoASR {
       _encoder = opus.SimpleOpusEncoder(
         sampleRate: DoubaoConstants.sampleRate,
         channels: DoubaoConstants.channels,
-        application: opus.Application.voip,
+        // Match the original Python client and the former Swift port. Opus's
+        // VOIP mode applies a different speech-oriented signal tuning before
+        // the private ASR service receives the encoded frames.
+        application: opus.Application.audio,
       );
       _credentials = await DoubaoCredentialStore.shared.ensureCredentials();
       await _startMicStream();
@@ -174,6 +184,7 @@ class _DoubaoASR {
     } finally {
       _isRunning = false;
       _isFinalizing = false;
+      _canSendAudio = false;
       await _closeWebSocket();
       _encoder?.destroy();
       _encoder = null;
@@ -216,9 +227,9 @@ class _DoubaoASR {
         sampleRate: DoubaoConstants.sampleRate,
         numChannels: DoubaoConstants.channels,
         streamBufferSize: DoubaoConstants.bytesPerFrame,
-        autoGain: false,
-        echoCancel: false,
-        noiseSuppress: false,
+        autoGain: true,
+        echoCancel: true,
+        noiseSuppress: true,
         iosConfig: IosRecordConfig(
           categoryOptions: [
             IosAudioCategoryOption.allowBluetooth,
@@ -477,7 +488,10 @@ class _DoubaoASR {
   }
 
   void _appendAndDrainPcm(Uint8List data) {
-    if (!_isRunning || _isFinalizing) return;
+    // recorder.stop() can deliver its last chunk while stop() is waiting for
+    // the stream to close. Keep that audio; stop() cancels the subscription
+    // before it drains the buffer and sends the LAST frame.
+    if (!_isRunning) return;
     _pcmBuffer.addAll(data);
     _emitAudioLevel(data);
     if (_canSendAudio) _scheduleFlush();
@@ -496,10 +510,9 @@ class _DoubaoASR {
 
   Future<void> _flushPendingFrames() async {
     if (!_canSendAudio) return;
-    const frameSize = DoubaoConstants.bytesPerFrame;
-    while (!_isFinalizing && _pcmBuffer.length >= frameSize) {
-      final frame = Uint8List.fromList(_pcmBuffer.sublist(0, frameSize));
-      _pcmBuffer.removeRange(0, frameSize);
+    while (true) {
+      final frame = _pcmBuffer.takeFullFrame();
+      if (frame == null) break;
       final state = _didSendFirstFrame ? FrameState.middle : FrameState.first;
       await _encodeAndSend(frame, state);
       _didSendFirstFrame = true;
@@ -508,30 +521,40 @@ class _DoubaoASR {
 
   Future<void> _flushAndSendLastFrame() async {
     const frameSize = DoubaoConstants.bytesPerFrame;
-    if (_pcmBuffer.isEmpty) {
+
+    // A recorder callback may contain several 20 ms frames. Drain every full
+    // frame instead of keeping only the first one and clearing the rest.
+    while (true) {
+      final frame = _pcmBuffer.takeFullFrame();
+      if (frame == null) break;
+      final state = _didSendFirstFrame ? FrameState.middle : FrameState.first;
+      await _encodeAndSend(frame, state);
+      _didSendFirstFrame = true;
+    }
+
+    final lastFrame = _pcmBuffer.takePaddedRemainder();
+    if (lastFrame == null) {
       if (_didSendFirstFrame) {
         await _encodeAndSend(Uint8List(frameSize), FrameState.last);
       }
       return;
     }
-    if (_pcmBuffer.length < frameSize) {
-      _pcmBuffer.addAll(Uint8List(frameSize - _pcmBuffer.length));
-    }
-    final frame = Uint8List.fromList(_pcmBuffer.sublist(0, frameSize));
-    _pcmBuffer.clear();
-    await _encodeAndSend(frame, FrameState.last);
+    await _encodeAndSend(lastFrame, FrameState.last);
   }
 
   Future<void> _encodeAndSend(Uint8List pcmFrame, FrameState state) async {
     final encoder = _encoder;
     if (encoder == null) return;
     final opusFrame = encoder.encode(input: _pcmFrameToSamples(pcmFrame));
+    final timestampMs = _audioFrameClock.nextTimestampMs(
+      DateTime.now().millisecondsSinceEpoch,
+    );
     await _sendData(
       AsrMessageBuilder.taskRequest(
         audio: opusFrame,
         requestId: _requestId,
         frameState: state,
-        timestampMs: DateTime.now().millisecondsSinceEpoch,
+        timestampMs: timestampMs,
       ),
     );
   }

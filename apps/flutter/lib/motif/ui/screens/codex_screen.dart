@@ -11,6 +11,7 @@ import '../../codex/codex_thread_catalog.dart';
 import '../../codex/side_chat_collection_controller.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
 import '../../models/resource_documents.dart';
+import '../../platform/services.dart';
 import '../../platform/window_title.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
@@ -25,10 +26,12 @@ class CodexScreen extends StatefulWidget {
   const CodexScreen({
     required this.controller,
     required this.onWorkspaceRequested,
+    this.speechService,
     super.key,
   });
 
   final CodexFeatureController controller;
+  final SpeechService? speechService;
   final Future<void> Function(CodexWorkspaceRequest request)
   onWorkspaceRequested;
 
@@ -265,6 +268,7 @@ class _CodexScreenState extends State<CodexScreen> {
                         'side-chat-drawer-${chrome.selectedThread!.id}',
                       ),
                       controller: widget.controller,
+                      speechService: widget.speechService,
                     ),
                   )
                 : null,
@@ -399,6 +403,7 @@ class _CodexScreenState extends State<CodexScreen> {
                 child: CodexThreadWorkspace(
                   state: state.selectedConversation ?? state,
                   codexState: widget.controller.preferences,
+                  speechService: widget.speechService,
                   onOpenFile: (path) =>
                       _openFile(state.selectedConversation ?? state, path),
                   onOpenImage: (path) => _openFile(
@@ -530,6 +535,7 @@ class _CodexScreenState extends State<CodexScreen> {
           builder: (_) => SideChatScreen(
             collection: collection,
             codexState: widget.controller.preferences,
+            speechService: widget.speechService,
           ),
         ),
       );
@@ -555,9 +561,14 @@ class _CodexScreenState extends State<CodexScreen> {
 }
 
 class _LazySideChatDrawer extends StatefulWidget {
-  const _LazySideChatDrawer({required this.controller, super.key});
+  const _LazySideChatDrawer({
+    required this.controller,
+    this.speechService,
+    super.key,
+  });
 
   final CodexFeatureController controller;
+  final SpeechService? speechService;
 
   @override
   State<_LazySideChatDrawer> createState() => _LazySideChatDrawerState();
@@ -587,6 +598,7 @@ class _LazySideChatDrawerState extends State<_LazySideChatDrawer> {
     return SideChatScreen(
       collection: collection,
       codexState: widget.controller.preferences,
+      speechService: widget.speechService,
       manageWindowTitle: false,
     );
   }
