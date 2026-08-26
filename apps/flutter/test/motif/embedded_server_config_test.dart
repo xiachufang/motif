@@ -15,6 +15,7 @@ void main() {
 
     expect(config.autostart, isTrue);
     expect(config.allowScreenCapture, isFalse);
+    expect(config.toRuntimeJson()['listen_mode'], 'lan');
   });
 
   test('loads legacy config with a missing push relay field', () {
@@ -32,7 +33,6 @@ void main() {
       'autostart': true,
     });
 
-    expect(config.listenMode, EmbeddedListenMode.lan);
     expect(config.port, 7777);
     expect(config.rzvEnabled, isTrue);
     expect(config.rzvMode, EmbeddedRelayMode.custom);
@@ -69,7 +69,6 @@ void main() {
     });
 
     const defaults = EmbeddedServerConfig();
-    expect(config.listenMode, defaults.listenMode);
     expect(config.port, defaults.port);
     expect(config.tsEnabled, defaults.tsEnabled);
     expect(config.tsHostname, defaults.tsHostname);
@@ -78,6 +77,14 @@ void main() {
     expect(config.pushRelayUrl, defaults.pushRelayUrl);
     expect(config.autostart, defaults.autostart);
     expect(config.allowScreenCapture, defaults.allowScreenCapture);
+    expect(config.toPersistedJson()['listen_mode'], 'lan');
+  });
+
+  test('migrates the retired loopback mode to LAN', () {
+    final config = embeddedServerConfigFromJson({'listen_mode': 'loopback'});
+
+    expect(config.toPersistedJson()['listen_mode'], 'lan');
+    expect(config.toRuntimeJson()['listen_mode'], 'lan');
   });
 
   test('preserves an explicitly disabled autostart setting', () {

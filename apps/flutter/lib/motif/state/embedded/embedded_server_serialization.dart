@@ -3,11 +3,6 @@ library;
 
 import 'embedded_server_models.dart';
 
-EmbeddedListenMode _listenModeFromWire(Object? value) => switch (value) {
-  'lan' => EmbeddedListenMode.lan,
-  _ => EmbeddedListenMode.loopback,
-};
-
 EmbeddedRelayMode _relayModeFromWire(
   Object? value,
   Map<String, Object?> rendezvous, {
@@ -42,7 +37,7 @@ bool _jsonBool(Object? value, bool fallback) =>
 extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
   /// Non-secret settings safe to persist in SharedPreferences.
   Map<String, Object?> toPersistedJson() => {
-    'listen_mode': listenMode.name,
+    'listen_mode': 'lan',
     'port': port,
     'tailscale': {
       'enabled': tsEnabled,
@@ -58,7 +53,7 @@ extension DesktopEmbeddedServerConfigJson on EmbeddedServerConfig {
 
   /// Full in-memory configuration passed directly to the embedded Rust server.
   Map<String, Object?> toRuntimeJson() => {
-    'listen_mode': listenMode.name,
+    'listen_mode': 'lan',
     'port': port,
     'tailscale': {
       'enabled': tsEnabled,
@@ -81,7 +76,6 @@ EmbeddedServerConfig embeddedServerConfigFromJson(Map<String, Object?> json) {
   final rendezvous = _jsonObject(json['rzv']);
   final port = json['port'];
   return EmbeddedServerConfig(
-    listenMode: _listenModeFromWire(json['listen_mode']),
     port: port is num ? port.toInt() : defaults.port,
     tsEnabled: _jsonBool(tailscale['enabled'], defaults.tsEnabled),
     tsHostname: _jsonString(tailscale['hostname'], defaults.tsHostname),

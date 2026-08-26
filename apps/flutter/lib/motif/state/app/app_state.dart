@@ -264,7 +264,7 @@ class AppState {
       scheduler: ObservationSchedulers.immediate,
     );
     // One-way bridge: the app observes the embedded server's status and
-    // registers/updates its loopback entry as a connectable target. The server
+    // registers/updates its local entry as a connectable target. The server
     // service stays unaware of the app's server list.
     final embedded = embeddedServer;
     if (embedded != null) {
@@ -353,7 +353,7 @@ class AppState {
 
   /// Auto-connects the server that was active when this process started.
   ///
-  /// A managed embedded server can take several seconds to bind its loopback
+  /// A managed embedded server can take several seconds to bind its TCP
   /// endpoint while Tailscale or rendezvous starts. Probing the persisted
   /// profile before then leaves the client blocked even though motifd becomes
   /// reachable moments later, so defer that startup connection until
@@ -909,7 +909,7 @@ class AppState {
     _pushCoordinator.onSettingsChanged();
   }
 
-  /// The embedded server changed: keep its connectable loopback entry in sync,
+  /// The embedded server changed: keep its connectable local entry in sync,
   /// then propagate the change to observers. This is the only place the app
   /// reaches into the server's state — the service never touches the app.
   void _onEmbeddedServerChanged() {
@@ -917,19 +917,17 @@ class AppState {
     _relayStoreChange();
   }
 
-  /// Upsert the loopback [MotifServer] for the running embedded server so it
-  /// appears in the connect flow. No-op until it has a loopback endpoint.
+  /// Upsert the local [MotifServer] for the running embedded server so it
+  /// appears in the connect flow. No-op until it has a TCP endpoint.
   Future<void> _syncEmbeddedServerEntry() async {
     final svc = embeddedServer;
     if (svc == null) return;
     final endpoint = svc.status.loopbackEndpoint;
     if (endpoint == null) return;
 
-    // In LAN mode the embedded listener is TLS + psk-bearer even on loopback, so
-    // the local client must speak https + pin + bearer. In Loopback mode it's
-    // plaintext (and a bearer only when relay pairing is on). The pairing link
-    // carries the psk (+ pin), which the resolver turns into the bearer.
-    final isLan = svc.config.listenMode == EmbeddedListenMode.lan;
+    // The embedded LAN listener is TLS + psk-bearer even when the local client
+    // reaches it through 127.0.0.1. The pairing link carries the psk and pin,
+    // which the resolver turns into the bearer and certificate check.
     final pairingUri = svc.status.pairingUri;
     var psk = '';
     var pubKey = '';
@@ -937,11 +935,11 @@ class AppState {
       try {
         final p = MotifPairingPayload.parse(pairingUri);
         psk = base64Url.encode(p.psk).replaceAll('=', '');
-        if (isLan && p.pubKey != null) {
+        if (p.pubKey != null) {
           pubKey = base64Url.encode(p.pubKey!).replaceAll('=', '');
         }
       } catch (_) {
-        // Unparseable link → fall back to a plaintext loopback entry.
+        // Leave pairing data empty; the connection will fail closed.
       }
     }
     final desired = MotifServer(
@@ -949,11 +947,11 @@ class AppState {
       name: 'This computer',
       host: endpoint.host,
       port: endpoint.port,
-      scheme: isLan ? 'https' : 'http',
+      scheme: 'https',
       kind: ServerKind.direct,
       psk: psk,
       pubKey: pubKey,
-      directHosts: isLan ? [endpoint.host] : const [],
+      directHosts: [endpoint.host],
     );
     final existing = serverById(kEmbeddedServerId);
     if (existing == null) {

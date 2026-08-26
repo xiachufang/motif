@@ -34,7 +34,7 @@ cd apps\flutter
 flutter run -d windows -t lib\main_desktop.dart
 ```
 
-打开 App 的 **Server** 页面，保持默认 **Loopback**，然后点 **Start**。App 会加载
+打开 App 的 **Server** 页面，然后点 **Start**。内嵌 server 默认监听局域网，App 会加载
 `motif_embed.dll`，调用 `motif_embed_init` 和 `motif_embed_start`。Server 运行后，
 Client 页会自动出现 `This computer`。
 

@@ -1,9 +1,8 @@
 /// System-tray control for the embedded server (desktop only) — the Flutter
 /// equivalent of the Tauri menu-bar app's tray. Shows a status icon and a menu
-/// to Start/Stop the in-process server, open the served web UI, reach the
-/// settings screen, show the main window, and quit. Reflects the embedded
-/// server's run state in the icon + menu, rebuilding only when the state
-/// changes.
+/// to Start/Stop the in-process server, reach the settings screen, show the
+/// main window, and quit. Reflects the embedded server's run state in the icon
+/// and menu, rebuilding only when the state changes.
 ///
 /// No-op when there's no embedded-server capability (web/mobile, or the native
 /// library failed to load).
@@ -32,12 +31,9 @@ class TrayService {
   // Current menu items, retained so their click-event closures aren't GC'd.
   final List<na.MenuItem> _items = [];
   EmbeddedServerService? _svc;
-  ObservationSubscription<
-    ({EmbeddedRunState phase, bool hasLoopback, bool hasAuth})
-  >?
+  ObservationSubscription<({EmbeddedRunState phase, bool hasAuth})>?
   _serviceSubscription;
   EmbeddedRunState? _lastPhase;
-  bool _lastHasLoopback = false;
   bool _lastHasAuth = false;
   // nativeapi can deliver a menu-item click more than once for a single
   // selection on macOS; this collapses rapid repeats to one action.
@@ -77,11 +73,7 @@ class TrayService {
       return;
     }
     _serviceSubscription = observe(
-      () => (
-        phase: svc.status.phase,
-        hasLoopback: svc.status.loopbackEndpoint != null,
-        hasAuth: svc.status.authUrl != null,
-      ),
+      () => (phase: svc.status.phase, hasAuth: svc.status.authUrl != null),
       onChange: (_) => _sync(),
       scheduler: ObservationSchedulers.immediate,
     );
@@ -101,16 +93,11 @@ class TrayService {
     final svc = _svc;
     if (tray == null || svc == null) return;
     final phase = svc.status.phase;
-    final hasLoopback = svc.status.loopbackEndpoint != null;
     final hasAuth = svc.status.authUrl != null;
-    if (!force &&
-        phase == _lastPhase &&
-        hasLoopback == _lastHasLoopback &&
-        hasAuth == _lastHasAuth) {
+    if (!force && phase == _lastPhase && hasAuth == _lastHasAuth) {
       return;
     }
     _lastPhase = phase;
-    _lastHasLoopback = hasLoopback;
     _lastHasAuth = hasAuth;
     _applyIcon(tray, phase);
     tray.tooltip = 'Motif — ${_phaseLabel(phase)}';
@@ -175,10 +162,6 @@ class TrayService {
       add(_item('Start Server', () => svc.start()));
     }
 
-    if (running && status.loopbackEndpoint != null) {
-      menu.addSeparator();
-      add(_item('Open in Browser…', () => _openWebUi(svc)));
-    }
     if (status.authUrl != null) {
       add(
         _item('Sign in to Tailscale…', () => openExternalUrl(status.authUrl!)),
@@ -211,15 +194,6 @@ class TrayService {
       Future.delayed(const Duration(milliseconds: 50), onTap);
     });
     return item;
-  }
-
-  /// Open the running server's served web UI in the default browser. The
-  /// loopback listener is plaintext and unauthenticated (LAN/relay pairing adds
-  /// TLS + a bearer, which a browser can't pin — use the app/QR for those).
-  void _openWebUi(EmbeddedServerService svc) {
-    final ep = svc.status.loopbackEndpoint;
-    if (ep == null) return;
-    openExternalUrl('http://${ep.host}:${ep.port}/');
   }
 
   /// Switch the app to [mode] and bring the window forward.

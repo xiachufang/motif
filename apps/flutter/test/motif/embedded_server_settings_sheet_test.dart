@@ -15,7 +15,6 @@ void main() {
   ) async {
     final service = _FakeEmbeddedServerService(
       config: const EmbeddedServerConfig(
-        listenMode: EmbeddedListenMode.lan,
         rzvMode: EmbeddedRelayMode.custom,
         rzvRelay: 'relay.example.com',
         rzvJwt: 'owner.jwt',
@@ -118,7 +117,7 @@ void main() {
     tester,
   ) async {
     final service = _FakeEmbeddedServerService(
-      config: const EmbeddedServerConfig(listenMode: EmbeddedListenMode.lan),
+      config: const EmbeddedServerConfig(),
       status: const EmbeddedServerStatus(),
     );
     final errors = await _captureFlutterErrors(tester, () async {
@@ -126,8 +125,8 @@ void main() {
     });
 
     expect(find.text('Server Settings'), findsOneWidget);
-    expect(find.text('Loopback'), findsOneWidget);
-    expect(find.text('LAN'), findsOneWidget);
+    expect(find.text('Loopback'), findsNothing);
+    expect(find.text('Local network'), findsOneWidget);
     expect(find.text('CONNECTION RELAY'), findsOneWidget);
     expect(find.byKey(const ValueKey('relay-mode-free')), findsOneWidget);
     expect(find.text('Free'), findsOneWidget);

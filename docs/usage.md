@@ -233,19 +233,15 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 关闭桌面窗口不会自动停止 server；桌面 App 会留在托盘。选择 Quit Motif 时会尽量
 先停止 embedded server。
 
-### 3.3 Listen 模式
+### 3.3 Listen 地址
 
-桌面 embedded server 有三个 listen 模式：
-
-| 模式 | 监听地址 | 适合 |
-| --- | --- | --- |
-| Loopback only | `127.0.0.1:<port>` | 默认模式。只给这台电脑自己用，明文、无鉴权 |
-| Local network | `0.0.0.0:<port>` | 同一局域网里的手机/平板/电脑直连；自动加密 + psk 配对，扫 Pairing 区的二维码即可 |
-| Off | 不开 TCP listener | 只通过 Tailscale 或 relay pairing 访问 |
+桌面 embedded server 固定监听 `0.0.0.0:<port>`，可从同一局域网的手机、
+平板或电脑直连。LAN listener 会自动启用 TLS 和 psk 配对，不提供
+明文 loopback 模式。
 
 默认端口是 `7777`。如果端口被占用，在 Server 页的 Listen 区域改成其它端口。
 
-当 embedded server 有 loopback endpoint 时，Motif App 会自动在 Client 页注册一个
+当 embedded server 启动后，Motif App 会自动在 Client 页注册一个
 `This computer` server。你可以直接从 Client 页进入本机 Session。
 
 ### 3.4 认证与加密
@@ -254,13 +250,11 @@ Web 和移动端不能运行 embedded server；它们只能作为 client。Flutt
 桌面 App 从持久化的 psk 派生 bearer、用自签证书终止 TLS，并在 **Pairing** 区显示
 一个 `motif://pair` 二维码/链接——它就是唯一凭证，无论走 LAN 直连还是 relay 都展示。
 
-Loopback 模式保持明文、无鉴权（只给本机用）。
-
 ### 3.5 让其它设备连回这台电脑
 
 **同一局域网直连：**
 
-1. Server 页选择 **Local network**，Start server。
+1. 在 Server 页 Start server。
 2. 在 **Pairing** 区扫描二维码（或复制链接）。
 3. 在手机/平板/另一台电脑的 Motif App 里选 **Pair**，扫码/粘贴即连——自动 `https://`
    + 证书 pin + psk bearer，无需手填 token。
@@ -273,8 +267,6 @@ Loopback 模式保持明文、无鉴权（只给本机用）。
 4. 选择 Browser login，Start 后打开登录 URL；或粘贴 auth key 做 headless 登录。
 5. 其它设备在 Motif App 里先连接 Tailscale，再添加 Tailscale server。
 
-如果只想走 tailnet，不想开本地 TCP，把 Listen 设置为 **Off**，同时启用 Tailscale。
-
 **Relay pairing：**
 
 1. Pairing 区打开 **Pair over a relay**。
@@ -285,12 +277,6 @@ Loopback 模式保持明文、无鉴权（只给本机用）。
 
 这适合手机接入、两端都在 NAT 后、或者不想配置局域网/Tailscale 的场景。前提是你有
 可用的 `motif-rendezvous` relay。
-
-**浏览器打开本机 Web UI：**
-
-托盘菜单里的 **Open in Browser** 打开 embedded server 的 Web UI（明文 loopback）。
-这个入口只在 server 正在运行且有 loopback endpoint 时出现；LAN/relay 的加密直连请
-用 App 扫码（浏览器无法 pin 自签证书）。
 
 ### 3.6 本机模式的注意事项
 
@@ -337,7 +323,7 @@ Session 列表打开 **Codex**，即可创建或恢复工作区 Thread。左侧 
 | WSL | WSL 内的 `--listen 127.0.0.1:7777` | Add Server → WSL | Windows App 自动 bootstrap；Linux workdir/shell |
 | Tailscale | `--tailscale` | Enable Tailscale | 适合多设备、NAT 后、移动办公 |
 | Rendezvous relay | `--rzv-relay` | Pair over a relay | 适合扫码配对和无直连网络（端到端 TLS pin + psk bearer） |
-| Browser same-origin | `motifd` 内嵌 Web UI | Tray Open in Browser | Web client 与 RPC/WS 共用同一个 origin |
+| Browser same-origin | `motifd` 内嵌 Web UI | 浏览器直接访问 | Web client 与 RPC/WS 共用同一个 origin |
 
 ## 6. 快速排错
 

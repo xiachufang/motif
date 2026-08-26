@@ -349,44 +349,19 @@ class _EmbeddedServerSettingsDialogState
     );
   }
 
-  // ── Listen mode + port ──
+  // ── Listen address + port ──
 
   Widget _listenSection(EmbeddedServerConfig cfg, MotifColors c) {
-    final selected = _listenModeText(cfg.listenMode);
     return MotifSection(
       title: 'Listen',
       children: [
         Padding(
           padding: const EdgeInsets.all(MotifSpacing.md),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SegmentedButton<EmbeddedListenMode>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(
-                    value: EmbeddedListenMode.loopback,
-                    label: Text('Loopback'),
-                    icon: Icon(Icons.computer_outlined),
-                  ),
-                  ButtonSegment(
-                    value: EmbeddedListenMode.lan,
-                    label: Text('LAN'),
-                    icon: Icon(Icons.lan_outlined),
-                  ),
-                ],
-                selected: {cfg.listenMode},
-                onSelectionChanged: (next) =>
-                    _updateDraft(cfg.copyWith(listenMode: next.first)),
-              ),
-              const SizedBox(height: MotifSpacing.md),
-              _ModeSummary(
-                icon: selected.icon,
-                title: selected.title,
-                subtitle: selected.subtitle,
-                tone: selected.tone(c),
-              ),
-            ],
+          child: _ModeSummary(
+            icon: Icons.lan_outlined,
+            title: 'Local network',
+            subtitle: 'Reachable on the LAN at 0.0.0.0; encrypted, pair via QR',
+            tone: c.success,
           ),
         ),
         _field(
@@ -403,29 +378,6 @@ class _EmbeddedServerSettingsDialogState
         ),
       ],
     );
-  }
-
-  ({
-    IconData icon,
-    String title,
-    String subtitle,
-    Color Function(MotifColors) tone,
-  })
-  _listenModeText(EmbeddedListenMode mode) {
-    return switch (mode) {
-      EmbeddedListenMode.loopback => (
-        icon: Icons.lock_outline,
-        title: 'Loopback only',
-        subtitle: 'Private to this computer at 127.0.0.1',
-        tone: (MotifColors c) => c.success,
-      ),
-      EmbeddedListenMode.lan => (
-        icon: Icons.lan_outlined,
-        title: 'Local network',
-        subtitle: 'Reachable on the LAN at 0.0.0.0; encrypted, pair via QR',
-        tone: (MotifColors c) => c.success,
-      ),
-    };
   }
 
   // ── Tailscale ──
@@ -1431,8 +1383,7 @@ Future<void> showEmbeddedServerSettingsDialog(BuildContext context) {
 }
 
 bool _configsEqual(EmbeddedServerConfig a, EmbeddedServerConfig b) {
-  return a.listenMode == b.listenMode &&
-      a.port == b.port &&
+  return a.port == b.port &&
       a.tsEnabled == b.tsEnabled &&
       a.tsHostname == b.tsHostname &&
       a.tsAuthkey == b.tsAuthkey &&
@@ -1698,10 +1649,7 @@ class _ServerOverview extends StatelessWidget {
 
   String _subtitle(bool running) {
     if (!running) {
-      final mode = config.listenMode == EmbeddedListenMode.loopback
-          ? '127.0.0.1'
-          : '0.0.0.0';
-      return 'Configured for $mode:${config.port}';
+      return 'Configured for 0.0.0.0:${config.port}';
     }
     final endpointCount = status.boundAddrs.length;
     final endpoints = switch (endpointCount) {

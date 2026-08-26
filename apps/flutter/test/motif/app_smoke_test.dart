@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -42,9 +43,12 @@ class _DelayedEmbeddedServerService extends EmbeddedServerService {
   int stopCalls = 0;
 
   void becomeReady(int port) {
+    final psk = base64Url.encode(List<int>.filled(32, 1)).replaceAll('=', '');
+    final pin = base64Url.encode(List<int>.filled(32, 2)).replaceAll('=', '');
     statusState = EmbeddedServerStatus(
       running: true,
       boundAddrs: ['tcp://0.0.0.0:$port'],
+      pairingUri: 'motif://pair?v=1&host=192.0.2.1&port=$port&psk=$psk&pk=$pin',
     );
   }
 
@@ -200,7 +204,11 @@ void main() {
 
     expect(transport.connectCalls, 1);
     expect(app.isServerLive(kEmbeddedServerId), isTrue);
-    expect(app.serverById(kEmbeddedServerId)?.port, listener.port);
+    final local = app.serverById(kEmbeddedServerId);
+    expect(local?.port, listener.port);
+    expect(local?.scheme, 'https');
+    expect(local?.psk, isNotEmpty);
+    expect(local?.pubKey, isNotEmpty);
   });
 
   testWidgets('command q quits the complete macOS app', (tester) async {

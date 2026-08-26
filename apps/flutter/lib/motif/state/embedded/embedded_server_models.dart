@@ -6,7 +6,7 @@ library;
 
 import 'package:flutter/foundation.dart';
 
-/// Stable id of the auto-managed loopback server entry.
+/// Stable id of the auto-managed local server entry.
 const String kEmbeddedServerId = 'embedded-local';
 
 /// Default public push relay for embedded motifd. The Rust embed layer accepts
@@ -16,17 +16,12 @@ const String kDefaultPushRelayAddress = 'motif-push-relay.slothease.com';
 /// Public rendezvous relay used by the auto-managed Free option.
 const String kDefaultRzvRelayAddress = 'motif-relay.slothease.com';
 
-/// How the embedded server should listen. Mirrors the Rust `ListenMode`
-/// (serialized lowercase) in the desktop implementation.
-enum EmbeddedListenMode { loopback, lan }
-
 /// Connection Relay policy. Existing enabled/JWT configurations migrate to
 /// [custom]; fresh installs use [free].
 enum EmbeddedRelayMode { free, custom, off }
 
 @immutable
 class EmbeddedServerConfig {
-  final EmbeddedListenMode listenMode;
   final int port;
   final bool tsEnabled;
   final String tsHostname;
@@ -43,7 +38,6 @@ class EmbeddedServerConfig {
   final bool allowScreenCapture;
 
   const EmbeddedServerConfig({
-    this.listenMode = EmbeddedListenMode.loopback,
     this.port = 7777,
     this.tsEnabled = false,
     this.tsHostname = '',
@@ -58,7 +52,6 @@ class EmbeddedServerConfig {
   });
 
   EmbeddedServerConfig copyWith({
-    EmbeddedListenMode? listenMode,
     int? port,
     bool? tsEnabled,
     String? tsHostname,
@@ -71,7 +64,6 @@ class EmbeddedServerConfig {
     bool? autostart,
     bool? allowScreenCapture,
   }) => EmbeddedServerConfig(
-    listenMode: listenMode ?? this.listenMode,
     port: port ?? this.port,
     tsEnabled: tsEnabled ?? this.tsEnabled,
     tsHostname: tsHostname ?? this.tsHostname,

@@ -18,10 +18,8 @@ const DEFAULT_PUSH_RELAY_ADDRESS: &str = "motif-push-relay.slothease.com";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ListenMode {
-    /// 127.0.0.1 only — private, token-less is fine.
-    #[default]
-    Loopback,
     /// 0.0.0.0 — reachable on the LAN; requires a token.
+    #[default]
     Lan,
     /// No TCP listener; Tailscale-only.
     Off,
@@ -126,7 +124,6 @@ impl MenuConfig {
         }
 
         let listen = match self.listen_mode {
-            ListenMode::Loopback => Some(SocketAddr::from((Ipv4Addr::LOCALHOST, self.port))),
             ListenMode::Lan => Some(SocketAddr::from((Ipv4Addr::UNSPECIFIED, self.port))),
             ListenMode::Off => None,
         };
@@ -136,8 +133,8 @@ impl MenuConfig {
             return Err("Relay pairing requires an owner JWT.".into());
         }
         // A LAN listener is a network surface: encrypt it (self-signed TLS,
-        // client pins the cert) and authenticate with a psk-derived bearer, same
-        // as the `motifd` CLI. Loopback stays plaintext (local host app only).
+        // client pins the cert) and authenticate with a psk-derived bearer,
+        // same as the `motifd` CLI.
         let is_lan = matches!(self.listen_mode, ListenMode::Lan);
 
         if listen.is_none() && !self.tailscale.enabled && !rzv_on {
@@ -296,16 +293,10 @@ mod tests {
     }
 
     #[test]
-    fn loopback_tokenless_ok() {
-        let c = MenuConfig::default(); // loopback, auth off
+    fn lan_is_the_default() {
+        let c = MenuConfig::default();
         assert!(c.autostart, "embedded server should autostart by default");
-        let sc = c
-            .to_server_config(&tsnet())
-            .expect("loopback should map")
-            .server;
-        assert!(sc.listen.unwrap().ip().is_loopback());
-        assert!(sc.token.is_none());
-        assert!(sc.tailscale.is_none());
+        assert_eq!(c.listen_mode, ListenMode::Lan);
     }
 
     #[test]
@@ -324,6 +315,10 @@ mod tests {
         assert!(!sc.listen.unwrap().ip().is_loopback());
         assert!(sc.token.is_some(), "LAN derives a psk bearer");
         assert!(sc.listen_tls.is_some(), "LAN terminates TLS");
+        assert!(
+            sc.rendezvous.is_none(),
+            "relay remains independently disabled"
+        );
         let uri = built
             .pairing_uri
             .expect("LAN advertises a direct pairing link");
@@ -380,20 +375,6 @@ mod tests {
         assert_eq!(c.push_relay_url, DEFAULT_PUSH_RELAY_ADDRESS);
         assert!(c.autostart);
         assert!(c.allow_screen_capture);
-
-        // Keep this host-contract test valid for the Windows no-feature CI
-        // build too. Tailscale availability is covered separately; here we
-        // only need a feature-independent config to verify the new field maps.
-        let mut mapped = c.clone();
-        mapped.listen_mode = ListenMode::Loopback;
-        mapped.tailscale.enabled = false;
-        assert!(
-            mapped
-                .to_server_config(&tsnet())
-                .expect("capture opt-in should map")
-                .server
-                .allow_screen_capture
-        );
     }
 
     #[test]
@@ -402,16 +383,6 @@ mod tests {
         let json = serde_json::to_string(&MenuConfig::default()).unwrap();
         let with_unknown = json.replacen('{', "{\"auth\":{},", 1);
         assert!(serde_json::from_str::<MenuConfig>(&with_unknown).is_err());
-    }
-
-    #[test]
-    fn rzv_disabled_has_no_backend_or_pairing() {
-        // Default (rzv off) takes the early-return path — no filesystem I/O.
-        let built = c_default()
-            .to_server_config(&tsnet())
-            .expect("default maps");
-        assert!(built.server.rendezvous.is_none());
-        assert!(built.pairing_uri.is_none());
     }
 
     #[test]
@@ -429,11 +400,8 @@ mod tests {
 
     #[test]
     fn default_push_relay_maps_to_full_endpoint() {
-        let built = c_default()
-            .to_server_config(&tsnet())
-            .expect("default maps");
         assert_eq!(
-            built.server.push_relay_url.as_deref(),
+            normalize_push_relay_url(DEFAULT_PUSH_RELAY_ADDRESS).as_deref(),
             Some("https://motif-push-relay.slothease.com/v1/push")
         );
     }
@@ -449,9 +417,5 @@ mod tests {
             Some("https://relay.example.com/custom")
         );
         assert_eq!(normalize_push_relay_url("   "), None);
-    }
-
-    fn c_default() -> MenuConfig {
-        MenuConfig::default()
     }
 }

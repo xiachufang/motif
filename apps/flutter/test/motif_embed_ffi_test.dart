@@ -1,6 +1,6 @@
 /// Exercises the Dart↔Rust FFI ABI of the embedded-server library against the
 /// host-built dynamic library: confirms the symbol names/signatures match and
-/// that a real start→status→stop cycle works over loopback. Skipped
+/// that a real start→status→stop cycle works over a LAN listener. Skipped
 /// automatically when the library hasn't been built
 /// (`scripts/build_motif_embed.sh --target <host>`).
 @TestOn('vm')
@@ -58,12 +58,12 @@ void main() {
     expect((status as Map<String, Object?>).containsKey('error'), true);
   });
 
-  test('start → running → stop on loopback', () async {
+  test('start → running → stop on LAN', () async {
     final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final port = probe.port;
     await probe.close();
     final config = {
-      'listen_mode': 'loopback',
+      'listen_mode': 'lan',
       'port': port,
       'tailscale': {
         'enabled': false,
