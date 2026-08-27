@@ -296,7 +296,9 @@ Motif 的 **Terminal** 与 **Codex** 是独立入口。Terminal attach 到服务
 Codex 页面通过 `motifd` 启动并连接同机的 `codex app-server`，让 Codex 直接在
 服务端工作目录中运行。
 
-使用前需要在运行 `motifd` 的系统用户下安装并登录 Codex CLI：
+Flutter 桌面 App 的内嵌 server 在本机缺少 Codex CLI 时，会在第一次打开 Codex
+页面时通过 OpenAI 官方脚本静默安装。独立 `motifd` 仍需在运行它的系统用户下手动
+安装。两种模式都需要用户自行登录：
 
 ```bash
 codex --version

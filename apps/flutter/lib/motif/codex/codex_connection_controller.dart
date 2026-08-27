@@ -43,8 +43,9 @@ final class CodexCliNotFoundException implements Exception {
   @override
   String toString() =>
       'Install the Codex CLI on the Motif server, then retry. The standalone '
-      'installer normally places it at ~/.local/bin/codex. If Codex is '
-      'installed elsewhere, set MOTIFD_CODEX_PATH to its executable.\n\n'
+      'installer uses ~/.local/bin on macOS/Linux and the per-user OpenAI '
+      'Programs directory on Windows. If Codex is installed elsewhere, set '
+      'MOTIFD_CODEX_PATH to its executable.\n\n'
       'Server detail: $serverMessage';
 }
 
@@ -72,7 +73,10 @@ final class RpcCodexTransport implements CodexTransport {
       // Starting over HTTP first preserves motifd's structured launch errors.
       // A failed WebSocket upgrade otherwise collapses them into an opaque
       // channel connection exception on both native and web clients.
-      await handle.rpc('codex.start');
+      // A first launch may silently install Codex on the embedded desktop
+      // server. OpenAI's installer allows a five-minute asset download, so
+      // this request needs a wider budget than ordinary RPCs.
+      await handle.rpc('codex.start', timeout: const Duration(minutes: 10));
       final connection = await handle.openWebSocket(
         const ServerWebSocketRequest(path: '/codex'),
       );

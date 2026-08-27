@@ -157,13 +157,17 @@ for image tags, configuration, and GHCR details.
 
 The Codex view is separate from terminal sessions. It uses `codex app-server`
 on the `motifd` host to provide streamed conversations, persistent thread
-history, forks, approvals, and Side Chats in Motif. Install and authenticate the
-Codex CLI for the same OS user that runs `motifd`; Codex usage follows that
-account or API key rather than Motif itself.
+history, forks, approvals, and Side Chats in Motif. When the Flutter desktop
+app's embedded server first needs Codex and cannot find it, it silently runs
+OpenAI's official standalone installer for the current OS user. Authentication
+is still explicit; Codex usage follows that account or API key rather than
+Motif itself. Standalone `motifd` deployments remain operator-managed and need
+Codex installed separately.
 
 `motifd` first checks `MOTIFD_CODEX_PATH`, then `PATH`, the standalone install
-location `~/.local/bin/codex`, Homebrew prefixes, and common npm/node-manager
-locations. Set `MOTIFD_CODEX_PATH` when Codex is installed elsewhere. See
+location (`~/.local/bin/codex` on macOS/Linux or the per-user OpenAI Programs
+directory on Windows), Homebrew prefixes, and common npm/node-manager locations.
+Set `MOTIFD_CODEX_PATH` when Codex is installed elsewhere. See
 [`docs/codex.md`](docs/codex.md) for setup, authentication, thread, and Side
 Chat details.
 

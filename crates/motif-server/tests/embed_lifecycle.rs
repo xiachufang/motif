@@ -17,6 +17,7 @@ fn loopback_cfg() -> ServerConfig {
         token: None,
         push_relay_url: None,
         allow_screen_capture: false,
+        auto_install_codex: false,
     }
 }
 

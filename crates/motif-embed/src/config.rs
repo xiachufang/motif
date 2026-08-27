@@ -253,6 +253,7 @@ impl MenuConfig {
                 token,
                 push_relay_url: normalize_push_relay_url(&self.push_relay_url),
                 allow_screen_capture: self.allow_screen_capture,
+                auto_install_codex: true,
             },
             pairing_uri,
             rzv_jwt,
@@ -313,6 +314,10 @@ mod tests {
         let built = c.to_server_config(&tsnet()).expect("lan should map");
         let sc = &built.server;
         assert!(!sc.listen.unwrap().ip().is_loopback());
+        assert!(
+            sc.auto_install_codex,
+            "embedded server should install a missing Codex CLI"
+        );
         assert!(sc.token.is_some(), "LAN derives a psk bearer");
         assert!(sc.listen_tls.is_some(), "LAN terminates TLS");
         assert!(

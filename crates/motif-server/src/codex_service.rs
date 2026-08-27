@@ -53,7 +53,21 @@ impl CodexService {
         conns: Arc<ConnRegistry>,
         devices: DeviceState,
     ) -> Arc<Self> {
-        Self::build(manager, conns, Arc::new(SystemCodexLauncher), devices)
+        Self::new_with_devices_and_auto_install(manager, conns, devices, false)
+    }
+
+    pub fn new_with_devices_and_auto_install(
+        manager: Arc<SessionManager>,
+        conns: Arc<ConnRegistry>,
+        devices: DeviceState,
+        auto_install: bool,
+    ) -> Arc<Self> {
+        Self::build(
+            manager,
+            conns,
+            Arc::new(SystemCodexLauncher::new(auto_install)),
+            devices,
+        )
     }
 
     fn build(

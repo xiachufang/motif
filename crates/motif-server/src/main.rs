@@ -317,6 +317,7 @@ async fn run() -> anyhow::Result<()> {
         token,
         push_relay_url: args.push_relay_url,
         allow_screen_capture: args.allow_screen_capture,
+        auto_install_codex: false,
     };
     motif_server::serve(cfg).await
 }

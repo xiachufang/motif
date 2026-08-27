@@ -10,7 +10,13 @@ Codex 是可选集成。Motif 不包含 OpenAI 账号、API key 或 Codex 用量
 
 ## 1. 准备 Codex CLI
 
-在运行 `motifd` 的同一个系统用户下安装 Codex CLI，并先确认它可执行：
+Flutter 桌面 App 的内嵌 server 会在第一次打开 Codex、且本机找不到 Codex CLI 时，
+使用 OpenAI 官方安装脚本静默安装最新版。macOS/Linux 使用 `install.sh`，Windows
+使用 `install.ps1`；安装过程不会弹出交互确认。显式设置了无效的
+`MOTIFD_CODEX_PATH` 时不会覆盖该配置，而是直接报告配置错误。
+
+独立运行的 `motifd`（包括 daemon、容器和远端主机）不会自动修改运行环境，仍需在
+运行它的同一个系统用户下安装 Codex CLI。安装后可这样确认：
 
 ```bash
 codex --version
@@ -111,6 +117,8 @@ permission profile、sandbox 和审批策略约束。
 
 **提示找不到 Codex CLI**
 
+- Flutter 桌面内嵌 server 会自动尝试安装；若安装失败，错误详情会包含下载或安装
+  阶段的原因。检查网络、`curl`（macOS/Linux）或 PowerShell（Windows）后重试。
 - 以运行 `motifd` 的用户执行 `codex --version`。
 - 为 daemon 显式设置 `MOTIFD_CODEX_PATH`，然后重启 `motifd`。
 

@@ -42,6 +42,10 @@ pub struct ServerConfig {
     /// Explicit opt-in for authenticated clients to enumerate displays/windows
     /// and request one-shot PNG screenshots from this graphical login session.
     pub allow_screen_capture: bool,
+    /// Install the Codex CLI with OpenAI's official standalone installer when
+    /// the executable cannot be found. The Flutter embedded server enables
+    /// this; standalone motifd deployments keep installation operator-owned.
+    pub auto_install_codex: bool,
 }
 
 // rustls::ServerConfig isn't Debug; render listen_tls as a presence flag.
@@ -56,6 +60,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("push_relay_url", &self.push_relay_url)
             .field("allow_screen_capture", &self.allow_screen_capture)
+            .field("auto_install_codex", &self.auto_install_codex)
             .finish()
     }
 }

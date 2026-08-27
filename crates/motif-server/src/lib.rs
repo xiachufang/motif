@@ -485,10 +485,11 @@ pub async fn start(cfg: ServerConfig) -> anyhow::Result<RunningServer> {
         store: device_store,
         relay: relay_client,
     };
-    let codex = codex_service::CodexService::new_with_devices(
+    let codex = codex_service::CodexService::new_with_devices_and_auto_install(
         Arc::clone(&manager),
         Arc::clone(&conns),
         device_state.clone(),
+        cfg.auto_install_codex,
     );
 
     let state = ws::AppState {
