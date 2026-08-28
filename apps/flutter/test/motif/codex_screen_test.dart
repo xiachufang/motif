@@ -611,6 +611,93 @@ void main() {
     app.dispose();
   });
 
+  testWidgets('network disconnect and reconnect stay in the composer area', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 700);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final app = await appState();
+    final client = ScreenFakeClient();
+    final connected = client.state;
+    final serviceState = readyServiceState(connection: client);
+    final thread = serviceState.catalog.allThreads.single;
+    serviceState.selectedThread = thread;
+    client.listedThreads = [thread];
+    client.threadResumeResponses[thread.id] = _resumeResponse(thread);
+
+    await tester.pumpWidget(
+      MotifScope(
+        appState: app,
+        codexState: CodexState(),
+        child: MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: _CodexTestHost(
+            app: app,
+            codex: CodexState(),
+            serviceState: serviceState,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('codex-composer-input')),
+      'Keep this draft',
+    );
+    client
+      ..state = const CodexConnectionState(
+        phase: CodexConnectionPhase.failed,
+        error: 'network offline',
+      )
+      ..notifyListeners();
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('codex-thread-detail')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('codex-connection-status')),
+      findsOneWidget,
+    );
+    expect(find.text('Connection lost'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-composer')), findsNothing);
+    expect(find.text('Codex connection failed'), findsNothing);
+
+    client
+      ..state = const CodexConnectionState(
+        phase: CodexConnectionPhase.connecting,
+      )
+      ..notifyListeners();
+    await tester.pump();
+
+    expect(find.text('Reconnecting to Codex'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-connecting')), findsNothing);
+    expect(find.byKey(const ValueKey('codex-thread-detail')), findsOneWidget);
+
+    client
+      ..state = const CodexConnectionState(
+        phase: CodexConnectionPhase.initializing,
+      )
+      ..notifyListeners();
+    await tester.pump();
+
+    expect(find.text('Restoring Codex session'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-initializing')), findsNothing);
+
+    client
+      ..state = connected
+      ..notifyListeners();
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('codex-connection-status')), findsNothing);
+    expect(find.byKey(const ValueKey('codex-composer')), findsOneWidget);
+    expect(find.text('Keep this draft'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    app.dispose();
+  });
+
   testWidgets('nested Codex route keeps Close beside the sidebar toggle', (
     tester,
   ) async {
@@ -1169,6 +1256,7 @@ final class ScreenFakeClient extends ChangeNotifier
 
   final Map<String, String> files;
   final List<CodexModel> models;
+  List<CodexThread> listedThreads = const [];
   final List<String> readPaths = [];
   final StreamController<Map<String, Object?>> _raw =
       StreamController<Map<String, Object?>>.broadcast();
@@ -1209,7 +1297,7 @@ final class ScreenFakeClient extends ChangeNotifier
   @override
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
-  ) async => const CodexThreadListResponse(data: []);
+  ) async => CodexThreadListResponse(data: listedThreads);
 
   @override
   Future<CodexThreadSetNameResponse> setThreadName(

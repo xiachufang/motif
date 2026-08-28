@@ -12,6 +12,7 @@ import 'package:image_picker/image_picker.dart' as image_picker;
 
 import '../../codex/codex_agent_output_parser.dart';
 import '../../codex/codex_composer_models.dart';
+import '../../codex/codex_connection_controller.dart';
 import '../../codex/codex_navigation.dart';
 import '../../codex/codex_observation_view_models.dart';
 import '../../codex/codex_service_state.dart';
@@ -451,7 +452,14 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                 CodexMotionSwitcher(
                   animateSize: true,
                   alignment: Alignment.bottomCenter,
-                  child: projectedExternalActiveTurn != null
+                  child:
+                      state.connectionState.phase !=
+                          CodexConnectionPhase.connected
+                      ? _ConnectionStatusNotice(
+                          key: const ValueKey('codex-connection-status'),
+                          connection: state.connectionState,
+                        )
+                      : projectedExternalActiveTurn != null
                       ? const _ExternalThreadActiveNotice(
                           key: ValueKey('codex-external-thread-active'),
                         )
@@ -2554,6 +2562,78 @@ class _ExternalThreadActiveNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
+    return _ComposerStatusNotice(
+      leading: Icon(
+        Icons.devices_rounded,
+        size: MotifIconSize.md,
+        color: c.textSecondary,
+      ),
+      title: 'This thread is active elsewhere',
+      description:
+          'Motif will update it automatically. You can send a message '
+          'when the other turn finishes.',
+    );
+  }
+}
+
+class _ConnectionStatusNotice extends StatelessWidget {
+  const _ConnectionStatusNotice({required this.connection, super.key});
+
+  final CodexConnectionState connection;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final reconnecting = connection.phase != CodexConnectionPhase.failed;
+    final title = switch (connection.phase) {
+      CodexConnectionPhase.connecting => 'Reconnecting to Codex',
+      CodexConnectionPhase.initializing => 'Restoring Codex session',
+      CodexConnectionPhase.failed => 'Connection lost',
+      CodexConnectionPhase.connected => '',
+    };
+    final description = switch (connection.phase) {
+      CodexConnectionPhase.connecting =>
+        'Your conversation stays available while Motif restores the connection.',
+      CodexConnectionPhase.initializing =>
+        'Connected to the server. Finishing Codex setup…',
+      CodexConnectionPhase.failed =>
+        'Motif will reconnect automatically. Your conversation is still available.',
+      CodexConnectionPhase.connected => '',
+    };
+    return _ComposerStatusNotice(
+      leading: reconnecting
+          ? SizedBox.square(
+              dimension: MotifIconSize.md,
+              child: CircularProgressIndicator(
+                color: c.textSecondary,
+                strokeWidth: 2,
+              ),
+            )
+          : Icon(
+              Icons.wifi_off_rounded,
+              size: MotifIconSize.md,
+              color: c.textSecondary,
+            ),
+      title: title,
+      description: description,
+    );
+  }
+}
+
+class _ComposerStatusNotice extends StatelessWidget {
+  const _ComposerStatusNotice({
+    required this.leading,
+    required this.title,
+    required this.description,
+  });
+
+  final Widget leading;
+  final String title;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
     return Container(
       padding: const EdgeInsets.all(MotifSpacing.md),
       decoration: BoxDecoration(
@@ -2565,24 +2645,19 @@ class _ExternalThreadActiveNotice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.devices_rounded,
-            size: MotifIconSize.md,
-            color: c.textSecondary,
-          ),
+          leading,
           const SizedBox(width: MotifSpacing.sm),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This thread is active elsewhere',
+                  title,
                   style: MotifType.subhead.copyWith(color: c.textPrimary),
                 ),
                 const SizedBox(height: MotifSpacing.xs),
                 Text(
-                  'Motif will update it automatically. You can send a message '
-                  'when the other turn finishes.',
+                  description,
                   style: MotifType.callout.copyWith(color: c.textSecondary),
                 ),
               ],

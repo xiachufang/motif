@@ -371,76 +371,88 @@ class _CodexScreenState extends State<CodexScreen> {
     required String? readingThreadId,
     VoidCallback? onOpenSidebar,
   }) {
-    final child = switch (connection.phase) {
-      CodexConnectionPhase.connecting => const _MainSurface(
-        child: _Progress(
-          key: ValueKey('codex-connecting'),
-          title: 'Connecting to Codex',
-        ),
-      ),
-      CodexConnectionPhase.initializing => const _MainSurface(
-        child: _Progress(
-          key: ValueKey('codex-initializing'),
-          title: 'Initializing experimental API',
-        ),
-      ),
-      CodexConnectionPhase.connected =>
-        readingThreadId != null
-            ? const _MainSurface(
-                child: _Progress(
-                  key: ValueKey('codex-thread-loading'),
-                  title: 'Loading thread',
-                ),
-              )
-            : selectedThread == null
-            ? _MainSurface(
-                child: _Connected(
-                  serviceState: state,
-                  onOpenSidebar: onOpenSidebar,
-                ),
-              )
-            : KeyedSubtree(
-                key: ValueKey('codex-thread-${selectedThread.id}'),
-                child: CodexThreadWorkspace(
-                  state: state.selectedConversation ?? state,
-                  codexState: widget.controller.preferences,
-                  speechService: widget.speechService,
-                  onOpenFile: (path) =>
-                      _openFile(state.selectedConversation ?? state, path),
-                  onOpenImage: (path) => _openFile(
-                    state.selectedConversation ?? state,
-                    path,
-                    image: true,
-                  ),
-                  onOpenTurnDiff: (document, {initialPath}) => _openTurnDiff(
-                    state.selectedConversation ?? state,
-                    document,
-                    initialPath: initialPath,
-                  ),
-                ),
+    final keepThreadVisible =
+        selectedThread != null &&
+        switch (connection.phase) {
+          CodexConnectionPhase.connecting ||
+          CodexConnectionPhase.initializing => true,
+          CodexConnectionPhase.connected => readingThreadId == null,
+          CodexConnectionPhase.failed =>
+            connection.failureKind == CodexConnectionFailureKind.connection,
+        };
+    final child = keepThreadVisible
+        ? _threadWorkspace(state, selectedThread)
+        : switch (connection.phase) {
+            CodexConnectionPhase.connecting => const _MainSurface(
+              child: _Progress(
+                key: ValueKey('codex-connecting'),
+                title: 'Connecting to Codex',
               ),
-      CodexConnectionPhase.failed => _MainSurface(
-        child: _Failure(
-          title:
-              connection.failureKind == CodexConnectionFailureKind.cliNotFound
-              ? 'Codex CLI not found'
-              : 'Codex connection failed',
-          error: connection.error ?? 'Connection failed',
-          onRetry: state.retryConnection,
-        ),
-      ),
-    };
-    final transitionKey = switch (connection.phase) {
-      CodexConnectionPhase.connecting => 'connecting',
-      CodexConnectionPhase.initializing => 'initializing',
-      CodexConnectionPhase.failed => 'failed',
-      CodexConnectionPhase.connected when readingThreadId != null =>
-        'loading-$readingThreadId',
-      CodexConnectionPhase.connected when selectedThread == null => 'empty',
-      CodexConnectionPhase.connected => 'thread-${selectedThread!.id}',
-    };
+            ),
+            CodexConnectionPhase.initializing => const _MainSurface(
+              child: _Progress(
+                key: ValueKey('codex-initializing'),
+                title: 'Initializing experimental API',
+              ),
+            ),
+            CodexConnectionPhase.connected =>
+              readingThreadId != null
+                  ? const _MainSurface(
+                      child: _Progress(
+                        key: ValueKey('codex-thread-loading'),
+                        title: 'Loading thread',
+                      ),
+                    )
+                  : selectedThread == null
+                  ? _MainSurface(
+                      child: _Connected(
+                        serviceState: state,
+                        onOpenSidebar: onOpenSidebar,
+                      ),
+                    )
+                  : _threadWorkspace(state, selectedThread),
+            CodexConnectionPhase.failed => _MainSurface(
+              child: _Failure(
+                title:
+                    connection.failureKind ==
+                        CodexConnectionFailureKind.cliNotFound
+                    ? 'Codex CLI not found'
+                    : 'Codex connection failed',
+                error: connection.error ?? 'Connection failed',
+                onRetry: state.retryConnection,
+              ),
+            ),
+          };
+    final transitionKey = keepThreadVisible
+        ? 'thread-${selectedThread.id}'
+        : switch (connection.phase) {
+            CodexConnectionPhase.connecting => 'connecting',
+            CodexConnectionPhase.initializing => 'initializing',
+            CodexConnectionPhase.failed => 'failed',
+            CodexConnectionPhase.connected when readingThreadId != null =>
+              'loading-$readingThreadId',
+            CodexConnectionPhase.connected when selectedThread == null =>
+              'empty',
+            CodexConnectionPhase.connected => 'thread-${selectedThread!.id}',
+          };
     return CodexMotionSwitcher(
       child: KeyedSubtree(key: ValueKey(transitionKey), child: child),
+    );
+  }
+
+  Widget _threadWorkspace(CodexServiceState state, CodexThread selectedThread) {
+    final conversation = state.selectedConversation ?? state;
+    return KeyedSubtree(
+      key: ValueKey('codex-thread-${selectedThread.id}'),
+      child: CodexThreadWorkspace(
+        state: conversation,
+        codexState: widget.controller.preferences,
+        speechService: widget.speechService,
+        onOpenFile: (path) => _openFile(conversation, path),
+        onOpenImage: (path) => _openFile(conversation, path, image: true),
+        onOpenTurnDiff: (document, {initialPath}) =>
+            _openTurnDiff(conversation, document, initialPath: initialPath),
+      ),
     );
   }
 
