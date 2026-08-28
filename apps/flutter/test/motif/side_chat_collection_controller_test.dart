@@ -63,7 +63,7 @@ void main() {
       expect(collection.entries.first.id, first.id);
 
       await collection.close();
-      expect(client.unsubscribed, isEmpty);
+      expect(client.unsubscribed, containsAll([first.id, second!.id]));
       expect(client.closed, isTrue);
     },
   );
@@ -86,7 +86,7 @@ void main() {
   });
 
   test(
-    'closing a shared collection keeps its socket and subscription',
+    'closing a shared collection releases its writer but keeps its socket',
     () async {
       final client = _SideChatFakeClient();
       final registry = CodexConversationRegistry(
@@ -111,9 +111,9 @@ void main() {
       await collection.close();
 
       expect(entry, isNotNull);
-      expect(client.unsubscribed, isEmpty);
+      expect(client.unsubscribed, [entry!.id]);
       expect(client.closed, isFalse);
-      expect(registry.handleFor(entry!.id)?.wasSubscribed, isTrue);
+      expect(registry.handleFor(entry.id)?.wasSubscribed, isFalse);
       expect(registry.sessionFor(entry.id), isNotNull);
 
       await registry.close();

@@ -22,6 +22,8 @@ enum CodexCatalogPhase { idle, loading, ready, failed }
 enum CodexConversationFeature { goals }
 
 typedef CodexForkThreadDelegate = Future<bool> Function(String lastTurnId);
+typedef CodexResumeThreadForSendDelegate =
+    Future<CodexThread> Function(String threadId);
 
 const codexThreadTurnsPageSize = 10;
 const codexThreadTurnsItemsView = CodexTurnItemsView('full');
@@ -185,6 +187,7 @@ class CodexConversationState extends ChangeNotifier {
   String? _viewModelThreadId;
   Object? _catalogFingerprint;
   CodexForkThreadDelegate? _forkThreadDelegate;
+  CodexResumeThreadForSendDelegate? _resumeThreadForSendDelegate;
 
   static const Duration deltaFlushInterval = Duration(milliseconds: 33);
 
@@ -966,6 +969,12 @@ class CodexConversationState extends ChangeNotifier {
     _forkThreadDelegate = delegate;
   }
 
+  void configureResumeThreadForSendDelegate(
+    CodexResumeThreadForSendDelegate? delegate,
+  ) {
+    _resumeThreadForSendDelegate = delegate;
+  }
+
   void selectModel(String modelId) {
     _modelSelectionTouched = true;
     _effortSelectionTouched = true;
@@ -1704,6 +1713,12 @@ class CodexConversationState extends ChangeNotifier {
   /// resume. A reconnect clears this cache because subscriptions belong to the
   /// app-server connection that performed the resume.
   Future<CodexThread> ensureThreadResumedForSend(String threadId) {
+    final delegate = _resumeThreadForSendDelegate;
+    if (delegate != null) return delegate(threadId);
+    return _ensureThreadResumedForSend(threadId);
+  }
+
+  Future<CodexThread> _ensureThreadResumedForSend(String threadId) {
     if (_closed) {
       return Future<CodexThread>.error(
         StateError('Codex service state is closed'),
@@ -1715,6 +1730,11 @@ class CodexConversationState extends ChangeNotifier {
       threadId,
       () => _resumeThreadForSend(threadId),
     );
+  }
+
+  void _forgetResumedThread(String threadId) {
+    _resumedThreads.remove(threadId);
+    _pendingThreadResumes.remove(threadId);
   }
 
   Future<CodexThread> _resumeThreadForSend(String threadId) async {
@@ -2723,6 +2743,7 @@ final class CodexThreadHandle {
   DateTime lastActivityAt;
   int? subscribedEpoch;
   bool wasSubscribed = false;
+  bool writerActivity = false;
   DateTime? idleSince;
   Timer? evictionTimer;
   final Set<String> visibilityOwners = <String>{};
@@ -2758,6 +2779,7 @@ final class CodexConversationRegistry extends ChangeNotifier {
   final Map<String, CodexConversationState> _sessions = {};
   final Map<String, VoidCallback> _sessionListeners = {};
   final Map<String, Future<CodexConversationState>> _pendingSessions = {};
+  final Map<String, Future<void>> _pendingWriterReleases = {};
   final Map<String, List<CodexJsonEncodable>> _pendingEvents = {};
   late final StreamSubscription<CodexJsonEncodable> _typedSubscription;
   int _connectionEpoch;
@@ -2882,9 +2904,36 @@ final class CodexConversationRegistry extends ChangeNotifier {
     return future;
   }
 
+  /// Waits for any in-flight writer release before lazily subscribing again.
+  /// This serializes `thread/unsubscribe` and `thread/resume`, so a message
+  /// submitted exactly as an idle writer is released cannot lose its new
+  /// subscription to the older unsubscribe response.
+  Future<CodexThread> resumeThreadForSend(String threadId) async {
+    final pendingRelease = _pendingWriterReleases[threadId];
+    if (pendingRelease != null) await pendingRelease;
+    if (_closed) {
+      throw StateError('Codex conversation registry is closed');
+    }
+    final handle = _handles[threadId];
+    final session = _sessions[threadId];
+    if (handle == null || session == null) {
+      throw StateError('Codex thread session is not loaded: $threadId');
+    }
+    final thread = await session._ensureThreadResumedForSend(threadId);
+    if (!_closed && identical(_handles[threadId], handle)) {
+      handle
+        ..wasSubscribed = true
+        ..subscribedEpoch = _currentConnectedEpoch;
+      notifyListeners();
+    }
+    return thread;
+  }
+
   Future<CodexConversationState> _hydrateSession(
     CodexThreadHandle handle,
   ) async {
+    final pendingRelease = _pendingWriterReleases[handle.thread.id];
+    if (pendingRelease != null) await pendingRelease;
     await _ensureConnected();
     _ensureHydrationCurrent(handle);
     final epoch = _currentConnectedEpoch!;
@@ -2953,6 +3002,12 @@ final class CodexConversationRegistry extends ChangeNotifier {
   void releaseVisibility(String threadId, String owner) {
     final handle = _handles[threadId];
     if (handle == null || !handle.visibilityOwners.remove(owner)) return;
+    final session = _sessions[threadId];
+    if (handle.visibilityOwners.isEmpty &&
+        session != null &&
+        !_sessionHasWriterActivity(session)) {
+      unawaited(_releaseWriter(handle, session));
+    }
     _scheduleEviction(handle);
   }
 
@@ -2968,7 +3023,8 @@ final class CodexConversationRegistry extends ChangeNotifier {
   CodexConversationState _newSession(CodexThreadHandle handle) {
     final existing = _sessions[handle.thread.id];
     if (existing != null) return existing;
-    final session = sessionFactory(handle.kind);
+    final session = sessionFactory(handle.kind)
+      ..configureResumeThreadForSendDelegate(resumeThreadForSend);
     void listener() => _sessionChanged(handle, session);
     _sessions[handle.thread.id] = session;
     _sessionListeners[handle.thread.id] = listener;
@@ -2983,6 +3039,9 @@ final class CodexConversationRegistry extends ChangeNotifier {
     if (_closed || !identical(_sessions[handle.thread.id], session)) return;
     final thread = session.selectedThread;
     if (thread != null) handle.thread = thread;
+    final hadWriterActivity = handle.writerActivity;
+    final hasWriterActivity = _sessionHasWriterActivity(session);
+    handle.writerActivity = hasWriterActivity;
     if (_sessionHasActivity(session)) {
       handle
         ..lastActivityAt = DateTime.now()
@@ -2997,20 +3056,82 @@ final class CodexConversationRegistry extends ChangeNotifier {
         ..wasSubscribed = true
         ..subscribedEpoch = _currentConnectedEpoch;
     }
+    if (hadWriterActivity && !hasWriterActivity) {
+      unawaited(_releaseWriter(handle, session));
+    }
     notifyListeners();
   }
 
-  bool _sessionHasActivity(CodexConversationState session) =>
+  bool _sessionHasWriterActivity(CodexConversationState session) =>
       session.activeTurn != null ||
       session.sending ||
       session.queuedMessages.isNotEmpty ||
-      session.pendingServerRequests.isNotEmpty ||
-      session.loadingOlderTurns;
+      session.pendingServerRequests.isNotEmpty;
+
+  bool _sessionHasActivity(CodexConversationState session) =>
+      _sessionHasWriterActivity(session) || session.loadingOlderTurns;
 
   bool _retainsSession(CodexThreadHandle handle) {
     if (handle.visibilityOwners.isNotEmpty) return true;
     final session = _sessions[handle.thread.id];
     return session != null && _sessionHasActivity(session);
+  }
+
+  Future<void> _releaseWriter(
+    CodexThreadHandle handle,
+    CodexConversationState? session, {
+    bool force = false,
+  }) {
+    final threadId = handle.thread.id;
+    final existing = _pendingWriterReleases[threadId];
+    if (existing != null) return existing;
+    if (!handle.wasSubscribed ||
+        (!force && (session == null || _sessionHasWriterActivity(session)))) {
+      return Future<void>.value();
+    }
+
+    // Clear the local fast path before sending unsubscribe. A simultaneous
+    // message send will wait for this operation through
+    // [resumeThreadForSend], then issue a fresh thread/resume.
+    session?._forgetResumedThread(threadId);
+    final releasedEpoch = handle.subscribedEpoch;
+    late final Future<void> release;
+    release = _performWriterRelease(handle, releasedEpoch).whenComplete(() {
+      if (identical(_pendingWriterReleases[threadId], release)) {
+        _pendingWriterReleases.remove(threadId);
+      }
+    });
+    _pendingWriterReleases[threadId] = release;
+    return release;
+  }
+
+  Future<void> _performWriterRelease(
+    CodexThreadHandle handle,
+    int? releasedEpoch,
+  ) async {
+    final threadId = handle.thread.id;
+    var released = false;
+    try {
+      final currentEpoch = _currentConnectedEpoch;
+      if (currentEpoch != null && releasedEpoch == currentEpoch) {
+        await connection.unsubscribeThread(threadId);
+      }
+      released = true;
+    } catch (_) {
+      released = connection.state.phase != CodexConnectionPhase.connected;
+      // A failed unsubscribe keeps the handle marked as subscribed so a
+      // reconnect can heal it. Once the socket is gone, its writer is already
+      // released and must not be restored merely because the RPC had no reply.
+    }
+    if (!released || !identical(_handles[threadId], handle)) return;
+    // Do not erase a newer subscription acquired after a connection epoch
+    // change. Same-epoch sends are serialized behind the pending release.
+    if (handle.subscribedEpoch == releasedEpoch) {
+      handle
+        ..wasSubscribed = false
+        ..subscribedEpoch = null;
+      if (!_closed) notifyListeners();
+    }
   }
 
   void _scheduleEviction(CodexThreadHandle handle) {
@@ -3039,16 +3160,21 @@ final class CodexConversationRegistry extends ChangeNotifier {
   Future<void> _evict(CodexThreadHandle handle) async {
     final id = handle.thread.id;
     if (_retainsSession(handle)) return;
+    final currentSession = _sessions[id];
+    if (currentSession == null) return;
+    await _releaseWriter(handle, currentSession);
+    if (_retainsSession(handle) || !identical(_sessions[id], currentSession)) {
+      return;
+    }
     handle
       ..evictionTimer?.cancel()
       ..evictionTimer = null
       ..idleSince = null;
-    final session = _sessions.remove(id);
+    _sessions.remove(id);
     final listener = _sessionListeners.remove(id);
-    if (session == null) return;
-    if (listener != null) session.removeListener(listener);
-    await session.close();
-    session.dispose();
+    if (listener != null) currentSession.removeListener(listener);
+    await currentSession.close();
+    currentSession.dispose();
     if (!_closed) notifyListeners();
   }
 
@@ -3230,7 +3356,13 @@ final class CodexConversationRegistry extends ChangeNotifier {
   }
 
   Future<void> removeThread(String threadId) async {
-    final handle = _handles.remove(threadId);
+    final handle = _handles[threadId];
+    final currentSession = _sessions[threadId];
+    if (handle != null) {
+      await _releaseWriter(handle, currentSession, force: true);
+    }
+    if (handle != null && !identical(_handles[threadId], handle)) return;
+    _handles.remove(threadId);
     handle?.evictionTimer?.cancel();
     _pendingSessions.remove(threadId);
     _pendingEvents.remove(threadId);
@@ -3249,9 +3381,14 @@ final class CodexConversationRegistry extends ChangeNotifier {
     _closed = true;
     connection.removeListener(_onConnectionChanged);
     await _typedSubscription.cancel();
-    for (final handle in _handles.values) {
+    final handles = _handles.values.toList(growable: false);
+    for (final handle in handles) {
       handle.evictionTimer?.cancel();
     }
+    await Future.wait([
+      for (final handle in handles)
+        _releaseWriter(handle, _sessions[handle.thread.id], force: true),
+    ]);
     final sessions = _sessions.entries.toList(growable: false);
     _sessions.clear();
     _sessionListeners.clear();
@@ -3260,6 +3397,7 @@ final class CodexConversationRegistry extends ChangeNotifier {
       entry.value.dispose();
     }
     _handles.clear();
+    _pendingWriterReleases.clear();
     _pendingEvents.clear();
   }
 

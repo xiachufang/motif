@@ -539,6 +539,119 @@ void main() {
     await state.close();
   });
 
+  test(
+    'releases an idle writer after turn completion and resumes on next send',
+    () async {
+      final existing = thread('thread');
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [existing]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+      final conversation = state.selectedConversation!;
+
+      expect(await conversation.submitMessage('first', const []), isTrue);
+      expect(client.resumedThreadIds, ['thread']);
+      expect(client.unsubscribedThreadIds, isEmpty);
+      expect(state.conversations.handleFor('thread')?.wasSubscribed, isTrue);
+
+      client.emit(
+        const CodexTurnCompletedNotification2(
+          params: CodexTurnCompletedNotification(
+            threadId: 'thread',
+            turn: CodexTurn(
+              id: 'turn-new',
+              items: [],
+              status: CodexTurnStatus.completed,
+            ),
+          ),
+        ),
+      );
+      await waitFor(() => client.unsubscribedThreadIds.isNotEmpty);
+
+      expect(client.unsubscribedThreadIds, ['thread']);
+      expect(state.conversations.handleFor('thread')?.wasSubscribed, isFalse);
+
+      client.setConnectionState(
+        const CodexConnectionState(
+          phase: CodexConnectionPhase.failed,
+          error: 'network changed',
+        ),
+      );
+      client.setConnectionState(
+        const CodexConnectionState(
+          phase: CodexConnectionPhase.connected,
+          response: CodexInitializeResponse(
+            codexHome: CodexV2AbsolutePathBuf('/tmp/codex'),
+            platformFamily: 'unix',
+            platformOs: 'macos',
+            userAgent: 'test-reconnected',
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(client.resumedThreadIds, ['thread']);
+
+      expect(await conversation.submitMessage('second', const []), isTrue);
+      expect(client.resumedThreadIds, ['thread', 'thread']);
+      expect(state.conversations.handleFor('thread')?.wasSubscribed, isTrue);
+
+      await state.close();
+    },
+  );
+
+  test(
+    'waits for writer release before resuming a simultaneous send',
+    () async {
+      final existing = thread('thread');
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [existing]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+      final conversation = state.selectedConversation!;
+      expect(await conversation.submitMessage('first', const []), isTrue);
+
+      final releaseGate = Completer<void>();
+      client.unsubscribeGate = releaseGate;
+      client.emit(
+        const CodexTurnCompletedNotification2(
+          params: CodexTurnCompletedNotification(
+            threadId: 'thread',
+            turn: CodexTurn(
+              id: 'turn-new',
+              items: [],
+              status: CodexTurnStatus.completed,
+            ),
+          ),
+        ),
+      );
+      await waitFor(() => client.unsubscribedThreadIds.isNotEmpty);
+
+      final nextSend = conversation.submitMessage('second', const []);
+      await Future<void>.delayed(Duration.zero);
+      expect(client.resumedThreadIds, ['thread']);
+      expect(client.startedParams, hasLength(1));
+
+      releaseGate.complete();
+      expect(await nextSend, isTrue);
+      expect(client.resumedThreadIds, ['thread', 'thread']);
+      expect(client.startedParams, hasLength(2));
+
+      await state.close();
+    },
+  );
+
   test('recreates an evicted subscribed session when a turn starts', () async {
     final first = thread('first', updatedAt: 20);
     final second = thread('second', updatedAt: 10);
@@ -1652,6 +1765,7 @@ final class FakeCodexClient extends ChangeNotifier
   final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
   final List<CodexThreadForkParams> forkParams = [];
   final List<CodexThreadStartParams> startThreadParams = [];
+  final List<String> unsubscribedThreadIds = [];
   final List<String> resumedThreadIds = [];
   final List<bool> resumeIncludeTurns = [];
   final List<CodexThreadResumeInitialTurnsPageParams?> resumeInitialTurnsPages =
@@ -1664,6 +1778,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> watchIds = [];
   final List<String> readPaths = [];
   final List<String> unwatchedIds = [];
+  Completer<void>? unsubscribeGate;
   Object? listError;
   Completer<CodexTurnSteerResponse>? steerGate;
   bool closed = false;
@@ -1826,9 +1941,13 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexThreadUnsubscribeResponse> unsubscribeThread(
     String threadId,
-  ) async => const CodexThreadUnsubscribeResponse(
-    status: CodexThreadUnsubscribeStatus.unsubscribed,
-  );
+  ) async {
+    unsubscribedThreadIds.add(threadId);
+    await unsubscribeGate?.future;
+    return const CodexThreadUnsubscribeResponse(
+      status: CodexThreadUnsubscribeStatus.unsubscribed,
+    );
+  }
 
   @override
   Future<CodexThreadResumeResponse> resumeThread(
