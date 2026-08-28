@@ -24,6 +24,7 @@ import '../../platform/services.dart';
 import '../../platform/speech_locale.dart';
 import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
+import '../widgets/adaptive_modal.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_motion.dart';
 import '../widgets/codex_turn_activity.dart';
@@ -1728,64 +1729,144 @@ class _UserMessage extends StatelessWidget {
     final parsed = const CodexUserInputParser().parse(item.content);
     final localImages = parsed.localImages;
     final remoteImages = parsed.remoteImages;
+    final hasMessage =
+        parsed.text.isNotEmpty ||
+        localImages.isNotEmpty ||
+        remoteImages.isNotEmpty;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 680),
-        child: DecoratedBox(
-          key: ValueKey('codex-user-message-${item.id}'),
-          decoration: BoxDecoration(
-            color: c.subtleFill,
-            borderRadius: BorderRadius.circular(MotifRadius.md),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(MotifSpacing.md),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (localImages.isNotEmpty || remoteImages.isNotEmpty)
-                  Wrap(
-                    spacing: MotifSpacing.sm,
-                    runSpacing: MotifSpacing.sm,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (parsed.responseAnnotations.isNotEmpty) ...[
+              _ResponseAnnotationsButton(
+                messageId: item.id,
+                annotations: parsed.responseAnnotations,
+              ),
+              if (hasMessage) const SizedBox(height: MotifSpacing.sm),
+            ],
+            if (hasMessage)
+              DecoratedBox(
+                key: ValueKey('codex-user-message-${item.id}'),
+                decoration: BoxDecoration(
+                  color: c.subtleFill,
+                  borderRadius: BorderRadius.circular(MotifRadius.md),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(MotifSpacing.md),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      for (final image in localImages)
-                        _RemoteImage(
-                          state: state,
-                          path: image.path,
-                          onTap: onOpenImage == null
-                              ? null
-                              : () => onOpenImage!(image.path),
+                      if (localImages.isNotEmpty || remoteImages.isNotEmpty)
+                        Wrap(
+                          spacing: MotifSpacing.sm,
+                          runSpacing: MotifSpacing.sm,
+                          children: [
+                            for (final image in localImages)
+                              _RemoteImage(
+                                state: state,
+                                path: image.path,
+                                onTap: onOpenImage == null
+                                    ? null
+                                    : () => onOpenImage!(image.path),
+                              ),
+                            for (final image in remoteImages)
+                              GestureDetector(
+                                key: ValueKey(
+                                  'codex-user-remote-image-${image.url}',
+                                ),
+                                onTap: onOpenImage == null
+                                    ? null
+                                    : () => onOpenImage!(image.url),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(
+                                    MotifRadius.xs,
+                                  ),
+                                  child: _RemoteUrlImage(
+                                    url: image.url,
+                                    width: 160,
+                                    height: 120,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
-                      for (final image in remoteImages)
-                        GestureDetector(
-                          key: ValueKey('codex-user-remote-image-${image.url}'),
-                          onTap: onOpenImage == null
+                      if (parsed.text.isNotEmpty) ...[
+                        if (localImages.isNotEmpty || remoteImages.isNotEmpty)
+                          const SizedBox(height: MotifSpacing.sm),
+                        CodexMarkdown(
+                          parsed.text,
+                          fitContent: true,
+                          style: CodexType.body.copyWith(color: c.textPrimary),
+                          onTapFileLink: onOpenFile == null
                               ? null
-                              : () => onOpenImage!(image.url),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(MotifRadius.xs),
-                            child: _RemoteUrlImage(
-                              url: image.url,
-                              width: 160,
-                              height: 120,
-                              fit: BoxFit.cover,
-                            ),
-                          ),
+                              : (href) =>
+                                    _openMarkdownFile(state, onOpenFile!, href),
                         ),
+                      ],
                     ],
                   ),
-                if (parsed.text.isNotEmpty) ...[
-                  if (localImages.isNotEmpty || remoteImages.isNotEmpty)
-                    const SizedBox(height: MotifSpacing.sm),
-                  CodexMarkdown(
-                    parsed.text,
-                    fitContent: true,
-                    style: CodexType.body.copyWith(color: c.textPrimary),
-                    onTapFileLink: onOpenFile == null
-                        ? null
-                        : (href) => _openMarkdownFile(state, onOpenFile!, href),
-                  ),
-                ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ResponseAnnotationsButton extends StatelessWidget {
+  const _ResponseAnnotationsButton({
+    required this.messageId,
+    required this.annotations,
+  });
+
+  final String messageId;
+  final List<CodexResponseAnnotation> annotations;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    final label = _annotationCountLabel(annotations.length);
+    return Tooltip(
+      message: 'View $label',
+      child: Material(
+        color: c.surface,
+        shape: RoundedRectangleBorder(
+          side: BorderSide(color: c.border),
+          borderRadius: BorderRadius.circular(MotifRadius.pill),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          key: ValueKey('codex-user-annotations-$messageId'),
+          onTap: () => unawaited(
+            showAdaptiveModal<void>(
+              context,
+              builder: (_) =>
+                  _ResponseAnnotationsModal(annotations: annotations),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: MotifSpacing.md,
+              vertical: MotifSpacing.sm,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.speaker_notes_outlined,
+                  size: MotifIconSize.sm,
+                  color: c.textTertiary,
+                ),
+                const SizedBox(width: MotifSpacing.sm),
+                Text(
+                  label,
+                  style: MotifType.body.copyWith(color: c.textPrimary),
+                ),
               ],
             ),
           ),
@@ -1794,6 +1875,87 @@ class _UserMessage extends StatelessWidget {
     );
   }
 }
+
+class _ResponseAnnotationsModal extends StatelessWidget {
+  const _ResponseAnnotationsModal({required this.annotations});
+
+  final List<CodexResponseAnnotation> annotations;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return AdaptiveModal(
+      key: const ValueKey('codex-response-annotations-modal'),
+      title: _annotationCountLabel(annotations.length),
+      content: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var index = 0; index < annotations.length; index++) ...[
+            if (index > 0) const SizedBox(height: MotifSpacing.xl),
+            if (annotations.length > 1) ...[
+              Text(
+                'Annotation ${index + 1}',
+                style: MotifType.headline.copyWith(color: c.textPrimary),
+              ),
+              const SizedBox(height: MotifSpacing.sm),
+            ],
+            _ResponseAnnotationCard(
+              key: ValueKey('codex-response-annotation-$index'),
+              annotation: annotations[index],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ResponseAnnotationCard extends StatelessWidget {
+  const _ResponseAnnotationCard({required this.annotation, super.key});
+
+  final CodexResponseAnnotation annotation;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'SELECTED RESPONSE',
+          style: MotifType.overline.copyWith(color: c.textTertiary),
+        ),
+        const SizedBox(height: MotifSpacing.xs),
+        Container(
+          padding: const EdgeInsets.all(MotifSpacing.md),
+          decoration: BoxDecoration(
+            color: c.subtleFill,
+            borderRadius: BorderRadius.circular(MotifRadius.sm),
+          ),
+          child: Text(
+            annotation.text,
+            style: CodexType.body.copyWith(color: c.textPrimary, height: 1.45),
+          ),
+        ),
+        if (annotation.annotation case final comment?) ...[
+          const SizedBox(height: MotifSpacing.lg),
+          Text(
+            'COMMENT',
+            style: MotifType.overline.copyWith(color: c.textTertiary),
+          ),
+          const SizedBox(height: MotifSpacing.xs),
+          Text(
+            comment,
+            style: CodexType.body.copyWith(color: c.textPrimary, height: 1.45),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+String _annotationCountLabel(int count) =>
+    '$count ${count == 1 ? 'annotation' : 'annotations'}';
 
 class _RemoteImage extends StatelessWidget {
   const _RemoteImage({required this.state, required this.path, this.onTap});

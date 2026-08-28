@@ -2055,6 +2055,93 @@ Only show **this request**.
     state.dispose();
   });
 
+  testWidgets(
+    'shows response annotations on their user message and opens their details',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(900, 820);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..turns = const [
+          CodexTurn(
+            completedAt: 1754973480,
+            id: 'annotation-turn',
+            items: [
+              CodexUserMessageThreadItem(
+                id: 'plain-user',
+                content: [CodexTextUserInput(text: '同一个 turn 的前一条消息')],
+              ),
+              CodexUserMessageThreadItem(
+                id: 'annotation-user',
+                content: [
+                  CodexTextUserInput(
+                    text: '''
+# Response annotations:
+Each item contains text selected from an earlier Codex response.
+<response-annotations>
+[{"text":"再点其他位置会移动分割线；取消则不保存。","annotation":"什么意思？"}]
+</response-annotations>
+
+## My request:
+可以 split 后，不退出接着 split 吗？
+''',
+                  ),
+                ],
+              ),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ];
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      final button = find.byKey(
+        const ValueKey('codex-user-annotations-annotation-user'),
+      );
+      final message = find.byKey(
+        const ValueKey('codex-user-message-annotation-user'),
+      );
+      expect(button, findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('codex-user-annotations-plain-user')),
+        findsNothing,
+      );
+      expect(find.text('1 annotation'), findsOneWidget);
+      expect(find.textContaining('Response annotations:'), findsNothing);
+      expect(find.textContaining('<response-annotations>'), findsNothing);
+      expect(find.text('可以 split 后，不退出接着 split 吗？'), findsOneWidget);
+      expect(find.text('什么意思？'), findsNothing);
+      expect(
+        tester.getRect(button).bottom,
+        lessThan(tester.getRect(message).top),
+      );
+
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('codex-response-annotations-modal')),
+        findsOneWidget,
+      );
+      expect(find.text('再点其他位置会移动分割线；取消则不保存。'), findsOneWidget);
+      expect(find.text('什么意思？'), findsOneWidget);
+
+      await tester.tap(find.byType(CloseButton));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
   testWidgets('plan items stay collapsed and open on a detail page', (
     tester,
   ) async {
