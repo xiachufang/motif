@@ -10,13 +10,16 @@ Codex 是可选集成。Motif 不包含 OpenAI 账号、API key 或 Codex 用量
 
 ## 1. 准备 Codex CLI
 
-Flutter 桌面 App 的内嵌 server 会在第一次打开 Codex、且本机找不到 Codex CLI 时，
-使用 OpenAI 官方安装脚本静默安装最新版。macOS/Linux 使用 `install.sh`，Windows
-使用 `install.ps1`；安装过程不会弹出交互确认。显式设置了无效的
+Flutter 桌面 App 的内嵌 server 会在第一次打开 Codex 时优先使用本机 ChatGPT
+桌面 App 内置的 Codex。这样 ChatGPT 与 Motif 读写同一份 Thread 时会尽量使用相同
+协议版本。如果没有安装 ChatGPT，Motif 才查找独立安装的 Codex CLI；两者都找不到
+时，使用 OpenAI 官方安装脚本静默安装最新版。macOS/Linux 使用 `install.sh`，
+Windows 使用 `install.ps1`；安装过程不会弹出交互确认。显式设置了无效的
 `MOTIFD_CODEX_PATH` 时不会覆盖该配置，而是直接报告配置错误。
 
-独立运行的 `motifd`（包括 daemon、容器和远端主机）不会自动修改运行环境，仍需在
-运行它的同一个系统用户下安装 Codex CLI。安装后可这样确认：
+独立运行的 `motifd`（包括 daemon、容器和远端主机）不会自动修改运行环境；如果
+同机没有 ChatGPT 桌面 App，仍需在运行它的同一个系统用户下安装 Codex CLI。独立
+安装后可这样确认：
 
 ```bash
 codex --version
@@ -56,9 +59,15 @@ OpenAI 官方参考：
 `motifd` 会按以下顺序查找 Codex：
 
 1. `MOTIFD_CODEX_PATH`
-2. 当前进程的 `PATH`
-3. `~/.local/bin/codex`
-4. 常见 Homebrew、npm 和 Node 版本管理器安装位置
+2. ChatGPT 桌面 App 内置的 Codex
+3. 当前进程的 `PATH`
+4. `~/.local/bin/codex`
+5. 常见 Homebrew、npm 和 Node 版本管理器安装位置
+
+macOS 会检查系统和用户 `Applications` 目录。Linux 会从 `chatgpt` launcher 的
+真实路径推导 `resources/codex`，并兼容官方 deb/rpm 的常见系统安装目录。Windows
+会检查 ChatGPT launcher、per-user/Program Files 安装目录和可访问的 Microsoft
+Store package 目录。某个候选不存在或不可访问时会静默继续，不影响后续回退。
 
 如果 `motifd` 由 systemd、launchd 或 Docker 启动，它看到的 `PATH` 可能和交互式
 shell 不同。最稳定的方式是显式设置绝对路径：
@@ -130,5 +139,7 @@ permission profile、sandbox 和审批策略约束。
 **Thread 或 Side Chat 无法恢复**
 
 - 先检查 `motifd` 与 Codex CLI 是否刚升级或重启。
+- 如果该 Thread 最近由 ChatGPT 桌面 App 打开过，确认 Motif 日志中的 `program`
+  指向 ChatGPT 内置 Codex，或独立 CLI 版本不低于写入该 Thread 的版本。
 - Side Chat 是临时分支；如果对应 Codex rollout 已被清理，Motif 会忽略失效条目并
   创建新的 Side Chat。

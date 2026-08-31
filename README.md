@@ -164,9 +164,11 @@ is still explicit; Codex usage follows that account or API key rather than
 Motif itself. Standalone `motifd` deployments remain operator-managed and need
 Codex installed separately.
 
-`motifd` first checks `MOTIFD_CODEX_PATH`, then `PATH`, the standalone install
-location (`~/.local/bin/codex` on macOS/Linux or the per-user OpenAI Programs
-directory on Windows), Homebrew prefixes, and common npm/node-manager locations.
+`motifd` first checks `MOTIFD_CODEX_PATH`, then the Codex bundled with the
+ChatGPT desktop app, `PATH`, the standalone install location
+(`~/.local/bin/codex` on macOS/Linux or the per-user OpenAI Programs directory
+on Windows), Homebrew prefixes, and common npm/node-manager locations. This
+keeps shared thread storage on the ChatGPT app's protocol version when possible.
 Set `MOTIFD_CODEX_PATH` when Codex is installed elsewhere. See
 [`docs/codex.md`](docs/codex.md) for setup, authentication, thread, and Side
 Chat details.

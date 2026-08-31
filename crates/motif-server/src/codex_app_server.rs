@@ -93,7 +93,7 @@ pub enum CodexLaunchError {
     #[error("{CODEX_PATH_ENV} does not identify an executable Codex CLI: {0}")]
     ConfiguredCodexNotFound(String),
     #[error(
-        "could not find an executable Codex CLI; install Codex or set {CODEX_PATH_ENV}. Searched PATH and: {0}"
+        "could not find an executable Codex CLI; install Codex or set {CODEX_PATH_ENV}. Searched the ChatGPT desktop app, PATH, and: {0}"
     )]
     CodexNotFound(String),
     #[error("could not install the Codex CLI automatically: {0}")]
@@ -294,20 +294,36 @@ fn resolve_codex_program() -> Result<PathBuf, CodexLaunchError> {
         });
     }
 
-    if let Ok(program) = which::which("codex") {
-        return Ok(program);
-    }
-
-    let candidates = common_codex_candidates();
-    find_executable(candidates.iter().cloned()).ok_or_else(|| {
+    // ChatGPT and Motif share the same Codex thread storage by default. The
+    // desktop app can bundle a newer protocol than a separately installed CLI,
+    // so prefer its binary before consulting PATH and standalone locations.
+    let chatgpt_candidates = chatgpt_bundled_codex_candidates();
+    let standalone_candidates = common_codex_candidates();
+    resolve_unconfigured_codex_program(
+        &chatgpt_candidates,
+        || which::which("codex").ok(),
+        &standalone_candidates,
+    )
+    .ok_or_else(|| {
         CodexLaunchError::CodexNotFound(
-            candidates
+            chatgpt_candidates
                 .iter()
+                .chain(&standalone_candidates)
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", "),
         )
     })
+}
+
+fn resolve_unconfigured_codex_program(
+    chatgpt_candidates: &[PathBuf],
+    path_lookup: impl FnOnce() -> Option<PathBuf>,
+    standalone_candidates: &[PathBuf],
+) -> Option<PathBuf> {
+    find_executable(chatgpt_candidates.iter().cloned())
+        .or_else(path_lookup)
+        .or_else(|| find_executable(standalone_candidates.iter().cloned()))
 }
 
 fn resolve_codex_program_for_launch(auto_install: bool) -> Result<PathBuf, CodexLaunchError> {
@@ -339,7 +355,7 @@ fn resolve_codex_program_with_installer(
             Ok(program)
         }
         Err(CodexLaunchError::CodexNotFound(searched)) => Err(CodexLaunchError::Install(format!(
-            "the official installer completed, but no executable was found; searched PATH and: {searched}"
+            "the official installer completed, but no executable was found; searched: {searched}"
         ))),
         Err(error) => Err(error),
     }
@@ -469,6 +485,133 @@ fn find_executable(candidates: impl IntoIterator<Item = PathBuf>) -> Option<Path
         .find_map(|candidate| which::which(candidate).ok())
 }
 
+fn push_unique_path(candidates: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn push_codex_candidates_in(candidates: &mut Vec<PathBuf>, directory: PathBuf) {
+    for name in codex_executable_names() {
+        push_unique_path(candidates, directory.join(name));
+    }
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn push_launcher_relative_codex_candidates(candidates: &mut Vec<PathBuf>, launcher: &Path) {
+    let mut launchers = vec![launcher.to_path_buf()];
+    if let Ok(canonical) = std::fs::canonicalize(launcher) {
+        push_unique_path(&mut launchers, canonical);
+    }
+
+    for launcher in launchers {
+        let Some(directory) = launcher.parent() else {
+            continue;
+        };
+        push_codex_candidates_in(candidates, directory.join("resources"));
+        push_codex_candidates_in(candidates, directory.join("Resources"));
+        if let Some(parent) = directory.parent() {
+            push_codex_candidates_in(candidates, parent.join("resources"));
+            push_codex_candidates_in(candidates, parent.join("Resources"));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn chatgpt_bundled_codex_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_codex_candidates_in(
+        &mut candidates,
+        PathBuf::from("/Applications/ChatGPT.app/Contents/Resources"),
+    );
+    if let Some(home) = crate::paths::home_dir() {
+        push_codex_candidates_in(
+            &mut candidates,
+            home.join("Applications/ChatGPT.app/Contents/Resources"),
+        );
+    }
+    candidates
+}
+
+#[cfg(target_os = "linux")]
+fn chatgpt_bundled_codex_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(launcher) = which::which("chatgpt") {
+        push_launcher_relative_codex_candidates(&mut candidates, &launcher);
+    }
+
+    for directory in [
+        "/opt/chatgpt/resources",
+        "/opt/ChatGPT/resources",
+        "/usr/lib/chatgpt/resources",
+        "/usr/lib/ChatGPT/resources",
+        "/usr/lib64/chatgpt/resources",
+        "/usr/share/chatgpt/resources",
+    ] {
+        push_codex_candidates_in(&mut candidates, PathBuf::from(directory));
+    }
+    candidates
+}
+
+#[cfg(windows)]
+fn chatgpt_bundled_codex_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for launcher_name in ["ChatGPT.exe", "ChatGPT"] {
+        if let Ok(launcher) = which::which(launcher_name) {
+            push_launcher_relative_codex_candidates(&mut candidates, &launcher);
+        }
+    }
+
+    for env_name in ["LOCALAPPDATA", "ProgramFiles", "ProgramW6432"] {
+        let Some(root) = non_empty_env(env_name).map(PathBuf::from) else {
+            continue;
+        };
+        for relative in [
+            "Programs/ChatGPT/resources",
+            "Programs/OpenAI/ChatGPT/resources",
+            "ChatGPT/resources",
+            "OpenAI/ChatGPT/resources",
+        ] {
+            push_codex_candidates_in(&mut candidates, root.join(relative));
+        }
+    }
+
+    append_windows_store_chatgpt_candidates(&mut candidates);
+    candidates
+}
+
+#[cfg(windows)]
+fn append_windows_store_chatgpt_candidates(candidates: &mut Vec<PathBuf>) {
+    let mut roots = Vec::new();
+    for env_name in ["ProgramFiles", "ProgramW6432"] {
+        let Some(root) = non_empty_env(env_name).map(PathBuf::from) else {
+            continue;
+        };
+        push_unique_path(&mut roots, root.join("WindowsApps"));
+    }
+
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
+        for entry in entries {
+            let package_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if !package_name.contains("chatgpt") {
+                continue;
+            }
+            push_codex_candidates_in(candidates, entry.path().join("app/resources"));
+            push_codex_candidates_in(candidates, entry.path().join("resources"));
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn chatgpt_bundled_codex_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 fn common_codex_candidates() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -526,10 +669,7 @@ fn common_codex_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     for dir in dirs {
         for name in codex_executable_names() {
-            let candidate = dir.join(name);
-            if !candidates.contains(&candidate) {
-                candidates.push(candidate);
-            }
+            push_unique_path(&mut candidates, dir.join(name));
         }
     }
     candidates
@@ -852,6 +992,89 @@ mod tests {
 
         assert!(matches!(error, CodexLaunchError::CodexNotFound(_)));
         assert_eq!(installs.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prefers_chatgpt_bundled_codex_before_path_and_standalone_candidates() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bundled = temp.path().join("chatgpt-codex");
+        let standalone = temp.path().join("standalone-codex");
+        for executable in [&bundled, &standalone] {
+            fs::write(executable, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path_lookups = AtomicUsize::new(0);
+
+        let actual = resolve_unconfigured_codex_program(
+            std::slice::from_ref(&bundled),
+            || {
+                path_lookups.fetch_add(1, AtomicOrdering::SeqCst);
+                Some(standalone.clone())
+            },
+            std::slice::from_ref(&standalone),
+        );
+
+        assert_eq!(actual, Some(bundled));
+        assert_eq!(path_lookups.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_codex_precedes_standalone_fallback_when_chatgpt_is_missing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let missing_bundled = temp.path().join("missing-chatgpt-codex");
+        let path_codex = temp.path().join("path-codex");
+        let standalone = temp.path().join("standalone-codex");
+        for executable in [&path_codex, &standalone] {
+            fs::write(executable, "#!/bin/sh\n").unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let actual = resolve_unconfigured_codex_program(
+            &[missing_bundled],
+            || Some(path_codex.clone()),
+            std::slice::from_ref(&standalone),
+        );
+
+        assert_eq!(actual, Some(path_codex));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chatgpt_candidates_prefer_the_system_macos_application() {
+        assert_eq!(
+            chatgpt_bundled_codex_candidates().first(),
+            Some(&PathBuf::from(
+                "/Applications/ChatGPT.app/Contents/Resources/codex"
+            ))
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn chatgpt_candidates_include_linux_package_layouts() {
+        let candidates = chatgpt_bundled_codex_candidates();
+
+        assert!(candidates.contains(&PathBuf::from("/opt/chatgpt/resources/codex")));
+        assert!(candidates.contains(&PathBuf::from("/usr/lib/chatgpt/resources/codex")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn chatgpt_candidates_include_windows_per_user_package_layout() {
+        let local_app_data = non_empty_env("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .expect("Windows provides LOCALAPPDATA");
+        let candidates = chatgpt_bundled_codex_candidates();
+
+        assert!(candidates.contains(&local_app_data.join("Programs/ChatGPT/resources/codex.exe")));
+        assert!(candidates
+            .contains(&local_app_data.join("Programs/OpenAI/ChatGPT/resources/codex.exe")));
     }
 
     #[test]
