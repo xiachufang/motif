@@ -327,6 +327,100 @@ void main() {
     state.dispose();
   });
 
+  testWidgets(
+    'active writer conflict offers to fork and resends in the new thread',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 800);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final preferences = CodexState();
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)
+        ..activePlan = null
+        ..queuedMessages = const [];
+      final completedTurns = [state.turns.first];
+      final idleThread = codexThreadWithStatus(
+        codexThreadWithTurns(client.thread, completedTurns),
+        const CodexIdleThreadStatus(),
+      );
+      client
+        ..thread = idleThread
+        ..resumeError = const CodexRpcException(
+          CodexJSONRPCErrorError(
+            code: -32000,
+            message: 'thread `thread` already has an active writer',
+          ),
+        );
+      state
+        ..selectedThread = idleThread
+        ..turns = completedTurns;
+      state.synchronizeViewModel();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(
+            body: CodexThreadWorkspace(state: state, codexState: preferences),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final input = find.byKey(const ValueKey('codex-composer-input'));
+      final send = find.byKey(const ValueKey('codex-send'));
+      await tester.enterText(input, 'Continue in a fork');
+      expect(
+        preferences.composerDraft('server', 'thread'),
+        'Continue in a fork',
+      );
+      await tester.tap(send);
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('codex-active-writer-dialog')),
+        findsOneWidget,
+      );
+      expect(client.forked, isEmpty);
+      await tester.tap(
+        find.byKey(const ValueKey('codex-active-writer-cancel')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(input).controller?.text,
+        'Continue in a fork',
+      );
+
+      client.resumeError = const CodexRpcException(
+        CodexJSONRPCErrorError(
+          code: -32000,
+          message: 'thread `thread` already has an active writer',
+        ),
+      );
+      await tester.tap(send);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('codex-active-writer-fork')));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(client.forked.single.threadId, 'thread');
+      expect(client.forked.single.lastTurnId, isNull);
+      expect(client.renamedThreads.single.threadId, 'forked-thread');
+      expect(client.renamedThreads.single.name, 'Workspace thread 2');
+      expect(client.started.single.threadId, 'forked-thread');
+      expect(
+        client.started.single.input.whereType<CodexTextUserInput>().single.text,
+        'Continue in a fork',
+      );
+      expect(state.selectedThread?.id, 'forked-thread');
+      expect(codexThreadTitle(state.selectedThread!), 'Workspace thread 2');
+      expect(tester.widget<TextField>(input).controller?.text, isEmpty);
+      expect(preferences.composerDraft('server', 'thread'), isNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
   testWidgets('context compaction transitions without a Thinking fallback', (
     tester,
   ) async {
@@ -3769,9 +3863,11 @@ final class WorkspaceFakeClient extends ChangeNotifier
   Map<String?, CodexThreadTurnsListResponse> turnPages = const {};
   final List<CodexThreadTurnsListParams> turnListParams = [];
   final List<CodexThreadForkParams> forked = [];
+  final List<({String threadId, String name})> renamedThreads = [];
   final List<CodexTurnStartParams> started = [];
   final List<CodexTurnSteerParams> steered = [];
   Completer<CodexTurnSteerResponse>? steerGate;
+  Object? resumeError;
   final List<CodexThreadGoalSetParams> goalsSet = [];
   final List<({CodexV2RequestId id, CodexJsonEncodable response})> responses =
       [];
@@ -3814,7 +3910,10 @@ final class WorkspaceFakeClient extends ChangeNotifier
   Future<CodexThreadSetNameResponse> setThreadName(
     String threadId,
     String name,
-  ) async => const CodexThreadSetNameResponse();
+  ) async {
+    renamedThreads.add((threadId: threadId, name: name));
+    return const CodexThreadSetNameResponse();
+  }
 
   @override
   Future<CodexThreadArchiveResponse> archiveThread(String threadId) async =>
@@ -3900,19 +3999,26 @@ final class WorkspaceFakeClient extends ChangeNotifier
     String threadId, {
     bool includeTurns = false,
     CodexThreadResumeInitialTurnsPageParams? initialTurnsPage,
-  }) async => CodexThreadResumeResponse(
-    approvalPolicy: const CodexAskForApproval('on-request'),
-    approvalsReviewer: CodexApprovalsReviewer.user,
-    cwd: thread.cwd,
-    model: 'codex-test',
-    modelProvider: 'openai',
-    initialTurnsPage: initialTurnsPage == null
-        ? null
-        : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
-    reasoningEffort: const CodexReasoningEffort('high'),
-    sandbox: const CodexDangerFullAccessSandboxPolicy(),
-    thread: thread,
-  );
+  }) async {
+    final error = resumeError;
+    if (error != null) {
+      resumeError = null;
+      throw error;
+    }
+    return CodexThreadResumeResponse(
+      approvalPolicy: const CodexAskForApproval('on-request'),
+      approvalsReviewer: CodexApprovalsReviewer.user,
+      cwd: thread.cwd,
+      model: 'codex-test',
+      modelProvider: 'openai',
+      initialTurnsPage: initialTurnsPage == null
+          ? null
+          : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
+      reasoningEffort: const CodexReasoningEffort('high'),
+      sandbox: const CodexDangerFullAccessSandboxPolicy(),
+      thread: thread,
+    );
+  }
 
   @override
   Future<CodexTurnStartResponse> startTurn(CodexTurnStartParams params) async {

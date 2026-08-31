@@ -388,6 +388,27 @@ String codexThreadTitle(CodexThread thread) {
   return 'Untitled thread';
 }
 
+String nextCodexForkThreadName(
+  CodexThread source,
+  Iterable<CodexThread> existingThreads,
+) {
+  final current = codexThreadTitle(source).trim();
+  final suffix = RegExp(r'^(.*\S)\s+(\d+)$').firstMatch(current);
+  final parsedSuffix = suffix == null ? null : int.tryParse(suffix.group(2)!);
+  final base = parsedSuffix != null && parsedSuffix >= 2
+      ? suffix!.group(1)!
+      : current;
+  var number = parsedSuffix != null && parsedSuffix >= 2 ? parsedSuffix + 1 : 2;
+  final existingNames = existingThreads
+      .map(codexThreadTitle)
+      .map((name) => name.trim())
+      .toSet();
+  while (existingNames.contains('$base $number')) {
+    number++;
+  }
+  return '$base $number';
+}
+
 String codexPathBasename(String path) {
   var normalized = path.trim().replaceAll('\\', '/');
   while (normalized.length > 1 && normalized.endsWith('/')) {

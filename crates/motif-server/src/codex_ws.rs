@@ -194,10 +194,11 @@ async fn proxy(
                     };
                     if let Some(response) = rpc_response {
                         if let Some(prepared) = pending_turn_starts.remove(&response.request_key) {
-                            if response.succeeded {
-                                observer.confirm_turn(prepared);
-                            } else {
-                                observer.cancel_turn(prepared);
+                            match response.turn_id {
+                                Some(turn_id) if response.succeeded => {
+                                    observer.confirm_turn(prepared, turn_id);
+                                }
+                                _ => observer.cancel_turn(prepared),
                             }
                         }
                     }
@@ -239,6 +240,7 @@ struct TurnStartRequest {
 struct RpcResponse {
     request_key: String,
     succeeded: bool,
+    turn_id: Option<String>,
 }
 
 fn parse_turn_start(text: &str) -> Option<TurnStartRequest> {
@@ -265,11 +267,17 @@ fn parse_rpc_response(text: &str) -> Option<RpcResponse> {
         return Some(RpcResponse {
             request_key,
             succeeded: false,
+            turn_id: None,
         });
     }
-    value.get("result").is_some().then_some(RpcResponse {
+    let result = value.get("result")?;
+    Some(RpcResponse {
         request_key,
         succeeded: true,
+        turn_id: result
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -396,10 +404,11 @@ mod tests {
     #[test]
     fn correlates_string_and_numeric_rpc_responses() {
         assert_eq!(
-            parse_rpc_response(r#"{"id":"start-1","result":{"turn":{}}}"#),
+            parse_rpc_response(r#"{"id":"start-1","result":{"turn":{"id":"turn-1"}}}"#),
             Some(RpcResponse {
                 request_key: "\"start-1\"".to_string(),
                 succeeded: true,
+                turn_id: Some("turn-1".to_string()),
             })
         );
         assert_eq!(
@@ -407,6 +416,15 @@ mod tests {
             Some(RpcResponse {
                 request_key: "42".to_string(),
                 succeeded: false,
+                turn_id: None,
+            })
+        );
+        assert_eq!(
+            parse_rpc_response(r#"{"id":43,"result":{"turn":{}}}"#),
+            Some(RpcResponse {
+                request_key: "43".to_string(),
+                succeeded: true,
+                turn_id: None,
             })
         );
         assert!(parse_rpc_response(

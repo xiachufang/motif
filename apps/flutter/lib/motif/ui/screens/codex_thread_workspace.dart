@@ -652,7 +652,24 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
       attachments,
       references,
     );
-    if (!accepted || !mounted) return;
+    if (!accepted) {
+      if (!mounted ||
+          widget.state.sendFailureKind != CodexSendFailureKind.activeWriter) {
+        return;
+      }
+      final fork = await _confirmForkAfterWriterConflict();
+      if (!mounted || !fork) return;
+      final resent = await widget.state.forkThreadAndSubmitMessage(
+        text,
+        attachments,
+        references,
+      );
+      if (!resent) return;
+      _clearBoundComposerDraft();
+      if (!mounted) return;
+    } else if (!mounted) {
+      return;
+    }
     _composer.clear();
     setState(() {
       _attachments = const [];
@@ -660,6 +677,41 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
     });
     _composerFocus.unfocus();
     _showLatestContent();
+  }
+
+  Future<bool> _confirmForkAfterWriterConflict() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        key: const ValueKey('codex-active-writer-dialog'),
+        title: const Text('Continue in a new thread?'),
+        content: const Text(
+          'Another Codex session is already writing to this thread. '
+          'Fork a new thread and resend your message there?',
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('codex-active-writer-cancel'),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('codex-active-writer-fork'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Fork and send'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  void _clearBoundComposerDraft() {
+    final state = _draftState;
+    final serverId = _draftServerId;
+    final threadId = _draftThreadId;
+    if (state == null || serverId == null || threadId == null) return;
+    state.clearComposerDraft(serverId, threadId);
   }
 
   void _toggleGoalMode() {

@@ -21,9 +21,21 @@ enum CodexCatalogPhase { idle, loading, ready, failed }
 
 enum CodexConversationFeature { goals }
 
+enum CodexSendFailureKind { activeWriter }
+
 typedef CodexForkThreadDelegate = Future<bool> Function(String lastTurnId);
+typedef CodexForkThreadForSendDelegate =
+    Future<bool> Function(CodexQueuedMessage message);
 typedef CodexResumeThreadForSendDelegate =
     Future<CodexThread> Function(String threadId);
+
+CodexSendFailureKind? _codexSendFailureKind(Object error) {
+  if (error is! CodexRpcException) return null;
+  final message = error.error.message.toLowerCase();
+  return message.contains('already has an active writer')
+      ? CodexSendFailureKind.activeWriter
+      : null;
+}
 
 const codexThreadTurnsPageSize = 10;
 const codexThreadTurnsItemsView = CodexTurnItemsView('full');
@@ -135,6 +147,7 @@ class CodexConversationState extends ChangeNotifier {
   String? goalError;
   bool sending = false;
   String? sendError;
+  CodexSendFailureKind? sendFailureKind;
   CodexTurnPlanUpdatedNotification? activePlan;
   String? activeDiff;
   bool queueMessagesWhileActive = false;
@@ -187,6 +200,7 @@ class CodexConversationState extends ChangeNotifier {
   String? _viewModelThreadId;
   Object? _catalogFingerprint;
   CodexForkThreadDelegate? _forkThreadDelegate;
+  CodexForkThreadForSendDelegate? _forkThreadForSendDelegate;
   CodexResumeThreadForSendDelegate? _resumeThreadForSendDelegate;
 
   static const Duration deltaFlushInterval = Duration(milliseconds: 33);
@@ -900,51 +914,7 @@ class CodexConversationState extends ChangeNotifier {
         CodexThreadForkParams(threadId: source.id, lastTurnId: lastTurnId),
       );
       if (_closed) return false;
-      final thread = response.thread;
-      _threads[thread.id] = thread;
-      _resumedThreads[thread.id] = thread;
-      _recordThreadPlacement(thread.id, source.id, replace: true);
-      if (sourceProject != null) {
-        _assignThreadToProject(
-          thread,
-          sourceProject,
-          insertBeforeThreadId: source.id,
-        );
-      }
-      selectedThread = thread;
-      turns = thread.turns;
-      readingThreadId = null;
-      readError = null;
-      _failedReadThreadId = null;
-      goal = null;
-      goalError = null;
-      activePlan = null;
-      awaitingPlanDecisionItemId = null;
-      activeDiff = null;
-      sendError = null;
-      queuedMessages = const [];
-      _serverRequests.clear();
-      pendingServerRequests = const [];
-      if (!_modelSelectionTouched) {
-        selectedModelId = models
-            .where(
-              (candidate) =>
-                  candidate.model == response.model ||
-                  candidate.id == response.model,
-            )
-            .firstOrNull
-            ?.id;
-      }
-      if (!_effortSelectionTouched) {
-        selectedReasoningEffort = response.reasoningEffort?.value;
-      }
-      if (!_permissionSelectionTouched) {
-        selectedPermissionId = response.activePermissionProfile?.id;
-      }
-      _rebuildCatalog();
-      _notify();
-      unawaited(_loadThreadConfiguration(thread));
-      didOpenForkedThread(response);
+      _openForkedThread(response, source: source, sourceProject: sourceProject);
       return true;
     } catch (error) {
       if (!_closed) forkError = '$error';
@@ -957,16 +927,165 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
+  /// Forks the whole selected thread after a writer conflict and resends the
+  /// original composer message in the new thread.
+  Future<bool> forkThreadAndSubmitMessage(
+    String text,
+    List<CodexPendingAttachment> attachments, [
+    List<CodexComposerReference> references = const [],
+  ]) async {
+    if (text.trim().isEmpty && attachments.isEmpty && references.isEmpty) {
+      return false;
+    }
+    final message = CodexQueuedMessage(
+      id: 'queued-${++_queueSequence}',
+      text: text,
+      attachments: List.unmodifiable(attachments),
+      references: List.unmodifiable(references),
+    );
+    final delegate = _forkThreadForSendDelegate;
+    if (delegate != null) {
+      if (_closed || sending) return false;
+      sending = true;
+      sendError = null;
+      sendFailureKind = null;
+      _notify();
+      try {
+        return await delegate(message);
+      } catch (error) {
+        if (!_closed) sendError = 'Could not continue in a new thread: $error';
+        return false;
+      } finally {
+        if (!_closed) {
+          sending = false;
+          _notify();
+        }
+      }
+    }
+    return _forkThreadAndSubmitMessage(message);
+  }
+
+  Future<bool> _forkThreadAndSubmitMessage(CodexQueuedMessage message) async {
+    final source = selectedThread;
+    if (_closed || source == null || sending || forkingTurnId != null) {
+      return false;
+    }
+    final sourceProject = _projectForThread(source.id);
+    final forkName = nextCodexForkThreadName(
+      source,
+      _threads.values.followedBy(catalog.allThreads),
+    );
+    sending = true;
+    sendError = null;
+    sendFailureKind = null;
+    _notify();
+    try {
+      final response = await connection.forkThread(
+        CodexThreadForkParams(threadId: source.id),
+      );
+      if (_closed) return false;
+
+      var openedResponse = response;
+      try {
+        await connection.setThreadName(response.thread.id, forkName);
+        openedResponse = CodexThreadForkResponse.fromJson({
+          ...response.toJson(),
+          'thread': codexThreadWithName(response.thread, forkName).toJson(),
+        });
+      } catch (_) {
+        // The fork is still usable if the optional display-name update fails.
+      }
+      if (_closed) return false;
+      final target = _openForkedThread(
+        openedResponse,
+        source: source,
+        sourceProject: sourceProject,
+      );
+      sending = false;
+      _notify();
+      return await target._sendMessageNow(message, steer: false);
+    } catch (error) {
+      if (!_closed) sendError = 'Could not continue in a new thread: $error';
+      return false;
+    } finally {
+      if (!_closed && sending) {
+        sending = false;
+        _notify();
+      }
+    }
+  }
+
+  CodexConversationState _openForkedThread(
+    CodexThreadForkResponse response, {
+    required CodexThread source,
+    required CodexLocalProject? sourceProject,
+  }) {
+    final thread = response.thread;
+    _threads[thread.id] = thread;
+    _resumedThreads[thread.id] = thread;
+    _recordThreadPlacement(thread.id, source.id, replace: true);
+    if (sourceProject != null) {
+      _assignThreadToProject(
+        thread,
+        sourceProject,
+        insertBeforeThreadId: source.id,
+      );
+    }
+    selectedThread = thread;
+    turns = thread.turns;
+    readingThreadId = null;
+    readError = null;
+    _failedReadThreadId = null;
+    goal = null;
+    goalError = null;
+    activePlan = null;
+    awaitingPlanDecisionItemId = null;
+    activeDiff = null;
+    sendError = null;
+    sendFailureKind = null;
+    queuedMessages = const [];
+    _serverRequests.clear();
+    pendingServerRequests = const [];
+    if (!_modelSelectionTouched) {
+      selectedModelId = models
+          .where(
+            (candidate) =>
+                candidate.model == response.model ||
+                candidate.id == response.model,
+          )
+          .firstOrNull
+          ?.id;
+    }
+    if (!_effortSelectionTouched) {
+      selectedReasoningEffort = response.reasoningEffort?.value;
+    }
+    if (!_permissionSelectionTouched) {
+      selectedPermissionId = response.activePermissionProfile?.id;
+    }
+    _rebuildCatalog();
+    _notify();
+    unawaited(_loadThreadConfiguration(thread));
+    return didOpenForkedThread(response);
+  }
+
   /// Hook for a catalog-owning subclass to adopt a newly started session.
   @protected
   void didOpenStartedThread(CodexThreadStartResponse response) {}
 
   /// Hook for a catalog-owning subclass to adopt a newly forked session.
   @protected
-  void didOpenForkedThread(CodexThreadForkResponse response) {}
+  CodexConversationState didOpenForkedThread(
+    CodexThreadForkResponse response,
+  ) => this;
 
   void configureForkThreadDelegate(CodexForkThreadDelegate? delegate) {
     _forkThreadDelegate = delegate;
+  }
+
+  void configureForkThreadForSendDelegate(
+    CodexForkThreadForSendDelegate? delegate,
+  ) {
+    _forkThreadForSendDelegate = delegate;
   }
 
   void configureResumeThreadForSendDelegate(
@@ -1412,6 +1531,7 @@ class CodexConversationState extends ChangeNotifier {
       return false;
     }
     if (projectedExternalActiveTurn != null) {
+      sendFailureKind = null;
       sendError = 'This thread is active in another Codex session.';
       _notify();
       return false;
@@ -1426,7 +1546,7 @@ class CodexConversationState extends ChangeNotifier {
       try {
         await ensureThreadResumedForSend(selectedThread!.id);
       } catch (error) {
-        sendError = '$error';
+        _recordSendError(error);
         _notify();
         return false;
       }
@@ -1471,6 +1591,7 @@ class CodexConversationState extends ChangeNotifier {
     final thread = selectedThread;
     if (_closed || thread == null || sending) return false;
     if (projectedExternalActiveTurn != null) {
+      sendFailureKind = null;
       sendError = 'This thread is active in another Codex session.';
       _notify();
       return false;
@@ -1479,11 +1600,13 @@ class CodexConversationState extends ChangeNotifier {
     String? optimisticTurnId;
     sending = true;
     sendError = null;
+    sendFailureKind = null;
     _notify();
     try {
       final input = await _prepareInputs(message);
       await ensureThreadResumedForSend(thread.id);
       if (projectedExternalActiveTurn != null) {
+        sendFailureKind = null;
         sendError = 'This thread is active in another Codex session.';
         return false;
       }
@@ -1531,7 +1654,7 @@ class CodexConversationState extends ChangeNotifier {
         if (optimisticItemId != null && optimisticTurnId != null) {
           _removeItem(optimisticTurnId, optimisticItemId);
         }
-        sendError = '$error';
+        _recordSendError(error);
       }
       return false;
     } finally {
@@ -1540,6 +1663,13 @@ class CodexConversationState extends ChangeNotifier {
         _notify();
       }
     }
+  }
+
+  void _recordSendError(Object error) {
+    sendFailureKind = _codexSendFailureKind(error);
+    sendError = sendFailureKind == CodexSendFailureKind.activeWriter
+        ? 'This thread already has an active writer.'
+        : '$error';
   }
 
   String _nextClientUserMessageId() =>
@@ -3530,6 +3660,15 @@ final class CodexServiceState extends CodexConversationState {
         )
         ..configureForkThreadDelegate(
           kind == CodexThreadSessionKind.persisted ? forkThreadAtTurn : null,
+        )
+        ..configureForkThreadForSendDelegate(
+          kind == CodexThreadSessionKind.persisted
+              ? (message) => forkThreadAndSubmitMessage(
+                  message.text,
+                  message.attachments,
+                  message.references,
+                )
+              : null,
         );
 
   @override
@@ -3646,12 +3785,13 @@ final class CodexServiceState extends CodexConversationState {
   }
 
   @override
-  void didOpenForkedThread(CodexThreadForkResponse response) {
+  CodexConversationState didOpenForkedThread(CodexThreadForkResponse response) {
     final session = conversations.registerFork(
       response,
       kind: CodexThreadSessionKind.persisted,
     );
     _adoptConversation(response.thread.id, session);
+    return session;
   }
 
   void _adoptConversation(

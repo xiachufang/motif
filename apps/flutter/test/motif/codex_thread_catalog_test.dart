@@ -218,6 +218,21 @@ void main() {
     expect(codexThreadTitle(thread('empty')), 'Untitled thread');
   });
 
+  test('fork names use the next available numeric suffix', () {
+    final source = thread('source', name: 'Release notes');
+    final second = thread('second', name: 'Release notes 2');
+    final fourth = thread('fourth', name: 'Release notes 4');
+
+    expect(
+      nextCodexForkThreadName(source, [source, second, fourth]),
+      'Release notes 3',
+    );
+    expect(
+      nextCodexForkThreadName(second, [source, second, fourth]),
+      'Release notes 3',
+    );
+  });
+
   test('managed worktree detection uses the app-server Codex home', () {
     expect(
       codexThreadIsManagedWorktree(

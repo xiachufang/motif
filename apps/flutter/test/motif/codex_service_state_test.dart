@@ -1195,6 +1195,61 @@ void main() {
     await state.close();
   });
 
+  test('forks, numbers, and resends after an active writer conflict', () async {
+    final source = thread(
+      'source',
+      turns: const [
+        CodexTurn(id: 'turn-1', items: [], status: CodexTurnStatus.completed),
+      ],
+    );
+    final client =
+        FakeCodexClient(
+            pages: {
+              null: CodexThreadListResponse(data: [source]),
+            },
+          )
+          ..resumeError = const CodexRpcException(
+            CodexJSONRPCErrorError(
+              code: -32000,
+              message: 'thread `source` already has an active writer',
+            ),
+          );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread(source.id);
+    final conversation = state.selectedConversation!;
+
+    expect(
+      await conversation.submitMessage('Continue here', const []),
+      isFalse,
+    );
+    expect(conversation.sendFailureKind, CodexSendFailureKind.activeWriter);
+    expect(client.forkParams, isEmpty);
+
+    expect(
+      await conversation.forkThreadAndSubmitMessage('Continue here', const []),
+      isTrue,
+    );
+    expect(client.forkParams.single.threadId, source.id);
+    expect(client.forkParams.single.lastTurnId, isNull);
+    expect(client.renamedThreads.single.threadId, 'forked-source');
+    expect(client.renamedThreads.single.name, 'source 2');
+    expect(state.selectedThread?.id, 'forked-source');
+    expect(codexThreadTitle(state.selectedThread!), 'source 2');
+    expect(client.startedParams.single.threadId, 'forked-source');
+    expect(
+      client.startedParams.single.input
+          .whereType<CodexTextUserInput>()
+          .single
+          .text,
+      'Continue here',
+    );
+
+    await state.close();
+  });
+
   test('starts a thread in a project and opens it without resume', () async {
     final before = thread('before', updatedAt: 30);
     final current = thread('current', updatedAt: 20);
@@ -1780,6 +1835,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> unwatchedIds = [];
   Completer<void>? unsubscribeGate;
   Object? listError;
+  Object? resumeError;
   Completer<CodexTurnSteerResponse>? steerGate;
   bool closed = false;
   bool disposed = false;
@@ -1958,6 +2014,11 @@ final class FakeCodexClient extends ChangeNotifier
     resumedThreadIds.add(threadId);
     resumeIncludeTurns.add(includeTurns);
     resumeInitialTurnsPages.add(initialTurnsPage);
+    final error = resumeError;
+    if (error != null) {
+      resumeError = null;
+      throw error;
+    }
     final original = pages.values
         .expand((page) => page.data)
         .firstWhere((thread) => thread.id == threadId);
