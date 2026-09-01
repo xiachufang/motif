@@ -21,18 +21,18 @@
       "version": "1.0.75"
     },
     "windows-x86_64": {
-      "file": "motifd-1.0.74-57-windows-x86_64.tar.gz",
-      "publishedAt": "2026-08-31T08:20:13Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.74",
-      "sha256": "5c78f4371aa642fd8c5c4db70e044fc0309377a0e6213380267becccdd05515e",
-      "size": 21345375,
-      "tag": "v1.0.74",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.74/motifd-1.0.74-57-windows-x86_64.tar.gz",
-      "version": "1.0.74"
+      "file": "motifd-1.0.75-58-windows-x86_64.tar.gz",
+      "publishedAt": "2026-09-01T06:05:43Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.75",
+      "sha256": "05854538c1abc4b3ef39d746a562509be3f5346f2df3d0c0dbba1aef7fc83e8e",
+      "size": 21347450,
+      "tag": "v1.0.75",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.75/motifd-1.0.75-58-windows-x86_64.tar.gz",
+      "version": "1.0.75"
     }
   },
   "channel": "stable",
   "product": "motifd",
   "schema": 1,
-  "updatedAt": "2026-09-01T06:05:42Z"
+  "updatedAt": "2026-09-01T06:05:43Z"
 }
