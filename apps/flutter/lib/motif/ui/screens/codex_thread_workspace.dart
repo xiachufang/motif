@@ -2997,10 +2997,12 @@ class _Composer extends StatelessWidget {
                 key: const ValueKey('codex-composer-input'),
                 controller: controller,
                 focusNode: focusNode,
+                style: CodexType.body.copyWith(color: c.textPrimary),
                 minLines: 2,
                 maxLines: 8,
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
+                  hintStyle: CodexType.body.copyWith(color: c.textTertiary),
                   hintText: state.goalModeEnabled
                       ? state.goal == null
                             ? 'Describe your goal'

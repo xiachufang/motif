@@ -93,6 +93,12 @@ void main() {
       await tester.pump();
 
       final input = find.byKey(const ValueKey('codex-composer-input'));
+      final textField = tester.widget<TextField>(input);
+      expect(textField.style?.fontSize, CodexType.body.fontSize);
+      expect(
+        textField.decoration?.hintStyle?.fontSize,
+        CodexType.body.fontSize,
+      );
       await tester.tap(input);
       await tester.pump();
       tester.testTextInput.updateEditingValue(
