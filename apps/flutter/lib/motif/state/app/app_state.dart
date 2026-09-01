@@ -92,6 +92,8 @@ class AppState {
   late final PushCoordinator _pushCoordinator;
   late final AppRuntimeController _runtime;
   final Map<String, ServerInstance> _serverInstances = {};
+  final Map<String, List<Future<void> Function(String threadId)>>
+  _codexThreadOpeners = {};
   final WorkspaceRegistry _workspaces = WorkspaceRegistry();
   bool _disposed = false;
   late final ObservationSubscription<
@@ -158,6 +160,39 @@ class AppState {
         threadId: trimmed,
       );
     });
+  }
+
+  /// Registers a mounted Codex screen that can switch threads without
+  /// rebuilding its feature controller (and therefore its Codex connection).
+  void registerCodexThreadOpener(
+    String serverId,
+    Future<void> Function(String threadId) opener,
+  ) {
+    final openers = _codexThreadOpeners.putIfAbsent(serverId, () => []);
+    openers.remove(opener);
+    openers.add(opener);
+  }
+
+  void unregisterCodexThreadOpener(
+    String serverId,
+    Future<void> Function(String threadId) opener,
+  ) {
+    final openers = _codexThreadOpeners[serverId];
+    if (openers == null) return;
+    openers.remove(opener);
+    if (openers.isEmpty) _codexThreadOpeners.remove(serverId);
+  }
+
+  /// Opens [threadId] on the most recently mounted Codex screen for [serverId].
+  /// Returns false when navigation still needs to create a Codex route.
+  Future<bool> openCodexThreadOnExistingScreen({
+    required String serverId,
+    required String threadId,
+  }) async {
+    final openers = _codexThreadOpeners[serverId];
+    if (openers == null || openers.isEmpty) return false;
+    await openers.last(threadId);
+    return true;
   }
 
   /// Take and clear the pending open, or `null` if none.
@@ -1266,6 +1301,7 @@ class AppState {
       instance.dispose();
     }
     _serverInstances.clear();
+    _codexThreadOpeners.clear();
     unawaited(connectionPools.dispose());
   }
 }

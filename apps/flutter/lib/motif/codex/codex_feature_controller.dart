@@ -40,7 +40,7 @@ final class CodexFeatureController extends ChangeNotifier {
   String? setupError;
   bool operationInFlight = false;
   bool sideChatOpening = false;
-  bool _started = false;
+  Future<void>? _startFuture;
   bool _closed = false;
   String? _lastObservedThreadId;
   String? _pendingRestoreThreadId;
@@ -63,9 +63,12 @@ final class CodexFeatureController extends ChangeNotifier {
     return pending;
   }
 
-  Future<void> start() async {
-    if (_started || _closed) return;
-    _started = true;
+  Future<void> start() {
+    if (_closed) return Future.value();
+    return _startFuture ??= _start();
+  }
+
+  Future<void> _start() async {
     final requestedThreadId = initialThreadId?.trim();
     final hasRequestedThread = requestedThreadId?.isNotEmpty == true;
     _pendingRestoreThreadId = hasRequestedThread
@@ -122,6 +125,7 @@ final class CodexFeatureController extends ChangeNotifier {
     CodexServiceState state,
     String threadId,
   ) async {
+    if (state.selectedThread?.id == threadId) return;
     final catalogTarget = state.catalog.allThreads
         .where((thread) => thread.id == threadId)
         .firstOrNull;
@@ -155,6 +159,18 @@ final class CodexFeatureController extends ChangeNotifier {
     if (_closed || sideChat == null) return;
     _pendingInitialSideChat = collection;
     notifyListeners();
+  }
+
+  /// Selects a notification target on the running feature without creating a
+  /// second Codex connection. Selecting the already-visible thread is a no-op.
+  Future<void> openThread(String threadId) async {
+    final id = threadId.trim();
+    if (_closed || id.isEmpty) return;
+    await start();
+    if (_closed) return;
+    final state = _service;
+    if (state == null || state.selectedThread?.id == id) return;
+    await _openRequestedThread(state, id);
   }
 
   SideChatCollectionController? openSideChats() {

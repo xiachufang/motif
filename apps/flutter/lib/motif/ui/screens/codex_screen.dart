@@ -37,10 +37,10 @@ class CodexScreen extends StatefulWidget {
   onWorkspaceRequested;
 
   @override
-  State<CodexScreen> createState() => _CodexScreenState();
+  State<CodexScreen> createState() => CodexScreenState();
 }
 
-class _CodexScreenState extends State<CodexScreen> {
+class CodexScreenState extends State<CodexScreen> {
   static const double _mobileBreakpoint = 768;
   static const double _sidebarMinWidth = 260;
   static const double _resizeHandleWidth = 8;
@@ -59,6 +59,17 @@ class _CodexScreenState extends State<CodexScreen> {
   Future<void> _startController() async {
     await widget.controller.start();
     if (!mounted) return;
+    _showPendingSideChat();
+  }
+
+  /// Reuses this screen's controller and connection for a notification target.
+  Future<void> openThread(String threadId) async {
+    await widget.controller.openThread(threadId);
+    if (!mounted) return;
+    _showPendingSideChat();
+  }
+
+  void _showPendingSideChat() {
     final collection = widget.controller.takePendingInitialSideChat();
     if (collection == null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -653,7 +664,7 @@ class _SidebarResizeHandle extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onHorizontalDragUpdate: (details) => onDragDelta(details.delta.dx),
         child: SizedBox(
-          width: _CodexScreenState._resizeHandleWidth,
+          width: CodexScreenState._resizeHandleWidth,
           child: Center(child: Container(width: 1, color: c.border)),
         ),
       ),

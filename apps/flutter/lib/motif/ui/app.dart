@@ -504,6 +504,15 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
     String threadId,
   ) async {
     if (app.serverById(pending.serverId) == null) return;
+    final routeName = 'codex/${pending.serverId}';
+    if (_topRouteName(context) == routeName &&
+        await app.openCodexThreadOnExistingScreen(
+          serverId: pending.serverId,
+          threadId: threadId,
+        )) {
+      return;
+    }
+    if (!context.mounted) return;
     if (app.servers.activeId != pending.serverId) {
       await app.servers.setActive(pending.serverId);
       if (!context.mounted) return;
@@ -521,7 +530,7 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
     final nav = Navigator.of(context);
     final topRouteName = _topRouteName(context);
     final route = MaterialPageRoute<void>(
-      settings: RouteSettings(name: 'codex/${pending.serverId}'),
+      settings: RouteSettings(name: routeName),
       fullscreenDialog: true,
       builder: (_) =>
           AppCodexScreen(serverId: pending.serverId, initialThreadId: threadId),

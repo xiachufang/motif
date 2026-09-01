@@ -198,6 +198,13 @@ void main() {
     expect(screen.serverId, 'server-1');
     expect(screen.initialThreadId, 'thread-42');
     expect(workspace.viewModel.presence.latestNotification, isNull);
+
+    final originalState = tester.state(find.byType(AppCodexScreen));
+    app.requestOpenCodexThread(serverId: 'server-1', threadId: 'thread-43');
+    await tester.pumpAndSettle();
+
+    expect(find.byType(AppCodexScreen), findsOneWidget);
+    expect(tester.state(find.byType(AppCodexScreen)), same(originalState));
   });
 
   testWidgets('banner tap switches tab in the visible session', (tester) async {

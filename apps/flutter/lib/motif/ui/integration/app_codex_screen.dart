@@ -30,6 +30,8 @@ final class AppCodexScreen extends StatefulWidget {
 }
 
 final class _AppCodexScreenState extends State<AppCodexScreen> {
+  final GlobalKey<CodexScreenState> _screenKey = GlobalKey<CodexScreenState>();
+  late final Future<void> Function(String threadId) _threadOpener = _openThread;
   CodexFeatureController? _controller;
   AppState? _app;
 
@@ -47,6 +49,16 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
       controlService: (action) => _controlService(app, action),
       initialThreadId: widget.initialThreadId,
     );
+    app.registerCodexThreadOpener(widget.serverId, _threadOpener);
+  }
+
+  Future<void> _openThread(String threadId) async {
+    final screen = _screenKey.currentState;
+    if (screen != null) {
+      await screen.openThread(threadId);
+      return;
+    }
+    await _controller?.openThread(threadId);
   }
 
   CodexAppServerClient _createConnection(AppState app) {
@@ -77,6 +89,7 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
 
   @override
   void dispose() {
+    _app?.unregisterCodexThreadOpener(widget.serverId, _threadOpener);
     _controller?.dispose();
     super.dispose();
   }
@@ -89,6 +102,7 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
       return const SizedBox.shrink();
     }
     return CodexScreen(
+      key: _screenKey,
       controller: controller,
       speechService: app.platform.speech,
       onWorkspaceRequested: (request) => CodexSessionCoordinator.open(

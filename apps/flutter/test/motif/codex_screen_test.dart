@@ -176,6 +176,36 @@ void main() {
     controller.dispose();
   });
 
+  test('notification reuses the selected thread and connection', () async {
+    SharedPreferences.setMockInitialValues({});
+    final sharedPreferences = await SharedPreferences.getInstance();
+    final preferences = CodexState(preferences: sharedPreferences);
+    final client = ScreenFakeClient();
+    final serviceState = readyServiceState(connection: client);
+    final target = serviceState.catalog.allThreads.single;
+    client.threadReadResponse = CodexThreadReadResponse(thread: target);
+    final controller = CodexFeatureController(
+      serverId: 'server',
+      preferences: preferences,
+      connectionFactory: () => client,
+      serviceFactory: () => serviceState,
+      controlService: (_) async {},
+      initialThreadId: target.id,
+    );
+
+    await controller.start();
+    final readsAfterInitialOpen = client.readThreadIds.length;
+
+    await controller.openThread(target.id);
+
+    expect(client.startCount, 1);
+    expect(client.readThreadIds, hasLength(readsAfterInitialOpen));
+    expect(serviceState.selectedThread?.id, target.id);
+
+    await controller.close();
+    controller.dispose();
+  });
+
   test(
     'notification side chat opens its parent before the side chat',
     () async {
@@ -1287,7 +1317,9 @@ final class ScreenFakeClient extends ChangeNotifier
   Stream<CodexJsonEncodable> get typedMessages => _typed.stream;
 
   @override
-  Future<void> start() async {}
+  Future<void> start() async => startCount++;
+
+  int startCount = 0;
 
   @override
   Future<void> retry() async => retryCount++;
