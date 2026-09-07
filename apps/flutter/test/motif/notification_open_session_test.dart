@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/models/motif_proto.dart';
 import 'package:motif/motif/platform/services.dart';
 import 'package:motif/motif/state/app/app_state.dart';
+import 'package:motif/motif/state/embedded/embedded_server_service.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_controller.dart';
 import 'package:motif/motif/state/workspace/connection/workspace_connection_view_model.dart';
 import 'package:motif/motif/state/persistence/stores.dart';
@@ -67,11 +68,48 @@ class _ConnectingNotifWorkspaceConnectionController
   }
 }
 
-Future<AppState> _appWithClient(WorkspaceConnectionController client) async {
+class _AvailableEmbeddedServer extends NoopEmbeddedServerService {
+  _AvailableEmbeddedServer() {
+    availableState = true;
+  }
+}
+
+class _NotificationPushService extends NoopPushService {
+  @override
+  bool get isSupported => true;
+
+  late void Function({
+    required String? session,
+    String? instanceId,
+    String? viewId,
+    String? threadId,
+  })
+  open;
+
+  @override
+  void onNotificationOpen(
+    void Function({
+      required String? session,
+      String? instanceId,
+      String? viewId,
+      String? threadId,
+    })
+    handler,
+  ) {
+    open = handler;
+  }
+}
+
+Future<AppState> _appWithClient(
+  WorkspaceConnectionController client, {
+  bool desktop = false,
+  PushService? pushService,
+}) async {
   SharedPreferences.setMockInitialValues({
     'motif.servers.v1':
         '[{"id":"server-1","name":"Dev","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
     'activeServerID': 'server-1',
+    'motif.push.instanceServers': '{"instance-1":"server-1"}',
   });
   final prefs = await SharedPreferences.getInstance();
   final app = AppState(
@@ -79,7 +117,12 @@ Future<AppState> _appWithClient(WorkspaceConnectionController client) async {
     terminalSettings: TerminalSettingsStore(prefs),
     commands: QuickCommandStore(prefs),
     push: PushSettingsStore(prefs),
-    platform: PlatformServices.defaults(),
+    platform: PlatformServices(
+      tailscale: NoopTailscaleService(),
+      speech: NoopSpeechService(),
+      push: pushService ?? NoopPushService(),
+    ),
+    embeddedServer: desktop ? _AvailableEmbeddedServer() : null,
     serverTransportFactory: (_) => TestServerTransport(
       live: client is! _ConnectingNotifWorkspaceConnectionController,
       onConnect: client is _ConnectingNotifWorkspaceConnectionController
@@ -206,6 +249,89 @@ void main() {
     expect(find.byType(AppCodexScreen), findsOneWidget);
     expect(tester.state(find.byType(AppCodexScreen)), same(originalState));
   });
+
+  for (final desktop in [false, true]) {
+    for (final fromBanner in [true, false]) {
+      testWidgets(
+        '${desktop ? 'desktop' : 'mobile'} ${fromBanner ? 'banner' : 'system callback'} returns to Codex below another route',
+        (tester) async {
+          final platformPush = _NotificationPushService();
+          final app = await _appWithClient(
+            _NotifWorkspaceConnectionController(),
+            desktop: desktop,
+            pushService: platformPush,
+          );
+          addTearDown(app.dispose);
+          final workspace = app.workspaceForSession('server-1', 'work');
+          await tester.pumpWidget(
+            MotifScope(appState: app, child: const MotifApp()),
+          );
+          await tester.pump();
+          app.requestOpenCodexThread(
+            serverId: 'server-1',
+            threadId: 'thread-42',
+          );
+          await tester.pumpAndSettle();
+          final originalState = tester.state(find.byType(AppCodexScreen));
+          final navigator = Navigator.of(
+            tester.element(find.byType(AppCodexScreen)),
+          );
+          unawaited(
+            navigator.push<void>(
+              MaterialPageRoute<void>(
+                settings: const RouteSettings(name: 'codex-file/server-1'),
+                builder: (_) => const Scaffold(body: Text('File preview')),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(find.text('File preview'), findsOneWidget);
+          // Desktop dialogs use the root navigator above the client navigator.
+          if (desktop) {
+            app.setViewMode(AppViewMode.server);
+            unawaited(
+              showDialog<void>(
+                context: tester.element(find.text('File preview')),
+                builder: (_) => const AlertDialog(content: Text('Root dialog')),
+              ),
+            );
+            await tester.pumpAndSettle();
+          }
+
+          if (fromBanner) {
+            workspace.viewModel.presence.latestNotification =
+                const MotifNotification(
+                  title: 'Another task finished',
+                  body: '',
+                  threadId: 'thread-43',
+                  kind: 'finished',
+                );
+            await tester.pump();
+            await tester.tap(find.text('Another task finished'));
+          } else {
+            platformPush.open(
+              session: null,
+              instanceId: 'instance-1',
+              threadId: 'thread-43',
+            );
+          }
+          await tester.pumpAndSettle();
+
+          expect(
+            find.byType(AppCodexScreen, skipOffstage: false),
+            findsOneWidget,
+          );
+          expect(
+            tester.state(find.byType(AppCodexScreen)),
+            same(originalState),
+          );
+          expect(find.text('File preview'), findsNothing);
+          expect(find.text('Root dialog'), findsNothing);
+          expect(app.viewMode, AppViewMode.client);
+        },
+      );
+    }
+  }
 
   testWidgets('banner tap switches tab in the visible session', (tester) async {
     final client = _NotifWorkspaceConnectionController()

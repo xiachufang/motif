@@ -412,46 +412,55 @@ void main() {
     app.dispose();
   });
 
-  test(
-    'cold-start pending notification open is drained on AppState init',
-    () async {
-      SharedPreferences.setMockInitialValues({
-        'motif.servers.v1':
-            '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
-        'activeServerID': 's1',
-        'motif.push.instanceServers': '{"instance-1":"s1"}',
-      });
-      final prefs = await SharedPreferences.getInstance();
-      final platformPush = _FakePushService()
-        ..pendingOpen = (
-          session: 'boot-session',
-          instanceId: 'instance-1',
-          viewId: 'view-boot',
-          threadId: null,
+  for (final threadId in [null, 'boot-thread']) {
+    test(
+      'cold-start pending ${threadId == null ? 'session' : 'thread'} is drained on AppState init',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'motif.servers.v1':
+              '[{"id":"s1","name":"One","host":"127.0.0.1","port":7777,"token":"","kind":"direct"}]',
+          'activeServerID': 's1',
+          'motif.push.instanceServers': '{"instance-1":"s1"}',
+        });
+        final prefs = await SharedPreferences.getInstance();
+        final platformPush = _FakePushService()
+          ..pendingOpen = (
+            session: 'boot-session',
+            instanceId: 'instance-1',
+            viewId: 'view-boot',
+            threadId: threadId,
+          );
+        final client = _PushServerFixture('instance-1');
+        final app = AppState(
+          servers: ServerStore(prefs),
+          terminalSettings: TerminalSettingsStore(prefs),
+          commands: QuickCommandStore(prefs),
+          push: PushSettingsStore(prefs),
+          platform: PlatformServices(
+            tailscale: NoopTailscaleService(),
+            speech: NoopSpeechService(),
+            push: platformPush,
+          ),
+          serverTransportFactory: (_) => _pushTransport(client),
         );
-      final client = _PushServerFixture('instance-1');
-      final app = AppState(
-        servers: ServerStore(prefs),
-        terminalSettings: TerminalSettingsStore(prefs),
-        commands: QuickCommandStore(prefs),
-        push: PushSettingsStore(prefs),
-        platform: PlatformServices(
-          tailscale: NoopTailscaleService(),
-          speech: NoopSpeechService(),
-          push: platformPush,
-        ),
-        serverTransportFactory: (_) => _pushTransport(client),
-      );
-      app.serverInstance('s1');
-      await Future<void>.delayed(Duration.zero);
+        app.serverInstance('s1');
+        await Future<void>.delayed(Duration.zero);
 
-      expect(app.pendingSessionOpen?.serverId, 's1');
-      expect(app.pendingSessionOpen?.session, 'boot-session');
-      expect(app.pendingSessionOpen?.viewId, 'view-boot');
-      expect(platformPush.pendingOpen, isNull);
-      app.dispose();
-    },
-  );
+        expect(app.pendingSessionOpen?.serverId, 's1');
+        expect(app.pendingSessionOpen?.threadId, threadId);
+        expect(
+          app.pendingSessionOpen?.session,
+          threadId == null ? 'boot-session' : null,
+        );
+        expect(
+          app.pendingSessionOpen?.viewId,
+          threadId == null ? 'view-boot' : null,
+        );
+        expect(platformPush.pendingOpen, isNull);
+        app.dispose();
+      },
+    );
+  }
 
   test('cold-start notification uses persisted instance routing', () async {
     SharedPreferences.setMockInitialValues({

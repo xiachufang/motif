@@ -92,7 +92,7 @@ class AppState {
   late final PushCoordinator _pushCoordinator;
   late final AppRuntimeController _runtime;
   final Map<String, ServerInstance> _serverInstances = {};
-  final Map<String, List<Future<void> Function(String threadId)>>
+  final Map<String, List<Future<bool> Function(String threadId)>>
   _codexThreadOpeners = {};
   final WorkspaceRegistry _workspaces = WorkspaceRegistry();
   bool _disposed = false;
@@ -166,7 +166,7 @@ class AppState {
   /// rebuilding its feature controller (and therefore its Codex connection).
   void registerCodexThreadOpener(
     String serverId,
-    Future<void> Function(String threadId) opener,
+    Future<bool> Function(String threadId) opener,
   ) {
     final openers = _codexThreadOpeners.putIfAbsent(serverId, () => []);
     openers.remove(opener);
@@ -175,7 +175,7 @@ class AppState {
 
   void unregisterCodexThreadOpener(
     String serverId,
-    Future<void> Function(String threadId) opener,
+    Future<bool> Function(String threadId) opener,
   ) {
     final openers = _codexThreadOpeners[serverId];
     if (openers == null) return;
@@ -191,8 +191,12 @@ class AppState {
   }) async {
     final openers = _codexThreadOpeners[serverId];
     if (openers == null || openers.isEmpty) return false;
-    await openers.last(threadId);
-    return true;
+    // A popped route stays mounted during its exit animation. Skip it and
+    // allow an older, still-active screen to handle the request.
+    for (final opener in openers.reversed.toList()) {
+      if (await opener(threadId)) return true;
+    }
+    return false;
   }
 
   /// Take and clear the pending open, or `null` if none.

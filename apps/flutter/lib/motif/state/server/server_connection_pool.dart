@@ -290,6 +290,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
     ServerWebSocketConnector? webSocketConnector,
     this.healthTtl = const Duration(seconds: 15),
     this.healthCheckInterval = const Duration(seconds: 30),
+    this.webSocketCloseTimeout = const Duration(seconds: 2),
     DateTime Function()? now,
   }) : _serverProvider = serverProvider,
        _resolveRoute = resolveRoute,
@@ -310,6 +311,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
   final DateTime Function() _now;
   final Duration healthTtl;
   final Duration healthCheckInterval;
+  final Duration webSocketCloseTimeout;
 
   static http.Client _defaultHttpClientFactory(
     ProxySettings proxy,
@@ -620,10 +622,15 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
         });
       final body = request.body;
       if (body != null) outgoing.bodyBytes = body;
-      final streamed = request.timeout == null
-          ? await generation.client.send(outgoing)
-          : await generation.client.send(outgoing).timeout(request.timeout!);
-      final response = await http.Response.fromStream(streamed);
+      // The deadline covers the body as well as the headers. A half-open
+      // connection can deliver HTTP 200 and then stop sending indefinitely.
+      final receive = () async {
+        final streamed = await generation.client.send(outgoing);
+        return http.Response.fromStream(streamed);
+      }();
+      final response = request.timeout == null
+          ? await receive
+          : await receive.timeout(request.timeout!);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         _markHealthy();
       }
@@ -713,6 +720,7 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
         certPin: generation.certPin,
       );
       final connection = _ExclusiveWebSocketConnection(
+        closeTimeout: webSocketCloseTimeout,
         routeGeneration: generation.generation,
         socket: socket,
         onDone: (connection, locallyClosed) =>
@@ -720,9 +728,18 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
         onMessage: _markHealthy,
       );
       owner._sockets.add(connection);
+      final dialWatch = Stopwatch()..start();
+      Log.i(
+        'WebSocket opening server=$serverId path=${request.path} generation=${generation.generation}',
+        name: 'motif.resume',
+      );
       try {
         await connection.ready;
       } catch (error, stackTrace) {
+        Log.w(
+          'WebSocket open failed server=$serverId path=${request.path} took=${dialWatch.elapsedMilliseconds}ms errorType=${error.runtimeType}',
+          name: 'motif.resume',
+        );
         await connection.close();
         if (identical(_current, generation)) {
           try {
@@ -735,6 +752,10 @@ final class DefaultServerConnectionPool implements ServerConnectionPool {
         Error.throwWithStackTrace(error, stackTrace);
       }
       if (identical(_current, generation) && !owner.isClosed) {
+        Log.i(
+          'WebSocket ready server=$serverId path=${request.path} generation=${generation.generation} took=${dialWatch.elapsedMilliseconds}ms',
+          name: 'motif.resume',
+        );
         return connection;
       }
       await connection.close(4001, 'route changed');
@@ -1000,6 +1021,7 @@ final class _ServerConnectionHandle implements ServerConnectionHandle {
 final class _ExclusiveWebSocketConnection
     implements ExclusiveWebSocketConnection {
   _ExclusiveWebSocketConnection({
+    required this.closeTimeout,
     required this.routeGeneration,
     required WebSocketChannel socket,
     required void Function(
@@ -1027,6 +1049,7 @@ final class _ExclusiveWebSocketConnection
   }
 
   final WebSocketChannel _socket;
+  final Duration closeTimeout;
   final void Function(_ExclusiveWebSocketConnection, bool) _onDone;
   final void Function() _onMessage;
   // A physical socket can deliver frames immediately after `ready`, before
@@ -1073,9 +1096,16 @@ final class _ExclusiveWebSocketConnection
     if (_finished) return;
     _locallyClosed = true;
     try {
-      await _socket.sink.close(code, reason);
+      await _socket.sink.close(code, reason).timeout(closeTimeout);
+    } catch (error) {
+      Log.w(
+        'WebSocket cleanup failed generation=$routeGeneration errorType=${error.runtimeType}',
+        name: 'motif.resume',
+      );
     } finally {
-      await _subscription.cancel();
+      // Cleanup must never hold the next route hostage to an old peer. Stop
+      // delivering its events immediately, even if physical close is stalled.
+      unawaited(_subscription.cancel().catchError((Object _) {}));
       _finish();
     }
   }

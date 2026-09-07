@@ -8,9 +8,10 @@ import UserNotifications
   // Held while waiting for the APNs token delegate callback.
   private var pendingTokenResult: FlutterResult?
   private var pushChannel: FlutterMethodChannel?
-  /// Cold-start / early tap payload held until Dart asks for it (or the
-  /// MethodChannel is ready to push `onNotificationOpen`).
+  /// Channel creation precedes Dart's handler registration. Keep early taps
+  /// until Dart drains them and explicitly establishes that it is ready.
   private var pendingNotificationOpen: [String: String]?
+  private var notificationOpenHandlerReady = false
 
   override func application(
     _ application: UIApplication,
@@ -51,17 +52,13 @@ import UserNotifications
         case "takePendingNotificationOpen":
           // Cold start: Dart drains any tap that arrived before the channel
           // handler was registered.
+          self?.notificationOpenHandlerReady = true
           let pending = self?.pendingNotificationOpen
           self?.pendingNotificationOpen = nil
           result(pending)
         default:
           result(FlutterMethodNotImplemented)
         }
-      }
-      // If a tap arrived before the channel existed, flush it now.
-      if let pending = pendingNotificationOpen {
-        pendingNotificationOpen = nil
-        channel.invokeMethod("onNotificationOpen", arguments: pending)
       }
     }
 
@@ -145,7 +142,7 @@ import UserNotifications
       payload["thread_id"] = threadId
     }
     guard !payload.isEmpty else { return }
-    if let channel = pushChannel {
+    if notificationOpenHandlerReady, let channel = pushChannel {
       channel.invokeMethod("onNotificationOpen", arguments: payload)
     } else {
       pendingNotificationOpen = payload

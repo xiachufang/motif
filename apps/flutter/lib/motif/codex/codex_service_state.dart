@@ -2684,7 +2684,10 @@ class CodexConversationState extends ChangeNotifier {
 
   void _syncSelectedThread() {
     final id = selectedThread?.id;
-    if (id != null) selectedThread = _threads[id];
+    // A list snapshot can omit a directly opened notification target (for
+    // example, a newly created or archived thread). Absence from the catalog
+    // must not undo navigation. Explicit removals clear it in _removeThread.
+    if (id != null) selectedThread = _threads[id] ?? selectedThread;
   }
 
   CodexItemViewModel itemViewModel(CodexThreadItem item) {

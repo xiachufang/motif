@@ -31,7 +31,7 @@ final class AppCodexScreen extends StatefulWidget {
 
 final class _AppCodexScreenState extends State<AppCodexScreen> {
   final GlobalKey<CodexScreenState> _screenKey = GlobalKey<CodexScreenState>();
-  late final Future<void> Function(String threadId) _threadOpener = _openThread;
+  late final Future<bool> Function(String threadId) _threadOpener = _openThread;
   CodexFeatureController? _controller;
   AppState? _app;
 
@@ -52,13 +52,28 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
     app.registerCodexThreadOpener(widget.serverId, _threadOpener);
   }
 
-  Future<void> _openThread(String threadId) async {
+  Future<bool> _openThread(String threadId) async {
+    if (!mounted) return false;
+    final route = ModalRoute.of(context);
+    if (route == null || !route.isActive) return false;
+    final navigator = Navigator.of(context);
+    // File previews, workspaces and side chats can cover this screen. Return
+    // to its exact route instead of creating another feature/connection.
+    navigator.popUntil((candidate) => identical(candidate, route));
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
+    if (!identical(rootNavigator, navigator)) {
+      final shellRoute = ModalRoute.of(navigator.context);
+      if (shellRoute != null && shellRoute.isActive) {
+        rootNavigator.popUntil((candidate) => identical(candidate, shellRoute));
+      }
+    }
     final screen = _screenKey.currentState;
     if (screen != null) {
       await screen.openThread(threadId);
-      return;
+      return true;
     }
     await _controller?.openThread(threadId);
+    return true;
   }
 
   CodexAppServerClient _createConnection(AppState app) {

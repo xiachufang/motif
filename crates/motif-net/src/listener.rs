@@ -81,6 +81,7 @@ const RZV_HELLO_LEN: usize = RZV_MAGIC.len() + 1 + 32;
 /// Bound the wait here so the pump can drop it and enter its reconnect loop
 /// even when the underlying connection never reports EOF/reset.
 const RZV_CONTROL_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
+const RZV_DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 const RZV_WS_KEEPALIVE: Duration = Duration::from_secs(15);
 
 #[cfg(feature = "tailscale")]
@@ -360,6 +361,66 @@ async fn park_accept(
     .await
 }
 
+/// Bound setup separately from parking: DNS, TLS and HTTP Upgrade can all
+/// stall before the control-frame keepalive deadline starts.
+async fn connect_rzv_websocket(
+    url: &str,
+    token: &[u8; 32],
+    jwt: &str,
+    ws_tls: std::sync::Arc<rustls::ClientConfig>,
+    dial_timeout: Duration,
+) -> io::Result<tokio_tungstenite::WebSocketStream<Box<dyn WsTransport>>> {
+    let mut stage = "URL validation";
+    tokio::time::timeout(dial_timeout, async {
+        let endpoint = rzv_ws_url(url, "v2/accept")?;
+        let host = endpoint
+            .host_str()
+            .ok_or_else(|| io::Error::other("rzv URL has no host"))?;
+        let port = endpoint
+            .port_or_known_default()
+            .ok_or_else(|| io::Error::other("rzv URL has no port"))?;
+        stage = "DNS/TCP connect";
+        let tcp = TcpStream::connect((host, port)).await?;
+        let transport: Box<dyn WsTransport> = match endpoint.scheme() {
+            "wss" => {
+                stage = "TLS handshake";
+                let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
+                    .map_err(|_| io::Error::other("invalid rzv TLS server name"))?;
+                let connector = tokio_rustls::TlsConnector::from(ws_tls);
+                Box::new(connector.connect(server_name, tcp).await?)
+            }
+            "ws" => Box::new(tcp),
+            other => return Err(io::Error::other(format!("unsupported rzv scheme {other}"))),
+        };
+        let mut request = endpoint
+            .as_str()
+            .into_client_request()
+            .map_err(|e| io::Error::other(format!("rzv WebSocket request: {e}")))?;
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {jwt}")
+                .parse()
+                .map_err(|_| io::Error::other("rzv JWT is not a valid header value"))?,
+        );
+        stage = "WebSocket upgrade";
+        let (mut ws, _) = tokio_tungstenite::client_async(request, transport)
+            .await
+            .map_err(|e| io::Error::other(format!("rzv WebSocket upgrade: {e}")))?;
+        stage = "HELLO write";
+        ws.send(WsMessage::Binary(build_rzv_hello(token).into()))
+            .await
+            .map_err(|e| io::Error::other(format!("rzv HELLO: {e}")))?;
+        Ok(ws)
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("rzv {stage} timed out after {dial_timeout:?}"),
+        )
+    })?
+}
+
 async fn park_accept_with_idle_timeout(
     url: &str,
     token: &[u8; 32],
@@ -369,40 +430,7 @@ async fn park_accept_with_idle_timeout(
     control_idle_timeout: Duration,
     on_connected: impl FnOnce(),
 ) -> io::Result<Stream> {
-    let endpoint = rzv_ws_url(url, "v2/accept")?;
-    let host = endpoint
-        .host_str()
-        .ok_or_else(|| io::Error::other("rzv URL has no host"))?;
-    let port = endpoint
-        .port_or_known_default()
-        .ok_or_else(|| io::Error::other("rzv URL has no port"))?;
-    let tcp = TcpStream::connect((host, port)).await?;
-    let transport: Box<dyn WsTransport> = match endpoint.scheme() {
-        "wss" => {
-            let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
-                .map_err(|_| io::Error::other("invalid rzv TLS server name"))?;
-            let connector = tokio_rustls::TlsConnector::from(ws_tls);
-            Box::new(connector.connect(server_name, tcp).await?)
-        }
-        "ws" => Box::new(tcp),
-        other => return Err(io::Error::other(format!("unsupported rzv scheme {other}"))),
-    };
-    let mut request = endpoint
-        .as_str()
-        .into_client_request()
-        .map_err(|e| io::Error::other(format!("rzv WebSocket request: {e}")))?;
-    request.headers_mut().insert(
-        header::AUTHORIZATION,
-        format!("Bearer {jwt}")
-            .parse()
-            .map_err(|_| io::Error::other("rzv JWT is not a valid header value"))?,
-    );
-    let (mut ws, _) = tokio_tungstenite::client_async(request, transport)
-        .await
-        .map_err(|e| io::Error::other(format!("rzv WebSocket upgrade: {e}")))?;
-    ws.send(WsMessage::Binary(build_rzv_hello(token).into()))
-        .await
-        .map_err(|e| io::Error::other(format!("rzv HELLO: {e}")))?;
+    let mut ws = connect_rzv_websocket(url, token, jwt, ws_tls, RZV_DIAL_TIMEOUT).await?;
     // A successful Upgrade proves that the relay was reachable and accepted
     // the owner JWT. Publishing here gives the embedding UI a prompt answer
     // without waiting for a client to pair with this parked socket.
@@ -673,6 +701,45 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, List
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rzv_setup_times_out_before_parking_and_drops_socket() {
+        for scheme in ["ws", "wss"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("{scheme}://{}", listener.local_addr().unwrap());
+            let peer = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                // Accept TCP, consume the request, but never finish Upgrade/TLS.
+                socket.read_to_end(&mut bytes).await.unwrap();
+                assert!(!bytes.is_empty());
+            });
+            let config = RzvListenConfig::new(&url, [0; 32], "test");
+            let result = connect_rzv_websocket(
+                &url,
+                &[0; 32],
+                "test",
+                config.ws_tls,
+                Duration::from_millis(50),
+            )
+            .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("unexpected connection"),
+            };
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            let stage = if scheme == "wss" {
+                "TLS handshake"
+            } else {
+                "WebSocket upgrade"
+            };
+            assert!(error.to_string().contains(stage), "{error}");
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     #[test]
     fn empty_config_rejected() {

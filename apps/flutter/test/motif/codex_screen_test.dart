@@ -206,6 +206,71 @@ void main() {
     controller.dispose();
   });
 
+  testWidgets(
+    'catalog refresh keeps notification targets visible instead of Open Threads',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final app = await appState();
+      addTearDown(app.dispose);
+      final client = ScreenFakeClient();
+      final state = readyServiceState(connection: client);
+      final targets = state.catalog.allThreads.toList();
+      for (final target in targets) {
+        client.threadReadResponses[target.id] = CodexThreadReadResponse(
+          thread: target,
+        );
+      }
+      state.catalog = const CodexCatalogSnapshot.empty();
+      final preferences = CodexState();
+      final controller = CodexFeatureController(
+        serverId: 'server',
+        preferences: preferences,
+        connectionFactory: () => client,
+        serviceFactory: () => state,
+        controlService: (_) async {},
+        initialThreadId: targets.first.id,
+      );
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MotifScope(
+          appState: app,
+          codexState: preferences,
+          child: MaterialApp(
+            theme: motifTheme(Brightness.light),
+            home: CodexScreen(
+              controller: controller,
+              onWorkspaceRequested: (_) async {},
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      for (final target in targets) {
+        await controller.openThread(target.id);
+        await tester.pumpAndSettle();
+        expect(state.selectedThread?.id, target.id);
+        // A catalog snapshot can predate a newly created notification target, or
+        // omit an archived thread. It must not undo the explicit selection.
+        client.listedThreads = const [];
+        await state.refreshCatalog(showLoading: false);
+        await tester.pumpAndSettle();
+
+        expect(state.selectedThread?.id, target.id);
+        expect(state.viewModel.selectedThread?.id, target.id);
+        expect(preferences.lastOpenedThreadId('server'), target.id);
+        expect(find.byType(CodexThreadWorkspace), findsOneWidget);
+        expect(find.text('Open Threads'), findsNothing);
+      }
+      await tester.pumpWidget(const SizedBox.shrink());
+      unawaited(controller.close());
+      await tester.pump();
+    },
+  );
+
   test(
     'notification side chat opens its parent before the side chat',
     () async {

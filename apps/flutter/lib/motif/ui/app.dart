@@ -505,18 +505,17 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
   ) async {
     if (app.serverById(pending.serverId) == null) return;
     final routeName = 'codex/${pending.serverId}';
-    if (_topRouteName(context) == routeName &&
-        await app.openCodexThreadOnExistingScreen(
-          serverId: pending.serverId,
-          threadId: threadId,
-        )) {
-      return;
-    }
-    if (!context.mounted) return;
     if (app.servers.activeId != pending.serverId) {
       await app.servers.setActive(pending.serverId);
       if (!context.mounted) return;
     }
+    if (await app.openCodexThreadOnExistingScreen(
+      serverId: pending.serverId,
+      threadId: threadId,
+    )) {
+      return;
+    }
+    if (!context.mounted) return;
     final connected = await app.ensureServerConnectedAndRefresh(
       pending.serverId,
       makeActive: false,
@@ -526,6 +525,15 @@ class _PendingSessionOpenListener extends _$_PendingSessionOpenListener {
       showMotifToast(context, 'Could not connect to the notification server');
       return;
     }
+
+    // The user may have opened Codex while the connection was being made.
+    if (await app.openCodexThreadOnExistingScreen(
+      serverId: pending.serverId,
+      threadId: threadId,
+    )) {
+      return;
+    }
+    if (!context.mounted) return;
 
     final nav = Navigator.of(context);
     final topRouteName = _topRouteName(context);

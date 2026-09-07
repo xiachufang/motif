@@ -23,31 +23,34 @@ WebSocketChannel connectWebSocket(
   String? proxyUser,
   String? proxyPass,
   Uint8List? certPin,
+  Duration connectTimeout = const Duration(seconds: 20),
 }) {
   final hasProxy = proxyHost != null && proxyPort != null;
-  if (hasProxy || certPin != null) {
-    final client = HttpClient();
-    if (hasProxy) {
-      socks.SocksTCPClient.assignToHttpClient(client, [
-        socks.ProxySettings(
-          InternetAddress(proxyHost),
-          proxyPort,
-          username: proxyUser,
-          password: proxyPass,
-        ),
-      ]);
-    }
-    if (certPin != null) {
-      client.badCertificateCallback = (cert, host, port) =>
-          certMatchesPin(cert, certPin);
-    }
-    return IOWebSocketChannel.connect(
-      Uri.parse(url),
-      headers: headers,
-      customClient: client,
-    );
+  // Give both socket establishment and the complete HTTP Upgrade a deadline.
+  final client = HttpClient()..connectionTimeout = connectTimeout;
+  if (hasProxy) {
+    socks.SocksTCPClient.assignToHttpClient(client, [
+      socks.ProxySettings(
+        InternetAddress(proxyHost),
+        proxyPort,
+        username: proxyUser,
+        password: proxyPass,
+      ),
+    ]);
   }
-  return IOWebSocketChannel.connect(Uri.parse(url), headers: headers);
+  if (certPin != null) {
+    client.badCertificateCallback = (cert, host, port) =>
+        certMatchesPin(cert, certPin);
+  }
+  // Close owned HTTP connections after the attempt. The platform may finish
+  // cancelling a pending TLS handshake later; ready must still fail on time.
+  // Upgraded sockets are detached and remain usable after HttpClient closes.
+  final connection = WebSocket.connect(
+    url,
+    headers: headers,
+    customClient: client,
+  ).timeout(connectTimeout).whenComplete(() => client.close(force: true));
+  return IOWebSocketChannel(connection);
 }
 
 /// Constant-time check that [cert]'s DER hashes to [pin] (the rzv cert pin

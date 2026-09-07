@@ -64,6 +64,8 @@ class CodexScreenState extends State<CodexScreen> {
 
   /// Reuses this screen's controller and connection for a notification target.
   Future<void> openThread(String threadId) async {
+    _scaffoldKey.currentState?.closeDrawer();
+    _scaffoldKey.currentState?.closeEndDrawer();
     await widget.controller.openThread(threadId);
     if (!mounted) return;
     _showPendingSideChat();

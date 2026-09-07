@@ -28,6 +28,55 @@ const _serverB = MotifServer(
 );
 
 void main() {
+  test('response body stalls expire and safe reads recover', () async {
+    final body = StreamController<List<int>>();
+    final fixture = _PoolFixture(_serverA, stalledBody: body.stream);
+    addTearDown(() async {
+      unawaited(body.close());
+      await fixture.dispose();
+    });
+    final handle = fixture.pool.acquire(
+      ownerId: 'home',
+      ownerKind: ConnectionOwnerKind.serverHome,
+    );
+    final response = await handle
+        .send(
+          const ServerHttpRequest(
+            method: 'GET',
+            path: '/stalled',
+            retry: RpcRetryPolicy.safeOnce,
+            timeout: Duration(milliseconds: 20),
+          ),
+        )
+        .timeout(const Duration(seconds: 1));
+    expect(response.statusCode, 200);
+    expect(fixture.resolveCalls, 2);
+    expect(fixture.clients.first.closeCount, 1);
+  });
+
+  test(
+    'reconnect does not wait indefinitely for an old WebSocket close',
+    () async {
+      final fixture = _PoolFixture(_serverA);
+      final gate = Completer<void>();
+      addTearDown(() async {
+        if (!gate.isCompleted) gate.complete();
+        await fixture.dispose();
+      });
+      final handle = fixture.pool.acquire(
+        ownerId: 'codex',
+        ownerKind: ConnectionOwnerKind.codex,
+      );
+      await handle.openWebSocket(
+        const ServerWebSocketRequest(path: '/ws/codex'),
+      );
+      fixture.sockets.single.closeGate = gate.future;
+      await fixture.pool.reconnect().timeout(const Duration(seconds: 1));
+      expect(fixture.resolveCalls, 2);
+      expect(fixture.pool.snapshot.phase, ServerConnectionPoolPhase.ready);
+    },
+  );
+
   test('same-server handles share one HTTP generation', () async {
     final fixture = _PoolFixture(_serverA);
     addTearDown(fixture.dispose);
@@ -403,6 +452,7 @@ final class _PoolFixture {
     this.resolveGate,
     this.failPath,
     this.failuresRemaining = 0,
+    this.stalledBody,
   }) {
     pool = DefaultServerConnectionPool(
       serverId: server.id,
@@ -415,9 +465,15 @@ final class _PoolFixture {
       stopForwarder: (_) async {},
       forgetLearnedRoute: (_) {},
       healthTtl: const Duration(minutes: 1),
+      webSocketCloseTimeout: const Duration(milliseconds: 20),
       httpClientFactory: (_, _) {
         late final _RecordingClient client;
         client = _RecordingClient((request) async {
+          if (request.url.path == '/stalled' && stalledBody != null) {
+            final body = stalledBody!;
+            stalledBody = null;
+            return http.StreamedResponse(body, 200);
+          }
           if (request.url.path == failPath && failuresRemaining > 0) {
             failuresRemaining--;
             throw http.ClientException('connection reset', request.url);
@@ -462,6 +518,7 @@ final class _PoolFixture {
   final Future<void>? resolveGate;
   final String? failPath;
   int failuresRemaining;
+  Stream<List<int>>? stalledBody;
   int pingFailuresRemaining = 0;
   late final DefaultServerConnectionPool pool;
   int resolveCalls = 0;
@@ -496,6 +553,7 @@ final class _FakeWebSocket
     implements WebSocketChannel {
   _FakeWebSocket() {
     sink = _FakeSink(() async {
+      await closeGate;
       closed = true;
       if (!_incoming.isClosed) await _incoming.close();
     });
@@ -503,6 +561,7 @@ final class _FakeWebSocket
 
   final StreamController<Object?> _incoming = StreamController<Object?>();
   bool closed = false;
+  Future<void>? closeGate;
 
   Future<void> closeFromServer() async {
     closed = true;
