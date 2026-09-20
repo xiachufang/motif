@@ -117,8 +117,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   String _asrBase = '';
   String _lastAsrText = '';
   int _voiceSession = 0;
-  Timer? _recordingTimer;
-  Duration _recordingDuration = Duration.zero;
 
   @override
   void initState() {
@@ -148,7 +146,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _voiceSession += 1;
-    _recordingTimer?.cancel();
     if (_recording || _voiceBusy) {
       unawaited(widget.speechService?.stop());
     }
@@ -252,7 +249,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
             _voiceBusy = false;
             _recording = false;
           });
-          _stopRecordingClock();
           showMotifToast(context, 'Voice input: $error');
         },
       );
@@ -261,22 +257,14 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
         _voiceBusy = false;
         _recording = true;
       });
-      _startRecordingClock();
     } catch (error) {
       if (!mounted || session != _voiceSession) return;
       setState(() {
         _voiceBusy = false;
         _recording = false;
       });
-      _stopRecordingClock();
       showMotifToast(context, 'Voice input unavailable: $error');
     }
-  }
-
-  Future<void> _cancelVoiceInput() async {
-    _ignoreVoiceFinal = true;
-    _replaceAsrText(_asrBase);
-    await _stopVoiceInput();
   }
 
   Future<void> _stopVoiceInput() async {
@@ -302,26 +290,9 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
           _voiceBusy = false;
           _recording = false;
         });
-        _stopRecordingClock();
         _ignoreVoiceFinal = false;
       }
     }
-  }
-
-  void _startRecordingClock() {
-    _recordingTimer?.cancel();
-    _recordingDuration = Duration.zero;
-    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      setState(() {
-        _recordingDuration = Duration(seconds: timer.tick);
-      });
-    });
-  }
-
-  void _stopRecordingClock() {
-    _recordingTimer?.cancel();
-    _recordingTimer = null;
   }
 
   void _replaceAsrText(String text) {
@@ -540,7 +511,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                               widget.speechService?.isAvailable == true,
                           recording: _recording,
                           voiceBusy: _voiceBusy,
-                          recordingDuration: _recordingDuration,
                           attachments: _attachments,
                           references: _references,
                           onAddImages: _pickImages,
@@ -551,7 +521,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                           onToggleGoal: _toggleGoalMode,
                           onTogglePlan: _togglePlanMode,
                           onRemoveGoal: _removeGoal,
-                          onCancelVoiceInput: _cancelVoiceInput,
                           onToggleVoiceInput: _toggleVoiceInput,
                           onSubmit: _submit,
                         ),
@@ -678,8 +647,17 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   }
 
   Future<void> _submit() async {
+    if (_voiceBusy) return;
     final submittingState = widget.state;
     final submittingThreadId = submittingState.selectedThread?.id;
+    if (_recording) {
+      await _stopVoiceInput();
+      if (!mounted ||
+          !identical(widget.state, submittingState) ||
+          widget.state.selectedThread?.id != submittingThreadId) {
+        return;
+      }
+    }
     final text = _composer.text;
     final attachments = _attachments;
     final references = _references;
@@ -3057,7 +3035,6 @@ class _Composer extends StatelessWidget {
     required this.voiceAvailable,
     required this.recording,
     required this.voiceBusy,
-    required this.recordingDuration,
     required this.attachments,
     required this.references,
     required this.onAddImages,
@@ -3068,7 +3045,6 @@ class _Composer extends StatelessWidget {
     required this.onToggleGoal,
     required this.onTogglePlan,
     required this.onRemoveGoal,
-    required this.onCancelVoiceInput,
     required this.onToggleVoiceInput,
     required this.onSubmit,
     super.key,
@@ -3080,7 +3056,6 @@ class _Composer extends StatelessWidget {
   final bool voiceAvailable;
   final bool recording;
   final bool voiceBusy;
-  final Duration recordingDuration;
   final List<CodexPendingAttachment> attachments;
   final List<CodexComposerReference> references;
   final Future<void> Function() onAddImages;
@@ -3091,7 +3066,6 @@ class _Composer extends StatelessWidget {
   final VoidCallback onToggleGoal;
   final VoidCallback onTogglePlan;
   final VoidCallback onRemoveGoal;
-  final Future<void> Function() onCancelVoiceInput;
   final Future<void> Function() onToggleVoiceInput;
   final Future<void> Function() onSubmit;
 
@@ -3159,44 +3133,66 @@ class _Composer extends StatelessWidget {
                   },
                 ),
               },
-              child: TextField(
-                key: const ValueKey('codex-composer-input'),
-                controller: controller,
-                focusNode: focusNode,
-                style: CodexType.body.copyWith(color: c.textPrimary),
-                minLines: 2,
-                maxLines: 8,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintStyle: CodexType.body.copyWith(color: c.textTertiary),
-                  hintText: state.goalModeEnabled
-                      ? state.goal == null
-                            ? 'Describe your goal'
-                            : 'Update your goal'
-                      : state.queueMessagesWhileActive &&
-                            (turnActive ||
-                                state.projectedExternalActiveTurn != null)
-                      ? 'Queue a message for the next turn'
-                      : 'Do anything',
-                  border: const OutlineInputBorder(
-                    borderRadius: BorderRadius.all(
-                      Radius.circular(MotifRadius.sm),
+              child: Stack(
+                children: [
+                  TextField(
+                    key: const ValueKey('codex-composer-input'),
+                    controller: controller,
+                    focusNode: focusNode,
+                    style: CodexType.body.copyWith(color: c.textPrimary),
+                    minLines: 2,
+                    maxLines: 8,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      contentPadding: voiceAvailable
+                          ? const EdgeInsets.fromLTRB(
+                              MotifSpacing.md,
+                              MotifSpacing.md,
+                              MotifControlSize.sm + MotifSpacing.md * 2,
+                              MotifSpacing.md,
+                            )
+                          : null,
+                      hintStyle: CodexType.body.copyWith(color: c.textTertiary),
+                      hintText: state.goalModeEnabled
+                          ? state.goal == null
+                                ? 'Describe your goal'
+                                : 'Update your goal'
+                          : state.queueMessagesWhileActive &&
+                                (turnActive ||
+                                    state.projectedExternalActiveTurn != null)
+                          ? 'Queue a message for the next turn'
+                          : 'Do anything',
+                      border: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(
+                          Radius.circular(MotifRadius.sm),
+                        ),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(
+                          Radius.circular(MotifRadius.sm),
+                        ),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: const OutlineInputBorder(
+                        borderRadius: BorderRadius.all(
+                          Radius.circular(MotifRadius.sm),
+                        ),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
-                    borderSide: BorderSide.none,
                   ),
-                  enabledBorder: const OutlineInputBorder(
-                    borderRadius: BorderRadius.all(
-                      Radius.circular(MotifRadius.sm),
+                  if (voiceAvailable)
+                    Positioned(
+                      right: MotifSpacing.xs,
+                      bottom: MotifSpacing.xs,
+                      child: _VoiceInputButton(
+                        recording: recording,
+                        busy: voiceBusy,
+                        onPressed: onToggleVoiceInput,
+                      ),
                     ),
-                    borderSide: BorderSide.none,
-                  ),
-                  focusedBorder: const OutlineInputBorder(
-                    borderRadius: BorderRadius.all(
-                      Radius.circular(MotifRadius.sm),
-                    ),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
+                ],
               ),
             ),
           ),
@@ -3205,7 +3201,8 @@ class _Composer extends StatelessWidget {
             valueListenable: controller,
             builder: (context, value, _) => LayoutBuilder(
               builder: (context, constraints) {
-                final stopActiveTurn = turnActive && value.text.trim().isEmpty;
+                final stopActiveTurn =
+                    turnActive && value.text.trim().isEmpty && !recording;
                 final compactActions = constraints.maxWidth < 540;
                 final add = _ComposerAddButton(
                   state: state,
@@ -3234,7 +3231,10 @@ class _Composer extends StatelessWidget {
                       ? 'Queue message'
                       : 'Send',
                   onPressed:
-                      state.sending || state.goalLoading || state.queueBusy
+                      state.sending ||
+                          state.goalLoading ||
+                          state.queueBusy ||
+                          voiceBusy
                       ? null
                       : stopActiveTurn
                       ? state.interruptActiveTurn
@@ -3275,40 +3275,6 @@ class _Composer extends StatelessWidget {
                           ),
                   ),
                 );
-                final voice = voiceAvailable && !recording
-                    ? IconButton(
-                        key: const ValueKey('codex-voice-input'),
-                        tooltip: voiceBusy
-                            ? 'Starting voice input'
-                            : 'Voice input',
-                        onPressed: voiceBusy
-                            ? null
-                            : () => unawaited(onToggleVoiceInput()),
-                        style: context.iconButtonStyle(
-                          foregroundColor: c.textPrimary,
-                          backgroundColor: Colors.transparent,
-                          fixedSize: const Size.square(MotifControlSize.sm),
-                          minimumSize: const Size.square(MotifControlSize.sm),
-                        ),
-                        icon: voiceBusy
-                            ? SizedBox.square(
-                                dimension: MotifIconSize.md,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: c.textSecondary,
-                                ),
-                              )
-                            : const Icon(Icons.mic_none_rounded),
-                      )
-                    : null;
-                final recordingControls = recording
-                    ? _VoiceRecordingControls(
-                        duration: recordingDuration,
-                        busy: voiceBusy,
-                        onCancel: onCancelVoiceInput,
-                        onConfirm: onToggleVoiceInput,
-                      )
-                    : null;
                 if (compactActions) {
                   return Row(
                     children: [
@@ -3319,22 +3285,14 @@ class _Composer extends StatelessWidget {
                           child: selections,
                         ),
                       ),
-                      if (recordingControls != null)
-                        recordingControls
-                      else ...[
-                        ConstrainedBox(
-                          constraints: BoxConstraints(
-                            maxWidth: constraints.maxWidth * 0.46,
-                          ),
-                          child: _ModelSettingsSelector(state: state),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: constraints.maxWidth * 0.46,
                         ),
-                        const SizedBox(width: MotifSpacing.xs),
-                        if (voice != null) ...[
-                          voice,
-                          const SizedBox(width: MotifSpacing.xs),
-                        ],
-                        send,
-                      ],
+                        child: _ModelSettingsSelector(state: state),
+                      ),
+                      const SizedBox(width: MotifSpacing.xs),
+                      send,
                     ],
                   );
                 }
@@ -3343,17 +3301,9 @@ class _Composer extends StatelessWidget {
                     add,
                     selections,
                     const Spacer(),
-                    if (recordingControls != null)
-                      recordingControls
-                    else ...[
-                      _ModelSettingsSelector(state: state),
-                      const SizedBox(width: MotifSpacing.xs),
-                      if (voice != null) ...[
-                        voice,
-                        const SizedBox(width: MotifSpacing.xs),
-                      ],
-                      send,
-                    ],
+                    _ModelSettingsSelector(state: state),
+                    const SizedBox(width: MotifSpacing.xs),
+                    send,
                   ],
                 );
               },
@@ -3379,64 +3329,105 @@ class _Composer extends StatelessWidget {
   }
 }
 
-class _VoiceRecordingControls extends StatelessWidget {
-  const _VoiceRecordingControls({
-    required this.duration,
+class _VoiceInputButton extends StatefulWidget {
+  const _VoiceInputButton({
+    required this.recording,
     required this.busy,
-    required this.onCancel,
-    required this.onConfirm,
+    required this.onPressed,
   });
 
-  final Duration duration;
+  final bool recording;
   final bool busy;
-  final Future<void> Function() onCancel;
-  final Future<void> Function() onConfirm;
+  final Future<void> Function() onPressed;
+
+  @override
+  State<_VoiceInputButton> createState() => _VoiceInputButtonState();
+}
+
+class _VoiceInputButtonState extends State<_VoiceInputButton>
+    with SingleTickerProviderStateMixin {
+  late final _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 650),
+  );
+  late final _scale = Tween<double>(
+    begin: 1,
+    end: 0.84,
+  ).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _updatePulse();
+  }
+
+  @override
+  void didUpdateWidget(covariant _VoiceInputButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _updatePulse();
+  }
+
+  void _updatePulse() {
+    if (widget.recording &&
+        !widget.busy &&
+        !MediaQuery.disableAnimationsOf(context)) {
+      if (!_pulse.isAnimating) _pulse.repeat(reverse: true);
+    } else {
+      _pulse.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    final minutes = duration.inMinutes.toString().padLeft(2, '0');
-    final seconds = (duration.inSeconds % 60).toString().padLeft(2, '0');
-    return Row(
-      mainAxisSize: MainAxisSize.min,
+    return Stack(
+      alignment: Alignment.center,
       children: [
-        Text(
-          '$minutes:$seconds',
-          key: const ValueKey('codex-voice-duration'),
-          style: MotifType.mono.copyWith(color: c.textSecondary),
-        ),
-        const SizedBox(width: MotifSpacing.sm),
-        IconButton(
-          key: const ValueKey('codex-voice-cancel'),
-          tooltip: 'Cancel voice input',
-          onPressed: busy ? null : () => unawaited(onCancel()),
-          style: context.iconButtonStyle(
-            fixedSize: const Size.square(MotifControlSize.sm),
-            minimumSize: const Size.square(MotifControlSize.sm),
+        if (widget.recording)
+          IgnorePointer(
+            child: ScaleTransition(
+              key: const ValueKey('codex-voice-background-pulse'),
+              scale: _scale,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: c.accent,
+                  shape: BoxShape.circle,
+                ),
+                child: const SizedBox.square(dimension: MotifControlSize.sm),
+              ),
+            ),
           ),
-          icon: const Icon(Icons.close_rounded),
-        ),
-        const SizedBox(width: MotifSpacing.xs),
-        IconButton.filled(
+        IconButton(
           key: const ValueKey('codex-voice-input'),
-          tooltip: busy ? 'Finishing voice input' : 'Finish voice input',
-          onPressed: busy ? null : () => unawaited(onConfirm()),
+          tooltip: widget.recording
+              ? (widget.busy ? 'Finishing voice input' : 'Finish voice input')
+              : (widget.busy ? 'Starting voice input' : 'Voice input'),
+          onPressed: widget.busy ? null : () => unawaited(widget.onPressed()),
           style: context
               .iconButtonStyle(
+                foregroundColor: widget.recording
+                    ? c.textOnAccent
+                    : c.textPrimary,
+                backgroundColor: Colors.transparent,
                 fixedSize: const Size.square(MotifControlSize.sm),
                 minimumSize: const Size.square(MotifControlSize.sm),
               )
-              .copyWith(
-                foregroundColor: WidgetStatePropertyAll(c.textOnAccent),
-                backgroundColor: WidgetStatePropertyAll(c.accent),
-                shape: const WidgetStatePropertyAll(CircleBorder()),
-              ),
-          icon: busy
-              ? const SizedBox.square(
+              .copyWith(shape: const WidgetStatePropertyAll(CircleBorder())),
+          icon: widget.busy
+              ? SizedBox.square(
                   dimension: MotifIconSize.md,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: widget.recording ? c.textOnAccent : c.textSecondary,
+                  ),
                 )
-              : const Icon(Icons.check_rounded),
+              : const Icon(Icons.mic_none_rounded, size: MotifIconSize.md),
         ),
       ],
     );

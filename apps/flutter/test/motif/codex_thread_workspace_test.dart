@@ -280,25 +280,44 @@ void main() {
       final input = find.byKey(const ValueKey('codex-composer-input'));
       final voice = find.byKey(const ValueKey('codex-voice-input'));
       await tester.enterText(input, '已有内容');
+      final buttonSize = tester.getSize(voice);
+      final iconSize = tester.getSize(find.byIcon(Icons.mic_none_rounded));
       await tester.tap(voice);
       await tester.pump();
 
       expect(speech.starts, 1);
+      expect(find.byKey(const ValueKey('codex-voice-duration')), findsNothing);
+      expect(find.byKey(const ValueKey('codex-voice-cancel')), findsNothing);
+      expect(find.byIcon(Icons.mic_none_rounded), findsOneWidget);
+      final pulse = find.byKey(const ValueKey('codex-voice-background-pulse'));
+      final initialScale = tester.widget<ScaleTransition>(pulse).scale.value;
+      await tester.pump(const Duration(milliseconds: 650));
       expect(
-        find.byKey(const ValueKey('codex-voice-duration')),
-        findsOneWidget,
+        tester.widget<ScaleTransition>(pulse).scale.value,
+        lessThan(initialScale),
       );
-      expect(find.text('00:00'), findsOneWidget);
-      expect(find.byIcon(Icons.close_rounded), findsOneWidget);
-      expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+      expect(tester.getSize(voice), buttonSize);
+      expect(tester.getSize(find.byIcon(Icons.mic_none_rounded)), iconSize);
       expect(
-        find.byKey(const ValueKey('codex-model-settings-label')),
+        find.ancestor(
+          of: find.byIcon(Icons.mic_none_rounded),
+          matching: find.byType(ScaleTransition),
+        ),
         findsNothing,
       );
-      expect(find.byKey(const ValueKey('codex-send')), findsNothing);
+      await tester.pump(const Duration(milliseconds: 650));
+      expect(
+        tester.widget<ScaleTransition>(pulse).scale.value,
+        closeTo(initialScale, 0.01),
+      );
+      expect(
+        find.byKey(const ValueKey('codex-model-settings-label')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('codex-send')), findsOneWidget);
 
       await tester.pump(const Duration(seconds: 2));
-      expect(find.text('00:02'), findsOneWidget);
+      expect(find.text('00:02'), findsNothing);
 
       speech.emitPartial('中间结果');
       await tester.pump();
@@ -308,6 +327,9 @@ void main() {
       await tester.pump();
 
       expect(speech.stops, 1);
+      expect(pulse, findsNothing);
+      expect(tester.getSize(voice), buttonSize);
+      expect(tester.getSize(find.byIcon(Icons.mic_none_rounded)), iconSize);
       expect(tester.widget<TextField>(input).controller?.text, '已有内容 最终结果');
       expect(
         find.byKey(const ValueKey('codex-model-settings-label')),
@@ -319,11 +341,11 @@ void main() {
       await tester.pump();
       speech.emitPartial('不要保留');
       await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('codex-voice-cancel')));
+      await tester.enterText(input, '手动修改');
       await tester.pump();
 
       expect(speech.stops, 2);
-      expect(tester.widget<TextField>(input).controller?.text, '已有内容 最终结果');
+      expect(tester.widget<TextField>(input).controller?.text, '手动修改');
 
       await tester.pumpWidget(const SizedBox.shrink());
       state.dispose();
@@ -4033,6 +4055,7 @@ final class WorkspaceFakeClient extends ChangeNotifier
     String name,
   ) async {
     renamedThreads.add((threadId: threadId, name: name));
+    if (thread.id == threadId) thread = codexThreadWithName(thread, name);
     return const CodexThreadSetNameResponse();
   }
 
@@ -4100,7 +4123,9 @@ final class WorkspaceFakeClient extends ChangeNotifier
       modelProvider: 'openai',
       reasoningEffort: const CodexReasoningEffort('high'),
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
-      thread: fork,
+      thread: params.excludeTurns == true
+          ? codexThreadWithTurns(fork, const [])
+          : fork,
     );
   }
 

@@ -1269,6 +1269,23 @@ void main() {
       ],
     );
     final client = FakeCodexClient(
+      turnPages: {
+        'forked-source': {
+          null: CodexThreadTurnsListResponse(
+            data: source.turns.reversed.toList(),
+            nextCursor: 'older-fork-page',
+          ),
+          'older-fork-page': const CodexThreadTurnsListResponse(
+            data: [
+              CodexTurn(
+                id: 'older-turn',
+                items: [],
+                status: CodexTurnStatus.completed,
+              ),
+            ],
+          ),
+        },
+      },
       projects: [testProject()],
       pages: {
         null: CodexThreadListResponse(
@@ -1291,6 +1308,7 @@ void main() {
     );
     expect(client.forkParams.single.threadId, 'source');
     expect(client.forkParams.single.lastTurnId, 'turn-1');
+    expect(client.forkParams.single.excludeTurns, isTrue);
     expect(state.selectedThread?.id, 'forked-source');
     expect(state.turns.single.id, 'turn-1');
     expect(state.catalog.projects.single.threads.map((thread) => thread.id), [
@@ -1300,6 +1318,10 @@ void main() {
       'after',
     ]);
 
+    expect(await state.loadOlderTurns(), isTrue);
+    expect(state.turns.map((turn) => turn.id), ['older-turn', 'turn-1']);
+    expect(client.turnListParams.last.threadId, 'forked-source');
+    expect(client.turnListParams.last.cursor, 'older-fork-page');
     await state.ensureThreadResumedForSend('forked-source');
     expect(client.resumedThreadIds, isEmpty);
     await state.close();
@@ -1344,6 +1366,12 @@ void main() {
     );
     expect(client.forkParams.single.threadId, source.id);
     expect(client.forkParams.single.lastTurnId, isNull);
+    expect(client.forkParams.single.excludeTurns, isTrue);
+    final forkPage = client.turnListParams.last;
+    expect(forkPage.threadId, 'forked-source');
+    expect(forkPage.limit, 10);
+    expect(forkPage.sortDirection, CodexSortDirection.desc);
+    expect(state.turns.any((turn) => turn.id == 'turn-1'), isTrue);
     expect(client.renamedThreads.single.threadId, 'forked-source');
     expect(client.renamedThreads.single.name, 'source 2');
     expect(state.selectedThread?.id, 'forked-source');
@@ -1359,6 +1387,47 @@ void main() {
 
     await state.close();
   });
+
+  test(
+    'fork history failure can retry without duplicating fork or send',
+    () async {
+      final source = thread(
+        'source',
+        turns: const [
+          CodexTurn(id: 'turn-1', items: [], status: CodexTurnStatus.completed),
+        ],
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [source]),
+        },
+      )..forkHistoryError = StateError('History temporarily unavailable');
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread(source.id);
+      expect(
+        await state.selectedConversation!.forkThreadAndSubmitMessage(
+          'Continue here',
+          const [],
+        ),
+        isTrue,
+      );
+      final fork = state.selectedConversation!;
+      expect(fork.selectedThread?.id, 'forked-source');
+      expect(fork.readError, contains('History temporarily unavailable'));
+      expect(client.startedParams.single.threadId, 'forked-source');
+
+      client.forkHistoryError = null;
+      await fork.retryRead();
+      expect(fork.readError, isNull);
+      expect(fork.turns.single.id, 'turn-1');
+      expect(client.forkParams, hasLength(1));
+      expect(client.startedParams, hasLength(1));
+      expect(client.resumedThreadIds, isEmpty);
+      await state.close();
+    },
+  );
 
   test('starts a thread in a project and opens it without resume', () async {
     final before = thread('before', updatedAt: 30);
@@ -2062,6 +2131,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<CodexThreadTurnsListParams> turnListParams = [];
   final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
   final List<CodexThreadForkParams> forkParams = [];
+  final Map<String, CodexThread> forkedThreads = {};
   final List<CodexThreadStartParams> startThreadParams = [];
   final List<String> unsubscribedThreadIds = [];
   final List<String> resumedThreadIds = [];
@@ -2080,6 +2150,7 @@ final class FakeCodexClient extends ChangeNotifier
   Completer<void>? unsubscribeGate;
   Object? listError;
   Object? resumeError;
+  Object? forkHistoryError;
   Completer<CodexTurnSteerResponse>? steerGate;
   bool closed = false;
   bool disposed = false;
@@ -2140,6 +2211,8 @@ final class FakeCodexClient extends ChangeNotifier
     String name,
   ) async {
     renamedThreads.add((threadId: threadId, name: name));
+    final fork = forkedThreads[threadId];
+    if (fork != null) forkedThreads[threadId] = codexThreadWithName(fork, name);
     return const CodexThreadSetNameResponse();
   }
 
@@ -2172,9 +2245,11 @@ final class FakeCodexClient extends ChangeNotifier
     readIncludeTurns.add(includeTurns);
     final gate = readGates[threadId];
     if (gate != null) return gate.future;
-    final original = pages.values
-        .expand((page) => page.data)
-        .firstWhere((thread) => thread.id == threadId);
+    final original =
+        forkedThreads[threadId] ??
+        pages.values
+            .expand((page) => page.data)
+            .firstWhere((thread) => thread.id == threadId);
     return CodexThreadReadResponse(thread: original);
   }
 
@@ -2183,11 +2258,17 @@ final class FakeCodexClient extends ChangeNotifier
     CodexThreadTurnsListParams params,
   ) async {
     turnListParams.add(params);
+    if (forkedThreads.containsKey(params.threadId) &&
+        forkHistoryError != null) {
+      throw forkHistoryError!;
+    }
     final configured = turnPages[params.threadId]?[params.cursor];
     if (configured != null) return configured;
-    final original = pages.values
-        .expand((page) => page.data)
-        .firstWhere((thread) => thread.id == params.threadId);
+    final original =
+        forkedThreads[params.threadId] ??
+        pages.values
+            .expand((page) => page.data)
+            .firstWhere((thread) => thread.id == params.threadId);
     return CodexThreadTurnsListResponse(
       data: original.turns.reversed.toList(growable: false),
     );
@@ -2207,6 +2288,7 @@ final class FakeCodexClient extends ChangeNotifier
       updatedAt: source.updatedAt,
       turns: source.turns,
     );
+    forkedThreads[fork.id] = fork;
     return CodexThreadForkResponse(
       approvalPolicy: const CodexAskForApproval('never'),
       approvalsReviewer: CodexApprovalsReviewer.user,
@@ -2214,7 +2296,9 @@ final class FakeCodexClient extends ChangeNotifier
       model: 'test',
       modelProvider: 'openai',
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
-      thread: fork,
+      thread: params.excludeTurns == true
+          ? codexThreadWithTurns(fork, const [])
+          : fork,
     );
   }
 
@@ -2275,9 +2359,11 @@ final class FakeCodexClient extends ChangeNotifier
       resumeError = null;
       throw error;
     }
-    final original = pages.values
-        .expand((page) => page.data)
-        .firstWhere((thread) => thread.id == threadId);
+    final original =
+        forkedThreads[threadId] ??
+        pages.values
+            .expand((page) => page.data)
+            .firstWhere((thread) => thread.id == threadId);
     return CodexThreadResumeResponse(
       approvalPolicy: const CodexAskForApproval('never'),
       approvalsReviewer: CodexApprovalsReviewer.user,

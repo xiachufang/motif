@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::{
     frame::coding::CloseCode as TungsteniteCloseCode, CloseFrame as TungsteniteCloseFrame,
+    WebSocketConfig,
 };
 use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
@@ -25,6 +26,14 @@ use crate::ws::AppState;
 #[derive(Debug, Default, Deserialize)]
 pub struct CodexQuery {
     pub token: Option<String>,
+}
+
+fn upstream_websocket_config() -> WebSocketConfig {
+    // History responses can exceed the default 16 MiB frame limit. Keep both
+    // the frame and total message bounded at the existing 64 MiB message limit.
+    WebSocketConfig::default()
+        .max_frame_size(Some(64 << 20))
+        .max_message_size(Some(64 << 20))
 }
 
 pub async fn codex_upgrade(
@@ -80,7 +89,13 @@ pub async fn codex_upgrade(
         }
     };
     let upstream_url = format!("ws://{address}");
-    let (upstream, _) = match tokio_tungstenite::client_async(upstream_url, tcp).await {
+    let (upstream, _) = match tokio_tungstenite::client_async_with_config(
+        upstream_url,
+        tcp,
+        Some(upstream_websocket_config()),
+    )
+    .await
+    {
         Ok(upstream) => upstream,
         Err(error) => {
             tracing::warn!(%address, %error, "codex app-server websocket handshake failed");
@@ -209,7 +224,7 @@ async fn proxy(
                     }
                 }
                 Some(Err(error)) => {
-                    tracing::debug!(%client_id, %error, "codex upstream websocket read failed");
+                    tracing::warn!(%client_id, %error, "codex upstream websocket read failed");
                     let _ = client_tx.send(close(1011, "codex app-server connection failed")).await;
                     break;
                 }
@@ -338,6 +353,37 @@ fn close(code: u16, reason: &'static str) -> AxumMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receives_large_history_frame_but_still_rejects_oversized_frames() {
+        use std::io::Cursor;
+        use tokio_tungstenite::tungstenite::{protocol::Role, Error, WebSocket};
+
+        // One unmasked server text frame, like the app-server history response.
+        let length = 17 * 1024 * 1024;
+        let mut frame = vec![0x81, 127];
+        frame.extend_from_slice(&(length as u64).to_be_bytes());
+        frame.resize(10 + length, b'x');
+        let mut default_socket =
+            WebSocket::from_raw_socket(Cursor::new(frame.clone()), Role::Client, None);
+        assert!(matches!(default_socket.read(), Err(Error::Capacity(_))));
+
+        let mut socket = WebSocket::from_raw_socket(
+            Cursor::new(frame),
+            Role::Client,
+            Some(upstream_websocket_config()),
+        );
+        assert_eq!(socket.read().unwrap().len(), length);
+
+        let mut oversized = vec![0x81, 127];
+        oversized.extend_from_slice(&(65_u64 << 20).to_be_bytes());
+        let mut socket = WebSocket::from_raw_socket(
+            Cursor::new(oversized),
+            Role::Client,
+            Some(upstream_websocket_config()),
+        );
+        assert!(matches!(socket.read(), Err(Error::Capacity(_))));
+    }
 
     #[test]
     fn preserves_data_and_control_frames_in_both_directions() {

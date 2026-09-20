@@ -914,10 +914,14 @@ class CodexConversationState extends ChangeNotifier {
     _notify();
     try {
       final response = await connection.forkThread(
-        CodexThreadForkParams(threadId: source.id, lastTurnId: lastTurnId),
+        CodexThreadForkParams(
+          threadId: source.id,
+          lastTurnId: lastTurnId,
+          excludeTurns: true,
+        ),
       );
       if (_closed) return false;
-      _openForkedThread(response, source: source);
+      await _openForkedThread(response, source: source);
       return true;
     } catch (error) {
       if (!_closed) forkError = '$error';
@@ -983,7 +987,7 @@ class CodexConversationState extends ChangeNotifier {
     _notify();
     try {
       final response = await connection.forkThread(
-        CodexThreadForkParams(threadId: source.id),
+        CodexThreadForkParams(threadId: source.id, excludeTurns: true),
       );
       if (_closed) return false;
 
@@ -998,7 +1002,10 @@ class CodexConversationState extends ChangeNotifier {
         // The fork is still usable if the optional display-name update fails.
       }
       if (_closed) return false;
-      final target = _openForkedThread(openedResponse, source: source);
+      final target = await _openForkedThread(openedResponse, source: source);
+      if (target._closed || target.selectedThread?.id != response.thread.id) {
+        return false;
+      }
       sending = false;
       _notify();
       return await target._sendMessageNow(message, steer: false);
@@ -1013,10 +1020,10 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
-  CodexConversationState _openForkedThread(
+  Future<CodexConversationState> _openForkedThread(
     CodexThreadForkResponse response, {
     required CodexThread source,
-  }) {
+  }) async {
     final thread = response.thread;
     _threads[thread.id] = thread;
     _resumedThreads[thread.id] = thread;
@@ -1055,7 +1062,11 @@ class CodexConversationState extends ChangeNotifier {
     _rebuildCatalog();
     _notify();
     unawaited(_loadThreadConfiguration(thread));
-    return didOpenForkedThread(response);
+    final target = didOpenForkedThread(response);
+    // Fork establishes the subscription, but omits the potentially huge history.
+    // Reuse the bounded initial page, cursor, and retry handling used on open.
+    await target.readThread(thread.id);
+    return target;
   }
 
   /// Hook for a catalog-owning subclass to adopt a newly started session.
