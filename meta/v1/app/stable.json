@@ -21,18 +21,18 @@
       "version": "1.0.78"
     },
     "windows-x86_64": {
-      "file": "Motif-flutter-1.0.78-61-windows-x86_64.tar.gz",
-      "publishedAt": "2026-09-20T04:07:58Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.78",
-      "sha256": "4bc532623b588982c17228fd852df3f84936220b2dac2033cfc3e2b13189d9cf",
-      "size": 21533110,
-      "tag": "v1.0.78",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.78/Motif-flutter-1.0.78-61-windows-x86_64.tar.gz",
-      "version": "1.0.78"
+      "file": "Motif-flutter-1.0.79-62-windows-x86_64.tar.gz",
+      "publishedAt": "2026-09-20T06:28:01Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.79",
+      "sha256": "27adaf88d42e3bad417509f711dab583c288caa360b016c8a06b4a5dbd3279ef",
+      "size": 21555049,
+      "tag": "v1.0.79",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.79/Motif-flutter-1.0.79-62-windows-x86_64.tar.gz",
+      "version": "1.0.79"
     }
   },
   "channel": "stable",
   "product": "app",
   "schema": 1,
-  "updatedAt": "2026-09-20T06:23:49Z"
+  "updatedAt": "2026-09-20T06:28:02Z"
 }
