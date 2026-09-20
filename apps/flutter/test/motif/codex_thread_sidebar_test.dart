@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,6 +11,8 @@ import 'package:motif/motif/ui/screens/codex_thread_sidebar.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'package:motif/motif/ui/widgets/codex_sidebar_components.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'fake_codex_queue.dart';
 
 void main() {
   test('CodexState owns independent in-memory sidebar chrome', () {
@@ -175,48 +176,51 @@ void main() {
       for (var index = 1; index <= 26; index++)
         thread(
           't$index',
+          projectId: 'p1',
           name: 'Thread $index',
           updatedAt: now - index,
           status: index == 1
               ? const CodexActiveThreadStatus(activeFlags: [])
               : const CodexNotLoadedThreadStatus(),
         ),
-      thread('p2-thread', name: 'Project two thread', updatedAt: now - 20),
-      thread('pin', name: 'Pinned thread', updatedAt: now - 30),
+      thread(
+        'p2-thread',
+        projectId: 'p2',
+        name: 'Project two thread',
+        updatedAt: now - 20,
+      ),
+      thread(
+        'pin',
+        projectId: 'p1',
+        name: 'Pinned thread',
+        updatedAt: now - 30,
+      ),
       thread('recent', name: 'Projectless thread', updatedAt: now - 40),
     ];
-    final global = CodexGlobalStateData.tryParse(
-      jsonEncode({
-        'local-projects': {
-          for (var index = 1; index <= 7; index++)
-            'p$index': {
-              'id': 'p$index',
-              'name': 'Project $index',
-              'rootPaths': ['/work/p$index'],
-            },
-        },
-        'project-order': [for (var index = 1; index <= 7; index++) 'p$index'],
-        'pinned-thread-ids': ['pin'],
-        'projectless-thread-ids': ['recent'],
-        'thread-project-assignments': {
-          for (var index = 1; index <= 26; index++)
-            't$index': {'projectKind': 'local', 'projectId': 'p1'},
-          'p2-thread': {'projectKind': 'local', 'projectId': 'p2'},
-          'pin': {'projectKind': 'local', 'projectId': 'p1'},
-        },
-        'sidebar-project-thread-orders': {
-          'p1': {
-            'threadIds': [for (var index = 1; index <= 26; index++) 't$index'],
-          },
-        },
-        'selected-project': {'type': 'local', 'projectId': 'p1'},
-      }),
-    );
+    final projects = [
+      for (var index = 1; index <= 7; index++)
+        CodexProject(
+          id: 'p$index',
+          name: 'Project $index',
+          roots: [
+            CodexProjectRoot(path: CodexV2AbsolutePathBuf('/work/p$index')),
+          ],
+          position: index,
+          metadata: const {},
+          createdAt: 0,
+          updatedAt: 0,
+        ),
+    ];
     final client = SidebarFakeClient({
       for (final thread in threads) thread.id: thread,
     });
     final state = CodexServiceState(serverId: 'server', connection: client)
-      ..catalog = buildCodexCatalog(threads, global)
+      ..catalog = buildCodexCatalog(
+        threads,
+        projects,
+        pinnedThreadIds: ['pin'],
+        selectedProjectId: 'p1',
+      )
       ..catalogPhase = CodexCatalogPhase.ready;
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -380,7 +384,12 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.runAsync(codexState.flushProjectSidebarPreferences);
     final restoredCodexState = CodexState(preferences: preferences);
-    state.catalog = buildCodexCatalog(threads, global);
+    state.catalog = buildCodexCatalog(
+      threads,
+      projects,
+      pinnedThreadIds: ['pin'],
+      selectedProjectId: 'p1',
+    );
     await tester.pumpWidget(buildSidebar(restoredCodexState));
     await tester.pump();
     expect(find.text('Project 7'), findsOneWidget);
@@ -420,10 +429,14 @@ void main() {
   testWidgets('project action starts and opens a thread in that cwd', (
     tester,
   ) async {
-    final project = const CodexLocalProject(
+    final project = const CodexProject(
       id: 'p1',
       name: 'Project 1',
-      rootPaths: ['/work/p1'],
+      roots: [CodexProjectRoot(path: CodexV2AbsolutePathBuf('/work/p1'))],
+      createdAt: 0,
+      updatedAt: 0,
+      metadata: {},
+      position: 0,
     );
     final client = SidebarFakeClient({});
     var createdThreads = 0;
@@ -436,7 +449,6 @@ void main() {
         pinnedThreadIds: const {},
         projectNamesByThreadId: const {},
         selectedProjectId: 'p1',
-        usesGlobalState: true,
       )
       ..catalogPhase = CodexCatalogPhase.ready;
 
@@ -471,10 +483,14 @@ void main() {
   testWidgets('project action loading indicator is vertically centered', (
     tester,
   ) async {
-    const project = CodexLocalProject(
+    const project = CodexProject(
       id: 'p1',
       name: 'Project 1',
-      rootPaths: ['/work/p1'],
+      roots: [CodexProjectRoot(path: CodexV2AbsolutePathBuf('/work/p1'))],
+      createdAt: 0,
+      updatedAt: 0,
+      metadata: {},
+      position: 0,
     );
     final state =
         CodexServiceState(serverId: 'server', connection: SidebarFakeClient({}))
@@ -486,7 +502,6 @@ void main() {
             pinnedThreadIds: {},
             projectNamesByThreadId: {},
             selectedProjectId: 'p1',
-            usesGlobalState: true,
           )
           ..catalogPhase = CodexCatalogPhase.ready
           ..creatingProjectId = 'p1';
@@ -571,7 +586,7 @@ void main() {
     final active = thread('managed', name: 'Managed thread', updatedAt: 20);
     final client = SidebarFakeClient({'managed': active});
     final state = CodexServiceState(serverId: 'server', connection: client)
-      ..catalog = buildCodexCatalog([active], null)
+      ..catalog = buildCodexCatalog([active], const [])
       ..catalogPhase = CodexCatalogPhase.ready;
     await state.refreshCatalog();
 
@@ -691,7 +706,7 @@ void main() {
       checkout.id: checkout,
     });
     final state = CodexServiceState(serverId: 'server', connection: client)
-      ..catalog = buildCodexCatalog([worktree, checkout], null)
+      ..catalog = buildCodexCatalog([worktree, checkout], const [])
       ..catalogPhase = CodexCatalogPhase.ready;
 
     await tester.pumpWidget(
@@ -744,6 +759,7 @@ void main() {
 }
 
 final class SidebarFakeClient extends ChangeNotifier
+    with FakeCodexQueue
     implements CodexAppServerClient {
   SidebarFakeClient(this.threads, {Map<String, CodexThread>? archivedThreads})
     : archivedThreads = archivedThreads ?? {};
@@ -782,6 +798,11 @@ final class SidebarFakeClient extends ChangeNotifier
 
   @override
   Future<void> retry() async {}
+
+  @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) async => const CodexProjectListResponse(data: []);
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -871,6 +892,7 @@ final class SidebarFakeClient extends ChangeNotifier
     startThreadParams.add(params);
     final projectless = params.cwd == null;
     final created = CodexThread(
+      projectId: params.projectId,
       cliVersion: 'test',
       createdAt: 100,
       cwd: CodexV2AbsolutePathBuf(params.cwd ?? ''),
@@ -1011,11 +1033,13 @@ final class SidebarFakeClient extends ChangeNotifier
 
 CodexThread thread(
   String id, {
+  String? projectId,
   required String name,
   required int updatedAt,
   String cwd = '/work/motif',
   CodexThreadStatus status = const CodexNotLoadedThreadStatus(),
 }) => CodexThread(
+  projectId: projectId,
   cliVersion: 'test',
   createdAt: updatedAt,
   cwd: CodexV2AbsolutePathBuf(cwd),

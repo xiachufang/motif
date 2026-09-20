@@ -5,11 +5,136 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
+import 'package:motif/motif/codex/codex_composer_models.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
 import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 
+import 'fake_codex_queue.dart';
+
 void main() {
+  test(
+    'loads all project pages and applies server assignment changes',
+    () async {
+      final assigned = thread('assigned', projectId: 'second');
+      final unassigned = thread('unassigned', projectId: null);
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [assigned, unassigned]),
+        },
+        projectPages: {
+          null: CodexProjectListResponse(
+            data: [testProject(id: 'first')],
+            nextCursor: 'page2',
+          ),
+          'page2': CodexProjectListResponse(
+            data: [testProject(id: 'second', position: 1)],
+          ),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.projectListParams.map((p) => p.cursor), [null, 'page2']);
+      expect(state.catalog.projects.map((g) => g.project.id), [
+        'first',
+        'second',
+      ]);
+      expect(state.catalog.projects.last.threads.single.id, 'assigned');
+      expect(state.catalog.projectlessThreads.single.id, 'unassigned');
+      await state.readThread('assigned');
+      client.emit(
+        const CodexThreadProjectUpdatedNotification2(
+          params: CodexThreadProjectUpdatedNotification(
+            threadId: 'assigned',
+            projectId: 'first',
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(state.catalog.projects.first.threads.single.id, 'assigned');
+      expect(state.selectedThread?.projectId, 'first');
+      client.emit(
+        const CodexThreadProjectUpdatedNotification2(
+          params: CodexThreadProjectUpdatedNotification(
+            threadId: 'assigned',
+            projectId: null,
+          ),
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(state.catalog.projects.every((g) => g.threads.isEmpty), isTrue);
+      expect(state.selectedThread?.projectId, isNull);
+      await state.close();
+    },
+  );
+
+  test(
+    'project changes refresh names and deletions without cwd fallback',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('member')]),
+        },
+        projects: [testProject()],
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      client.projects = [testProject(name: 'Renamed')];
+      client.emit(
+        CodexServerNotification.fromJson({
+          'method': 'project/changed',
+          'params': {'projectId': 'motif', 'changeType': 'updated'},
+        }),
+      );
+      await waitFor(
+        () => state.catalog.projects.single.project.name == 'Renamed',
+      );
+      client.projects = [];
+      client.emit(
+        CodexServerNotification.fromJson({
+          'method': 'project/changed',
+          'params': {'projectId': 'motif', 'changeType': 'deleted'},
+        }),
+      );
+      await waitFor(() => state.catalog.projects.isEmpty);
+      expect(state.catalog.projectlessThreads.single.id, 'member');
+      await state.close();
+    },
+  );
+
+  test(
+    'project API failures are surfaced instead of fabricating cwd projects',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('member')]),
+        },
+      )..projectError = StateError('project/list unavailable');
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.failed);
+      expect(state.catalogError, contains('project/list unavailable'));
+      expect(state.catalog.projects, isEmpty);
+      client.projectError = null;
+      client.projectPages = {
+        null: CodexProjectListResponse(
+          data: [testProject()],
+          nextCursor: 'repeat',
+        ),
+        'repeat': const CodexProjectListResponse(
+          data: [],
+          nextCursor: 'repeat',
+        ),
+      };
+      await state.refreshCatalog();
+      expect(state.catalogPhase, CodexCatalogPhase.failed);
+      expect(state.catalogError, contains('Repeated project/list cursor'));
+      await state.close();
+    },
+  );
+
   test('uses a five-minute external-active lease by default', () async {
     final state = CodexConversationState(
       serverId: 'server',
@@ -38,22 +163,8 @@ void main() {
             nextCursor: 'next',
           ),
         },
-        globalState: jsonEncode({
-          'local-projects': {
-            'motif': {
-              'id': 'motif',
-              'name': 'Motif',
-              'rootPaths': ['/work/motif'],
-            },
-          },
-          'project-order': ['motif'],
-          'pinned-thread-ids': ['second'],
-          'projectless-thread-ids': <String>[],
-          'thread-project-assignments': {
-            'first': {'projectKind': 'local', 'projectId': 'motif'},
-            'second': {'projectKind': 'local', 'projectId': 'motif'},
-          },
-        }),
+        projects: [testProject()],
+        pinnedThreadIds: ['second'],
       );
       final state = CodexServiceState(serverId: 'server', connection: client);
 
@@ -98,22 +209,7 @@ void main() {
 
       final listCallsBeforeChange = client.listParams.length;
       final readsBeforeChange = client.readPaths.length;
-      client.globalState = jsonEncode({
-        'local-projects': {
-          'motif': {
-            'id': 'motif',
-            'name': 'Motif',
-            'rootPaths': ['/work/motif'],
-          },
-        },
-        'project-order': ['motif'],
-        'pinned-thread-ids': ['first'],
-        'projectless-thread-ids': <String>[],
-        'thread-project-assignments': {
-          'first': {'projectKind': 'local', 'projectId': 'motif'},
-          'second': {'projectKind': 'local', 'projectId': 'motif'},
-        },
-      });
+      client.pinnedThreadIds = ['first'];
       client.emit(
         const CodexFsChangedNotification2(
           params: CodexFsChangedNotification(
@@ -356,7 +452,20 @@ void main() {
     );
     client.pages[null] = CodexThreadListResponse(data: [changed]);
 
+    client.serverQueues['thread'] = const [
+      CodexQueuedSubmission(
+        id: 'external-queue',
+        clientUserMessageId: 'external-client-message',
+        input: [CodexTextUserInput(text: 'Queued in another client')],
+      ),
+    ];
+
     await waitFor(() => state.turns.length == 2);
+    await waitFor(() => state.selectedConversation!.queuedMessages.length == 1);
+    expect(
+      state.selectedConversation!.queuedMessages.single.id,
+      'external-queue',
+    );
     expect(client.readThreadIds.length, greaterThanOrEqualTo(3));
     expect(
       (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
@@ -1160,6 +1269,7 @@ void main() {
       ],
     );
     final client = FakeCodexClient(
+      projects: [testProject()],
       pages: {
         null: CodexThreadListResponse(
           data: [
@@ -1258,28 +1368,8 @@ void main() {
       pages: {
         null: CodexThreadListResponse(data: [before, current, after]),
       },
-      globalState: jsonEncode({
-        'local-projects': {
-          'motif': {
-            'id': 'motif',
-            'name': 'Motif',
-            'rootPaths': ['/work/motif'],
-          },
-        },
-        'project-order': ['motif'],
-        'pinned-thread-ids': <String>[],
-        'projectless-thread-ids': <String>[],
-        'thread-project-assignments': {
-          'before': {'projectKind': 'local', 'projectId': 'motif'},
-          'current': {'projectKind': 'local', 'projectId': 'motif'},
-          'after': {'projectKind': 'local', 'projectId': 'motif'},
-        },
-        'sidebar-project-thread-orders': {
-          'motif': {
-            'threadIds': ['before', 'current', 'after'],
-          },
-        },
-      }),
+      projects: [testProject()],
+      pinnedThreadIds: [],
     );
     final state = CodexServiceState(serverId: 'server', connection: client);
     await state.start();
@@ -1309,6 +1399,7 @@ void main() {
       isTrue,
     );
     expect(client.startThreadParams.single.cwd, '/work/motif');
+    expect(client.startThreadParams.single.projectId, 'motif');
     expect(client.startThreadParams.single.model, 'codex-test');
     expect(client.startThreadParams.single.permissions, 'full-access');
     expect(state.selectedThread?.id, 'new-thread');
@@ -1362,28 +1453,8 @@ void main() {
         pages: {
           null: CodexThreadListResponse(data: [before, current, after]),
         },
-        globalState: jsonEncode({
-          'local-projects': {
-            'motif': {
-              'id': 'motif',
-              'name': 'Motif',
-              'rootPaths': ['/work/motif'],
-            },
-          },
-          'project-order': ['motif'],
-          'pinned-thread-ids': <String>[],
-          'projectless-thread-ids': <String>[],
-          'thread-project-assignments': {
-            'before': {'projectKind': 'local', 'projectId': 'motif'},
-            'current': {'projectKind': 'local', 'projectId': 'motif'},
-            'after': {'projectKind': 'local', 'projectId': 'motif'},
-          },
-          'sidebar-project-thread-orders': {
-            'motif': {
-              'threadIds': ['before', 'current', 'after'],
-            },
-          },
-        }),
+        projects: [testProject()],
+        pinnedThreadIds: [],
       );
       final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
@@ -1660,13 +1731,13 @@ void main() {
   );
 
   test(
-    'queues during an active turn and shows steer before confirmation',
+    'queue persists through reopening and changes from another client',
     () async {
       final active = thread(
         'thread',
         turns: const [
           CodexTurn(
-            id: 'turn-1',
+            id: 'active',
             items: [],
             status: CodexTurnStatus.inProgress,
           ),
@@ -1677,75 +1748,89 @@ void main() {
           null: CodexThreadListResponse(data: [active]),
         },
       );
-      final state = CodexServiceState(serverId: 'server', connection: client);
-      await state.start();
-      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
-      await state.readThread('thread');
+      final state =
+          CodexConversationState(
+              serverId: 'server',
+              connection: client,
+              connectionLease: const CodexSharedConnectionLease(),
+            )
+            ..selectedThread = active
+            ..turns = active.turns;
       state.setQueueing(true);
-
       expect(await state.submitMessage('queued', const []), isTrue);
-      expect(state.queuedMessages.single.text, 'queued');
-      expect(client.resumedThreadIds, ['thread']);
-
-      final steerGate = Completer<CodexTurnSteerResponse>();
-      client.steerGate = steerGate;
-      final steer = state.steerQueuedMessage(state.queuedMessages.single.id);
-      await waitFor(() => client.steeredParams.isNotEmpty);
-
-      final params = client.steeredParams.single;
-      final clientId = params.clientUserMessageId;
-      expect(clientId, isNotNull);
-      final optimistic = state.activeTurn!.items
-          .whereType<CodexUserMessageThreadItem>()
-          .single;
-      expect(optimistic.clientId, clientId);
-      expect((optimistic.content.single as CodexTextUserInput).text, 'queued');
-      expect(state.queuedMessages, hasLength(1));
-
+      expect(state.queuedMessages.single.id, 'server-queue-1');
+      expect(client.queueAdds.single.clientUserMessageId, startsWith('motif-'));
+      expect(client.resumedThreadIds, isEmpty);
+      expect(client.startedParams, isEmpty);
+      await state.close();
+      final restored = CodexConversationState(
+        serverId: 'server',
+        connection: client,
+      )..selectedThread = active;
+      await restored.refreshQueue();
+      expect(restored.queuedMessages.single.text, 'queued');
+      client.serverQueues['thread'] = [queueItem('remote', 'from desktop')];
       client.emit(
-        CodexItemStartedNotification2(
-          params: CodexItemStartedNotification(
-            item: CodexUserMessageThreadItem(
-              clientId: clientId,
-              content: const [CodexTextUserInput(text: 'queued')],
-              id: 'server-user-message',
-            ),
-            startedAtMs: 1,
-            threadId: 'thread',
-            turnId: 'turn-1',
-          ),
+        const CodexThreadQueueChangedNotification2(
+          params: CodexThreadQueueChangedNotification(threadId: 'thread'),
         ),
       );
-      await waitFor(
-        () =>
-            state.activeTurn!.items
-                .whereType<CodexUserMessageThreadItem>()
-                .single
-                .id ==
-            'server-user-message',
-      );
-      expect(
-        state.activeTurn!.items.whereType<CodexUserMessageThreadItem>(),
-        hasLength(1),
-      );
+      await waitFor(() => restored.queuedMessages.single.id == 'remote');
+      expect(restored.queuedMessages.single.text, 'from desktop');
+      await restored.close();
+    },
+  );
 
-      steerGate.complete(const CodexTurnSteerResponse(turnId: 'turn-1'));
-      expect(await steer, isTrue);
-      expect(state.queuedMessages, isEmpty);
-      expect(params.expectedTurnId, 'turn-1');
-      expect((params.input.single as CodexTextUserInput).text, 'queued');
+  test(
+    'queue edits preserve non-text inputs, order and delete persist',
+    () async {
+      final client = FakeCodexClient(pages: const {});
+      final rich = CodexQueuedSubmission(
+        id: 'rich',
+        clientUserMessageId: 'client-rich',
+        input: const [
+          CodexTextUserInput(text: 'old'),
+          CodexLocalImageUserInput(path: '/uploaded/image.png'),
+          CodexSkillUserInput(name: 'skill', path: '/skills/test'),
+        ],
+      );
+      client.serverQueues['thread'] = [rich, queueItem('second', 'second')];
+      final state = CodexConversationState(
+        serverId: 'server',
+        connection: client,
+      )..selectedThread = thread('thread');
+      await state.refreshQueue();
+      expect(await state.updateQueuedMessage('rich', 'edited'), isTrue);
+      expect(state.queuedMessages.first.text, 'edited');
+      expect(
+        client.queueUpdates.single.input.skip(1).map((i) => i.toJson()),
+        rich.input.skip(1).map((i) => i.toJson()),
+      );
+      expect(await state.moveQueuedMessage('second', -1), isTrue);
+      expect(client.queueReorders.single.queuedSubmissionIds, [
+        'second',
+        'rich',
+      ]);
+      expect(state.queuedMessages.first.id, 'second');
+      client.queueMutationError = StateError('offline');
+      expect(await state.deleteQueuedMessage('rich'), isFalse);
+      expect(state.queuedMessages, hasLength(2));
+      expect(state.queueError, contains('offline'));
+      client.queueMutationError = null;
+      expect(await state.deleteQueuedMessage('rich'), isTrue);
+      expect(state.queuedMessages.single.id, 'second');
       await state.close();
     },
   );
 
   test(
-    'starts the next queued message when the active turn completes',
+    'server owns automatic dispatch; manual start uses queue/start only',
     () async {
       final active = thread(
         'thread',
         turns: const [
           CodexTurn(
-            id: 'turn-1',
+            id: 'active',
             items: [],
             status: CodexTurnStatus.inProgress,
           ),
@@ -1756,43 +1841,197 @@ void main() {
           null: CodexThreadListResponse(data: [active]),
         },
       );
-      final state = CodexServiceState(serverId: 'server', connection: client);
-      await state.start();
-      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
-      await state.readThread('thread');
-      state.setQueueing(true);
-      await state.submitMessage('run next', const []);
-
+      client.serverQueues['thread'] = [queueItem('next', 'next')];
+      final state =
+          CodexConversationState(serverId: 'server', connection: client)
+            ..selectedThread = active
+            ..turns = active.turns;
+      await state.refreshQueue();
+      expect(await state.startQueuedMessage('next'), isFalse);
       client.emit(
         const CodexTurnCompletedNotification2(
           params: CodexTurnCompletedNotification(
             threadId: 'thread',
             turn: CodexTurn(
-              id: 'turn-1',
+              id: 'active',
               items: [],
               status: CodexTurnStatus.completed,
             ),
           ),
         ),
       );
-      await waitFor(() => client.startedParams.isNotEmpty);
-
+      await waitFor(() => state.activeTurn == null);
+      expect(client.startedParams, isEmpty);
+      expect(client.queueStarts, isEmpty);
+      expect(await state.startQueuedMessage('next'), isTrue);
+      expect(client.queueStarts.single.queuedSubmissionId, 'next');
+      expect(client.startedParams, isEmpty);
+      expect(state.activeTurn?.id, 'server-queued-turn');
       expect(state.queuedMessages, isEmpty);
+      await state.close();
+    },
+  );
+
+  test(
+    'queue pagination and stale responses cannot overwrite a new selection',
+    () async {
+      final client = FakeCodexClient(pages: const {})..queuePageSize = 1;
+      client.serverQueues['a'] = [
+        queueItem('one', 'one'),
+        queueItem('two', 'two'),
+      ];
+      client.serverQueues['b'] = [queueItem('other', 'other')];
+      final state = CodexConversationState(
+        serverId: 'server',
+        connection: client,
+      )..selectedThread = thread('a');
+      await state.refreshQueue();
+      expect(state.queuedMessages.map((i) => i.id), ['one', 'two']);
+      final gate = Completer<CodexThreadQueueListResponse>();
+      client.queueListGate = gate;
+      final stale = state.refreshQueue();
+      state.selectedThread = thread('b');
+      await state.refreshQueue();
+      gate.complete(
+        CodexThreadQueueListResponse(data: [queueItem('stale', 'stale')]),
+      );
+      await stale;
+      expect(state.queuedMessages.single.id, 'other');
+      client.queueListError = StateError('queue unavailable');
+      await state.refreshQueue();
+      expect(state.queueError, contains('queue unavailable'));
+      expect(state.queuedMessages.single.id, 'other');
+      await state.close();
+    },
+  );
+
+  test(
+    'reconnect reloads the durable queue and enqueue failures keep no local fallback',
+    () async {
+      final active = thread(
+        'thread',
+        turns: const [
+          CodexTurn(
+            id: 'active',
+            items: [],
+            status: CodexTurnStatus.inProgress,
+          ),
+        ],
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [active]),
+        },
+      );
+      final state =
+          CodexConversationState(serverId: 'server', connection: client)
+            ..selectedThread = active
+            ..turns = active.turns;
+      state.setQueueing(true);
+      client.queueMutationError = StateError('add failed');
+      expect(await state.submitMessage('keep in composer', const []), isFalse);
+      expect(state.queuedMessages, isEmpty);
+      expect(state.queueError, contains('add failed'));
+      client.queueMutationError = null;
+      final connected = client.state;
+      client.setConnectionState(
+        const CodexConnectionState(
+          phase: CodexConnectionPhase.failed,
+          error: 'disconnected',
+        ),
+      );
+      client.serverQueues['thread'] = [
+        queueItem('while-away', 'saved elsewhere'),
+      ];
+      client.setConnectionState(connected);
+      await waitFor(() => state.queuedMessages.isNotEmpty);
+      expect(state.queuedMessages.single.id, 'while-away');
+      expect(client.startedParams, isEmpty);
+      await state.close();
+    },
+  );
+
+  test(
+    'queue uploads attachments before persisting their input payload',
+    () async {
+      final active = thread(
+        'thread',
+        turns: const [
+          CodexTurn(
+            id: 'active',
+            items: [],
+            status: CodexTurnStatus.inProgress,
+          ),
+        ],
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [active]),
+        },
+      );
+      final state =
+          CodexConversationState(serverId: 'server', connection: client)
+            ..selectedThread = active
+            ..turns = active.turns;
+      state.setQueueing(true);
       expect(
-        (client.startedParams.single.input.single as CodexTextUserInput).text,
-        'run next',
+        await state.submitMessage(
+          'inspect',
+          [
+            CodexPendingAttachment(
+              name: 'image.png',
+              bytes: Uint8List.fromList([1, 2, 3]),
+              kind: CodexAttachmentKind.image,
+            ),
+          ],
+          const [
+            CodexComposerReference(
+              kind: CodexComposerReferenceKind.skill,
+              name: 'skill',
+              path: '/skill',
+            ),
+          ],
+        ),
+        isTrue,
+      );
+      expect(client.writtenPaths, hasLength(1));
+      final input = client.queueAdds.single.input;
+      expect(
+        input.whereType<CodexLocalImageUserInput>().single.path,
+        client.writtenPaths.single,
+      );
+      expect(input.whereType<CodexSkillUserInput>().single.path, '/skill');
+      await state.refreshQueue();
+      expect(
+        state.queuedMessages.single.serverInput!.map((item) => item.toJson()),
+        input.map((item) => item.toJson()),
       );
       await state.close();
     },
   );
+
+  test('ephemeral side chats do not call persistent queue APIs', () async {
+    final client = FakeCodexClient(pages: const {});
+    final state = CodexConversationState(serverId: 'server', connection: client)
+      ..selectedThread = thread('temporary', ephemeral: true);
+    state.setQueueing(true);
+    await state.refreshQueue();
+    expect(state.queueMessagesWhileActive, isFalse);
+    expect(client.queueLists, isEmpty);
+    expect(await state.deleteQueuedMessage('anything'), isFalse);
+    await state.close();
+  });
 }
 
 final class FakeCodexClient extends ChangeNotifier
+    with FakeCodexQueue
     implements CodexAppServerClient {
   FakeCodexClient({
     required this.pages,
     this.turnPages = const {},
-    this.globalState,
+    this.projects = const [],
+    this.pinnedThreadIds = const [],
+    this.projectPages,
     this.models = const [],
     this.permissionProfiles = const [],
     this.resumeReasoningEffort,
@@ -1800,7 +2039,11 @@ final class FakeCodexClient extends ChangeNotifier
 
   final Map<String?, CodexThreadListResponse> pages;
   final Map<String, Map<String?, CodexThreadTurnsListResponse>> turnPages;
-  String? globalState;
+  List<CodexProject> projects;
+  List<String> pinnedThreadIds;
+  Map<String?, CodexProjectListResponse>? projectPages;
+  final List<CodexProjectListParams> projectListParams = [];
+  Object? projectError;
   final List<CodexModel> models;
   final List<CodexPermissionProfileSummary> permissionProfiles;
   final CodexReasoningEffort? resumeReasoningEffort;
@@ -1832,6 +2075,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> watchedPaths = [];
   final List<String> watchIds = [];
   final List<String> readPaths = [];
+  final List<String> writtenPaths = [];
   final List<String> unwatchedIds = [];
   Completer<void>? unsubscribeGate;
   Object? listError;
@@ -1869,6 +2113,16 @@ final class FakeCodexClient extends ChangeNotifier
 
   @override
   Future<void> retry() => start();
+
+  @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) async {
+    projectListParams.add(params);
+    if (projectError != null) throw projectError!;
+    return projectPages?[params.cursor] ??
+        CodexProjectListResponse(data: projects);
+  }
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -1949,6 +2203,7 @@ final class FakeCodexClient extends ChangeNotifier
         .firstWhere((candidate) => candidate.id == params.threadId);
     final fork = thread(
       'forked-${source.id}',
+      projectId: source.projectId,
       updatedAt: source.updatedAt,
       turns: source.turns,
     );
@@ -1969,6 +2224,7 @@ final class FakeCodexClient extends ChangeNotifier
   ) async {
     startThreadParams.add(params);
     final created = CodexThread(
+      projectId: params.projectId,
       cliVersion: 'test',
       createdAt: 100,
       cwd: CodexV2AbsolutePathBuf(params.cwd ?? ''),
@@ -2105,9 +2361,10 @@ final class FakeCodexClient extends ChangeNotifier
   @override
   Future<CodexFsReadFileResponse> readFile(String path) async {
     readPaths.add(path);
-    if (globalState == null) throw StateError('missing');
     return CodexFsReadFileResponse(
-      dataBase64: base64Encode(utf8.encode(globalState!)),
+      dataBase64: base64Encode(
+        utf8.encode(jsonEncode({'pinned-thread-ids': pinnedThreadIds})),
+      ),
     );
   }
 
@@ -2119,7 +2376,10 @@ final class FakeCodexClient extends ChangeNotifier
   Future<CodexFsWriteFileResponse> writeFile(
     String path,
     String dataBase64,
-  ) async => const CodexFsWriteFileResponse();
+  ) async {
+    writtenPaths.add(path);
+    return const CodexFsWriteFileResponse();
+  }
 
   @override
   Future<void> respondToServerRequest(
@@ -2154,11 +2414,13 @@ final class FakeCodexClient extends ChangeNotifier
 
 CodexThread thread(
   String id, {
+  String? projectId = 'motif',
   int updatedAt = 1,
   bool ephemeral = false,
   String? path,
   List<CodexTurn> turns = const [],
 }) => CodexThread(
+  projectId: projectId,
   cliVersion: 'test',
   createdAt: updatedAt,
   cwd: const CodexV2AbsolutePathBuf('/work/motif'),
@@ -2182,3 +2444,24 @@ Future<void> waitFor(bool Function() condition) async {
   }
   fail('condition was not reached');
 }
+
+CodexProject testProject({
+  String id = 'motif',
+  int position = 0,
+  String name = 'Motif',
+}) => CodexProject(
+  id: id,
+  name: name,
+  roots: const [CodexProjectRoot(path: CodexV2AbsolutePathBuf('/work/motif'))],
+  position: position,
+  metadata: const {},
+  createdAt: 0,
+  updatedAt: 0,
+);
+
+CodexQueuedSubmission queueItem(String id, String text) =>
+    CodexQueuedSubmission(
+      id: id,
+      clientUserMessageId: 'client-$id',
+      input: [CodexTextUserInput(text: text)],
+    );

@@ -168,13 +168,13 @@ codex-app-server-protocol: ## Regenerate experimental Codex app-server Dart type
 	@mkdir -p target/codex-app-server-schemas/json target/codex-app-server-schemas/ts
 	@"$(CODEX)" app-server generate-json-schema --experimental --out target/codex-app-server-schemas/json
 	@"$(CODEX)" app-server generate-ts --experimental --out target/codex-app-server-schemas/ts
-	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart
+	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart --codex-version "$$("$(CODEX)" --version)"
 
 codex-app-server-protocol-check: ## Verify committed Codex Dart types match the local Codex schema.
 	@command -v "$(CODEX)" >/dev/null || { echo "Missing codex. Install Codex CLI first."; exit 1; }
 	@mkdir -p target/codex-app-server-schemas/json
 	@"$(CODEX)" app-server generate-json-schema --experimental --out target/codex-app-server-schemas/json
-	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart --check
+	@cd "$(FLUTTER_DIR)" && "$(DART)" run tool/generate_codex_app_server_protocol.dart --check --codex-version "$$("$(CODEX)" --version)"
 
 check-tools: check-cargo check-flutter ## Check the common local toolchain.
 

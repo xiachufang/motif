@@ -151,6 +151,25 @@ abstract interface class CodexAppServerClient implements Listenable {
   Future<void> start();
   Future<void> retry();
   Future<void> close();
+  Future<CodexThreadQueueAddResponse> addThreadQueue(
+    CodexThreadQueueAddParams params,
+  );
+  Future<CodexThreadQueueListResponse> listThreadQueue(
+    CodexThreadQueueListParams params,
+  );
+  Future<CodexThreadQueueUpdateResponse> updateThreadQueue(
+    CodexThreadQueueUpdateParams params,
+  );
+  Future<CodexThreadQueueDeleteResponse> deleteThreadQueue(
+    CodexThreadQueueDeleteParams params,
+  );
+  Future<CodexThreadQueueReorderResponse> reorderThreadQueue(
+    CodexThreadQueueReorderParams params,
+  );
+  Future<CodexThreadQueueStartResponse> startThreadQueue(
+    CodexThreadQueueStartParams params,
+  );
+  Future<CodexProjectListResponse> listProjects(CodexProjectListParams params);
   Future<CodexThreadListResponse> listThreads(CodexThreadListParams params);
   Future<CodexThreadSetNameResponse> setThreadName(
     String threadId,
@@ -390,6 +409,69 @@ final class CodexConnectionController extends ChangeNotifier
       await start();
     }
   }
+
+  @override
+  Future<CodexThreadQueueAddResponse> addThreadQueue(
+    CodexThreadQueueAddParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueAddRequest(id: id, params: params),
+    CodexThreadQueueAddResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadQueueListResponse> listThreadQueue(
+    CodexThreadQueueListParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueListRequest(id: id, params: params),
+    CodexThreadQueueListResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadQueueUpdateResponse> updateThreadQueue(
+    CodexThreadQueueUpdateParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueUpdateRequest(id: id, params: params),
+    CodexThreadQueueUpdateResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadQueueDeleteResponse> deleteThreadQueue(
+    CodexThreadQueueDeleteParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueDeleteRequest(id: id, params: params),
+    CodexThreadQueueDeleteResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadQueueReorderResponse> reorderThreadQueue(
+    CodexThreadQueueReorderParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueReorderRequest(id: id, params: params),
+    CodexThreadQueueReorderResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadQueueStartResponse> startThreadQueue(
+    CodexThreadQueueStartParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadQueueStartRequest(id: id, params: params),
+    CodexThreadQueueStartResponse.fromJson,
+  );
+
+  Future<CodexProjectCreateResponse> createProject(
+    CodexProjectCreateParams params,
+  ) => _typedRequest(
+    (id) => CodexProjectCreateRequest(id: id, params: params),
+    CodexProjectCreateResponse.fromJson,
+  );
+
+  @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) => _typedRequest(
+    (id) => CodexProjectListRequest(id: id, params: params),
+    CodexProjectListResponse.fromJson,
+  );
 
   @override
   Future<CodexThreadListResponse> listThreads(CodexThreadListParams params) =>

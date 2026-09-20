@@ -22,7 +22,110 @@ import 'package:motif/motif/ui/widgets/codex_turn_activity.dart';
 import 'package:motif/motif/ui/widgets/diff_text_view.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'fake_codex_queue.dart';
+
 void main() {
+  testWidgets('queue editor updates the server item without removing it', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1000, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)..activePlan = null;
+    final threadId = state.selectedThread!.id;
+    client.serverQueues[threadId] = [
+      const CodexQueuedSubmission(
+        id: 'edit-me',
+        clientUserMessageId: 'client-edit',
+        input: [
+          CodexTextUserInput(text: 'Before'),
+          CodexLocalImageUserInput(path: '/image.png'),
+        ],
+      ),
+    ];
+    await state.refreshQueue();
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byTooltip('Message actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Edit message'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.queuedMessages.single.id, 'edit-me');
+    expect(client.queueDeletes, isEmpty);
+    await tester.enterText(
+      find.byKey(const ValueKey('codex-queue-edit-text')),
+      'After',
+    );
+    await tester.tap(find.byKey(const ValueKey('codex-queue-edit-save')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(client.queueUpdates.single.queuedSubmissionId, 'edit-me');
+    expect(state.queuedMessages.single.text, 'After');
+    expect(
+      state.queuedMessages.single.serverInput!.last,
+      isA<CodexLocalImageUserInput>(),
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets(
+    'composer exposes server queue mode even when the queue is empty',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final client = WorkspaceFakeClient();
+      final state = workspaceState(client)..queuedMessages = const [];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('codex-add-menu')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.byKey(const ValueKey('codex-toggle-queue')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(state.queueMessagesWhileActive, isTrue);
+      await tester.enterText(
+        find.byKey(const ValueKey('codex-composer-input')),
+        'Queued from composer',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('codex-send')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        client.queueAdds.single.input
+            .whereType<CodexTextUserInput>()
+            .single
+            .text,
+        'Queued from composer',
+      );
+      expect(client.started, isEmpty);
+      expect(client.steered, isEmpty);
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
   testWidgets('active plan details and diff use separate hit targets', (
     tester,
   ) async {
@@ -1778,7 +1881,7 @@ void main() {
         findsNothing,
       );
       expect(find.text('queued follow-up'), findsOneWidget);
-      expect(find.text('Steer'), findsOneWidget);
+      expect(find.text('Run now'), findsOneWidget);
       expect(find.byKey(const ValueKey('codex-composer')), findsOneWidget);
       expect(
         find.byKey(const ValueKey('codex-model-selector')),
@@ -1873,9 +1976,14 @@ void main() {
         findsNothing,
       );
 
-      await tester.tap(find.text('Steer'));
+      final runNow = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Run now'),
+      );
+      expect(runNow.onPressed, isNull);
+      expect(client.steered, isEmpty);
+      await tester.tap(find.byTooltip('Delete queued message'));
       await tester.pump(const Duration(milliseconds: 200));
-      expect(client.steered, hasLength(1));
+      expect(client.queueDeletes.single.queuedSubmissionId, 'queued-1');
       expect(state.queuedMessages, isEmpty);
 
       state.turns = [
@@ -3754,6 +3862,7 @@ CodexServiceState workspaceState(
     ),
   ];
   final thread = CodexThread(
+    projectId: null,
     cliVersion: 'test',
     createdAt: 1,
     cwd: const CodexV2AbsolutePathBuf('/work/motif'),
@@ -3864,6 +3973,7 @@ final class _FakeSpeechService implements SpeechService {
 }
 
 final class WorkspaceFakeClient extends ChangeNotifier
+    with FakeCodexQueue
     implements CodexAppServerClient {
   late CodexThread thread;
   Map<String?, CodexThreadTurnsListResponse> turnPages = const {};
@@ -3906,6 +4016,11 @@ final class WorkspaceFakeClient extends ChangeNotifier
 
   @override
   Future<void> retry() async {}
+
+  @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) async => const CodexProjectListResponse(data: []);
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -3956,6 +4071,7 @@ final class WorkspaceFakeClient extends ChangeNotifier
   ) async {
     forked.add(params);
     final fork = CodexThread(
+      projectId: null,
       cliVersion: thread.cliVersion,
       createdAt: thread.createdAt,
       cwd: thread.cwd,

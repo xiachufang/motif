@@ -8,7 +8,6 @@ import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:motif/motif/codex/codex_connection_controller.dart';
 import 'package:motif/motif/codex/codex_service_state.dart';
-import 'package:motif/motif/codex/codex_thread_catalog.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 import 'package:motif/motif/codex/side_chat_collection_controller.dart';
 import 'package:motif/motif/models/motif_proto.dart';
@@ -285,13 +284,14 @@ void main() {
         // A previous interrupted screenshot run may already have removed it.
       }
     }
-    final created = await seed.createThreadForProject(
-      const CodexLocalProject(
-        id: 'motif-showcase',
+    final showcaseProject = (await codexConnection.createProject(
+      const CodexProjectCreateParams(
+        idempotencyKey: 'motif-showcase',
         name: 'Motif Mobile',
-        rootPaths: [demoRoot],
+        roots: [CodexProjectRoot(path: CodexV2AbsolutePathBuf(demoRoot))],
       ),
-    );
+    )).project;
+    final created = await seed.createThreadForProject(showcaseProject);
     expect(created, isTrue, reason: seed.createThreadError);
     final createdThreadId = seed.selectedThread!.id;
     codexThreadIds.add(createdThreadId);
@@ -430,11 +430,7 @@ void main() {
     final displayService = codexScreen.controller.viewModel.service!;
     for (final title in showcaseCodexThreadTitles.skip(1)) {
       final createdExtra = await displayService.createThreadForProject(
-        const CodexLocalProject(
-          id: 'motif-showcase',
-          name: 'Motif Mobile',
-          rootPaths: [demoRoot],
-        ),
+        showcaseProject,
       );
       expect(createdExtra, isTrue, reason: displayService.createThreadError);
       final threadId = displayService.selectedThread!.id;
@@ -652,6 +648,7 @@ final class _ScreenshotSideChatClient extends ChangeNotifier
       modelProvider: 'openai',
       parentThreadId: params.threadId,
       preview: '',
+      projectId: null,
       sessionId: threadId,
       source: const CodexSessionSource('cli'),
       status: const CodexIdleThreadStatus(),

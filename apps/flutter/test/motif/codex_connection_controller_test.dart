@@ -103,6 +103,202 @@ void main() {
     },
   );
 
+  test(
+    'project/list sends typed pagination and decodes multi-root projects',
+    () async {
+      late final _FakeWebSocket socket;
+      final sent = <Map<String, Object?>>[];
+      socket = _FakeWebSocket((message) {
+        final json = (jsonDecode(message as String) as Map)
+            .cast<String, Object?>();
+        sent.add(json);
+        final result = switch (json['method']) {
+          'initialize' => <String, Object?>{
+            'codexHome': '/tmp/codex',
+            'platformFamily': 'unix',
+            'platformOs': 'macos',
+            'userAgent': 'codex-test',
+          },
+          'project/list' => <String, Object?>{
+            'data': [
+              {
+                'id': 'project',
+                'name': 'Project',
+                'roots': [
+                  {'path': '/one'},
+                  {'path': '/two'},
+                ],
+                'metadata': {},
+                'position': 2,
+                'createdAt': 1,
+                'updatedAt': 2,
+              },
+            ],
+            'nextCursor': 'next',
+          },
+          _ => null,
+        };
+        if (result != null) {
+          scheduleMicrotask(
+            () => socket.addIncoming(
+              jsonEncode({'id': json['id'], 'result': result}),
+            ),
+          );
+        }
+      });
+      final controller = CodexConnectionController(
+        transport: _FakeTransport(socket),
+        appVersionProvider: () async => '1.0',
+      );
+      await controller.start();
+      final response = await controller.listProjects(
+        const CodexProjectListParams(
+          cursor: 'page',
+          limit: 100,
+          sortKey: CodexProjectSortKey.position,
+        ),
+      );
+      expect(sent.last['method'], 'project/list');
+      expect(sent.last['params'], {
+        'cursor': 'page',
+        'limit': 100,
+        'sortKey': 'position',
+      });
+      expect(response.nextCursor, 'next');
+      expect(response.data.single.roots.map((r) => r.path.value), [
+        '/one',
+        '/two',
+      ]);
+      await controller.close();
+    },
+  );
+
+  test(
+    'queue RPCs serialize identifiers and decode server responses',
+    () async {
+      late final _FakeWebSocket socket;
+      final sent = <Map<String, Object?>>[];
+      final item = <String, Object?>{
+        'id': 'queued',
+        'clientUserMessageId': 'client',
+        'input': [
+          {'type': 'text', 'text': 'hello'},
+        ],
+      };
+      socket = _FakeWebSocket((message) {
+        final json = (jsonDecode(message as String) as Map)
+            .cast<String, Object?>();
+        sent.add(json);
+        final result = switch (json['method']) {
+          'initialize' => <String, Object?>{
+            'codexHome': '/tmp/codex',
+            'platformFamily': 'unix',
+            'platformOs': 'macos',
+            'userAgent': 'codex-test',
+          },
+          'thread/queue/add' ||
+          'thread/queue/update' => <String, Object?>{'queuedSubmission': item},
+          'thread/queue/list' => <String, Object?>{
+            'data': [item],
+            'nextCursor': 'next',
+          },
+          'thread/queue/delete' => <String, Object?>{'deleted': true},
+          'thread/queue/reorder' => <String, Object?>{},
+          'thread/queue/start' => <String, Object?>{
+            'turn': {'id': 'turn', 'items': [], 'status': 'inProgress'},
+          },
+          _ => null,
+        };
+        if (result != null) {
+          scheduleMicrotask(
+            () => socket.addIncoming(
+              jsonEncode({'id': json['id'], 'result': result}),
+            ),
+          );
+        }
+      });
+      final controller = CodexConnectionController(
+        transport: _FakeTransport(socket),
+        appVersionProvider: () async => '1.0',
+      );
+      await controller.start();
+      expect(
+        (await controller.addThreadQueue(
+          const CodexThreadQueueAddParams(
+            threadId: 'thread',
+            clientUserMessageId: 'client',
+            input: [CodexTextUserInput(text: 'hello')],
+          ),
+        )).queuedSubmission.id,
+        'queued',
+      );
+      expect(sent.last['params'], {
+        'threadId': 'thread',
+        'clientUserMessageId': 'client',
+        'input': [
+          {'type': 'text', 'text': 'hello'},
+        ],
+      });
+      expect(
+        (await controller.listThreadQueue(
+          const CodexThreadQueueListParams(
+            threadId: 'thread',
+            cursor: 'page',
+            limit: 10,
+          ),
+        )).nextCursor,
+        'next',
+      );
+      expect(sent.last['params'], {
+        'threadId': 'thread',
+        'cursor': 'page',
+        'limit': 10,
+      });
+      await controller.updateThreadQueue(
+        const CodexThreadQueueUpdateParams(
+          threadId: 'thread',
+          queuedSubmissionId: 'queued',
+          input: [CodexTextUserInput(text: 'edited')],
+        ),
+      );
+      expect((sent.last['params'] as Map)['queuedSubmissionId'], 'queued');
+      expect(
+        (await controller.deleteThreadQueue(
+          const CodexThreadQueueDeleteParams(
+            threadId: 'thread',
+            queuedSubmissionId: 'queued',
+          ),
+        )).deleted,
+        isTrue,
+      );
+      await controller.reorderThreadQueue(
+        const CodexThreadQueueReorderParams(
+          threadId: 'thread',
+          queuedSubmissionIds: ['b', 'a'],
+        ),
+      );
+      expect((sent.last['params'] as Map)['queuedSubmissionIds'], ['b', 'a']);
+      expect(
+        (await controller.startThreadQueue(
+          const CodexThreadQueueStartParams(
+            threadId: 'thread',
+            queuedSubmissionId: 'queued',
+          ),
+        )).turn.id,
+        'turn',
+      );
+      expect(sent.skip(2).map((m) => m['method']), [
+        'thread/queue/add',
+        'thread/queue/list',
+        'thread/queue/update',
+        'thread/queue/delete',
+        'thread/queue/reorder',
+        'thread/queue/start',
+      ]);
+      await controller.close();
+    },
+  );
+
   test('unknown notification is retained as raw and typed fallback', () async {
     late final _FakeWebSocket socket;
     socket = _FakeWebSocket((message) {

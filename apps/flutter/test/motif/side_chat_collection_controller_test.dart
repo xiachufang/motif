@@ -9,6 +9,8 @@ import 'package:motif/motif/codex/side_chat_collection_controller.dart';
 import 'package:motif/motif/ui/screens/side_chat_screen.dart';
 import 'package:motif/motif/ui/theme/motif_theme.dart';
 
+import 'fake_codex_queue.dart';
+
 void main() {
   test(
     'forks ephemeral conversations directly from the fixed parent',
@@ -290,6 +292,7 @@ void main() {
 }
 
 final class _SideChatFakeClient extends ChangeNotifier
+    with FakeCodexQueue
     implements CodexAppServerClient {
   _SideChatFakeClient({Iterable<CodexThread> restoredThreads = const []}) {
     for (final thread in restoredThreads) {
@@ -341,6 +344,11 @@ final class _SideChatFakeClient extends ChangeNotifier
   Future<void> retry() async {}
 
   @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) async => const CodexProjectListResponse(data: []);
+
+  @override
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
   ) async {
@@ -355,6 +363,7 @@ final class _SideChatFakeClient extends ChangeNotifier
     forks.add(params);
     final index = forks.length;
     final thread = CodexThread(
+      projectId: null,
       cliVersion: 'test',
       createdAt: index,
       cwd: const CodexV2AbsolutePathBuf('/work/motif'),
@@ -465,6 +474,7 @@ CodexThread _sideThread(
   required String parentThreadId,
   required int updatedAt,
 }) => CodexThread(
+  projectId: null,
   cliVersion: 'test',
   createdAt: updatedAt,
   cwd: const CodexV2AbsolutePathBuf('/work/motif'),

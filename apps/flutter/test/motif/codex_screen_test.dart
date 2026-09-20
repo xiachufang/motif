@@ -29,6 +29,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/test_server_transport.dart';
 import 'support/workspace_connection_fixture.dart';
 
+import 'fake_codex_queue.dart';
+
 void main() {
   testWidgets('missing Codex CLI shows installation guidance', (tester) async {
     final app = await appState();
@@ -281,6 +283,7 @@ void main() {
       final serviceState = readyServiceState(connection: client);
       final parent = serviceState.catalog.allThreads.single;
       final sideChat = CodexThread(
+        projectId: null,
         cliVersion: 'test',
         createdAt: 2,
         cwd: parent.cwd,
@@ -1308,6 +1311,7 @@ CodexServiceState readyServiceState({
   final threads = [
     for (var index = 0; index < threadCount; index++)
       CodexThread(
+        projectId: null,
         cliVersion: 'test',
         createdAt: 1,
         cwd: CodexV2AbsolutePathBuf(projectlessThreads ? '' : '/work/motif'),
@@ -1327,7 +1331,7 @@ CodexServiceState readyServiceState({
       serverId: 'server',
       connection: connection ?? ScreenFakeClient(),
     )
-    ..catalog = buildCodexCatalog(threads, null)
+    ..catalog = buildCodexCatalog(threads, const [])
     ..catalogPhase = CodexCatalogPhase.ready;
 }
 
@@ -1346,6 +1350,7 @@ CodexThreadResumeResponse _resumeResponse(CodexThread thread) =>
     );
 
 final class ScreenFakeClient extends ChangeNotifier
+    with FakeCodexQueue
     implements CodexAppServerClient {
   ScreenFakeClient({this.files = const {}, this.models = const []});
 
@@ -1390,6 +1395,11 @@ final class ScreenFakeClient extends ChangeNotifier
   Future<void> retry() async => retryCount++;
 
   int retryCount = 0;
+
+  @override
+  Future<CodexProjectListResponse> listProjects(
+    CodexProjectListParams params,
+  ) async => const CodexProjectListResponse(data: []);
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -1444,6 +1454,7 @@ final class ScreenFakeClient extends ChangeNotifier
   ) async {
     forkParams.add(params);
     final thread = CodexThread(
+      projectId: null,
       cliVersion: 'test',
       createdAt: 1,
       cwd: const CodexV2AbsolutePathBuf('/work/motif'),
@@ -1482,6 +1493,7 @@ final class ScreenFakeClient extends ChangeNotifier
     CodexThreadStartParams params,
   ) async {
     final thread = CodexThread(
+      projectId: null,
       cliVersion: 'test',
       createdAt: 2,
       cwd: CodexV2AbsolutePathBuf(params.cwd ?? ''),

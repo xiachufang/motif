@@ -1345,6 +1345,10 @@ String _agentToolProgressTitle(CodexCollabAgentToolCallThreadItem value) {
     CodexCollabAgentTool.resumeAgent => 'Resuming agent',
     CodexCollabAgentTool.wait => 'Waiting for agents',
     CodexCollabAgentTool.closeAgent => 'Closing agent',
+    CodexCollabAgentTool.sendMessage => 'Messaging agent',
+    CodexCollabAgentTool.followupTask => 'Assigning follow-up task',
+    CodexCollabAgentTool.interruptAgent => 'Interrupting agent',
+    CodexCollabAgentTool.listAgents => 'Listing agents',
   };
   return _withActivityDetail(verb, value.prompt?.trim() ?? '');
 }

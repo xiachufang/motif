@@ -1,7 +1,7 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND.
 //
-// Codex version: codex-cli 0.147.0
-// Schema SHA-256: babfd5c98cd978dd858b4762cdfbc9fba941e1a0e4053de0050e4082ae1f075a
+// Codex version: codex-cli 0.155.0-alpha.9.2
+// Schema SHA-256: 6eb6205c196729896ac3cff340d3a5eb947d6f99e10cca83383766aeae28f31c
 // Command: codex app-server generate-json-schema --experimental
 // Generator: dart run tool/generate_codex_app_server_protocol.dart
 // ignore_for_file: dead_code, unnecessary_question_mark, unused_local_variable
@@ -352,6 +352,18 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
     switch (map['method']) {
       case 'initialize':
         return CodexInitializeRequest.fromJson(map);
+      case 'server/diagnostics':
+        return CodexServerDiagnosticsRequest.fromJson(map);
+      case 'userVerification/status':
+        return CodexUserVerificationStatusRequest.fromJson(map);
+      case 'userVerification/enroll':
+        return CodexUserVerificationEnrollRequest.fromJson(map);
+      case 'userVerification/delete':
+        return CodexUserVerificationDeleteRequest.fromJson(map);
+      case 'userVerification/verify':
+        return CodexUserVerificationVerifyRequest.fromJson(map);
+      case 'userVerification/cancel':
+        return CodexUserVerificationCancelRequest.fromJson(map);
       case 'thread/start':
         return CodexThreadStartRequest.fromJson(map);
       case 'thread/resume':
@@ -376,14 +388,34 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexThreadGoalGetRequest.fromJson(map);
       case 'thread/goal/clear':
         return CodexThreadGoalClearRequest.fromJson(map);
+      case 'thread/queue/add':
+        return CodexThreadQueueAddRequest.fromJson(map);
+      case 'thread/queue/list':
+        return CodexThreadQueueListRequest.fromJson(map);
+      case 'thread/queue/update':
+        return CodexThreadQueueUpdateRequest.fromJson(map);
+      case 'thread/queue/delete':
+        return CodexThreadQueueDeleteRequest.fromJson(map);
+      case 'thread/queue/reorder':
+        return CodexThreadQueueReorderRequest.fromJson(map);
+      case 'thread/queue/start':
+        return CodexThreadQueueStartRequest.fromJson(map);
       case 'thread/metadata/update':
         return CodexThreadMetadataUpdateRequest.fromJson(map);
+      case 'thread/attachment/add':
+        return CodexThreadAttachmentAddRequest.fromJson(map);
+      case 'thread/attachment/list':
+        return CodexThreadAttachmentListRequest.fromJson(map);
+      case 'thread/attachment/remove':
+        return CodexThreadAttachmentRemoveRequest.fromJson(map);
       case 'thread/section/move':
         return CodexThreadSectionMoveRequest.fromJson(map);
       case 'thread/settings/update':
         return CodexThreadSettingsUpdateRequest.fromJson(map);
       case 'thread/memoryMode/set':
         return CodexThreadMemoryModeSetRequest.fromJson(map);
+      case 'memory/status':
+        return CodexMemoryStatusRequest.fromJson(map);
       case 'memory/reset':
         return CodexMemoryResetRequest.fromJson(map);
       case 'thread/unarchive':
@@ -400,10 +432,24 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexThreadBackgroundTerminalsListRequest.fromJson(map);
       case 'thread/backgroundTerminals/terminate':
         return CodexThreadBackgroundTerminalsTerminateRequest.fromJson(map);
-      case 'thread/rollback':
-        return CodexThreadRollbackRequest.fromJson(map);
+      case 'thread/revert':
+        return CodexThreadRevertRequest.fromJson(map);
       case 'thread/list':
         return CodexThreadListRequest.fromJson(map);
+      case 'project/list':
+        return CodexProjectListRequest.fromJson(map);
+      case 'project/read':
+        return CodexProjectReadRequest.fromJson(map);
+      case 'project/create':
+        return CodexProjectCreateRequest.fromJson(map);
+      case 'project/import':
+        return CodexProjectImportRequest.fromJson(map);
+      case 'project/update':
+        return CodexProjectUpdateRequest.fromJson(map);
+      case 'project/move':
+        return CodexProjectMoveRequest.fromJson(map);
+      case 'project/delete':
+        return CodexProjectDeleteRequest.fromJson(map);
       case 'threadSection/list':
         return CodexThreadSectionListRequest.fromJson(map);
       case 'threadSection/create':
@@ -444,6 +490,8 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexPluginSearchRequest.fromJson(map);
       case 'plugin/installed':
         return CodexPluginInstalledRequest.fromJson(map);
+      case 'plugin/reconcile':
+        return CodexPluginReconcileRequest.fromJson(map);
       case 'plugin/read':
         return CodexPluginReadRequest.fromJson(map);
       case 'plugin/skill/read':
@@ -490,6 +538,8 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexPluginUninstallRequest.fromJson(map);
       case 'turn/start':
         return CodexTurnStartRequest.fromJson(map);
+      case 'turn/settings/update':
+        return CodexTurnSettingsUpdateRequest.fromJson(map);
       case 'turn/steer':
         return CodexTurnSteerRequest.fromJson(map);
       case 'turn/interrupt':
@@ -504,6 +554,8 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexThreadRealtimeAppendSpeechRequest.fromJson(map);
       case 'thread/realtime/stop':
         return CodexThreadRealtimeStopRequest.fromJson(map);
+      case 'thread/timeline/list':
+        return CodexThreadTimelineListRequest.fromJson(map);
       case 'thread/realtime/listVoices':
         return CodexThreadRealtimeListVoicesRequest.fromJson(map);
       case 'review/start':
@@ -550,6 +602,10 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexMcpServerStatusListRequest.fromJson(map);
       case 'mcpServer/resource/read':
         return CodexMcpServerResourceReadRequest.fromJson(map);
+      case 'mcpServer/event/stream/start':
+        return CodexMcpServerEventStreamStartRequest.fromJson(map);
+      case 'mcpServer/event/stream/stop':
+        return CodexMcpServerEventStreamStopRequest.fromJson(map);
       case 'mcpServer/tool/call':
         return CodexMcpServerToolCallRequest.fromJson(map);
       case 'windowsSandbox/setupStart':
@@ -558,6 +614,10 @@ sealed class CodexClientRequest implements CodexJsonEncodable {
         return CodexWindowsSandboxReadinessRequest.fromJson(map);
       case 'account/login/start':
         return CodexAccountLoginStartRequest.fromJson(map);
+      case 'account/bedrock/discover':
+        return CodexAccountBedrockDiscoverRequest.fromJson(map);
+      case 'account/bedrock/setup':
+        return CodexAccountBedrockSetupRequest.fromJson(map);
       case 'account/login/cancel':
         return CodexAccountLoginCancelRequest.fromJson(map);
       case 'account/logout':
@@ -644,6 +704,183 @@ final class CodexInitializeRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'initialize',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexServerDiagnosticsRequest extends CodexClientRequest {
+  const CodexServerDiagnosticsRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexServerDiagnosticsParams params;
+
+  factory CodexServerDiagnosticsRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexServerDiagnosticsRequest');
+    if (map['method'] != 'server/diagnostics') {
+      throw FormatException(
+        'Expected method=server/diagnostics for CodexServerDiagnosticsRequest',
+      );
+    }
+    return CodexServerDiagnosticsRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexServerDiagnosticsParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'server/diagnostics',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexUserVerificationStatusRequest extends CodexClientRequest {
+  const CodexUserVerificationStatusRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexUserVerificationStatusParams params;
+
+  factory CodexUserVerificationStatusRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationStatusRequest');
+    if (map['method'] != 'userVerification/status') {
+      throw FormatException(
+        'Expected method=userVerification/status for CodexUserVerificationStatusRequest',
+      );
+    }
+    return CodexUserVerificationStatusRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexUserVerificationStatusParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'userVerification/status',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexUserVerificationEnrollRequest extends CodexClientRequest {
+  const CodexUserVerificationEnrollRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexUserVerificationEnrollParams params;
+
+  factory CodexUserVerificationEnrollRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationEnrollRequest');
+    if (map['method'] != 'userVerification/enroll') {
+      throw FormatException(
+        'Expected method=userVerification/enroll for CodexUserVerificationEnrollRequest',
+      );
+    }
+    return CodexUserVerificationEnrollRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexUserVerificationEnrollParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'userVerification/enroll',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexUserVerificationDeleteRequest extends CodexClientRequest {
+  const CodexUserVerificationDeleteRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexUserVerificationDeleteParams params;
+
+  factory CodexUserVerificationDeleteRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationDeleteRequest');
+    if (map['method'] != 'userVerification/delete') {
+      throw FormatException(
+        'Expected method=userVerification/delete for CodexUserVerificationDeleteRequest',
+      );
+    }
+    return CodexUserVerificationDeleteRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexUserVerificationDeleteParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'userVerification/delete',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexUserVerificationVerifyRequest extends CodexClientRequest {
+  const CodexUserVerificationVerifyRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexUserVerificationVerifyParams params;
+
+  factory CodexUserVerificationVerifyRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationVerifyRequest');
+    if (map['method'] != 'userVerification/verify') {
+      throw FormatException(
+        'Expected method=userVerification/verify for CodexUserVerificationVerifyRequest',
+      );
+    }
+    return CodexUserVerificationVerifyRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexUserVerificationVerifyParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'userVerification/verify',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexUserVerificationCancelRequest extends CodexClientRequest {
+  const CodexUserVerificationCancelRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexUserVerificationCancelParams params;
+
+  factory CodexUserVerificationCancelRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationCancelRequest');
+    if (map['method'] != 'userVerification/cancel') {
+      throw FormatException(
+        'Expected method=userVerification/cancel for CodexUserVerificationCancelRequest',
+      );
+    }
+    return CodexUserVerificationCancelRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexUserVerificationCancelParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'userVerification/cancel',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -979,6 +1216,171 @@ final class CodexThreadGoalClearRequest extends CodexClientRequest {
   };
 }
 
+final class CodexThreadQueueAddRequest extends CodexClientRequest {
+  const CodexThreadQueueAddRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueAddParams params;
+
+  factory CodexThreadQueueAddRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueAddRequest');
+    if (map['method'] != 'thread/queue/add') {
+      throw FormatException(
+        'Expected method=thread/queue/add for CodexThreadQueueAddRequest',
+      );
+    }
+    return CodexThreadQueueAddRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueAddParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/add',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueListRequest extends CodexClientRequest {
+  const CodexThreadQueueListRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueListParams params;
+
+  factory CodexThreadQueueListRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueListRequest');
+    if (map['method'] != 'thread/queue/list') {
+      throw FormatException(
+        'Expected method=thread/queue/list for CodexThreadQueueListRequest',
+      );
+    }
+    return CodexThreadQueueListRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueListParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/list',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueUpdateRequest extends CodexClientRequest {
+  const CodexThreadQueueUpdateRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueUpdateParams params;
+
+  factory CodexThreadQueueUpdateRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueUpdateRequest');
+    if (map['method'] != 'thread/queue/update') {
+      throw FormatException(
+        'Expected method=thread/queue/update for CodexThreadQueueUpdateRequest',
+      );
+    }
+    return CodexThreadQueueUpdateRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueUpdateParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/update',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueDeleteRequest extends CodexClientRequest {
+  const CodexThreadQueueDeleteRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueDeleteParams params;
+
+  factory CodexThreadQueueDeleteRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueDeleteRequest');
+    if (map['method'] != 'thread/queue/delete') {
+      throw FormatException(
+        'Expected method=thread/queue/delete for CodexThreadQueueDeleteRequest',
+      );
+    }
+    return CodexThreadQueueDeleteRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueDeleteParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/delete',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueReorderRequest extends CodexClientRequest {
+  const CodexThreadQueueReorderRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueReorderParams params;
+
+  factory CodexThreadQueueReorderRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueReorderRequest');
+    if (map['method'] != 'thread/queue/reorder') {
+      throw FormatException(
+        'Expected method=thread/queue/reorder for CodexThreadQueueReorderRequest',
+      );
+    }
+    return CodexThreadQueueReorderRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueReorderParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/reorder',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueStartRequest extends CodexClientRequest {
+  const CodexThreadQueueStartRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexThreadQueueStartParams params;
+
+  factory CodexThreadQueueStartRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueStartRequest');
+    if (map['method'] != 'thread/queue/start') {
+      throw FormatException(
+        'Expected method=thread/queue/start for CodexThreadQueueStartRequest',
+      );
+    }
+    return CodexThreadQueueStartRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadQueueStartParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/start',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexThreadMetadataUpdateRequest extends CodexClientRequest {
   const CodexThreadMetadataUpdateRequest({
     required this.id,
@@ -1004,6 +1406,96 @@ final class CodexThreadMetadataUpdateRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/metadata/update',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadAttachmentAddRequest extends CodexClientRequest {
+  const CodexThreadAttachmentAddRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexThreadAttachmentAddParams params;
+
+  factory CodexThreadAttachmentAddRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentAddRequest');
+    if (map['method'] != 'thread/attachment/add') {
+      throw FormatException(
+        'Expected method=thread/attachment/add for CodexThreadAttachmentAddRequest',
+      );
+    }
+    return CodexThreadAttachmentAddRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadAttachmentAddParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/attachment/add',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadAttachmentListRequest extends CodexClientRequest {
+  const CodexThreadAttachmentListRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexThreadAttachmentListParams params;
+
+  factory CodexThreadAttachmentListRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentListRequest');
+    if (map['method'] != 'thread/attachment/list') {
+      throw FormatException(
+        'Expected method=thread/attachment/list for CodexThreadAttachmentListRequest',
+      );
+    }
+    return CodexThreadAttachmentListRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadAttachmentListParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/attachment/list',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadAttachmentRemoveRequest extends CodexClientRequest {
+  const CodexThreadAttachmentRemoveRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexThreadAttachmentRemoveParams params;
+
+  factory CodexThreadAttachmentRemoveRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentRemoveRequest');
+    if (map['method'] != 'thread/attachment/remove') {
+      throw FormatException(
+        'Expected method=thread/attachment/remove for CodexThreadAttachmentRemoveRequest',
+      );
+    }
+    return CodexThreadAttachmentRemoveRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadAttachmentRemoveParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/attachment/remove',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -1091,6 +1583,33 @@ final class CodexThreadMemoryModeSetRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/memoryMode/set',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexMemoryStatusRequest extends CodexClientRequest {
+  const CodexMemoryStatusRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexMemoryStatusParams params;
+
+  factory CodexMemoryStatusRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMemoryStatusRequest');
+    if (map['method'] != 'memory/status') {
+      throw FormatException(
+        'Expected method=memory/status for CodexMemoryStatusRequest',
+      );
+    }
+    return CodexMemoryStatusRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexMemoryStatusParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'memory/status',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -1354,28 +1873,28 @@ final class CodexThreadBackgroundTerminalsTerminateRequest
   };
 }
 
-final class CodexThreadRollbackRequest extends CodexClientRequest {
-  const CodexThreadRollbackRequest({required this.id, required this.params});
+final class CodexThreadRevertRequest extends CodexClientRequest {
+  const CodexThreadRevertRequest({required this.id, required this.params});
 
   final CodexV2RequestId id;
-  final CodexThreadRollbackParams params;
+  final CodexThreadRevertParams params;
 
-  factory CodexThreadRollbackRequest.fromJson(Object? json) {
-    final map = CodexJson.asMap(json, 'CodexThreadRollbackRequest');
-    if (map['method'] != 'thread/rollback') {
+  factory CodexThreadRevertRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRevertRequest');
+    if (map['method'] != 'thread/revert') {
       throw FormatException(
-        'Expected method=thread/rollback for CodexThreadRollbackRequest',
+        'Expected method=thread/revert for CodexThreadRevertRequest',
       );
     }
-    return CodexThreadRollbackRequest(
+    return CodexThreadRevertRequest(
       id: CodexV2RequestId.fromJson(map['id']),
-      params: CodexThreadRollbackParams.fromJson(map['params']),
+      params: CodexThreadRevertParams.fromJson(map['params']),
     );
   }
 
   @override
   Map<String, Object?> toJson() => {
-    'method': 'thread/rollback',
+    'method': 'thread/revert',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -1403,6 +1922,195 @@ final class CodexThreadListRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/list',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectListRequest extends CodexClientRequest {
+  const CodexProjectListRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectListParams params;
+
+  factory CodexProjectListRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectListRequest');
+    if (map['method'] != 'project/list') {
+      throw FormatException(
+        'Expected method=project/list for CodexProjectListRequest',
+      );
+    }
+    return CodexProjectListRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectListParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/list',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectReadRequest extends CodexClientRequest {
+  const CodexProjectReadRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectReadParams params;
+
+  factory CodexProjectReadRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectReadRequest');
+    if (map['method'] != 'project/read') {
+      throw FormatException(
+        'Expected method=project/read for CodexProjectReadRequest',
+      );
+    }
+    return CodexProjectReadRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectReadParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/read',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectCreateRequest extends CodexClientRequest {
+  const CodexProjectCreateRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectCreateParams params;
+
+  factory CodexProjectCreateRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectCreateRequest');
+    if (map['method'] != 'project/create') {
+      throw FormatException(
+        'Expected method=project/create for CodexProjectCreateRequest',
+      );
+    }
+    return CodexProjectCreateRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectCreateParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/create',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectImportRequest extends CodexClientRequest {
+  const CodexProjectImportRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectImportParams params;
+
+  factory CodexProjectImportRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectImportRequest');
+    if (map['method'] != 'project/import') {
+      throw FormatException(
+        'Expected method=project/import for CodexProjectImportRequest',
+      );
+    }
+    return CodexProjectImportRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectImportParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/import',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectUpdateRequest extends CodexClientRequest {
+  const CodexProjectUpdateRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectUpdateParams params;
+
+  factory CodexProjectUpdateRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectUpdateRequest');
+    if (map['method'] != 'project/update') {
+      throw FormatException(
+        'Expected method=project/update for CodexProjectUpdateRequest',
+      );
+    }
+    return CodexProjectUpdateRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectUpdateParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/update',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectMoveRequest extends CodexClientRequest {
+  const CodexProjectMoveRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectMoveParams params;
+
+  factory CodexProjectMoveRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectMoveRequest');
+    if (map['method'] != 'project/move') {
+      throw FormatException(
+        'Expected method=project/move for CodexProjectMoveRequest',
+      );
+    }
+    return CodexProjectMoveRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectMoveParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/move',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectDeleteRequest extends CodexClientRequest {
+  const CodexProjectDeleteRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexProjectDeleteParams params;
+
+  factory CodexProjectDeleteRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectDeleteRequest');
+    if (map['method'] != 'project/delete') {
+      throw FormatException(
+        'Expected method=project/delete for CodexProjectDeleteRequest',
+      );
+    }
+    return CodexProjectDeleteRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexProjectDeleteParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/delete',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -1961,6 +2669,33 @@ final class CodexPluginInstalledRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'plugin/installed',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexPluginReconcileRequest extends CodexClientRequest {
+  const CodexPluginReconcileRequest({required this.id, required this.params});
+
+  final CodexV2RequestId id;
+  final CodexPluginReconcileParams params;
+
+  factory CodexPluginReconcileRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPluginReconcileRequest');
+    if (map['method'] != 'plugin/reconcile') {
+      throw FormatException(
+        'Expected method=plugin/reconcile for CodexPluginReconcileRequest',
+      );
+    }
+    return CodexPluginReconcileRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexPluginReconcileParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'plugin/reconcile',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -2585,6 +3320,36 @@ final class CodexTurnStartRequest extends CodexClientRequest {
   };
 }
 
+final class CodexTurnSettingsUpdateRequest extends CodexClientRequest {
+  const CodexTurnSettingsUpdateRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexTurnSettingsUpdateParams params;
+
+  factory CodexTurnSettingsUpdateRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnSettingsUpdateRequest');
+    if (map['method'] != 'turn/settings/update') {
+      throw FormatException(
+        'Expected method=turn/settings/update for CodexTurnSettingsUpdateRequest',
+      );
+    }
+    return CodexTurnSettingsUpdateRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexTurnSettingsUpdateParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'turn/settings/update',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexTurnSteerRequest extends CodexClientRequest {
   const CodexTurnSteerRequest({required this.id, required this.params});
 
@@ -2784,6 +3549,36 @@ final class CodexThreadRealtimeStopRequest extends CodexClientRequest {
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/realtime/stop',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadTimelineListRequest extends CodexClientRequest {
+  const CodexThreadTimelineListRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexThreadTimelineListParams params;
+
+  factory CodexThreadTimelineListRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadTimelineListRequest');
+    if (map['method'] != 'thread/timeline/list') {
+      throw FormatException(
+        'Expected method=thread/timeline/list for CodexThreadTimelineListRequest',
+      );
+    }
+    return CodexThreadTimelineListRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexThreadTimelineListParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/timeline/list',
     'id': CodexJson.encode(id),
     'params': CodexJson.encode(params),
   };
@@ -3476,6 +4271,66 @@ final class CodexMcpServerResourceReadRequest extends CodexClientRequest {
   };
 }
 
+final class CodexMcpServerEventStreamStartRequest extends CodexClientRequest {
+  const CodexMcpServerEventStreamStartRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexMcpServerEventStreamStartParams params;
+
+  factory CodexMcpServerEventStreamStartRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStartRequest');
+    if (map['method'] != 'mcpServer/event/stream/start') {
+      throw FormatException(
+        'Expected method=mcpServer/event/stream/start for CodexMcpServerEventStreamStartRequest',
+      );
+    }
+    return CodexMcpServerEventStreamStartRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexMcpServerEventStreamStartParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'mcpServer/event/stream/start',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexMcpServerEventStreamStopRequest extends CodexClientRequest {
+  const CodexMcpServerEventStreamStopRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexMcpServerEventStreamStopParams params;
+
+  factory CodexMcpServerEventStreamStopRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStopRequest');
+    if (map['method'] != 'mcpServer/event/stream/stop') {
+      throw FormatException(
+        'Expected method=mcpServer/event/stream/stop for CodexMcpServerEventStreamStopRequest',
+      );
+    }
+    return CodexMcpServerEventStreamStopRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexMcpServerEventStreamStopParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'mcpServer/event/stream/stop',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexMcpServerToolCallRequest extends CodexClientRequest {
   const CodexMcpServerToolCallRequest({required this.id, required this.params});
 
@@ -3592,6 +4447,66 @@ final class CodexAccountLoginStartRequest extends CodexClientRequest {
   };
 }
 
+final class CodexAccountBedrockDiscoverRequest extends CodexClientRequest {
+  const CodexAccountBedrockDiscoverRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexBedrockDiscoverParams params;
+
+  factory CodexAccountBedrockDiscoverRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAccountBedrockDiscoverRequest');
+    if (map['method'] != 'account/bedrock/discover') {
+      throw FormatException(
+        'Expected method=account/bedrock/discover for CodexAccountBedrockDiscoverRequest',
+      );
+    }
+    return CodexAccountBedrockDiscoverRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexBedrockDiscoverParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'account/bedrock/discover',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexAccountBedrockSetupRequest extends CodexClientRequest {
+  const CodexAccountBedrockSetupRequest({
+    required this.id,
+    required this.params,
+  });
+
+  final CodexV2RequestId id;
+  final CodexBedrockSetupParams params;
+
+  factory CodexAccountBedrockSetupRequest.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAccountBedrockSetupRequest');
+    if (map['method'] != 'account/bedrock/setup') {
+      throw FormatException(
+        'Expected method=account/bedrock/setup for CodexAccountBedrockSetupRequest',
+      );
+    }
+    return CodexAccountBedrockSetupRequest(
+      id: CodexV2RequestId.fromJson(map['id']),
+      params: CodexBedrockSetupParams.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'account/bedrock/setup',
+    'id': CodexJson.encode(id),
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexAccountLoginCancelRequest extends CodexClientRequest {
   const CodexAccountLoginCancelRequest({
     required this.id,
@@ -3655,7 +4570,7 @@ final class CodexAccountRateLimitsReadRequest extends CodexClientRequest {
   const CodexAccountRateLimitsReadRequest({required this.id, this.params});
 
   final CodexV2RequestId id;
-  final Null? params;
+  final CodexGetAccountRateLimitsParams? params;
 
   factory CodexAccountRateLimitsReadRequest.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexAccountRateLimitsReadRequest');
@@ -3667,10 +4582,7 @@ final class CodexAccountRateLimitsReadRequest extends CodexClientRequest {
     return CodexAccountRateLimitsReadRequest(
       id: CodexV2RequestId.fromJson(map['id']),
       params: map.containsKey('params') && map['params'] != null
-          ? CodexJson.asNull(
-              map['params'],
-              'CodexAccountRateLimitsReadRequest.params',
-            )
+          ? CodexGetAccountRateLimitsParams.fromJson(map['params'])
           : null,
     );
   }
@@ -3725,7 +4637,7 @@ final class CodexAccountUsageReadRequest extends CodexClientRequest {
   const CodexAccountUsageReadRequest({required this.id, this.params});
 
   final CodexV2RequestId id;
-  final Null? params;
+  final CodexGetAccountTokenUsageParams? params;
 
   factory CodexAccountUsageReadRequest.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexAccountUsageReadRequest');
@@ -3737,10 +4649,7 @@ final class CodexAccountUsageReadRequest extends CodexClientRequest {
     return CodexAccountUsageReadRequest(
       id: CodexV2RequestId.fromJson(map['id']),
       params: map.containsKey('params') && map['params'] != null
-          ? CodexJson.asNull(
-              map['params'],
-              'CodexAccountUsageReadRequest.params',
-            )
+          ? CodexGetAccountTokenUsageParams.fromJson(map['params'])
           : null,
     );
   }
@@ -4485,6 +5394,25 @@ final class CodexCommandExecutionApprovalDecision
   Object? toJson() => CodexJson.encode(value);
 }
 
+enum CodexCommandExecutionApprovalKind implements CodexJsonEncodable {
+  command('command'),
+  writeStdin('writeStdin');
+
+  const CodexCommandExecutionApprovalKind(this.value);
+  final String value;
+  factory CodexCommandExecutionApprovalKind.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexCommandExecutionApprovalKind');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexCommandExecutionApprovalKind: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 final class CodexCommandExecutionRequestApprovalParams
     implements CodexJsonEncodable {
   const CodexCommandExecutionRequestApprovalParams({
@@ -4496,6 +5424,7 @@ final class CodexCommandExecutionRequestApprovalParams
     this.cwd,
     this.environmentId,
     required this.itemId,
+    this.kind,
     this.networkApprovalContext,
     this.proposedExecpolicyAmendment,
     this.proposedNetworkPolicyAmendments,
@@ -4513,6 +5442,7 @@ final class CodexCommandExecutionRequestApprovalParams
   final CodexLegacyAppPathString? cwd;
   final String? environmentId;
   final String itemId;
+  final CodexCommandExecutionApprovalKind? kind;
   final CodexNetworkApprovalContext? networkApprovalContext;
   final List<String>? proposedExecpolicyAmendment;
   final List<CodexNetworkPolicyAmendment>? proposedNetworkPolicyAmendments;
@@ -4582,6 +5512,9 @@ final class CodexCommandExecutionRequestApprovalParams
         map['itemId'],
         'CodexCommandExecutionRequestApprovalParams.itemId',
       ),
+      kind: map.containsKey('kind') && map['kind'] != null
+          ? CodexCommandExecutionApprovalKind.fromJson(map['kind'])
+          : null,
       networkApprovalContext:
           map.containsKey('networkApprovalContext') &&
               map['networkApprovalContext'] != null
@@ -4646,6 +5579,7 @@ final class CodexCommandExecutionRequestApprovalParams
     if (cwd != null) 'cwd': CodexJson.encode(cwd),
     if (environmentId != null) 'environmentId': CodexJson.encode(environmentId),
     'itemId': CodexJson.encode(itemId),
+    if (kind != null) 'kind': CodexJson.encode(kind),
     if (networkApprovalContext != null)
       'networkApprovalContext': CodexJson.encode(networkApprovalContext),
     if (proposedExecpolicyAmendment != null)
@@ -6646,6 +7580,16 @@ sealed class CodexMcpServerElicitationRequestParams
     } on FormatException {
       /* try the next variant */
     }
+    try {
+      return CodexMcpServerElicitationRequestParamsVariant4.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
+    try {
+      return CodexMcpServerElicitationRequestParamsVariant5.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
     return CodexMcpServerElicitationRequestParamsUnknown(map);
   }
 }
@@ -6653,16 +7597,16 @@ sealed class CodexMcpServerElicitationRequestParams
 final class CodexMcpServerElicitationRequestParamsVariant1
     extends CodexMcpServerElicitationRequestParams {
   const CodexMcpServerElicitationRequestParamsVariant1({
-    this.meta,
-    required this.message,
+    required this.challenge,
+    required this.description,
     required this.mode,
-    required this.requestedSchema,
+    required this.title,
   });
 
-  final Object? meta;
-  final String message;
+  final String challenge;
+  final String description;
   final String mode;
-  final CodexMcpElicitationSchema requestedSchema;
+  final String title;
 
   factory CodexMcpServerElicitationRequestParamsVariant1.fromJson(
     Object? json,
@@ -6672,30 +7616,32 @@ final class CodexMcpServerElicitationRequestParamsVariant1
       'CodexMcpServerElicitationRequestParamsVariant1',
     );
     return CodexMcpServerElicitationRequestParamsVariant1(
-      meta: map.containsKey('_meta') && map['_meta'] != null
-          ? CodexJson.clone(map['_meta'])
-          : null,
-      message: CodexJson.asString(
-        map['message'],
-        'CodexMcpServerElicitationRequestParamsVariant1.message',
+      challenge: CodexJson.asString(
+        map['challenge'],
+        'CodexMcpServerElicitationRequestParamsVariant1.challenge',
+      ),
+      description: CodexJson.asString(
+        map['description'],
+        'CodexMcpServerElicitationRequestParamsVariant1.description',
       ),
       mode: CodexJson.asStringLiteral(
         map['mode'],
         'CodexMcpServerElicitationRequestParamsVariant1.mode',
-        'form',
+        'openai/userVerification',
       ),
-      requestedSchema: CodexMcpElicitationSchema.fromJson(
-        map['requestedSchema'],
+      title: CodexJson.asString(
+        map['title'],
+        'CodexMcpServerElicitationRequestParamsVariant1.title',
       ),
     );
   }
 
   @override
   Map<String, Object?> toJson() => {
-    if (meta != null) '_meta': CodexJson.encode(meta),
-    'message': CodexJson.encode(message),
+    'challenge': CodexJson.encode(challenge),
+    'description': CodexJson.encode(description),
     'mode': CodexJson.encode(mode),
-    'requestedSchema': CodexJson.encode(requestedSchema),
+    'title': CodexJson.encode(title),
   };
 }
 
@@ -6711,7 +7657,7 @@ final class CodexMcpServerElicitationRequestParamsVariant2
   final Object? meta;
   final String message;
   final String mode;
-  final Object? requestedSchema;
+  final CodexMcpElicitationSchema requestedSchema;
 
   factory CodexMcpServerElicitationRequestParamsVariant2.fromJson(
     Object? json,
@@ -6731,9 +7677,11 @@ final class CodexMcpServerElicitationRequestParamsVariant2
       mode: CodexJson.asStringLiteral(
         map['mode'],
         'CodexMcpServerElicitationRequestParamsVariant2.mode',
-        'openai/form',
+        'form',
       ),
-      requestedSchema: CodexJson.clone(map['requestedSchema']),
+      requestedSchema: CodexMcpElicitationSchema.fromJson(
+        map['requestedSchema'],
+      ),
     );
   }
 
@@ -6750,17 +7698,15 @@ final class CodexMcpServerElicitationRequestParamsVariant3
     extends CodexMcpServerElicitationRequestParams {
   const CodexMcpServerElicitationRequestParamsVariant3({
     this.meta,
-    required this.elicitationId,
     required this.message,
     required this.mode,
-    required this.url,
+    required this.requestedSchema,
   });
 
   final Object? meta;
-  final String elicitationId;
   final String message;
   final String mode;
-  final String url;
+  final Object? requestedSchema;
 
   factory CodexMcpServerElicitationRequestParamsVariant3.fromJson(
     Object? json,
@@ -6773,10 +7719,6 @@ final class CodexMcpServerElicitationRequestParamsVariant3
       meta: map.containsKey('_meta') && map['_meta'] != null
           ? CodexJson.clone(map['_meta'])
           : null,
-      elicitationId: CodexJson.asString(
-        map['elicitationId'],
-        'CodexMcpServerElicitationRequestParamsVariant3.elicitationId',
-      ),
       message: CodexJson.asString(
         map['message'],
         'CodexMcpServerElicitationRequestParamsVariant3.message',
@@ -6784,11 +7726,111 @@ final class CodexMcpServerElicitationRequestParamsVariant3
       mode: CodexJson.asStringLiteral(
         map['mode'],
         'CodexMcpServerElicitationRequestParamsVariant3.mode',
+        'openai/form',
+      ),
+      requestedSchema: CodexJson.clone(map['requestedSchema']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (meta != null) '_meta': CodexJson.encode(meta),
+    'message': CodexJson.encode(message),
+    'mode': CodexJson.encode(mode),
+    'requestedSchema': CodexJson.encode(requestedSchema),
+  };
+}
+
+final class CodexMcpServerElicitationRequestParamsVariant4
+    extends CodexMcpServerElicitationRequestParams {
+  const CodexMcpServerElicitationRequestParamsVariant4({
+    this.meta,
+    required this.message,
+    required this.mode,
+    required this.requestedSchema,
+  });
+
+  final Object? meta;
+  final String message;
+  final String mode;
+  final Object? requestedSchema;
+
+  factory CodexMcpServerElicitationRequestParamsVariant4.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexMcpServerElicitationRequestParamsVariant4',
+    );
+    return CodexMcpServerElicitationRequestParamsVariant4(
+      meta: map.containsKey('_meta') && map['_meta'] != null
+          ? CodexJson.clone(map['_meta'])
+          : null,
+      message: CodexJson.asString(
+        map['message'],
+        'CodexMcpServerElicitationRequestParamsVariant4.message',
+      ),
+      mode: CodexJson.asStringLiteral(
+        map['mode'],
+        'CodexMcpServerElicitationRequestParamsVariant4.mode',
+        'openaiForm',
+      ),
+      requestedSchema: CodexJson.clone(map['requestedSchema']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (meta != null) '_meta': CodexJson.encode(meta),
+    'message': CodexJson.encode(message),
+    'mode': CodexJson.encode(mode),
+    'requestedSchema': CodexJson.encode(requestedSchema),
+  };
+}
+
+final class CodexMcpServerElicitationRequestParamsVariant5
+    extends CodexMcpServerElicitationRequestParams {
+  const CodexMcpServerElicitationRequestParamsVariant5({
+    this.meta,
+    required this.elicitationId,
+    required this.message,
+    required this.mode,
+    required this.url,
+  });
+
+  final Object? meta;
+  final String elicitationId;
+  final String message;
+  final String mode;
+  final String url;
+
+  factory CodexMcpServerElicitationRequestParamsVariant5.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexMcpServerElicitationRequestParamsVariant5',
+    );
+    return CodexMcpServerElicitationRequestParamsVariant5(
+      meta: map.containsKey('_meta') && map['_meta'] != null
+          ? CodexJson.clone(map['_meta'])
+          : null,
+      elicitationId: CodexJson.asString(
+        map['elicitationId'],
+        'CodexMcpServerElicitationRequestParamsVariant5.elicitationId',
+      ),
+      message: CodexJson.asString(
+        map['message'],
+        'CodexMcpServerElicitationRequestParamsVariant5.message',
+      ),
+      mode: CodexJson.asStringLiteral(
+        map['mode'],
+        'CodexMcpServerElicitationRequestParamsVariant5.mode',
         'url',
       ),
       url: CodexJson.asString(
         map['url'],
-        'CodexMcpServerElicitationRequestParamsVariant3.url',
+        'CodexMcpServerElicitationRequestParamsVariant5.url',
       ),
     );
   }
@@ -7086,7 +8128,7 @@ final class CodexPermissionsRequestApprovalParams
     required this.turnId,
   });
 
-  final CodexV2AbsolutePathBuf cwd;
+  final CodexLegacyAppPathString cwd;
   final String? environmentId;
   final String itemId;
   final CodexRequestPermissionProfile permissions;
@@ -7098,7 +8140,7 @@ final class CodexPermissionsRequestApprovalParams
   factory CodexPermissionsRequestApprovalParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexPermissionsRequestApprovalParams');
     return CodexPermissionsRequestApprovalParams(
-      cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      cwd: CodexLegacyAppPathString.fromJson(map['cwd']),
       environmentId:
           map.containsKey('environmentId') && map['environmentId'] != null
           ? CodexJson.asString(
@@ -7223,14 +8265,24 @@ sealed class CodexServerNotification implements CodexJsonEncodable {
         return CodexThreadUnarchivedNotification2.fromJson(map);
       case 'thread/closed':
         return CodexThreadClosedNotification2.fromJson(map);
+      case 'thread/reverted':
+        return CodexThreadRevertedNotification2.fromJson(map);
       case 'skills/changed':
         return CodexSkillsChangedNotification2.fromJson(map);
       case 'thread/name/updated':
         return CodexThreadNameUpdatedNotification2.fromJson(map);
+      case 'thread/attachment/updated':
+        return CodexThreadAttachmentUpdatedNotification2.fromJson(map);
       case 'thread/goal/updated':
         return CodexThreadGoalUpdatedNotification2.fromJson(map);
       case 'thread/goal/cleared':
         return CodexThreadGoalClearedNotification2.fromJson(map);
+      case 'thread/queue/changed':
+        return CodexThreadQueueChangedNotification2.fromJson(map);
+      case 'project/changed':
+        return CodexProjectChangedNotification2.fromJson(map);
+      case 'thread/project/updated':
+        return CodexThreadProjectUpdatedNotification2.fromJson(map);
       case 'thread/environment/connected':
         return CodexThreadEnvironmentConnectedNotification.fromJson(map);
       case 'thread/environment/disconnected':
@@ -7257,6 +8309,10 @@ sealed class CodexServerNotification implements CodexJsonEncodable {
         return CodexItemAutoApprovalReviewStartedNotification.fromJson(map);
       case 'item/autoApprovalReview/completed':
         return CodexItemAutoApprovalReviewCompletedNotification.fromJson(map);
+      case 'autoApprovalReview/strictReviewRequired':
+        return CodexAutoApprovalReviewStrictReviewRequiredNotification.fromJson(
+          map,
+        );
       case 'item/completed':
         return CodexItemCompletedNotification2.fromJson(map);
       case 'item/agentMessage/delta':
@@ -7287,6 +8343,8 @@ sealed class CodexServerNotification implements CodexJsonEncodable {
         return CodexMcpServerOauthLoginCompletedNotification2.fromJson(map);
       case 'mcpServer/startupStatus/updated':
         return CodexMcpServerStartupStatusUpdatedNotification.fromJson(map);
+      case 'mcpServer/event/stream/notification':
+        return CodexMcpServerEventStreamNotificationNotification.fromJson(map);
       case 'account/updated':
         return CodexAccountUpdatedNotification2.fromJson(map);
       case 'account/rateLimits/updated':
@@ -7317,6 +8375,12 @@ sealed class CodexServerNotification implements CodexJsonEncodable {
         return CodexModelReroutedNotification2.fromJson(map);
       case 'model/verification':
         return CodexModelVerificationNotification2.fromJson(map);
+      case 'modelProvider/authRecoveryStarted':
+        return CodexModelProviderAuthRecoveryStartedNotification.fromJson(map);
+      case 'modelProvider/authRecoveryCompleted':
+        return CodexModelProviderAuthRecoveryCompletedNotification.fromJson(
+          map,
+        );
       case 'turn/moderationMetadata':
         return CodexTurnModerationMetadataNotification2.fromJson(map);
       case 'model/safetyBuffering/updated':
@@ -7337,6 +8401,14 @@ sealed class CodexServerNotification implements CodexJsonEncodable {
         return CodexThreadRealtimeStartedNotification2.fromJson(map);
       case 'thread/realtime/itemAdded':
         return CodexThreadRealtimeItemAddedNotification2.fromJson(map);
+      case 'thread/realtime/item/started':
+        return CodexThreadRealtimeItemStartedNotification2.fromJson(map);
+      case 'thread/realtime/item/transcript/delta':
+        return CodexThreadRealtimeItemTranscriptDeltaNotification2.fromJson(
+          map,
+        );
+      case 'thread/realtime/item/completed':
+        return CodexThreadRealtimeItemCompletedNotification2.fromJson(map);
       case 'thread/realtime/transcript/delta':
         return CodexThreadRealtimeTranscriptDeltaNotification2.fromJson(map);
       case 'thread/realtime/transcript/done':
@@ -7530,6 +8602,30 @@ final class CodexThreadClosedNotification2 extends CodexServerNotification {
   };
 }
 
+final class CodexThreadRevertedNotification2 extends CodexServerNotification {
+  const CodexThreadRevertedNotification2({required this.params});
+
+  final CodexThreadRevertedNotification params;
+
+  factory CodexThreadRevertedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRevertedNotification2');
+    if (map['method'] != 'thread/reverted') {
+      throw FormatException(
+        'Expected method=thread/reverted for CodexThreadRevertedNotification2',
+      );
+    }
+    return CodexThreadRevertedNotification2(
+      params: CodexThreadRevertedNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/reverted',
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexSkillsChangedNotification2 extends CodexServerNotification {
   const CodexSkillsChangedNotification2({required this.params});
 
@@ -7575,6 +8671,34 @@ final class CodexThreadNameUpdatedNotification2
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/name/updated',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadAttachmentUpdatedNotification2
+    extends CodexServerNotification {
+  const CodexThreadAttachmentUpdatedNotification2({required this.params});
+
+  final CodexThreadAttachmentUpdatedNotification params;
+
+  factory CodexThreadAttachmentUpdatedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadAttachmentUpdatedNotification2',
+    );
+    if (map['method'] != 'thread/attachment/updated') {
+      throw FormatException(
+        'Expected method=thread/attachment/updated for CodexThreadAttachmentUpdatedNotification2',
+      );
+    }
+    return CodexThreadAttachmentUpdatedNotification2(
+      params: CodexThreadAttachmentUpdatedNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/attachment/updated',
     'params': CodexJson.encode(params),
   };
 }
@@ -7625,6 +8749,80 @@ final class CodexThreadGoalClearedNotification2
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/goal/cleared',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadQueueChangedNotification2
+    extends CodexServerNotification {
+  const CodexThreadQueueChangedNotification2({required this.params});
+
+  final CodexThreadQueueChangedNotification params;
+
+  factory CodexThreadQueueChangedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueChangedNotification2');
+    if (map['method'] != 'thread/queue/changed') {
+      throw FormatException(
+        'Expected method=thread/queue/changed for CodexThreadQueueChangedNotification2',
+      );
+    }
+    return CodexThreadQueueChangedNotification2(
+      params: CodexThreadQueueChangedNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/queue/changed',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexProjectChangedNotification2 extends CodexServerNotification {
+  const CodexProjectChangedNotification2({required this.params});
+
+  final CodexProjectChangedNotification params;
+
+  factory CodexProjectChangedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectChangedNotification2');
+    if (map['method'] != 'project/changed') {
+      throw FormatException(
+        'Expected method=project/changed for CodexProjectChangedNotification2',
+      );
+    }
+    return CodexProjectChangedNotification2(
+      params: CodexProjectChangedNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'project/changed',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadProjectUpdatedNotification2
+    extends CodexServerNotification {
+  const CodexThreadProjectUpdatedNotification2({required this.params});
+
+  final CodexThreadProjectUpdatedNotification params;
+
+  factory CodexThreadProjectUpdatedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadProjectUpdatedNotification2');
+    if (map['method'] != 'thread/project/updated') {
+      throw FormatException(
+        'Expected method=thread/project/updated for CodexThreadProjectUpdatedNotification2',
+      );
+    }
+    return CodexThreadProjectUpdatedNotification2(
+      params: CodexThreadProjectUpdatedNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/project/updated',
     'params': CodexJson.encode(params),
   };
 }
@@ -7973,6 +9171,38 @@ final class CodexItemAutoApprovalReviewCompletedNotification
   @override
   Map<String, Object?> toJson() => {
     'method': 'item/autoApprovalReview/completed',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexAutoApprovalReviewStrictReviewRequiredNotification
+    extends CodexServerNotification {
+  const CodexAutoApprovalReviewStrictReviewRequiredNotification({
+    required this.params,
+  });
+
+  final CodexStrictReviewRequiredNotification params;
+
+  factory CodexAutoApprovalReviewStrictReviewRequiredNotification.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexAutoApprovalReviewStrictReviewRequiredNotification',
+    );
+    if (map['method'] != 'autoApprovalReview/strictReviewRequired') {
+      throw FormatException(
+        'Expected method=autoApprovalReview/strictReviewRequired for CodexAutoApprovalReviewStrictReviewRequiredNotification',
+      );
+    }
+    return CodexAutoApprovalReviewStrictReviewRequiredNotification(
+      params: CodexStrictReviewRequiredNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'autoApprovalReview/strictReviewRequired',
     'params': CodexJson.encode(params),
   };
 }
@@ -8367,6 +9597,38 @@ final class CodexMcpServerStartupStatusUpdatedNotification
   };
 }
 
+final class CodexMcpServerEventStreamNotificationNotification
+    extends CodexServerNotification {
+  const CodexMcpServerEventStreamNotificationNotification({
+    required this.params,
+  });
+
+  final CodexMcpServerEventStreamNotification params;
+
+  factory CodexMcpServerEventStreamNotificationNotification.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexMcpServerEventStreamNotificationNotification',
+    );
+    if (map['method'] != 'mcpServer/event/stream/notification') {
+      throw FormatException(
+        'Expected method=mcpServer/event/stream/notification for CodexMcpServerEventStreamNotificationNotification',
+      );
+    }
+    return CodexMcpServerEventStreamNotificationNotification(
+      params: CodexMcpServerEventStreamNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'mcpServer/event/stream/notification',
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexAccountUpdatedNotification2 extends CodexServerNotification {
   const CodexAccountUpdatedNotification2({required this.params});
 
@@ -8730,6 +9992,70 @@ final class CodexModelVerificationNotification2
   };
 }
 
+final class CodexModelProviderAuthRecoveryStartedNotification
+    extends CodexServerNotification {
+  const CodexModelProviderAuthRecoveryStartedNotification({
+    required this.params,
+  });
+
+  final CodexAuthRecoveryNotification params;
+
+  factory CodexModelProviderAuthRecoveryStartedNotification.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexModelProviderAuthRecoveryStartedNotification',
+    );
+    if (map['method'] != 'modelProvider/authRecoveryStarted') {
+      throw FormatException(
+        'Expected method=modelProvider/authRecoveryStarted for CodexModelProviderAuthRecoveryStartedNotification',
+      );
+    }
+    return CodexModelProviderAuthRecoveryStartedNotification(
+      params: CodexAuthRecoveryNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'modelProvider/authRecoveryStarted',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexModelProviderAuthRecoveryCompletedNotification
+    extends CodexServerNotification {
+  const CodexModelProviderAuthRecoveryCompletedNotification({
+    required this.params,
+  });
+
+  final CodexAuthRecoveryNotification params;
+
+  factory CodexModelProviderAuthRecoveryCompletedNotification.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexModelProviderAuthRecoveryCompletedNotification',
+    );
+    if (map['method'] != 'modelProvider/authRecoveryCompleted') {
+      throw FormatException(
+        'Expected method=modelProvider/authRecoveryCompleted for CodexModelProviderAuthRecoveryCompletedNotification',
+      );
+    }
+    return CodexModelProviderAuthRecoveryCompletedNotification(
+      params: CodexAuthRecoveryNotification.fromJson(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'modelProvider/authRecoveryCompleted',
+    'params': CodexJson.encode(params),
+  };
+}
+
 final class CodexTurnModerationMetadataNotification2
     extends CodexServerNotification {
   const CodexTurnModerationMetadataNotification2({required this.params});
@@ -9003,6 +10329,100 @@ final class CodexThreadRealtimeItemAddedNotification2
   @override
   Map<String, Object?> toJson() => {
     'method': 'thread/realtime/itemAdded',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadRealtimeItemStartedNotification2
+    extends CodexServerNotification {
+  const CodexThreadRealtimeItemStartedNotification2({required this.params});
+
+  final CodexThreadRealtimeItemStartedNotification params;
+
+  factory CodexThreadRealtimeItemStartedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemStartedNotification2',
+    );
+    if (map['method'] != 'thread/realtime/item/started') {
+      throw FormatException(
+        'Expected method=thread/realtime/item/started for CodexThreadRealtimeItemStartedNotification2',
+      );
+    }
+    return CodexThreadRealtimeItemStartedNotification2(
+      params: CodexThreadRealtimeItemStartedNotification.fromJson(
+        map['params'],
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/realtime/item/started',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadRealtimeItemTranscriptDeltaNotification2
+    extends CodexServerNotification {
+  const CodexThreadRealtimeItemTranscriptDeltaNotification2({
+    required this.params,
+  });
+
+  final CodexThreadRealtimeItemTranscriptDeltaNotification params;
+
+  factory CodexThreadRealtimeItemTranscriptDeltaNotification2.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemTranscriptDeltaNotification2',
+    );
+    if (map['method'] != 'thread/realtime/item/transcript/delta') {
+      throw FormatException(
+        'Expected method=thread/realtime/item/transcript/delta for CodexThreadRealtimeItemTranscriptDeltaNotification2',
+      );
+    }
+    return CodexThreadRealtimeItemTranscriptDeltaNotification2(
+      params: CodexThreadRealtimeItemTranscriptDeltaNotification.fromJson(
+        map['params'],
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/realtime/item/transcript/delta',
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexThreadRealtimeItemCompletedNotification2
+    extends CodexServerNotification {
+  const CodexThreadRealtimeItemCompletedNotification2({required this.params});
+
+  final CodexThreadRealtimeItemCompletedNotification params;
+
+  factory CodexThreadRealtimeItemCompletedNotification2.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemCompletedNotification2',
+    );
+    if (map['method'] != 'thread/realtime/item/completed') {
+      throw FormatException(
+        'Expected method=thread/realtime/item/completed for CodexThreadRealtimeItemCompletedNotification2',
+      );
+    }
+    return CodexThreadRealtimeItemCompletedNotification2(
+      params: CodexThreadRealtimeItemCompletedNotification.fromJson(
+        map['params'],
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': 'thread/realtime/item/completed',
     'params': CodexJson.encode(params),
   };
 }
@@ -10073,6 +11493,25 @@ final class CodexAccountRateLimitsUpdatedNotification
   Map<String, Object?> toJson() => {'rateLimits': CodexJson.encode(rateLimits)};
 }
 
+enum CodexAccountRoutingOverride implements CodexJsonEncodable {
+  nOCONSTRAINT('NO_CONSTRAINT'),
+  us('us'),
+  usCr('us_cr');
+
+  const CodexAccountRoutingOverride(this.value);
+  final String value;
+  factory CodexAccountRoutingOverride.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexAccountRoutingOverride');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexAccountRoutingOverride: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 final class CodexAccountTokenUsageDailyBucket implements CodexJsonEncodable {
   const CodexAccountTokenUsageDailyBucket({
     required this.startDate,
@@ -10391,6 +11830,17 @@ final class CodexAdditionalNetworkPermissions implements CodexJsonEncodable {
   };
 }
 
+final class CodexAgentMessageDelivery implements CodexJsonEncodable {
+  const CodexAgentMessageDelivery(this.value);
+  final String value;
+  factory CodexAgentMessageDelivery.fromJson(Object? json) =>
+      CodexAgentMessageDelivery(
+        CodexJson.asStringLiteral(json, 'CodexAgentMessageDelivery', 'async'),
+      );
+  @override
+  Object? toJson() => CodexJson.encode(value);
+}
+
 final class CodexAgentMessageDeltaNotification implements CodexJsonEncodable {
   const CodexAgentMessageDeltaNotification({
     required this.delta,
@@ -10528,6 +11978,24 @@ final class CodexAgentPath implements CodexJsonEncodable {
   Object? toJson() => CodexJson.encode(value);
 }
 
+enum CodexAllowDenyRequirement implements CodexJsonEncodable {
+  allow('allow'),
+  deny('deny');
+
+  const CodexAllowDenyRequirement(this.value);
+  final String value;
+  factory CodexAllowDenyRequirement.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexAllowDenyRequirement');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexAllowDenyRequirement: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 final class CodexAnalyticsConfig implements CodexJsonEncodable {
   const CodexAnalyticsConfig({this.enabled});
 
@@ -10617,6 +12085,7 @@ final class CodexAppConfig implements CodexJsonEncodable {
     this.defaultToolsEnabled,
     this.destructiveEnabled,
     this.enabled,
+    this.links,
     this.openWorldEnabled,
     this.tools,
   });
@@ -10626,6 +12095,7 @@ final class CodexAppConfig implements CodexJsonEncodable {
   final bool? defaultToolsEnabled;
   final bool? destructiveEnabled;
   final bool? enabled;
+  final CodexAppLinksConfig? links;
   final bool? openWorldEnabled;
   final CodexAppToolsConfig? tools;
 
@@ -10661,6 +12131,9 @@ final class CodexAppConfig implements CodexJsonEncodable {
       enabled: map.containsKey('enabled') && map['enabled'] != null
           ? CodexJson.asBool(map['enabled'], 'CodexAppConfig.enabled')
           : null,
+      links: map.containsKey('links') && map['links'] != null
+          ? CodexAppLinksConfig.fromJson(map['links'])
+          : null,
       openWorldEnabled:
           map.containsKey('open_world_enabled') &&
               map['open_world_enabled'] != null
@@ -10686,6 +12159,7 @@ final class CodexAppConfig implements CodexJsonEncodable {
     if (destructiveEnabled != null)
       'destructive_enabled': CodexJson.encode(destructiveEnabled),
     if (enabled != null) 'enabled': CodexJson.encode(enabled),
+    if (links != null) 'links': CodexJson.encode(links),
     if (openWorldEnabled != null)
       'open_world_enabled': CodexJson.encode(openWorldEnabled),
     if (tools != null) 'tools': CodexJson.encode(tools),
@@ -10832,6 +12306,52 @@ final class CodexAppInfo implements CodexJsonEncodable {
     if (pluginDisplayNames != null)
       'pluginDisplayNames': CodexJson.encode(pluginDisplayNames),
   };
+}
+
+final class CodexAppLinkConfig implements CodexJsonEncodable {
+  const CodexAppLinkConfig({
+    this.approvalsReviewer,
+    this.defaultToolsApprovalMode,
+  });
+
+  final CodexApprovalsReviewer? approvalsReviewer;
+  final CodexAppToolApproval? defaultToolsApprovalMode;
+
+  factory CodexAppLinkConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAppLinkConfig');
+    return CodexAppLinkConfig(
+      approvalsReviewer:
+          map.containsKey('approvals_reviewer') &&
+              map['approvals_reviewer'] != null
+          ? CodexApprovalsReviewer.fromJson(map['approvals_reviewer'])
+          : null,
+      defaultToolsApprovalMode:
+          map.containsKey('default_tools_approval_mode') &&
+              map['default_tools_approval_mode'] != null
+          ? CodexAppToolApproval.fromJson(map['default_tools_approval_mode'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (approvalsReviewer != null)
+      'approvals_reviewer': CodexJson.encode(approvalsReviewer),
+    if (defaultToolsApprovalMode != null)
+      'default_tools_approval_mode': CodexJson.encode(defaultToolsApprovalMode),
+  };
+}
+
+final class CodexAppLinksConfig implements CodexJsonEncodable {
+  const CodexAppLinksConfig();
+
+  factory CodexAppLinksConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAppLinksConfig');
+    return const CodexAppLinksConfig();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
 }
 
 final class CodexAppListUpdatedNotification implements CodexJsonEncodable {
@@ -11302,6 +12822,60 @@ final class CodexAppToolsConfig implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {};
 }
 
+final class CodexApplicationNetworkRequirements implements CodexJsonEncodable {
+  const CodexApplicationNetworkRequirements({
+    required this.domains,
+    required this.enabled,
+  });
+
+  final Map<String, CodexNetworkDomainPermission> domains;
+  final bool enabled;
+
+  factory CodexApplicationNetworkRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexApplicationNetworkRequirements');
+    return CodexApplicationNetworkRequirements(
+      domains:
+          CodexJson.asMap(
+            map['domains'],
+            'CodexApplicationNetworkRequirements.domains',
+          ).map(
+            (key, value) =>
+                MapEntry(key, CodexNetworkDomainPermission.fromJson(value)),
+          ),
+      enabled: CodexJson.asBool(
+        map['enabled'],
+        'CodexApplicationNetworkRequirements.enabled',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'domains': CodexJson.encode(domains),
+    'enabled': CodexJson.encode(enabled),
+  };
+}
+
+final class CodexApplicationRequirements implements CodexJsonEncodable {
+  const CodexApplicationRequirements({this.network});
+
+  final CodexApplicationNetworkRequirements? network;
+
+  factory CodexApplicationRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexApplicationRequirements');
+    return CodexApplicationRequirements(
+      network: map.containsKey('network') && map['network'] != null
+          ? CodexApplicationNetworkRequirements.fromJson(map['network'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (network != null) 'network': CodexJson.encode(network),
+  };
+}
+
 enum CodexApprovalsReviewer implements CodexJsonEncodable {
   user('user'),
   autoReview('auto_review'),
@@ -11529,10 +13103,15 @@ final class CodexAppsListResponse implements CodexJsonEncodable {
 }
 
 final class CodexAppsReadParams implements CodexJsonEncodable {
-  const CodexAppsReadParams({required this.appIds, this.includeTools});
+  const CodexAppsReadParams({
+    required this.appIds,
+    this.includeTools,
+    this.threadId,
+  });
 
   final List<String> appIds;
   final bool? includeTools;
+  final String? threadId;
 
   factory CodexAppsReadParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexAppsReadParams');
@@ -11550,6 +13129,9 @@ final class CodexAppsReadParams implements CodexJsonEncodable {
               'CodexAppsReadParams.includeTools',
             )
           : null,
+      threadId: map.containsKey('threadId') && map['threadId'] != null
+          ? CodexJson.asString(map['threadId'], 'CodexAppsReadParams.threadId')
+          : null,
     );
   }
 
@@ -11557,6 +13139,7 @@ final class CodexAppsReadParams implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     'appIds': CodexJson.encode(appIds),
     if (includeTools != null) 'includeTools': CodexJson.encode(includeTools),
+    if (threadId != null) 'threadId': CodexJson.encode(threadId),
   };
 }
 
@@ -11606,6 +13189,42 @@ final class CodexAskForApproval implements CodexJsonEncodable {
   Object? toJson() => CodexJson.encode(value);
 }
 
+final class CodexAsyncUserInputQuestion implements CodexJsonEncodable {
+  const CodexAsyncUserInputQuestion({this.options, required this.title});
+
+  final List<String>? options;
+  final String title;
+
+  factory CodexAsyncUserInputQuestion.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAsyncUserInputQuestion');
+    return CodexAsyncUserInputQuestion(
+      options: map.containsKey('options') && map['options'] != null
+          ? CodexJson.asList(
+                  map['options'],
+                  'CodexAsyncUserInputQuestion.options',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexAsyncUserInputQuestion.options[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
+      title: CodexJson.asString(
+        map['title'],
+        'CodexAsyncUserInputQuestion.title',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (options != null) 'options': CodexJson.encode(options),
+    'title': CodexJson.encode(title),
+  };
+}
+
 final class CodexAuthMode implements CodexJsonEncodable {
   const CodexAuthMode(this.value);
   final Object? value;
@@ -11613,6 +13232,50 @@ final class CodexAuthMode implements CodexJsonEncodable {
       CodexAuthMode(CodexJson.clone(json));
   @override
   Object? toJson() => CodexJson.encode(value);
+}
+
+final class CodexAuthRecoveryNotification implements CodexJsonEncodable {
+  const CodexAuthRecoveryNotification({
+    required this.message,
+    required this.provider,
+    required this.threadId,
+    required this.turnId,
+  });
+
+  final String message;
+  final String provider;
+  final String threadId;
+  final String turnId;
+
+  factory CodexAuthRecoveryNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAuthRecoveryNotification');
+    return CodexAuthRecoveryNotification(
+      message: CodexJson.asString(
+        map['message'],
+        'CodexAuthRecoveryNotification.message',
+      ),
+      provider: CodexJson.asString(
+        map['provider'],
+        'CodexAuthRecoveryNotification.provider',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexAuthRecoveryNotification.threadId',
+      ),
+      turnId: CodexJson.asString(
+        map['turnId'],
+        'CodexAuthRecoveryNotification.turnId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'message': CodexJson.encode(message),
+    'provider': CodexJson.encode(provider),
+    'threadId': CodexJson.encode(threadId),
+    'turnId': CodexJson.encode(turnId),
+  };
 }
 
 final class CodexAutoCompactTokenLimitScope implements CodexJsonEncodable {
@@ -11639,14 +13302,500 @@ final class CodexAutoReviewDecisionSource implements CodexJsonEncodable {
   Object? toJson() => CodexJson.encode(value);
 }
 
-final class CodexBrowserUseRequirements implements CodexJsonEncodable {
-  const CodexBrowserUseRequirements({this.disableAutoReview});
+final class CodexAutoReviewRequirements implements CodexJsonEncodable {
+  const CodexAutoReviewRequirements({this.ignoreRules, this.requiredOnModels});
 
+  final List<String>? ignoreRules;
+  final List<String>? requiredOnModels;
+
+  factory CodexAutoReviewRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAutoReviewRequirements');
+    return CodexAutoReviewRequirements(
+      ignoreRules: map.containsKey('ignoreRules') && map['ignoreRules'] != null
+          ? CodexJson.asList(
+                  map['ignoreRules'],
+                  'CodexAutoReviewRequirements.ignoreRules',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexAutoReviewRequirements.ignoreRules[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
+      requiredOnModels:
+          map.containsKey('requiredOnModels') && map['requiredOnModels'] != null
+          ? CodexJson.asList(
+                  map['requiredOnModels'],
+                  'CodexAutoReviewRequirements.requiredOnModels',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexAutoReviewRequirements.requiredOnModels[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (ignoreRules != null) 'ignoreRules': CodexJson.encode(ignoreRules),
+    if (requiredOnModels != null)
+      'requiredOnModels': CodexJson.encode(requiredOnModels),
+  };
+}
+
+enum CodexAwsCredentialType implements CodexJsonEncodable {
+  accessKeys('accessKeys'),
+  bedrockApiKey('bedrockApiKey');
+
+  const CodexAwsCredentialType(this.value);
+  final String value;
+  factory CodexAwsCredentialType.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexAwsCredentialType');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexAwsCredentialType: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexBedrockAwsProfile implements CodexJsonEncodable {
+  const CodexBedrockAwsProfile({required this.name, this.region});
+
+  final String name;
+  final String? region;
+
+  factory CodexBedrockAwsProfile.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockAwsProfile');
+    return CodexBedrockAwsProfile(
+      name: CodexJson.asString(map['name'], 'CodexBedrockAwsProfile.name'),
+      region: map.containsKey('region') && map['region'] != null
+          ? CodexJson.asString(map['region'], 'CodexBedrockAwsProfile.region')
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'name': CodexJson.encode(name),
+    if (region != null) 'region': CodexJson.encode(region),
+  };
+}
+
+final class CodexBedrockDiscoverParams implements CodexJsonEncodable {
+  const CodexBedrockDiscoverParams();
+
+  factory CodexBedrockDiscoverParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockDiscoverParams');
+    return const CodexBedrockDiscoverParams();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexBedrockDiscoverResponse implements CodexJsonEncodable {
+  const CodexBedrockDiscoverResponse({
+    required this.environmentCredentials,
+    required this.profiles,
+  });
+
+  final List<CodexBedrockEnvironmentCredential> environmentCredentials;
+  final List<CodexBedrockAwsProfile> profiles;
+
+  factory CodexBedrockDiscoverResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockDiscoverResponse');
+    return CodexBedrockDiscoverResponse(
+      environmentCredentials:
+          CodexJson.asList(
+                map['environmentCredentials'],
+                'CodexBedrockDiscoverResponse.environmentCredentials',
+              )
+              .map((value) => CodexBedrockEnvironmentCredential.fromJson(value))
+              .toList(growable: false),
+      profiles:
+          CodexJson.asList(
+                map['profiles'],
+                'CodexBedrockDiscoverResponse.profiles',
+              )
+              .map((value) => CodexBedrockAwsProfile.fromJson(value))
+              .toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'environmentCredentials': CodexJson.encode(environmentCredentials),
+    'profiles': CodexJson.encode(profiles),
+  };
+}
+
+final class CodexBedrockEnvironmentCredential implements CodexJsonEncodable {
+  const CodexBedrockEnvironmentCredential({this.region, required this.type});
+
+  final String? region;
+  final CodexAwsCredentialType type;
+
+  factory CodexBedrockEnvironmentCredential.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockEnvironmentCredential');
+    return CodexBedrockEnvironmentCredential(
+      region: map.containsKey('region') && map['region'] != null
+          ? CodexJson.asString(
+              map['region'],
+              'CodexBedrockEnvironmentCredential.region',
+            )
+          : null,
+      type: CodexAwsCredentialType.fromJson(map['type']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (region != null) 'region': CodexJson.encode(region),
+    'type': CodexJson.encode(type),
+  };
+}
+
+sealed class CodexBedrockSetupParams implements CodexJsonEncodable {
+  const CodexBedrockSetupParams();
+  factory CodexBedrockSetupParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockSetupParams');
+    switch (map['type']) {
+      case 'profile':
+        return CodexProfilev2BedrockSetupParams.fromJson(map);
+      case 'environment':
+        return CodexEnvironmentv2BedrockSetupParams.fromJson(map);
+      default:
+        return CodexBedrockSetupParamsUnknown(map);
+    }
+  }
+}
+
+final class CodexProfilev2BedrockSetupParams extends CodexBedrockSetupParams {
+  const CodexProfilev2BedrockSetupParams({
+    required this.profile,
+    required this.region,
+  });
+
+  final String profile;
+  final String region;
+
+  factory CodexProfilev2BedrockSetupParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProfilev2BedrockSetupParams');
+    if (map['type'] != 'profile') {
+      throw FormatException(
+        'Expected type=profile for CodexProfilev2BedrockSetupParams',
+      );
+    }
+    return CodexProfilev2BedrockSetupParams(
+      profile: CodexJson.asString(
+        map['profile'],
+        'CodexProfilev2BedrockSetupParams.profile',
+      ),
+      region: CodexJson.asString(
+        map['region'],
+        'CodexProfilev2BedrockSetupParams.region',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'profile',
+    'profile': CodexJson.encode(profile),
+    'region': CodexJson.encode(region),
+  };
+}
+
+final class CodexEnvironmentv2BedrockSetupParams
+    extends CodexBedrockSetupParams {
+  const CodexEnvironmentv2BedrockSetupParams({required this.region});
+
+  final String region;
+
+  factory CodexEnvironmentv2BedrockSetupParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexEnvironmentv2BedrockSetupParams');
+    if (map['type'] != 'environment') {
+      throw FormatException(
+        'Expected type=environment for CodexEnvironmentv2BedrockSetupParams',
+      );
+    }
+    return CodexEnvironmentv2BedrockSetupParams(
+      region: CodexJson.asString(
+        map['region'],
+        'CodexEnvironmentv2BedrockSetupParams.region',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'environment',
+    'region': CodexJson.encode(region),
+  };
+}
+
+final class CodexBedrockSetupParamsUnknown extends CodexBedrockSetupParams {
+  const CodexBedrockSetupParamsUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
+final class CodexBedrockSetupResponse implements CodexJsonEncodable {
+  const CodexBedrockSetupResponse();
+
+  factory CodexBedrockSetupResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBedrockSetupResponse');
+    return const CodexBedrockSetupResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+enum CodexBrowserUseAccessApprovalLifetime implements CodexJsonEncodable {
+  turn('turn'),
+  thread('thread');
+
+  const CodexBrowserUseAccessApprovalLifetime(this.value);
+  final String value;
+  factory CodexBrowserUseAccessApprovalLifetime.fromJson(Object? json) {
+    final value = CodexJson.asString(
+      json,
+      'CodexBrowserUseAccessApprovalLifetime',
+    );
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexBrowserUseAccessApprovalLifetime: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexBrowserUseConfig implements CodexJsonEncodable {
+  const CodexBrowserUseConfig({
+    this.allowHistoryAccess,
+    this.defaultOriginPolicy,
+    this.origins,
+  });
+
+  final bool? allowHistoryAccess;
+  final CodexBrowserUseOriginPolicyConfig? defaultOriginPolicy;
+  final Map<String, CodexBrowserUseOriginPolicyConfig>? origins;
+
+  factory CodexBrowserUseConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBrowserUseConfig');
+    return CodexBrowserUseConfig(
+      allowHistoryAccess:
+          map.containsKey('allow_history_access') &&
+              map['allow_history_access'] != null
+          ? CodexJson.asBool(
+              map['allow_history_access'],
+              'CodexBrowserUseConfig.allow_history_access',
+            )
+          : null,
+      defaultOriginPolicy:
+          map.containsKey('default_origin_policy') &&
+              map['default_origin_policy'] != null
+          ? CodexBrowserUseOriginPolicyConfig.fromJson(
+              map['default_origin_policy'],
+            )
+          : null,
+      origins: map.containsKey('origins') && map['origins'] != null
+          ? CodexJson.asMap(
+              map['origins'],
+              'CodexBrowserUseConfig.origins',
+            ).map(
+              (key, value) => MapEntry(
+                key,
+                CodexBrowserUseOriginPolicyConfig.fromJson(value),
+              ),
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (allowHistoryAccess != null)
+      'allow_history_access': CodexJson.encode(allowHistoryAccess),
+    if (defaultOriginPolicy != null)
+      'default_origin_policy': CodexJson.encode(defaultOriginPolicy),
+    if (origins != null) 'origins': CodexJson.encode(origins),
+  };
+}
+
+final class CodexBrowserUseOriginPolicy implements CodexJsonEncodable {
+  const CodexBrowserUseOriginPolicy({
+    this.access,
+    this.accessApprovalLifetime,
+    this.autoReview,
+    this.downloads,
+    this.fullCdpAccess,
+    this.persistentApproval,
+    this.uploads,
+  });
+
+  final CodexAllowDenyRequirement? access;
+  final CodexBrowserUseAccessApprovalLifetime? accessApprovalLifetime;
+  final CodexAllowDenyRequirement? autoReview;
+  final CodexAllowDenyRequirement? downloads;
+  final CodexAllowDenyRequirement? fullCdpAccess;
+  final bool? persistentApproval;
+  final CodexAllowDenyRequirement? uploads;
+
+  factory CodexBrowserUseOriginPolicy.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBrowserUseOriginPolicy');
+    return CodexBrowserUseOriginPolicy(
+      access: map.containsKey('access') && map['access'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['access'])
+          : null,
+      accessApprovalLifetime:
+          map.containsKey('accessApprovalLifetime') &&
+              map['accessApprovalLifetime'] != null
+          ? CodexBrowserUseAccessApprovalLifetime.fromJson(
+              map['accessApprovalLifetime'],
+            )
+          : null,
+      autoReview: map.containsKey('autoReview') && map['autoReview'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['autoReview'])
+          : null,
+      downloads: map.containsKey('downloads') && map['downloads'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['downloads'])
+          : null,
+      fullCdpAccess:
+          map.containsKey('fullCdpAccess') && map['fullCdpAccess'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['fullCdpAccess'])
+          : null,
+      persistentApproval:
+          map.containsKey('persistentApproval') &&
+              map['persistentApproval'] != null
+          ? CodexJson.asBool(
+              map['persistentApproval'],
+              'CodexBrowserUseOriginPolicy.persistentApproval',
+            )
+          : null,
+      uploads: map.containsKey('uploads') && map['uploads'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['uploads'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (access != null) 'access': CodexJson.encode(access),
+    if (accessApprovalLifetime != null)
+      'accessApprovalLifetime': CodexJson.encode(accessApprovalLifetime),
+    if (autoReview != null) 'autoReview': CodexJson.encode(autoReview),
+    if (downloads != null) 'downloads': CodexJson.encode(downloads),
+    if (fullCdpAccess != null) 'fullCdpAccess': CodexJson.encode(fullCdpAccess),
+    if (persistentApproval != null)
+      'persistentApproval': CodexJson.encode(persistentApproval),
+    if (uploads != null) 'uploads': CodexJson.encode(uploads),
+  };
+}
+
+final class CodexBrowserUseOriginPolicyConfig implements CodexJsonEncodable {
+  const CodexBrowserUseOriginPolicyConfig({
+    this.access,
+    this.downloads,
+    this.fullCdpAccess,
+    this.uploads,
+  });
+
+  final CodexAllowDenyRequirement? access;
+  final CodexAllowDenyRequirement? downloads;
+  final CodexAllowDenyRequirement? fullCdpAccess;
+  final CodexAllowDenyRequirement? uploads;
+
+  factory CodexBrowserUseOriginPolicyConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBrowserUseOriginPolicyConfig');
+    return CodexBrowserUseOriginPolicyConfig(
+      access: map.containsKey('access') && map['access'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['access'])
+          : null,
+      downloads: map.containsKey('downloads') && map['downloads'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['downloads'])
+          : null,
+      fullCdpAccess:
+          map.containsKey('full_cdp_access') && map['full_cdp_access'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['full_cdp_access'])
+          : null,
+      uploads: map.containsKey('uploads') && map['uploads'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['uploads'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (access != null) 'access': CodexJson.encode(access),
+    if (downloads != null) 'downloads': CodexJson.encode(downloads),
+    if (fullCdpAccess != null)
+      'full_cdp_access': CodexJson.encode(fullCdpAccess),
+    if (uploads != null) 'uploads': CodexJson.encode(uploads),
+  };
+}
+
+final class CodexBrowserUseRequirements implements CodexJsonEncodable {
+  const CodexBrowserUseRequirements({
+    this.allowGlobalPersistentApproval,
+    this.allowHistoryAccess,
+    this.allowWebmcp,
+    this.defaultOriginPolicy,
+    this.disableAutoReview,
+    this.origins,
+  });
+
+  final bool? allowGlobalPersistentApproval;
+  final bool? allowHistoryAccess;
+  final bool? allowWebmcp;
+  final CodexBrowserUseOriginPolicy? defaultOriginPolicy;
   final bool? disableAutoReview;
+  final Map<String, CodexBrowserUseOriginPolicy>? origins;
 
   factory CodexBrowserUseRequirements.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexBrowserUseRequirements');
     return CodexBrowserUseRequirements(
+      allowGlobalPersistentApproval:
+          map.containsKey('allowGlobalPersistentApproval') &&
+              map['allowGlobalPersistentApproval'] != null
+          ? CodexJson.asBool(
+              map['allowGlobalPersistentApproval'],
+              'CodexBrowserUseRequirements.allowGlobalPersistentApproval',
+            )
+          : null,
+      allowHistoryAccess:
+          map.containsKey('allowHistoryAccess') &&
+              map['allowHistoryAccess'] != null
+          ? CodexJson.asBool(
+              map['allowHistoryAccess'],
+              'CodexBrowserUseRequirements.allowHistoryAccess',
+            )
+          : null,
+      allowWebmcp: map.containsKey('allowWebmcp') && map['allowWebmcp'] != null
+          ? CodexJson.asBool(
+              map['allowWebmcp'],
+              'CodexBrowserUseRequirements.allowWebmcp',
+            )
+          : null,
+      defaultOriginPolicy:
+          map.containsKey('defaultOriginPolicy') &&
+              map['defaultOriginPolicy'] != null
+          ? CodexBrowserUseOriginPolicy.fromJson(map['defaultOriginPolicy'])
+          : null,
       disableAutoReview:
           map.containsKey('disableAutoReview') &&
               map['disableAutoReview'] != null
@@ -11655,13 +13804,32 @@ final class CodexBrowserUseRequirements implements CodexJsonEncodable {
               'CodexBrowserUseRequirements.disableAutoReview',
             )
           : null,
+      origins: map.containsKey('origins') && map['origins'] != null
+          ? CodexJson.asMap(
+              map['origins'],
+              'CodexBrowserUseRequirements.origins',
+            ).map(
+              (key, value) =>
+                  MapEntry(key, CodexBrowserUseOriginPolicy.fromJson(value)),
+            )
+          : null,
     );
   }
 
   @override
   Map<String, Object?> toJson() => {
+    if (allowGlobalPersistentApproval != null)
+      'allowGlobalPersistentApproval': CodexJson.encode(
+        allowGlobalPersistentApproval,
+      ),
+    if (allowHistoryAccess != null)
+      'allowHistoryAccess': CodexJson.encode(allowHistoryAccess),
+    if (allowWebmcp != null) 'allowWebmcp': CodexJson.encode(allowWebmcp),
+    if (defaultOriginPolicy != null)
+      'defaultOriginPolicy': CodexJson.encode(defaultOriginPolicy),
     if (disableAutoReview != null)
       'disableAutoReview': CodexJson.encode(disableAutoReview),
+    if (origins != null) 'origins': CodexJson.encode(origins),
   };
 }
 
@@ -11798,6 +13966,27 @@ final class CodexCapabilityRootLocationUnknown
   Map<String, Object?> toJson() => rawJson;
 }
 
+enum CodexCliAuthCredentialsStoreMode implements CodexJsonEncodable {
+  file('file'),
+  keyring('keyring'),
+  auto('auto'),
+  ephemeral('ephemeral');
+
+  const CodexCliAuthCredentialsStoreMode(this.value);
+  final String value;
+  factory CodexCliAuthCredentialsStoreMode.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexCliAuthCredentialsStoreMode');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexCliAuthCredentialsStoreMode: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 final class CodexCodexErrorInfo implements CodexJsonEncodable {
   const CodexCodexErrorInfo(this.value);
   final Object? value;
@@ -11878,7 +14067,11 @@ enum CodexCollabAgentTool implements CodexJsonEncodable {
   sendInput('sendInput'),
   resumeAgent('resumeAgent'),
   wait('wait'),
-  closeAgent('closeAgent');
+  closeAgent('closeAgent'),
+  sendMessage('sendMessage'),
+  followupTask('followupTask'),
+  interruptAgent('interruptAgent'),
+  listAgents('listAgents');
 
   const CodexCollabAgentTool(this.value);
   final String value;
@@ -11897,7 +14090,8 @@ enum CodexCollabAgentTool implements CodexJsonEncodable {
 enum CodexCollabAgentToolCallStatus implements CodexJsonEncodable {
   inProgress('inProgress'),
   completed('completed'),
-  failed('failed');
+  failed('failed'),
+  interrupted('interrupted');
 
   const CodexCollabAgentToolCallStatus(this.value);
   final String value;
@@ -12661,10 +14855,109 @@ final class CodexCommandMigration implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {'name': CodexJson.encode(name)};
 }
 
+final class CodexComputerUseConfig implements CodexJsonEncodable {
+  const CodexComputerUseConfig({
+    this.defaultAppAccess,
+    this.macos,
+    this.windows,
+  });
+
+  final CodexAllowDenyRequirement? defaultAppAccess;
+  final CodexComputerUseMacosConfig? macos;
+  final CodexComputerUseWindowsConfig? windows;
+
+  factory CodexComputerUseConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseConfig');
+    return CodexComputerUseConfig(
+      defaultAppAccess:
+          map.containsKey('default_app_access') &&
+              map['default_app_access'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['default_app_access'])
+          : null,
+      macos: map.containsKey('macos') && map['macos'] != null
+          ? CodexComputerUseMacosConfig.fromJson(map['macos'])
+          : null,
+      windows: map.containsKey('windows') && map['windows'] != null
+          ? CodexComputerUseWindowsConfig.fromJson(map['windows'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (defaultAppAccess != null)
+      'default_app_access': CodexJson.encode(defaultAppAccess),
+    if (macos != null) 'macos': CodexJson.encode(macos),
+    if (windows != null) 'windows': CodexJson.encode(windows),
+  };
+}
+
+final class CodexComputerUseMacosConfig implements CodexJsonEncodable {
+  const CodexComputerUseMacosConfig({this.bundleIds});
+
+  final Map<String, CodexAllowDenyRequirement>? bundleIds;
+
+  factory CodexComputerUseMacosConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseMacosConfig');
+    return CodexComputerUseMacosConfig(
+      bundleIds: map.containsKey('bundle_ids') && map['bundle_ids'] != null
+          ? CodexJson.asMap(
+              map['bundle_ids'],
+              'CodexComputerUseMacosConfig.bundle_ids',
+            ).map(
+              (key, value) =>
+                  MapEntry(key, CodexAllowDenyRequirement.fromJson(value)),
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (bundleIds != null) 'bundle_ids': CodexJson.encode(bundleIds),
+  };
+}
+
+final class CodexComputerUseMacosRequirements implements CodexJsonEncodable {
+  const CodexComputerUseMacosRequirements({this.bundleIds});
+
+  final Map<String, CodexAllowDenyRequirement>? bundleIds;
+
+  factory CodexComputerUseMacosRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseMacosRequirements');
+    return CodexComputerUseMacosRequirements(
+      bundleIds: map.containsKey('bundleIds') && map['bundleIds'] != null
+          ? CodexJson.asMap(
+              map['bundleIds'],
+              'CodexComputerUseMacosRequirements.bundleIds',
+            ).map(
+              (key, value) =>
+                  MapEntry(key, CodexAllowDenyRequirement.fromJson(value)),
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (bundleIds != null) 'bundleIds': CodexJson.encode(bundleIds),
+  };
+}
+
 final class CodexComputerUseRequirements implements CodexJsonEncodable {
-  const CodexComputerUseRequirements({this.allowLockedComputerUse});
+  const CodexComputerUseRequirements({
+    this.allowLockedComputerUse,
+    this.allowPersistentApproval,
+    this.defaultAppAccess,
+    this.macos,
+    this.windows,
+  });
 
   final bool? allowLockedComputerUse;
+  final bool? allowPersistentApproval;
+  final CodexAllowDenyRequirement? defaultAppAccess;
+  final CodexComputerUseMacosRequirements? macos;
+  final CodexComputerUseWindowsRequirements? windows;
 
   factory CodexComputerUseRequirements.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexComputerUseRequirements');
@@ -12677,6 +14970,24 @@ final class CodexComputerUseRequirements implements CodexJsonEncodable {
               'CodexComputerUseRequirements.allowLockedComputerUse',
             )
           : null,
+      allowPersistentApproval:
+          map.containsKey('allowPersistentApproval') &&
+              map['allowPersistentApproval'] != null
+          ? CodexJson.asBool(
+              map['allowPersistentApproval'],
+              'CodexComputerUseRequirements.allowPersistentApproval',
+            )
+          : null,
+      defaultAppAccess:
+          map.containsKey('defaultAppAccess') && map['defaultAppAccess'] != null
+          ? CodexAllowDenyRequirement.fromJson(map['defaultAppAccess'])
+          : null,
+      macos: map.containsKey('macos') && map['macos'] != null
+          ? CodexComputerUseMacosRequirements.fromJson(map['macos'])
+          : null,
+      windows: map.containsKey('windows') && map['windows'] != null
+          ? CodexComputerUseWindowsRequirements.fromJson(map['windows'])
+          : null,
     );
   }
 
@@ -12684,6 +14995,173 @@ final class CodexComputerUseRequirements implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     if (allowLockedComputerUse != null)
       'allowLockedComputerUse': CodexJson.encode(allowLockedComputerUse),
+    if (allowPersistentApproval != null)
+      'allowPersistentApproval': CodexJson.encode(allowPersistentApproval),
+    if (defaultAppAccess != null)
+      'defaultAppAccess': CodexJson.encode(defaultAppAccess),
+    if (macos != null) 'macos': CodexJson.encode(macos),
+    if (windows != null) 'windows': CodexJson.encode(windows),
+  };
+}
+
+final class CodexComputerUseWindowsConfig implements CodexJsonEncodable {
+  const CodexComputerUseWindowsConfig({this.aumids, this.exes});
+
+  final Map<String, CodexAllowDenyRequirement>? aumids;
+  final List<CodexComputerUseWindowsExeConfig>? exes;
+
+  factory CodexComputerUseWindowsConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseWindowsConfig');
+    return CodexComputerUseWindowsConfig(
+      aumids: map.containsKey('aumids') && map['aumids'] != null
+          ? CodexJson.asMap(
+              map['aumids'],
+              'CodexComputerUseWindowsConfig.aumids',
+            ).map(
+              (key, value) =>
+                  MapEntry(key, CodexAllowDenyRequirement.fromJson(value)),
+            )
+          : null,
+      exes: map.containsKey('exes') && map['exes'] != null
+          ? CodexJson.asList(map['exes'], 'CodexComputerUseWindowsConfig.exes')
+                .map(
+                  (value) => CodexComputerUseWindowsExeConfig.fromJson(value),
+                )
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (aumids != null) 'aumids': CodexJson.encode(aumids),
+    if (exes != null) 'exes': CodexJson.encode(exes),
+  };
+}
+
+final class CodexComputerUseWindowsExeConfig implements CodexJsonEncodable {
+  const CodexComputerUseWindowsExeConfig({
+    required this.access,
+    this.binaryName,
+    required this.productName,
+    required this.publisherName,
+  });
+
+  final CodexAllowDenyRequirement access;
+  final String? binaryName;
+  final String productName;
+  final String publisherName;
+
+  factory CodexComputerUseWindowsExeConfig.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseWindowsExeConfig');
+    return CodexComputerUseWindowsExeConfig(
+      access: CodexAllowDenyRequirement.fromJson(map['access']),
+      binaryName: map.containsKey('binary_name') && map['binary_name'] != null
+          ? CodexJson.asString(
+              map['binary_name'],
+              'CodexComputerUseWindowsExeConfig.binary_name',
+            )
+          : null,
+      productName: CodexJson.asString(
+        map['product_name'],
+        'CodexComputerUseWindowsExeConfig.product_name',
+      ),
+      publisherName: CodexJson.asString(
+        map['publisher_name'],
+        'CodexComputerUseWindowsExeConfig.publisher_name',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'access': CodexJson.encode(access),
+    if (binaryName != null) 'binary_name': CodexJson.encode(binaryName),
+    'product_name': CodexJson.encode(productName),
+    'publisher_name': CodexJson.encode(publisherName),
+  };
+}
+
+final class CodexComputerUseWindowsExeRequirement
+    implements CodexJsonEncodable {
+  const CodexComputerUseWindowsExeRequirement({
+    required this.access,
+    this.binaryName,
+    required this.productName,
+    required this.publisherName,
+  });
+
+  final CodexAllowDenyRequirement access;
+  final String? binaryName;
+  final String productName;
+  final String publisherName;
+
+  factory CodexComputerUseWindowsExeRequirement.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseWindowsExeRequirement');
+    return CodexComputerUseWindowsExeRequirement(
+      access: CodexAllowDenyRequirement.fromJson(map['access']),
+      binaryName: map.containsKey('binaryName') && map['binaryName'] != null
+          ? CodexJson.asString(
+              map['binaryName'],
+              'CodexComputerUseWindowsExeRequirement.binaryName',
+            )
+          : null,
+      productName: CodexJson.asString(
+        map['productName'],
+        'CodexComputerUseWindowsExeRequirement.productName',
+      ),
+      publisherName: CodexJson.asString(
+        map['publisherName'],
+        'CodexComputerUseWindowsExeRequirement.publisherName',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'access': CodexJson.encode(access),
+    if (binaryName != null) 'binaryName': CodexJson.encode(binaryName),
+    'productName': CodexJson.encode(productName),
+    'publisherName': CodexJson.encode(publisherName),
+  };
+}
+
+final class CodexComputerUseWindowsRequirements implements CodexJsonEncodable {
+  const CodexComputerUseWindowsRequirements({this.aumids, this.exes});
+
+  final Map<String, CodexAllowDenyRequirement>? aumids;
+  final List<CodexComputerUseWindowsExeRequirement>? exes;
+
+  factory CodexComputerUseWindowsRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexComputerUseWindowsRequirements');
+    return CodexComputerUseWindowsRequirements(
+      aumids: map.containsKey('aumids') && map['aumids'] != null
+          ? CodexJson.asMap(
+              map['aumids'],
+              'CodexComputerUseWindowsRequirements.aumids',
+            ).map(
+              (key, value) =>
+                  MapEntry(key, CodexAllowDenyRequirement.fromJson(value)),
+            )
+          : null,
+      exes: map.containsKey('exes') && map['exes'] != null
+          ? CodexJson.asList(
+                  map['exes'],
+                  'CodexComputerUseWindowsRequirements.exes',
+                )
+                .map(
+                  (value) =>
+                      CodexComputerUseWindowsExeRequirement.fromJson(value),
+                )
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (aumids != null) 'aumids': CodexJson.encode(aumids),
+    if (exes != null) 'exes': CodexJson.encode(exes),
   };
 }
 
@@ -12693,7 +15171,9 @@ final class CodexConfig implements CodexJsonEncodable {
     this.approvalPolicy,
     this.approvalsReviewer,
     this.apps,
+    this.browserUse,
     this.compactPrompt,
+    this.computerUse,
     this.desktop,
     this.developerInstructions,
     this.forcedChatgptWorkspaceId,
@@ -12719,7 +15199,9 @@ final class CodexConfig implements CodexJsonEncodable {
   final CodexAskForApproval? approvalPolicy;
   final CodexApprovalsReviewer? approvalsReviewer;
   final CodexAppsConfig? apps;
+  final CodexBrowserUseConfig? browserUse;
   final String? compactPrompt;
+  final CodexComputerUseConfig? computerUse;
   final Map<String, Object?>? desktop;
   final String? developerInstructions;
   final CodexForcedChatgptWorkspaceIds? forcedChatgptWorkspaceId;
@@ -12758,12 +15240,19 @@ final class CodexConfig implements CodexJsonEncodable {
       apps: map.containsKey('apps') && map['apps'] != null
           ? CodexAppsConfig.fromJson(map['apps'])
           : null,
+      browserUse: map.containsKey('browser_use') && map['browser_use'] != null
+          ? CodexBrowserUseConfig.fromJson(map['browser_use'])
+          : null,
       compactPrompt:
           map.containsKey('compact_prompt') && map['compact_prompt'] != null
           ? CodexJson.asString(
               map['compact_prompt'],
               'CodexConfig.compact_prompt',
             )
+          : null,
+      computerUse:
+          map.containsKey('computer_use') && map['computer_use'] != null
+          ? CodexComputerUseConfig.fromJson(map['computer_use'])
           : null,
       desktop: map.containsKey('desktop') && map['desktop'] != null
           ? CodexJson.asMap(map['desktop'], 'CodexConfig.desktop')
@@ -12873,8 +15362,10 @@ final class CodexConfig implements CodexJsonEncodable {
     if (approvalsReviewer != null)
       'approvals_reviewer': CodexJson.encode(approvalsReviewer),
     if (apps != null) 'apps': CodexJson.encode(apps),
+    if (browserUse != null) 'browser_use': CodexJson.encode(browserUse),
     if (compactPrompt != null)
       'compact_prompt': CodexJson.encode(compactPrompt),
+    if (computerUse != null) 'computer_use': CodexJson.encode(computerUse),
     if (desktop != null) 'desktop': CodexJson.encode(desktop),
     if (developerInstructions != null)
       'developer_instructions': CodexJson.encode(developerInstructions),
@@ -13062,6 +15553,8 @@ sealed class CodexConfigLayerSource implements CodexJsonEncodable {
   factory CodexConfigLayerSource.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexConfigLayerSource');
     switch (map['type']) {
+      case 'packagedDefaults':
+        return CodexPackagedDefaultsConfigLayerSource.fromJson(map);
       case 'mdm':
         return CodexMdmConfigLayerSource.fromJson(map);
       case 'system':
@@ -13086,6 +15579,31 @@ sealed class CodexConfigLayerSource implements CodexJsonEncodable {
         return CodexConfigLayerSourceUnknown(map);
     }
   }
+}
+
+final class CodexPackagedDefaultsConfigLayerSource
+    extends CodexConfigLayerSource {
+  const CodexPackagedDefaultsConfigLayerSource({required this.file});
+
+  final CodexV2AbsolutePathBuf file;
+
+  factory CodexPackagedDefaultsConfigLayerSource.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPackagedDefaultsConfigLayerSource');
+    if (map['type'] != 'packagedDefaults') {
+      throw FormatException(
+        'Expected type=packagedDefaults for CodexPackagedDefaultsConfigLayerSource',
+      );
+    }
+    return CodexPackagedDefaultsConfigLayerSource(
+      file: CodexV2AbsolutePathBuf.fromJson(map['file']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'packagedDefaults',
+    'file': CodexJson.encode(file),
+  };
 }
 
 final class CodexMdmConfigLayerSource extends CodexConfigLayerSource {
@@ -13385,53 +15903,73 @@ final class CodexConfigReadResponse implements CodexJsonEncodable {
 
 final class CodexConfigRequirements implements CodexJsonEncodable {
   const CodexConfigRequirements({
+    this.additionalDeveloperInstructions,
     this.allowAppshots,
+    this.allowBrowserAndComputerUse,
     this.allowLoginShell,
     this.allowManagedHooksOnly,
     this.allowRemoteControl,
     this.allowedApprovalPolicies,
     this.allowedApprovalsReviewers,
+    this.allowedLoginMethods,
     this.allowedPermissionProfiles,
     this.allowedSandboxModes,
     this.allowedWebSearchModes,
     this.allowedWindowsSandboxImplementations,
+    this.application,
+    this.autoReview,
     this.browserUse,
+    this.chatgptBaseUrl,
     this.checkForUpdateOnStartup,
+    this.cliAuthCredentialsStore,
     this.computerUse,
     this.defaultPermissions,
     this.enforceResidency,
     this.featureRequirements,
     this.feedback,
     this.hooks,
+    this.inAppBrowser,
     this.logDir,
     this.modelCatalogJson,
+    this.modelProvider,
+    this.modelProviders,
     this.models,
     this.network,
     this.sqliteHome,
     this.windowsSandboxPrivateDesktop,
   });
 
+  final String? additionalDeveloperInstructions;
   final bool? allowAppshots;
+  final bool? allowBrowserAndComputerUse;
   final bool? allowLoginShell;
   final bool? allowManagedHooksOnly;
   final bool? allowRemoteControl;
   final List<CodexAskForApproval>? allowedApprovalPolicies;
   final List<CodexApprovalsReviewer>? allowedApprovalsReviewers;
+  final List<CodexForcedLoginMethod>? allowedLoginMethods;
   final Map<String, bool>? allowedPermissionProfiles;
   final List<CodexSandboxMode>? allowedSandboxModes;
   final List<CodexWebSearchMode>? allowedWebSearchModes;
-  final List<CodexWindowsSandboxSetupMode>?
+  final List<CodexWindowsSandboxImplementation>?
   allowedWindowsSandboxImplementations;
+  final CodexApplicationRequirements? application;
+  final CodexAutoReviewRequirements? autoReview;
   final CodexBrowserUseRequirements? browserUse;
+  final String? chatgptBaseUrl;
   final bool? checkForUpdateOnStartup;
+  final CodexCliAuthCredentialsStoreMode? cliAuthCredentialsStore;
   final CodexComputerUseRequirements? computerUse;
   final String? defaultPermissions;
   final CodexResidencyRequirement? enforceResidency;
   final Map<String, bool>? featureRequirements;
   final CodexFeedbackRequirements? feedback;
   final CodexManagedHooksRequirements? hooks;
+  final CodexInAppBrowserRequirements? inAppBrowser;
   final String? logDir;
   final String? modelCatalogJson;
+  final String? modelProvider;
+  final Map<String, Object?>? modelProviders;
   final CodexModelsRequirements? models;
   final CodexNetworkRequirements? network;
   final String? sqliteHome;
@@ -13440,11 +15978,27 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
   factory CodexConfigRequirements.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexConfigRequirements');
     return CodexConfigRequirements(
+      additionalDeveloperInstructions:
+          map.containsKey('additionalDeveloperInstructions') &&
+              map['additionalDeveloperInstructions'] != null
+          ? CodexJson.asString(
+              map['additionalDeveloperInstructions'],
+              'CodexConfigRequirements.additionalDeveloperInstructions',
+            )
+          : null,
       allowAppshots:
           map.containsKey('allowAppshots') && map['allowAppshots'] != null
           ? CodexJson.asBool(
               map['allowAppshots'],
               'CodexConfigRequirements.allowAppshots',
+            )
+          : null,
+      allowBrowserAndComputerUse:
+          map.containsKey('allowBrowserAndComputerUse') &&
+              map['allowBrowserAndComputerUse'] != null
+          ? CodexJson.asBool(
+              map['allowBrowserAndComputerUse'],
+              'CodexConfigRequirements.allowBrowserAndComputerUse',
             )
           : null,
       allowLoginShell:
@@ -13490,6 +16044,16 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
                 .map((value) => CodexApprovalsReviewer.fromJson(value))
                 .toList(growable: false)
           : null,
+      allowedLoginMethods:
+          map.containsKey('allowedLoginMethods') &&
+              map['allowedLoginMethods'] != null
+          ? CodexJson.asList(
+                  map['allowedLoginMethods'],
+                  'CodexConfigRequirements.allowedLoginMethods',
+                )
+                .map((value) => CodexForcedLoginMethod.fromJson(value))
+                .toList(growable: false)
+          : null,
       allowedPermissionProfiles:
           map.containsKey('allowedPermissionProfiles') &&
               map['allowedPermissionProfiles'] != null
@@ -13533,11 +16097,26 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
                   map['allowedWindowsSandboxImplementations'],
                   'CodexConfigRequirements.allowedWindowsSandboxImplementations',
                 )
-                .map((value) => CodexWindowsSandboxSetupMode.fromJson(value))
+                .map(
+                  (value) => CodexWindowsSandboxImplementation.fromJson(value),
+                )
                 .toList(growable: false)
+          : null,
+      application: map.containsKey('application') && map['application'] != null
+          ? CodexApplicationRequirements.fromJson(map['application'])
+          : null,
+      autoReview: map.containsKey('autoReview') && map['autoReview'] != null
+          ? CodexAutoReviewRequirements.fromJson(map['autoReview'])
           : null,
       browserUse: map.containsKey('browserUse') && map['browserUse'] != null
           ? CodexBrowserUseRequirements.fromJson(map['browserUse'])
+          : null,
+      chatgptBaseUrl:
+          map.containsKey('chatgptBaseUrl') && map['chatgptBaseUrl'] != null
+          ? CodexJson.asString(
+              map['chatgptBaseUrl'],
+              'CodexConfigRequirements.chatgptBaseUrl',
+            )
           : null,
       checkForUpdateOnStartup:
           map.containsKey('checkForUpdateOnStartup') &&
@@ -13545,6 +16124,13 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
           ? CodexJson.asBool(
               map['checkForUpdateOnStartup'],
               'CodexConfigRequirements.checkForUpdateOnStartup',
+            )
+          : null,
+      cliAuthCredentialsStore:
+          map.containsKey('cliAuthCredentialsStore') &&
+              map['cliAuthCredentialsStore'] != null
+          ? CodexCliAuthCredentialsStoreMode.fromJson(
+              map['cliAuthCredentialsStore'],
             )
           : null,
       computerUse: map.containsKey('computerUse') && map['computerUse'] != null
@@ -13584,6 +16170,10 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
       hooks: map.containsKey('hooks') && map['hooks'] != null
           ? CodexManagedHooksRequirements.fromJson(map['hooks'])
           : null,
+      inAppBrowser:
+          map.containsKey('inAppBrowser') && map['inAppBrowser'] != null
+          ? CodexInAppBrowserRequirements.fromJson(map['inAppBrowser'])
+          : null,
       logDir: map.containsKey('logDir') && map['logDir'] != null
           ? CodexJson.asString(map['logDir'], 'CodexConfigRequirements.logDir')
           : null,
@@ -13592,6 +16182,20 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
           ? CodexJson.asString(
               map['modelCatalogJson'],
               'CodexConfigRequirements.modelCatalogJson',
+            )
+          : null,
+      modelProvider:
+          map.containsKey('modelProvider') && map['modelProvider'] != null
+          ? CodexJson.asString(
+              map['modelProvider'],
+              'CodexConfigRequirements.modelProvider',
+            )
+          : null,
+      modelProviders:
+          map.containsKey('modelProviders') && map['modelProviders'] != null
+          ? CodexJson.asMap(
+              map['modelProviders'],
+              'CodexConfigRequirements.modelProviders',
             )
           : null,
       models: map.containsKey('models') && map['models'] != null
@@ -13619,7 +16223,15 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (additionalDeveloperInstructions != null)
+      'additionalDeveloperInstructions': CodexJson.encode(
+        additionalDeveloperInstructions,
+      ),
     if (allowAppshots != null) 'allowAppshots': CodexJson.encode(allowAppshots),
+    if (allowBrowserAndComputerUse != null)
+      'allowBrowserAndComputerUse': CodexJson.encode(
+        allowBrowserAndComputerUse,
+      ),
     if (allowLoginShell != null)
       'allowLoginShell': CodexJson.encode(allowLoginShell),
     if (allowManagedHooksOnly != null)
@@ -13630,6 +16242,8 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
       'allowedApprovalPolicies': CodexJson.encode(allowedApprovalPolicies),
     if (allowedApprovalsReviewers != null)
       'allowedApprovalsReviewers': CodexJson.encode(allowedApprovalsReviewers),
+    if (allowedLoginMethods != null)
+      'allowedLoginMethods': CodexJson.encode(allowedLoginMethods),
     if (allowedPermissionProfiles != null)
       'allowedPermissionProfiles': CodexJson.encode(allowedPermissionProfiles),
     if (allowedSandboxModes != null)
@@ -13640,9 +16254,15 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
       'allowedWindowsSandboxImplementations': CodexJson.encode(
         allowedWindowsSandboxImplementations,
       ),
+    if (application != null) 'application': CodexJson.encode(application),
+    if (autoReview != null) 'autoReview': CodexJson.encode(autoReview),
     if (browserUse != null) 'browserUse': CodexJson.encode(browserUse),
+    if (chatgptBaseUrl != null)
+      'chatgptBaseUrl': CodexJson.encode(chatgptBaseUrl),
     if (checkForUpdateOnStartup != null)
       'checkForUpdateOnStartup': CodexJson.encode(checkForUpdateOnStartup),
+    if (cliAuthCredentialsStore != null)
+      'cliAuthCredentialsStore': CodexJson.encode(cliAuthCredentialsStore),
     if (computerUse != null) 'computerUse': CodexJson.encode(computerUse),
     if (defaultPermissions != null)
       'defaultPermissions': CodexJson.encode(defaultPermissions),
@@ -13652,9 +16272,13 @@ final class CodexConfigRequirements implements CodexJsonEncodable {
       'featureRequirements': CodexJson.encode(featureRequirements),
     if (feedback != null) 'feedback': CodexJson.encode(feedback),
     if (hooks != null) 'hooks': CodexJson.encode(hooks),
+    if (inAppBrowser != null) 'inAppBrowser': CodexJson.encode(inAppBrowser),
     if (logDir != null) 'logDir': CodexJson.encode(logDir),
     if (modelCatalogJson != null)
       'modelCatalogJson': CodexJson.encode(modelCatalogJson),
+    if (modelProvider != null) 'modelProvider': CodexJson.encode(modelProvider),
+    if (modelProviders != null)
+      'modelProviders': CodexJson.encode(modelProviders),
     if (models != null) 'models': CodexJson.encode(models),
     if (network != null) 'network': CodexJson.encode(network),
     if (sqliteHome != null) 'sqliteHome': CodexJson.encode(sqliteHome),
@@ -13824,6 +16448,22 @@ final class CodexConfigWriteResponse implements CodexJsonEncodable {
   };
 }
 
+final class CodexConfigurationReasoning implements CodexJsonEncodable {
+  const CodexConfigurationReasoning({required this.effort});
+
+  final CodexReasoningEffort effort;
+
+  factory CodexConfigurationReasoning.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexConfigurationReasoning');
+    return CodexConfigurationReasoning(
+      effort: CodexReasoningEffort.fromJson(map['effort']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'effort': CodexJson.encode(effort)};
+}
+
 sealed class CodexConfiguredHookHandler implements CodexJsonEncodable {
   const CodexConfiguredHookHandler();
   factory CodexConfiguredHookHandler.fromJson(Object? json) {
@@ -13831,6 +16471,8 @@ sealed class CodexConfiguredHookHandler implements CodexJsonEncodable {
     switch (map['type']) {
       case 'command':
         return CodexCommandConfiguredHookHandler.fromJson(map);
+      case 'mcp_tool':
+        return CodexMcpToolConfiguredHookHandler.fromJson(map);
       case 'prompt':
         return CodexPromptConfiguredHookHandler.fromJson(map);
       case 'agent':
@@ -13917,6 +16559,69 @@ final class CodexCommandConfiguredHookHandler
       'commandWindows': CodexJson.encode(commandWindows),
     if (statusMessage != null) 'statusMessage': CodexJson.encode(statusMessage),
     if (timeoutSec != null) 'timeoutSec': CodexJson.encode(timeoutSec),
+  };
+}
+
+final class CodexMcpToolConfiguredHookHandler
+    extends CodexConfiguredHookHandler {
+  const CodexMcpToolConfiguredHookHandler({
+    required this.input,
+    required this.server,
+    this.statusMessage,
+    this.timeoutSec,
+    required this.tool,
+  });
+
+  final Map<String, Object?> input;
+  final String server;
+  final String? statusMessage;
+  final int? timeoutSec;
+  final String tool;
+
+  factory CodexMcpToolConfiguredHookHandler.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpToolConfiguredHookHandler');
+    if (map['type'] != 'mcp_tool') {
+      throw FormatException(
+        'Expected type=mcp_tool for CodexMcpToolConfiguredHookHandler',
+      );
+    }
+    return CodexMcpToolConfiguredHookHandler(
+      input: CodexJson.asMap(
+        map['input'],
+        'CodexMcpToolConfiguredHookHandler.input',
+      ),
+      server: CodexJson.asString(
+        map['server'],
+        'CodexMcpToolConfiguredHookHandler.server',
+      ),
+      statusMessage:
+          map.containsKey('statusMessage') && map['statusMessage'] != null
+          ? CodexJson.asString(
+              map['statusMessage'],
+              'CodexMcpToolConfiguredHookHandler.statusMessage',
+            )
+          : null,
+      timeoutSec: map.containsKey('timeoutSec') && map['timeoutSec'] != null
+          ? CodexJson.asInt(
+              map['timeoutSec'],
+              'CodexMcpToolConfiguredHookHandler.timeoutSec',
+            )
+          : null,
+      tool: CodexJson.asString(
+        map['tool'],
+        'CodexMcpToolConfiguredHookHandler.tool',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'mcp_tool',
+    'input': CodexJson.encode(input),
+    'server': CodexJson.encode(server),
+    if (statusMessage != null) 'statusMessage': CodexJson.encode(statusMessage),
+    if (timeoutSec != null) 'timeoutSec': CodexJson.encode(timeoutSec),
+    'tool': CodexJson.encode(tool),
   };
 }
 
@@ -14212,13 +16917,19 @@ final class CodexInputTextContentItem extends CodexContentItem {
 }
 
 final class CodexInputImageContentItem extends CodexContentItem {
-  const CodexInputImageContentItem({this.detail, required this.imageUrl});
+  const CodexInputImageContentItem({this.detail, this.imageUrl, this.fileId});
 
   final CodexImageDetail? detail;
-  final String imageUrl;
+  final String? imageUrl;
+  final String? fileId;
 
   factory CodexInputImageContentItem.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexInputImageContentItem');
+    if (!((map['image_url'] != null) || (map['file_id'] != null))) {
+      throw FormatException(
+        'Missing alternative fields for CodexInputImageContentItem',
+      );
+    }
     if (map['type'] != 'input_image') {
       throw FormatException(
         'Expected type=input_image for CodexInputImageContentItem',
@@ -14228,10 +16939,18 @@ final class CodexInputImageContentItem extends CodexContentItem {
       detail: map.containsKey('detail') && map['detail'] != null
           ? CodexImageDetail.fromJson(map['detail'])
           : null,
-      imageUrl: CodexJson.asString(
-        map['image_url'],
-        'CodexInputImageContentItem.image_url',
-      ),
+      imageUrl: map.containsKey('image_url') && map['image_url'] != null
+          ? CodexJson.asString(
+              map['image_url'],
+              'CodexInputImageContentItem.image_url',
+            )
+          : null,
+      fileId: map.containsKey('file_id') && map['file_id'] != null
+          ? CodexJson.asString(
+              map['file_id'],
+              'CodexInputImageContentItem.file_id',
+            )
+          : null,
     );
   }
 
@@ -14239,7 +16958,8 @@ final class CodexInputImageContentItem extends CodexContentItem {
   Map<String, Object?> toJson() => {
     'type': 'input_image',
     if (detail != null) 'detail': CodexJson.encode(detail),
-    'image_url': CodexJson.encode(imageUrl),
+    if (imageUrl != null) 'image_url': CodexJson.encode(imageUrl),
+    if (fileId != null) 'file_id': CodexJson.encode(fileId),
   };
 }
 
@@ -14384,6 +17104,25 @@ final class CodexCreditsSnapshot implements CodexJsonEncodable {
     'hasCredits': CodexJson.encode(hasCredits),
     'unlimited': CodexJson.encode(unlimited),
   };
+}
+
+enum CodexCyberAccessProgram implements CodexJsonEncodable {
+  standard('standard'),
+  daybreakBlue('daybreakBlue'),
+  daybreakRed('daybreakRed');
+
+  const CodexCyberAccessProgram(this.value);
+  final String value;
+  factory CodexCyberAccessProgram.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexCyberAccessProgram');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexCyberAccessProgram: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
 }
 
 final class CodexDeprecationNoticeNotification implements CodexJsonEncodable {
@@ -16324,13 +19063,20 @@ final class CodexFeedbackUploadParams implements CodexJsonEncodable {
 }
 
 final class CodexFeedbackUploadResponse implements CodexJsonEncodable {
-  const CodexFeedbackUploadResponse({required this.threadId});
+  const CodexFeedbackUploadResponse({this.promptHash, required this.threadId});
 
+  final String? promptHash;
   final String threadId;
 
   factory CodexFeedbackUploadResponse.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexFeedbackUploadResponse');
     return CodexFeedbackUploadResponse(
+      promptHash: map.containsKey('promptHash') && map['promptHash'] != null
+          ? CodexJson.asString(
+              map['promptHash'],
+              'CodexFeedbackUploadResponse.promptHash',
+            )
+          : null,
       threadId: CodexJson.asString(
         map['threadId'],
         'CodexFeedbackUploadResponse.threadId',
@@ -16339,7 +19085,10 @@ final class CodexFeedbackUploadResponse implements CodexJsonEncodable {
   }
 
   @override
-  Map<String, Object?> toJson() => {'threadId': CodexJson.encode(threadId)};
+  Map<String, Object?> toJson() => {
+    if (promptHash != null) 'promptHash': CodexJson.encode(promptHash),
+    'threadId': CodexJson.encode(threadId),
+  };
 }
 
 final class CodexFileChangeOutputDeltaNotification
@@ -17321,17 +20070,24 @@ final class CodexInputImageFunctionCallOutputContentItem
     extends CodexFunctionCallOutputContentItem {
   const CodexInputImageFunctionCallOutputContentItem({
     this.detail,
-    required this.imageUrl,
+    this.imageUrl,
+    this.fileId,
   });
 
   final CodexImageDetail? detail;
-  final String imageUrl;
+  final String? imageUrl;
+  final String? fileId;
 
   factory CodexInputImageFunctionCallOutputContentItem.fromJson(Object? json) {
     final map = CodexJson.asMap(
       json,
       'CodexInputImageFunctionCallOutputContentItem',
     );
+    if (!((map['image_url'] != null) || (map['file_id'] != null))) {
+      throw FormatException(
+        'Missing alternative fields for CodexInputImageFunctionCallOutputContentItem',
+      );
+    }
     if (map['type'] != 'input_image') {
       throw FormatException(
         'Expected type=input_image for CodexInputImageFunctionCallOutputContentItem',
@@ -17341,10 +20097,18 @@ final class CodexInputImageFunctionCallOutputContentItem
       detail: map.containsKey('detail') && map['detail'] != null
           ? CodexImageDetail.fromJson(map['detail'])
           : null,
-      imageUrl: CodexJson.asString(
-        map['image_url'],
-        'CodexInputImageFunctionCallOutputContentItem.image_url',
-      ),
+      imageUrl: map.containsKey('image_url') && map['image_url'] != null
+          ? CodexJson.asString(
+              map['image_url'],
+              'CodexInputImageFunctionCallOutputContentItem.image_url',
+            )
+          : null,
+      fileId: map.containsKey('file_id') && map['file_id'] != null
+          ? CodexJson.asString(
+              map['file_id'],
+              'CodexInputImageFunctionCallOutputContentItem.file_id',
+            )
+          : null,
     );
   }
 
@@ -17352,7 +20116,8 @@ final class CodexInputImageFunctionCallOutputContentItem
   Map<String, Object?> toJson() => {
     'type': 'input_image',
     if (detail != null) 'detail': CodexJson.encode(detail),
-    'image_url': CodexJson.encode(imageUrl),
+    if (imageUrl != null) 'image_url': CodexJson.encode(imageUrl),
+    if (fileId != null) 'file_id': CodexJson.encode(fileId),
   };
 }
 
@@ -17454,26 +20219,90 @@ final class CodexGetAccountParams implements CodexJsonEncodable {
   };
 }
 
+final class CodexGetAccountRateLimitsParams implements CodexJsonEncodable {
+  const CodexGetAccountRateLimitsParams({
+    this.excludeResetCreditDetails,
+    this.supportsLunaReserve,
+  });
+
+  final bool? excludeResetCreditDetails;
+  final bool? supportsLunaReserve;
+
+  factory CodexGetAccountRateLimitsParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexGetAccountRateLimitsParams');
+    return CodexGetAccountRateLimitsParams(
+      excludeResetCreditDetails:
+          map.containsKey('excludeResetCreditDetails') &&
+              map['excludeResetCreditDetails'] != null
+          ? CodexJson.asBool(
+              map['excludeResetCreditDetails'],
+              'CodexGetAccountRateLimitsParams.excludeResetCreditDetails',
+            )
+          : null,
+      supportsLunaReserve:
+          map.containsKey('supportsLunaReserve') &&
+              map['supportsLunaReserve'] != null
+          ? CodexJson.asBool(
+              map['supportsLunaReserve'],
+              'CodexGetAccountRateLimitsParams.supportsLunaReserve',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (excludeResetCreditDetails != null)
+      'excludeResetCreditDetails': CodexJson.encode(excludeResetCreditDetails),
+    if (supportsLunaReserve != null)
+      'supportsLunaReserve': CodexJson.encode(supportsLunaReserve),
+  };
+}
+
 final class CodexGetAccountRateLimitsResponse implements CodexJsonEncodable {
   const CodexGetAccountRateLimitsResponse({
+    this.accountId,
+    this.ordinaryUsageAllowed,
     this.rateLimitResetCredits,
+    this.rateLimitUpsell,
     required this.rateLimits,
     this.rateLimitsByLimitId,
   });
 
+  final String? accountId;
+  final bool? ordinaryUsageAllowed;
   final CodexRateLimitResetCreditsSummary? rateLimitResetCredits;
+  final Object? rateLimitUpsell;
   final CodexRateLimitSnapshot rateLimits;
   final Map<String, CodexRateLimitSnapshot>? rateLimitsByLimitId;
 
   factory CodexGetAccountRateLimitsResponse.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexGetAccountRateLimitsResponse');
     return CodexGetAccountRateLimitsResponse(
+      accountId: map.containsKey('accountId') && map['accountId'] != null
+          ? CodexJson.asString(
+              map['accountId'],
+              'CodexGetAccountRateLimitsResponse.accountId',
+            )
+          : null,
+      ordinaryUsageAllowed:
+          map.containsKey('ordinaryUsageAllowed') &&
+              map['ordinaryUsageAllowed'] != null
+          ? CodexJson.asBool(
+              map['ordinaryUsageAllowed'],
+              'CodexGetAccountRateLimitsResponse.ordinaryUsageAllowed',
+            )
+          : null,
       rateLimitResetCredits:
           map.containsKey('rateLimitResetCredits') &&
               map['rateLimitResetCredits'] != null
           ? CodexRateLimitResetCreditsSummary.fromJson(
               map['rateLimitResetCredits'],
             )
+          : null,
+      rateLimitUpsell:
+          map.containsKey('rateLimitUpsell') && map['rateLimitUpsell'] != null
+          ? CodexJson.clone(map['rateLimitUpsell'])
           : null,
       rateLimits: CodexRateLimitSnapshot.fromJson(map['rateLimits']),
       rateLimitsByLimitId:
@@ -17492,8 +20321,13 @@ final class CodexGetAccountRateLimitsResponse implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (accountId != null) 'accountId': CodexJson.encode(accountId),
+    if (ordinaryUsageAllowed != null)
+      'ordinaryUsageAllowed': CodexJson.encode(ordinaryUsageAllowed),
     if (rateLimitResetCredits != null)
       'rateLimitResetCredits': CodexJson.encode(rateLimitResetCredits),
+    if (rateLimitUpsell != null)
+      'rateLimitUpsell': CodexJson.encode(rateLimitUpsell),
     'rateLimits': CodexJson.encode(rateLimits),
     if (rateLimitsByLimitId != null)
       'rateLimitsByLimitId': CodexJson.encode(rateLimitsByLimitId),
@@ -17504,10 +20338,12 @@ final class CodexGetAccountResponse implements CodexJsonEncodable {
   const CodexGetAccountResponse({
     this.account,
     required this.requiresOpenaiAuth,
+    this.workspaceRouting,
   });
 
   final CodexAccount? account;
   final bool requiresOpenaiAuth;
+  final CodexWorkspaceRouting? workspaceRouting;
 
   factory CodexGetAccountResponse.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexGetAccountResponse');
@@ -17519,6 +20355,10 @@ final class CodexGetAccountResponse implements CodexJsonEncodable {
         map['requiresOpenaiAuth'],
         'CodexGetAccountResponse.requiresOpenaiAuth',
       ),
+      workspaceRouting:
+          map.containsKey('workspaceRouting') && map['workspaceRouting'] != null
+          ? CodexWorkspaceRouting.fromJson(map['workspaceRouting'])
+          : null,
     );
   }
 
@@ -17526,6 +20366,31 @@ final class CodexGetAccountResponse implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     if (account != null) 'account': CodexJson.encode(account),
     'requiresOpenaiAuth': CodexJson.encode(requiresOpenaiAuth),
+    if (workspaceRouting != null)
+      'workspaceRouting': CodexJson.encode(workspaceRouting),
+  };
+}
+
+final class CodexGetAccountTokenUsageParams implements CodexJsonEncodable {
+  const CodexGetAccountTokenUsageParams({this.threadId});
+
+  final String? threadId;
+
+  factory CodexGetAccountTokenUsageParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexGetAccountTokenUsageParams');
+    return CodexGetAccountTokenUsageParams(
+      threadId: map.containsKey('threadId') && map['threadId'] != null
+          ? CodexJson.asString(
+              map['threadId'],
+              'CodexGetAccountTokenUsageParams.threadId',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (threadId != null) 'threadId': CodexJson.encode(threadId),
   };
 }
 
@@ -17533,10 +20398,12 @@ final class CodexGetAccountTokenUsageResponse implements CodexJsonEncodable {
   const CodexGetAccountTokenUsageResponse({
     this.dailyUsageBuckets,
     required this.summary,
+    this.threadUsage,
   });
 
   final List<CodexAccountTokenUsageDailyBucket>? dailyUsageBuckets;
   final CodexAccountTokenUsageSummary summary;
+  final CodexThreadUsage? threadUsage;
 
   factory CodexGetAccountTokenUsageResponse.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexGetAccountTokenUsageResponse');
@@ -17554,6 +20421,9 @@ final class CodexGetAccountTokenUsageResponse implements CodexJsonEncodable {
                 .toList(growable: false)
           : null,
       summary: CodexAccountTokenUsageSummary.fromJson(map['summary']),
+      threadUsage: map.containsKey('threadUsage') && map['threadUsage'] != null
+          ? CodexThreadUsage.fromJson(map['threadUsage'])
+          : null,
     );
   }
 
@@ -17562,6 +20432,7 @@ final class CodexGetAccountTokenUsageResponse implements CodexJsonEncodable {
     if (dailyUsageBuckets != null)
       'dailyUsageBuckets': CodexJson.encode(dailyUsageBuckets),
     'summary': CodexJson.encode(summary),
+    if (threadUsage != null) 'threadUsage': CodexJson.encode(threadUsage),
   };
 }
 
@@ -17681,6 +20552,8 @@ sealed class CodexGuardianApprovalReviewAction implements CodexJsonEncodable {
         return CodexCommandGuardianApprovalReviewAction.fromJson(map);
       case 'execve':
         return CodexExecveGuardianApprovalReviewAction.fromJson(map);
+      case 'writeStdin':
+        return CodexWriteStdinGuardianApprovalReviewAction.fromJson(map);
       case 'applyPatch':
         return CodexApplyPatchGuardianApprovalReviewAction.fromJson(map);
       case 'networkAccess':
@@ -17706,7 +20579,7 @@ final class CodexCommandGuardianApprovalReviewAction
   });
 
   final String command;
-  final CodexV2AbsolutePathBuf cwd;
+  final CodexLegacyAppPathString cwd;
   final CodexGuardianCommandSource source;
 
   factory CodexCommandGuardianApprovalReviewAction.fromJson(Object? json) {
@@ -17724,7 +20597,7 @@ final class CodexCommandGuardianApprovalReviewAction
         map['command'],
         'CodexCommandGuardianApprovalReviewAction.command',
       ),
-      cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      cwd: CodexLegacyAppPathString.fromJson(map['cwd']),
       source: CodexGuardianCommandSource.fromJson(map['source']),
     );
   }
@@ -17794,6 +20667,57 @@ final class CodexExecveGuardianApprovalReviewAction
   };
 }
 
+final class CodexWriteStdinGuardianApprovalReviewAction
+    extends CodexGuardianApprovalReviewAction {
+  const CodexWriteStdinGuardianApprovalReviewAction({
+    required this.approvalId,
+    required this.cwd,
+    required this.processId,
+    required this.stdin,
+  });
+
+  final String approvalId;
+  final CodexLegacyAppPathString cwd;
+  final String processId;
+  final String stdin;
+
+  factory CodexWriteStdinGuardianApprovalReviewAction.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexWriteStdinGuardianApprovalReviewAction',
+    );
+    if (map['type'] != 'writeStdin') {
+      throw FormatException(
+        'Expected type=writeStdin for CodexWriteStdinGuardianApprovalReviewAction',
+      );
+    }
+    return CodexWriteStdinGuardianApprovalReviewAction(
+      approvalId: CodexJson.asString(
+        map['approvalId'],
+        'CodexWriteStdinGuardianApprovalReviewAction.approvalId',
+      ),
+      cwd: CodexLegacyAppPathString.fromJson(map['cwd']),
+      processId: CodexJson.asString(
+        map['processId'],
+        'CodexWriteStdinGuardianApprovalReviewAction.processId',
+      ),
+      stdin: CodexJson.asString(
+        map['stdin'],
+        'CodexWriteStdinGuardianApprovalReviewAction.stdin',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'writeStdin',
+    'approvalId': CodexJson.encode(approvalId),
+    'cwd': CodexJson.encode(cwd),
+    'processId': CodexJson.encode(processId),
+    'stdin': CodexJson.encode(stdin),
+  };
+}
+
 final class CodexApplyPatchGuardianApprovalReviewAction
     extends CodexGuardianApprovalReviewAction {
   const CodexApplyPatchGuardianApprovalReviewAction({
@@ -17801,8 +20725,8 @@ final class CodexApplyPatchGuardianApprovalReviewAction
     required this.files,
   });
 
-  final CodexV2AbsolutePathBuf cwd;
-  final List<CodexV2AbsolutePathBuf> files;
+  final CodexLegacyAppPathString cwd;
+  final List<CodexLegacyAppPathString> files;
 
   factory CodexApplyPatchGuardianApprovalReviewAction.fromJson(Object? json) {
     final map = CodexJson.asMap(
@@ -17815,13 +20739,13 @@ final class CodexApplyPatchGuardianApprovalReviewAction
       );
     }
     return CodexApplyPatchGuardianApprovalReviewAction(
-      cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      cwd: CodexLegacyAppPathString.fromJson(map['cwd']),
       files:
           CodexJson.asList(
                 map['files'],
                 'CodexApplyPatchGuardianApprovalReviewAction.files',
               )
-              .map((value) => CodexV2AbsolutePathBuf.fromJson(value))
+              .map((value) => CodexLegacyAppPathString.fromJson(value))
               .toList(growable: false),
     );
   }
@@ -18183,7 +21107,8 @@ enum CodexHookEventName implements CodexJsonEncodable {
   userPromptSubmit('userPromptSubmit'),
   subagentStart('subagentStart'),
   subagentStop('subagentStop'),
-  stop('stop');
+  stop('stop'),
+  interrupt('interrupt');
 
   const CodexHookEventName(this.value);
   final String value;
@@ -18218,6 +21143,7 @@ enum CodexHookExecutionMode implements CodexJsonEncodable {
 
 enum CodexHookHandlerType implements CodexJsonEncodable {
   command('command'),
+  mcpTool('mcpTool'),
   prompt('prompt'),
   agent('agent');
 
@@ -18235,116 +21161,155 @@ enum CodexHookHandlerType implements CodexJsonEncodable {
   Object toJson() => value;
 }
 
-final class CodexHookMetadata implements CodexJsonEncodable {
-  const CodexHookMetadata({
-    this.additionalContextLimit,
-    this.command,
-    required this.currentHash,
-    required this.displayOrder,
-    required this.enabled,
-    required this.eventName,
-    required this.handlerType,
-    required this.isManaged,
-    required this.key,
-    this.matcher,
-    this.pluginId,
-    required this.source,
-    required this.sourcePath,
-    this.statusMessage,
-    required this.timeoutSec,
-    required this.trustStatus,
-  });
-
-  final int? additionalContextLimit;
-  final String? command;
-  final String currentHash;
-  final int displayOrder;
-  final bool enabled;
-  final CodexHookEventName eventName;
-  final CodexHookHandlerType handlerType;
-  final bool isManaged;
-  final String key;
-  final String? matcher;
-  final String? pluginId;
-  final CodexHookSource source;
-  final CodexV2AbsolutePathBuf sourcePath;
-  final String? statusMessage;
-  final int timeoutSec;
-  final CodexHookTrustStatus trustStatus;
-
+sealed class CodexHookMetadata implements CodexJsonEncodable {
+  const CodexHookMetadata();
   factory CodexHookMetadata.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexHookMetadata');
-    return CodexHookMetadata(
-      additionalContextLimit:
-          map.containsKey('additionalContextLimit') &&
-              map['additionalContextLimit'] != null
-          ? CodexJson.asInt(
-              map['additionalContextLimit'],
-              'CodexHookMetadata.additionalContextLimit',
-            )
+    try {
+      return CodexHookMetadataVariant1.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
+    try {
+      return CodexHookMetadataVariant2.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
+    try {
+      return CodexPromptHookMetadata.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
+    try {
+      return CodexAgentHookMetadata.fromJson(map);
+    } on FormatException {
+      /* try the next variant */
+    }
+    return CodexHookMetadataUnknown(map);
+  }
+}
+
+final class CodexHookMetadataVariant1 extends CodexHookMetadata {
+  const CodexHookMetadataVariant1({
+    this.asyncValue,
+    required this.command,
+    required this.handlerType,
+  });
+
+  final bool? asyncValue;
+  final String command;
+  final String handlerType;
+
+  factory CodexHookMetadataVariant1.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexHookMetadataVariant1');
+    return CodexHookMetadataVariant1(
+      asyncValue: map.containsKey('async') && map['async'] != null
+          ? CodexJson.asBool(map['async'], 'CodexHookMetadataVariant1.async')
           : null,
-      command: map.containsKey('command') && map['command'] != null
-          ? CodexJson.asString(map['command'], 'CodexHookMetadata.command')
-          : null,
-      currentHash: CodexJson.asString(
-        map['currentHash'],
-        'CodexHookMetadata.currentHash',
+      command: CodexJson.asString(
+        map['command'],
+        'CodexHookMetadataVariant1.command',
       ),
-      displayOrder: CodexJson.asInt(
-        map['displayOrder'],
-        'CodexHookMetadata.displayOrder',
+      handlerType: CodexJson.asStringLiteral(
+        map['handlerType'],
+        'CodexHookMetadataVariant1.handlerType',
+        'command',
       ),
-      enabled: CodexJson.asBool(map['enabled'], 'CodexHookMetadata.enabled'),
-      eventName: CodexHookEventName.fromJson(map['eventName']),
-      handlerType: CodexHookHandlerType.fromJson(map['handlerType']),
-      isManaged: CodexJson.asBool(
-        map['isManaged'],
-        'CodexHookMetadata.isManaged',
-      ),
-      key: CodexJson.asString(map['key'], 'CodexHookMetadata.key'),
-      matcher: map.containsKey('matcher') && map['matcher'] != null
-          ? CodexJson.asString(map['matcher'], 'CodexHookMetadata.matcher')
-          : null,
-      pluginId: map.containsKey('pluginId') && map['pluginId'] != null
-          ? CodexJson.asString(map['pluginId'], 'CodexHookMetadata.pluginId')
-          : null,
-      source: CodexHookSource.fromJson(map['source']),
-      sourcePath: CodexV2AbsolutePathBuf.fromJson(map['sourcePath']),
-      statusMessage:
-          map.containsKey('statusMessage') && map['statusMessage'] != null
-          ? CodexJson.asString(
-              map['statusMessage'],
-              'CodexHookMetadata.statusMessage',
-            )
-          : null,
-      timeoutSec: CodexJson.asInt(
-        map['timeoutSec'],
-        'CodexHookMetadata.timeoutSec',
-      ),
-      trustStatus: CodexHookTrustStatus.fromJson(map['trustStatus']),
     );
   }
 
   @override
   Map<String, Object?> toJson() => {
-    if (additionalContextLimit != null)
-      'additionalContextLimit': CodexJson.encode(additionalContextLimit),
-    if (command != null) 'command': CodexJson.encode(command),
-    'currentHash': CodexJson.encode(currentHash),
-    'displayOrder': CodexJson.encode(displayOrder),
-    'enabled': CodexJson.encode(enabled),
-    'eventName': CodexJson.encode(eventName),
+    if (asyncValue != null) 'async': CodexJson.encode(asyncValue),
+    'command': CodexJson.encode(command),
     'handlerType': CodexJson.encode(handlerType),
-    'isManaged': CodexJson.encode(isManaged),
-    'key': CodexJson.encode(key),
-    if (matcher != null) 'matcher': CodexJson.encode(matcher),
-    if (pluginId != null) 'pluginId': CodexJson.encode(pluginId),
-    'source': CodexJson.encode(source),
-    'sourcePath': CodexJson.encode(sourcePath),
-    if (statusMessage != null) 'statusMessage': CodexJson.encode(statusMessage),
-    'timeoutSec': CodexJson.encode(timeoutSec),
-    'trustStatus': CodexJson.encode(trustStatus),
   };
+}
+
+final class CodexHookMetadataVariant2 extends CodexHookMetadata {
+  const CodexHookMetadataVariant2({
+    required this.handlerType,
+    required this.server,
+    required this.tool,
+  });
+
+  final String handlerType;
+  final String server;
+  final String tool;
+
+  factory CodexHookMetadataVariant2.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexHookMetadataVariant2');
+    return CodexHookMetadataVariant2(
+      handlerType: CodexJson.asStringLiteral(
+        map['handlerType'],
+        'CodexHookMetadataVariant2.handlerType',
+        'mcpTool',
+      ),
+      server: CodexJson.asString(
+        map['server'],
+        'CodexHookMetadataVariant2.server',
+      ),
+      tool: CodexJson.asString(map['tool'], 'CodexHookMetadataVariant2.tool'),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'handlerType': CodexJson.encode(handlerType),
+    'server': CodexJson.encode(server),
+    'tool': CodexJson.encode(tool),
+  };
+}
+
+final class CodexPromptHookMetadata extends CodexHookMetadata {
+  const CodexPromptHookMetadata({required this.handlerType});
+
+  final String handlerType;
+
+  factory CodexPromptHookMetadata.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPromptHookMetadata');
+    return CodexPromptHookMetadata(
+      handlerType: CodexJson.asStringLiteral(
+        map['handlerType'],
+        'CodexPromptHookMetadata.handlerType',
+        'prompt',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'handlerType': CodexJson.encode(handlerType),
+  };
+}
+
+final class CodexAgentHookMetadata extends CodexHookMetadata {
+  const CodexAgentHookMetadata({required this.handlerType});
+
+  final String handlerType;
+
+  factory CodexAgentHookMetadata.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexAgentHookMetadata');
+    return CodexAgentHookMetadata(
+      handlerType: CodexJson.asStringLiteral(
+        map['handlerType'],
+        'CodexAgentHookMetadata.handlerType',
+        'agent',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'handlerType': CodexJson.encode(handlerType),
+  };
+}
+
+final class CodexHookMetadataUnknown extends CodexHookMetadata {
+  const CodexHookMetadataUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
 }
 
 final class CodexHookMigration implements CodexJsonEncodable {
@@ -18745,6 +21710,99 @@ enum CodexImageDetail implements CodexJsonEncodable {
   }
   @override
   Object toJson() => value;
+}
+
+sealed class CodexImageGenerationFailure implements CodexJsonEncodable {
+  const CodexImageGenerationFailure();
+  factory CodexImageGenerationFailure.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexImageGenerationFailure');
+    switch (map['type']) {
+      case 'usageLimitExceeded':
+        return CodexUsageLimitExceededImageGenerationFailure.fromJson(map);
+      default:
+        return CodexImageGenerationFailureUnknown(map);
+    }
+  }
+}
+
+final class CodexUsageLimitExceededImageGenerationFailure
+    extends CodexImageGenerationFailure {
+  const CodexUsageLimitExceededImageGenerationFailure({
+    required this.limitId,
+    this.resetsAt,
+  });
+
+  final String limitId;
+  final int? resetsAt;
+
+  factory CodexUsageLimitExceededImageGenerationFailure.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexUsageLimitExceededImageGenerationFailure',
+    );
+    if (map['type'] != 'usageLimitExceeded') {
+      throw FormatException(
+        'Expected type=usageLimitExceeded for CodexUsageLimitExceededImageGenerationFailure',
+      );
+    }
+    return CodexUsageLimitExceededImageGenerationFailure(
+      limitId: CodexJson.asString(
+        map['limitId'],
+        'CodexUsageLimitExceededImageGenerationFailure.limitId',
+      ),
+      resetsAt: map.containsKey('resetsAt') && map['resetsAt'] != null
+          ? CodexJson.asInt(
+              map['resetsAt'],
+              'CodexUsageLimitExceededImageGenerationFailure.resetsAt',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'usageLimitExceeded',
+    'limitId': CodexJson.encode(limitId),
+    if (resetsAt != null) 'resetsAt': CodexJson.encode(resetsAt),
+  };
+}
+
+final class CodexImageGenerationFailureUnknown
+    extends CodexImageGenerationFailure {
+  const CodexImageGenerationFailureUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
+final class CodexInAppBrowserRequirements implements CodexJsonEncodable {
+  const CodexInAppBrowserRequirements({
+    this.allowExternalBrowserSettingsImport,
+  });
+
+  final bool? allowExternalBrowserSettingsImport;
+
+  factory CodexInAppBrowserRequirements.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexInAppBrowserRequirements');
+    return CodexInAppBrowserRequirements(
+      allowExternalBrowserSettingsImport:
+          map.containsKey('allowExternalBrowserSettingsImport') &&
+              map['allowExternalBrowserSettingsImport'] != null
+          ? CodexJson.asBool(
+              map['allowExternalBrowserSettingsImport'],
+              'CodexInAppBrowserRequirements.allowExternalBrowserSettingsImport',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (allowExternalBrowserSettingsImport != null)
+      'allowExternalBrowserSettingsImport': CodexJson.encode(
+        allowExternalBrowserSettingsImport,
+      ),
+  };
 }
 
 final class CodexInputModality implements CodexJsonEncodable {
@@ -19264,6 +22322,8 @@ sealed class CodexLoginAccountParams implements CodexJsonEncodable {
         return CodexChatgptAuthTokensv2LoginAccountParams.fromJson(map);
       case 'amazonBedrock':
         return CodexAmazonBedrockv2LoginAccountParams.fromJson(map);
+      case 'amazonBedrockAccessKeys':
+        return CodexAmazonBedrockAccessKeysv2LoginAccountParams.fromJson(map);
       default:
         return CodexLoginAccountParamsUnknown(map);
     }
@@ -19455,6 +22515,65 @@ final class CodexAmazonBedrockv2LoginAccountParams
     'type': 'amazonBedrock',
     'apiKey': CodexJson.encode(apiKey),
     'region': CodexJson.encode(region),
+  };
+}
+
+final class CodexAmazonBedrockAccessKeysv2LoginAccountParams
+    extends CodexLoginAccountParams {
+  const CodexAmazonBedrockAccessKeysv2LoginAccountParams({
+    required this.accessKeyId,
+    required this.region,
+    required this.secretAccessKey,
+    this.sessionToken,
+  });
+
+  final String accessKeyId;
+  final String region;
+  final String secretAccessKey;
+  final String? sessionToken;
+
+  factory CodexAmazonBedrockAccessKeysv2LoginAccountParams.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexAmazonBedrockAccessKeysv2LoginAccountParams',
+    );
+    if (map['type'] != 'amazonBedrockAccessKeys') {
+      throw FormatException(
+        'Expected type=amazonBedrockAccessKeys for CodexAmazonBedrockAccessKeysv2LoginAccountParams',
+      );
+    }
+    return CodexAmazonBedrockAccessKeysv2LoginAccountParams(
+      accessKeyId: CodexJson.asString(
+        map['accessKeyId'],
+        'CodexAmazonBedrockAccessKeysv2LoginAccountParams.accessKeyId',
+      ),
+      region: CodexJson.asString(
+        map['region'],
+        'CodexAmazonBedrockAccessKeysv2LoginAccountParams.region',
+      ),
+      secretAccessKey: CodexJson.asString(
+        map['secretAccessKey'],
+        'CodexAmazonBedrockAccessKeysv2LoginAccountParams.secretAccessKey',
+      ),
+      sessionToken:
+          map.containsKey('sessionToken') && map['sessionToken'] != null
+          ? CodexJson.asString(
+              map['sessionToken'],
+              'CodexAmazonBedrockAccessKeysv2LoginAccountParams.sessionToken',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'amazonBedrockAccessKeys',
+    'accessKeyId': CodexJson.encode(accessKeyId),
+    'region': CodexJson.encode(region),
+    'secretAccessKey': CodexJson.encode(secretAccessKey),
+    if (sessionToken != null) 'sessionToken': CodexJson.encode(sessionToken),
   };
 }
 
@@ -19668,6 +22787,7 @@ final class CodexLogoutAccountResponse implements CodexJsonEncodable {
 
 final class CodexManagedHooksRequirements implements CodexJsonEncodable {
   const CodexManagedHooksRequirements({
+    this.interrupt,
     required this.permissionRequest,
     required this.postCompact,
     required this.postToolUse,
@@ -19683,6 +22803,7 @@ final class CodexManagedHooksRequirements implements CodexJsonEncodable {
     this.windowsManagedDir,
   });
 
+  final List<CodexConfiguredHookMatcherGroup>? interrupt;
   final List<CodexConfiguredHookMatcherGroup> permissionRequest;
   final List<CodexConfiguredHookMatcherGroup> postCompact;
   final List<CodexConfiguredHookMatcherGroup> postToolUse;
@@ -19700,6 +22821,14 @@ final class CodexManagedHooksRequirements implements CodexJsonEncodable {
   factory CodexManagedHooksRequirements.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexManagedHooksRequirements');
     return CodexManagedHooksRequirements(
+      interrupt: map.containsKey('Interrupt') && map['Interrupt'] != null
+          ? CodexJson.asList(
+                  map['Interrupt'],
+                  'CodexManagedHooksRequirements.Interrupt',
+                )
+                .map((value) => CodexConfiguredHookMatcherGroup.fromJson(value))
+                .toList(growable: false)
+          : null,
       permissionRequest:
           CodexJson.asList(
                 map['PermissionRequest'],
@@ -19793,6 +22922,7 @@ final class CodexManagedHooksRequirements implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (interrupt != null) 'Interrupt': CodexJson.encode(interrupt),
     'PermissionRequest': CodexJson.encode(permissionRequest),
     'PostCompact': CodexJson.encode(postCompact),
     'PostToolUse': CodexJson.encode(postToolUse),
@@ -20099,6 +23229,53 @@ final class CodexMarketplaceUpgradeResponse implements CodexJsonEncodable {
   };
 }
 
+enum CodexMcpAppDisplayMode implements CodexJsonEncodable {
+  inline('inline'),
+  fullscreen('fullscreen');
+
+  const CodexMcpAppDisplayMode(this.value);
+  final String value;
+  factory CodexMcpAppDisplayMode.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexMcpAppDisplayMode');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexMcpAppDisplayMode: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexMcpAppUi implements CodexJsonEncodable {
+  const CodexMcpAppUi({
+    required this.preferredModelDisplayMode,
+    required this.resourceUri,
+  });
+
+  final CodexMcpAppDisplayMode preferredModelDisplayMode;
+  final String resourceUri;
+
+  factory CodexMcpAppUi.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpAppUi');
+    return CodexMcpAppUi(
+      preferredModelDisplayMode: CodexMcpAppDisplayMode.fromJson(
+        map['preferredModelDisplayMode'],
+      ),
+      resourceUri: CodexJson.asString(
+        map['resourceUri'],
+        'CodexMcpAppUi.resourceUri',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'preferredModelDisplayMode': CodexJson.encode(preferredModelDisplayMode),
+    'resourceUri': CodexJson.encode(resourceUri),
+  };
+}
+
 enum CodexMcpAuthStatus implements CodexJsonEncodable {
   unknown('unknown'),
   unsupported('unsupported'),
@@ -20121,11 +23298,15 @@ enum CodexMcpAuthStatus implements CodexJsonEncodable {
 
 final class CodexMcpResourceReadParams implements CodexJsonEncodable {
   const CodexMcpResourceReadParams({
+    this.connectorId,
+    this.originCallId,
     required this.server,
     this.threadId,
     required this.uri,
   });
 
+  final String? connectorId;
+  final String? originCallId;
   final String server;
   final String? threadId;
   final String uri;
@@ -20133,6 +23314,19 @@ final class CodexMcpResourceReadParams implements CodexJsonEncodable {
   factory CodexMcpResourceReadParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexMcpResourceReadParams');
     return CodexMcpResourceReadParams(
+      connectorId: map.containsKey('connectorId') && map['connectorId'] != null
+          ? CodexJson.asString(
+              map['connectorId'],
+              'CodexMcpResourceReadParams.connectorId',
+            )
+          : null,
+      originCallId:
+          map.containsKey('originCallId') && map['originCallId'] != null
+          ? CodexJson.asString(
+              map['originCallId'],
+              'CodexMcpResourceReadParams.originCallId',
+            )
+          : null,
       server: CodexJson.asString(
         map['server'],
         'CodexMcpResourceReadParams.server',
@@ -20149,6 +23343,8 @@ final class CodexMcpResourceReadParams implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (connectorId != null) 'connectorId': CodexJson.encode(connectorId),
+    if (originCallId != null) 'originCallId': CodexJson.encode(originCallId),
     'server': CodexJson.encode(server),
     if (threadId != null) 'threadId': CodexJson.encode(threadId),
     'uri': CodexJson.encode(uri),
@@ -20156,9 +23352,13 @@ final class CodexMcpResourceReadParams implements CodexJsonEncodable {
 }
 
 final class CodexMcpResourceReadResponse implements CodexJsonEncodable {
-  const CodexMcpResourceReadResponse({required this.contents});
+  const CodexMcpResourceReadResponse({
+    required this.contents,
+    this.originCallId,
+  });
 
   final List<CodexResourceContent> contents;
+  final String? originCallId;
 
   factory CodexMcpResourceReadResponse.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexMcpResourceReadResponse');
@@ -20170,11 +23370,203 @@ final class CodexMcpResourceReadResponse implements CodexJsonEncodable {
               )
               .map((value) => CodexResourceContent.fromJson(value))
               .toList(growable: false),
+      originCallId:
+          map.containsKey('originCallId') && map['originCallId'] != null
+          ? CodexJson.asString(
+              map['originCallId'],
+              'CodexMcpResourceReadResponse.originCallId',
+            )
+          : null,
     );
   }
 
   @override
-  Map<String, Object?> toJson() => {'contents': CodexJson.encode(contents)};
+  Map<String, Object?> toJson() => {
+    'contents': CodexJson.encode(contents),
+    if (originCallId != null) 'originCallId': CodexJson.encode(originCallId),
+  };
+}
+
+enum CodexMcpServerConnectionStatus implements CodexJsonEncodable {
+  notStarted('notStarted'),
+  starting('starting'),
+  connected('connected'),
+  authenticationRequired('authenticationRequired'),
+  failed('failed'),
+  cancelled('cancelled'),
+  disabled('disabled');
+
+  const CodexMcpServerConnectionStatus(this.value);
+  final String value;
+  factory CodexMcpServerConnectionStatus.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexMcpServerConnectionStatus');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexMcpServerConnectionStatus: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexMcpServerEventNotification implements CodexJsonEncodable {
+  const CodexMcpServerEventNotification({
+    required this.method,
+    required this.params,
+  });
+
+  final String method;
+  final Object? params;
+
+  factory CodexMcpServerEventNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventNotification');
+    return CodexMcpServerEventNotification(
+      method: CodexJson.asString(
+        map['method'],
+        'CodexMcpServerEventNotification.method',
+      ),
+      params: CodexJson.clone(map['params']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'method': CodexJson.encode(method),
+    'params': CodexJson.encode(params),
+  };
+}
+
+final class CodexMcpServerEventStreamNotification
+    implements CodexJsonEncodable {
+  const CodexMcpServerEventStreamNotification({
+    required this.notification,
+    required this.subscriptionId,
+  });
+
+  final CodexMcpServerEventNotification notification;
+  final String subscriptionId;
+
+  factory CodexMcpServerEventStreamNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamNotification');
+    return CodexMcpServerEventStreamNotification(
+      notification: CodexMcpServerEventNotification.fromJson(
+        map['notification'],
+      ),
+      subscriptionId: CodexJson.asString(
+        map['subscriptionId'],
+        'CodexMcpServerEventStreamNotification.subscriptionId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'notification': CodexJson.encode(notification),
+    'subscriptionId': CodexJson.encode(subscriptionId),
+  };
+}
+
+final class CodexMcpServerEventStreamStartParams implements CodexJsonEncodable {
+  const CodexMcpServerEventStreamStartParams({
+    this.meta,
+    required this.arguments,
+    required this.name,
+    required this.server,
+    required this.subscriptionId,
+    required this.threadId,
+  });
+
+  final Object? meta;
+  final Object? arguments;
+  final String name;
+  final String server;
+  final String subscriptionId;
+  final String threadId;
+
+  factory CodexMcpServerEventStreamStartParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStartParams');
+    return CodexMcpServerEventStreamStartParams(
+      meta: map.containsKey('_meta') && map['_meta'] != null
+          ? CodexJson.clone(map['_meta'])
+          : null,
+      arguments: CodexJson.clone(map['arguments']),
+      name: CodexJson.asString(
+        map['name'],
+        'CodexMcpServerEventStreamStartParams.name',
+      ),
+      server: CodexJson.asString(
+        map['server'],
+        'CodexMcpServerEventStreamStartParams.server',
+      ),
+      subscriptionId: CodexJson.asString(
+        map['subscriptionId'],
+        'CodexMcpServerEventStreamStartParams.subscriptionId',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexMcpServerEventStreamStartParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (meta != null) '_meta': CodexJson.encode(meta),
+    'arguments': CodexJson.encode(arguments),
+    'name': CodexJson.encode(name),
+    'server': CodexJson.encode(server),
+    'subscriptionId': CodexJson.encode(subscriptionId),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexMcpServerEventStreamStartResponse
+    implements CodexJsonEncodable {
+  const CodexMcpServerEventStreamStartResponse();
+
+  factory CodexMcpServerEventStreamStartResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStartResponse');
+    return const CodexMcpServerEventStreamStartResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexMcpServerEventStreamStopParams implements CodexJsonEncodable {
+  const CodexMcpServerEventStreamStopParams({required this.subscriptionId});
+
+  final String subscriptionId;
+
+  factory CodexMcpServerEventStreamStopParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStopParams');
+    return CodexMcpServerEventStreamStopParams(
+      subscriptionId: CodexJson.asString(
+        map['subscriptionId'],
+        'CodexMcpServerEventStreamStopParams.subscriptionId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'subscriptionId': CodexJson.encode(subscriptionId),
+  };
+}
+
+final class CodexMcpServerEventStreamStopResponse
+    implements CodexJsonEncodable {
+  const CodexMcpServerEventStreamStopResponse();
+
+  factory CodexMcpServerEventStreamStopResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMcpServerEventStreamStopResponse');
+    return const CodexMcpServerEventStreamStopResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
 }
 
 final class CodexMcpServerInfo implements CodexJsonEncodable {
@@ -20250,6 +23642,29 @@ final class CodexMcpServerMigration implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {'name': CodexJson.encode(name)};
 }
 
+enum CodexMcpServerOauthClientRegistration implements CodexJsonEncodable {
+  auto('auto'),
+  cimd('cimd'),
+  dcr('dcr');
+
+  const CodexMcpServerOauthClientRegistration(this.value);
+  final String value;
+  factory CodexMcpServerOauthClientRegistration.fromJson(Object? json) {
+    final value = CodexJson.asString(
+      json,
+      'CodexMcpServerOauthClientRegistration',
+    );
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexMcpServerOauthClientRegistration: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 final class CodexMcpServerOauthLoginCompletedNotification
     implements CodexJsonEncodable {
   const CodexMcpServerOauthLoginCompletedNotification({
@@ -20304,12 +23719,14 @@ final class CodexMcpServerOauthLoginCompletedNotification
 
 final class CodexMcpServerOauthLoginParams implements CodexJsonEncodable {
   const CodexMcpServerOauthLoginParams({
+    this.clientRegistration,
     required this.name,
     this.scopes,
     this.threadId,
     this.timeoutSecs,
   });
 
+  final CodexMcpServerOauthClientRegistration? clientRegistration;
   final String name;
   final List<String>? scopes;
   final String? threadId;
@@ -20318,6 +23735,13 @@ final class CodexMcpServerOauthLoginParams implements CodexJsonEncodable {
   factory CodexMcpServerOauthLoginParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexMcpServerOauthLoginParams');
     return CodexMcpServerOauthLoginParams(
+      clientRegistration:
+          map.containsKey('clientRegistration') &&
+              map['clientRegistration'] != null
+          ? CodexMcpServerOauthClientRegistration.fromJson(
+              map['clientRegistration'],
+            )
+          : null,
       name: CodexJson.asString(
         map['name'],
         'CodexMcpServerOauthLoginParams.name',
@@ -20352,6 +23776,8 @@ final class CodexMcpServerOauthLoginParams implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (clientRegistration != null)
+      'clientRegistration': CodexJson.encode(clientRegistration),
     'name': CodexJson.encode(name),
     if (scopes != null) 'scopes': CodexJson.encode(scopes),
     if (threadId != null) 'threadId': CodexJson.encode(threadId),
@@ -20431,24 +23857,35 @@ final class CodexMcpServerStatus implements CodexJsonEncodable {
   const CodexMcpServerStatus({
     required this.authStatus,
     required this.name,
+    this.pluginId,
     required this.resourceTemplates,
     required this.resources,
+    this.runtimeStatus,
+    this.serverCapabilities,
     this.serverInfo,
     required this.tools,
+    this.toolsError,
   });
 
   final CodexMcpAuthStatus authStatus;
   final String name;
+  final String? pluginId;
   final List<CodexResourceTemplate> resourceTemplates;
   final List<CodexResource> resources;
+  final CodexMcpServerConnectionStatus? runtimeStatus;
+  final Object? serverCapabilities;
   final CodexMcpServerInfo? serverInfo;
   final Map<String, CodexTool> tools;
+  final String? toolsError;
 
   factory CodexMcpServerStatus.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexMcpServerStatus');
     return CodexMcpServerStatus(
       authStatus: CodexMcpAuthStatus.fromJson(map['authStatus']),
       name: CodexJson.asString(map['name'], 'CodexMcpServerStatus.name'),
+      pluginId: map.containsKey('pluginId') && map['pluginId'] != null
+          ? CodexJson.asString(map['pluginId'], 'CodexMcpServerStatus.pluginId')
+          : null,
       resourceTemplates:
           CodexJson.asList(
                 map['resourceTemplates'],
@@ -20460,6 +23897,15 @@ final class CodexMcpServerStatus implements CodexJsonEncodable {
         map['resources'],
         'CodexMcpServerStatus.resources',
       ).map((value) => CodexResource.fromJson(value)).toList(growable: false),
+      runtimeStatus:
+          map.containsKey('runtimeStatus') && map['runtimeStatus'] != null
+          ? CodexMcpServerConnectionStatus.fromJson(map['runtimeStatus'])
+          : null,
+      serverCapabilities:
+          map.containsKey('serverCapabilities') &&
+              map['serverCapabilities'] != null
+          ? CodexJson.clone(map['serverCapabilities'])
+          : null,
       serverInfo: map.containsKey('serverInfo') && map['serverInfo'] != null
           ? CodexMcpServerInfo.fromJson(map['serverInfo'])
           : null,
@@ -20467,6 +23913,12 @@ final class CodexMcpServerStatus implements CodexJsonEncodable {
         map['tools'],
         'CodexMcpServerStatus.tools',
       ).map((key, value) => MapEntry(key, CodexTool.fromJson(value))),
+      toolsError: map.containsKey('toolsError') && map['toolsError'] != null
+          ? CodexJson.asString(
+              map['toolsError'],
+              'CodexMcpServerStatus.toolsError',
+            )
+          : null,
     );
   }
 
@@ -20474,10 +23926,15 @@ final class CodexMcpServerStatus implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     'authStatus': CodexJson.encode(authStatus),
     'name': CodexJson.encode(name),
+    if (pluginId != null) 'pluginId': CodexJson.encode(pluginId),
     'resourceTemplates': CodexJson.encode(resourceTemplates),
     'resources': CodexJson.encode(resources),
+    if (runtimeStatus != null) 'runtimeStatus': CodexJson.encode(runtimeStatus),
+    if (serverCapabilities != null)
+      'serverCapabilities': CodexJson.encode(serverCapabilities),
     if (serverInfo != null) 'serverInfo': CodexJson.encode(serverInfo),
     'tools': CodexJson.encode(tools),
+    if (toolsError != null) 'toolsError': CodexJson.encode(toolsError),
   };
 }
 
@@ -20911,6 +24368,62 @@ final class CodexMemoryResetResponse implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {};
 }
 
+final class CodexMemoryStatusParams implements CodexJsonEncodable {
+  const CodexMemoryStatusParams({this.minConsolidatedThreads});
+
+  final int? minConsolidatedThreads;
+
+  factory CodexMemoryStatusParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMemoryStatusParams');
+    return CodexMemoryStatusParams(
+      minConsolidatedThreads:
+          map.containsKey('minConsolidatedThreads') &&
+              map['minConsolidatedThreads'] != null
+          ? CodexJson.asInt(
+              map['minConsolidatedThreads'],
+              'CodexMemoryStatusParams.minConsolidatedThreads',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (minConsolidatedThreads != null)
+      'minConsolidatedThreads': CodexJson.encode(minConsolidatedThreads),
+  };
+}
+
+final class CodexMemoryStatusResponse implements CodexJsonEncodable {
+  const CodexMemoryStatusResponse({
+    required this.v2ConsolidatedThreads,
+    required this.v2Ready,
+  });
+
+  final int v2ConsolidatedThreads;
+  final bool v2Ready;
+
+  factory CodexMemoryStatusResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMemoryStatusResponse');
+    return CodexMemoryStatusResponse(
+      v2ConsolidatedThreads: CodexJson.asInt(
+        map['v2ConsolidatedThreads'],
+        'CodexMemoryStatusResponse.v2ConsolidatedThreads',
+      ),
+      v2Ready: CodexJson.asBool(
+        map['v2Ready'],
+        'CodexMemoryStatusResponse.v2Ready',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'v2ConsolidatedThreads': CodexJson.encode(v2ConsolidatedThreads),
+    'v2Ready': CodexJson.encode(v2Ready),
+  };
+}
+
 enum CodexMergeStrategy implements CodexJsonEncodable {
   replace('replace'),
   upsert('upsert');
@@ -21028,6 +24541,68 @@ final class CodexMigrationDetails implements CodexJsonEncodable {
   };
 }
 
+final class CodexMisalignmentErrorDetails implements CodexJsonEncodable {
+  const CodexMisalignmentErrorDetails({
+    this.detailedExplanation,
+    this.errorType,
+    this.steer,
+  });
+
+  final String? detailedExplanation;
+  final String? errorType;
+  final CodexMisalignmentSteer? steer;
+
+  factory CodexMisalignmentErrorDetails.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMisalignmentErrorDetails');
+    return CodexMisalignmentErrorDetails(
+      detailedExplanation:
+          map.containsKey('detailedExplanation') &&
+              map['detailedExplanation'] != null
+          ? CodexJson.asString(
+              map['detailedExplanation'],
+              'CodexMisalignmentErrorDetails.detailedExplanation',
+            )
+          : null,
+      errorType: map.containsKey('errorType') && map['errorType'] != null
+          ? CodexJson.asString(
+              map['errorType'],
+              'CodexMisalignmentErrorDetails.errorType',
+            )
+          : null,
+      steer: map.containsKey('steer') && map['steer'] != null
+          ? CodexMisalignmentSteer.fromJson(map['steer'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (detailedExplanation != null)
+      'detailedExplanation': CodexJson.encode(detailedExplanation),
+    if (errorType != null) 'errorType': CodexJson.encode(errorType),
+    if (steer != null) 'steer': CodexJson.encode(steer),
+  };
+}
+
+final class CodexMisalignmentSteer implements CodexJsonEncodable {
+  const CodexMisalignmentSteer({required this.message});
+
+  final String message;
+
+  factory CodexMisalignmentSteer.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexMisalignmentSteer');
+    return CodexMisalignmentSteer(
+      message: CodexJson.asString(
+        map['message'],
+        'CodexMisalignmentSteer.message',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'message': CodexJson.encode(message)};
+}
+
 final class CodexMockExperimentalMethodParams implements CodexJsonEncodable {
   const CodexMockExperimentalMethodParams({this.value});
 
@@ -21095,6 +24670,7 @@ final class CodexModel implements CodexJsonEncodable {
   const CodexModel({
     this.additionalSpeedTiers,
     this.availabilityNux,
+    this.availableAccessPrograms,
     required this.defaultReasoningEffort,
     this.defaultServiceTier,
     required this.description,
@@ -21105,6 +24681,7 @@ final class CodexModel implements CodexJsonEncodable {
     required this.isDefault,
     required this.model,
     this.modelSpecialty,
+    this.multiAgentVersion,
     this.serviceTiers,
     required this.supportedReasoningEfforts,
     this.supportsPersonality,
@@ -21114,6 +24691,7 @@ final class CodexModel implements CodexJsonEncodable {
 
   final List<String>? additionalSpeedTiers;
   final CodexModelAvailabilityNux? availabilityNux;
+  final CodexModelAccessPrograms? availableAccessPrograms;
   final CodexReasoningEffort defaultReasoningEffort;
   final String? defaultServiceTier;
   final String description;
@@ -21124,6 +24702,7 @@ final class CodexModel implements CodexJsonEncodable {
   final bool isDefault;
   final String model;
   final String? modelSpecialty;
+  final CodexMultiAgentVersion? multiAgentVersion;
   final List<CodexModelServiceTier>? serviceTiers;
   final List<CodexReasoningEffortOption> supportedReasoningEfforts;
   final bool? supportsPersonality;
@@ -21151,6 +24730,11 @@ final class CodexModel implements CodexJsonEncodable {
       availabilityNux:
           map.containsKey('availabilityNux') && map['availabilityNux'] != null
           ? CodexModelAvailabilityNux.fromJson(map['availabilityNux'])
+          : null,
+      availableAccessPrograms:
+          map.containsKey('availableAccessPrograms') &&
+              map['availableAccessPrograms'] != null
+          ? CodexModelAccessPrograms.fromJson(map['availableAccessPrograms'])
           : null,
       defaultReasoningEffort: CodexReasoningEffort.fromJson(
         map['defaultReasoningEffort'],
@@ -21191,6 +24775,11 @@ final class CodexModel implements CodexJsonEncodable {
               'CodexModel.modelSpecialty',
             )
           : null,
+      multiAgentVersion:
+          map.containsKey('multiAgentVersion') &&
+              map['multiAgentVersion'] != null
+          ? CodexMultiAgentVersion.fromJson(map['multiAgentVersion'])
+          : null,
       serviceTiers:
           map.containsKey('serviceTiers') && map['serviceTiers'] != null
           ? CodexJson.asList(map['serviceTiers'], 'CodexModel.serviceTiers')
@@ -21227,6 +24816,8 @@ final class CodexModel implements CodexJsonEncodable {
       'additionalSpeedTiers': CodexJson.encode(additionalSpeedTiers),
     if (availabilityNux != null)
       'availabilityNux': CodexJson.encode(availabilityNux),
+    if (availableAccessPrograms != null)
+      'availableAccessPrograms': CodexJson.encode(availableAccessPrograms),
     'defaultReasoningEffort': CodexJson.encode(defaultReasoningEffort),
     if (defaultServiceTier != null)
       'defaultServiceTier': CodexJson.encode(defaultServiceTier),
@@ -21240,6 +24831,8 @@ final class CodexModel implements CodexJsonEncodable {
     'model': CodexJson.encode(model),
     if (modelSpecialty != null)
       'modelSpecialty': CodexJson.encode(modelSpecialty),
+    if (multiAgentVersion != null)
+      'multiAgentVersion': CodexJson.encode(multiAgentVersion),
     if (serviceTiers != null) 'serviceTiers': CodexJson.encode(serviceTiers),
     'supportedReasoningEfforts': CodexJson.encode(supportedReasoningEfforts),
     if (supportsPersonality != null)
@@ -21247,6 +24840,24 @@ final class CodexModel implements CodexJsonEncodable {
     if (upgrade != null) 'upgrade': CodexJson.encode(upgrade),
     if (upgradeInfo != null) 'upgradeInfo': CodexJson.encode(upgradeInfo),
   };
+}
+
+final class CodexModelAccessPrograms implements CodexJsonEncodable {
+  const CodexModelAccessPrograms({required this.cyber});
+
+  final List<CodexCyberAccessProgram> cyber;
+
+  factory CodexModelAccessPrograms.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexModelAccessPrograms');
+    return CodexModelAccessPrograms(
+      cyber: CodexJson.asList(map['cyber'], 'CodexModelAccessPrograms.cyber')
+          .map((value) => CodexCyberAccessProgram.fromJson(value))
+          .toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'cyber': CodexJson.encode(cyber)};
 }
 
 final class CodexModelAvailabilityNux implements CodexJsonEncodable {
@@ -21574,12 +25185,14 @@ final class CodexModelUpgradeInfo implements CodexJsonEncodable {
     this.migrationMarkdown,
     required this.model,
     this.modelLink,
+    this.retirementAt,
     this.upgradeCopy,
   });
 
   final String? migrationMarkdown;
   final String model;
   final String? modelLink;
+  final int? retirementAt;
   final String? upgradeCopy;
 
   factory CodexModelUpgradeInfo.fromJson(Object? json) {
@@ -21600,6 +25213,13 @@ final class CodexModelUpgradeInfo implements CodexJsonEncodable {
               'CodexModelUpgradeInfo.modelLink',
             )
           : null,
+      retirementAt:
+          map.containsKey('retirementAt') && map['retirementAt'] != null
+          ? CodexJson.asInt(
+              map['retirementAt'],
+              'CodexModelUpgradeInfo.retirementAt',
+            )
+          : null,
       upgradeCopy: map.containsKey('upgradeCopy') && map['upgradeCopy'] != null
           ? CodexJson.asString(
               map['upgradeCopy'],
@@ -21615,6 +25235,7 @@ final class CodexModelUpgradeInfo implements CodexJsonEncodable {
       'migrationMarkdown': CodexJson.encode(migrationMarkdown),
     'model': CodexJson.encode(model),
     if (modelLink != null) 'modelLink': CodexJson.encode(modelLink),
+    if (retirementAt != null) 'retirementAt': CodexJson.encode(retirementAt),
     if (upgradeCopy != null) 'upgradeCopy': CodexJson.encode(upgradeCopy),
   };
 }
@@ -21701,6 +25322,25 @@ final class CodexMultiAgentMode implements CodexJsonEncodable {
       CodexMultiAgentMode(CodexJson.clone(json));
   @override
   Object? toJson() => CodexJson.encode(value);
+}
+
+enum CodexMultiAgentVersion implements CodexJsonEncodable {
+  disabled('disabled'),
+  v1('v1'),
+  v2('v2');
+
+  const CodexMultiAgentVersion(this.value);
+  final String value;
+  factory CodexMultiAgentVersion.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexMultiAgentVersion');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexMultiAgentVersion: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
 }
 
 enum CodexNetworkAccess implements CodexJsonEncodable {
@@ -22019,6 +25659,30 @@ enum CodexNonSteerableTurnKind implements CodexJsonEncodable {
   }
   @override
   Object toJson() => value;
+}
+
+final class CodexNullableGetAccountRateLimitsParams
+    implements CodexJsonEncodable {
+  const CodexNullableGetAccountRateLimitsParams(this.value);
+  final CodexGetAccountRateLimitsParams? value;
+  factory CodexNullableGetAccountRateLimitsParams.fromJson(Object? json) =>
+      CodexNullableGetAccountRateLimitsParams(
+        json == null ? null : CodexGetAccountRateLimitsParams.fromJson(json),
+      );
+  @override
+  Object? toJson() => CodexJson.encode(value);
+}
+
+final class CodexNullableGetAccountTokenUsageParams
+    implements CodexJsonEncodable {
+  const CodexNullableGetAccountTokenUsageParams(this.value);
+  final CodexGetAccountTokenUsageParams? value;
+  factory CodexNullableGetAccountTokenUsageParams.fromJson(Object? json) =>
+      CodexNullableGetAccountTokenUsageParams(
+        json == null ? null : CodexGetAccountTokenUsageParams.fromJson(json),
+      );
+  @override
+  Object? toJson() => CodexJson.encode(value);
 }
 
 final class CodexNullableRemoteControlDisableParams
@@ -22379,6 +26043,8 @@ enum CodexPlanType implements CodexJsonEncodable {
   enterpriseCbpUsageBased('enterprise_cbp_usage_based'),
   enterprise('enterprise'),
   edu('edu'),
+  eduPlus('edu_plus'),
+  eduPro('edu_pro'),
   unknown('unknown');
 
   const CodexPlanType(this.value);
@@ -22566,11 +26232,13 @@ final class CodexPluginHookSummary implements CodexJsonEncodable {
 
 final class CodexPluginInstallParams implements CodexJsonEncodable {
   const CodexPluginInstallParams({
+    this.installAttemptId,
     this.marketplacePath,
     required this.pluginName,
     this.remoteMarketplaceName,
   });
 
+  final String? installAttemptId;
   final CodexV2AbsolutePathBuf? marketplacePath;
   final String pluginName;
   final String? remoteMarketplaceName;
@@ -22578,6 +26246,13 @@ final class CodexPluginInstallParams implements CodexJsonEncodable {
   factory CodexPluginInstallParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexPluginInstallParams');
     return CodexPluginInstallParams(
+      installAttemptId:
+          map.containsKey('installAttemptId') && map['installAttemptId'] != null
+          ? CodexJson.asString(
+              map['installAttemptId'],
+              'CodexPluginInstallParams.installAttemptId',
+            )
+          : null,
       marketplacePath:
           map.containsKey('marketplacePath') && map['marketplacePath'] != null
           ? CodexV2AbsolutePathBuf.fromJson(map['marketplacePath'])
@@ -22599,6 +26274,8 @@ final class CodexPluginInstallParams implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (installAttemptId != null)
+      'installAttemptId': CodexJson.encode(installAttemptId),
     if (marketplacePath != null)
       'marketplacePath': CodexJson.encode(marketplacePath),
     'pluginName': CodexJson.encode(pluginName),
@@ -23190,6 +26867,135 @@ final class CodexPluginReadResponse implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {'plugin': CodexJson.encode(plugin)};
+}
+
+final class CodexPluginReconcileChangedPlugin implements CodexJsonEncodable {
+  const CodexPluginReconcileChangedPlugin({
+    required this.hasApps,
+    required this.hasHooks,
+    required this.hasMcps,
+    required this.hasSkills,
+    required this.id,
+  });
+
+  final bool hasApps;
+  final bool hasHooks;
+  final bool hasMcps;
+  final bool hasSkills;
+  final String id;
+
+  factory CodexPluginReconcileChangedPlugin.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPluginReconcileChangedPlugin');
+    return CodexPluginReconcileChangedPlugin(
+      hasApps: CodexJson.asBool(
+        map['hasApps'],
+        'CodexPluginReconcileChangedPlugin.hasApps',
+      ),
+      hasHooks: CodexJson.asBool(
+        map['hasHooks'],
+        'CodexPluginReconcileChangedPlugin.hasHooks',
+      ),
+      hasMcps: CodexJson.asBool(
+        map['hasMcps'],
+        'CodexPluginReconcileChangedPlugin.hasMcps',
+      ),
+      hasSkills: CodexJson.asBool(
+        map['hasSkills'],
+        'CodexPluginReconcileChangedPlugin.hasSkills',
+      ),
+      id: CodexJson.asString(map['id'], 'CodexPluginReconcileChangedPlugin.id'),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'hasApps': CodexJson.encode(hasApps),
+    'hasHooks': CodexJson.encode(hasHooks),
+    'hasMcps': CodexJson.encode(hasMcps),
+    'hasSkills': CodexJson.encode(hasSkills),
+    'id': CodexJson.encode(id),
+  };
+}
+
+final class CodexPluginReconcileParams implements CodexJsonEncodable {
+  const CodexPluginReconcileParams({this.reason});
+
+  final String? reason;
+
+  factory CodexPluginReconcileParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPluginReconcileParams');
+    return CodexPluginReconcileParams(
+      reason: map.containsKey('reason') && map['reason'] != null
+          ? CodexJson.asString(
+              map['reason'],
+              'CodexPluginReconcileParams.reason',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (reason != null) 'reason': CodexJson.encode(reason),
+  };
+}
+
+final class CodexPluginReconcileResponse implements CodexJsonEncodable {
+  const CodexPluginReconcileResponse({
+    required this.changedPlugins,
+    required this.failedMaterializationRemotePluginIds,
+    required this.failedRemotePluginIds,
+  });
+
+  final List<CodexPluginReconcileChangedPlugin> changedPlugins;
+  final List<String> failedMaterializationRemotePluginIds;
+  final List<String> failedRemotePluginIds;
+
+  factory CodexPluginReconcileResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexPluginReconcileResponse');
+    return CodexPluginReconcileResponse(
+      changedPlugins:
+          CodexJson.asList(
+                map['changedPlugins'],
+                'CodexPluginReconcileResponse.changedPlugins',
+              )
+              .map((value) => CodexPluginReconcileChangedPlugin.fromJson(value))
+              .toList(growable: false),
+      failedMaterializationRemotePluginIds:
+          CodexJson.asList(
+                map['failedMaterializationRemotePluginIds'],
+                'CodexPluginReconcileResponse.failedMaterializationRemotePluginIds',
+              )
+              .map(
+                (value) => CodexJson.asString(
+                  value,
+                  'CodexPluginReconcileResponse.failedMaterializationRemotePluginIds[]',
+                ),
+              )
+              .toList(growable: false),
+      failedRemotePluginIds:
+          CodexJson.asList(
+                map['failedRemotePluginIds'],
+                'CodexPluginReconcileResponse.failedRemotePluginIds',
+              )
+              .map(
+                (value) => CodexJson.asString(
+                  value,
+                  'CodexPluginReconcileResponse.failedRemotePluginIds[]',
+                ),
+              )
+              .toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'changedPlugins': CodexJson.encode(changedPlugins),
+    'failedMaterializationRemotePluginIds': CodexJson.encode(
+      failedMaterializationRemotePluginIds,
+    ),
+    'failedRemotePluginIds': CodexJson.encode(failedRemotePluginIds),
+  };
 }
 
 final class CodexPluginSearchParams implements CodexJsonEncodable {
@@ -24739,6 +28545,567 @@ final class CodexProcessWriteStdinResponse implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {};
 }
 
+final class CodexProject implements CodexJsonEncodable {
+  const CodexProject({
+    required this.createdAt,
+    required this.id,
+    required this.metadata,
+    required this.name,
+    required this.position,
+    this.recencyAt,
+    required this.roots,
+    required this.updatedAt,
+  });
+
+  final int createdAt;
+  final String id;
+  final Map<String, String> metadata;
+  final String name;
+  final int position;
+  final int? recencyAt;
+  final List<CodexProjectRoot> roots;
+  final int updatedAt;
+
+  factory CodexProject.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProject');
+    return CodexProject(
+      createdAt: CodexJson.asInt(map['createdAt'], 'CodexProject.createdAt'),
+      id: CodexJson.asString(map['id'], 'CodexProject.id'),
+      metadata: CodexJson.asMap(map['metadata'], 'CodexProject.metadata').map(
+        (key, value) =>
+            MapEntry(key, CodexJson.asString(value, 'CodexProject.metadata{}')),
+      ),
+      name: CodexJson.asString(map['name'], 'CodexProject.name'),
+      position: CodexJson.asInt(map['position'], 'CodexProject.position'),
+      recencyAt: map.containsKey('recencyAt') && map['recencyAt'] != null
+          ? CodexJson.asInt(map['recencyAt'], 'CodexProject.recencyAt')
+          : null,
+      roots: CodexJson.asList(map['roots'], 'CodexProject.roots')
+          .map((value) => CodexProjectRoot.fromJson(value))
+          .toList(growable: false),
+      updatedAt: CodexJson.asInt(map['updatedAt'], 'CodexProject.updatedAt'),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'createdAt': CodexJson.encode(createdAt),
+    'id': CodexJson.encode(id),
+    'metadata': CodexJson.encode(metadata),
+    'name': CodexJson.encode(name),
+    'position': CodexJson.encode(position),
+    if (recencyAt != null) 'recencyAt': CodexJson.encode(recencyAt),
+    'roots': CodexJson.encode(roots),
+    'updatedAt': CodexJson.encode(updatedAt),
+  };
+}
+
+enum CodexProjectChangeType implements CodexJsonEncodable {
+  created('created'),
+  updated('updated'),
+  deleted('deleted');
+
+  const CodexProjectChangeType(this.value);
+  final String value;
+  factory CodexProjectChangeType.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexProjectChangeType');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexProjectChangeType: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexProjectChangedNotification implements CodexJsonEncodable {
+  const CodexProjectChangedNotification({
+    required this.changeType,
+    required this.projectId,
+  });
+
+  final CodexProjectChangeType changeType;
+  final String projectId;
+
+  factory CodexProjectChangedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectChangedNotification');
+    return CodexProjectChangedNotification(
+      changeType: CodexProjectChangeType.fromJson(map['changeType']),
+      projectId: CodexJson.asString(
+        map['projectId'],
+        'CodexProjectChangedNotification.projectId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'changeType': CodexJson.encode(changeType),
+    'projectId': CodexJson.encode(projectId),
+  };
+}
+
+final class CodexProjectCreateParams implements CodexJsonEncodable {
+  const CodexProjectCreateParams({
+    required this.idempotencyKey,
+    this.metadata,
+    required this.name,
+    required this.roots,
+  });
+
+  final String idempotencyKey;
+  final Map<String, String>? metadata;
+  final String name;
+  final List<CodexProjectRoot> roots;
+
+  factory CodexProjectCreateParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectCreateParams');
+    return CodexProjectCreateParams(
+      idempotencyKey: CodexJson.asString(
+        map['idempotencyKey'],
+        'CodexProjectCreateParams.idempotencyKey',
+      ),
+      metadata: map.containsKey('metadata') && map['metadata'] != null
+          ? CodexJson.asMap(
+              map['metadata'],
+              'CodexProjectCreateParams.metadata',
+            ).map(
+              (key, value) => MapEntry(
+                key,
+                CodexJson.asString(
+                  value,
+                  'CodexProjectCreateParams.metadata{}',
+                ),
+              ),
+            )
+          : null,
+      name: CodexJson.asString(map['name'], 'CodexProjectCreateParams.name'),
+      roots: CodexJson.asList(map['roots'], 'CodexProjectCreateParams.roots')
+          .map((value) => CodexProjectRoot.fromJson(value))
+          .toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'idempotencyKey': CodexJson.encode(idempotencyKey),
+    if (metadata != null) 'metadata': CodexJson.encode(metadata),
+    'name': CodexJson.encode(name),
+    'roots': CodexJson.encode(roots),
+  };
+}
+
+final class CodexProjectCreateResponse implements CodexJsonEncodable {
+  const CodexProjectCreateResponse({required this.project});
+
+  final CodexProject project;
+
+  factory CodexProjectCreateResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectCreateResponse');
+    return CodexProjectCreateResponse(
+      project: CodexProject.fromJson(map['project']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'project': CodexJson.encode(project)};
+}
+
+final class CodexProjectDeleteParams implements CodexJsonEncodable {
+  const CodexProjectDeleteParams({required this.projectId});
+
+  final String projectId;
+
+  factory CodexProjectDeleteParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectDeleteParams');
+    return CodexProjectDeleteParams(
+      projectId: CodexJson.asString(
+        map['projectId'],
+        'CodexProjectDeleteParams.projectId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'projectId': CodexJson.encode(projectId)};
+}
+
+final class CodexProjectDeleteResponse implements CodexJsonEncodable {
+  const CodexProjectDeleteResponse();
+
+  factory CodexProjectDeleteResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectDeleteResponse');
+    return const CodexProjectDeleteResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexProjectImportParams implements CodexJsonEncodable {
+  const CodexProjectImportParams({
+    required this.idempotencyKey,
+    this.metadata,
+    required this.name,
+    required this.roots,
+    this.threads,
+  });
+
+  final String idempotencyKey;
+  final Map<String, String>? metadata;
+  final String name;
+  final List<CodexProjectRoot> roots;
+  final List<String>? threads;
+
+  factory CodexProjectImportParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectImportParams');
+    return CodexProjectImportParams(
+      idempotencyKey: CodexJson.asString(
+        map['idempotencyKey'],
+        'CodexProjectImportParams.idempotencyKey',
+      ),
+      metadata: map.containsKey('metadata') && map['metadata'] != null
+          ? CodexJson.asMap(
+              map['metadata'],
+              'CodexProjectImportParams.metadata',
+            ).map(
+              (key, value) => MapEntry(
+                key,
+                CodexJson.asString(
+                  value,
+                  'CodexProjectImportParams.metadata{}',
+                ),
+              ),
+            )
+          : null,
+      name: CodexJson.asString(map['name'], 'CodexProjectImportParams.name'),
+      roots: CodexJson.asList(map['roots'], 'CodexProjectImportParams.roots')
+          .map((value) => CodexProjectRoot.fromJson(value))
+          .toList(growable: false),
+      threads: map.containsKey('threads') && map['threads'] != null
+          ? CodexJson.asList(map['threads'], 'CodexProjectImportParams.threads')
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexProjectImportParams.threads[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'idempotencyKey': CodexJson.encode(idempotencyKey),
+    if (metadata != null) 'metadata': CodexJson.encode(metadata),
+    'name': CodexJson.encode(name),
+    'roots': CodexJson.encode(roots),
+    if (threads != null) 'threads': CodexJson.encode(threads),
+  };
+}
+
+final class CodexProjectImportResponse implements CodexJsonEncodable {
+  const CodexProjectImportResponse({required this.project});
+
+  final CodexProject project;
+
+  factory CodexProjectImportResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectImportResponse');
+    return CodexProjectImportResponse(
+      project: CodexProject.fromJson(map['project']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'project': CodexJson.encode(project)};
+}
+
+final class CodexProjectListParams implements CodexJsonEncodable {
+  const CodexProjectListParams({
+    this.cursor,
+    this.limit,
+    this.sortDirection,
+    this.sortKey,
+  });
+
+  final String? cursor;
+  final int? limit;
+  final CodexSortDirection? sortDirection;
+  final CodexProjectSortKey? sortKey;
+
+  factory CodexProjectListParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectListParams');
+    return CodexProjectListParams(
+      cursor: map.containsKey('cursor') && map['cursor'] != null
+          ? CodexJson.asString(map['cursor'], 'CodexProjectListParams.cursor')
+          : null,
+      limit: map.containsKey('limit') && map['limit'] != null
+          ? CodexJson.asInt(map['limit'], 'CodexProjectListParams.limit')
+          : null,
+      sortDirection:
+          map.containsKey('sortDirection') && map['sortDirection'] != null
+          ? CodexSortDirection.fromJson(map['sortDirection'])
+          : null,
+      sortKey: map.containsKey('sortKey') && map['sortKey'] != null
+          ? CodexProjectSortKey.fromJson(map['sortKey'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (cursor != null) 'cursor': CodexJson.encode(cursor),
+    if (limit != null) 'limit': CodexJson.encode(limit),
+    if (sortDirection != null) 'sortDirection': CodexJson.encode(sortDirection),
+    if (sortKey != null) 'sortKey': CodexJson.encode(sortKey),
+  };
+}
+
+final class CodexProjectListResponse implements CodexJsonEncodable {
+  const CodexProjectListResponse({required this.data, this.nextCursor});
+
+  final List<CodexProject> data;
+  final String? nextCursor;
+
+  factory CodexProjectListResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectListResponse');
+    return CodexProjectListResponse(
+      data: CodexJson.asList(
+        map['data'],
+        'CodexProjectListResponse.data',
+      ).map((value) => CodexProject.fromJson(value)).toList(growable: false),
+      nextCursor: map.containsKey('nextCursor') && map['nextCursor'] != null
+          ? CodexJson.asString(
+              map['nextCursor'],
+              'CodexProjectListResponse.nextCursor',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'data': CodexJson.encode(data),
+    if (nextCursor != null) 'nextCursor': CodexJson.encode(nextCursor),
+  };
+}
+
+final class CodexProjectMoveParams implements CodexJsonEncodable {
+  const CodexProjectMoveParams({this.beforeProjectId, required this.projectId});
+
+  final String? beforeProjectId;
+  final String projectId;
+
+  factory CodexProjectMoveParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectMoveParams');
+    return CodexProjectMoveParams(
+      beforeProjectId:
+          map.containsKey('beforeProjectId') && map['beforeProjectId'] != null
+          ? CodexJson.asString(
+              map['beforeProjectId'],
+              'CodexProjectMoveParams.beforeProjectId',
+            )
+          : null,
+      projectId: CodexJson.asString(
+        map['projectId'],
+        'CodexProjectMoveParams.projectId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (beforeProjectId != null)
+      'beforeProjectId': CodexJson.encode(beforeProjectId),
+    'projectId': CodexJson.encode(projectId),
+  };
+}
+
+final class CodexProjectMoveResponse implements CodexJsonEncodable {
+  const CodexProjectMoveResponse();
+
+  factory CodexProjectMoveResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectMoveResponse');
+    return const CodexProjectMoveResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexProjectReadParams implements CodexJsonEncodable {
+  const CodexProjectReadParams({required this.projectId});
+
+  final String projectId;
+
+  factory CodexProjectReadParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectReadParams');
+    return CodexProjectReadParams(
+      projectId: CodexJson.asString(
+        map['projectId'],
+        'CodexProjectReadParams.projectId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'projectId': CodexJson.encode(projectId)};
+}
+
+final class CodexProjectReadResponse implements CodexJsonEncodable {
+  const CodexProjectReadResponse({required this.project});
+
+  final CodexProject project;
+
+  factory CodexProjectReadResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectReadResponse');
+    return CodexProjectReadResponse(
+      project: CodexProject.fromJson(map['project']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'project': CodexJson.encode(project)};
+}
+
+final class CodexProjectRoot implements CodexJsonEncodable {
+  const CodexProjectRoot({required this.path});
+
+  final CodexV2AbsolutePathBuf path;
+
+  factory CodexProjectRoot.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectRoot');
+    return CodexProjectRoot(path: CodexV2AbsolutePathBuf.fromJson(map['path']));
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'path': CodexJson.encode(path)};
+}
+
+enum CodexProjectSortKey implements CodexJsonEncodable {
+  position('position'),
+  recencyAt('recencyAt');
+
+  const CodexProjectSortKey(this.value);
+  final String value;
+  factory CodexProjectSortKey.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexProjectSortKey');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () =>
+          throw FormatException('Unknown CodexProjectSortKey: $value'),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexProjectUpdateParams implements CodexJsonEncodable {
+  const CodexProjectUpdateParams({
+    this.metadata,
+    this.name,
+    required this.projectId,
+    this.roots,
+  });
+
+  final Map<String, String>? metadata;
+  final String? name;
+  final String projectId;
+  final List<CodexProjectRoot>? roots;
+
+  factory CodexProjectUpdateParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectUpdateParams');
+    return CodexProjectUpdateParams(
+      metadata: map.containsKey('metadata') && map['metadata'] != null
+          ? CodexJson.asMap(
+              map['metadata'],
+              'CodexProjectUpdateParams.metadata',
+            ).map(
+              (key, value) => MapEntry(
+                key,
+                CodexJson.asString(
+                  value,
+                  'CodexProjectUpdateParams.metadata{}',
+                ),
+              ),
+            )
+          : null,
+      name: map.containsKey('name') && map['name'] != null
+          ? CodexJson.asString(map['name'], 'CodexProjectUpdateParams.name')
+          : null,
+      projectId: CodexJson.asString(
+        map['projectId'],
+        'CodexProjectUpdateParams.projectId',
+      ),
+      roots: map.containsKey('roots') && map['roots'] != null
+          ? CodexJson.asList(map['roots'], 'CodexProjectUpdateParams.roots')
+                .map((value) => CodexProjectRoot.fromJson(value))
+                .toList(growable: false)
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (metadata != null) 'metadata': CodexJson.encode(metadata),
+    if (name != null) 'name': CodexJson.encode(name),
+    'projectId': CodexJson.encode(projectId),
+    if (roots != null) 'roots': CodexJson.encode(roots),
+  };
+}
+
+final class CodexProjectUpdateResponse implements CodexJsonEncodable {
+  const CodexProjectUpdateResponse({required this.project});
+
+  final CodexProject project;
+
+  factory CodexProjectUpdateResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexProjectUpdateResponse');
+    return CodexProjectUpdateResponse(
+      project: CodexProject.fromJson(map['project']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'project': CodexJson.encode(project)};
+}
+
+final class CodexQueuedSubmission implements CodexJsonEncodable {
+  const CodexQueuedSubmission({
+    required this.clientUserMessageId,
+    required this.id,
+    required this.input,
+  });
+
+  final String clientUserMessageId;
+  final String id;
+  final List<CodexUserInput> input;
+
+  factory CodexQueuedSubmission.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexQueuedSubmission');
+    return CodexQueuedSubmission(
+      clientUserMessageId: CodexJson.asString(
+        map['clientUserMessageId'],
+        'CodexQueuedSubmission.clientUserMessageId',
+      ),
+      id: CodexJson.asString(map['id'], 'CodexQueuedSubmission.id'),
+      input: CodexJson.asList(
+        map['input'],
+        'CodexQueuedSubmission.input',
+      ).map((value) => CodexUserInput.fromJson(value)).toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'clientUserMessageId': CodexJson.encode(clientUserMessageId),
+    'id': CodexJson.encode(id),
+    'input': CodexJson.encode(input),
+  };
+}
+
 enum CodexRateLimitReachedType implements CodexJsonEncodable {
   rateLimitReached('rate_limit_reached'),
   workspaceOwnerCreditsDepleted('workspace_owner_credits_depleted'),
@@ -24898,6 +29265,7 @@ final class CodexRateLimitSnapshot implements CodexJsonEncodable {
     this.individualLimit,
     this.limitId,
     this.limitName,
+    this.normalModelSlug,
     this.planType,
     this.primary,
     this.rateLimitReachedType,
@@ -24909,6 +29277,7 @@ final class CodexRateLimitSnapshot implements CodexJsonEncodable {
   final CodexSpendControlLimitSnapshot? individualLimit;
   final String? limitId;
   final String? limitName;
+  final String? normalModelSlug;
   final CodexPlanType? planType;
   final CodexRateLimitWindow? primary;
   final CodexRateLimitReachedType? rateLimitReachedType;
@@ -24932,6 +29301,13 @@ final class CodexRateLimitSnapshot implements CodexJsonEncodable {
           ? CodexJson.asString(
               map['limitName'],
               'CodexRateLimitSnapshot.limitName',
+            )
+          : null,
+      normalModelSlug:
+          map.containsKey('normalModelSlug') && map['normalModelSlug'] != null
+          ? CodexJson.asString(
+              map['normalModelSlug'],
+              'CodexRateLimitSnapshot.normalModelSlug',
             )
           : null,
       planType: map.containsKey('planType') && map['planType'] != null
@@ -24966,6 +29342,8 @@ final class CodexRateLimitSnapshot implements CodexJsonEncodable {
       'individualLimit': CodexJson.encode(individualLimit),
     if (limitId != null) 'limitId': CodexJson.encode(limitId),
     if (limitName != null) 'limitName': CodexJson.encode(limitName),
+    if (normalModelSlug != null)
+      'normalModelSlug': CodexJson.encode(normalModelSlug),
     if (planType != null) 'planType': CodexJson.encode(planType),
     if (primary != null) 'primary': CodexJson.encode(primary),
     if (rateLimitReachedType != null)
@@ -25024,12 +29402,14 @@ final class CodexRawResponseCompletedNotification
     required this.threadId,
     required this.turnId,
     this.usage,
+    this.usageMetadata,
   });
 
   final String responseId;
   final String threadId;
   final String turnId;
   final CodexTokenUsageBreakdown? usage;
+  final CodexResponseUsageMetadata? usageMetadata;
 
   factory CodexRawResponseCompletedNotification.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexRawResponseCompletedNotification');
@@ -25049,6 +29429,10 @@ final class CodexRawResponseCompletedNotification
       usage: map.containsKey('usage') && map['usage'] != null
           ? CodexTokenUsageBreakdown.fromJson(map['usage'])
           : null,
+      usageMetadata:
+          map.containsKey('usageMetadata') && map['usageMetadata'] != null
+          ? CodexResponseUsageMetadata.fromJson(map['usageMetadata'])
+          : null,
     );
   }
 
@@ -25058,6 +29442,7 @@ final class CodexRawResponseCompletedNotification
     'threadId': CodexJson.encode(threadId),
     'turnId': CodexJson.encode(turnId),
     if (usage != null) 'usage': CodexJson.encode(usage),
+    if (usageMetadata != null) 'usageMetadata': CodexJson.encode(usageMetadata),
   };
 }
 
@@ -26468,6 +30853,8 @@ sealed class CodexResponseItem implements CodexJsonEncodable {
         return CodexImageGenerationCallResponseItem.fromJson(map);
       case 'compaction':
         return CodexCompactionResponseItem.fromJson(map);
+      case 'configuration_update':
+        return CodexConfigurationUpdateResponseItem.fromJson(map);
       case 'compaction_trigger':
         return CodexCompactionTriggerResponseItem.fromJson(map);
       case 'context_compaction':
@@ -26902,16 +31289,20 @@ final class CodexToolSearchCallResponseItem extends CodexResponseItem {
 
 final class CodexFunctionCallOutputResponseItem extends CodexResponseItem {
   const CodexFunctionCallOutputResponseItem({
-    required this.callId,
+    this.callId,
     this.id,
     this.internalChatMessageMetadataPassthrough,
+    this.name,
+    this.namespace,
     required this.output,
   });
 
-  final String callId;
+  final String? callId;
   final String? id;
   final CodexInternalChatMessageMetadataPassthrough?
   internalChatMessageMetadataPassthrough;
+  final String? name;
+  final String? namespace;
   final CodexFunctionCallOutputBody output;
 
   factory CodexFunctionCallOutputResponseItem.fromJson(Object? json) {
@@ -26922,10 +31313,12 @@ final class CodexFunctionCallOutputResponseItem extends CodexResponseItem {
       );
     }
     return CodexFunctionCallOutputResponseItem(
-      callId: CodexJson.asString(
-        map['call_id'],
-        'CodexFunctionCallOutputResponseItem.call_id',
-      ),
+      callId: map.containsKey('call_id') && map['call_id'] != null
+          ? CodexJson.asString(
+              map['call_id'],
+              'CodexFunctionCallOutputResponseItem.call_id',
+            )
+          : null,
       id: map.containsKey('id') && map['id'] != null
           ? CodexJson.asString(
               map['id'],
@@ -26939,6 +31332,18 @@ final class CodexFunctionCallOutputResponseItem extends CodexResponseItem {
               map['internal_chat_message_metadata_passthrough'],
             )
           : null,
+      name: map.containsKey('name') && map['name'] != null
+          ? CodexJson.asString(
+              map['name'],
+              'CodexFunctionCallOutputResponseItem.name',
+            )
+          : null,
+      namespace: map.containsKey('namespace') && map['namespace'] != null
+          ? CodexJson.asString(
+              map['namespace'],
+              'CodexFunctionCallOutputResponseItem.namespace',
+            )
+          : null,
       output: CodexFunctionCallOutputBody.fromJson(map['output']),
     );
   }
@@ -26946,12 +31351,14 @@ final class CodexFunctionCallOutputResponseItem extends CodexResponseItem {
   @override
   Map<String, Object?> toJson() => {
     'type': 'function_call_output',
-    'call_id': CodexJson.encode(callId),
+    if (callId != null) 'call_id': CodexJson.encode(callId),
     if (id != null) 'id': CodexJson.encode(id),
     if (internalChatMessageMetadataPassthrough != null)
       'internal_chat_message_metadata_passthrough': CodexJson.encode(
         internalChatMessageMetadataPassthrough,
       ),
+    if (name != null) 'name': CodexJson.encode(name),
+    if (namespace != null) 'namespace': CodexJson.encode(namespace),
     'output': CodexJson.encode(output),
   };
 }
@@ -27353,6 +31760,30 @@ final class CodexCompactionResponseItem extends CodexResponseItem {
   };
 }
 
+final class CodexConfigurationUpdateResponseItem extends CodexResponseItem {
+  const CodexConfigurationUpdateResponseItem({required this.reasoning});
+
+  final CodexConfigurationReasoning reasoning;
+
+  factory CodexConfigurationUpdateResponseItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexConfigurationUpdateResponseItem');
+    if (map['type'] != 'configuration_update') {
+      throw FormatException(
+        'Expected type=configuration_update for CodexConfigurationUpdateResponseItem',
+      );
+    }
+    return CodexConfigurationUpdateResponseItem(
+      reasoning: CodexConfigurationReasoning.fromJson(map['reasoning']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'configuration_update',
+    'reasoning': CodexJson.encode(reasoning),
+  };
+}
+
 final class CodexCompactionTriggerResponseItem extends CodexResponseItem {
   const CodexCompactionTriggerResponseItem();
 
@@ -27447,6 +31878,34 @@ final class CodexResponseItemUnknown extends CodexResponseItem {
   final Map<String, Object?> rawJson;
   @override
   Map<String, Object?> toJson() => rawJson;
+}
+
+final class CodexResponseUsageMetadata implements CodexJsonEncodable {
+  const CodexResponseUsageMetadata({this.amount, this.metadata});
+
+  final String? amount;
+  final Object? metadata;
+
+  factory CodexResponseUsageMetadata.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexResponseUsageMetadata');
+    return CodexResponseUsageMetadata(
+      amount: map.containsKey('amount') && map['amount'] != null
+          ? CodexJson.asString(
+              map['amount'],
+              'CodexResponseUsageMetadata.amount',
+            )
+          : null,
+      metadata: map.containsKey('metadata') && map['metadata'] != null
+          ? CodexJson.clone(map['metadata'])
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (amount != null) 'amount': CodexJson.encode(amount),
+    if (metadata != null) 'metadata': CodexJson.encode(metadata),
+  };
 }
 
 sealed class CodexResponsesApiWebSearchAction implements CodexJsonEncodable {
@@ -28339,6 +32798,113 @@ final class CodexSendAddCreditsNudgeEmailResponse
   Map<String, Object?> toJson() => {'status': CodexJson.encode(status)};
 }
 
+final class CodexServerDiagnosticsGauge implements CodexJsonEncodable {
+  const CodexServerDiagnosticsGauge({required this.name, required this.value});
+
+  final String name;
+  final int value;
+
+  factory CodexServerDiagnosticsGauge.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexServerDiagnosticsGauge');
+    return CodexServerDiagnosticsGauge(
+      name: CodexJson.asString(map['name'], 'CodexServerDiagnosticsGauge.name'),
+      value: CodexJson.asInt(map['value'], 'CodexServerDiagnosticsGauge.value'),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'name': CodexJson.encode(name),
+    'value': CodexJson.encode(value),
+  };
+}
+
+final class CodexServerDiagnosticsParams implements CodexJsonEncodable {
+  const CodexServerDiagnosticsParams();
+
+  factory CodexServerDiagnosticsParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexServerDiagnosticsParams');
+    return const CodexServerDiagnosticsParams();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexServerDiagnosticsProcess implements CodexJsonEncodable {
+  const CodexServerDiagnosticsProcess({
+    required this.id,
+    this.physicalFootprintBytes,
+    this.residentMemoryBytes,
+  });
+
+  final int id;
+  final int? physicalFootprintBytes;
+  final int? residentMemoryBytes;
+
+  factory CodexServerDiagnosticsProcess.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexServerDiagnosticsProcess');
+    return CodexServerDiagnosticsProcess(
+      id: CodexJson.asInt(map['id'], 'CodexServerDiagnosticsProcess.id'),
+      physicalFootprintBytes:
+          map.containsKey('physicalFootprintBytes') &&
+              map['physicalFootprintBytes'] != null
+          ? CodexJson.asInt(
+              map['physicalFootprintBytes'],
+              'CodexServerDiagnosticsProcess.physicalFootprintBytes',
+            )
+          : null,
+      residentMemoryBytes:
+          map.containsKey('residentMemoryBytes') &&
+              map['residentMemoryBytes'] != null
+          ? CodexJson.asInt(
+              map['residentMemoryBytes'],
+              'CodexServerDiagnosticsProcess.residentMemoryBytes',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'id': CodexJson.encode(id),
+    if (physicalFootprintBytes != null)
+      'physicalFootprintBytes': CodexJson.encode(physicalFootprintBytes),
+    if (residentMemoryBytes != null)
+      'residentMemoryBytes': CodexJson.encode(residentMemoryBytes),
+  };
+}
+
+final class CodexServerDiagnosticsResponse implements CodexJsonEncodable {
+  const CodexServerDiagnosticsResponse({
+    required this.gauges,
+    required this.process,
+  });
+
+  final List<CodexServerDiagnosticsGauge> gauges;
+  final CodexServerDiagnosticsProcess process;
+
+  factory CodexServerDiagnosticsResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexServerDiagnosticsResponse');
+    return CodexServerDiagnosticsResponse(
+      gauges:
+          CodexJson.asList(
+                map['gauges'],
+                'CodexServerDiagnosticsResponse.gauges',
+              )
+              .map((value) => CodexServerDiagnosticsGauge.fromJson(value))
+              .toList(growable: false),
+      process: CodexServerDiagnosticsProcess.fromJson(map['process']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'gauges': CodexJson.encode(gauges),
+    'process': CodexJson.encode(process),
+  };
+}
+
 final class CodexServerRequestResolvedNotification
     implements CodexJsonEncodable {
   const CodexServerRequestResolvedNotification({
@@ -28583,6 +33149,7 @@ final class CodexSkillMetadata implements CodexJsonEncodable {
     this.interfaceValue,
     required this.name,
     required this.path,
+    this.pluginId,
     required this.scope,
     this.shortDescription,
   });
@@ -28593,6 +33160,7 @@ final class CodexSkillMetadata implements CodexJsonEncodable {
   final CodexSkillInterface? interfaceValue;
   final String name;
   final CodexV2AbsolutePathBuf path;
+  final String? pluginId;
   final CodexSkillScope scope;
   final String? shortDescription;
 
@@ -28613,6 +33181,9 @@ final class CodexSkillMetadata implements CodexJsonEncodable {
           : null,
       name: CodexJson.asString(map['name'], 'CodexSkillMetadata.name'),
       path: CodexV2AbsolutePathBuf.fromJson(map['path']),
+      pluginId: map.containsKey('pluginId') && map['pluginId'] != null
+          ? CodexJson.asString(map['pluginId'], 'CodexSkillMetadata.pluginId')
+          : null,
       scope: CodexSkillScope.fromJson(map['scope']),
       shortDescription:
           map.containsKey('shortDescription') && map['shortDescription'] != null
@@ -28632,6 +33203,7 @@ final class CodexSkillMetadata implements CodexJsonEncodable {
     if (interfaceValue != null) 'interface': CodexJson.encode(interfaceValue),
     'name': CodexJson.encode(name),
     'path': CodexJson.encode(path),
+    if (pluginId != null) 'pluginId': CodexJson.encode(pluginId),
     'scope': CodexJson.encode(scope),
     if (shortDescription != null)
       'shortDescription': CodexJson.encode(shortDescription),
@@ -29030,10 +33602,49 @@ final class CodexSpendControlLimitSnapshot implements CodexJsonEncodable {
   };
 }
 
+final class CodexStrictReviewRequiredNotification
+    implements CodexJsonEncodable {
+  const CodexStrictReviewRequiredNotification({
+    required this.startedAtMs,
+    required this.threadId,
+    required this.turnId,
+  });
+
+  final int startedAtMs;
+  final String threadId;
+  final String turnId;
+
+  factory CodexStrictReviewRequiredNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexStrictReviewRequiredNotification');
+    return CodexStrictReviewRequiredNotification(
+      startedAtMs: CodexJson.asInt(
+        map['startedAtMs'],
+        'CodexStrictReviewRequiredNotification.startedAtMs',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexStrictReviewRequiredNotification.threadId',
+      ),
+      turnId: CodexJson.asString(
+        map['turnId'],
+        'CodexStrictReviewRequiredNotification.turnId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'startedAtMs': CodexJson.encode(startedAtMs),
+    'threadId': CodexJson.encode(threadId),
+    'turnId': CodexJson.encode(turnId),
+  };
+}
+
 enum CodexSubAgentActivityKind implements CodexJsonEncodable {
   started('started'),
   interacted('interacted'),
-  interrupted('interrupted');
+  interrupted('interrupted'),
+  completed('completed');
 
   const CodexSubAgentActivityKind(this.value);
   final String value;
@@ -29201,17 +33812,23 @@ final class CodexThread implements CodexJsonEncodable {
     required this.cliVersion,
     required this.createdAt,
     required this.cwd,
+    this.daybreakEnabled,
+    this.environments,
     required this.ephemeral,
     this.extra,
     this.forkedFromId,
     this.gitInfo,
     this.historyMode,
     required this.id,
+    this.model,
     required this.modelProvider,
     this.name,
+    this.originator,
     this.parentThreadId,
     this.path,
     required this.preview,
+    required this.projectId,
+    this.reasoningEffort,
     this.recencyAt,
     this.section,
     this.sectionEnteredAt,
@@ -29229,17 +33846,23 @@ final class CodexThread implements CodexJsonEncodable {
   final String cliVersion;
   final int createdAt;
   final CodexV2AbsolutePathBuf cwd;
+  final bool? daybreakEnabled;
+  final List<CodexThreadEnvironment>? environments;
   final bool ephemeral;
   final CodexThreadExtra? extra;
   final String? forkedFromId;
   final CodexGitInfo? gitInfo;
   final CodexThreadHistoryMode? historyMode;
   final String id;
+  final String? model;
   final String modelProvider;
   final String? name;
+  final String? originator;
   final String? parentThreadId;
   final String? path;
   final String preview;
+  final String? projectId;
+  final CodexReasoningEffort? reasoningEffort;
   final int? recencyAt;
   final CodexThreadSection? section;
   final int? sectionEnteredAt;
@@ -29277,6 +33900,19 @@ final class CodexThread implements CodexJsonEncodable {
       ),
       createdAt: CodexJson.asInt(map['createdAt'], 'CodexThread.createdAt'),
       cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      daybreakEnabled:
+          map.containsKey('daybreakEnabled') && map['daybreakEnabled'] != null
+          ? CodexJson.asBool(
+              map['daybreakEnabled'],
+              'CodexThread.daybreakEnabled',
+            )
+          : null,
+      environments:
+          map.containsKey('environments') && map['environments'] != null
+          ? CodexJson.asList(map['environments'], 'CodexThread.environments')
+                .map((value) => CodexThreadEnvironment.fromJson(value))
+                .toList(growable: false)
+          : null,
       ephemeral: CodexJson.asBool(map['ephemeral'], 'CodexThread.ephemeral'),
       extra: map.containsKey('extra') && map['extra'] != null
           ? CodexThreadExtra.fromJson(map['extra'])
@@ -29292,12 +33928,18 @@ final class CodexThread implements CodexJsonEncodable {
           ? CodexThreadHistoryMode.fromJson(map['historyMode'])
           : null,
       id: CodexJson.asString(map['id'], 'CodexThread.id'),
+      model: map.containsKey('model') && map['model'] != null
+          ? CodexJson.asString(map['model'], 'CodexThread.model')
+          : null,
       modelProvider: CodexJson.asString(
         map['modelProvider'],
         'CodexThread.modelProvider',
       ),
       name: map.containsKey('name') && map['name'] != null
           ? CodexJson.asString(map['name'], 'CodexThread.name')
+          : null,
+      originator: map.containsKey('originator') && map['originator'] != null
+          ? CodexJson.asString(map['originator'], 'CodexThread.originator')
           : null,
       parentThreadId:
           map.containsKey('parentThreadId') && map['parentThreadId'] != null
@@ -29310,6 +33952,13 @@ final class CodexThread implements CodexJsonEncodable {
           ? CodexJson.asString(map['path'], 'CodexThread.path')
           : null,
       preview: CodexJson.asString(map['preview'], 'CodexThread.preview'),
+      projectId: map['projectId'] == null
+          ? null
+          : CodexJson.asString(map['projectId'], 'CodexThread.projectId'),
+      reasoningEffort:
+          map.containsKey('reasoningEffort') && map['reasoningEffort'] != null
+          ? CodexReasoningEffort.fromJson(map['reasoningEffort'])
+          : null,
       recencyAt: map.containsKey('recencyAt') && map['recencyAt'] != null
           ? CodexJson.asInt(map['recencyAt'], 'CodexThread.recencyAt')
           : null,
@@ -29347,18 +33996,26 @@ final class CodexThread implements CodexJsonEncodable {
     'cliVersion': CodexJson.encode(cliVersion),
     'createdAt': CodexJson.encode(createdAt),
     'cwd': CodexJson.encode(cwd),
+    if (daybreakEnabled != null)
+      'daybreakEnabled': CodexJson.encode(daybreakEnabled),
+    if (environments != null) 'environments': CodexJson.encode(environments),
     'ephemeral': CodexJson.encode(ephemeral),
     if (extra != null) 'extra': CodexJson.encode(extra),
     if (forkedFromId != null) 'forkedFromId': CodexJson.encode(forkedFromId),
     if (gitInfo != null) 'gitInfo': CodexJson.encode(gitInfo),
     if (historyMode != null) 'historyMode': CodexJson.encode(historyMode),
     'id': CodexJson.encode(id),
+    if (model != null) 'model': CodexJson.encode(model),
     'modelProvider': CodexJson.encode(modelProvider),
     if (name != null) 'name': CodexJson.encode(name),
+    if (originator != null) 'originator': CodexJson.encode(originator),
     if (parentThreadId != null)
       'parentThreadId': CodexJson.encode(parentThreadId),
     if (path != null) 'path': CodexJson.encode(path),
     'preview': CodexJson.encode(preview),
+    'projectId': CodexJson.encode(projectId),
+    if (reasoningEffort != null)
+      'reasoningEffort': CodexJson.encode(reasoningEffort),
     if (recencyAt != null) 'recencyAt': CodexJson.encode(recencyAt),
     if (section != null) 'section': CodexJson.encode(section),
     if (sectionEnteredAt != null)
@@ -29487,6 +34144,331 @@ final class CodexThreadArchivedNotification implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {'threadId': CodexJson.encode(threadId)};
+}
+
+final class CodexThreadAttachment implements CodexJsonEncodable {
+  const CodexThreadAttachment({
+    required this.attachmentType,
+    required this.createdAt,
+    required this.id,
+    required this.identityKey,
+    required this.payload,
+  });
+
+  final String attachmentType;
+  final int createdAt;
+  final String id;
+  final String identityKey;
+  final Object? payload;
+
+  factory CodexThreadAttachment.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachment');
+    return CodexThreadAttachment(
+      attachmentType: CodexJson.asString(
+        map['attachmentType'],
+        'CodexThreadAttachment.attachmentType',
+      ),
+      createdAt: CodexJson.asInt(
+        map['createdAt'],
+        'CodexThreadAttachment.createdAt',
+      ),
+      id: CodexJson.asString(map['id'], 'CodexThreadAttachment.id'),
+      identityKey: CodexJson.asString(
+        map['identityKey'],
+        'CodexThreadAttachment.identityKey',
+      ),
+      payload: CodexJson.clone(map['payload']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'attachmentType': CodexJson.encode(attachmentType),
+    'createdAt': CodexJson.encode(createdAt),
+    'id': CodexJson.encode(id),
+    'identityKey': CodexJson.encode(identityKey),
+    'payload': CodexJson.encode(payload),
+  };
+}
+
+enum CodexThreadAttachmentAddOutcome implements CodexJsonEncodable {
+  created('created'),
+  existing('existing');
+
+  const CodexThreadAttachmentAddOutcome(this.value);
+  final String value;
+  factory CodexThreadAttachmentAddOutcome.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexThreadAttachmentAddOutcome');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexThreadAttachmentAddOutcome: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexThreadAttachmentAddParams implements CodexJsonEncodable {
+  const CodexThreadAttachmentAddParams({
+    required this.attachmentType,
+    required this.identityKey,
+    required this.payload,
+    required this.threadId,
+  });
+
+  final String attachmentType;
+  final String identityKey;
+  final Object? payload;
+  final String threadId;
+
+  factory CodexThreadAttachmentAddParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentAddParams');
+    return CodexThreadAttachmentAddParams(
+      attachmentType: CodexJson.asString(
+        map['attachmentType'],
+        'CodexThreadAttachmentAddParams.attachmentType',
+      ),
+      identityKey: CodexJson.asString(
+        map['identityKey'],
+        'CodexThreadAttachmentAddParams.identityKey',
+      ),
+      payload: CodexJson.clone(map['payload']),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadAttachmentAddParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'attachmentType': CodexJson.encode(attachmentType),
+    'identityKey': CodexJson.encode(identityKey),
+    'payload': CodexJson.encode(payload),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadAttachmentAddResponse implements CodexJsonEncodable {
+  const CodexThreadAttachmentAddResponse({
+    required this.attachment,
+    required this.outcome,
+  });
+
+  final CodexThreadAttachment attachment;
+  final CodexThreadAttachmentAddOutcome outcome;
+
+  factory CodexThreadAttachmentAddResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentAddResponse');
+    return CodexThreadAttachmentAddResponse(
+      attachment: CodexThreadAttachment.fromJson(map['attachment']),
+      outcome: CodexThreadAttachmentAddOutcome.fromJson(map['outcome']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'attachment': CodexJson.encode(attachment),
+    'outcome': CodexJson.encode(outcome),
+  };
+}
+
+final class CodexThreadAttachmentListParams implements CodexJsonEncodable {
+  const CodexThreadAttachmentListParams({
+    this.cursor,
+    this.limit,
+    required this.threadId,
+  });
+
+  final String? cursor;
+  final int? limit;
+  final String threadId;
+
+  factory CodexThreadAttachmentListParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentListParams');
+    return CodexThreadAttachmentListParams(
+      cursor: map.containsKey('cursor') && map['cursor'] != null
+          ? CodexJson.asString(
+              map['cursor'],
+              'CodexThreadAttachmentListParams.cursor',
+            )
+          : null,
+      limit: map.containsKey('limit') && map['limit'] != null
+          ? CodexJson.asInt(
+              map['limit'],
+              'CodexThreadAttachmentListParams.limit',
+            )
+          : null,
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadAttachmentListParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (cursor != null) 'cursor': CodexJson.encode(cursor),
+    if (limit != null) 'limit': CodexJson.encode(limit),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadAttachmentListResponse implements CodexJsonEncodable {
+  const CodexThreadAttachmentListResponse({
+    required this.data,
+    this.nextCursor,
+  });
+
+  final List<CodexThreadAttachment> data;
+  final String? nextCursor;
+
+  factory CodexThreadAttachmentListResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentListResponse');
+    return CodexThreadAttachmentListResponse(
+      data:
+          CodexJson.asList(
+                map['data'],
+                'CodexThreadAttachmentListResponse.data',
+              )
+              .map((value) => CodexThreadAttachment.fromJson(value))
+              .toList(growable: false),
+      nextCursor: map.containsKey('nextCursor') && map['nextCursor'] != null
+          ? CodexJson.asString(
+              map['nextCursor'],
+              'CodexThreadAttachmentListResponse.nextCursor',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'data': CodexJson.encode(data),
+    if (nextCursor != null) 'nextCursor': CodexJson.encode(nextCursor),
+  };
+}
+
+enum CodexThreadAttachmentOperation implements CodexJsonEncodable {
+  created('created'),
+  deleted('deleted');
+
+  const CodexThreadAttachmentOperation(this.value);
+  final String value;
+  factory CodexThreadAttachmentOperation.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexThreadAttachmentOperation');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexThreadAttachmentOperation: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexThreadAttachmentRemoveParams implements CodexJsonEncodable {
+  const CodexThreadAttachmentRemoveParams({
+    required this.attachmentType,
+    required this.identityKey,
+    required this.threadId,
+  });
+
+  final String attachmentType;
+  final String identityKey;
+  final String threadId;
+
+  factory CodexThreadAttachmentRemoveParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentRemoveParams');
+    return CodexThreadAttachmentRemoveParams(
+      attachmentType: CodexJson.asString(
+        map['attachmentType'],
+        'CodexThreadAttachmentRemoveParams.attachmentType',
+      ),
+      identityKey: CodexJson.asString(
+        map['identityKey'],
+        'CodexThreadAttachmentRemoveParams.identityKey',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadAttachmentRemoveParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'attachmentType': CodexJson.encode(attachmentType),
+    'identityKey': CodexJson.encode(identityKey),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadAttachmentRemoveResponse implements CodexJsonEncodable {
+  const CodexThreadAttachmentRemoveResponse();
+
+  factory CodexThreadAttachmentRemoveResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadAttachmentRemoveResponse');
+    return const CodexThreadAttachmentRemoveResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexThreadAttachmentUpdatedNotification
+    implements CodexJsonEncodable {
+  const CodexThreadAttachmentUpdatedNotification({
+    required this.attachmentId,
+    required this.attachmentType,
+    required this.identityKey,
+    required this.operation,
+    required this.threadId,
+  });
+
+  final String attachmentId;
+  final String attachmentType;
+  final String identityKey;
+  final CodexThreadAttachmentOperation operation;
+  final String threadId;
+
+  factory CodexThreadAttachmentUpdatedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadAttachmentUpdatedNotification',
+    );
+    return CodexThreadAttachmentUpdatedNotification(
+      attachmentId: CodexJson.asString(
+        map['attachmentId'],
+        'CodexThreadAttachmentUpdatedNotification.attachmentId',
+      ),
+      attachmentType: CodexJson.asString(
+        map['attachmentType'],
+        'CodexThreadAttachmentUpdatedNotification.attachmentType',
+      ),
+      identityKey: CodexJson.asString(
+        map['identityKey'],
+        'CodexThreadAttachmentUpdatedNotification.identityKey',
+      ),
+      operation: CodexThreadAttachmentOperation.fromJson(map['operation']),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadAttachmentUpdatedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'attachmentId': CodexJson.encode(attachmentId),
+    'attachmentType': CodexJson.encode(attachmentType),
+    'identityKey': CodexJson.encode(identityKey),
+    'operation': CodexJson.encode(operation),
+    'threadId': CodexJson.encode(threadId),
+  };
 }
 
 final class CodexThreadBackgroundTerminal implements CodexJsonEncodable {
@@ -29889,6 +34871,43 @@ final class CodexThreadDeletedNotification implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {'threadId': CodexJson.encode(threadId)};
 }
 
+final class CodexThreadEnvironment implements CodexJsonEncodable {
+  const CodexThreadEnvironment({
+    required this.cwd,
+    required this.environmentId,
+    required this.runtimeWorkspaceRoots,
+  });
+
+  final CodexLegacyAppPathString cwd;
+  final String environmentId;
+  final List<CodexLegacyAppPathString> runtimeWorkspaceRoots;
+
+  factory CodexThreadEnvironment.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadEnvironment');
+    return CodexThreadEnvironment(
+      cwd: CodexLegacyAppPathString.fromJson(map['cwd']),
+      environmentId: CodexJson.asString(
+        map['environmentId'],
+        'CodexThreadEnvironment.environmentId',
+      ),
+      runtimeWorkspaceRoots:
+          CodexJson.asList(
+                map['runtimeWorkspaceRoots'],
+                'CodexThreadEnvironment.runtimeWorkspaceRoots',
+              )
+              .map((value) => CodexLegacyAppPathString.fromJson(value))
+              .toList(growable: false),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'cwd': CodexJson.encode(cwd),
+    'environmentId': CodexJson.encode(environmentId),
+    'runtimeWorkspaceRoots': CodexJson.encode(runtimeWorkspaceRoots),
+  };
+}
+
 final class CodexThreadExtra implements CodexJsonEncodable {
   const CodexThreadExtra();
 
@@ -30099,6 +35118,7 @@ final class CodexThreadForkResponse implements CodexJsonEncodable {
     required this.approvalPolicy,
     required this.approvalsReviewer,
     required this.cwd,
+    this.disabledPluginIds,
     this.instructionSources,
     required this.model,
     required this.modelProvider,
@@ -30114,6 +35134,7 @@ final class CodexThreadForkResponse implements CodexJsonEncodable {
   final CodexAskForApproval approvalPolicy;
   final CodexApprovalsReviewer approvalsReviewer;
   final CodexV2AbsolutePathBuf cwd;
+  final List<String>? disabledPluginIds;
   final List<CodexLegacyAppPathString>? instructionSources;
   final String model;
   final String modelProvider;
@@ -30139,6 +35160,21 @@ final class CodexThreadForkResponse implements CodexJsonEncodable {
         map['approvalsReviewer'],
       ),
       cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexThreadForkResponse.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadForkResponse.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
       instructionSources:
           map.containsKey('instructionSources') &&
               map['instructionSources'] != null
@@ -30190,6 +35226,8 @@ final class CodexThreadForkResponse implements CodexJsonEncodable {
     'approvalPolicy': CodexJson.encode(approvalPolicy),
     'approvalsReviewer': CodexJson.encode(approvalsReviewer),
     'cwd': CodexJson.encode(cwd),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (instructionSources != null)
       'instructionSources': CodexJson.encode(instructionSources),
     'model': CodexJson.encode(model),
@@ -30616,6 +35654,8 @@ sealed class CodexThreadItem implements CodexJsonEncodable {
         return CodexHookPromptThreadItem.fromJson(map);
       case 'agentMessage':
         return CodexAgentMessageThreadItem.fromJson(map);
+      case 'functionCallOutput':
+        return CodexFunctionCallOutputThreadItem.fromJson(map);
       case 'plan':
         return CodexPlanThreadItem.fromJson(map);
       case 'reasoning':
@@ -30729,15 +35769,19 @@ final class CodexHookPromptThreadItem extends CodexThreadItem {
 
 final class CodexAgentMessageThreadItem extends CodexThreadItem {
   const CodexAgentMessageThreadItem({
+    this.delivery,
     required this.id,
     this.memoryCitation,
     this.phase,
+    this.questions,
     required this.text,
   });
 
+  final CodexAgentMessageDelivery? delivery;
   final String id;
   final CodexMemoryCitation? memoryCitation;
   final CodexMessagePhase? phase;
+  final List<CodexAsyncUserInputQuestion>? questions;
   final String text;
 
   factory CodexAgentMessageThreadItem.fromJson(Object? json) {
@@ -30748,6 +35792,9 @@ final class CodexAgentMessageThreadItem extends CodexThreadItem {
       );
     }
     return CodexAgentMessageThreadItem(
+      delivery: map.containsKey('delivery') && map['delivery'] != null
+          ? CodexAgentMessageDelivery.fromJson(map['delivery'])
+          : null,
       id: CodexJson.asString(map['id'], 'CodexAgentMessageThreadItem.id'),
       memoryCitation:
           map.containsKey('memoryCitation') && map['memoryCitation'] != null
@@ -30756,6 +35803,14 @@ final class CodexAgentMessageThreadItem extends CodexThreadItem {
       phase: map.containsKey('phase') && map['phase'] != null
           ? CodexMessagePhase.fromJson(map['phase'])
           : null,
+      questions: map.containsKey('questions') && map['questions'] != null
+          ? CodexJson.asList(
+                  map['questions'],
+                  'CodexAgentMessageThreadItem.questions',
+                )
+                .map((value) => CodexAsyncUserInputQuestion.fromJson(value))
+                .toList(growable: false)
+          : null,
       text: CodexJson.asString(map['text'], 'CodexAgentMessageThreadItem.text'),
     );
   }
@@ -30763,11 +35818,59 @@ final class CodexAgentMessageThreadItem extends CodexThreadItem {
   @override
   Map<String, Object?> toJson() => {
     'type': 'agentMessage',
+    if (delivery != null) 'delivery': CodexJson.encode(delivery),
     'id': CodexJson.encode(id),
     if (memoryCitation != null)
       'memoryCitation': CodexJson.encode(memoryCitation),
     if (phase != null) 'phase': CodexJson.encode(phase),
+    if (questions != null) 'questions': CodexJson.encode(questions),
     'text': CodexJson.encode(text),
+  };
+}
+
+final class CodexFunctionCallOutputThreadItem extends CodexThreadItem {
+  const CodexFunctionCallOutputThreadItem({
+    required this.id,
+    required this.name,
+    this.namespace,
+    required this.output,
+  });
+
+  final String id;
+  final String name;
+  final String? namespace;
+  final CodexFunctionCallOutputBody output;
+
+  factory CodexFunctionCallOutputThreadItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexFunctionCallOutputThreadItem');
+    if (map['type'] != 'functionCallOutput') {
+      throw FormatException(
+        'Expected type=functionCallOutput for CodexFunctionCallOutputThreadItem',
+      );
+    }
+    return CodexFunctionCallOutputThreadItem(
+      id: CodexJson.asString(map['id'], 'CodexFunctionCallOutputThreadItem.id'),
+      name: CodexJson.asString(
+        map['name'],
+        'CodexFunctionCallOutputThreadItem.name',
+      ),
+      namespace: map.containsKey('namespace') && map['namespace'] != null
+          ? CodexJson.asString(
+              map['namespace'],
+              'CodexFunctionCallOutputThreadItem.namespace',
+            )
+          : null,
+      output: CodexFunctionCallOutputBody.fromJson(map['output']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'functionCallOutput',
+    'id': CodexJson.encode(id),
+    'name': CodexJson.encode(name),
+    if (namespace != null) 'namespace': CodexJson.encode(namespace),
+    'output': CodexJson.encode(output),
   };
 }
 
@@ -31006,6 +36109,7 @@ final class CodexMcpToolCallThreadItem extends CodexThreadItem {
     this.error,
     required this.id,
     this.mcpAppResourceUri,
+    this.mcpAppUi,
     this.pluginId,
     this.readOnlyHint,
     this.result,
@@ -31020,6 +36124,7 @@ final class CodexMcpToolCallThreadItem extends CodexThreadItem {
   final CodexMcpToolCallError? error;
   final String id;
   final String? mcpAppResourceUri;
+  final CodexMcpAppUi? mcpAppUi;
   final String? pluginId;
   final bool? readOnlyHint;
   final CodexMcpToolCallResult? result;
@@ -31057,6 +36162,9 @@ final class CodexMcpToolCallThreadItem extends CodexThreadItem {
               'CodexMcpToolCallThreadItem.mcpAppResourceUri',
             )
           : null,
+      mcpAppUi: map.containsKey('mcpAppUi') && map['mcpAppUi'] != null
+          ? CodexMcpAppUi.fromJson(map['mcpAppUi'])
+          : null,
       pluginId: map.containsKey('pluginId') && map['pluginId'] != null
           ? CodexJson.asString(
               map['pluginId'],
@@ -31092,6 +36200,7 @@ final class CodexMcpToolCallThreadItem extends CodexThreadItem {
     'id': CodexJson.encode(id),
     if (mcpAppResourceUri != null)
       'mcpAppResourceUri': CodexJson.encode(mcpAppResourceUri),
+    if (mcpAppUi != null) 'mcpAppUi': CodexJson.encode(mcpAppUi),
     if (pluginId != null) 'pluginId': CodexJson.encode(pluginId),
     if (readOnlyHint != null) 'readOnlyHint': CodexJson.encode(readOnlyHint),
     if (result != null) 'result': CodexJson.encode(result),
@@ -31426,6 +36535,7 @@ final class CodexSleepThreadItem extends CodexThreadItem {
 
 final class CodexImageGenerationThreadItem extends CodexThreadItem {
   const CodexImageGenerationThreadItem({
+    this.failure,
     required this.id,
     required this.result,
     this.revisedPrompt,
@@ -31434,6 +36544,7 @@ final class CodexImageGenerationThreadItem extends CodexThreadItem {
     this.transparentBackground,
   });
 
+  final CodexImageGenerationFailure? failure;
   final String id;
   final String result;
   final String? revisedPrompt;
@@ -31449,6 +36560,9 @@ final class CodexImageGenerationThreadItem extends CodexThreadItem {
       );
     }
     return CodexImageGenerationThreadItem(
+      failure: map.containsKey('failure') && map['failure'] != null
+          ? CodexImageGenerationFailure.fromJson(map['failure'])
+          : null,
       id: CodexJson.asString(map['id'], 'CodexImageGenerationThreadItem.id'),
       result: CodexJson.asString(
         map['result'],
@@ -31482,6 +36596,7 @@ final class CodexImageGenerationThreadItem extends CodexThreadItem {
   @override
   Map<String, Object?> toJson() => {
     'type': 'imageGeneration',
+    if (failure != null) 'failure': CodexJson.encode(failure),
     'id': CodexJson.encode(id),
     'result': CodexJson.encode(result),
     if (revisedPrompt != null) 'revisedPrompt': CodexJson.encode(revisedPrompt),
@@ -31723,7 +36838,9 @@ final class CodexThreadListParams implements CodexJsonEncodable {
     this.cwd,
     this.limit,
     this.modelProviders,
+    this.originators,
     this.parentThreadId,
+    this.projectId,
     this.searchTerm,
     this.sectionId,
     this.sortDirection,
@@ -31738,7 +36855,9 @@ final class CodexThreadListParams implements CodexJsonEncodable {
   final CodexThreadListCwdFilter? cwd;
   final int? limit;
   final List<String>? modelProviders;
+  final List<String>? originators;
   final String? parentThreadId;
+  final String? projectId;
   final String? searchTerm;
   final String? sectionId;
   final CodexSortDirection? sortDirection;
@@ -31782,11 +36901,30 @@ final class CodexThreadListParams implements CodexJsonEncodable {
                 )
                 .toList(growable: false)
           : null,
+      originators: map.containsKey('originators') && map['originators'] != null
+          ? CodexJson.asList(
+                  map['originators'],
+                  'CodexThreadListParams.originators',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadListParams.originators[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
       parentThreadId:
           map.containsKey('parentThreadId') && map['parentThreadId'] != null
           ? CodexJson.asString(
               map['parentThreadId'],
               'CodexThreadListParams.parentThreadId',
+            )
+          : null,
+      projectId: map.containsKey('projectId') && map['projectId'] != null
+          ? CodexJson.asString(
+              map['projectId'],
+              'CodexThreadListParams.projectId',
             )
           : null,
       searchTerm: map.containsKey('searchTerm') && map['searchTerm'] != null
@@ -31836,8 +36974,10 @@ final class CodexThreadListParams implements CodexJsonEncodable {
     if (limit != null) 'limit': CodexJson.encode(limit),
     if (modelProviders != null)
       'modelProviders': CodexJson.encode(modelProviders),
+    if (originators != null) 'originators': CodexJson.encode(originators),
     if (parentThreadId != null)
       'parentThreadId': CodexJson.encode(parentThreadId),
+    if (projectId != null) 'projectId': CodexJson.encode(projectId),
     if (searchTerm != null) 'searchTerm': CodexJson.encode(searchTerm),
     if (sectionId != null) 'sectionId': CodexJson.encode(sectionId),
     if (sortDirection != null) 'sortDirection': CodexJson.encode(sortDirection),
@@ -32054,16 +37194,36 @@ final class CodexThreadMetadataGitInfoUpdateParams
 }
 
 final class CodexThreadMetadataUpdateParams implements CodexJsonEncodable {
-  const CodexThreadMetadataUpdateParams({this.gitInfo, required this.threadId});
+  const CodexThreadMetadataUpdateParams({
+    this.daybreakEnabled,
+    this.gitInfo,
+    this.projectId,
+    required this.threadId,
+  });
 
+  final bool? daybreakEnabled;
   final CodexThreadMetadataGitInfoUpdateParams? gitInfo;
+  final String? projectId;
   final String threadId;
 
   factory CodexThreadMetadataUpdateParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadMetadataUpdateParams');
     return CodexThreadMetadataUpdateParams(
+      daybreakEnabled:
+          map.containsKey('daybreakEnabled') && map['daybreakEnabled'] != null
+          ? CodexJson.asBool(
+              map['daybreakEnabled'],
+              'CodexThreadMetadataUpdateParams.daybreakEnabled',
+            )
+          : null,
       gitInfo: map.containsKey('gitInfo') && map['gitInfo'] != null
           ? CodexThreadMetadataGitInfoUpdateParams.fromJson(map['gitInfo'])
+          : null,
+      projectId: map.containsKey('projectId') && map['projectId'] != null
+          ? CodexJson.asString(
+              map['projectId'],
+              'CodexThreadMetadataUpdateParams.projectId',
+            )
           : null,
       threadId: CodexJson.asString(
         map['threadId'],
@@ -32074,7 +37234,10 @@ final class CodexThreadMetadataUpdateParams implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (daybreakEnabled != null)
+      'daybreakEnabled': CodexJson.encode(daybreakEnabled),
     if (gitInfo != null) 'gitInfo': CodexJson.encode(gitInfo),
+    if (projectId != null) 'projectId': CodexJson.encode(projectId),
     'threadId': CodexJson.encode(threadId),
   };
 }
@@ -32124,6 +37287,382 @@ final class CodexThreadNameUpdatedNotification implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     'threadId': CodexJson.encode(threadId),
     if (threadName != null) 'threadName': CodexJson.encode(threadName),
+  };
+}
+
+final class CodexThreadProjectUpdatedNotification
+    implements CodexJsonEncodable {
+  const CodexThreadProjectUpdatedNotification({
+    required this.projectId,
+    required this.threadId,
+  });
+
+  final String? projectId;
+  final String threadId;
+
+  factory CodexThreadProjectUpdatedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadProjectUpdatedNotification');
+    return CodexThreadProjectUpdatedNotification(
+      projectId: map['projectId'] == null
+          ? null
+          : CodexJson.asString(
+              map['projectId'],
+              'CodexThreadProjectUpdatedNotification.projectId',
+            ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadProjectUpdatedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'projectId': CodexJson.encode(projectId),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueAddParams implements CodexJsonEncodable {
+  const CodexThreadQueueAddParams({
+    required this.clientUserMessageId,
+    required this.input,
+    required this.threadId,
+  });
+
+  final String clientUserMessageId;
+  final List<CodexUserInput> input;
+  final String threadId;
+
+  factory CodexThreadQueueAddParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueAddParams');
+    return CodexThreadQueueAddParams(
+      clientUserMessageId: CodexJson.asString(
+        map['clientUserMessageId'],
+        'CodexThreadQueueAddParams.clientUserMessageId',
+      ),
+      input: CodexJson.asList(
+        map['input'],
+        'CodexThreadQueueAddParams.input',
+      ).map((value) => CodexUserInput.fromJson(value)).toList(growable: false),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueAddParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'clientUserMessageId': CodexJson.encode(clientUserMessageId),
+    'input': CodexJson.encode(input),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueAddResponse implements CodexJsonEncodable {
+  const CodexThreadQueueAddResponse({required this.queuedSubmission});
+
+  final CodexQueuedSubmission queuedSubmission;
+
+  factory CodexThreadQueueAddResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueAddResponse');
+    return CodexThreadQueueAddResponse(
+      queuedSubmission: CodexQueuedSubmission.fromJson(map['queuedSubmission']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'queuedSubmission': CodexJson.encode(queuedSubmission),
+  };
+}
+
+final class CodexThreadQueueChangedNotification implements CodexJsonEncodable {
+  const CodexThreadQueueChangedNotification({required this.threadId});
+
+  final String threadId;
+
+  factory CodexThreadQueueChangedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueChangedNotification');
+    return CodexThreadQueueChangedNotification(
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueChangedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'threadId': CodexJson.encode(threadId)};
+}
+
+final class CodexThreadQueueDeleteParams implements CodexJsonEncodable {
+  const CodexThreadQueueDeleteParams({
+    required this.queuedSubmissionId,
+    required this.threadId,
+  });
+
+  final String queuedSubmissionId;
+  final String threadId;
+
+  factory CodexThreadQueueDeleteParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueDeleteParams');
+    return CodexThreadQueueDeleteParams(
+      queuedSubmissionId: CodexJson.asString(
+        map['queuedSubmissionId'],
+        'CodexThreadQueueDeleteParams.queuedSubmissionId',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueDeleteParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'queuedSubmissionId': CodexJson.encode(queuedSubmissionId),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueDeleteResponse implements CodexJsonEncodable {
+  const CodexThreadQueueDeleteResponse({required this.deleted});
+
+  final bool deleted;
+
+  factory CodexThreadQueueDeleteResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueDeleteResponse');
+    return CodexThreadQueueDeleteResponse(
+      deleted: CodexJson.asBool(
+        map['deleted'],
+        'CodexThreadQueueDeleteResponse.deleted',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'deleted': CodexJson.encode(deleted)};
+}
+
+final class CodexThreadQueueListParams implements CodexJsonEncodable {
+  const CodexThreadQueueListParams({
+    this.cursor,
+    this.limit,
+    required this.threadId,
+  });
+
+  final String? cursor;
+  final int? limit;
+  final String threadId;
+
+  factory CodexThreadQueueListParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueListParams');
+    return CodexThreadQueueListParams(
+      cursor: map.containsKey('cursor') && map['cursor'] != null
+          ? CodexJson.asString(
+              map['cursor'],
+              'CodexThreadQueueListParams.cursor',
+            )
+          : null,
+      limit: map.containsKey('limit') && map['limit'] != null
+          ? CodexJson.asInt(map['limit'], 'CodexThreadQueueListParams.limit')
+          : null,
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueListParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (cursor != null) 'cursor': CodexJson.encode(cursor),
+    if (limit != null) 'limit': CodexJson.encode(limit),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueListResponse implements CodexJsonEncodable {
+  const CodexThreadQueueListResponse({required this.data, this.nextCursor});
+
+  final List<CodexQueuedSubmission> data;
+  final String? nextCursor;
+
+  factory CodexThreadQueueListResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueListResponse');
+    return CodexThreadQueueListResponse(
+      data: CodexJson.asList(map['data'], 'CodexThreadQueueListResponse.data')
+          .map((value) => CodexQueuedSubmission.fromJson(value))
+          .toList(growable: false),
+      nextCursor: map.containsKey('nextCursor') && map['nextCursor'] != null
+          ? CodexJson.asString(
+              map['nextCursor'],
+              'CodexThreadQueueListResponse.nextCursor',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'data': CodexJson.encode(data),
+    if (nextCursor != null) 'nextCursor': CodexJson.encode(nextCursor),
+  };
+}
+
+final class CodexThreadQueueReorderParams implements CodexJsonEncodable {
+  const CodexThreadQueueReorderParams({
+    required this.queuedSubmissionIds,
+    required this.threadId,
+  });
+
+  final List<String> queuedSubmissionIds;
+  final String threadId;
+
+  factory CodexThreadQueueReorderParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueReorderParams');
+    return CodexThreadQueueReorderParams(
+      queuedSubmissionIds:
+          CodexJson.asList(
+                map['queuedSubmissionIds'],
+                'CodexThreadQueueReorderParams.queuedSubmissionIds',
+              )
+              .map(
+                (value) => CodexJson.asString(
+                  value,
+                  'CodexThreadQueueReorderParams.queuedSubmissionIds[]',
+                ),
+              )
+              .toList(growable: false),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueReorderParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'queuedSubmissionIds': CodexJson.encode(queuedSubmissionIds),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueReorderResponse implements CodexJsonEncodable {
+  const CodexThreadQueueReorderResponse();
+
+  factory CodexThreadQueueReorderResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueReorderResponse');
+    return const CodexThreadQueueReorderResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexThreadQueueStartParams implements CodexJsonEncodable {
+  const CodexThreadQueueStartParams({
+    this.queuedSubmissionId,
+    required this.threadId,
+  });
+
+  final String? queuedSubmissionId;
+  final String threadId;
+
+  factory CodexThreadQueueStartParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueStartParams');
+    return CodexThreadQueueStartParams(
+      queuedSubmissionId:
+          map.containsKey('queuedSubmissionId') &&
+              map['queuedSubmissionId'] != null
+          ? CodexJson.asString(
+              map['queuedSubmissionId'],
+              'CodexThreadQueueStartParams.queuedSubmissionId',
+            )
+          : null,
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueStartParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (queuedSubmissionId != null)
+      'queuedSubmissionId': CodexJson.encode(queuedSubmissionId),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueStartResponse implements CodexJsonEncodable {
+  const CodexThreadQueueStartResponse({required this.turn});
+
+  final CodexTurn turn;
+
+  factory CodexThreadQueueStartResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueStartResponse');
+    return CodexThreadQueueStartResponse(turn: CodexTurn.fromJson(map['turn']));
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'turn': CodexJson.encode(turn)};
+}
+
+final class CodexThreadQueueUpdateParams implements CodexJsonEncodable {
+  const CodexThreadQueueUpdateParams({
+    required this.input,
+    required this.queuedSubmissionId,
+    required this.threadId,
+  });
+
+  final List<CodexUserInput> input;
+  final String queuedSubmissionId;
+  final String threadId;
+
+  factory CodexThreadQueueUpdateParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueUpdateParams');
+    return CodexThreadQueueUpdateParams(
+      input: CodexJson.asList(
+        map['input'],
+        'CodexThreadQueueUpdateParams.input',
+      ).map((value) => CodexUserInput.fromJson(value)).toList(growable: false),
+      queuedSubmissionId: CodexJson.asString(
+        map['queuedSubmissionId'],
+        'CodexThreadQueueUpdateParams.queuedSubmissionId',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadQueueUpdateParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'input': CodexJson.encode(input),
+    'queuedSubmissionId': CodexJson.encode(queuedSubmissionId),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadQueueUpdateResponse implements CodexJsonEncodable {
+  const CodexThreadQueueUpdateResponse({required this.queuedSubmission});
+
+  final CodexQueuedSubmission queuedSubmission;
+
+  factory CodexThreadQueueUpdateResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadQueueUpdateResponse');
+    return CodexThreadQueueUpdateResponse(
+      queuedSubmission: CodexQueuedSubmission.fromJson(map['queuedSubmission']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'queuedSubmission': CodexJson.encode(queuedSubmission),
   };
 }
 
@@ -32365,6 +37904,117 @@ final class CodexThreadRealtimeAudioChunk implements CodexJsonEncodable {
   };
 }
 
+sealed class CodexThreadRealtimeBemItemPresentation
+    implements CodexJsonEncodable {
+  const CodexThreadRealtimeBemItemPresentation();
+  factory CodexThreadRealtimeBemItemPresentation.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRealtimeBemItemPresentation');
+    switch (map['type']) {
+      case 'wholeItem':
+        return CodexWholeItemThreadRealtimeBemItemPresentation.fromJson(map);
+      case 'inlineMarkdown':
+        return CodexInlineMarkdownThreadRealtimeBemItemPresentation.fromJson(
+          map,
+        );
+      case 'inlineVisualization':
+        return CodexInlineVisualizationThreadRealtimeBemItemPresentation.fromJson(
+          map,
+        );
+      default:
+        return CodexThreadRealtimeBemItemPresentationUnknown(map);
+    }
+  }
+}
+
+final class CodexWholeItemThreadRealtimeBemItemPresentation
+    extends CodexThreadRealtimeBemItemPresentation {
+  const CodexWholeItemThreadRealtimeBemItemPresentation();
+
+  factory CodexWholeItemThreadRealtimeBemItemPresentation.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexWholeItemThreadRealtimeBemItemPresentation',
+    );
+    if (map['type'] != 'wholeItem') {
+      throw FormatException(
+        'Expected type=wholeItem for CodexWholeItemThreadRealtimeBemItemPresentation',
+      );
+    }
+    return const CodexWholeItemThreadRealtimeBemItemPresentation();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'type': 'wholeItem'};
+}
+
+final class CodexInlineMarkdownThreadRealtimeBemItemPresentation
+    extends CodexThreadRealtimeBemItemPresentation {
+  const CodexInlineMarkdownThreadRealtimeBemItemPresentation();
+
+  factory CodexInlineMarkdownThreadRealtimeBemItemPresentation.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexInlineMarkdownThreadRealtimeBemItemPresentation',
+    );
+    if (map['type'] != 'inlineMarkdown') {
+      throw FormatException(
+        'Expected type=inlineMarkdown for CodexInlineMarkdownThreadRealtimeBemItemPresentation',
+      );
+    }
+    return const CodexInlineMarkdownThreadRealtimeBemItemPresentation();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'type': 'inlineMarkdown'};
+}
+
+final class CodexInlineVisualizationThreadRealtimeBemItemPresentation
+    extends CodexThreadRealtimeBemItemPresentation {
+  const CodexInlineVisualizationThreadRealtimeBemItemPresentation({
+    required this.index,
+  });
+
+  final int index;
+
+  factory CodexInlineVisualizationThreadRealtimeBemItemPresentation.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexInlineVisualizationThreadRealtimeBemItemPresentation',
+    );
+    if (map['type'] != 'inlineVisualization') {
+      throw FormatException(
+        'Expected type=inlineVisualization for CodexInlineVisualizationThreadRealtimeBemItemPresentation',
+      );
+    }
+    return CodexInlineVisualizationThreadRealtimeBemItemPresentation(
+      index: CodexJson.asInt(
+        map['index'],
+        'CodexInlineVisualizationThreadRealtimeBemItemPresentation.index',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'inlineVisualization',
+    'index': CodexJson.encode(index),
+  };
+}
+
+final class CodexThreadRealtimeBemItemPresentationUnknown
+    extends CodexThreadRealtimeBemItemPresentation {
+  const CodexThreadRealtimeBemItemPresentationUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
 final class CodexThreadRealtimeClosedNotification
     implements CodexJsonEncodable {
   const CodexThreadRealtimeClosedNotification({
@@ -32455,6 +38105,161 @@ final class CodexThreadRealtimeInitialItem implements CodexJsonEncodable {
   };
 }
 
+sealed class CodexThreadRealtimeItem implements CodexJsonEncodable {
+  const CodexThreadRealtimeItem();
+  factory CodexThreadRealtimeItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRealtimeItem');
+    switch (map['type']) {
+      case 'realtimeSessionStarted':
+        return CodexRealtimeSessionStartedThreadRealtimeItem.fromJson(map);
+      case 'transcriptSegment':
+        return CodexTranscriptSegmentThreadRealtimeItem.fromJson(map);
+      case 'bemItemPromoted':
+        return CodexBemItemPromotedThreadRealtimeItem.fromJson(map);
+      case 'realtimeSessionClosed':
+        return CodexRealtimeSessionClosedThreadRealtimeItem.fromJson(map);
+      default:
+        return CodexThreadRealtimeItemUnknown(map);
+    }
+  }
+}
+
+final class CodexRealtimeSessionStartedThreadRealtimeItem
+    extends CodexThreadRealtimeItem {
+  const CodexRealtimeSessionStartedThreadRealtimeItem();
+
+  factory CodexRealtimeSessionStartedThreadRealtimeItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexRealtimeSessionStartedThreadRealtimeItem',
+    );
+    if (map['type'] != 'realtimeSessionStarted') {
+      throw FormatException(
+        'Expected type=realtimeSessionStarted for CodexRealtimeSessionStartedThreadRealtimeItem',
+      );
+    }
+    return const CodexRealtimeSessionStartedThreadRealtimeItem();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'type': 'realtimeSessionStarted'};
+}
+
+final class CodexTranscriptSegmentThreadRealtimeItem
+    extends CodexThreadRealtimeItem {
+  const CodexTranscriptSegmentThreadRealtimeItem({
+    required this.role,
+    required this.text,
+  });
+
+  final CodexThreadRealtimeTranscriptRole role;
+  final String text;
+
+  factory CodexTranscriptSegmentThreadRealtimeItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexTranscriptSegmentThreadRealtimeItem',
+    );
+    if (map['type'] != 'transcriptSegment') {
+      throw FormatException(
+        'Expected type=transcriptSegment for CodexTranscriptSegmentThreadRealtimeItem',
+      );
+    }
+    return CodexTranscriptSegmentThreadRealtimeItem(
+      role: CodexThreadRealtimeTranscriptRole.fromJson(map['role']),
+      text: CodexJson.asString(
+        map['text'],
+        'CodexTranscriptSegmentThreadRealtimeItem.text',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'transcriptSegment',
+    'role': CodexJson.encode(role),
+    'text': CodexJson.encode(text),
+  };
+}
+
+final class CodexBemItemPromotedThreadRealtimeItem
+    extends CodexThreadRealtimeItem {
+  const CodexBemItemPromotedThreadRealtimeItem({
+    required this.itemId,
+    required this.presentation,
+    required this.turnId,
+  });
+
+  final String itemId;
+  final CodexThreadRealtimeBemItemPresentation presentation;
+  final String turnId;
+
+  factory CodexBemItemPromotedThreadRealtimeItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexBemItemPromotedThreadRealtimeItem');
+    if (map['type'] != 'bemItemPromoted') {
+      throw FormatException(
+        'Expected type=bemItemPromoted for CodexBemItemPromotedThreadRealtimeItem',
+      );
+    }
+    return CodexBemItemPromotedThreadRealtimeItem(
+      itemId: CodexJson.asString(
+        map['item_id'],
+        'CodexBemItemPromotedThreadRealtimeItem.item_id',
+      ),
+      presentation: CodexThreadRealtimeBemItemPresentation.fromJson(
+        map['presentation'],
+      ),
+      turnId: CodexJson.asString(
+        map['turn_id'],
+        'CodexBemItemPromotedThreadRealtimeItem.turn_id',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'bemItemPromoted',
+    'item_id': CodexJson.encode(itemId),
+    'presentation': CodexJson.encode(presentation),
+    'turn_id': CodexJson.encode(turnId),
+  };
+}
+
+final class CodexRealtimeSessionClosedThreadRealtimeItem
+    extends CodexThreadRealtimeItem {
+  const CodexRealtimeSessionClosedThreadRealtimeItem({required this.outcome});
+
+  final CodexThreadRealtimeSessionOutcome outcome;
+
+  factory CodexRealtimeSessionClosedThreadRealtimeItem.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexRealtimeSessionClosedThreadRealtimeItem',
+    );
+    if (map['type'] != 'realtimeSessionClosed') {
+      throw FormatException(
+        'Expected type=realtimeSessionClosed for CodexRealtimeSessionClosedThreadRealtimeItem',
+      );
+    }
+    return CodexRealtimeSessionClosedThreadRealtimeItem(
+      outcome: CodexThreadRealtimeSessionOutcome.fromJson(map['outcome']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'realtimeSessionClosed',
+    'outcome': CodexJson.encode(outcome),
+  };
+}
+
+final class CodexThreadRealtimeItemUnknown extends CodexThreadRealtimeItem {
+  const CodexThreadRealtimeItemUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
 final class CodexThreadRealtimeItemAddedNotification
     implements CodexJsonEncodable {
   const CodexThreadRealtimeItemAddedNotification({
@@ -32482,6 +38287,111 @@ final class CodexThreadRealtimeItemAddedNotification
   @override
   Map<String, Object?> toJson() => {
     'item': CodexJson.encode(item),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadRealtimeItemCompletedNotification
+    implements CodexJsonEncodable {
+  const CodexThreadRealtimeItemCompletedNotification({
+    required this.item,
+    required this.threadId,
+  });
+
+  final CodexThreadRealtimeItem item;
+  final String threadId;
+
+  factory CodexThreadRealtimeItemCompletedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemCompletedNotification',
+    );
+    return CodexThreadRealtimeItemCompletedNotification(
+      item: CodexThreadRealtimeItem.fromJson(map['item']),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadRealtimeItemCompletedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'item': CodexJson.encode(item),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadRealtimeItemStartedNotification
+    implements CodexJsonEncodable {
+  const CodexThreadRealtimeItemStartedNotification({
+    required this.item,
+    required this.threadId,
+  });
+
+  final CodexThreadRealtimeItem item;
+  final String threadId;
+
+  factory CodexThreadRealtimeItemStartedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemStartedNotification',
+    );
+    return CodexThreadRealtimeItemStartedNotification(
+      item: CodexThreadRealtimeItem.fromJson(map['item']),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadRealtimeItemStartedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'item': CodexJson.encode(item),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadRealtimeItemTranscriptDeltaNotification
+    implements CodexJsonEncodable {
+  const CodexThreadRealtimeItemTranscriptDeltaNotification({
+    required this.delta,
+    required this.itemId,
+    required this.threadId,
+  });
+
+  final String delta;
+  final String itemId;
+  final String threadId;
+
+  factory CodexThreadRealtimeItemTranscriptDeltaNotification.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexThreadRealtimeItemTranscriptDeltaNotification',
+    );
+    return CodexThreadRealtimeItemTranscriptDeltaNotification(
+      delta: CodexJson.asString(
+        map['delta'],
+        'CodexThreadRealtimeItemTranscriptDeltaNotification.delta',
+      ),
+      itemId: CodexJson.asString(
+        map['itemId'],
+        'CodexThreadRealtimeItemTranscriptDeltaNotification.itemId',
+      ),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadRealtimeItemTranscriptDeltaNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'delta': CodexJson.encode(delta),
+    'itemId': CodexJson.encode(itemId),
     'threadId': CodexJson.encode(threadId),
   };
 }
@@ -32576,6 +38486,25 @@ final class CodexThreadRealtimeSdpNotification implements CodexJsonEncodable {
     'sdp': CodexJson.encode(sdp),
     'threadId': CodexJson.encode(threadId),
   };
+}
+
+enum CodexThreadRealtimeSessionOutcome implements CodexJsonEncodable {
+  ended('ended'),
+  failed('failed');
+
+  const CodexThreadRealtimeSessionOutcome(this.value);
+  final String value;
+  factory CodexThreadRealtimeSessionOutcome.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexThreadRealtimeSessionOutcome');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexThreadRealtimeSessionOutcome: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
 }
 
 final class CodexThreadRealtimeStartParams implements CodexJsonEncodable {
@@ -32826,6 +38755,8 @@ sealed class CodexThreadRealtimeStartTransport implements CodexJsonEncodable {
         return CodexWebsocketThreadRealtimeStartTransport.fromJson(map);
       case 'webrtc':
         return CodexWebrtcThreadRealtimeStartTransport.fromJson(map);
+      case 'existingCall':
+        return CodexExistingCallThreadRealtimeStartTransport.fromJson(map);
       default:
         return CodexThreadRealtimeStartTransportUnknown(map);
     }
@@ -32881,6 +38812,37 @@ final class CodexWebrtcThreadRealtimeStartTransport
   Map<String, Object?> toJson() => {
     'type': 'webrtc',
     'sdp': CodexJson.encode(sdp),
+  };
+}
+
+final class CodexExistingCallThreadRealtimeStartTransport
+    extends CodexThreadRealtimeStartTransport {
+  const CodexExistingCallThreadRealtimeStartTransport({required this.callId});
+
+  final String callId;
+
+  factory CodexExistingCallThreadRealtimeStartTransport.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexExistingCallThreadRealtimeStartTransport',
+    );
+    if (map['type'] != 'existingCall') {
+      throw FormatException(
+        'Expected type=existingCall for CodexExistingCallThreadRealtimeStartTransport',
+      );
+    }
+    return CodexExistingCallThreadRealtimeStartTransport(
+      callId: CodexJson.asString(
+        map['callId'],
+        'CodexExistingCallThreadRealtimeStartTransport.callId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'existingCall',
+    'callId': CodexJson.encode(callId),
   };
 }
 
@@ -33045,6 +39007,25 @@ final class CodexThreadRealtimeTranscriptDoneNotification
     'text': CodexJson.encode(text),
     'threadId': CodexJson.encode(threadId),
   };
+}
+
+enum CodexThreadRealtimeTranscriptRole implements CodexJsonEncodable {
+  user('user'),
+  assistant('assistant');
+
+  const CodexThreadRealtimeTranscriptRole(this.value);
+  final String value;
+  factory CodexThreadRealtimeTranscriptRole.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexThreadRealtimeTranscriptRole');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexThreadRealtimeTranscriptRole: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
 }
 
 final class CodexThreadResumeInitialTurnsPageParams
@@ -33263,7 +39244,9 @@ final class CodexThreadResumeResponse implements CodexJsonEncodable {
     this.activePermissionProfile,
     required this.approvalPolicy,
     required this.approvalsReviewer,
+    this.collaborationMode,
     required this.cwd,
+    this.disabledPluginIds,
     this.initialTurnsPage,
     this.instructionSources,
     this.itemsBackwardsCursor,
@@ -33281,7 +39264,9 @@ final class CodexThreadResumeResponse implements CodexJsonEncodable {
   final CodexActivePermissionProfile? activePermissionProfile;
   final CodexAskForApproval approvalPolicy;
   final CodexApprovalsReviewer approvalsReviewer;
+  final CodexCollaborationMode? collaborationMode;
   final CodexV2AbsolutePathBuf cwd;
+  final List<String>? disabledPluginIds;
   final CodexTurnsPage? initialTurnsPage;
   final List<CodexLegacyAppPathString>? instructionSources;
   final String? itemsBackwardsCursor;
@@ -33309,7 +39294,27 @@ final class CodexThreadResumeResponse implements CodexJsonEncodable {
       approvalsReviewer: CodexApprovalsReviewer.fromJson(
         map['approvalsReviewer'],
       ),
+      collaborationMode:
+          map.containsKey('collaborationMode') &&
+              map['collaborationMode'] != null
+          ? CodexCollaborationMode.fromJson(map['collaborationMode'])
+          : null,
       cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexThreadResumeResponse.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadResumeResponse.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
       initialTurnsPage:
           map.containsKey('initialTurnsPage') && map['initialTurnsPage'] != null
           ? CodexTurnsPage.fromJson(map['initialTurnsPage'])
@@ -33383,7 +39388,11 @@ final class CodexThreadResumeResponse implements CodexJsonEncodable {
       'activePermissionProfile': CodexJson.encode(activePermissionProfile),
     'approvalPolicy': CodexJson.encode(approvalPolicy),
     'approvalsReviewer': CodexJson.encode(approvalsReviewer),
+    if (collaborationMode != null)
+      'collaborationMode': CodexJson.encode(collaborationMode),
     'cwd': CodexJson.encode(cwd),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (initialTurnsPage != null)
       'initialTurnsPage': CodexJson.encode(initialTurnsPage),
     if (instructionSources != null)
@@ -33406,50 +39415,97 @@ final class CodexThreadResumeResponse implements CodexJsonEncodable {
   };
 }
 
-final class CodexThreadRollbackParams implements CodexJsonEncodable {
-  const CodexThreadRollbackParams({
-    required this.numTurns,
+final class CodexThreadRevertParams implements CodexJsonEncodable {
+  const CodexThreadRevertParams({
+    required this.beforeTurnId,
     required this.threadId,
   });
 
-  final int numTurns;
+  final String beforeTurnId;
   final String threadId;
 
-  factory CodexThreadRollbackParams.fromJson(Object? json) {
-    final map = CodexJson.asMap(json, 'CodexThreadRollbackParams');
-    return CodexThreadRollbackParams(
-      numTurns: CodexJson.asInt(
-        map['numTurns'],
-        'CodexThreadRollbackParams.numTurns',
+  factory CodexThreadRevertParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRevertParams');
+    return CodexThreadRevertParams(
+      beforeTurnId: CodexJson.asString(
+        map['beforeTurnId'],
+        'CodexThreadRevertParams.beforeTurnId',
       ),
       threadId: CodexJson.asString(
         map['threadId'],
-        'CodexThreadRollbackParams.threadId',
+        'CodexThreadRevertParams.threadId',
       ),
     );
   }
 
   @override
   Map<String, Object?> toJson() => {
-    'numTurns': CodexJson.encode(numTurns),
+    'beforeTurnId': CodexJson.encode(beforeTurnId),
     'threadId': CodexJson.encode(threadId),
   };
 }
 
-final class CodexThreadRollbackResponse implements CodexJsonEncodable {
-  const CodexThreadRollbackResponse({required this.thread});
+final class CodexThreadRevertResponse implements CodexJsonEncodable {
+  const CodexThreadRevertResponse({
+    this.itemsBackwardsCursor,
+    required this.thread,
+    this.turnsBackwardsCursor,
+  });
 
+  final String? itemsBackwardsCursor;
   final CodexThread thread;
+  final String? turnsBackwardsCursor;
 
-  factory CodexThreadRollbackResponse.fromJson(Object? json) {
-    final map = CodexJson.asMap(json, 'CodexThreadRollbackResponse');
-    return CodexThreadRollbackResponse(
+  factory CodexThreadRevertResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRevertResponse');
+    return CodexThreadRevertResponse(
+      itemsBackwardsCursor:
+          map.containsKey('itemsBackwardsCursor') &&
+              map['itemsBackwardsCursor'] != null
+          ? CodexJson.asString(
+              map['itemsBackwardsCursor'],
+              'CodexThreadRevertResponse.itemsBackwardsCursor',
+            )
+          : null,
       thread: CodexThread.fromJson(map['thread']),
+      turnsBackwardsCursor:
+          map.containsKey('turnsBackwardsCursor') &&
+              map['turnsBackwardsCursor'] != null
+          ? CodexJson.asString(
+              map['turnsBackwardsCursor'],
+              'CodexThreadRevertResponse.turnsBackwardsCursor',
+            )
+          : null,
     );
   }
 
   @override
-  Map<String, Object?> toJson() => {'thread': CodexJson.encode(thread)};
+  Map<String, Object?> toJson() => {
+    if (itemsBackwardsCursor != null)
+      'itemsBackwardsCursor': CodexJson.encode(itemsBackwardsCursor),
+    'thread': CodexJson.encode(thread),
+    if (turnsBackwardsCursor != null)
+      'turnsBackwardsCursor': CodexJson.encode(turnsBackwardsCursor),
+  };
+}
+
+final class CodexThreadRevertedNotification implements CodexJsonEncodable {
+  const CodexThreadRevertedNotification({required this.threadId});
+
+  final String threadId;
+
+  factory CodexThreadRevertedNotification.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadRevertedNotification');
+    return CodexThreadRevertedNotification(
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadRevertedNotification.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'threadId': CodexJson.encode(threadId)};
 }
 
 final class CodexThreadSearchOccurrence implements CodexJsonEncodable {
@@ -33760,14 +39816,22 @@ final class CodexThreadSearchTextRange implements CodexJsonEncodable {
 }
 
 final class CodexThreadSection implements CodexJsonEncodable {
-  const CodexThreadSection({required this.id, required this.name});
+  const CodexThreadSection({
+    this.appearance,
+    required this.id,
+    required this.name,
+  });
 
+  final CodexThreadSectionAppearance? appearance;
   final String id;
   final String name;
 
   factory CodexThreadSection.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadSection');
     return CodexThreadSection(
+      appearance: map.containsKey('appearance') && map['appearance'] != null
+          ? CodexThreadSectionAppearance.fromJson(map['appearance'])
+          : null,
       id: CodexJson.asString(map['id'], 'CodexThreadSection.id'),
       name: CodexJson.asString(map['name'], 'CodexThreadSection.name'),
     );
@@ -33775,19 +39839,52 @@ final class CodexThreadSection implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (appearance != null) 'appearance': CodexJson.encode(appearance),
     'id': CodexJson.encode(id),
     'name': CodexJson.encode(name),
   };
 }
 
-final class CodexThreadSectionCreateParams implements CodexJsonEncodable {
-  const CodexThreadSectionCreateParams({required this.name});
+final class CodexThreadSectionAppearance implements CodexJsonEncodable {
+  const CodexThreadSectionAppearance({this.color, this.icon});
 
+  final String? color;
+  final String? icon;
+
+  factory CodexThreadSectionAppearance.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadSectionAppearance');
+    return CodexThreadSectionAppearance(
+      color: map.containsKey('color') && map['color'] != null
+          ? CodexJson.asString(
+              map['color'],
+              'CodexThreadSectionAppearance.color',
+            )
+          : null,
+      icon: map.containsKey('icon') && map['icon'] != null
+          ? CodexJson.asString(map['icon'], 'CodexThreadSectionAppearance.icon')
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (color != null) 'color': CodexJson.encode(color),
+    if (icon != null) 'icon': CodexJson.encode(icon),
+  };
+}
+
+final class CodexThreadSectionCreateParams implements CodexJsonEncodable {
+  const CodexThreadSectionCreateParams({this.appearance, required this.name});
+
+  final CodexThreadSectionAppearance? appearance;
   final String name;
 
   factory CodexThreadSectionCreateParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadSectionCreateParams');
     return CodexThreadSectionCreateParams(
+      appearance: map.containsKey('appearance') && map['appearance'] != null
+          ? CodexThreadSectionAppearance.fromJson(map['appearance'])
+          : null,
       name: CodexJson.asString(
         map['name'],
         'CodexThreadSectionCreateParams.name',
@@ -33796,7 +39893,10 @@ final class CodexThreadSectionCreateParams implements CodexJsonEncodable {
   }
 
   @override
-  Map<String, Object?> toJson() => {'name': CodexJson.encode(name)};
+  Map<String, Object?> toJson() => {
+    if (appearance != null) 'appearance': CodexJson.encode(appearance),
+    'name': CodexJson.encode(name),
+  };
 }
 
 final class CodexThreadSectionCreateResponse implements CodexJsonEncodable {
@@ -33959,16 +40059,21 @@ final class CodexThreadSectionMoveResponse implements CodexJsonEncodable {
 
 final class CodexThreadSectionUpdateParams implements CodexJsonEncodable {
   const CodexThreadSectionUpdateParams({
+    this.appearance,
     required this.name,
     required this.sectionId,
   });
 
+  final CodexThreadSectionAppearance? appearance;
   final String name;
   final String sectionId;
 
   factory CodexThreadSectionUpdateParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadSectionUpdateParams');
     return CodexThreadSectionUpdateParams(
+      appearance: map.containsKey('appearance') && map['appearance'] != null
+          ? CodexThreadSectionAppearance.fromJson(map['appearance'])
+          : null,
       name: CodexJson.asString(
         map['name'],
         'CodexThreadSectionUpdateParams.name',
@@ -33982,6 +40087,7 @@ final class CodexThreadSectionUpdateParams implements CodexJsonEncodable {
 
   @override
   Map<String, Object?> toJson() => {
+    if (appearance != null) 'appearance': CodexJson.encode(appearance),
     'name': CodexJson.encode(name),
     'sectionId': CodexJson.encode(sectionId),
   };
@@ -34046,6 +40152,7 @@ final class CodexThreadSettings implements CodexJsonEncodable {
     required this.approvalsReviewer,
     required this.collaborationMode,
     required this.cwd,
+    this.disabledPluginIds,
     this.effort,
     required this.model,
     required this.modelProvider,
@@ -34061,6 +40168,7 @@ final class CodexThreadSettings implements CodexJsonEncodable {
   final CodexApprovalsReviewer approvalsReviewer;
   final CodexCollaborationMode collaborationMode;
   final CodexV2AbsolutePathBuf cwd;
+  final List<String>? disabledPluginIds;
   final CodexReasoningEffort? effort;
   final String model;
   final String modelProvider;
@@ -34088,6 +40196,21 @@ final class CodexThreadSettings implements CodexJsonEncodable {
         map['collaborationMode'],
       ),
       cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexThreadSettings.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadSettings.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
       effort: map.containsKey('effort') && map['effort'] != null
           ? CodexReasoningEffort.fromJson(map['effort'])
           : null,
@@ -34124,6 +40247,8 @@ final class CodexThreadSettings implements CodexJsonEncodable {
     'approvalsReviewer': CodexJson.encode(approvalsReviewer),
     'collaborationMode': CodexJson.encode(collaborationMode),
     'cwd': CodexJson.encode(cwd),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (effort != null) 'effort': CodexJson.encode(effort),
     'model': CodexJson.encode(model),
     'modelProvider': CodexJson.encode(modelProvider),
@@ -34142,6 +40267,7 @@ final class CodexThreadSettingsUpdateParams implements CodexJsonEncodable {
     this.approvalsReviewer,
     this.collaborationMode,
     this.cwd,
+    this.disabledPluginIds,
     this.effort,
     this.model,
     this.multiAgentMode,
@@ -34157,6 +40283,7 @@ final class CodexThreadSettingsUpdateParams implements CodexJsonEncodable {
   final CodexApprovalsReviewer? approvalsReviewer;
   final CodexCollaborationMode? collaborationMode;
   final String? cwd;
+  final List<String>? disabledPluginIds;
   final CodexReasoningEffort? effort;
   final String? model;
   final CodexMultiAgentMode? multiAgentMode;
@@ -34189,6 +40316,21 @@ final class CodexThreadSettingsUpdateParams implements CodexJsonEncodable {
               map['cwd'],
               'CodexThreadSettingsUpdateParams.cwd',
             )
+          : null,
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexThreadSettingsUpdateParams.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadSettingsUpdateParams.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
           : null,
       effort: map.containsKey('effort') && map['effort'] != null
           ? CodexReasoningEffort.fromJson(map['effort'])
@@ -34241,6 +40383,8 @@ final class CodexThreadSettingsUpdateParams implements CodexJsonEncodable {
     if (collaborationMode != null)
       'collaborationMode': CodexJson.encode(collaborationMode),
     if (cwd != null) 'cwd': CodexJson.encode(cwd),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (effort != null) 'effort': CodexJson.encode(effort),
     if (model != null) 'model': CodexJson.encode(model),
     if (multiAgentMode != null)
@@ -34298,10 +40442,12 @@ final class CodexThreadShellCommandParams implements CodexJsonEncodable {
   const CodexThreadShellCommandParams({
     required this.command,
     required this.threadId,
+    this.timeoutMs,
   });
 
   final String command;
   final String threadId;
+  final int? timeoutMs;
 
   factory CodexThreadShellCommandParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadShellCommandParams');
@@ -34314,6 +40460,12 @@ final class CodexThreadShellCommandParams implements CodexJsonEncodable {
         map['threadId'],
         'CodexThreadShellCommandParams.threadId',
       ),
+      timeoutMs: map.containsKey('timeoutMs') && map['timeoutMs'] != null
+          ? CodexJson.asInt(
+              map['timeoutMs'],
+              'CodexThreadShellCommandParams.timeoutMs',
+            )
+          : null,
     );
   }
 
@@ -34321,6 +40473,7 @@ final class CodexThreadShellCommandParams implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     'command': CodexJson.encode(command),
     'threadId': CodexJson.encode(threadId),
+    if (timeoutMs != null) 'timeoutMs': CodexJson.encode(timeoutMs),
   };
 }
 
@@ -34398,6 +40551,7 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
     this.baseInstructions,
     this.config,
     this.cwd,
+    this.daybreakEnabled,
     this.developerInstructions,
     this.dynamicTools,
     this.environments,
@@ -34410,6 +40564,7 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
     this.multiAgentMode,
     this.permissions,
     this.personality,
+    this.projectId,
     this.runtimeWorkspaceRoots,
     this.sandbox,
     this.selectedCapabilityRoots,
@@ -34425,6 +40580,7 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
   final String? baseInstructions;
   final Map<String, Object?>? config;
   final String? cwd;
+  final bool? daybreakEnabled;
   final String? developerInstructions;
   final List<CodexDynamicToolSpec>? dynamicTools;
   final List<CodexTurnEnvironmentParams>? environments;
@@ -34437,6 +40593,7 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
   final CodexMultiAgentMode? multiAgentMode;
   final String? permissions;
   final CodexPersonality? personality;
+  final String? projectId;
   final List<CodexV2AbsolutePathBuf>? runtimeWorkspaceRoots;
   final CodexSandboxMode? sandbox;
   final List<CodexSelectedCapabilityRoot>? selectedCapabilityRoots;
@@ -34477,6 +40634,13 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
           : null,
       cwd: map.containsKey('cwd') && map['cwd'] != null
           ? CodexJson.asString(map['cwd'], 'CodexThreadStartParams.cwd')
+          : null,
+      daybreakEnabled:
+          map.containsKey('daybreakEnabled') && map['daybreakEnabled'] != null
+          ? CodexJson.asBool(
+              map['daybreakEnabled'],
+              'CodexThreadStartParams.daybreakEnabled',
+            )
           : null,
       developerInstructions:
           map.containsKey('developerInstructions') &&
@@ -34552,6 +40716,12 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
       personality: map.containsKey('personality') && map['personality'] != null
           ? CodexPersonality.fromJson(map['personality'])
           : null,
+      projectId: map.containsKey('projectId') && map['projectId'] != null
+          ? CodexJson.asString(
+              map['projectId'],
+              'CodexThreadStartParams.projectId',
+            )
+          : null,
       runtimeWorkspaceRoots:
           map.containsKey('runtimeWorkspaceRoots') &&
               map['runtimeWorkspaceRoots'] != null
@@ -34613,6 +40783,8 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
       'baseInstructions': CodexJson.encode(baseInstructions),
     if (config != null) 'config': CodexJson.encode(config),
     if (cwd != null) 'cwd': CodexJson.encode(cwd),
+    if (daybreakEnabled != null)
+      'daybreakEnabled': CodexJson.encode(daybreakEnabled),
     if (developerInstructions != null)
       'developerInstructions': CodexJson.encode(developerInstructions),
     if (dynamicTools != null) 'dynamicTools': CodexJson.encode(dynamicTools),
@@ -34629,6 +40801,7 @@ final class CodexThreadStartParams implements CodexJsonEncodable {
       'multiAgentMode': CodexJson.encode(multiAgentMode),
     if (permissions != null) 'permissions': CodexJson.encode(permissions),
     if (personality != null) 'personality': CodexJson.encode(personality),
+    if (projectId != null) 'projectId': CodexJson.encode(projectId),
     if (runtimeWorkspaceRoots != null)
       'runtimeWorkspaceRoots': CodexJson.encode(runtimeWorkspaceRoots),
     if (sandbox != null) 'sandbox': CodexJson.encode(sandbox),
@@ -34648,6 +40821,7 @@ final class CodexThreadStartResponse implements CodexJsonEncodable {
     required this.approvalPolicy,
     required this.approvalsReviewer,
     required this.cwd,
+    this.disabledPluginIds,
     this.instructionSources,
     required this.model,
     required this.modelProvider,
@@ -34663,6 +40837,7 @@ final class CodexThreadStartResponse implements CodexJsonEncodable {
   final CodexAskForApproval approvalPolicy;
   final CodexApprovalsReviewer approvalsReviewer;
   final CodexV2AbsolutePathBuf cwd;
+  final List<String>? disabledPluginIds;
   final List<CodexLegacyAppPathString>? instructionSources;
   final String model;
   final String modelProvider;
@@ -34688,6 +40863,21 @@ final class CodexThreadStartResponse implements CodexJsonEncodable {
         map['approvalsReviewer'],
       ),
       cwd: CodexV2AbsolutePathBuf.fromJson(map['cwd']),
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexThreadStartResponse.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexThreadStartResponse.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
+          : null,
       instructionSources:
           map.containsKey('instructionSources') &&
               map['instructionSources'] != null
@@ -34739,6 +40929,8 @@ final class CodexThreadStartResponse implements CodexJsonEncodable {
     'approvalPolicy': CodexJson.encode(approvalPolicy),
     'approvalsReviewer': CodexJson.encode(approvalsReviewer),
     'cwd': CodexJson.encode(cwd),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (instructionSources != null)
       'instructionSources': CodexJson.encode(instructionSources),
     'model': CodexJson.encode(model),
@@ -34916,6 +41108,310 @@ final class CodexThreadStatusChangedNotification implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {
     'status': CodexJson.encode(status),
     'threadId': CodexJson.encode(threadId),
+  };
+}
+
+sealed class CodexThreadTimelineEntry implements CodexJsonEncodable {
+  const CodexThreadTimelineEntry();
+  factory CodexThreadTimelineEntry.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadTimelineEntry');
+    switch (map['type']) {
+      case 'item':
+        return CodexItemThreadTimelineEntry.fromJson(map);
+      case 'realtime':
+        return CodexRealtimeThreadTimelineEntry.fromJson(map);
+      case 'turnStarted':
+        return CodexTurnStartedThreadTimelineEntry.fromJson(map);
+      case 'turnCompleted':
+        return CodexTurnCompletedThreadTimelineEntry.fromJson(map);
+      default:
+        return CodexThreadTimelineEntryUnknown(map);
+    }
+  }
+}
+
+final class CodexItemThreadTimelineEntry extends CodexThreadTimelineEntry {
+  const CodexItemThreadTimelineEntry({
+    required this.item,
+    required this.position,
+    required this.turnId,
+  });
+
+  final CodexThreadItem item;
+  final int position;
+  final String turnId;
+
+  factory CodexItemThreadTimelineEntry.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexItemThreadTimelineEntry');
+    if (map['type'] != 'item') {
+      throw FormatException(
+        'Expected type=item for CodexItemThreadTimelineEntry',
+      );
+    }
+    return CodexItemThreadTimelineEntry(
+      item: CodexThreadItem.fromJson(map['item']),
+      position: CodexJson.asInt(
+        map['position'],
+        'CodexItemThreadTimelineEntry.position',
+      ),
+      turnId: CodexJson.asString(
+        map['turnId'],
+        'CodexItemThreadTimelineEntry.turnId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'item',
+    'item': CodexJson.encode(item),
+    'position': CodexJson.encode(position),
+    'turnId': CodexJson.encode(turnId),
+  };
+}
+
+final class CodexRealtimeThreadTimelineEntry extends CodexThreadTimelineEntry {
+  const CodexRealtimeThreadTimelineEntry({
+    required this.item,
+    required this.position,
+  });
+
+  final CodexThreadRealtimeItem item;
+  final int position;
+
+  factory CodexRealtimeThreadTimelineEntry.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexRealtimeThreadTimelineEntry');
+    if (map['type'] != 'realtime') {
+      throw FormatException(
+        'Expected type=realtime for CodexRealtimeThreadTimelineEntry',
+      );
+    }
+    return CodexRealtimeThreadTimelineEntry(
+      item: CodexThreadRealtimeItem.fromJson(map['item']),
+      position: CodexJson.asInt(
+        map['position'],
+        'CodexRealtimeThreadTimelineEntry.position',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'realtime',
+    'item': CodexJson.encode(item),
+    'position': CodexJson.encode(position),
+  };
+}
+
+final class CodexTurnStartedThreadTimelineEntry
+    extends CodexThreadTimelineEntry {
+  const CodexTurnStartedThreadTimelineEntry({
+    required this.position,
+    this.startedAt,
+    required this.turnId,
+  });
+
+  final int position;
+  final int? startedAt;
+  final String turnId;
+
+  factory CodexTurnStartedThreadTimelineEntry.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnStartedThreadTimelineEntry');
+    if (map['type'] != 'turnStarted') {
+      throw FormatException(
+        'Expected type=turnStarted for CodexTurnStartedThreadTimelineEntry',
+      );
+    }
+    return CodexTurnStartedThreadTimelineEntry(
+      position: CodexJson.asInt(
+        map['position'],
+        'CodexTurnStartedThreadTimelineEntry.position',
+      ),
+      startedAt: map.containsKey('started_at') && map['started_at'] != null
+          ? CodexJson.asInt(
+              map['started_at'],
+              'CodexTurnStartedThreadTimelineEntry.started_at',
+            )
+          : null,
+      turnId: CodexJson.asString(
+        map['turn_id'],
+        'CodexTurnStartedThreadTimelineEntry.turn_id',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'turnStarted',
+    'position': CodexJson.encode(position),
+    if (startedAt != null) 'started_at': CodexJson.encode(startedAt),
+    'turn_id': CodexJson.encode(turnId),
+  };
+}
+
+final class CodexTurnCompletedThreadTimelineEntry
+    extends CodexThreadTimelineEntry {
+  const CodexTurnCompletedThreadTimelineEntry({
+    this.completedAt,
+    this.durationMs,
+    this.error,
+    required this.position,
+    this.startedAt,
+    required this.status,
+    required this.turnId,
+  });
+
+  final int? completedAt;
+  final int? durationMs;
+  final CodexTurnError? error;
+  final int position;
+  final int? startedAt;
+  final CodexTurnStatus status;
+  final String turnId;
+
+  factory CodexTurnCompletedThreadTimelineEntry.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnCompletedThreadTimelineEntry');
+    if (map['type'] != 'turnCompleted') {
+      throw FormatException(
+        'Expected type=turnCompleted for CodexTurnCompletedThreadTimelineEntry',
+      );
+    }
+    return CodexTurnCompletedThreadTimelineEntry(
+      completedAt:
+          map.containsKey('completed_at') && map['completed_at'] != null
+          ? CodexJson.asInt(
+              map['completed_at'],
+              'CodexTurnCompletedThreadTimelineEntry.completed_at',
+            )
+          : null,
+      durationMs: map.containsKey('duration_ms') && map['duration_ms'] != null
+          ? CodexJson.asInt(
+              map['duration_ms'],
+              'CodexTurnCompletedThreadTimelineEntry.duration_ms',
+            )
+          : null,
+      error: map.containsKey('error') && map['error'] != null
+          ? CodexTurnError.fromJson(map['error'])
+          : null,
+      position: CodexJson.asInt(
+        map['position'],
+        'CodexTurnCompletedThreadTimelineEntry.position',
+      ),
+      startedAt: map.containsKey('started_at') && map['started_at'] != null
+          ? CodexJson.asInt(
+              map['started_at'],
+              'CodexTurnCompletedThreadTimelineEntry.started_at',
+            )
+          : null,
+      status: CodexTurnStatus.fromJson(map['status']),
+      turnId: CodexJson.asString(
+        map['turn_id'],
+        'CodexTurnCompletedThreadTimelineEntry.turn_id',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'turnCompleted',
+    if (completedAt != null) 'completed_at': CodexJson.encode(completedAt),
+    if (durationMs != null) 'duration_ms': CodexJson.encode(durationMs),
+    if (error != null) 'error': CodexJson.encode(error),
+    'position': CodexJson.encode(position),
+    if (startedAt != null) 'started_at': CodexJson.encode(startedAt),
+    'status': CodexJson.encode(status),
+    'turn_id': CodexJson.encode(turnId),
+  };
+}
+
+final class CodexThreadTimelineEntryUnknown extends CodexThreadTimelineEntry {
+  const CodexThreadTimelineEntryUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
+final class CodexThreadTimelineListParams implements CodexJsonEncodable {
+  const CodexThreadTimelineListParams({
+    this.cursor,
+    this.limit,
+    required this.threadId,
+  });
+
+  final String? cursor;
+  final int? limit;
+  final String threadId;
+
+  factory CodexThreadTimelineListParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadTimelineListParams');
+    return CodexThreadTimelineListParams(
+      cursor: map.containsKey('cursor') && map['cursor'] != null
+          ? CodexJson.asString(
+              map['cursor'],
+              'CodexThreadTimelineListParams.cursor',
+            )
+          : null,
+      limit: map.containsKey('limit') && map['limit'] != null
+          ? CodexJson.asInt(map['limit'], 'CodexThreadTimelineListParams.limit')
+          : null,
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadTimelineListParams.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (cursor != null) 'cursor': CodexJson.encode(cursor),
+    if (limit != null) 'limit': CodexJson.encode(limit),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadTimelineListResponse implements CodexJsonEncodable {
+  const CodexThreadTimelineListResponse({
+    this.activeRealtimeSessionAtPageStart,
+    required this.data,
+    this.nextCursor,
+  });
+
+  final String? activeRealtimeSessionAtPageStart;
+  final List<CodexThreadTimelineEntry> data;
+  final String? nextCursor;
+
+  factory CodexThreadTimelineListResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadTimelineListResponse');
+    return CodexThreadTimelineListResponse(
+      activeRealtimeSessionAtPageStart:
+          map.containsKey('activeRealtimeSessionAtPageStart') &&
+              map['activeRealtimeSessionAtPageStart'] != null
+          ? CodexJson.asString(
+              map['activeRealtimeSessionAtPageStart'],
+              'CodexThreadTimelineListResponse.activeRealtimeSessionAtPageStart',
+            )
+          : null,
+      data:
+          CodexJson.asList(map['data'], 'CodexThreadTimelineListResponse.data')
+              .map((value) => CodexThreadTimelineEntry.fromJson(value))
+              .toList(growable: false),
+      nextCursor: map.containsKey('nextCursor') && map['nextCursor'] != null
+          ? CodexJson.asString(
+              map['nextCursor'],
+              'CodexThreadTimelineListResponse.nextCursor',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (activeRealtimeSessionAtPageStart != null)
+      'activeRealtimeSessionAtPageStart': CodexJson.encode(
+        activeRealtimeSessionAtPageStart,
+      ),
+    'data': CodexJson.encode(data),
+    if (nextCursor != null) 'nextCursor': CodexJson.encode(nextCursor),
   };
 }
 
@@ -35193,6 +41689,162 @@ enum CodexThreadUnsubscribeStatus implements CodexJsonEncodable {
   }
   @override
   Object toJson() => value;
+}
+
+final class CodexThreadUsage implements CodexJsonEncodable {
+  const CodexThreadUsage({
+    required this.estimatedUsageCreditsMicros,
+    this.estimatedUsageUsdMicros,
+    required this.groups,
+    required this.threadId,
+  });
+
+  final int estimatedUsageCreditsMicros;
+  final int? estimatedUsageUsdMicros;
+  final List<CodexThreadUsageBreakdownGroup> groups;
+  final String threadId;
+
+  factory CodexThreadUsage.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadUsage');
+    return CodexThreadUsage(
+      estimatedUsageCreditsMicros: CodexJson.asInt(
+        map['estimatedUsageCreditsMicros'],
+        'CodexThreadUsage.estimatedUsageCreditsMicros',
+      ),
+      estimatedUsageUsdMicros:
+          map.containsKey('estimatedUsageUsdMicros') &&
+              map['estimatedUsageUsdMicros'] != null
+          ? CodexJson.asInt(
+              map['estimatedUsageUsdMicros'],
+              'CodexThreadUsage.estimatedUsageUsdMicros',
+            )
+          : null,
+      groups: CodexJson.asList(map['groups'], 'CodexThreadUsage.groups')
+          .map((value) => CodexThreadUsageBreakdownGroup.fromJson(value))
+          .toList(growable: false),
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexThreadUsage.threadId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'estimatedUsageCreditsMicros': CodexJson.encode(
+      estimatedUsageCreditsMicros,
+    ),
+    if (estimatedUsageUsdMicros != null)
+      'estimatedUsageUsdMicros': CodexJson.encode(estimatedUsageUsdMicros),
+    'groups': CodexJson.encode(groups),
+    'threadId': CodexJson.encode(threadId),
+  };
+}
+
+final class CodexThreadUsageBreakdownGroup implements CodexJsonEncodable {
+  const CodexThreadUsageBreakdownGroup({
+    this.cachedInputTokens,
+    required this.estimatedUsageCreditsMicros,
+    this.inputTokens,
+    this.model,
+    this.netNewInputTokens,
+    this.outputTokens,
+    this.reasoningEffort,
+    this.speed,
+    this.totalTokens,
+  });
+
+  final int? cachedInputTokens;
+  final int estimatedUsageCreditsMicros;
+  final int? inputTokens;
+  final String? model;
+  final int? netNewInputTokens;
+  final int? outputTokens;
+  final String? reasoningEffort;
+  final String? speed;
+  final int? totalTokens;
+
+  factory CodexThreadUsageBreakdownGroup.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexThreadUsageBreakdownGroup');
+    return CodexThreadUsageBreakdownGroup(
+      cachedInputTokens:
+          map.containsKey('cachedInputTokens') &&
+              map['cachedInputTokens'] != null
+          ? CodexJson.asInt(
+              map['cachedInputTokens'],
+              'CodexThreadUsageBreakdownGroup.cachedInputTokens',
+            )
+          : null,
+      estimatedUsageCreditsMicros: CodexJson.asInt(
+        map['estimatedUsageCreditsMicros'],
+        'CodexThreadUsageBreakdownGroup.estimatedUsageCreditsMicros',
+      ),
+      inputTokens: map.containsKey('inputTokens') && map['inputTokens'] != null
+          ? CodexJson.asInt(
+              map['inputTokens'],
+              'CodexThreadUsageBreakdownGroup.inputTokens',
+            )
+          : null,
+      model: map.containsKey('model') && map['model'] != null
+          ? CodexJson.asString(
+              map['model'],
+              'CodexThreadUsageBreakdownGroup.model',
+            )
+          : null,
+      netNewInputTokens:
+          map.containsKey('netNewInputTokens') &&
+              map['netNewInputTokens'] != null
+          ? CodexJson.asInt(
+              map['netNewInputTokens'],
+              'CodexThreadUsageBreakdownGroup.netNewInputTokens',
+            )
+          : null,
+      outputTokens:
+          map.containsKey('outputTokens') && map['outputTokens'] != null
+          ? CodexJson.asInt(
+              map['outputTokens'],
+              'CodexThreadUsageBreakdownGroup.outputTokens',
+            )
+          : null,
+      reasoningEffort:
+          map.containsKey('reasoningEffort') && map['reasoningEffort'] != null
+          ? CodexJson.asString(
+              map['reasoningEffort'],
+              'CodexThreadUsageBreakdownGroup.reasoningEffort',
+            )
+          : null,
+      speed: map.containsKey('speed') && map['speed'] != null
+          ? CodexJson.asString(
+              map['speed'],
+              'CodexThreadUsageBreakdownGroup.speed',
+            )
+          : null,
+      totalTokens: map.containsKey('totalTokens') && map['totalTokens'] != null
+          ? CodexJson.asInt(
+              map['totalTokens'],
+              'CodexThreadUsageBreakdownGroup.totalTokens',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (cachedInputTokens != null)
+      'cachedInputTokens': CodexJson.encode(cachedInputTokens),
+    'estimatedUsageCreditsMicros': CodexJson.encode(
+      estimatedUsageCreditsMicros,
+    ),
+    if (inputTokens != null) 'inputTokens': CodexJson.encode(inputTokens),
+    if (model != null) 'model': CodexJson.encode(model),
+    if (netNewInputTokens != null)
+      'netNewInputTokens': CodexJson.encode(netNewInputTokens),
+    if (outputTokens != null) 'outputTokens': CodexJson.encode(outputTokens),
+    if (reasoningEffort != null)
+      'reasoningEffort': CodexJson.encode(reasoningEffort),
+    if (speed != null) 'speed': CodexJson.encode(speed),
+    if (totalTokens != null) 'totalTokens': CodexJson.encode(totalTokens),
+  };
 }
 
 final class CodexTokenUsageBreakdown implements CodexJsonEncodable {
@@ -35513,11 +42165,13 @@ final class CodexTurnError implements CodexJsonEncodable {
     this.additionalDetails,
     this.codexErrorInfo,
     required this.message,
+    this.misalignment,
   });
 
   final String? additionalDetails;
   final CodexCodexErrorInfo? codexErrorInfo;
   final String message;
+  final CodexMisalignmentErrorDetails? misalignment;
 
   factory CodexTurnError.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexTurnError');
@@ -35535,6 +42189,10 @@ final class CodexTurnError implements CodexJsonEncodable {
           ? CodexCodexErrorInfo.fromJson(map['codexErrorInfo'])
           : null,
       message: CodexJson.asString(map['message'], 'CodexTurnError.message'),
+      misalignment:
+          map.containsKey('misalignment') && map['misalignment'] != null
+          ? CodexMisalignmentErrorDetails.fromJson(map['misalignment'])
+          : null,
     );
   }
 
@@ -35545,6 +42203,7 @@ final class CodexTurnError implements CodexJsonEncodable {
     if (codexErrorInfo != null)
       'codexErrorInfo': CodexJson.encode(codexErrorInfo),
     'message': CodexJson.encode(message),
+    if (misalignment != null) 'misalignment': CodexJson.encode(misalignment),
   };
 }
 
@@ -35723,6 +42382,100 @@ final class CodexTurnPlanUpdatedNotification implements CodexJsonEncodable {
   };
 }
 
+final class CodexTurnSettingsUpdateParams implements CodexJsonEncodable {
+  const CodexTurnSettingsUpdateParams({
+    this.approvalsReviewer,
+    this.effort,
+    this.model,
+    this.serviceTier,
+    this.summary,
+    required this.threadId,
+    required this.turnId,
+  });
+
+  final CodexApprovalsReviewer? approvalsReviewer;
+  final CodexReasoningEffort? effort;
+  final String? model;
+  final String? serviceTier;
+  final CodexReasoningSummary? summary;
+  final String threadId;
+  final String turnId;
+
+  factory CodexTurnSettingsUpdateParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnSettingsUpdateParams');
+    return CodexTurnSettingsUpdateParams(
+      approvalsReviewer:
+          map.containsKey('approvalsReviewer') &&
+              map['approvalsReviewer'] != null
+          ? CodexApprovalsReviewer.fromJson(map['approvalsReviewer'])
+          : null,
+      effort: map.containsKey('effort') && map['effort'] != null
+          ? CodexReasoningEffort.fromJson(map['effort'])
+          : null,
+      model: map.containsKey('model') && map['model'] != null
+          ? CodexJson.asString(
+              map['model'],
+              'CodexTurnSettingsUpdateParams.model',
+            )
+          : null,
+      serviceTier: map.containsKey('serviceTier') && map['serviceTier'] != null
+          ? CodexJson.asString(
+              map['serviceTier'],
+              'CodexTurnSettingsUpdateParams.serviceTier',
+            )
+          : null,
+      summary: map.containsKey('summary') && map['summary'] != null
+          ? CodexReasoningSummary.fromJson(map['summary'])
+          : null,
+      threadId: CodexJson.asString(
+        map['threadId'],
+        'CodexTurnSettingsUpdateParams.threadId',
+      ),
+      turnId: CodexJson.asString(
+        map['turnId'],
+        'CodexTurnSettingsUpdateParams.turnId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (approvalsReviewer != null)
+      'approvalsReviewer': CodexJson.encode(approvalsReviewer),
+    if (effort != null) 'effort': CodexJson.encode(effort),
+    if (model != null) 'model': CodexJson.encode(model),
+    if (serviceTier != null) 'serviceTier': CodexJson.encode(serviceTier),
+    if (summary != null) 'summary': CodexJson.encode(summary),
+    'threadId': CodexJson.encode(threadId),
+    'turnId': CodexJson.encode(turnId),
+  };
+}
+
+final class CodexTurnSettingsUpdateResponse implements CodexJsonEncodable {
+  const CodexTurnSettingsUpdateResponse({required this.status});
+
+  final CodexTurnSettingsUpdateStatus status;
+
+  factory CodexTurnSettingsUpdateResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnSettingsUpdateResponse');
+    return CodexTurnSettingsUpdateResponse(
+      status: CodexTurnSettingsUpdateStatus.fromJson(map['status']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'status': CodexJson.encode(status)};
+}
+
+final class CodexTurnSettingsUpdateStatus implements CodexJsonEncodable {
+  const CodexTurnSettingsUpdateStatus(this.value);
+  final Object? value;
+  factory CodexTurnSettingsUpdateStatus.fromJson(Object? json) =>
+      CodexTurnSettingsUpdateStatus(CodexJson.clone(json));
+  @override
+  Object? toJson() => CodexJson.encode(value);
+}
+
 final class CodexTurnStartParams implements CodexJsonEncodable {
   const CodexTurnStartParams({
     this.additionalContext,
@@ -35731,6 +42484,8 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
     this.clientUserMessageId,
     this.collaborationMode,
     this.cwd,
+    this.cyberAccessProgram,
+    this.disabledPluginIds,
     this.effort,
     this.environments,
     required this.input,
@@ -35743,8 +42498,11 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
     this.runtimeWorkspaceRoots,
     this.sandboxPolicy,
     this.serviceTier,
+    this.serviceTierForTurn,
     this.summary,
     required this.threadId,
+    this.toolOutput,
+    this.turnTrigger,
   });
 
   final Map<String, CodexAdditionalContextEntry>? additionalContext;
@@ -35753,6 +42511,8 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
   final String? clientUserMessageId;
   final CodexCollaborationMode? collaborationMode;
   final String? cwd;
+  final CodexCyberAccessProgram? cyberAccessProgram;
+  final List<String>? disabledPluginIds;
   final CodexReasoningEffort? effort;
   final List<CodexTurnEnvironmentParams>? environments;
   final List<CodexUserInput> input;
@@ -35765,8 +42525,11 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
   final List<CodexV2AbsolutePathBuf>? runtimeWorkspaceRoots;
   final CodexSandboxPolicy? sandboxPolicy;
   final String? serviceTier;
+  final String? serviceTierForTurn;
   final CodexReasoningSummary? summary;
   final String threadId;
+  final CodexTurnToolOutput? toolOutput;
+  final String? turnTrigger;
 
   factory CodexTurnStartParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexTurnStartParams');
@@ -35806,6 +42569,26 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
           : null,
       cwd: map.containsKey('cwd') && map['cwd'] != null
           ? CodexJson.asString(map['cwd'], 'CodexTurnStartParams.cwd')
+          : null,
+      cyberAccessProgram:
+          map.containsKey('cyberAccessProgram') &&
+              map['cyberAccessProgram'] != null
+          ? CodexCyberAccessProgram.fromJson(map['cyberAccessProgram'])
+          : null,
+      disabledPluginIds:
+          map.containsKey('disabledPluginIds') &&
+              map['disabledPluginIds'] != null
+          ? CodexJson.asList(
+                  map['disabledPluginIds'],
+                  'CodexTurnStartParams.disabledPluginIds',
+                )
+                .map(
+                  (value) => CodexJson.asString(
+                    value,
+                    'CodexTurnStartParams.disabledPluginIds[]',
+                  ),
+                )
+                .toList(growable: false)
           : null,
       effort: map.containsKey('effort') && map['effort'] != null
           ? CodexReasoningEffort.fromJson(map['effort'])
@@ -35879,6 +42662,14 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
               'CodexTurnStartParams.serviceTier',
             )
           : null,
+      serviceTierForTurn:
+          map.containsKey('serviceTierForTurn') &&
+              map['serviceTierForTurn'] != null
+          ? CodexJson.asString(
+              map['serviceTierForTurn'],
+              'CodexTurnStartParams.serviceTierForTurn',
+            )
+          : null,
       summary: map.containsKey('summary') && map['summary'] != null
           ? CodexReasoningSummary.fromJson(map['summary'])
           : null,
@@ -35886,6 +42677,15 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
         map['threadId'],
         'CodexTurnStartParams.threadId',
       ),
+      toolOutput: map.containsKey('toolOutput') && map['toolOutput'] != null
+          ? CodexTurnToolOutput.fromJson(map['toolOutput'])
+          : null,
+      turnTrigger: map.containsKey('turnTrigger') && map['turnTrigger'] != null
+          ? CodexJson.asString(
+              map['turnTrigger'],
+              'CodexTurnStartParams.turnTrigger',
+            )
+          : null,
     );
   }
 
@@ -35902,6 +42702,10 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
     if (collaborationMode != null)
       'collaborationMode': CodexJson.encode(collaborationMode),
     if (cwd != null) 'cwd': CodexJson.encode(cwd),
+    if (cyberAccessProgram != null)
+      'cyberAccessProgram': CodexJson.encode(cyberAccessProgram),
+    if (disabledPluginIds != null)
+      'disabledPluginIds': CodexJson.encode(disabledPluginIds),
     if (effort != null) 'effort': CodexJson.encode(effort),
     if (environments != null) 'environments': CodexJson.encode(environments),
     'input': CodexJson.encode(input),
@@ -35919,8 +42723,12 @@ final class CodexTurnStartParams implements CodexJsonEncodable {
       'runtimeWorkspaceRoots': CodexJson.encode(runtimeWorkspaceRoots),
     if (sandboxPolicy != null) 'sandboxPolicy': CodexJson.encode(sandboxPolicy),
     if (serviceTier != null) 'serviceTier': CodexJson.encode(serviceTier),
+    if (serviceTierForTurn != null)
+      'serviceTierForTurn': CodexJson.encode(serviceTierForTurn),
     if (summary != null) 'summary': CodexJson.encode(summary),
     'threadId': CodexJson.encode(threadId),
+    if (toolOutput != null) 'toolOutput': CodexJson.encode(toolOutput),
+    if (turnTrigger != null) 'turnTrigger': CodexJson.encode(turnTrigger),
   };
 }
 
@@ -36089,6 +42897,39 @@ final class CodexTurnSteerResponse implements CodexJsonEncodable {
   Map<String, Object?> toJson() => {'turnId': CodexJson.encode(turnId)};
 }
 
+final class CodexTurnToolOutput implements CodexJsonEncodable {
+  const CodexTurnToolOutput({
+    required this.name,
+    this.namespace,
+    required this.output,
+  });
+
+  final String name;
+  final String? namespace;
+  final CodexFunctionCallOutputBody output;
+
+  factory CodexTurnToolOutput.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexTurnToolOutput');
+    return CodexTurnToolOutput(
+      name: CodexJson.asString(map['name'], 'CodexTurnToolOutput.name'),
+      namespace: map.containsKey('namespace') && map['namespace'] != null
+          ? CodexJson.asString(
+              map['namespace'],
+              'CodexTurnToolOutput.namespace',
+            )
+          : null,
+      output: CodexFunctionCallOutputBody.fromJson(map['output']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'name': CodexJson.encode(name),
+    if (namespace != null) 'namespace': CodexJson.encode(namespace),
+    'output': CodexJson.encode(output),
+  };
+}
+
 final class CodexTurnsPage implements CodexJsonEncodable {
   const CodexTurnsPage({
     this.backwardsCursor,
@@ -36188,13 +43029,19 @@ final class CodexTextUserInput extends CodexUserInput {
 }
 
 final class CodexImageUserInput extends CodexUserInput {
-  const CodexImageUserInput({this.detail, required this.url});
+  const CodexImageUserInput({this.detail, this.url, this.fileId});
 
   final CodexImageDetail? detail;
-  final String url;
+  final String? url;
+  final String? fileId;
 
   factory CodexImageUserInput.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexImageUserInput');
+    if (!((map['url'] != null) || (map['fileId'] != null))) {
+      throw FormatException(
+        'Missing alternative fields for CodexImageUserInput',
+      );
+    }
     if (map['type'] != 'image') {
       throw FormatException('Expected type=image for CodexImageUserInput');
     }
@@ -36202,7 +43049,12 @@ final class CodexImageUserInput extends CodexUserInput {
       detail: map.containsKey('detail') && map['detail'] != null
           ? CodexImageDetail.fromJson(map['detail'])
           : null,
-      url: CodexJson.asString(map['url'], 'CodexImageUserInput.url'),
+      url: map.containsKey('url') && map['url'] != null
+          ? CodexJson.asString(map['url'], 'CodexImageUserInput.url')
+          : null,
+      fileId: map.containsKey('fileId') && map['fileId'] != null
+          ? CodexJson.asString(map['fileId'], 'CodexImageUserInput.fileId')
+          : null,
     );
   }
 
@@ -36210,7 +43062,8 @@ final class CodexImageUserInput extends CodexUserInput {
   Map<String, Object?> toJson() => {
     'type': 'image',
     if (detail != null) 'detail': CodexJson.encode(detail),
-    'url': CodexJson.encode(url),
+    if (url != null) 'url': CodexJson.encode(url),
+    if (fileId != null) 'fileId': CodexJson.encode(fileId),
   };
 }
 
@@ -36344,6 +43197,512 @@ final class CodexUserInputUnknown extends CodexUserInput {
   final Map<String, Object?> rawJson;
   @override
   Map<String, Object?> toJson() => rawJson;
+}
+
+final class CodexUserVerificationCancelParams implements CodexJsonEncodable {
+  const CodexUserVerificationCancelParams({required this.requestId});
+
+  final CodexV2RequestId requestId;
+
+  factory CodexUserVerificationCancelParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationCancelParams');
+    return CodexUserVerificationCancelParams(
+      requestId: CodexV2RequestId.fromJson(map['requestId']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'requestId': CodexJson.encode(requestId)};
+}
+
+final class CodexUserVerificationCancelResponse implements CodexJsonEncodable {
+  const CodexUserVerificationCancelResponse();
+
+  factory CodexUserVerificationCancelResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationCancelResponse');
+    return const CodexUserVerificationCancelResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+enum CodexUserVerificationCancellationReason implements CodexJsonEncodable {
+  userCancelled('userCancelled'),
+  interrupted('interrupted');
+
+  const CodexUserVerificationCancellationReason(this.value);
+  final String value;
+  factory CodexUserVerificationCancellationReason.fromJson(Object? json) {
+    final value = CodexJson.asString(
+      json,
+      'CodexUserVerificationCancellationReason',
+    );
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexUserVerificationCancellationReason: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexUserVerificationDeleteParams implements CodexJsonEncodable {
+  const CodexUserVerificationDeleteParams();
+
+  factory CodexUserVerificationDeleteParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationDeleteParams');
+    return const CodexUserVerificationDeleteParams();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexUserVerificationDeleteResponse implements CodexJsonEncodable {
+  const CodexUserVerificationDeleteResponse();
+
+  factory CodexUserVerificationDeleteResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationDeleteResponse');
+    return const CodexUserVerificationDeleteResponse();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexUserVerificationEnrollParams implements CodexJsonEncodable {
+  const CodexUserVerificationEnrollParams();
+
+  factory CodexUserVerificationEnrollParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationEnrollParams');
+    return const CodexUserVerificationEnrollParams();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexUserVerificationEnrollResponse implements CodexJsonEncodable {
+  const CodexUserVerificationEnrollResponse({
+    this.algorithm,
+    required this.credentialId,
+    this.publicKey,
+  });
+
+  final String? algorithm;
+  final String credentialId;
+  final String? publicKey;
+
+  factory CodexUserVerificationEnrollResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationEnrollResponse');
+    return CodexUserVerificationEnrollResponse(
+      algorithm: map.containsKey('algorithm') && map['algorithm'] != null
+          ? CodexJson.asString(
+              map['algorithm'],
+              'CodexUserVerificationEnrollResponse.algorithm',
+            )
+          : null,
+      credentialId: CodexJson.asString(
+        map['credentialId'],
+        'CodexUserVerificationEnrollResponse.credentialId',
+      ),
+      publicKey: map.containsKey('publicKey') && map['publicKey'] != null
+          ? CodexJson.asString(
+              map['publicKey'],
+              'CodexUserVerificationEnrollResponse.publicKey',
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (algorithm != null) 'algorithm': CodexJson.encode(algorithm),
+    'credentialId': CodexJson.encode(credentialId),
+    if (publicKey != null) 'publicKey': CodexJson.encode(publicKey),
+  };
+}
+
+sealed class CodexUserVerificationErrorDetails implements CodexJsonEncodable {
+  const CodexUserVerificationErrorDetails();
+  factory CodexUserVerificationErrorDetails.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationErrorDetails');
+    switch (map['type']) {
+      case 'invalidRequest':
+        return CodexInvalidRequestUserVerificationErrorDetails.fromJson(map);
+      case 'unavailable':
+        return CodexUnavailableUserVerificationErrorDetails.fromJson(map);
+      case 'cancelled':
+        return CodexCancelledUserVerificationErrorDetails.fromJson(map);
+      case 'failed':
+        return CodexFailedUserVerificationErrorDetails.fromJson(map);
+      default:
+        return CodexUserVerificationErrorDetailsUnknown(map);
+    }
+  }
+}
+
+final class CodexInvalidRequestUserVerificationErrorDetails
+    extends CodexUserVerificationErrorDetails {
+  const CodexInvalidRequestUserVerificationErrorDetails({required this.reason});
+
+  final CodexUserVerificationInvalidRequestReason reason;
+
+  factory CodexInvalidRequestUserVerificationErrorDetails.fromJson(
+    Object? json,
+  ) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexInvalidRequestUserVerificationErrorDetails',
+    );
+    if (map['type'] != 'invalidRequest') {
+      throw FormatException(
+        'Expected type=invalidRequest for CodexInvalidRequestUserVerificationErrorDetails',
+      );
+    }
+    return CodexInvalidRequestUserVerificationErrorDetails(
+      reason: CodexUserVerificationInvalidRequestReason.fromJson(map['reason']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'invalidRequest',
+    'reason': CodexJson.encode(reason),
+  };
+}
+
+final class CodexUnavailableUserVerificationErrorDetails
+    extends CodexUserVerificationErrorDetails {
+  const CodexUnavailableUserVerificationErrorDetails({required this.reason});
+
+  final CodexUserVerificationUnavailableReason reason;
+
+  factory CodexUnavailableUserVerificationErrorDetails.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexUnavailableUserVerificationErrorDetails',
+    );
+    if (map['type'] != 'unavailable') {
+      throw FormatException(
+        'Expected type=unavailable for CodexUnavailableUserVerificationErrorDetails',
+      );
+    }
+    return CodexUnavailableUserVerificationErrorDetails(
+      reason: CodexUserVerificationUnavailableReason.fromJson(map['reason']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'unavailable',
+    'reason': CodexJson.encode(reason),
+  };
+}
+
+final class CodexCancelledUserVerificationErrorDetails
+    extends CodexUserVerificationErrorDetails {
+  const CodexCancelledUserVerificationErrorDetails({required this.reason});
+
+  final CodexUserVerificationCancellationReason reason;
+
+  factory CodexCancelledUserVerificationErrorDetails.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexCancelledUserVerificationErrorDetails',
+    );
+    if (map['type'] != 'cancelled') {
+      throw FormatException(
+        'Expected type=cancelled for CodexCancelledUserVerificationErrorDetails',
+      );
+    }
+    return CodexCancelledUserVerificationErrorDetails(
+      reason: CodexUserVerificationCancellationReason.fromJson(map['reason']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'cancelled',
+    'reason': CodexJson.encode(reason),
+  };
+}
+
+final class CodexFailedUserVerificationErrorDetails
+    extends CodexUserVerificationErrorDetails {
+  const CodexFailedUserVerificationErrorDetails({required this.reason});
+
+  final CodexUserVerificationFailureReason reason;
+
+  factory CodexFailedUserVerificationErrorDetails.fromJson(Object? json) {
+    final map = CodexJson.asMap(
+      json,
+      'CodexFailedUserVerificationErrorDetails',
+    );
+    if (map['type'] != 'failed') {
+      throw FormatException(
+        'Expected type=failed for CodexFailedUserVerificationErrorDetails',
+      );
+    }
+    return CodexFailedUserVerificationErrorDetails(
+      reason: CodexUserVerificationFailureReason.fromJson(map['reason']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'type': 'failed',
+    'reason': CodexJson.encode(reason),
+  };
+}
+
+final class CodexUserVerificationErrorDetailsUnknown
+    extends CodexUserVerificationErrorDetails {
+  const CodexUserVerificationErrorDetailsUnknown(this.rawJson);
+  final Map<String, Object?> rawJson;
+  @override
+  Map<String, Object?> toJson() => rawJson;
+}
+
+enum CodexUserVerificationFailureReason implements CodexJsonEncodable {
+  authenticationFailed('authenticationFailed'),
+  timeout('timeout'),
+  providerError('providerError'),
+  serviceError('serviceError');
+
+  const CodexUserVerificationFailureReason(this.value);
+  final String value;
+  factory CodexUserVerificationFailureReason.fromJson(Object? json) {
+    final value = CodexJson.asString(
+      json,
+      'CodexUserVerificationFailureReason',
+    );
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexUserVerificationFailureReason: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexUserVerificationInvalidRequestReason
+    implements CodexJsonEncodable {
+  const CodexUserVerificationInvalidRequestReason(this.value);
+  final String value;
+  factory CodexUserVerificationInvalidRequestReason.fromJson(Object? json) =>
+      CodexUserVerificationInvalidRequestReason(
+        CodexJson.asStringLiteral(
+          json,
+          'CodexUserVerificationInvalidRequestReason',
+          'invalidParams',
+        ),
+      );
+  @override
+  Object? toJson() => CodexJson.encode(value);
+}
+
+final class CodexUserVerificationProof implements CodexJsonEncodable {
+  const CodexUserVerificationProof({
+    required this.credentialId,
+    required this.signature,
+  });
+
+  final String credentialId;
+  final String signature;
+
+  factory CodexUserVerificationProof.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationProof');
+    return CodexUserVerificationProof(
+      credentialId: CodexJson.asString(
+        map['credentialId'],
+        'CodexUserVerificationProof.credentialId',
+      ),
+      signature: CodexJson.asString(
+        map['signature'],
+        'CodexUserVerificationProof.signature',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'credentialId': CodexJson.encode(credentialId),
+    'signature': CodexJson.encode(signature),
+  };
+}
+
+final class CodexUserVerificationRpcError implements CodexJsonEncodable {
+  const CodexUserVerificationRpcError({
+    required this.code,
+    required this.data,
+    required this.message,
+  });
+
+  final int code;
+  final CodexUserVerificationErrorDetails data;
+  final String message;
+
+  factory CodexUserVerificationRpcError.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationRpcError');
+    return CodexUserVerificationRpcError(
+      code: CodexJson.asInt(map['code'], 'CodexUserVerificationRpcError.code'),
+      data: CodexUserVerificationErrorDetails.fromJson(map['data']),
+      message: CodexJson.asString(
+        map['message'],
+        'CodexUserVerificationRpcError.message',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'code': CodexJson.encode(code),
+    'data': CodexJson.encode(data),
+    'message': CodexJson.encode(message),
+  };
+}
+
+final class CodexUserVerificationStatusParams implements CodexJsonEncodable {
+  const CodexUserVerificationStatusParams();
+
+  factory CodexUserVerificationStatusParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationStatusParams');
+    return const CodexUserVerificationStatusParams();
+  }
+
+  @override
+  Map<String, Object?> toJson() => {};
+}
+
+final class CodexUserVerificationStatusResponse implements CodexJsonEncodable {
+  const CodexUserVerificationStatusResponse({
+    this.credentialId,
+    this.unavailableMessage,
+    this.unavailableReason,
+  });
+
+  final String? credentialId;
+  final String? unavailableMessage;
+  final CodexUserVerificationUnavailableReason? unavailableReason;
+
+  factory CodexUserVerificationStatusResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationStatusResponse');
+    return CodexUserVerificationStatusResponse(
+      credentialId:
+          map.containsKey('credentialId') && map['credentialId'] != null
+          ? CodexJson.asString(
+              map['credentialId'],
+              'CodexUserVerificationStatusResponse.credentialId',
+            )
+          : null,
+      unavailableMessage:
+          map.containsKey('unavailableMessage') &&
+              map['unavailableMessage'] != null
+          ? CodexJson.asString(
+              map['unavailableMessage'],
+              'CodexUserVerificationStatusResponse.unavailableMessage',
+            )
+          : null,
+      unavailableReason:
+          map.containsKey('unavailableReason') &&
+              map['unavailableReason'] != null
+          ? CodexUserVerificationUnavailableReason.fromJson(
+              map['unavailableReason'],
+            )
+          : null,
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    if (credentialId != null) 'credentialId': CodexJson.encode(credentialId),
+    if (unavailableMessage != null)
+      'unavailableMessage': CodexJson.encode(unavailableMessage),
+    if (unavailableReason != null)
+      'unavailableReason': CodexJson.encode(unavailableReason),
+  };
+}
+
+enum CodexUserVerificationUnavailableReason implements CodexJsonEncodable {
+  credentialMissing('credentialMissing'),
+  biometricsUnavailable('biometricsUnavailable'),
+  providerUnavailable('providerUnavailable');
+
+  const CodexUserVerificationUnavailableReason(this.value);
+  final String value;
+  factory CodexUserVerificationUnavailableReason.fromJson(Object? json) {
+    final value = CodexJson.asString(
+      json,
+      'CodexUserVerificationUnavailableReason',
+    );
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexUserVerificationUnavailableReason: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
+final class CodexUserVerificationVerifyParams implements CodexJsonEncodable {
+  const CodexUserVerificationVerifyParams({
+    required this.challenge,
+    required this.description,
+    required this.title,
+  });
+
+  final String challenge;
+  final String description;
+  final String title;
+
+  factory CodexUserVerificationVerifyParams.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationVerifyParams');
+    return CodexUserVerificationVerifyParams(
+      challenge: CodexJson.asString(
+        map['challenge'],
+        'CodexUserVerificationVerifyParams.challenge',
+      ),
+      description: CodexJson.asString(
+        map['description'],
+        'CodexUserVerificationVerifyParams.description',
+      ),
+      title: CodexJson.asString(
+        map['title'],
+        'CodexUserVerificationVerifyParams.title',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'challenge': CodexJson.encode(challenge),
+    'description': CodexJson.encode(description),
+    'title': CodexJson.encode(title),
+  };
+}
+
+final class CodexUserVerificationVerifyResponse implements CodexJsonEncodable {
+  const CodexUserVerificationVerifyResponse({required this.proof});
+
+  final CodexUserVerificationProof proof;
+
+  factory CodexUserVerificationVerifyResponse.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexUserVerificationVerifyResponse');
+    return CodexUserVerificationVerifyResponse(
+      proof: CodexUserVerificationProof.fromJson(map['proof']),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {'proof': CodexJson.encode(proof)};
 }
 
 enum CodexVerbosity implements CodexJsonEncodable {
@@ -36665,6 +44024,26 @@ final class CodexWebSearchToolConfig implements CodexJsonEncodable {
   };
 }
 
+enum CodexWindowsSandboxImplementation implements CodexJsonEncodable {
+  elevated('elevated'),
+  unelevated('unelevated'),
+  mxc('mxc');
+
+  const CodexWindowsSandboxImplementation(this.value);
+  final String value;
+  factory CodexWindowsSandboxImplementation.fromJson(Object? json) {
+    final value = CodexJson.asString(json, 'CodexWindowsSandboxImplementation');
+    return values.firstWhere(
+      (candidate) => candidate.value == value,
+      orElse: () => throw FormatException(
+        'Unknown CodexWindowsSandboxImplementation: $value',
+      ),
+    );
+  }
+  @override
+  Object toJson() => value;
+}
+
 enum CodexWindowsSandboxReadiness implements CodexJsonEncodable {
   ready('ready'),
   notConfigured('notConfigured'),
@@ -36916,6 +44295,42 @@ enum CodexWorkspaceMessageType implements CodexJsonEncodable {
   }
   @override
   Object toJson() => value;
+}
+
+final class CodexWorkspaceRouting implements CodexJsonEncodable {
+  const CodexWorkspaceRouting({
+    required this.accountRoutingOverride,
+    required this.backendOrigin,
+    required this.chatgptAccountId,
+  });
+
+  final CodexAccountRoutingOverride accountRoutingOverride;
+  final String backendOrigin;
+  final String chatgptAccountId;
+
+  factory CodexWorkspaceRouting.fromJson(Object? json) {
+    final map = CodexJson.asMap(json, 'CodexWorkspaceRouting');
+    return CodexWorkspaceRouting(
+      accountRoutingOverride: CodexAccountRoutingOverride.fromJson(
+        map['accountRoutingOverride'],
+      ),
+      backendOrigin: CodexJson.asString(
+        map['backendOrigin'],
+        'CodexWorkspaceRouting.backendOrigin',
+      ),
+      chatgptAccountId: CodexJson.asString(
+        map['chatgptAccountId'],
+        'CodexWorkspaceRouting.chatgptAccountId',
+      ),
+    );
+  }
+
+  @override
+  Map<String, Object?> toJson() => {
+    'accountRoutingOverride': CodexJson.encode(accountRoutingOverride),
+    'backendOrigin': CodexJson.encode(backendOrigin),
+    'chatgptAccountId': CodexJson.encode(chatgptAccountId),
+  };
 }
 
 enum CodexWriteStatus implements CodexJsonEncodable {

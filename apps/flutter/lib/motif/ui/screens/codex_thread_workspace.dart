@@ -424,6 +424,27 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                     onOpenDiff: widget.onOpenTurnDiff,
                   ),
                 ),
+                if (state.queueError != null)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Queue: ${state.queueError}',
+                          key: const ValueKey('codex-queue-error'),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: state.queueBusy || state.queueLoading
+                            ? null
+                            : state.refreshQueue,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                if (state.queueLoading)
+                  const LinearProgressIndicator(
+                    key: ValueKey('codex-queue-loading'),
+                  ),
                 CodexMotionSwitcher(
                   animateSize: true,
                   alignment: Alignment.topCenter,
@@ -440,8 +461,27 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                                 key: ValueKey('codex-queued-${message.id}'),
                                 message: message,
                                 queueing: state.queueMessagesWhileActive,
-                                onSteer: () =>
-                                    state.steerQueuedMessage(message.id),
+                                canStart:
+                                    state.activeTurn == null &&
+                                    state.projectedExternalActiveTurn == null &&
+                                    !state.queueBusy,
+                                busy: state.queueBusy,
+                                onStart: () =>
+                                    state.startQueuedMessage(message.id),
+                                onMoveUp:
+                                    state.queuedMessages.first.id == message.id
+                                    ? null
+                                    : () => state.moveQueuedMessage(
+                                        message.id,
+                                        -1,
+                                      ),
+                                onMoveDown:
+                                    state.queuedMessages.last.id == message.id
+                                    ? null
+                                    : () => state.moveQueuedMessage(
+                                        message.id,
+                                        1,
+                                      ),
                                 onDelete: () =>
                                     state.deleteQueuedMessage(message.id),
                                 onEdit: () => _editQueued(message.id),
@@ -460,9 +500,20 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                           key: const ValueKey('codex-connection-status'),
                           connection: state.connectionState,
                         )
-                      : projectedExternalActiveTurn != null
-                      ? const _ExternalThreadActiveNotice(
-                          key: ValueKey('codex-external-thread-active'),
+                      : projectedExternalActiveTurn != null &&
+                            !state.queueMessagesWhileActive
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const _ExternalThreadActiveNotice(
+                              key: ValueKey('codex-external-thread-active'),
+                            ),
+                            if (state.supportsMessageQueue)
+                              TextButton(
+                                onPressed: () => state.setQueueing(true),
+                                child: const Text('Queue a message'),
+                              ),
+                          ],
                         )
                       : decisionPlan != null
                       ? _PlanDecisionPanel(
@@ -627,6 +678,8 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   }
 
   Future<void> _submit() async {
+    final submittingState = widget.state;
+    final submittingThreadId = submittingState.selectedThread?.id;
     final text = _composer.text;
     final attachments = _attachments;
     final references = _references;
@@ -652,6 +705,11 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
       attachments,
       references,
     );
+    if (!mounted ||
+        !identical(widget.state, submittingState) ||
+        widget.state.selectedThread?.id != submittingThreadId) {
+      return;
+    }
     if (!accepted) {
       if (!mounted ||
           widget.state.sendFailureKind != CodexSendFailureKind.activeWriter) {
@@ -745,18 +803,21 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
     unawaited(widget.state.clearGoal());
   }
 
-  void _editQueued(String id) {
-    final message = widget.state.takeQueuedMessage(id);
+  Future<void> _editQueued(String id) async {
+    final state = widget.state;
+    final threadId = state.selectedThread?.id;
+    final message = state.queuedMessages
+        .where((item) => item.id == id)
+        .firstOrNull;
     if (message == null) return;
-    _composer.text = message.text;
-    _composer.selection = TextSelection.collapsed(
-      offset: _composer.text.length,
+    await showDialog<void>(
+      context: context,
+      builder: (_) => _EditQueuedMessageDialog(
+        state: state,
+        threadId: threadId,
+        message: message,
+      ),
     );
-    setState(() {
-      _attachments = message.attachments;
-      _references = message.references;
-    });
-    _composerFocus.requestFocus();
   }
 
   void _scrollToBottom() {
@@ -1780,7 +1841,9 @@ class _UserMessage extends StatelessWidget {
     final c = context.motif;
     final parsed = const CodexUserInputParser().parse(item.content);
     final localImages = parsed.localImages;
-    final remoteImages = parsed.remoteImages;
+    final remoteImages = parsed.remoteImages
+        .where((image) => image.url != null)
+        .toList();
     final hasMessage =
         parsed.text.isNotEmpty ||
         localImages.isNotEmpty ||
@@ -1831,13 +1894,13 @@ class _UserMessage extends StatelessWidget {
                                 ),
                                 onTap: onOpenImage == null
                                     ? null
-                                    : () => onOpenImage!(image.url),
+                                    : () => onOpenImage!(image.url!),
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(
                                     MotifRadius.xs,
                                   ),
                                   child: _RemoteUrlImage(
-                                    url: image.url,
+                                    url: image.url!,
                                     width: 160,
                                     height: 120,
                                     fit: BoxFit.cover,
@@ -2685,11 +2748,97 @@ class _PlanChip extends StatelessWidget {
   }
 }
 
+class _EditQueuedMessageDialog extends StatefulWidget {
+  const _EditQueuedMessageDialog({
+    required this.state,
+    required this.threadId,
+    required this.message,
+  });
+  final CodexConversationState state;
+  final String? threadId;
+  final CodexQueuedMessage message;
+
+  @override
+  State<_EditQueuedMessageDialog> createState() =>
+      _EditQueuedMessageDialogState();
+}
+
+class _EditQueuedMessageDialogState extends State<_EditQueuedMessageDialog> {
+  late final TextEditingController _editor = TextEditingController(
+    text: widget.message.text,
+  );
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _editor.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (widget.state.selectedThread?.id != widget.threadId) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    final saved = await widget.state.updateQueuedMessage(
+      widget.message.id,
+      _editor.text,
+    );
+    if (!mounted) return;
+    if (saved) {
+      Navigator.pop(context);
+    } else {
+      setState(() {
+        _saving = false;
+        _error = widget.state.queueError ?? 'Could not update queued message';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Edit queued message'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextField(
+          key: const ValueKey('codex-queue-edit-text'),
+          controller: _editor,
+          minLines: 2,
+          maxLines: 8,
+          enabled: !_saving,
+        ),
+        if (_error != null) Text(_error!),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: _saving ? null : () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        key: const ValueKey('codex-queue-edit-save'),
+        onPressed: _saving ? null : _save,
+        child: const Text('Save'),
+      ),
+    ],
+  );
+}
+
 class _QueuedMessageCard extends StatelessWidget {
   const _QueuedMessageCard({
     required this.message,
     required this.queueing,
-    required this.onSteer,
+    required this.onStart,
+    required this.canStart,
+    required this.busy,
+    this.onMoveUp,
+    this.onMoveDown,
     required this.onDelete,
     required this.onEdit,
     required this.onQueueingChanged,
@@ -2698,8 +2847,12 @@ class _QueuedMessageCard extends StatelessWidget {
 
   final CodexQueuedMessage message;
   final bool queueing;
-  final Future<bool> Function() onSteer;
-  final VoidCallback onDelete;
+  final Future<bool> Function() onStart;
+  final bool canStart;
+  final bool busy;
+  final Future<bool> Function()? onMoveUp;
+  final Future<bool> Function()? onMoveDown;
+  final Future<bool> Function() onDelete;
   final VoidCallback onEdit;
   final ValueChanged<bool> onQueueingChanged;
 
@@ -2736,26 +2889,39 @@ class _QueuedMessageCard extends StatelessWidget {
             ),
           ),
           TextButton.icon(
-            onPressed: () => unawaited(onSteer()),
+            onPressed: canStart ? () => unawaited(onStart()) : null,
             icon: const Icon(
               Icons.subdirectory_arrow_left,
               size: MotifIconSize.sm,
             ),
-            label: const Text('Steer'),
+            label: const Text('Run now'),
           ),
           IconButton(
             tooltip: 'Delete queued message',
-            onPressed: onDelete,
+            onPressed: busy ? null : () => unawaited(onDelete()),
             icon: const Icon(Icons.delete_outline, size: MotifIconSize.md),
           ),
           PopupMenuButton<String>(
             tooltip: 'Message actions',
+            enabled: !busy,
             onSelected: (value) {
               if (value == 'edit') onEdit();
+              if (value == 'up') unawaited(onMoveUp!());
+              if (value == 'down') unawaited(onMoveDown!());
               if (value == 'queueing') onQueueingChanged(!queueing);
             },
             itemBuilder: (_) => [
               const PopupMenuItem(value: 'edit', child: Text('Edit message')),
+              PopupMenuItem(
+                value: 'up',
+                enabled: onMoveUp != null,
+                child: const Text('Move up'),
+              ),
+              PopupMenuItem(
+                value: 'down',
+                enabled: onMoveDown != null,
+                child: const Text('Move down'),
+              ),
               PopupMenuItem(
                 value: 'queueing',
                 child: Text(
@@ -3007,6 +3173,10 @@ class _Composer extends StatelessWidget {
                       ? state.goal == null
                             ? 'Describe your goal'
                             : 'Update your goal'
+                      : state.queueMessagesWhileActive &&
+                            (turnActive ||
+                                state.projectedExternalActiveTurn != null)
+                      ? 'Queue a message for the next turn'
                       : 'Do anything',
                   border: const OutlineInputBorder(
                     borderRadius: BorderRadius.all(
@@ -3058,8 +3228,13 @@ class _Composer extends StatelessWidget {
                       ? 'Stop turn'
                       : state.goalModeEnabled
                       ? 'Save goal'
+                      : state.queueMessagesWhileActive &&
+                            (turnActive ||
+                                state.projectedExternalActiveTurn != null)
+                      ? 'Queue message'
                       : 'Send',
-                  onPressed: state.sending || state.goalLoading
+                  onPressed:
+                      state.sending || state.goalLoading || state.queueBusy
                       ? null
                       : stopActiveTurn
                       ? state.interruptActiveTurn
@@ -3296,6 +3471,9 @@ class _ComposerAddButton extends StatelessWidget {
         if (value == 'file') unawaited(onAddFiles());
         if (value == 'goal') onToggleGoal();
         if (value == 'plan') onTogglePlan();
+        if (value == 'queue') {
+          state.setQueueing(!state.queueMessagesWhileActive);
+        }
         if (value.startsWith('plugin:')) {
           final index = int.tryParse(value.substring('plugin:'.length));
           if (index != null && index < state.plugins.length) {
@@ -3350,6 +3528,17 @@ class _ComposerAddButton extends StatelessWidget {
             selected: state.planModeEnabled,
           ),
         ),
+        if (state.supportsMessageQueue)
+          PopupMenuItem(
+            key: const ValueKey('codex-toggle-queue'),
+            value: 'queue',
+            child: _ComposerMenuRow(
+              icon: Icons.low_priority_rounded,
+              label: 'Queue messages',
+              description: 'Send new messages after the current turn',
+              selected: state.queueMessagesWhileActive,
+            ),
+          ),
         const PopupMenuItem(enabled: false, child: Text('Plugins')),
         if (state.plugins.isEmpty)
           const PopupMenuItem(

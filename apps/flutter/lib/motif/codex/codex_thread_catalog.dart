@@ -1,140 +1,9 @@
-import 'dart:convert';
-
 import 'protocol/generated/codex_app_server_protocol.dart';
-
-final class CodexLocalProject {
-  const CodexLocalProject({
-    required this.id,
-    required this.name,
-    required this.rootPaths,
-    this.updatedAt,
-  });
-
-  final String id;
-  final String name;
-  final List<String> rootPaths;
-  final DateTime? updatedAt;
-}
-
-final class CodexThreadProjectAssignment {
-  const CodexThreadProjectAssignment({required this.projectId, this.cwd});
-
-  final String projectId;
-  final String? cwd;
-}
-
-/// Tolerant projection of the private Codex global state fields used by the
-/// sidebar. Unknown and malformed fields are ignored.
-final class CodexGlobalStateData {
-  const CodexGlobalStateData({
-    required this.projects,
-    required this.projectOrder,
-    required this.pinnedThreadIds,
-    required this.projectlessThreadIds,
-    required this.assignments,
-    required this.projectThreadOrders,
-    this.selectedProjectId,
-  });
-
-  final Map<String, CodexLocalProject> projects;
-  final List<String> projectOrder;
-  final List<String> pinnedThreadIds;
-  final List<String> projectlessThreadIds;
-  final Map<String, CodexThreadProjectAssignment> assignments;
-  final Map<String, List<String>> projectThreadOrders;
-  final String? selectedProjectId;
-
-  static CodexGlobalStateData? tryParse(String source) {
-    try {
-      final decoded = jsonDecode(source);
-      if (decoded is! Map) return null;
-      final root = decoded.cast<String, Object?>();
-      final rawProjects = root['local-projects'];
-      if (rawProjects is! Map) return null;
-
-      final projects = <String, CodexLocalProject>{};
-      for (final entry in rawProjects.entries) {
-        final value = entry.value;
-        if (value is! Map) continue;
-        final map = value.cast<Object?, Object?>();
-        final id = _string(map['id']) ?? _string(entry.key);
-        if (id == null || id.isEmpty) continue;
-        final roots = _stringList(map['rootPaths']);
-        final name = _string(map['name'])?.trim();
-        projects[id] = CodexLocalProject(
-          id: id,
-          name: name?.isNotEmpty == true
-              ? name!
-              : roots.isNotEmpty
-              ? codexPathBasename(roots.first)
-              : id,
-          rootPaths: roots,
-          updatedAt: _dateTime(map['updatedAt']),
-        );
-      }
-
-      final assignments = <String, CodexThreadProjectAssignment>{};
-      final rawAssignments = root['thread-project-assignments'];
-      if (rawAssignments is Map) {
-        for (final entry in rawAssignments.entries) {
-          final threadId = _string(entry.key);
-          final value = entry.value;
-          if (threadId == null || value is! Map) continue;
-          final map = value.cast<Object?, Object?>();
-          if (_string(map['projectKind']) != 'local') continue;
-          final projectId = _string(map['projectId']);
-          if (projectId == null || !projects.containsKey(projectId)) continue;
-          assignments[threadId] = CodexThreadProjectAssignment(
-            projectId: projectId,
-            cwd: _string(map['cwd']),
-          );
-        }
-      }
-
-      final projectThreadOrders = <String, List<String>>{};
-      final rawOrders = root['sidebar-project-thread-orders'];
-      if (rawOrders is Map) {
-        for (final entry in rawOrders.entries) {
-          final projectId = _string(entry.key);
-          final value = entry.value;
-          if (projectId == null || value is! Map) continue;
-          final threadIds = _stringList(
-            value.cast<Object?, Object?>()['threadIds'],
-          );
-          projectThreadOrders[projectId] = threadIds;
-        }
-      }
-
-      String? selectedProjectId;
-      final selected = root['selected-project'];
-      if (selected is Map) {
-        selectedProjectId = _string(
-          selected.cast<Object?, Object?>()['projectId'],
-        );
-      } else {
-        selectedProjectId = _string(selected);
-      }
-      if (!projects.containsKey(selectedProjectId)) selectedProjectId = null;
-
-      return CodexGlobalStateData(
-        projects: Map.unmodifiable(projects),
-        projectOrder: _stringList(root['project-order']),
-        pinnedThreadIds: _stringList(root['pinned-thread-ids']),
-        projectlessThreadIds: _stringList(root['projectless-thread-ids']),
-        assignments: Map.unmodifiable(assignments),
-        projectThreadOrders: Map.unmodifiable(projectThreadOrders),
-        selectedProjectId: selectedProjectId,
-      );
-    } catch (_) {
-      return null;
-    }
-  }
-}
 
 final class CodexProjectGroup {
   const CodexProjectGroup({required this.project, required this.threads});
 
-  final CodexLocalProject project;
+  final CodexProject project;
   final List<CodexThread> threads;
 }
 
@@ -147,7 +16,6 @@ final class CodexCatalogSnapshot {
     required this.pinnedThreadIds,
     required this.projectNamesByThreadId,
     required this.selectedProjectId,
-    required this.usesGlobalState,
   });
 
   const CodexCatalogSnapshot.empty()
@@ -157,8 +25,7 @@ final class CodexCatalogSnapshot {
       projectlessThreads = const [],
       pinnedThreadIds = const {},
       projectNamesByThreadId = const {},
-      selectedProjectId = null,
-      usesGlobalState = false;
+      selectedProjectId = null;
 
   final List<CodexThread> allThreads;
   final List<CodexThread> pinnedThreads;
@@ -167,7 +34,6 @@ final class CodexCatalogSnapshot {
   final Set<String> pinnedThreadIds;
   final Map<String, String> projectNamesByThreadId;
   final String? selectedProjectId;
-  final bool usesGlobalState;
 
   bool isPinned(String threadId) => pinnedThreadIds.contains(threadId);
 
@@ -175,167 +41,64 @@ final class CodexCatalogSnapshot {
       projectNamesByThreadId[threadId];
 }
 
+/// Project identity and ordering come exclusively from app-server.
 CodexCatalogSnapshot buildCodexCatalog(
   Iterable<CodexThread> source,
-  CodexGlobalStateData? globalState, {
+  Iterable<CodexProject> projects, {
+  Iterable<String> pinnedThreadIds = const [],
+  String? selectedProjectId,
   Map<String, String?> insertBeforeByThreadId = const {},
 }) {
-  final unique = <String, CodexThread>{};
-  for (final thread in source) {
-    if (!thread.ephemeral) unique[thread.id] = thread;
-  }
-  final threads = unique.values.toList()..sort(compareCodexThreadsByRecency);
-  if (globalState == null) {
-    return _buildCwdCatalog(
-      threads,
-      insertBeforeByThreadId: insertBeforeByThreadId,
-    );
-  }
-
-  final byId = {for (final thread in threads) thread.id: thread};
-  final pinnedThreads = <CodexThread>[];
-  final pinnedIds = <String>{};
-  for (final id in globalState.pinnedThreadIds) {
-    final thread = byId[id];
-    if (thread != null && pinnedIds.add(id)) pinnedThreads.add(thread);
-  }
-
-  final orderedProjectIds = <String>[];
-  final seenProjects = <String>{};
-  for (final id in globalState.projectOrder) {
-    if (globalState.projects.containsKey(id) && seenProjects.add(id)) {
-      orderedProjectIds.add(id);
-    }
-  }
-  final remainingProjects =
-      globalState.projects.values
-          .where((project) => !seenProjects.contains(project.id))
-          .toList()
-        ..sort((a, b) {
-          final updated = (b.updatedAt?.millisecondsSinceEpoch ?? 0).compareTo(
-            a.updatedAt?.millisecondsSinceEpoch ?? 0,
-          );
-          return updated != 0
-              ? updated
-              : a.name.toLowerCase().compareTo(b.name.toLowerCase());
-        });
-  orderedProjectIds.addAll(remainingProjects.map((project) => project.id));
-
-  final projectThreads = <String, List<CodexThread>>{
-    for (final id in orderedProjectIds) id: <CodexThread>[],
+  final unique = <String, CodexThread>{
+    for (final thread in source)
+      if (!thread.ephemeral) thread.id: thread,
   };
-  final projectIdByRootPath = <String, String>{};
-  for (final projectId in orderedProjectIds) {
-    for (final rootPath in globalState.projects[projectId]!.rootPaths) {
-      final normalized = rootPath.trim();
-      if (normalized.isNotEmpty) {
-        projectIdByRootPath.putIfAbsent(normalized, () => projectId);
-      }
-    }
-  }
-  final projectNamesByThreadId = <String, String>{};
+  final threads = unique.values.toList()..sort(compareCodexThreadsByRecency);
+  final orderedProjects = projects.toList()
+    ..sort((a, b) {
+      final position = a.position.compareTo(b.position);
+      return position != 0 ? position : a.id.compareTo(b.id);
+    });
+  final byProject = {
+    for (final project in orderedProjects) project.id: project,
+  };
+  final members = {
+    for (final project in orderedProjects) project.id: <CodexThread>[],
+  };
+  final pinnedIds = pinnedThreadIds.where(unique.containsKey).toSet();
+  final pinned = [for (final id in pinnedIds) unique[id]!];
   final projectless = <CodexThread>[];
-  final explicitProjectless = globalState.projectlessThreadIds.toSet();
+  final names = <String, String>{};
   for (final thread in threads) {
-    final assignment = globalState.assignments[thread.id];
-    final assignedProject = assignment == null
-        ? null
-        : globalState.projects[assignment.projectId];
-    final inferredProjectId = projectIdByRootPath[thread.cwd.value.trim()];
-    final project = explicitProjectless.contains(thread.id)
-        ? null
-        : assignedProject ??
-              (inferredProjectId == null
-                  ? null
-                  : globalState.projects[inferredProjectId]);
-    if (project != null) {
-      projectNamesByThreadId[thread.id] = project.name;
-    }
+    final project = byProject[thread.projectId];
+    if (project != null) names[thread.id] = project.name;
     if (pinnedIds.contains(thread.id)) continue;
     if (project == null) {
       projectless.add(thread);
     } else {
-      projectThreads[project.id]!.add(thread);
+      members[project.id]!.add(thread);
     }
   }
-
-  final groups = <CodexProjectGroup>[];
-  for (final projectId in orderedProjectIds) {
-    final project = globalState.projects[projectId]!;
-    final members = projectThreads[projectId]!
-      ..sort(compareCodexThreadsByRecency);
-    groups.add(
-      CodexProjectGroup(project: project, threads: List.unmodifiable(members)),
-    );
-  }
-  projectless.sort(compareCodexThreadsByRecency);
-
   return CodexCatalogSnapshot(
     allThreads: List.unmodifiable(threads),
     pinnedThreads: List.unmodifiable(
-      _applyThreadPlacements(pinnedThreads, insertBeforeByThreadId),
+      _applyThreadPlacements(pinned, insertBeforeByThreadId),
     ),
-    projects: List.unmodifiable(groups),
+    projects: List.unmodifiable([
+      for (final project in orderedProjects)
+        CodexProjectGroup(
+          project: project,
+          threads: List.unmodifiable(members[project.id]!),
+        ),
+    ]),
     projectlessThreads: List.unmodifiable(
       _applyThreadPlacements(projectless, insertBeforeByThreadId),
     ),
     pinnedThreadIds: Set.unmodifiable(pinnedIds),
-    projectNamesByThreadId: Map.unmodifiable(projectNamesByThreadId),
-    selectedProjectId: globalState.selectedProjectId,
-    usesGlobalState: true,
-  );
-}
-
-CodexCatalogSnapshot _buildCwdCatalog(
-  List<CodexThread> threads, {
-  required Map<String, String?> insertBeforeByThreadId,
-}) {
-  final grouped = <String, List<CodexThread>>{};
-  final projectless = <CodexThread>[];
-  final projectNamesByThreadId = <String, String>{};
-  for (final thread in threads) {
-    final cwd = thread.cwd.value.trim();
-    if (cwd.isEmpty) {
-      projectless.add(thread);
-      continue;
-    }
-    grouped.putIfAbsent(cwd, () => []).add(thread);
-    projectNamesByThreadId[thread.id] = codexPathBasename(cwd);
-  }
-  final groups =
-      grouped.entries.map((entry) {
-        final members = entry.value..sort(compareCodexThreadsByRecency);
-        return CodexProjectGroup(
-          project: CodexLocalProject(
-            id: 'cwd:${entry.key}',
-            name: codexPathBasename(entry.key),
-            rootPaths: [entry.key],
-          ),
-          threads: List.unmodifiable(members),
-        );
-      }).toList()..sort((a, b) {
-        final recency = compareCodexThreadsByRecency(
-          a.threads.first,
-          b.threads.first,
-        );
-        return recency != 0
-            ? recency
-            : a.project.name.toLowerCase().compareTo(
-                b.project.name.toLowerCase(),
-              );
-      });
-
-  return CodexCatalogSnapshot(
-    allThreads: List.unmodifiable(threads),
-    pinnedThreads: const [],
-    projects: List.unmodifiable(groups),
-    projectlessThreads: List.unmodifiable(
-      _applyThreadPlacements(projectless, insertBeforeByThreadId),
-    ),
-    pinnedThreadIds: const {},
-    projectNamesByThreadId: Map.unmodifiable(projectNamesByThreadId),
-    selectedProjectId: null,
-    usesGlobalState: false,
+    projectNamesByThreadId: Map.unmodifiable(names),
+    selectedProjectId: byProject.containsKey(selectedProjectId)
+        ? selectedProjectId
+        : null,
   );
 }
 
@@ -486,20 +249,4 @@ CodexThread codexThreadWithPreview(CodexThread thread, String preview) {
 CodexThread codexThreadWithTurns(CodexThread thread, List<CodexTurn> turns) {
   final json = thread.toJson()..['turns'] = CodexJson.encode(turns);
   return CodexThread.fromJson(json);
-}
-
-String? _string(Object? value) => value is String ? value : null;
-
-List<String> _stringList(Object? value) => value is List
-    ? value.whereType<String>().toList(growable: false)
-    : const [];
-
-DateTime? _dateTime(Object? value) {
-  if (value is String) return DateTime.tryParse(value);
-  if (value is num) {
-    final raw = value.toInt();
-    final milliseconds = raw.abs() < 100000000000 ? raw * 1000 : raw;
-    return DateTime.fromMillisecondsSinceEpoch(milliseconds);
-  }
-  return null;
 }

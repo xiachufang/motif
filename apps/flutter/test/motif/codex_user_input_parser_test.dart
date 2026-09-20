@@ -3,6 +3,17 @@ import 'package:motif/motif/codex/codex_user_input_parser.dart';
 import 'package:motif/motif/codex/protocol/generated/codex_app_server_protocol.dart';
 
 void main() {
+  test('image URL and file-id alternatives survive protocol decoding', () {
+    for (final field in ['url', 'fileId']) {
+      final json = <String, Object?>{'type': 'image', field: 'image-value'};
+      expect(CodexUserInput.fromJson(json).toJson(), json);
+    }
+    expect(
+      () => CodexUserInput.fromJson({'type': 'image'}),
+      throwsFormatException,
+    );
+  });
+
   const parser = CodexUserInputParser();
 
   test('extracts the request from the injected attachment prompt', () {

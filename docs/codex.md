@@ -95,6 +95,31 @@ Thread 与工作目录都在运行 `motifd` 的主机上。切换手机、平板
 重新打开同一个 server 即可继续已有 Thread；关闭 Motif 客户端不会停止正在运行的
 服务端任务。
 
+项目列表直接通过 App Server 的实验性 `project/list` 接口分页读取，保留服务端的
+名称、多目录 roots 和项目顺序。Thread 仅按服务端返回的 `projectId` 归组；没有归属的
+Thread 显示在项目外，不再根据 `cwd` 推导项目，也不读取桌面私有配置里的项目定义、
+归属或选中项目。新建项目内 Thread 会向 `thread/start` 传递 `projectId`；Fork 使用
+服务端返回的归属。`project/changed` 和 `thread/project/updated` 通知用于刷新项目与归属。
+
+服务端需要支持这些接口（当前协议由桌面 App 内置的 `0.155.0-alpha.9.2` 生成）。
+不支持 `project/list` 时会显示加载错误，不再回退到目录分组。历史 Thread 如果尚无
+服务端 `projectId`，会显示在项目外；Motif 不会自动猜测或改写它们的归属。置顶顺序仍单独读取
+桌面偏好中的 `pinned-thread-ids`，因为当前协议没有对应字段；它不参与项目归属判断。
+
+### 服务端消息队列
+
+在输入框的 **Add → Queue messages** 中开启排队后，执行中的新消息通过
+`thread/queue/add` 保存到服务端。附件先上传，再以协议输入与消息一起入队。
+队列在重新打开对话、重连和 `thread/queue/changed` 通知时分页读取；只读对话也会随现有轮询刷新。
+
+队列卡片支持删除、编辑文字、上下移动和空闲时 **Run now**；编辑会保留非文字输入
+（图片、技能、插件引用等）。自动执行由 App Server 在 Thread 空闲时调度，Motif
+不再在 turn 完成后重复调用 `turn/start`。手动停止后的待执行消息仍可通过 Run now
+启动。关闭排队选项只改变新消息的发送方式，不会删除或暂停已保存的队列。
+
+在其他客户端运行的 Thread 也可以通过 **Queue a message** 排队。临时 Side Chat
+不支持这个持久队列。服务端不支持队列接口或请求失败时会显示错误，不会退回本地队列。
+
 ## 4. Side Chat
 
 **Side Chat** 用于在不改写主 Thread 对话的前提下探索一个旁支问题，例如验证发布

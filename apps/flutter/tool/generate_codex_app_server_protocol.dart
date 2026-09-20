@@ -324,8 +324,21 @@ final class _Generator {
     String? extendsName,
     Map<String, String> literals = const {},
   }) {
-    final properties = _map(schema['properties']);
+    final properties = Map<String, Object?>.of(_map(schema['properties']));
     final required = _strings(schema['required']).toSet();
+    // Flatten inline object alternatives without discarding their payload fields
+    // (for example image inputs containing either url or fileId).
+    final alternatives = _unionChoices(schema);
+    if (alternatives != null && alternatives.every(_isObjectSchema)) {
+      for (final alternative in alternatives) {
+        properties.addAll(_map(alternative['properties']));
+      }
+      final commonRequired = _strings(alternatives.first['required']).toSet();
+      for (final alternative in alternatives.skip(1)) {
+        commonRequired.retainAll(_strings(alternative['required']));
+      }
+      required.addAll(commonRequired);
+    }
     final fields = <_Field>[];
     final usedFields = <String>{};
     for (final entry in properties.entries) {
@@ -375,6 +388,19 @@ final class _Generator {
     out
       ..writeln('  factory $name.fromJson(Object? json) {')
       ..writeln("    final map = CodexJson.asMap(json, '$name');");
+    if (alternatives != null && alternatives.every(_isObjectSchema)) {
+      final checks = alternatives
+          .map((alternative) {
+            final keys = _strings(alternative['required']);
+            return keys.isEmpty
+                ? 'true'
+                : '(${keys.map((key) => "map[${_q(key)}] != null").join(' && ')})';
+          })
+          .join(' || ');
+      out.writeln(
+        "    if (!($checks)) { throw FormatException('Missing alternative fields for $name'); }",
+      );
+    }
     for (final literal in literals.entries) {
       out
         ..writeln("    if (map[${_q(literal.key)}] != ${_q(literal.value)}) {")
