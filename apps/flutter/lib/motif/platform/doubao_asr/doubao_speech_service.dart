@@ -15,10 +15,13 @@ import 'asr_protocol.dart';
 import 'doubao_audio_frames.dart';
 import 'doubao_constants.dart';
 import 'doubao_credentials.dart';
+import 'doubao_session_config.dart';
+import 'doubao_transcript.dart';
 
 class DoubaoSpeechService implements SpeechService {
   _DoubaoASR? _asr;
   String _lastText = '';
+  Future<void> _operations = Future<void>.value();
 
   DoubaoSpeechService() {
     DoubaoCredentialStore.shared.warmup();
@@ -32,9 +35,17 @@ class DoubaoSpeechService implements SpeechService {
     required void Function(String partial) onPartial,
     void Function(double level)? onLevel,
     void Function(Object error)? onError,
+  }) => _serialize(
+    () => _start(onPartial: onPartial, onLevel: onLevel, onError: onError),
+  );
+
+  Future<void> _start({
+    required void Function(String partial) onPartial,
+    void Function(double level)? onLevel,
+    void Function(Object error)? onError,
   }) async {
     if (_asr != null) {
-      await stop();
+      await _stop();
     }
     _lastText = '';
     final asr = _DoubaoASR(
@@ -55,7 +66,20 @@ class DoubaoSpeechService implements SpeechService {
   }
 
   @override
-  Future<String> stop() async {
+  Future<String> stop() => _serialize(_stop);
+
+  // Keep the next session behind final recognition and socket shutdown. This
+  // also makes stop during startup wait for the handshake before finalizing.
+  Future<T> _serialize<T>(Future<T> Function() operation) {
+    final result = _operations.then((_) => operation());
+    _operations = result.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return result;
+  }
+
+  Future<String> _stop() async {
     final asr = _asr;
     if (asr == null) return _lastText;
     _asr = null;
@@ -99,8 +123,8 @@ class _DoubaoASR {
   bool _sessionFailed = false;
   bool _errorDelivered = false;
 
-  final List<String> _committedSegments = <String>[];
-  String _currentInterim = '';
+  final DoubaoTranscriptAssembler _transcript = DoubaoTranscriptAssembler();
+  Uint8List? _lastOpusFrame;
 
   Future<void> _flushFuture = Future<void>.value();
   Completer<void>? _finishedCompleter;
@@ -112,8 +136,8 @@ class _DoubaoASR {
     _isRunning = true;
     _isFinalizing = false;
     _requestId = _uuidV4();
-    _committedSegments.clear();
-    _currentInterim = '';
+    _transcript.reset();
+    _lastOpusFrame = null;
     _pcmBuffer.clear();
     _audioFrameClock.reset();
     _didSendFirstFrame = false;
@@ -167,16 +191,17 @@ class _DoubaoASR {
       if (!_sessionFailed) {
         try {
           await _flushAndSendLastFrame();
-          await _sendFinishSession();
+          if (!_sessionFailed) await _sendFinishSession();
         } catch (error) {
           _deliverError(error);
+          _signalFinished();
         }
       }
 
       final finished = _finishedCompleter?.future;
       if (finished != null) {
         await finished.timeout(
-          const Duration(milliseconds: 2500),
+          DoubaoConstants.finalResultTimeout,
           onTimeout: () {},
         );
       }
@@ -352,25 +377,8 @@ class _DoubaoASR {
     DoubaoCredentialStore.shared.reset().ignore();
   }
 
-  String _sessionConfigJson(String deviceId) {
-    return jsonEncode({
-      'audio_info': {
-        'channel': DoubaoConstants.channels,
-        'format': 'speech_opus',
-        'sample_rate': DoubaoConstants.sampleRate,
-      },
-      'enable_punctuation': true,
-      'enable_speech_rejection': false,
-      'extra': {
-        'app_name': 'com.android.chrome',
-        'cell_compress_rate': 8,
-        'did': deviceId,
-        'enable_asr_threepass': true,
-        'enable_asr_twopass': true,
-        'input_mode': 'tool',
-      },
-    });
-  }
+  String _sessionConfigJson(String deviceId) =>
+      jsonEncode(doubaoSessionConfig(deviceId));
 
   Future<AsrResponse> _waitForResponse(
     Duration timeout,
@@ -457,34 +465,9 @@ class _DoubaoASR {
 
     if (response.resultJson.isEmpty) return;
     final root = jsonDecode(response.resultJson) as Map<String, Object?>;
-    final results = root['results'];
-    if (results is! List || results.isEmpty) return;
-
-    var text = '';
-    var isInterim = true;
-    var vadFinished = false;
-    var nonstreamResult = false;
-    for (final item in results) {
-      if (item is! Map) continue;
-      final result = item.cast<String, Object?>();
-      final resultText = result['text'];
-      if (resultText is String && resultText.isNotEmpty) text = resultText;
-      if (result['is_interim'] == false) isInterim = false;
-      if (result['is_vad_finished'] == true) vadFinished = true;
-      final extra = result['extra'];
-      if (extra is Map && extra['nonstream_result'] == true) {
-        nonstreamResult = true;
-      }
-    }
-
-    if (text.isEmpty) return;
-    if ((!isInterim && vadFinished) || nonstreamResult) {
-      _committedSegments.add(text);
-      _currentInterim = '';
-    } else {
-      _currentInterim = text;
-    }
-    onPartial(_assembledText());
+    final result = DoubaoRecognitionResult.parse(root);
+    if (result == null || result.segments.isEmpty) return;
+    onPartial(_transcript.update(result));
   }
 
   void _appendAndDrainPcm(Uint8List data) {
@@ -510,7 +493,7 @@ class _DoubaoASR {
 
   Future<void> _flushPendingFrames() async {
     if (!_canSendAudio) return;
-    while (true) {
+    while (_canSendAudio && !_sessionFailed) {
       final frame = _pcmBuffer.takeFullFrame();
       if (frame == null) break;
       final state = _didSendFirstFrame ? FrameState.middle : FrameState.first;
@@ -520,32 +503,33 @@ class _DoubaoASR {
   }
 
   Future<void> _flushAndSendLastFrame() async {
-    const frameSize = DoubaoConstants.bytesPerFrame;
-
-    // A recorder callback may contain several 20 ms frames. Drain every full
-    // frame instead of keeping only the first one and clearing the rest.
-    while (true) {
-      final frame = _pcmBuffer.takeFullFrame();
-      if (frame == null) break;
+    // Match Douvo: preserve all microphone bytes, pad the final frame, and
+    // send 500 ms of Opus silence before marking the final packet.
+    for (final frame in _pcmBuffer.drainWithSilence(
+      silenceFrames: DoubaoConstants.tailSilenceFrames,
+    )) {
+      if (_sessionFailed) return;
       final state = _didSendFirstFrame ? FrameState.middle : FrameState.first;
       await _encodeAndSend(frame, state);
       _didSendFirstFrame = true;
     }
-
-    final lastFrame = _pcmBuffer.takePaddedRemainder();
-    if (lastFrame == null) {
-      if (_didSendFirstFrame) {
-        await _encodeAndSend(Uint8List(frameSize), FrameState.last);
-      }
-      return;
+    final finalPacket = _lastOpusFrame;
+    if (finalPacket != null && !_sessionFailed) {
+      // Reuse the last encoded silence packet, as Douvo does. The LAST frame
+      // must contain valid Opus, not raw PCM or an empty byte array.
+      await _sendOpusFrame(finalPacket, FrameState.last);
     }
-    await _encodeAndSend(lastFrame, FrameState.last);
   }
 
   Future<void> _encodeAndSend(Uint8List pcmFrame, FrameState state) async {
     final encoder = _encoder;
     if (encoder == null) return;
     final opusFrame = encoder.encode(input: _pcmFrameToSamples(pcmFrame));
+    _lastOpusFrame = opusFrame;
+    await _sendOpusFrame(opusFrame, state);
+  }
+
+  Future<void> _sendOpusFrame(Uint8List opusFrame, FrameState state) async {
     final timestampMs = _audioFrameClock.nextTimestampMs(
       DateTime.now().millisecondsSinceEpoch,
     );
@@ -614,7 +598,7 @@ class _DoubaoASR {
     return samples;
   }
 
-  String _assembledText() => _committedSegments.join() + _currentInterim;
+  String _assembledText() => _transcript.text;
 
   void _signalFinished() {
     final completer = _finishedCompleter;

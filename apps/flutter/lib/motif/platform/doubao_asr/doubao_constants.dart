@@ -42,4 +42,7 @@ class DoubaoConstants {
   static const frameDurationMs = 20;
   static const samplesPerFrame = sampleRate * frameDurationMs ~/ 1000;
   static const bytesPerFrame = samplesPerFrame * 2;
+  // Douvo appends 500 ms of encoded silence before the final Opus packet.
+  static const tailSilenceFrames = 25;
+  static const finalResultTimeout = Duration(seconds: 12);
 }

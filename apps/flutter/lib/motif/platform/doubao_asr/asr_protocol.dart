@@ -120,7 +120,12 @@ class AsrMessageBuilder {
     return (AsrRequest()
           ..serviceName = 'ASR'
           ..methodName = 'TaskRequest'
-          ..payload = '{"extra":{},"timestamp_ms":$timestampMs}'
+          ..payload = jsonEncode({
+            'extra': frameState == FrameState.last
+                ? {'finish_audio': true, 'force_asr_twopass': true}
+                : <String, Object>{},
+            'timestamp_ms': timestampMs,
+          })
           ..audioData = audio
           ..requestId = requestId
           ..frameState = frameState)

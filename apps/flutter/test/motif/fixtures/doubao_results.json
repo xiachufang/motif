@@ -1,0 +1,296 @@
+[
+  {
+    "name": "testParserJoinsLegacySegmentedResults",
+    "frames": [
+      {
+        "results": [
+          {
+            "text": "我发现诊断页它有一个选择 backend 的地方",
+            "is_interim": true
+          },
+          {
+            "text": "然后下拉菜单里的 checkmark 可以放在右边吗",
+            "is_interim": true
+          },
+          {
+            "text": "G 你可以叫 model",
+            "is_interim": true
+          }
+        ]
+      }
+    ],
+    "expected": "我发现诊断页它有一个选择 backend 的地方然后下拉菜单里的 checkmark 可以放在右边吗 G 你可以叫 model",
+    "assemble": false
+  },
+  {
+    "name": "testParserUsesCumulativeResultWithoutAppendingSentenceDetails",
+    "frames": [
+      {
+        "results": [
+          {
+            "text": "今天天气真不错。我们",
+            "start_time": 0,
+            "end_time": 7020,
+            "is_interim": true
+          },
+          {
+            "text": "今天天气真不错。",
+            "start_time": 0,
+            "end_time": 2500,
+            "is_interim": false,
+            "stream_asr_finish": true,
+            "extra": {
+              "nonstream_result": true
+            }
+          },
+          {
+            "text": "我们",
+            "start_time": 6520,
+            "end_time": 7020,
+            "is_interim": true,
+            "stream_asr_finish": false
+          }
+        ]
+      }
+    ],
+    "expected": "今天天气真不错。我们",
+    "assemble": false
+  },
+  {
+    "name": "testAssemblerSwitchesToCumulativeSnapshotsAfterDetailedFrame",
+    "frames": [
+      {
+        "results": [
+          {
+            "text": "今天天气真不错。",
+            "start_time": 0,
+            "end_time": 2500,
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "text": "今天天气真不错。我们",
+            "start_time": 0,
+            "end_time": 7020,
+            "is_interim": true
+          },
+          {
+            "text": "今天天气真不错。",
+            "start_time": 0,
+            "end_time": 2500,
+            "is_interim": false,
+            "stream_asr_finish": true,
+            "extra": {
+              "nonstream_result": true
+            }
+          },
+          {
+            "text": "我们",
+            "start_time": 6520,
+            "end_time": 7020,
+            "is_interim": true,
+            "stream_asr_finish": false
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "text": "今天天气不错，我们。",
+            "start_time": 0,
+            "end_time": 7200,
+            "is_interim": false,
+            "is_vad_finished": true
+          }
+        ]
+      }
+    ],
+    "expected": "今天天气不错，我们。",
+    "assemble": true
+  },
+  {
+    "name": "testParserMarksNonstreamResultAsFinal",
+    "frames": [
+      {
+        "results": [
+          {
+            "text": "测试测试。",
+            "is_interim": false,
+            "is_vad_finished": true,
+            "extra": {
+              "nonstream_result": true
+            }
+          }
+        ]
+      }
+    ],
+    "expected": "测试测试。",
+    "assemble": false
+  },
+  {
+    "name": "testParserMarksLastPostProcessSnapshotFinalWithoutVADFlag",
+    "frames": [
+      {
+        "results": [
+          {
+            "text": "今天这个方案已经确定了，我们明天开始实施。",
+            "start_time": 0,
+            "end_time": 5.74,
+            "is_interim": false
+          }
+        ]
+      }
+    ],
+    "expected": "今天这个方案已经确定了，我们明天开始实施。",
+    "assemble": false
+  },
+  {
+    "name": "testAssemblerReplacesSameIndexedSegmentInsteadOfAppendingDuplicate",
+    "frames": [
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 0,
+            "end_time": 1000,
+            "text": "后一段 manage 这边也要做安全网",
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 0,
+            "end_time": 1400,
+            "text": "后一段 manager 这边也要做安全网 transcription manager",
+            "is_interim": true
+          }
+        ]
+      }
+    ],
+    "expected": "后一段 manager 这边也要做安全网 transcription manager",
+    "assemble": true
+  },
+  {
+    "name": "testAssemblerKeepsSameIndexSegmentsWithDifferentStartTimes",
+    "frames": [
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 0,
+            "end_time": 36,
+            "text": "普通用户基本用不到 replace 正常打开 APP 会直接进 UI",
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 36,
+            "end_time": 84,
+            "text": "前和现在的修正结果也不是普通录音流程的一部分",
+            "is_interim": false,
+            "is_vad_finished": true
+          }
+        ]
+      }
+    ],
+    "expected": "普通用户基本用不到 replace 正常打开 APP 会直接进 UI 前和现在的修正结果也不是普通录音流程的一部分",
+    "assemble": true
+  },
+  {
+    "name": "testAssemblerCoalescesOverlappingSameIndexTimeWindows",
+    "frames": [
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 20,
+            "end_time": 73,
+            "text": "到的是 logs Douvel Replay 用途是重新跑 correction",
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 22,
+            "end_time": 73,
+            "text": "到的是 logs Douvel Replay 用途是重新跑 correction 对比之前和现在的修正结果",
+            "is_interim": true
+          }
+        ]
+      }
+    ],
+    "expected": "到的是 logs Douvel Replay 用途是重新跑 correction 对比之前和现在的修正结果",
+    "assemble": true
+  },
+  {
+    "name": "testAssemblerMergesSlidingActiveWindowInsteadOfKeepingShorterOlderText",
+    "frames": [
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 18,
+            "end_time": 73,
+            "text": "active segment 是当前 ASR 还在重写的候选内容 final 是同",
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 36,
+            "end_time": 101,
+            "text": "final 是同一窗口时确认 active 后提交 后续窗口会先提交旧 active",
+            "is_interim": true
+          }
+        ]
+      }
+    ],
+    "expected": "active segment 是当前 ASR 还在重写的候选内容 final 是同一窗口时确认 active 后提交 后续窗口会先提交旧 active",
+    "assemble": true
+  },
+  {
+    "name": "testAssemblerCommitsAdjacentWindowsInStreamingOrder",
+    "frames": [
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 0,
+            "end_time": 1000,
+            "text": "第一段",
+            "is_interim": true
+          }
+        ]
+      },
+      {
+        "results": [
+          {
+            "index": 0,
+            "start_time": 1000,
+            "end_time": 2000,
+            "text": "第二段",
+            "is_interim": true
+          }
+        ]
+      }
+    ],
+    "expected": "第一段第二段",
+    "assemble": true
+  }
+]

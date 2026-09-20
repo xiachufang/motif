@@ -35,6 +35,21 @@ class DoubaoPcmFrameBuffer {
     _bytes.clear();
     return frame;
   }
+
+  /// Drain all captured audio, pad its tail, then append Douvo's silence tail.
+  /// Even an aligned/empty buffer contributes one padded silence frame.
+  Iterable<Uint8List> drainWithSilence({required int silenceFrames}) sync* {
+    if (silenceFrames < 0) throw ArgumentError.value(silenceFrames);
+    while (true) {
+      final frame = takeFullFrame();
+      if (frame == null) break;
+      yield frame;
+    }
+    yield takePaddedRemainder() ?? Uint8List(frameSize);
+    for (var i = 0; i < silenceFrames; i++) {
+      yield Uint8List(frameSize);
+    }
+  }
 }
 
 /// Produces the 20 ms media timeline expected by the original Python client.

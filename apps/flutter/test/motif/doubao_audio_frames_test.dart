@@ -2,9 +2,31 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/doubao_asr/doubao_audio_frames.dart';
+import 'package:motif/motif/platform/doubao_asr/doubao_constants.dart';
 
 void main() {
   group('DoubaoPcmFrameBuffer', () {
+    for (final length in [0, 640, 641, 1922]) {
+      test(
+        'Douvo shutdown preserves $length bytes and adds its silence tail',
+        () {
+          final audio = List<int>.generate(length, (i) => (i % 255) + 1);
+          final buffer = DoubaoPcmFrameBuffer(frameSize: 640)..addAll(audio);
+          final frames = buffer
+              .drainWithSilence(
+                silenceFrames: DoubaoConstants.tailSilenceFrames,
+              )
+              .toList();
+          final bytes = frames.expand((frame) => frame).toList();
+          expect(bytes.take(length), audio);
+          expect(bytes.skip(length), everyElement(0));
+          expect(frames.length, length ~/ 640 + 1 + 25);
+          expect(frames.map((frame) => frame.length), everyElement(640));
+          expect(buffer.isEmpty, isTrue);
+        },
+      );
+    }
+
     test('drains every complete frame and preserves the padded tail', () {
       final buffer = DoubaoPcmFrameBuffer(frameSize: 4)
         ..addAll(Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
