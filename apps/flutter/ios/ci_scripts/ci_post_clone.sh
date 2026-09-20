@@ -49,6 +49,12 @@ export HOMEBREW_NO_INSTALL_CLEANUP=1
 
 retry brew install zig@0.16 go
 
+# Match the GitHub release workflows. Homebrew's moving Go version can break
+# libtailscale's experimental JSON dependency (Go 1.27 removed APIs it uses).
+# The installed go command downloads and runs this exact compiler as needed.
+export GOTOOLCHAIN=go1.25.5
+retry go version
+
 # The default execution directory of this script is the ci_scripts directory.
 # Xcode Cloud checks out the primary repository, but submodules are not
 # guaranteed to be populated. The Flutter native-asset hook builds libghostty-vt
