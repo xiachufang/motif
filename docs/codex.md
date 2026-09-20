@@ -96,14 +96,15 @@ Thread 与工作目录都在运行 `motifd` 的主机上。切换手机、平板
 服务端任务。
 
 项目列表直接通过 App Server 的实验性 `project/list` 接口分页读取，保留服务端的
-名称、多目录 roots 和项目顺序。Thread 仅按服务端返回的 `projectId` 归组；没有归属的
-Thread 显示在项目外，不再根据 `cwd` 推导项目，也不读取桌面私有配置里的项目定义、
-归属或选中项目。新建项目内 Thread 会向 `thread/start` 传递 `projectId`；Fork 使用
+名称、多目录 roots 和项目顺序。Thread 优先按服务端返回的 `projectId` 归组；尚无 ID 的
+历史对话按 `cwd` 匹配接口返回的项目根目录（优先最具体的根目录，共享根目录有歧义时不归组）。
+这仅影响显示，不改写服务端归属，也不读取桌面私有配置里的项目定义、归属或选中项目。
+新建项目内 Thread 会向 `thread/start` 传递 `projectId`；Fork 使用
 服务端返回的归属。`project/changed` 和 `thread/project/updated` 通知用于刷新项目与归属。
 
 服务端需要支持这些接口（当前协议由桌面 App 内置的 `0.155.0-alpha.9.2` 生成）。
-不支持 `project/list` 时会显示加载错误，不再回退到目录分组。历史 Thread 如果尚无
-服务端 `projectId`，会显示在项目外；Motif 不会自动猜测或改写它们的归属。置顶顺序仍单独读取
+不支持 `project/list` 时会显示加载错误，不根据目录创建项目。无法匹配项目的 Thread
+显示在项目外。置顶顺序仍单独读取
 桌面偏好中的 `pinned-thread-ids`，因为当前协议没有对应字段；它不参与项目归属判断。
 
 ### 服务端消息队列

@@ -35,7 +35,7 @@ void main() {
     },
   );
 
-  test('does not infer assignments from shared, exact, or nested roots', () {
+  test('shared roots remain ambiguous unless the server assigns a project', () {
     final snapshot = buildCodexCatalog(
       [
         thread('exact', cwd: '/work'),
@@ -48,6 +48,59 @@ void main() {
     expect(snapshot.projects.last.threads.single.id, 'assigned');
     expect(snapshot.projectlessThreads.map((t) => t.id), ['exact', 'nested']);
     expect(buildCodexCatalog([thread('cwd')], const []).projects, isEmpty);
+  });
+
+  test('groups threads without projectId using native project roots', () {
+    final snapshot = buildCodexCatalog(
+      [
+        thread('exact', cwd: '/work/'),
+        thread('nested', cwd: '/work/sub/task'),
+        thread('second-root', cwd: '/extra/task'),
+        thread('lookalike', cwd: '/work-other'),
+        thread('explicit', cwd: '/work/sub', projectId: 'main'),
+        thread('unknown-id', cwd: '/work', projectId: 'deleted'),
+        thread('pinned', cwd: '/extra'),
+      ],
+      [
+        project('main', roots: ['/work', '/extra', '/work']),
+        project('nested', roots: ['/work/sub']),
+      ],
+      pinnedThreadIds: ['pinned'],
+    );
+    expect(snapshot.projects.first.threads.map((t) => t.id), [
+      'exact',
+      'explicit',
+      'second-root',
+    ]);
+    expect(snapshot.projects.last.threads.single.id, 'nested');
+    expect(snapshot.projectlessThreads.map((t) => t.id), [
+      'lookalike',
+      'unknown-id',
+    ]);
+    expect(snapshot.projectNameForThread('pinned'), 'main');
+    expect(snapshot.pinnedThreads.single.id, 'pinned');
+    expect(
+      snapshot.allThreads.firstWhere((t) => t.id == 'exact').projectId,
+      isNull,
+    );
+  });
+
+  test('normalizes Windows roots without ignoring POSIX case', () {
+    final snapshot = buildCodexCatalog(
+      [
+        thread('windows', cwd: r'c:\Work\Motif\src'),
+        thread('unc', cwd: r'\\HOST\Share\Project\'),
+        thread('case-sensitive', cwd: '/Work/repo'),
+      ],
+      [
+        project('windows', roots: ['C:/work/motif/']),
+        project('unc', roots: ['//host/share/project']),
+        project('posix', roots: ['/work']),
+      ],
+    );
+    expect(snapshot.projectNameForThread('windows'), 'windows');
+    expect(snapshot.projectNameForThread('unc'), 'unc');
+    expect(snapshot.projectlessThreads.single.id, 'case-sensitive');
   });
 
   test(
@@ -184,10 +237,16 @@ CodexThread thread(
   updatedAt: updatedAt,
 );
 
-CodexProject project(String id, {int position = 0}) => CodexProject(
+CodexProject project(
+  String id, {
+  int position = 0,
+  List<String> roots = const ['/work'],
+}) => CodexProject(
   id: id,
   name: id,
-  roots: const [CodexProjectRoot(path: CodexV2AbsolutePathBuf('/work'))],
+  roots: roots
+      .map((path) => CodexProjectRoot(path: CodexV2AbsolutePathBuf(path)))
+      .toList(),
   position: position,
   metadata: const {},
   createdAt: 0,

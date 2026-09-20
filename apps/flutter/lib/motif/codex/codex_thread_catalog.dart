@@ -70,7 +70,9 @@ CodexCatalogSnapshot buildCodexCatalog(
   final projectless = <CodexThread>[];
   final names = <String, String>{};
   for (final thread in threads) {
-    final project = byProject[thread.projectId];
+    final project = thread.projectId != null
+        ? byProject[thread.projectId]
+        : _projectForDirectory(thread.cwd.value, orderedProjects);
     if (project != null) names[thread.id] = project.name;
     if (pinnedIds.contains(thread.id)) continue;
     if (project == null) {
@@ -100,6 +102,43 @@ CodexCatalogSnapshot buildCodexCatalog(
         ? selectedProjectId
         : null,
   );
+}
+
+// Desktop-created threads can lack projectId even when their project is
+// returned by project/list. Group those by the server's roots for display only.
+// Prefer the most specific root; shared roots are ambiguous and stay ungrouped.
+CodexProject? _projectForDirectory(String cwd, List<CodexProject> projects) {
+  final directory = _projectPath(cwd);
+  if (directory.isEmpty) return null;
+  CodexProject? match;
+  var longest = -1;
+  var ambiguous = false;
+  for (final project in projects) {
+    for (final root in project.roots) {
+      final path = _projectPath(root.path.value);
+      if (path.isEmpty ||
+          (directory != path &&
+              !directory.startsWith(path.endsWith('/') ? path : '$path/'))) {
+        continue;
+      }
+      if (path.length > longest) {
+        match = project;
+        longest = path.length;
+        ambiguous = false;
+      } else if (path.length == longest && match?.id != project.id) {
+        ambiguous = true;
+      }
+    }
+  }
+  return ambiguous ? null : match;
+}
+
+String _projectPath(String path) {
+  final normalized = _normalizedCodexPath(path);
+  return RegExp(r'^[A-Za-z]:/').hasMatch(normalized) ||
+          normalized.startsWith('//')
+      ? normalized.toLowerCase()
+      : normalized;
 }
 
 List<CodexThread> _applyThreadPlacements(
