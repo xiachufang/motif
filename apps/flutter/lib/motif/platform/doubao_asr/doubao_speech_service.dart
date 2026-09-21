@@ -122,6 +122,10 @@ class _DoubaoASR {
   bool _isFinalizing = false;
   bool _sessionFailed = false;
   bool _errorDelivered = false;
+  int _pcmBytes = 0;
+  int _sentFrames = 0;
+  int _resultFrames = 0;
+  double _peakLevel = 0;
 
   final DoubaoTranscriptAssembler _transcript = DoubaoTranscriptAssembler();
   Uint8List? _lastOpusFrame;
@@ -147,6 +151,7 @@ class _DoubaoASR {
     _finishedCompleter = Completer<void>();
 
     try {
+      Log.i('start: checking microphone permission', name: 'motif.asr');
       final granted = await _recorder.hasPermission();
       if (!granted) {
         throw const DoubaoException('Microphone permission denied');
@@ -160,10 +165,13 @@ class _DoubaoASR {
         // the private ASR service receives the encoded frames.
         application: opus.Application.audio,
       );
+      Log.i('start: loading credentials', name: 'motif.asr');
       _credentials = await DoubaoCredentialStore.shared.ensureCredentials();
       await _startMicStream();
+      Log.i('start: microphone started, connecting service', name: 'motif.asr');
       await _openWebSocket();
       await _sendInitialMessages();
+      Log.i('start: service ready', name: 'motif.asr');
       _canSendAudio = true;
       _scheduleFlush();
       await _flushFuture;
@@ -202,11 +210,19 @@ class _DoubaoASR {
       if (finished != null) {
         await finished.timeout(
           DoubaoConstants.finalResultTimeout,
-          onTimeout: () {},
+          onTimeout: () {
+            Log.w('stop: final result timeout', name: 'motif.asr');
+          },
         );
       }
       return _assembledText();
     } finally {
+      Log.i(
+        'stop: pcmBytes=$_pcmBytes sentFrames=$_sentFrames '
+        'resultFrames=$_resultFrames peakLevel=${_peakLevel.toStringAsFixed(4)} '
+        'textLength=${_transcript.text.length}',
+        name: 'motif.asr',
+      );
       _isRunning = false;
       _isFinalizing = false;
       _canSendAudio = false;
@@ -247,15 +263,17 @@ class _DoubaoASR {
 
   Future<void> _startMicStream() async {
     final stream = await _recorder.startStream(
-      const RecordConfig(
+      RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: DoubaoConstants.sampleRate,
         numChannels: DoubaoConstants.channels,
         streamBufferSize: DoubaoConstants.bytesPerFrame,
-        autoGain: true,
-        echoCancel: true,
-        noiseSuppress: true,
-        iosConfig: IosRecordConfig(
+        // macOS voice processing produced silent PCM in recording tests;
+        // the same microphone returned speech with processing disabled.
+        autoGain: !Platform.isMacOS,
+        echoCancel: !Platform.isMacOS,
+        noiseSuppress: !Platform.isMacOS,
+        iosConfig: const IosRecordConfig(
           categoryOptions: [
             IosAudioCategoryOption.allowBluetooth,
             IosAudioCategoryOption.defaultToSpeaker,
@@ -464,8 +482,14 @@ class _DoubaoASR {
     }
 
     if (response.resultJson.isEmpty) return;
+    _resultFrames++;
     final root = jsonDecode(response.resultJson) as Map<String, Object?>;
     final result = DoubaoRecognitionResult.parse(root);
+    Log.d(
+      'result: type=${response.messageType} segments=${result?.segments.length ?? 0} '
+      'textLength=${result?.text.length ?? 0} final=${result?.isFinal}',
+      name: 'motif.asr',
+    );
     if (result == null || result.segments.isEmpty) return;
     onPartial(_transcript.update(result));
   }
@@ -475,6 +499,13 @@ class _DoubaoASR {
     // the stream to close. Keep that audio; stop() cancels the subscription
     // before it drains the buffer and sends the LAST frame.
     if (!_isRunning) return;
+    _pcmBytes += data.length;
+    if (_pcmBytes == data.length) {
+      Log.i(
+        'microphone: first PCM chunk bytes=${data.length}',
+        name: 'motif.asr',
+      );
+    }
     _pcmBuffer.addAll(data);
     _emitAudioLevel(data);
     if (_canSendAudio) _scheduleFlush();
@@ -541,6 +572,7 @@ class _DoubaoASR {
         timestampMs: timestampMs,
       ),
     );
+    _sentFrames++;
   }
 
   Future<void> _sendFinishSession() async {
@@ -586,7 +618,9 @@ class _DoubaoASR {
       final sample = data.getInt16(i * 2, Endian.little) / 32768.0;
       sum += sample * sample;
     }
-    callback(min(1.0, sqrt(sum / samples) * 6.0));
+    final level = min(1.0, sqrt(sum / samples) * 6.0);
+    _peakLevel = max(_peakLevel, level);
+    callback(level);
   }
 
   Int16List _pcmFrameToSamples(Uint8List pcmFrame) {

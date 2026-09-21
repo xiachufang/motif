@@ -157,6 +157,24 @@ class DoubaoTranscriptAssembler {
           ]
         : ([...result.segments]..sort(_compare));
     for (final incoming in sorted) {
+      // Final results can be replayed or revised after the next window starts.
+      // Resolve those against committed windows before touching the active one,
+      // otherwise they are appended again (and can displace the active text).
+      final committedIndex = _committed.indexWhere(
+        (segment) =>
+            _sameTimeline(segment, incoming) &&
+            (segment.id == incoming.id ||
+                (segment.end == incoming.end && _overlaps(segment, incoming))),
+      );
+      if (committedIndex != -1) {
+        final existing = _committed[committedIndex];
+        // A late interim must not undo a final correction. Windows committed
+        // merely because a newer window started may still accept revisions.
+        if (incoming.isFinal || !existing.isFinal) {
+          _committed[committedIndex] = incoming.withId(existing.id);
+        }
+        continue;
+      }
       final active = _active;
       if (active == null) {
         if (incoming.isFinal) {

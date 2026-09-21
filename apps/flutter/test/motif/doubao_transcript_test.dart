@@ -7,6 +7,91 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:motif/motif/platform/doubao_asr/doubao_transcript.dart';
 
 void main() {
+  Map<String, Object?> segment(
+    String text, {
+    int start = 0,
+    int end = 1000,
+    bool finalResult = true,
+  }) => {
+    'text': text,
+    'start_time': start,
+    'end_time': end,
+    'is_interim': !finalResult,
+  };
+
+  String update(
+    DoubaoTranscriptAssembler assembler,
+    List<Map<String, Object?>> segments,
+  ) => assembler.update(DoubaoRecognitionResult.parse({'results': segments})!);
+
+  test('replayed final frames are idempotent', () {
+    final assembler = DoubaoTranscriptAssembler();
+    final frame = [segment('请检查重复插入。')];
+    expect(update(assembler, frame), '请检查重复插入。');
+    expect(update(assembler, frame), '请检查重复插入。');
+  });
+
+  test(
+    'late final correction replaces committed text and preserves active',
+    () {
+      final assembler = DoubaoTranscriptAssembler();
+      update(assembler, [segment('请检查检查。')]);
+      update(assembler, [
+        segment('下一句', start: 1000, end: 2000, finalResult: false),
+      ]);
+      expect(update(assembler, [segment('请检查。')]), '请检查。下一句');
+      expect(
+        update(assembler, [segment('请检查检查', finalResult: false)]),
+        '请检查。下一句',
+      );
+    },
+  );
+
+  test('replayed sentence batches do not append committed sentences', () {
+    final assembler = DoubaoTranscriptAssembler();
+    final first = segment('第一句。');
+    update(assembler, [first]);
+    final batch = [first, segment('第二句。', start: 1000, end: 2000)];
+    expect(update(assembler, batch), '第一句。第二句。');
+    expect(update(assembler, batch), '第一句。第二句。');
+  });
+
+  test('final can revise a window committed by the following interim', () {
+    final assembler = DoubaoTranscriptAssembler();
+    update(assembler, [segment('第一句句', finalResult: false)]);
+    update(assembler, [
+      segment('第二句', start: 1000, end: 2000, finalResult: false),
+    ]);
+    expect(update(assembler, [segment('第一句。')]), '第一句。第二句');
+  });
+
+  test('slightly shifted final window replaces the committed window', () {
+    final assembler = DoubaoTranscriptAssembler();
+    update(assembler, [segment('检查检查。')]);
+    expect(update(assembler, [segment('检查。', start: 20)]), '检查。');
+  });
+
+  test('identical speech in distinct time windows is preserved', () {
+    final assembler = DoubaoTranscriptAssembler();
+    update(assembler, [segment('测试。')]);
+    expect(
+      update(assembler, [segment('测试。', start: 1000, end: 2000)]),
+      '测试。测试。',
+    );
+  });
+
+  test('untimed final revisions replace the same candidate', () {
+    final assembler = DoubaoTranscriptAssembler();
+    update(assembler, [
+      {'text': '检查检查。', 'is_interim': false},
+    ]);
+    final revision = [
+      {'text': '检查。', 'is_interim': false},
+    ];
+    expect(update(assembler, revision), '检查。');
+    expect(update(assembler, revision), '检查。');
+  });
+
   final fixtures =
       jsonDecode(
             File('test/motif/fixtures/doubao_results.json').readAsStringSync(),
