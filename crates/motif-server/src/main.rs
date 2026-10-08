@@ -123,6 +123,12 @@ struct Args {
     /// may expose content outside the current Motif session.
     #[arg(long, env = "MOTIFD_ALLOW_SCREEN_CAPTURE", default_value_t = false)]
     allow_screen_capture: bool,
+
+    /// Disable automatic Codex CLI installation when the Codex view is first
+    /// opened and no executable can be found. Existing installations are
+    /// always preferred.
+    #[arg(long, env = "MOTIFD_NO_AUTO_INSTALL_CODEX", default_value_t = false)]
+    no_auto_install_codex: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -317,7 +323,7 @@ async fn run() -> anyhow::Result<()> {
         token,
         push_relay_url: args.push_relay_url,
         allow_screen_capture: args.allow_screen_capture,
-        auto_install_codex: false,
+        auto_install_codex: !args.no_auto_install_codex,
     };
     motif_server::serve(cfg).await
 }

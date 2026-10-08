@@ -43,8 +43,9 @@ pub struct ServerConfig {
     /// and request one-shot PNG screenshots from this graphical login session.
     pub allow_screen_capture: bool,
     /// Install the Codex CLI with OpenAI's official standalone installer when
-    /// the executable cannot be found. The Flutter embedded server enables
-    /// this; standalone motifd deployments keep installation operator-owned.
+    /// the executable cannot be found. Enabled by default in the Flutter
+    /// embedded server and standalone motifd; the CLI can opt out with
+    /// --no-auto-install-codex.
     pub auto_install_codex: bool,
 }
 

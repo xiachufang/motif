@@ -10,16 +10,18 @@ Codex 是可选集成。Motif 不包含 OpenAI 账号、API key 或 Codex 用量
 
 ## 1. 准备 Codex CLI
 
-Flutter 桌面 App 的内嵌 server 会在第一次打开 Codex 时优先使用本机 ChatGPT
-桌面 App 内置的 Codex。这样 ChatGPT 与 Motif 读写同一份 Thread 时会尽量使用相同
-协议版本。如果没有安装 ChatGPT，Motif 才查找独立安装的 Codex CLI；两者都找不到
+Flutter 桌面 App 的内嵌 server 和独立运行的 `motifd` 都会在第一次打开 Codex 时
+优先使用服务端主机上 ChatGPT 桌面 App 内置的 Codex。这样 ChatGPT 与 Motif 读写
+同一份 Thread 时会尽量使用相同协议版本。如果没有安装 ChatGPT，Motif 才查找
+独立安装的 Codex CLI；两者都找不到
 时，使用 OpenAI 官方安装脚本静默安装最新版。macOS/Linux 使用 `install.sh`，
 Windows 使用 `install.ps1`；安装过程不会弹出交互确认。显式设置了无效的
 `MOTIFD_CODEX_PATH` 时不会覆盖该配置，而是直接报告配置错误。
 
-独立运行的 `motifd`（包括 daemon、容器和远端主机）不会自动修改运行环境；如果
-同机没有 ChatGPT 桌面 App，仍需在运行它的同一个系统用户下安装 Codex CLI。独立
-安装后可这样确认：
+独立运行的 `motifd`（包括 daemon、容器和远端主机）默认也会按需安装。需要自行
+管理安装时，启动时传入 `--no-auto-install-codex`，或设置
+`MOTIFD_NO_AUTO_INSTALL_CODEX=true`。安装与登录都属于运行 `motifd` 的同一个系统
+用户。安装后可这样确认（若 `~/.local/bin` 不在 shell 的 `PATH` 中，请使用完整路径）：
 
 ```bash
 codex --version
@@ -152,8 +154,11 @@ permission profile、sandbox 和审批策略约束。
 
 **提示找不到 Codex CLI**
 
-- Flutter 桌面内嵌 server 会自动尝试安装；若安装失败，错误详情会包含下载或安装
-  阶段的原因。检查网络、`curl`（macOS/Linux）或 PowerShell（Windows）后重试。
+- Flutter 桌面内嵌 server 和默认配置的独立 `motifd` 都会自动尝试安装；若安装失败，
+  错误详情会包含下载或安装阶段的原因。检查网络、`curl`（macOS/Linux）或
+  PowerShell（Windows）后重试。
+- 检查 `motifd` 是否传入 `--no-auto-install-codex`，或设置了
+  `MOTIFD_NO_AUTO_INSTALL_CODEX=true`。
 - 以运行 `motifd` 的用户执行 `codex --version`。
 - 为 daemon 显式设置 `MOTIFD_CODEX_PATH`，然后重启 `motifd`。
 

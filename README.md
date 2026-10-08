@@ -157,12 +157,12 @@ for image tags, configuration, and GHCR details.
 
 The Codex view is separate from terminal sessions. It uses `codex app-server`
 on the `motifd` host to provide streamed conversations, persistent thread
-history, forks, approvals, and Side Chats in Motif. When the Flutter desktop
-app's embedded server first needs Codex and cannot find it, it silently runs
+history, forks, approvals, and Side Chats in Motif. When the embedded server or
+standalone `motifd` first needs Codex and cannot find it, it silently runs
 OpenAI's official standalone installer for the current OS user. Authentication
 is still explicit; Codex usage follows that account or API key rather than
-Motif itself. Standalone `motifd` deployments remain operator-managed and need
-Codex installed separately.
+Motif itself. For standalone `motifd`, pass `--no-auto-install-codex` or set
+`MOTIFD_NO_AUTO_INSTALL_CODEX=true` to manage installation yourself.
 
 `motifd` first checks `MOTIFD_CODEX_PATH`, then the Codex bundled with the
 ChatGPT desktop app, `PATH`, the standalone install location

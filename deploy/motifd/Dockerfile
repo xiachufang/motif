@@ -120,7 +120,7 @@ FROM debian:bookworm-slim AS runtime
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      bash ca-certificates git less openssh-client tini; \
+      bash ca-certificates curl git less openssh-client tini; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd -g 10001 motif; \
     useradd -m -u 10001 -g 10001 -s /bin/bash motif; \
