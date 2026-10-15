@@ -57,6 +57,8 @@ pub struct RzvListenConfig {
     pub token: [u8; 32],
     /// Owner JWT sent only in the WSS Upgrade request to `/v2/accept`.
     pub jwt: RzvJwt,
+    /// Stable public installation identity for relay diagnostics (never a secret).
+    pub device_id: Option<String>,
     /// Public-root configuration for the outer WSS connection. Tests and
     /// private deployments may replace this with a config containing a custom
     /// CA; production defaults to the Web PKI roots.
@@ -100,6 +102,7 @@ impl RzvListenConfig {
             url: url.into(),
             token,
             jwt: RzvJwt(Arc::new(RwLock::new(jwt.into()))),
+            device_id: None,
             ws_tls: Arc::new(
                 rustls::ClientConfig::builder()
                     .with_root_certificates(roots)

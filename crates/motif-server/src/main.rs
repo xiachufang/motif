@@ -246,6 +246,15 @@ async fn run() -> anyhow::Result<()> {
             if let Some(pool) = args.rzv_pool {
                 c.pool = pool;
             }
+            c.device_id = identity.as_ref().map(|id| {
+                format!(
+                    "cert_{}",
+                    id.cert_sha256
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            });
             c.tls = identity.as_ref().map(|id| id.server_config.clone());
             Some(c)
         }

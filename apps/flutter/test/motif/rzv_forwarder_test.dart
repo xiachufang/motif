@@ -17,90 +17,80 @@ void main() {
     await relay.stop();
   });
 
-  test(
-    'pairs and pipes bytes end-to-end through the relay',
-    () async {
-      relay = await _FakeRelay.start();
-      fwd = RzvForwarder(
-        relayHost: '127.0.0.1',
-        relayPort: relay.port,
-        relayScheme: 'ws',
-        token: token,
-      );
-      await fwd.start();
+  test('pairs and pipes bytes end-to-end through the relay', () async {
+    relay = await _FakeRelay.start();
+    fwd = RzvForwarder(
+      relayHost: '127.0.0.1',
+      relayPort: relay.port,
+      relayScheme: 'ws',
+      token: token,
+      deviceId: 'app_0123456789abcdef0123456789abcdef',
+    );
+    await fwd.start();
 
-      final client = await Socket.connect('127.0.0.1', fwd.port);
-      final payload = Uint8List.fromList(utf8Bytes('hello rendezvous'));
-      final echo = _collect(client, payload.length);
-      client.add(payload);
-      await client.flush();
+    final client = await Socket.connect('127.0.0.1', fwd.port);
+    final payload = Uint8List.fromList(utf8Bytes('hello rendezvous'));
+    final echo = _collect(client, payload.length);
+    client.add(payload);
+    await client.flush();
 
-      expect(await echo, payload, reason: 'relay should echo through the pipe');
+    expect(await echo, payload, reason: 'relay should echo through the pipe');
 
-      // The forwarder presented a well-formed binary HELLO with our token.
-      expect(relay.hellos, hasLength(1));
-      final parsed = RzvProtocol.parseHello(relay.hellos.single);
-      expect(parsed, token);
+    // The forwarder presented a well-formed binary HELLO with our token.
+    expect(relay.deviceIds, ['app_0123456789abcdef0123456789abcdef']);
+    expect(relay.hellos, hasLength(1));
+    final parsed = RzvProtocol.parseHello(relay.hellos.single);
+    expect(parsed, token);
 
-      await client.close();
-    },
-    timeout: const Timeout(Duration(seconds: 15)),
-  );
+    await client.close();
+  }, timeout: const Timeout(Duration(seconds: 15)));
 
-  test(
-    'stays parked through native WebSocket PING/PONG',
-    () async {
-      relay = await _FakeRelay.start(
-        pairDelay: const Duration(milliseconds: 150),
-        pingInterval: const Duration(milliseconds: 50),
-      );
-      fwd = RzvForwarder(
-        relayHost: '127.0.0.1',
-        relayPort: relay.port,
-        relayScheme: 'ws',
-        token: token,
-      );
-      await fwd.start();
+  test('stays parked through native WebSocket PING/PONG', () async {
+    relay = await _FakeRelay.start(
+      pairDelay: const Duration(milliseconds: 150),
+      pingInterval: const Duration(milliseconds: 50),
+    );
+    fwd = RzvForwarder(
+      relayHost: '127.0.0.1',
+      relayPort: relay.port,
+      relayScheme: 'ws',
+      token: token,
+    );
+    await fwd.start();
 
-      final client = await Socket.connect('127.0.0.1', fwd.port);
-      final payload = Uint8List.fromList(utf8Bytes('after-ping'));
-      final echo = _collect(client, payload.length);
-      client.add(payload);
-      await client.flush();
+    final client = await Socket.connect('127.0.0.1', fwd.port);
+    final payload = Uint8List.fromList(utf8Bytes('after-ping'));
+    final echo = _collect(client, payload.length);
+    client.add(payload);
+    await client.flush();
 
-      expect(await echo, payload);
+    expect(await echo, payload);
 
-      await client.close();
-    },
-    timeout: const Timeout(Duration(seconds: 15)),
-  );
+    await client.close();
+  }, timeout: const Timeout(Duration(seconds: 15)));
 
-  test(
-    'tears down local connection when relay never pairs',
-    () async {
-      relay = await _FakeRelay.start(silent: true); // never sends PAIRED
-      fwd = RzvForwarder(
-        relayHost: '127.0.0.1',
-        relayPort: relay.port,
-        relayScheme: 'ws',
-        token: token,
-        pairTimeout: const Duration(milliseconds: 300),
-      );
-      await fwd.start();
+  test('tears down local connection when relay never pairs', () async {
+    relay = await _FakeRelay.start(silent: true); // never sends PAIRED
+    fwd = RzvForwarder(
+      relayHost: '127.0.0.1',
+      relayPort: relay.port,
+      relayScheme: 'ws',
+      token: token,
+      pairTimeout: const Duration(milliseconds: 300),
+    );
+    await fwd.start();
 
-      final client = await Socket.connect('127.0.0.1', fwd.port);
-      // Local socket should be closed by the forwarder after the pair timeout.
-      final done = Completer<void>();
-      client.listen(
-        (_) {},
-        onDone: done.complete,
-        onError: (_) => done.complete(),
-      );
-      await done.future.timeout(const Duration(seconds: 5));
-      await client.close();
-    },
-    timeout: const Timeout(Duration(seconds: 15)),
-  );
+    final client = await Socket.connect('127.0.0.1', fwd.port);
+    // Local socket should be closed by the forwarder after the pair timeout.
+    final done = Completer<void>();
+    client.listen(
+      (_) {},
+      onDone: done.complete,
+      onError: (_) => done.complete(),
+    );
+    await done.future.timeout(const Duration(seconds: 5));
+    await client.close();
+  }, timeout: const Timeout(Duration(seconds: 15)));
 }
 
 List<int> utf8Bytes(String s) => s.codeUnits;
@@ -146,6 +136,7 @@ class _FakeRelay {
   final Duration pairDelay;
   final Duration? pingInterval;
   final List<Uint8List> hellos = [];
+  final List<String?> deviceIds = [];
   final List<WebSocket> _sockets = [];
 
   int get port => _server.port;
@@ -173,6 +164,7 @@ class _FakeRelay {
       await request.response.close();
       return;
     }
+    deviceIds.add(request.headers.value('x-motif-device-id'));
     final socket = await WebSocketTransformer.upgrade(request);
     _sockets.add(socket);
     socket.pingInterval = pingInterval;

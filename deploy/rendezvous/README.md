@@ -281,3 +281,20 @@ WantedBy=multi-user.target
   invalidates all Free refresh tokens; individual revocation would require a
   persistent installation registry.
 - WebSocket compression is disabled; keepalive uses native Ping/Pong only.
+
+Device correlation: updated Motif clients send an optional `X-Motif-Device-Id`
+Upgrade header. Client installations persist a random `app_<32 hex digits>` ID;
+`motifd` uses `cert_<64 hex digits>` from its persisted public TLS certificate
+fingerprint. IDs survive reconnects and process restarts. Clearing client app
+storage or replacing the server certificate changes the corresponding ID.
+Connection logs include `device_id`; pair/forwarding logs include
+`accept_device_id` (motifd) and `connect_device_id` (client). These are diagnostic,
+self-reported identifiers, not authenticated device identities. The owner JWT
+`subject` is recorded separately on the connection span.
+
+Older clients without this header appear as `unknown`. Invalid metadata (over
+80 bytes or characters other than ASCII letters, digits, `_`, `-`) is ignored
+without rejecting the connection. HELLO and pairing are unchanged; new clients
+also work with older relays. Both the relay and the corresponding Motif client /
+motifd need updating to obtain device IDs. No pairing secrets or hardware IDs
+are used as diagnostic identifiers.

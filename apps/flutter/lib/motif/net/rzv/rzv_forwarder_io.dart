@@ -18,6 +18,7 @@ class RzvForwarder {
     required this.relayPort,
     required Uint8List token,
     this.relayScheme = 'wss',
+    this.deviceId,
     this.pairTimeout = const Duration(seconds: 30),
     this.dialTimeout = const Duration(seconds: 10),
   }) : token = Uint8List.fromList(token),
@@ -26,6 +27,7 @@ class RzvForwarder {
          'rzv token must be ${RzvProtocol.tokenLength} bytes',
        );
 
+  final String? deviceId;
   final String relayHost;
   final int relayPort;
   final String relayScheme;
@@ -67,7 +69,7 @@ class RzvForwarder {
     );
     Log.i(
       'rzv forwarder 127.0.0.1:${s.port} -> '
-      '$relayScheme://$relayHost:$relayPort/v2/connect',
+      '$relayScheme://$relayHost:$relayPort/v2/connect device_id=${deviceId ?? 'unknown'}',
       name: 'motif.rzv',
     );
     return s.port;
@@ -101,14 +103,18 @@ class RzvForwarder {
       relay = await WebSocket.connect(
         uri.toString(),
         customClient: dialClient,
+        headers: {'x-motif-device-id': ?deviceId},
       ).timeout(dialTimeout);
       relay.pingInterval = const Duration(seconds: 15);
       Log.i(
-        'rzv: WSS connected took=${sw.elapsedMilliseconds}ms',
+        'rzv: WSS connected device_id=${deviceId ?? 'unknown'} took=${sw.elapsedMilliseconds}ms',
         name: 'motif.rzv',
       );
     } catch (e) {
-      Log.w('rzv: WSS dial failed: $e', name: 'motif.rzv');
+      Log.w(
+        'rzv: WSS dial failed device_id=${deviceId ?? 'unknown'}: $e',
+        name: 'motif.rzv',
+      );
       local.destroy();
       return;
     } finally {

@@ -288,6 +288,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
         let url = c.url.clone();
         let token = c.token;
         let jwt = c.jwt_handle();
+        let device_id = c.device_id.clone();
         let ws_tls = c.ws_tls.clone();
         let tls = c.tls.clone();
         pumps.push(tokio::spawn(async move {
@@ -300,6 +301,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
                     &url,
                     &token,
                     &current_jwt,
+                    device_id.as_deref(),
                     ws_tls.clone(),
                     tls.clone(),
                     move || {
@@ -311,7 +313,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
                     Ok(stream) => {
                         backoff = Duration::from_millis(250);
                         let addr = SocketAddr::from(([0, 0, 0, 0], 0));
-                        tracing::info!(relay = %url, transport = "rzv", "motif-net: accept");
+                        tracing::info!(relay = %url, device_id = device_id.as_deref().unwrap_or("unknown"), transport = "rzv", "motif-net: accept");
                         if tx.send(Ok((stream, addr))).await.is_err() {
                             tracing::debug!("rzv pump: receiver dropped, exiting");
                             return;
@@ -320,7 +322,7 @@ fn bind_rzv(c: &RzvListenConfig) -> RzvBackend {
                     }
                     Err(e) => {
                         let _ = event_tx.send(RzvPumpEvent::Failed(index, e.to_string()));
-                        tracing::warn!(relay = %url, error = %e, "rzv pump: park failed; retrying");
+                        tracing::warn!(relay = %url, device_id = device_id.as_deref().unwrap_or("unknown"), error = %e, "rzv pump: park failed; retrying");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(Duration::from_secs(15));
                     }
@@ -345,6 +347,7 @@ async fn park_accept(
     url: &str,
     token: &[u8; 32],
     jwt: &str,
+    device_id: Option<&str>,
     ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     on_connected: impl FnOnce(),
@@ -353,6 +356,7 @@ async fn park_accept(
         url,
         token,
         jwt,
+        device_id,
         ws_tls,
         tls,
         RZV_CONTROL_IDLE_TIMEOUT,
@@ -367,6 +371,7 @@ async fn connect_rzv_websocket(
     url: &str,
     token: &[u8; 32],
     jwt: &str,
+    device_id: Option<&str>,
     ws_tls: std::sync::Arc<rustls::ClientConfig>,
     dial_timeout: Duration,
 ) -> io::Result<tokio_tungstenite::WebSocketStream<Box<dyn WsTransport>>> {
@@ -402,6 +407,14 @@ async fn connect_rzv_websocket(
                 .parse()
                 .map_err(|_| io::Error::other("rzv JWT is not a valid header value"))?,
         );
+        if let Some(device_id) = device_id {
+            request.headers_mut().insert(
+                "x-motif-device-id",
+                device_id
+                    .parse()
+                    .map_err(|_| io::Error::other("invalid relay device ID"))?,
+            );
+        }
         stage = "WebSocket upgrade";
         let (mut ws, _) = tokio_tungstenite::client_async(request, transport)
             .await
@@ -425,12 +438,14 @@ async fn park_accept_with_idle_timeout(
     url: &str,
     token: &[u8; 32],
     jwt: &str,
+    device_id: Option<&str>,
     ws_tls: std::sync::Arc<rustls::ClientConfig>,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     control_idle_timeout: Duration,
     on_connected: impl FnOnce(),
 ) -> io::Result<Stream> {
-    let mut ws = connect_rzv_websocket(url, token, jwt, ws_tls, RZV_DIAL_TIMEOUT).await?;
+    let mut ws =
+        connect_rzv_websocket(url, token, jwt, device_id, ws_tls, RZV_DIAL_TIMEOUT).await?;
     // A successful Upgrade proves that the relay was reachable and accepted
     // the owner JWT. Publishing here gives the embedding UI a prompt answer
     // without waiting for a client to pair with this parked socket.
@@ -703,6 +718,42 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn rzv_upgrade_preserves_device_identity_across_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_hdr_async(
+                    socket,
+                    |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                     response| {
+                        assert_eq!(request.headers()["x-motif-device-id"], "cert_test_identity");
+                        Ok(response)
+                    },
+                )
+                .await
+                .unwrap();
+                assert!(matches!(ws.next().await, Some(Ok(WsMessage::Binary(_)))));
+            }
+        });
+        let config = RzvListenConfig::new(&url, [0; 32], "test");
+        for _ in 0..2 {
+            let _ws = connect_rzv_websocket(
+                &url,
+                &[0; 32],
+                "test",
+                Some("cert_test_identity"),
+                config.ws_tls.clone(),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn rzv_setup_times_out_before_parking_and_drops_socket() {
         for scheme in ["ws", "wss"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -719,6 +770,7 @@ mod tests {
                 &url,
                 &[0; 32],
                 "test",
+                None,
                 config.ws_tls,
                 Duration::from_millis(50),
             )

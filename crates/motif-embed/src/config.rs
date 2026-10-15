@@ -178,6 +178,10 @@ impl MenuConfig {
                     motif_server::rzv::derive_token(&psk),
                     self.rzv.jwt.trim().to_string(),
                 );
+                c.device_id = Some(format!(
+                    "cert_{}",
+                    pin.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ));
                 c.tls = Some(identity.server_config.clone());
                 rzv_jwt = Some(c.jwt_handle());
                 rendezvous = Some(c);

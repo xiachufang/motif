@@ -81,3 +81,13 @@ the WebSocket byte stream and verifies `SHA-256(cert DER) == pk`. It then sends
 the PSK-derived motifd bearer inside that inner TLS connection. The reverse
 proxy terminates only the outer WSS. It and Rvz can observe the JWT, pairing
 token, and inner ciphertext, but cannot read or forge motif application traffic.
+
+### Optional diagnostic device metadata
+
+Both Upgrade endpoints accept `X-Motif-Device-Id`, an optional self-reported
+installation identifier, limited to 1–80 ASCII letters, digits, `_` or `-`.
+Absent/invalid values are logged as `unknown`, without affecting authentication,
+pairing, or forwarding. It is never an authorization credential. Native clients
+persist a random `app_` ID; motifd sends `cert_` plus its public certificate SHA-256
+hex fingerprint. This HTTP metadata does not change the binary HELLO format and
+is compatible with peers that do not send or inspect it.

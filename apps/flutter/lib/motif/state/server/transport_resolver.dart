@@ -13,6 +13,7 @@ import '../../models/settings.dart';
 import '../../net/proxy_client.dart';
 import '../../net/rpc_error.dart';
 import '../../net/rzv/rzv_forwarder.dart';
+import '../../net/rzv/rzv_device_identity.dart';
 import '../../net/rzv/rzv_protocol.dart';
 import '../../net/ssh/ssh_bootstrapper.dart';
 import '../../net/ssh/ssh_forwarder.dart';
@@ -763,7 +764,17 @@ class TransportResolver {
       await stopForwarder(server.id);
       fwd = null;
     }
+    String? deviceId;
+    if (fwd == null) {
+      try {
+        deviceId = await RzvDeviceIdentity.load();
+      } catch (error) {
+        // Diagnostics must not prevent a usable relay connection.
+        Log.w('rzv: device identity unavailable: $error', name: 'motif.rzv');
+      }
+    }
     fwd ??= _rzvForwarders[server.id] = RzvForwarder(
+      deviceId: deviceId,
       relayHost: relay.host,
       relayPort: relay.port,
       relayScheme: relay.scheme,

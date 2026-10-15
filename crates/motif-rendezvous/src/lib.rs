@@ -29,6 +29,7 @@ use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 /// First WebSocket binary message: `MRZV`, version, token.
 pub const MAGIC: [u8; 4] = *b"MRZV";
@@ -467,6 +468,7 @@ enum Role {
 
 struct Peer {
     connection_id: u64,
+    device_id: String,
     socket: WebSocket,
     role: Role,
     principal: Option<AuthenticatedPrincipal>,
@@ -529,11 +531,13 @@ impl Hub {
         role: Role,
         principal: Option<AuthenticatedPrincipal>,
         connection_id: u64,
+        device_id: String,
     ) {
         let started = Instant::now();
         tracing::info!(connection_id, ?role, "rzv websocket connected");
         match read_hello(socket, role, principal, connection_id).await {
-            Ok((token, peer)) => {
+            Ok((token, mut peer)) => {
+                peer.device_id = device_id;
                 self.pair_or_park(token, peer).await;
             }
             Err(e) => {
@@ -668,25 +672,63 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
+// Diagnostic metadata is untrusted, optional, and never used for authentication.
+fn device_id_header(headers: &HeaderMap) -> String {
+    match headers
+        .get("x-motif-device-id")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(id)
+            if !id.is_empty()
+                && id.len() <= 80
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') =>
+        {
+            id.to_owned()
+        }
+        _ => "unknown".into(),
+    }
+}
+
 async fn accept_upgrade(
     State(hub): State<Arc<Hub>>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
     let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let device_id = device_id_header(&headers);
     let principal = match hub.auth.authenticate(&headers) {
         Ok(principal) => principal,
         Err(e) => {
-            tracing::warn!(connection_id, error = %e, "rzv accept JWT rejected");
+            tracing::warn!(connection_id, %device_id, error = %e, "rzv accept JWT rejected");
             return (StatusCode::UNAUTHORIZED, "invalid rendezvous JWT").into_response();
         }
     };
-    upgrade_peer(hub, ws, Role::Accept, Some(principal), connection_id)
+    upgrade_peer(
+        hub,
+        ws,
+        Role::Accept,
+        Some(principal),
+        connection_id,
+        device_id,
+    )
 }
 
-async fn connect_upgrade(State(hub): State<Arc<Hub>>, ws: WebSocketUpgrade) -> Response {
+async fn connect_upgrade(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
     let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
-    upgrade_peer(hub, ws, Role::Connect, None, connection_id)
+    upgrade_peer(
+        hub,
+        ws,
+        Role::Connect,
+        None,
+        connection_id,
+        device_id_header(&headers),
+    )
 }
 
 fn upgrade_peer(
@@ -695,14 +737,21 @@ fn upgrade_peer(
     role: Role,
     principal: Option<AuthenticatedPrincipal>,
     connection_id: u64,
+    device_id: String,
 ) -> Response {
-    tracing::info!(connection_id, ?role, "rzv websocket upgrade requested");
+    // Keep diagnostic context even when RUST_LOG filters out INFO events.
+    let span = tracing::error_span!("rzv_connection", connection_id, ?role, %device_id, subject = principal.as_ref().map(|p| p.subject.as_ref()).unwrap_or("unknown"));
+    let failed_span = span.clone();
+    tracing::info!(parent: &span, "rzv websocket upgrade requested");
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
         .on_failed_upgrade(move |error| {
-            tracing::warn!(connection_id, ?role, %error, "rzv websocket upgrade failed");
+            tracing::warn!(parent: &failed_span, %error, "rzv websocket upgrade failed");
         })
-        .on_upgrade(move |socket| hub.handle(socket, role, principal, connection_id))
+        .on_upgrade(move |socket| {
+            hub.handle(socket, role, principal, connection_id, device_id)
+                .instrument(span)
+        })
 }
 
 async fn read_hello(
@@ -729,6 +778,7 @@ async fn read_hello(
         token,
         Peer {
             connection_id,
+            device_id: "unknown".into(),
             socket,
             role,
             principal,
@@ -878,6 +928,20 @@ struct PairIds {
 }
 
 async fn splice(a: Peer, b: Peer, keepalive: Duration) {
+    let (accept, connect) = if a.role == Role::Accept {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    let span = tracing::error_span!("rzv_pair",
+        accept_device_id = %accept.device_id,
+        connect_device_id = %connect.device_id,
+        accept_connection_id = accept.connection_id,
+        connect_connection_id = connect.connection_id);
+    splice_inner(a, b, keepalive).instrument(span).await;
+}
+
+async fn splice_inner(a: Peer, b: Peer, keepalive: Duration) {
     let (mut accept, mut connect) = match (a.role, b.role) {
         (Role::Accept, Role::Connect) => (a, b),
         (Role::Connect, Role::Accept) => (b, a),
@@ -1159,6 +1223,29 @@ mod tests {
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
     use serde::Serialize;
+
+    #[test]
+    fn device_metadata_is_optional_and_bounded() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(device_id_header(&headers), "unknown");
+        for invalid in [
+            "".to_owned(),
+            "x".repeat(81),
+            "secret.with.dots".into(),
+            "device name".into(),
+        ] {
+            headers.insert("x-motif-device-id", invalid.parse().unwrap());
+            assert_eq!(device_id_header(&headers), "unknown");
+        }
+        headers.insert(
+            "x-motif-device-id",
+            "app_0123456789abcdef0123456789abcdef".parse().unwrap(),
+        );
+        assert_eq!(
+            device_id_header(&headers),
+            "app_0123456789abcdef0123456789abcdef"
+        );
+    }
 
     #[test]
     fn hello_roundtrip() {

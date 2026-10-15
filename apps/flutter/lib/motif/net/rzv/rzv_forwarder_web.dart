@@ -12,10 +12,12 @@ class RzvForwarder {
     required this.relayPort,
     required Uint8List token,
     this.relayScheme = 'wss',
+    this.deviceId,
     this.pairTimeout = const Duration(seconds: 30),
     this.dialTimeout = const Duration(seconds: 10),
   }) : token = Uint8List.fromList(token);
 
+  final String? deviceId;
   final String relayHost;
   final int relayPort;
   final String relayScheme;
