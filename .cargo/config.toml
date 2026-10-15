@@ -1,0 +1,6 @@
+[env]
+# libtailscale-sys 0.2.2 embeds go-json-experiment from August 2025. Its
+# json/v2 aliases refer to APIs removed by Go 1.27, where jsonv2 is enabled by
+# default. Keep its standalone implementation until that dependency is updated;
+# the compiler remains Go 1.27.1. This applies to Go invoked by Cargo build.rs.
+GOEXPERIMENT = "nojsonv2"
