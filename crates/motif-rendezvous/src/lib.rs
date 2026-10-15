@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,8 @@ pub const CTRL_PAIRED: u8 = 0x10;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 const FORWARD_CHUNK_BYTES: usize = 16 * 1024;
+// Process-local correlation ids reveal neither the pairing token nor credentials.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Drop a parked waiter after this many keepalive PINGs have gone unanswered.
 ///
@@ -463,6 +466,7 @@ enum Role {
 }
 
 struct Peer {
+    connection_id: u64,
     socket: WebSocket,
     role: Role,
     principal: Option<AuthenticatedPrincipal>,
@@ -524,20 +528,30 @@ impl Hub {
         socket: WebSocket,
         role: Role,
         principal: Option<AuthenticatedPrincipal>,
+        connection_id: u64,
     ) {
-        match read_hello(socket, role, principal).await {
+        let started = Instant::now();
+        tracing::info!(connection_id, ?role, "rzv websocket connected");
+        match read_hello(socket, role, principal, connection_id).await {
             Ok((token, peer)) => {
                 self.pair_or_park(token, peer).await;
             }
             Err(e) => {
-                tracing::debug!(error = %e, ?role, "rzv websocket ended before pairing");
+                tracing::warn!(
+                    connection_id,
+                    ?role,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "rzv HELLO failed"
+                );
             }
         }
     }
 
     async fn pair_or_park(self: &Arc<Self>, token: Token, peer: Peer) {
         let role = peer.role;
-        let rx = {
+        let connection_id = peer.connection_id;
+        let (rx, waiting_accepts, waiting_connects) = {
             let mut map = self.inner.lock();
             let waiters = map.entry(token).or_default();
             let opposite = match role {
@@ -555,10 +569,11 @@ impl Hub {
 
             match handed {
                 None => {
+                    let counts = (waiters.accepts.len(), waiters.connects.len());
                     if waiters.is_empty() {
                         map.remove(&token);
                     }
-                    None
+                    (None, counts.0, counts.1)
                 }
                 Some(peer) => {
                     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -570,12 +585,23 @@ impl Hub {
                         tx,
                         since: Instant::now(),
                     });
-                    Some((peer, rx))
+                    (
+                        Some((peer, rx)),
+                        waiters.accepts.len(),
+                        waiters.connects.len(),
+                    )
                 }
             }
         };
 
         if let Some((peer, rx)) = rx {
+            tracing::info!(
+                connection_id,
+                ?role,
+                waiting_accepts,
+                waiting_connects,
+                "rzv waiting for peer"
+            );
             park(peer, rx, self.keepalive).await;
         }
     }
@@ -647,28 +673,43 @@ async fn accept_upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
     let principal = match hub.auth.authenticate(&headers) {
         Ok(principal) => principal,
         Err(e) => {
-            tracing::warn!(error = %e, "rzv accept JWT rejected");
+            tracing::warn!(connection_id, error = %e, "rzv accept JWT rejected");
             return (StatusCode::UNAUTHORIZED, "invalid rendezvous JWT").into_response();
         }
     };
-    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
-        .max_frame_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Accept, Some(principal)))
+    upgrade_peer(hub, ws, Role::Accept, Some(principal), connection_id)
 }
 
 async fn connect_upgrade(State(hub): State<Arc<Hub>>, ws: WebSocketUpgrade) -> Response {
+    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    upgrade_peer(hub, ws, Role::Connect, None, connection_id)
+}
+
+fn upgrade_peer(
+    hub: Arc<Hub>,
+    ws: WebSocketUpgrade,
+    role: Role,
+    principal: Option<AuthenticatedPrincipal>,
+    connection_id: u64,
+) -> Response {
+    tracing::info!(connection_id, ?role, "rzv websocket upgrade requested");
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| Arc::clone(&hub).handle(socket, Role::Connect, None))
+        .on_failed_upgrade(move |error| {
+            tracing::warn!(connection_id, ?role, %error, "rzv websocket upgrade failed");
+        })
+        .on_upgrade(move |socket| hub.handle(socket, role, principal, connection_id))
 }
 
 async fn read_hello(
     mut socket: WebSocket,
     role: Role,
     principal: Option<AuthenticatedPrincipal>,
+    connection_id: u64,
 ) -> anyhow::Result<(Token, Peer)> {
     let token = tokio::time::timeout(HELLO_TIMEOUT, async {
         loop {
@@ -687,6 +728,7 @@ async fn read_hello(
     Ok((
         token,
         Peer {
+            connection_id,
             socket,
             role,
             principal,
@@ -718,6 +760,9 @@ pub fn parse_hello(frame: &[u8]) -> anyhow::Result<Token> {
 }
 
 async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keepalive: Duration) {
+    let connection_id = peer.connection_id;
+    let role = peer.role;
+    let started = Instant::now();
     let ping_enabled = !keepalive.is_zero();
     let mut pings_sent = 0u64;
     let mut pongs_read = 0u64;
@@ -725,7 +770,8 @@ async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keep
     // Speak first so a dead waiter is bounded by exactly the configured number
     // of keepalive periods instead of one additional initial idle period.
     if ping_enabled {
-        if peer.socket.send(Message::Ping(Bytes::new())).await.is_err() {
+        if let Err(error) = peer.socket.send(Message::Ping(Bytes::new())).await {
+            tracing::warn!(connection_id, ?role, %error, "rzv initial keepalive failed");
             return;
         }
         pings_sent += 1;
@@ -747,19 +793,57 @@ async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keep
             biased;
             partner = &mut rx => {
                 if let Ok(partner) = partner {
+                    tracing::info!(
+                        connection_id,
+                        partner_connection_id = partner.connection_id,
+                        ?role,
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        "rzv peer matched"
+                    );
                     splice(peer, partner, keepalive).await;
+                } else {
+                    tracing::info!(
+                        connection_id,
+                        ?role,
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        reason = "queue_removed",
+                        "rzv waiting connection closed"
+                    );
                 }
                 return;
             }
             msg = peer.socket.recv() => match msg {
                 Some(Ok(Message::Ping(payload))) => {
-                    if peer.socket.send(Message::Pong(payload)).await.is_err() { return; }
+                    if let Err(error) = peer.socket.send(Message::Pong(payload)).await {
+                        tracing::warn!(connection_id, ?role, %error, "rzv keepalive PONG failed");
+                        return;
+                    }
                 }
                 Some(Ok(Message::Pong(_))) => {
                     pongs_read = pongs_read.saturating_add(1);
                 }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(Message::Close(_))) | None => {
+                    tracing::info!(
+                        connection_id,
+                        ?role,
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        reason = "peer_closed",
+                        "rzv waiting connection closed"
+                    );
+                    return;
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(
+                        connection_id,
+                        ?role,
+                        wait_ms = started.elapsed().as_millis() as u64,
+                        %error,
+                        "rzv waiting websocket read failed"
+                    );
+                    return;
+                }
                 Some(Ok(Message::Binary(_))) | Some(Ok(Message::Text(_))) => {
+                    tracing::warn!(connection_id, ?role, "rzv unexpected frame before pairing");
                     let _ = peer.socket.send(Message::Close(None)).await;
                     return;
                 }
@@ -767,19 +851,30 @@ async fn park(mut peer: Peer, mut rx: tokio::sync::oneshot::Receiver<Peer>, keep
             _ = tick.tick(), if ping_enabled => {
                 let unanswered = pings_sent.saturating_sub(pongs_read);
                 if unanswered >= MAX_UNANSWERED_PINGS {
-                    tracing::debug!(
-                        ?peer.role,
+                    tracing::warn!(
+                        connection_id,
+                        ?role,
                         unanswered,
+                        wait_ms = started.elapsed().as_millis() as u64,
                         "rzv parked waiter missed keepalives; closing half-open WebSocket"
                     );
                     let _ = peer.socket.send(Message::Close(None)).await;
                     return;
                 }
-                if peer.socket.send(Message::Ping(Bytes::new())).await.is_err() { return; }
+                if let Err(error) = peer.socket.send(Message::Ping(Bytes::new())).await {
+                    tracing::warn!(connection_id, ?role, %error, "rzv keepalive PING failed");
+                    return;
+                }
                 pings_sent += 1;
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct PairIds {
+    accept: u64,
+    connect: u64,
 }
 
 async fn splice(a: Peer, b: Peer, keepalive: Duration) {
@@ -788,24 +883,48 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
         (Role::Connect, Role::Accept) => (b, a),
         _ => return,
     };
+    let pair = PairIds {
+        accept: accept.connection_id,
+        connect: connect.connection_id,
+    };
+    let started = Instant::now();
     let Some(principal) = accept.principal.take() else {
-        tracing::warn!("rzv paired accept without authenticated principal");
+        tracing::warn!(
+            accept_connection_id = pair.accept,
+            connect_connection_id = pair.connect,
+            "rzv paired accept without authenticated principal"
+        );
         return;
     };
 
-    if accept
-        .socket
-        .send(Message::Binary(Bytes::from_static(&[CTRL_PAIRED])))
-        .await
-        .is_err()
-        || connect
+    let paired = async {
+        accept
             .socket
             .send(Message::Binary(Bytes::from_static(&[CTRL_PAIRED])))
             .await
-            .is_err()
-    {
+            .context("send PAIRED to motifd")?;
+        connect
+            .socket
+            .send(Message::Binary(Bytes::from_static(&[CTRL_PAIRED])))
+            .await
+            .context("send PAIRED to client")?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = paired {
+        tracing::warn!(
+            accept_connection_id = pair.accept,
+            connect_connection_id = pair.connect,
+            error = %format!("{error:#}"),
+            "rzv PAIRED delivery failed"
+        );
         return;
     }
+    tracing::info!(
+        accept_connection_id = pair.accept,
+        connect_connection_id = pair.connect,
+        "rzv paired; forwarding started"
+    );
 
     let accept_socket = accept.socket;
     let connect_socket = connect.socket;
@@ -823,6 +942,8 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
                 .map(|limiter| Arc::clone(&limiter.client_to_server)),
         },
         keepalive,
+        pair,
+        "client_to_server",
     );
     let s2c = pump(
         accept_rx,
@@ -835,12 +956,17 @@ async fn splice(a: Peer, b: Peer, keepalive: Duration) {
                 .map(|limiter| Arc::clone(&limiter.server_to_client)),
         },
         keepalive,
+        pair,
+        "server_to_client",
     );
-    let (c2s, s2c) = tokio::join!(c2s, s2c);
-    tracing::debug!(
+    // Each pump logs its own completion immediately. Waiting for both directions
+    // before logging would hide a failure while the opposite read is still open.
+    let _ = tokio::join!(c2s, s2c);
+    tracing::info!(
+        accept_connection_id = pair.accept,
+        connect_connection_id = pair.connect,
         subject = %principal.subject,
-        client_to_server = c2s.unwrap_or_default(),
-        server_to_client = s2c.unwrap_or_default(),
+        duration_ms = started.elapsed().as_millis() as u64,
         "rzv websocket splice closed"
     );
 }
@@ -850,8 +976,13 @@ async fn pump(
     mut output: SplitSink<WebSocket, Message>,
     limiters: DirectionLimiters,
     keepalive: Duration,
+    pair: PairIds,
+    direction: &'static str,
 ) -> anyhow::Result<u64> {
     let mut total = 0u64;
+    let started = Instant::now();
+    let mut reason = "stream_ended";
+    let mut close_code = None;
     let mut tick = tokio::time::interval(if keepalive.is_zero() {
         Duration::from_secs(3600)
     } else {
@@ -859,38 +990,65 @@ async fn pump(
     });
     tick.tick().await;
 
-    loop {
-        tokio::select! {
-            msg = input.next() => match msg {
-                Some(Ok(Message::Binary(payload))) => {
-                    let mut offset = 0;
-                    while offset < payload.len() {
-                        let n = limiters.max_chunk(payload.len() - offset);
-                        limiters.consume(n).await;
-                        output
-                            .send(Message::Binary(payload.slice(offset..offset + n)))
-                            .await?;
-                        offset += n;
-                        total += n as u64;
+    let result: anyhow::Result<u64> = async {
+        loop {
+            tokio::select! {
+                msg = input.next() => match msg {
+                    Some(Ok(Message::Binary(payload))) => {
+                        let mut offset = 0;
+                        while offset < payload.len() {
+                            let n = limiters.max_chunk(payload.len() - offset);
+                            limiters.consume(n).await;
+                            output
+                                .send(Message::Binary(payload.slice(offset..offset + n)))
+                                .await.context("forward binary frame")?;
+                            offset += n;
+                            total += n as u64;
+                        }
                     }
+                    Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
+                        // tungstenite queues the required PONG on the shared socket;
+                        // the next sink flush (including our periodic PING) sends it.
+                    }
+                    Some(Ok(Message::Close(frame))) => {
+                        reason = "peer_close";
+                        close_code = frame.as_ref().map(|frame| frame.code);
+                        let _ = output.send(Message::Close(frame)).await;
+                        return Ok(total);
+                    }
+                    Some(Ok(Message::Text(_))) => anyhow::bail!("text frame after pairing"),
+                    Some(Err(e)) => return Err(e).context("read source websocket"),
+                    None => return Ok(total),
+                },
+                _ = tick.tick(), if !keepalive.is_zero() => {
+                    output.send(Message::Ping(Bytes::new())).await.context("send keepalive PING")?;
                 }
-                Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
-                    // tungstenite queues the required PONG on the shared socket;
-                    // the next sink flush (including our periodic PING) sends it.
-                }
-                Some(Ok(Message::Close(frame))) => {
-                    let _ = output.send(Message::Close(frame)).await;
-                    return Ok(total);
-                }
-                Some(Ok(Message::Text(_))) => anyhow::bail!("text frame after pairing"),
-                Some(Err(e)) => return Err(e.into()),
-                None => return Ok(total),
-            },
-            _ = tick.tick(), if !keepalive.is_zero() => {
-                output.send(Message::Ping(Bytes::new())).await?;
             }
         }
     }
+    .await;
+    match &result {
+        Ok(_) => tracing::info!(
+            accept_connection_id = pair.accept,
+            connect_connection_id = pair.connect,
+            direction,
+            bytes = total,
+            duration_ms = started.elapsed().as_millis() as u64,
+            reason,
+            close_code,
+            "rzv forwarding finished"
+        ),
+        Err(error) => tracing::warn!(
+            accept_connection_id = pair.accept,
+            connect_connection_id = pair.connect,
+            direction,
+            bytes = total,
+            duration_ms = started.elapsed().as_millis() as u64,
+            error = %format!("{error:#}"),
+            "rzv forwarding failed"
+        ),
+    }
+    result
 }
 
 struct DirectionLimiters {

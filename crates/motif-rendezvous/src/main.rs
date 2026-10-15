@@ -58,7 +58,13 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    tracing_subscriber::fmt().with_target(false).init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_ansi(false)
+        .init();
     let auth_path = args
         .auth_config
         .as_deref()
@@ -73,7 +79,14 @@ async fn main() -> anyhow::Result<()> {
         auth,
     );
     hub.spawn_reaper();
-    tracing::info!(addr = %args.listen, "motif-rendezvous HTTP/WebSocket listening");
+    tracing::info!(
+        addr = %args.listen,
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        keepalive_secs = args.keepalive_secs,
+        park_ttl_secs = args.park_ttl_secs,
+        "motif-rendezvous HTTP/WebSocket listening"
+    );
     axum::serve(listener, hub.router()).await?;
     Ok(())
 }

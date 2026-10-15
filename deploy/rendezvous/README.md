@@ -190,6 +190,39 @@ Other flags:
 - `healthcheck --addr <host:port>`: lightweight socket liveness probe used by
   the container.
 
+## Logs and connection diagnostics
+
+Rvz writes logs to stdout; it does not create a log file. With Docker, use
+`docker logs --timestamps --since 30m motif-rzv`; with the systemd unit below,
+use `journalctl -u motif-rendezvous --since '30 minutes ago'`.
+
+The default level is `info`. Set `RUST_LOG=debug` (or
+`RUST_LOG=info,motif_rendezvous=debug`) in the service environment for more
+detail. Connection lifecycle events remain visible at the default level:
+
+- `websocket upgrade requested` / `websocket connected`: a request reached Rvz
+  and its WebSocket opened. `role=Accept` is motifd; `role=Connect` is a client.
+- `waiting for peer`: HELLO was accepted; the queue counts show whether motifd
+  or the client is missing for that pairing token.
+- `peer matched` / `paired; forwarding started`: both endpoints were found and
+  Rvz delivered `PAIRED` to both. Inner TLS and Motif requests happen afterward.
+- `forwarding finished` / `forwarding failed`: the direction, byte count,
+  elapsed time, close code (when present), and error identify which half ended.
+  Each direction logs immediately, even if the other half is still open.
+- HELLO, upgrade, authentication, and keepalive failures are warnings.
+
+`connection_id` identifies one WebSocket within a process. Pair logs include
+both `accept_connection_id` and `connect_connection_id`, so their earlier
+events can be correlated. Logs exclude JWTs, pairing tokens, and payloads.
+The `/health` endpoint and the Docker healthcheck only establish listener
+liveness; they do not prove that pairing, inner TLS, or Codex is working.
+
+For an incident, compare client and motifd timestamps with these Rvz events
+and the HTTPS proxy's access/error logs. A client dial timeout with no matching
+Rvz upgrade request points to the path before Rvz. A waiting `Connect` without
+an `Accept` points to motifd's relay connection. Successful pairing followed
+by a TLS/HTTP failure needs the motifd-side logs as well.
+
 ## Connect motifd
 
 For a custom/self-hosted Relay, place the owner JWT in a mode-0600 file and
