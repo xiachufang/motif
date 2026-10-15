@@ -65,7 +65,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95        # matches rust-toolchain.toml
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.5'
+          go-version: '1.27.1'
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0                        # apps/flutter/ghostty minimum

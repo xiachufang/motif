@@ -14,9 +14,9 @@ SRC=""
 OUT=""
 TARGET="host"   # host | macos-* | linux-* | windows-* | android-* | ios | ios-sim*
 REPO="${LIBTAILSCALE_REPO:-https://github.com/tailscale/libtailscale.git}"
-# Keep fresh builders on the same Go 1.25.5-compatible source as releases.
-# Upstream main now requires Go 1.27.1; do not silently change the dependency.
-REF="${LIBTAILSCALE_REF:-59d4bb82744915815178e0f0776d60026a397ee7}"
+# Pin the Go 1.27.1-compatible source so fresh builds and cached builders
+# use the same dependency instead of following upstream main.
+REF="${LIBTAILSCALE_REF:-d1dc45d039edb7759ecbee6ba2aea0c4bca884b8}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

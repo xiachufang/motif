@@ -49,10 +49,9 @@ export HOMEBREW_NO_INSTALL_CLEANUP=1
 
 retry brew install zig@0.16 go
 
-# Match the GitHub release workflows. Homebrew's moving Go version can break
-# libtailscale's experimental JSON dependency (Go 1.27 removed APIs it uses).
+# Match the GitHub release workflows and libtailscale's minimum Go version.
 # The installed go command downloads and runs this exact compiler as needed.
-export GOTOOLCHAIN=go1.25.5
+export GOTOOLCHAIN=go1.27.1
 retry go version
 
 # The default execution directory of this script is the ci_scripts directory.
