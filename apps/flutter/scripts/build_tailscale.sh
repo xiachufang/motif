@@ -14,7 +14,9 @@ SRC=""
 OUT=""
 TARGET="host"   # host | macos-* | linux-* | windows-* | android-* | ios | ios-sim*
 REPO="${LIBTAILSCALE_REPO:-https://github.com/tailscale/libtailscale.git}"
-REF="${LIBTAILSCALE_REF:-main}"
+# Keep fresh builders on the same Go 1.25.5-compatible source as releases.
+# Upstream main now requires Go 1.27.1; do not silently change the dependency.
+REF="${LIBTAILSCALE_REF:-59d4bb82744915815178e0f0776d60026a397ee7}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,8 +32,15 @@ command -v go >/dev/null || { echo "error: go not on PATH" >&2; exit 127; }
 if [[ -z "$SRC" ]]; then
   SRC="$PROJECT_DIR/build/libtailscale"
   if [[ ! -d "$SRC/.git" ]]; then
-    echo ">>> cloning libtailscale ($REF)"
-    git clone --depth 1 --branch "$REF" "$REPO" "$SRC"
+    echo ">>> initializing libtailscale ($REF)"
+    git init "$SRC"
+    git -C "$SRC" remote add origin "$REPO"
+  fi
+  # Fetch accepts full commit IDs as well as branch/tag overrides. Also repair
+  # managed caches created before the pin; explicit --src checkouts stay intact.
+  if [[ "$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)" != "$REF" ]]; then
+    git -C "$SRC" fetch --depth 1 origin "$REF"
+    git -C "$SRC" checkout --detach FETCH_HEAD
   fi
 fi
 
