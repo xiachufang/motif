@@ -11,14 +11,14 @@
       "version": "1.0.87"
     },
     "macos-arm64": {
-      "file": "Motif-v1.0.86-notarized.dmg",
-      "publishedAt": "2026-10-15T15:37:04Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.86",
-      "sha256": "b51a97f459b2229654b78ca20401f651b9fa4c4d270758c5339b9080f4b5cb9b",
-      "size": 40627708,
-      "tag": "v1.0.86",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.86/Motif-v1.0.86-notarized.dmg",
-      "version": "1.0.86"
+      "file": "Motif-v1.0.87-notarized.dmg",
+      "publishedAt": "2026-10-20T02:44:37Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.87",
+      "sha256": "8c28675c96d8a1a6ca054ff747d156fd0712b143184275c22787c122fee588af",
+      "size": 40644568,
+      "tag": "v1.0.87",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.87/Motif-v1.0.87-notarized.dmg",
+      "version": "1.0.87"
     },
     "windows-x86_64": {
       "file": "Motif-flutter-1.0.87-70-windows-x86_64.tar.gz",
@@ -34,5 +34,5 @@
   "channel": "stable",
   "product": "app",
   "schema": 1,
-  "updatedAt": "2026-10-20T02:34:37Z"
+  "updatedAt": "2026-10-20T02:44:38Z"
 }
