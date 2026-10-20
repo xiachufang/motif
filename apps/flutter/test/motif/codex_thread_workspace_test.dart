@@ -1771,6 +1771,14 @@ void main() {
       id: 'recent-activity',
       text: 'Recent activity detail',
     );
+    const recentCommand = CodexCommandExecutionThreadItem(
+      aggregatedOutput: 'done',
+      command: 'printf done',
+      commandActions: [],
+      cwd: CodexLegacyAppPathString('/work/motif'),
+      id: 'recent-command',
+      status: CodexCommandExecutionStatus.completed,
+    );
     const olderActivity = CodexAgentMessageThreadItem(
       id: 'older-activity',
       text: 'Older activity detail',
@@ -1784,6 +1792,7 @@ void main() {
           data: [
             CodexThreadItemEntry(item: answer, turnId: 'summary-turn'),
             CodexThreadItemEntry(item: recentActivity, turnId: 'summary-turn'),
+            CodexThreadItemEntry(item: recentCommand, turnId: 'summary-turn'),
           ],
           nextCursor: 'older-items',
         ),
@@ -1847,6 +1856,10 @@ void main() {
       const Size(0, 32),
     );
     expect(
+      loadEarlierButton.style!.padding!.resolve(<WidgetState>{}),
+      EdgeInsets.zero,
+    );
+    expect(
       loadEarlierButton.style!.tapTargetSize,
       MaterialTapTargetSize.shrinkWrap,
     );
@@ -1857,6 +1870,19 @@ void main() {
           )
           .size,
       MotifIconSize.sm,
+    );
+    final activityGroup = find.byKey(
+      const ValueKey('codex-activity-summary-turn-0'),
+    );
+    final activityLeading = find
+        .descendant(of: activityGroup, matching: find.byType(Icon))
+        .first;
+    final loadEarlierLeading = find
+        .descendant(of: loadEarlier, matching: find.byType(Icon))
+        .first;
+    expect(
+      tester.getTopLeft(loadEarlierLeading).dx,
+      tester.getTopLeft(activityLeading).dx,
     );
 
     await tester.tap(loadEarlier);

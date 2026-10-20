@@ -1759,10 +1759,14 @@ class _TurnItemsLoadControl extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: MotifSpacing.md),
       child: switch (state.phase) {
-        CodexTurnItemsPhase.loading => const Center(
-          child: SizedBox.square(
-            dimension: 20,
-            child: CircularProgressIndicator(strokeWidth: 1.5),
+        CodexTurnItemsPhase.loading => const SizedBox(
+          height: 32,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox.square(
+              dimension: MotifIconSize.sm,
+              child: CircularProgressIndicator(strokeWidth: 1.5),
+            ),
           ),
         ),
         CodexTurnItemsPhase.failed => Row(
@@ -1818,7 +1822,7 @@ class _TurnItemsLoadButton extends StatelessWidget {
       style: TextButton.styleFrom(
         foregroundColor: c.textSecondary,
         minimumSize: const Size(0, 32),
-        padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xs),
+        padding: EdgeInsets.zero,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         textStyle: MotifType.subhead,
         visualDensity: const VisualDensity(vertical: -4),
