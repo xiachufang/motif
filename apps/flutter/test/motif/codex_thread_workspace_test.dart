@@ -1530,6 +1530,74 @@ void main() {
     },
   );
 
+  testWidgets('loaded turn page has a stable extent before it is scrolled', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 700);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final client = WorkspaceFakeClient();
+    final longMarkdown = List.generate(
+      80,
+      (index) => 'Paragraph $index has enough text to occupy its own line.',
+    ).join('\n\n');
+    final turns = List.generate(
+      10,
+      (index) => CodexTurn(
+        id: 'extent-turn-$index',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'extent-user-$index',
+            content: [
+              CodexTextUserInput(
+                text: index == 0
+                    ? '# My request:\n\n'
+                          '1 拍摄照片为什么不会写入卡内？无法通过回放查看\n'
+                          '2 创意外观是生效的吗？'
+                    : 'Question $index',
+              ),
+            ],
+          ),
+          CodexAgentMessageThreadItem(
+            id: 'extent-agent-$index',
+            phase: const CodexMessagePhase('final_answer'),
+            text: index == 0 ? longMarkdown : 'Short response $index',
+          ),
+        ],
+        status: CodexTurnStatus.completed,
+      ),
+    );
+    final state = workspaceState(client)
+      ..turns = turns
+      ..activePlan = null
+      ..queuedMessages = const [];
+    state.synchronizeViewModel();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final stream = find.byKey(const ValueKey('codex-turn-stream'));
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(of: stream, matching: find.byType(Scrollable)),
+        )
+        .position;
+    final initialExtent = position.maxScrollExtent;
+    position.jumpTo(position.minScrollExtent);
+    await tester.pump();
+
+    expect(position.maxScrollExtent, closeTo(initialExtent, 0.01));
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
   testWidgets('composer focus and send keep the latest content visible', (
     tester,
   ) async {
@@ -1603,33 +1671,49 @@ void main() {
     state.dispose();
   });
 
-  testWidgets('loads an older full turn page from the history control', (
+  testWidgets('automatically loads an older turn page near the top', (
     tester,
   ) async {
-    const olderTurn = CodexTurn(
-      id: 'older-turn',
-      items: [
-        CodexAgentMessageThreadItem(id: 'older-answer', text: 'Older answer'),
-      ],
-      status: CodexTurnStatus.completed,
+    const olderQuestion = CodexUserMessageThreadItem(
+      id: 'older-question',
+      content: [CodexTextUserInput(text: 'Older question')],
     );
-    const recentTurn = CodexTurn(
-      id: 'recent-turn',
-      items: [
-        CodexAgentMessageThreadItem(id: 'recent-answer', text: 'Recent answer'),
-      ],
-      status: CodexTurnStatus.completed,
+    const olderAnswer = CodexAgentMessageThreadItem(
+      id: 'older-answer',
+      text: 'Older answer',
+    );
+    const recentQuestion = CodexUserMessageThreadItem(
+      id: 'recent-question',
+      content: [CodexTextUserInput(text: 'Recent question')],
+    );
+    const recentAnswer = CodexAgentMessageThreadItem(
+      id: 'recent-answer',
+      text: 'Recent answer',
     );
     final client = WorkspaceFakeClient();
     final state = workspaceState(client)
       ..activePlan = null
       ..queuedMessages = const [];
-    client.turnPages = const {
-      null: CodexThreadTurnsListResponse(
-        data: [recentTurn],
+    client.turnPages = {
+      null: const CodexThreadTurnsListResponse(
+        data: [
+          CodexTurn(
+            id: 'recent-turn',
+            items: [recentQuestion, recentAnswer],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
         nextCursor: 'older-page',
       ),
-      'older-page': CodexThreadTurnsListResponse(data: [olderTurn]),
+      'older-page': const CodexThreadTurnsListResponse(
+        data: [
+          CodexTurn(
+            id: 'older-turn',
+            items: [olderQuestion, olderAnswer],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      ),
     };
     await state.refreshCatalog(showLoading: false);
     await state.readThread('thread');
@@ -1644,14 +1728,11 @@ void main() {
 
     expect(find.text('Recent answer'), findsOneWidget);
     expect(find.text('Older answer'), findsNothing);
-    expect(
-      find.byKey(const ValueKey('codex-load-older-turns')),
-      findsOneWidget,
+    await tester.drag(
+      find.byKey(const ValueKey('codex-turn-stream')),
+      const Offset(0, 1000),
     );
-
-    await tester.tap(find.byKey(const ValueKey('codex-load-older-turns')));
     await tester.pumpAndSettle();
-
     expect(find.text('Older answer'), findsOneWidget);
     expect(client.turnListParams.map((params) => params.cursor), [
       null,
@@ -1659,12 +1740,385 @@ void main() {
     ]);
     expect(
       client.turnListParams.map((params) => params.itemsView?.value),
-      everyElement('full'),
+      everyElement('summary'),
+    );
+    expect(client.itemListParams, isEmpty);
+    expect(find.byKey(const ValueKey('codex-load-older-turns')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('loads turn activity in larger pages only after a click', (
+    tester,
+  ) async {
+    const question = CodexUserMessageThreadItem(
+      id: 'summary-user',
+      content: [CodexTextUserInput(text: 'Summary question')],
+    );
+    const answer = CodexAgentMessageThreadItem(
+      id: 'summary-answer',
+      phase: CodexMessagePhase('final_answer'),
+      text: 'Summary answer',
+    );
+    const summary = CodexTurn(
+      id: 'summary-turn',
+      items: [question, answer],
+      itemsView: CodexTurnItemsView('summary'),
+      status: CodexTurnStatus.completed,
+    );
+    const recentActivity = CodexAgentMessageThreadItem(
+      id: 'recent-activity',
+      text: 'Recent activity detail',
+    );
+    const olderActivity = CodexAgentMessageThreadItem(
+      id: 'older-activity',
+      text: 'Older activity detail',
+    );
+    final client = WorkspaceFakeClient()
+      ..turnPages = const {
+        null: CodexThreadTurnsListResponse(data: [summary]),
+      }
+      ..itemPages = const {
+        null: CodexThreadItemsListResponse(
+          data: [
+            CodexThreadItemEntry(item: answer, turnId: 'summary-turn'),
+            CodexThreadItemEntry(item: recentActivity, turnId: 'summary-turn'),
+          ],
+          nextCursor: 'older-items',
+        ),
+        'older-items': CodexThreadItemsListResponse(
+          data: [
+            CodexThreadItemEntry(item: olderActivity, turnId: 'summary-turn'),
+            CodexThreadItemEntry(item: question, turnId: 'summary-turn'),
+          ],
+        ),
+      };
+    final state = workspaceState(client)
+      ..activePlan = null
+      ..queuedMessages = const [];
+    await state.refreshCatalog(showLoading: false);
+    await state.readThread('thread');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Summary answer'), findsOneWidget);
+    expect(client.itemListParams, isEmpty);
+    expect(find.text('Recent activity detail'), findsNothing);
+    expect(
+      find.byKey(const ValueKey('codex-load-turn-items-summary-turn')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('codex-worked-toggle-summary-turn')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Recent activity detail'), findsOneWidget);
+    expect(find.text('Older activity detail'), findsNothing);
+    expect(client.itemListParams.single.limit, codexThreadTurnItemsPageSize);
+    expect(client.itemListParams.single.turnId, 'summary-turn');
+
+    final loadEarlier = find.byKey(
+      const ValueKey('codex-load-earlier-turn-items-summary-turn'),
+    );
+    final loadEarlierTextButton = find.descendant(
+      of: loadEarlier,
+      matching: find.byType(TextButton),
+    );
+    final loadEarlierButton = tester.widget<TextButton>(loadEarlierTextButton);
+    expect(
+      loadEarlierButton.style!.foregroundColor!.resolve(<WidgetState>{}),
+      MotifColors.light.textSecondary,
     );
     expect(
-      client.turnListParams.map((params) => params.limit),
-      everyElement(10),
+      loadEarlierButton.style!.textStyle!.resolve(<WidgetState>{})?.fontSize,
+      MotifType.subhead.fontSize,
     );
+    expect(
+      loadEarlierButton.style!.minimumSize!.resolve(<WidgetState>{}),
+      const Size(0, 32),
+    );
+    expect(
+      loadEarlierButton.style!.tapTargetSize,
+      MaterialTapTargetSize.shrinkWrap,
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.descendant(of: loadEarlier, matching: find.byType(Icon)),
+          )
+          .size,
+      MotifIconSize.sm,
+    );
+
+    await tester.tap(loadEarlier);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Older activity detail'), findsOneWidget);
+    expect(client.itemListParams.map((params) => params.cursor), [
+      null,
+      'older-items',
+    ]);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets(
+    'uses interrupted timing to load initial activity without a load button',
+    (tester) async {
+      const question = CodexUserMessageThreadItem(
+        id: 'interrupted-user',
+        content: [CodexTextUserInput(text: 'Inspect the failure')],
+      );
+      const activity = CodexAgentMessageThreadItem(
+        id: 'interrupted-activity',
+        phase: CodexMessagePhase('commentary'),
+        text: 'Recovered activity detail',
+      );
+      const summary = CodexTurn(
+        durationMs: 4000,
+        id: 'interrupted-summary',
+        items: [question],
+        itemsView: CodexTurnItemsView('summary'),
+        status: CodexTurnStatus.interrupted,
+      );
+      final client = WorkspaceFakeClient()
+        ..turnPages = const {
+          null: CodexThreadTurnsListResponse(data: [summary]),
+        }
+        ..itemPages = const {
+          null: CodexThreadItemsListResponse(
+            data: [
+              CodexThreadItemEntry(
+                item: activity,
+                turnId: 'interrupted-summary',
+              ),
+              CodexThreadItemEntry(
+                item: question,
+                turnId: 'interrupted-summary',
+              ),
+            ],
+          ),
+        };
+      final state = workspaceState(client)
+        ..activePlan = null
+        ..queuedMessages = const [];
+      await state.refreshCatalog(showLoading: false);
+      await state.readThread('thread');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Load activity'), findsNothing);
+      expect(find.text('Stopped after 4s'), findsOneWidget);
+      expect(find.text('Recovered activity detail'), findsNothing);
+
+      await tester.tap(
+        find.byKey(
+          const ValueKey('codex-turn-items-toggle-interrupted-summary'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Recovered activity detail'), findsOneWidget);
+      expect(client.itemListParams, hasLength(1));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets(
+    'keeps the viewport anchored when item paging only grows a later turn',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 700);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final turns = List.generate(
+        12,
+        (index) => CodexTurn(
+          id: 'anchor-turn-$index',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'anchor-user-$index',
+              content: [CodexTextUserInput(text: 'Question $index')],
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'anchor-agent-$index',
+              phase: CodexMessagePhase('final_answer'),
+              text: 'Response $index',
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      );
+      const lateItem = CodexUserMessageThreadItem(
+        id: 'late-user-item',
+        content: [
+          CodexTextUserInput(
+            text:
+                'A later paged user item with enough content to make the last '
+                'turn visibly taller without inserting anything before the '
+                'reader viewport.\n\nThis must not move the current position.',
+          ),
+        ],
+      );
+      final client = WorkspaceFakeClient();
+      client.turnPages = {
+        null: CodexThreadTurnsListResponse(
+          data: turns.reversed.toList(growable: false),
+        ),
+      };
+      client.itemPages = {
+        null: const CodexThreadItemsListResponse(
+          data: [
+            CodexThreadItemEntry(item: lateItem, turnId: 'anchor-turn-11'),
+          ],
+        ),
+      };
+      final state = workspaceState(client)
+        ..activePlan = null
+        ..queuedMessages = const [];
+      await state.refreshCatalog(showLoading: false);
+      await state.readThread('thread');
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: motifTheme(Brightness.light),
+          home: Scaffold(body: CodexThreadWorkspace(state: state)),
+        ),
+      );
+      await tester.pump();
+
+      final stream = find.byKey(const ValueKey('codex-turn-stream'));
+      final position = tester
+          .state<ScrollableState>(
+            find.descendant(of: stream, matching: find.byType(Scrollable)),
+          )
+          .position;
+      await tester.drag(stream, const Offset(0, 10000));
+      await tester.pumpAndSettle();
+      expect(position.pixels, position.minScrollExtent);
+      final visibleAnchor = find.text('Question 0');
+      expect(visibleAnchor, findsOneWidget);
+      final beforeAnchorTop = tester.getTopLeft(visibleAnchor).dy;
+
+      expect(await state.loadTurnItems('anchor-turn-11'), isTrue);
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getTopLeft(visibleAnchor).dy,
+        closeTo(beforeAnchorTop, 0.01),
+      );
+      expect(state.turns.last.items, contains(lateItem));
+      expect(client.itemListParams.single.turnId, 'anchor-turn-11');
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      state.dispose();
+    },
+  );
+
+  testWidgets('keeps the first visible turn anchored when older turns load', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1000, 700);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final recentTurns = List.generate(
+      12,
+      (index) => CodexTurn(
+        id: 'explicit-recent-$index',
+        items: [
+          CodexUserMessageThreadItem(
+            id: 'explicit-user-$index',
+            content: [CodexTextUserInput(text: 'Recent question $index')],
+          ),
+          CodexAgentMessageThreadItem(
+            id: 'explicit-agent-$index',
+            text: 'Recent answer $index',
+          ),
+        ],
+        status: CodexTurnStatus.completed,
+      ),
+    );
+    final client = WorkspaceFakeClient();
+    client.turnPages = {
+      null: CodexThreadTurnsListResponse(
+        data: recentTurns.reversed.toList(growable: false),
+        nextCursor: 'explicit-older-page',
+      ),
+      'explicit-older-page': const CodexThreadTurnsListResponse(
+        data: [
+          CodexTurn(
+            id: 'explicit-older',
+            items: [
+              CodexUserMessageThreadItem(
+                id: 'explicit-older-user',
+                content: [
+                  CodexTextUserInput(text: 'Explicitly loaded question'),
+                ],
+              ),
+              CodexAgentMessageThreadItem(
+                id: 'explicit-older-agent',
+                text: 'Explicitly loaded answer',
+              ),
+            ],
+            status: CodexTurnStatus.completed,
+          ),
+        ],
+      ),
+    };
+    final state = workspaceState(client)
+      ..activePlan = null
+      ..queuedMessages = const [];
+    await state.refreshCatalog(showLoading: false);
+    await state.readThread('thread');
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    final stream = find.byKey(const ValueKey('codex-turn-stream'));
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(of: stream, matching: find.byType(Scrollable)),
+        )
+        .position;
+    await tester.drag(stream, const Offset(0, 10000));
+    await tester.pumpAndSettle();
+
+    expect(client.turnListParams.map((params) => params.cursor), [
+      null,
+      'explicit-older-page',
+    ]);
+    expect(client.itemListParams, isEmpty);
+    final visibleAnchor = find.text('Recent question 0');
+    expect(visibleAnchor, findsOneWidget);
+    expect(position.pixels, greaterThan(position.minScrollExtent));
+
+    position.jumpTo(position.minScrollExtent);
+    await tester.pump();
+    expect(find.text('Explicitly loaded question'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -1706,11 +2160,12 @@ void main() {
         MotifColors.light.surface,
       );
       final conversationSliver = tester.widget<SliverList>(
-        find.byType(SliverList).first,
+        find.byType(SliverList).last,
       );
       expect(
         conversationSliver.delegate.estimatedChildCount,
-        greaterThan(state.turns.length),
+        (state.turns.length + codexThreadTurnsPageSize - 1) ~/
+            codexThreadTurnsPageSize,
       );
       expect(find.text('Latest **progress**'), findsOneWidget);
       expect(
@@ -2280,6 +2735,64 @@ Only show **this request**.
     );
     expect(find.textContaining('Files mentioned by the user'), findsNothing);
     expect(find.textContaining('/tmp/screenshot.png'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
+  });
+
+  testWidgets('hides an injected context and its request title', (
+    tester,
+  ) async {
+    final client = WorkspaceFakeClient();
+    final state = workspaceState(client)
+      ..turns = const [
+        CodexTurn(
+          completedAt: 1754973480,
+          id: 'browser-context-turn',
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'browser-context-user',
+              content: [
+                CodexTextUserInput(
+                  text: '''
+<in-app-browser-context source="ambient-ui-state">
+This block is automatically supplied ambient UI state.
+# In app browser:
+- Current URL: http://127.0.0.1:56033/
+</in-app-browser-context>
+
+## My request:
+1 拍摄照片为什么不会写入卡内？无法通过回放查看
+2 创意外观是生效的吗？
+''',
+                ),
+              ],
+            ),
+          ],
+          status: CodexTurnStatus.completed,
+        ),
+      ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(body: CodexThreadWorkspace(state: state)),
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is MarkdownBody &&
+            widget.data ==
+                '1 拍摄照片为什么不会写入卡内？无法通过回放查看\n'
+                    '2 创意外观是生效的吗？',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('My request:'), findsNothing);
+    expect(find.textContaining('in-app-browser-context'), findsNothing);
 
     await tester.pumpWidget(const SizedBox.shrink());
     state.dispose();
@@ -3574,15 +4087,16 @@ Each item contains text selected from an earlier Codex response.
           find.byKey(ValueKey('codex-user-remote-image-$dataImage')),
         )
         .onTap!();
-    tester
-        .widget<GestureDetector>(
-          find.byKey(
-            const ValueKey(
-              'codex-markdown-image-https://example.test/result.png',
-            ),
-          ),
-        )
-        .onTap!();
+    final markdownImage = find.byKey(
+      const ValueKey('codex-markdown-image-https://example.test/result.png'),
+    );
+    expect(tester.getSize(markdownImage).height, 160);
+    final decodedMarkdownImage = tester.widget<Image>(
+      find.descendant(of: markdownImage, matching: find.byType(Image)),
+    );
+    final resizedProvider = decodedMarkdownImage.image as ResizeImage;
+    expect(resizedProvider.height, (160 * tester.view.devicePixelRatio).ceil());
+    await tester.tap(markdownImage);
 
     expect(openedImages, [
       '/work/motif/request.png',
@@ -3591,7 +4105,7 @@ Each item contains text selected from an earlier Codex response.
     ]);
   });
 
-  testWidgets('view-image activity thumbnail opens the large image', (
+  testWidgets('view-image activity opens without rendering a thumbnail', (
     tester,
   ) async {
     final client = WorkspaceFakeClient();
@@ -3618,16 +4132,10 @@ Each item contains text selected from an earlier Codex response.
     );
     await tester.tap(find.text('Viewed an image'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Viewed result.png'));
-    await tester.pumpAndSettle();
-
-    tester
-        .widget<GestureDetector>(
-          find.byKey(
-            const ValueKey('codex-image-thumbnail-/work/motif/result.png'),
-          ),
-        )
-        .onTap!();
+    expect(find.byType(Image), findsNothing);
+    await tester.tap(
+      find.byKey(const ValueKey('codex-image-activity-view-image')),
+    );
 
     expect(openedImages, ['/work/motif/result.png']);
   });
@@ -3999,7 +4507,9 @@ final class WorkspaceFakeClient extends ChangeNotifier
     implements CodexAppServerClient {
   late CodexThread thread;
   Map<String?, CodexThreadTurnsListResponse> turnPages = const {};
+  Map<String?, CodexThreadItemsListResponse> itemPages = const {};
   final List<CodexThreadTurnsListParams> turnListParams = [];
+  final List<CodexThreadItemsListParams> itemListParams = [];
   final List<CodexThreadForkParams> forked = [];
   final List<({String threadId, String name})> renamedThreads = [];
   final List<CodexTurnStartParams> started = [];
@@ -4086,6 +4596,22 @@ final class WorkspaceFakeClient extends ChangeNotifier
         CodexThreadTurnsListResponse(
           data: thread.turns.reversed.toList(growable: false),
         );
+  }
+
+  @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) async {
+    itemListParams.add(params);
+    final configured = itemPages[params.cursor];
+    if (configured != null) return configured;
+    return CodexThreadItemsListResponse(
+      data: [
+        for (final turn in thread.turns.reversed)
+          for (final item in turn.items.reversed)
+            CodexThreadItemEntry(item: item, turnId: turn.id),
+      ],
+    );
   }
 
   @override

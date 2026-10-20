@@ -148,6 +148,11 @@ void main() {
 
       expect(client.resumed, ['saved-1', 'saved-2']);
       expect(client.resumeIncludesTurns, everyElement(isFalse));
+      expect(client.resumeInitialTurnsPages, everyElement(isNull));
+      expect(client.turnListParams.single.cursor, 'turns-anchor');
+      expect(client.turnListParams.single.limit, codexThreadTurnsPageSize);
+      expect(client.turnListParams.single.itemsView?.value, 'summary');
+      expect(client.itemListParams, isEmpty);
       expect(client.forks, isEmpty);
       expect(collection.entries.map((entry) => entry.id), [
         'saved-2',
@@ -308,6 +313,10 @@ final class _SideChatFakeClient extends ChangeNotifier
   final List<String> unsubscribed = [];
   final List<String> resumed = [];
   final List<bool> resumeIncludesTurns = [];
+  final List<CodexThreadResumeInitialTurnsPageParams?> resumeInitialTurnsPages =
+      [];
+  final List<CodexThreadTurnsListParams> turnListParams = [];
+  final List<CodexThreadItemsListParams> itemListParams = [];
   final Map<String, CodexThread> _threads = {};
   int listCalls = 0;
   int goalCalls = 0;
@@ -354,6 +363,30 @@ final class _SideChatFakeClient extends ChangeNotifier
   ) async {
     listCalls++;
     return const CodexThreadListResponse(data: []);
+  }
+
+  @override
+  Future<CodexThreadTurnsListResponse> listThreadTurns(
+    CodexThreadTurnsListParams params,
+  ) async {
+    turnListParams.add(params);
+    return CodexThreadTurnsListResponse(
+      data: _threads[params.threadId]!.turns.reversed.toList(growable: false),
+    );
+  }
+
+  @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) async {
+    itemListParams.add(params);
+    return CodexThreadItemsListResponse(
+      data: [
+        for (final turn in _threads[params.threadId]!.turns.reversed)
+          for (final item in turn.items.reversed)
+            CodexThreadItemEntry(item: item, turnId: turn.id),
+      ],
+    );
   }
 
   @override
@@ -410,6 +443,7 @@ final class _SideChatFakeClient extends ChangeNotifier
   }) async {
     resumed.add(threadId);
     resumeIncludesTurns.add(includeTurns);
+    resumeInitialTurnsPages.add(initialTurnsPage);
     final thread = _threads[threadId];
     if (thread == null) {
       throw CodexRpcException(
@@ -425,11 +459,13 @@ final class _SideChatFakeClient extends ChangeNotifier
       cwd: thread.cwd,
       model: 'codex-test',
       modelProvider: 'openai',
+      itemsBackwardsCursor: 'items-anchor',
       initialTurnsPage: initialTurnsPage == null
           ? null
           : CodexTurnsPage(data: thread.turns.reversed.toList(growable: false)),
       sandbox: const CodexDangerFullAccessSandboxPolicy(),
       thread: thread,
+      turnsBackwardsCursor: 'turns-anchor',
     );
   }
 

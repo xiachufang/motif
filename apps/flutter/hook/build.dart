@@ -11,6 +11,7 @@ const _tailscaleAssetName = 'motif/platform/tailscale_ffi.dart';
 // The embedded-server cdylib (a C ABI over motif-server). Desktop only — the
 // app runs an in-process motifd from the tray, like the Tauri menu-bar app.
 const _motifEmbedAssetName = 'motif/platform/motif_embed_ffi.dart';
+const _homebrewVersionedZig = '/opt/homebrew/opt/zig@0.16/bin/zig';
 const _homebrewZig = '/opt/homebrew/opt/zig/bin/zig';
 
 bool _envFlagEnabled(String name) {
@@ -23,6 +24,7 @@ Future<bool> _hasSupportedZig() async {
   final override = Platform.environment['ZIG'];
   for (final candidate in [
     if (override != null && override.isNotEmpty) override,
+    _homebrewVersionedZig,
     _homebrewZig,
     'zig',
   ]) {

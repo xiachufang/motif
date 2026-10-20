@@ -539,7 +539,6 @@ class _ActivityItem extends StatelessWidget {
           : null,
     ),
     CodexImageViewThreadItem value => _ImageActivity(
-      state: state,
       item: value,
       onOpenImage: onOpenImage,
     ),
@@ -575,7 +574,6 @@ class _ActivityItem extends StatelessWidget {
       detail: '`${value.agentPath}`\n\n`${value.agentThreadId}`',
     ),
     CodexImageGenerationThreadItem value => _ImageGenerationActivity(
-      state: state,
       item: value,
       onOpenImage: onOpenImage,
     ),
@@ -886,20 +884,17 @@ class _UnifiedDiff extends StatelessWidget {
 }
 
 class _ImageActivity extends StatelessWidget {
-  const _ImageActivity({
-    required this.state,
-    required this.item,
-    required this.onOpenImage,
-  });
+  const _ImageActivity({required this.item, required this.onOpenImage});
 
-  final CodexConversationState state;
   final CodexImageViewThreadItem item;
   final CodexOpenImage? onOpenImage;
 
   @override
   Widget build(BuildContext context) => _DetailActivity(
+    activityKey: ValueKey('codex-image-activity-${item.id}'),
     icon: Icons.image_outlined,
-    title: 'Viewed ${_leaf(item.path.value)}',
+    title: 'Viewed an image',
+    onTap: onOpenImage == null ? null : () => onOpenImage!(item.path.value),
     action: onOpenImage == null
         ? null
         : IconButton(
@@ -915,43 +910,15 @@ class _ImageActivity extends StatelessWidget {
             onPressed: () => onOpenImage!(item.path.value),
             icon: const Icon(Icons.open_in_new_rounded),
           ),
-    child: FutureBuilder<Uint8List>(
-      future: state.readRemoteFile(item.path.value),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const LinearProgressIndicator();
-        return Align(
-          alignment: Alignment.centerLeft,
-          child: GestureDetector(
-            key: ValueKey('codex-image-thumbnail-${item.path.value}'),
-            onTap: onOpenImage == null
-                ? null
-                : () => onOpenImage!(item.path.value),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(MotifRadius.xs),
-              child: Image.memory(
-                snapshot.data!,
-                width: 240,
-                height: 180,
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) =>
-                    const Icon(Icons.broken_image_outlined),
-              ),
-            ),
-          ),
-        );
-      },
-    ),
   );
 }
 
 class _ImageGenerationActivity extends StatelessWidget {
   const _ImageGenerationActivity({
-    required this.state,
     required this.item,
     required this.onOpenImage,
   });
 
-  final CodexConversationState state;
   final CodexImageGenerationThreadItem item;
   final CodexOpenImage? onOpenImage;
 
@@ -959,12 +926,16 @@ class _ImageGenerationActivity extends StatelessWidget {
   Widget build(BuildContext context) {
     final path = item.savedPath?.value;
     return _DetailActivity(
+      activityKey: ValueKey('codex-generated-image-activity-${item.id}'),
       icon: Icons.auto_awesome_outlined,
       title: 'Generated an image',
       detail: item.revisedPrompt?.trim().isNotEmpty == true
           ? item.revisedPrompt
           : null,
       running: item.status == 'inProgress',
+      onTap: path == null || onOpenImage == null
+          ? null
+          : () => onOpenImage!(path),
       action: path == null || onOpenImage == null
           ? null
           : IconButton(
@@ -980,34 +951,6 @@ class _ImageGenerationActivity extends StatelessWidget {
               onPressed: () => onOpenImage!(path),
               icon: const Icon(Icons.open_in_new_rounded),
             ),
-      child: path == null
-          ? null
-          : FutureBuilder<Uint8List>(
-              future: state.readRemoteFile(path),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const LinearProgressIndicator();
-                return Align(
-                  alignment: Alignment.centerLeft,
-                  child: GestureDetector(
-                    key: ValueKey('codex-generated-image-thumbnail-$path'),
-                    onTap: onOpenImage == null
-                        ? null
-                        : () => onOpenImage!(path),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(MotifRadius.xs),
-                      child: Image.memory(
-                        snapshot.data!,
-                        width: 240,
-                        height: 180,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) =>
-                            const Icon(Icons.broken_image_outlined),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
     );
   }
 }
@@ -1020,6 +963,8 @@ class _DetailActivity extends StatelessWidget {
     this.child,
     this.running = false,
     this.action,
+    this.onTap,
+    this.activityKey,
   });
 
   final IconData icon;
@@ -1028,6 +973,8 @@ class _DetailActivity extends StatelessWidget {
   final Widget? child;
   final bool running;
   final Widget? action;
+  final VoidCallback? onTap;
+  final Key? activityKey;
 
   @override
   Widget build(BuildContext context) {
@@ -1041,11 +988,19 @@ class _DetailActivity extends StatelessWidget {
               )
             : null);
     if (content == null) {
-      return _ActivityRow(icon: icon, title: title, running: running);
+      return _ActivityRow(
+        key: activityKey,
+        icon: icon,
+        title: title,
+        running: running,
+        action: action,
+        onTap: onTap,
+      );
     }
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
       child: _InlineExpansionTile(
+        key: activityKey,
         initiallyExpanded: false,
         childrenPadding: const EdgeInsets.only(left: MotifSpacing.md),
         leading: running
@@ -1206,38 +1161,51 @@ class _ActivityRow extends StatelessWidget {
     required this.icon,
     required this.title,
     this.running = false,
+    this.action,
+    this.onTap,
+    super.key,
   });
 
   final IconData icon;
   final String title;
   final bool running;
+  final Widget? action;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          running
-              ? SizedBox.square(
-                  dimension: MotifIconSize.sm,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: c.accent,
-                  ),
-                )
-              : Icon(icon, size: MotifIconSize.sm, color: c.textTertiary),
-          const SizedBox(width: MotifSpacing.sm),
-          Expanded(
-            child: Text(
-              title,
-              maxLines: _activityTitleMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: MotifType.subhead.copyWith(color: c.textSecondary),
-            ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(MotifRadius.xs),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            children: [
+              running
+                  ? SizedBox.square(
+                      dimension: MotifIconSize.sm,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: c.accent,
+                      ),
+                    )
+                  : Icon(icon, size: MotifIconSize.sm, color: c.textTertiary),
+              const SizedBox(width: MotifSpacing.sm),
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: _activityTitleMaxLines,
+                  overflow: TextOverflow.ellipsis,
+                  style: MotifType.subhead.copyWith(color: c.textSecondary),
+                ),
+              ),
+              ?action,
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

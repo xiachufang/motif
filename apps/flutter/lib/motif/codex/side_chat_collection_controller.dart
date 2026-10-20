@@ -199,19 +199,23 @@ final class SideChatCollectionController extends ChangeNotifier {
           final createSession =
               id == _restorableSelectedId ||
               (_restorableSelectedId == null && restoredIds.isEmpty);
-          final response = await connection.resumeThread(
-            id,
-            initialTurnsPage: createSession
-                ? codexThreadResumeInitialTurnsPage
-                : null,
-          );
+          final response = await connection.resumeThread(id);
           if (_closed) return null;
           if (!_isExpectedSideChat(response.thread, id)) continue;
+          final history = createSession
+              ? await loadCodexHistoryPage(
+                  connection: connection,
+                  threadId: id,
+                  cursor: response.turnsBackwardsCursor,
+                )
+              : null;
+          if (_closed) return null;
           final conversation = registry.registerResumed(
             response,
             kind: CodexThreadSessionKind.sideChat,
             parentThreadId: parentThreadId,
             createSession: createSession,
+            history: history,
           );
           _addEntry(
             id: response.thread.id,
@@ -286,15 +290,19 @@ final class SideChatCollectionController extends ChangeNotifier {
     try {
       await _ensureConnected();
       if (_closed) return null;
-      final response = await connection.resumeThread(
-        id,
-        initialTurnsPage: codexThreadResumeInitialTurnsPage,
-      );
+      final response = await connection.resumeThread(id);
       if (_closed || !_isExpectedSideChat(response.thread, id)) return null;
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: id,
+        cursor: response.turnsBackwardsCursor,
+      );
+      if (_closed) return null;
       final conversation = registry.registerResumed(
         response,
         kind: CodexThreadSessionKind.sideChat,
         parentThreadId: parentThreadId,
+        history: history,
       );
       final ids = _restorableThreadIds.contains(id)
           ? _restorableThreadIds

@@ -1449,6 +1449,24 @@ final class ScreenFakeClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) async {
+    final thread =
+        threadReadResponses[params.threadId]?.thread ??
+        threadReadResponse?.thread ??
+        threadResumeResponses[params.threadId]?.thread ??
+        (throw StateError('unused'));
+    return CodexThreadItemsListResponse(
+      data: [
+        for (final turn in thread.turns.reversed)
+          for (final item in turn.items.reversed)
+            CodexThreadItemEntry(item: item, turnId: turn.id),
+      ],
+    );
+  }
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async {

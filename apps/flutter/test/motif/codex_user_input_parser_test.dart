@@ -16,6 +16,55 @@ void main() {
 
   const parser = CodexUserInputParser();
 
+  test('removes a standalone request presentation header', () {
+    for (final header in [
+      '# My request:',
+      '## My request:',
+      'My request:',
+      '## My request for Codex:',
+    ]) {
+      final parsed = parser.parse([
+        CodexTextUserInput(
+          text:
+              '$header\n\n'
+              '1 拍摄照片为什么不会写入卡内？无法通过回放查看\n'
+              '2 创意外观是生效的吗？',
+        ),
+      ]);
+
+      expect(
+        parsed.text,
+        '1 拍摄照片为什么不会写入卡内？无法通过回放查看\n'
+        '2 创意外观是生效的吗？',
+        reason: header,
+      );
+    }
+  });
+
+  test('removes an injected browser context and its request header', () {
+    final parsed = parser.parse(const [
+      CodexTextUserInput(
+        text: '''
+<in-app-browser-context source="ambient-ui-state">
+This block is automatically supplied ambient UI state.
+# In app browser:
+- Current URL: http://127.0.0.1:56033/
+</in-app-browser-context>
+
+## My request:
+1 拍摄照片为什么不会写入卡内？无法通过回放查看
+2 创意外观是生效的吗？
+''',
+      ),
+    ]);
+
+    expect(
+      parsed.text,
+      '1 拍摄照片为什么不会写入卡内？无法通过回放查看\n'
+      '2 创意外观是生效的吗？',
+    );
+  });
+
   test('extracts the request from the injected attachment prompt', () {
     final parsed = parser.parse(const [
       CodexTextUserInput(

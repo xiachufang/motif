@@ -44,12 +44,11 @@ final class _ParsedTextInput {
 final class CodexUserInputParser {
   const CodexUserInputParser();
 
-  static const _filesHeader = '# Files mentioned by the user:';
   static const _responseAnnotationsHeader = '# Response annotations:';
   static const _responseAnnotationsOpen = '<response-annotations>';
   static const _responseAnnotationsClose = '</response-annotations>';
   static final _requestHeader = RegExp(
-    r'^## My request(?: for Codex)?:\s*$',
+    r'^(?:#{1,6}[ \t]+)?My request(?: for Codex)?:[ \t]*$',
     multiLine: true,
   );
 
@@ -87,7 +86,9 @@ final class CodexUserInputParser {
     final normalized = text.trimLeft();
     final annotated = _parseResponseAnnotations(normalized);
     if (annotated != null) return annotated;
-    if (!normalized.startsWith(_filesHeader)) {
+    // Keep a damaged annotation envelope visible instead of treating its
+    // trailing request header as a valid presentation boundary.
+    if (normalized.startsWith(_responseAnnotationsHeader)) {
       return _ParsedTextInput(text: text);
     }
 

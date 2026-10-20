@@ -874,6 +874,17 @@ final class SidebarFakeClient extends ChangeNotifier
   );
 
   @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) async => CodexThreadItemsListResponse(
+    data: [
+      for (final turn in threads[params.threadId]!.turns.reversed)
+        for (final item in turn.items.reversed)
+          CodexThreadItemEntry(item: item, turnId: turn.id),
+    ],
+  );
+
+  @override
   Future<CodexThreadForkResponse> forkThread(
     CodexThreadForkParams params,
   ) async => throw StateError('unused');

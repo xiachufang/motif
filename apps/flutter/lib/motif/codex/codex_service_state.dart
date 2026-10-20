@@ -38,13 +38,50 @@ CodexSendFailureKind? _codexSendFailureKind(Object error) {
 }
 
 const codexThreadTurnsPageSize = 10;
-const codexThreadTurnsItemsView = CodexTurnItemsView('full');
-const codexThreadResumeInitialTurnsPage =
-    CodexThreadResumeInitialTurnsPageParams(
-      itemsView: codexThreadTurnsItemsView,
-      limit: codexThreadTurnsPageSize,
-      sortDirection: CodexSortDirection.desc,
-    );
+const codexThreadTurnItemsPageSize = 25;
+const codexThreadTurnsItemsView = CodexTurnItemsView('summary');
+
+/// One bounded slice of persisted conversation turns.
+final class CodexHistoryPage {
+  const CodexHistoryPage({required this.turns});
+
+  final CodexThreadTurnsListResponse turns;
+}
+
+enum CodexTurnItemsPhase { notLoaded, loading, partial, complete, failed }
+
+final class CodexTurnItemsState {
+  const CodexTurnItemsState({
+    required this.phase,
+    this.error,
+    this.hasMore = false,
+  });
+
+  final CodexTurnItemsPhase phase;
+  final String? error;
+  final bool hasMore;
+}
+
+/// Global history is paged by turn summaries. Full tool output stays out of
+/// the normal conversation restore path and is fetched only for an expanded
+/// turn through `thread/items/list`.
+Future<CodexHistoryPage> loadCodexHistoryPage({
+  required CodexAppServerClient connection,
+  required String threadId,
+  String? cursor,
+}) async {
+  return CodexHistoryPage(
+    turns: await connection.listThreadTurns(
+      CodexThreadTurnsListParams(
+        cursor: cursor,
+        itemsView: codexThreadTurnsItemsView,
+        limit: codexThreadTurnsPageSize,
+        sortDirection: CodexSortDirection.desc,
+        threadId: threadId,
+      ),
+    ),
+  );
+}
 
 abstract interface class CodexConnectionLease {
   const CodexConnectionLease();
@@ -160,6 +197,8 @@ class CodexConversationState extends ChangeNotifier {
   final Map<String, CodexServerRequest> _serverRequests = {};
   final Map<String, Future<Uint8List>> _remoteFileCache = {};
   final Map<String, String?> _insertBeforeByThreadId = {};
+  final Set<String> _summaryTurnIds = {};
+  final Map<String, _CodexTurnItemPageState> _turnItemPages = {};
   final Map<_CodexDeltaKey, StringBuffer> _pendingDeltas = {};
   final Set<String> _streamingItemIds = {};
   final Map<String, CodexItemViewModel> _itemViewModelsById = {};
@@ -293,6 +332,37 @@ class CodexConversationState extends ChangeNotifier {
   bool get hasOlderTurns =>
       _turnPaginationThreadId == selectedThread?.id &&
       _olderTurnsCursor != null;
+
+  CodexTurnItemsState turnItemsState(String turnId) {
+    final page = _turnItemPages[turnId];
+    if (page == null) {
+      return CodexTurnItemsState(
+        phase: _summaryTurnIds.contains(turnId)
+            ? CodexTurnItemsPhase.notLoaded
+            : CodexTurnItemsPhase.complete,
+      );
+    }
+    if (page.loading) {
+      return CodexTurnItemsState(
+        phase: CodexTurnItemsPhase.loading,
+        hasMore: page.nextCursor != null,
+      );
+    }
+    if (page.error != null) {
+      return CodexTurnItemsState(
+        phase: CodexTurnItemsPhase.failed,
+        error: page.error,
+        hasMore: page.nextCursor != null,
+      );
+    }
+    final hasMore = page.nextCursor != null;
+    return CodexTurnItemsState(
+      phase: hasMore
+          ? CodexTurnItemsPhase.partial
+          : CodexTurnItemsPhase.complete,
+      hasMore: hasMore,
+    );
+  }
 
   bool isThreadResumed(String threadId) =>
       _resumedThreads.containsKey(threadId);
@@ -449,21 +519,18 @@ class CodexConversationState extends ChangeNotifier {
     _notify();
     try {
       final response = await connection.readThread(threadId);
-      final page = await connection.listThreadTurns(
-        CodexThreadTurnsListParams(
-          itemsView: codexThreadTurnsItemsView,
-          limit: codexThreadTurnsPageSize,
-          sortDirection: CodexSortDirection.desc,
-          threadId: threadId,
-        ),
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: threadId,
       );
       if (_closed || generation != _readGeneration) return;
-      final loadedTurns = page.data.reversed.toList(growable: false);
+      final loadedTurns = history.turns.data.reversed.toList(growable: false);
+      _markSummaryTurns(loadedTurns);
       final thread = codexThreadWithTurns(response.thread, loadedTurns);
       _threads[thread.id] = thread;
       selectedThread = thread;
       turns = loadedTurns;
-      _setTurnPagination(thread.id, page.nextCursor);
+      _setTurnPagination(thread.id, history.turns.nextCursor);
       activePlan = null;
       awaitingPlanDecisionItemId = null;
       activeDiff = null;
@@ -507,14 +574,10 @@ class CodexConversationState extends ChangeNotifier {
     olderTurnsError = null;
     _notify();
     try {
-      final page = await connection.listThreadTurns(
-        CodexThreadTurnsListParams(
-          cursor: cursor,
-          itemsView: codexThreadTurnsItemsView,
-          limit: codexThreadTurnsPageSize,
-          sortDirection: CodexSortDirection.desc,
-          threadId: thread.id,
-        ),
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: thread.id,
+        cursor: cursor,
       );
       if (_closed ||
           generation != _readGeneration ||
@@ -523,9 +586,10 @@ class CodexConversationState extends ChangeNotifier {
       }
 
       final seenTurnIds = turns.map((turn) => turn.id).toSet();
-      final older = page.data.reversed
+      final older = history.turns.data.reversed
           .where((turn) => seenTurnIds.add(turn.id))
           .toList(growable: false);
+      _markSummaryTurns(older);
       if (older.isNotEmpty) {
         turns = [...older, ...turns];
         final updatedThread = codexThreadWithTurns(selectedThread!, turns);
@@ -535,7 +599,7 @@ class CodexConversationState extends ChangeNotifier {
       }
       _setTurnPagination(
         thread.id,
-        page.nextCursor == cursor ? null : page.nextCursor,
+        history.turns.nextCursor == cursor ? null : history.turns.nextCursor,
       );
       return older.isNotEmpty;
     } catch (error) {
@@ -559,6 +623,8 @@ class CodexConversationState extends ChangeNotifier {
   void _resetTurnPagination() {
     _turnPaginationThreadId = null;
     _olderTurnsCursor = null;
+    _summaryTurnIds.clear();
+    _turnItemPages.clear();
     loadingOlderTurns = false;
     olderTurnsError = null;
   }
@@ -570,6 +636,93 @@ class CodexConversationState extends ChangeNotifier {
         ? null
         : normalized;
     olderTurnsError = null;
+  }
+
+  void _markSummaryTurns(Iterable<CodexTurn> values) {
+    _summaryTurnIds.addAll(values.map((turn) => turn.id));
+  }
+
+  /// Loads one user-requested page of full items for a single persisted turn.
+  /// Pages are independent from the scroll-driven turn summary cursor.
+  Future<bool> loadTurnItems(String turnId) async {
+    final thread = selectedThread;
+    final turnIndex = turns.indexWhere((turn) => turn.id == turnId);
+    if (_closed || thread == null || turnIndex < 0) return false;
+    if (!_summaryTurnIds.contains(turnId)) return false;
+
+    final page = _turnItemPages.putIfAbsent(
+      turnId,
+      () => _CodexTurnItemPageState(summaryItems: turns[turnIndex].items),
+    );
+    if (page.loading || (page.started && page.nextCursor == null)) return false;
+
+    final cursor = page.started ? page.nextCursor : null;
+    final generation = _readGeneration;
+    page
+      ..loading = true
+      ..error = null;
+    _notify();
+    try {
+      final response = await connection.listThreadItems(
+        CodexThreadItemsListParams(
+          cursor: cursor,
+          limit: codexThreadTurnItemsPageSize,
+          sortDirection: CodexSortDirection.desc,
+          threadId: thread.id,
+          turnId: turnId,
+        ),
+      );
+      if (_closed ||
+          generation != _readGeneration ||
+          selectedThread?.id != thread.id ||
+          !identical(_turnItemPages[turnId], page)) {
+        return false;
+      }
+
+      final incoming = response.data
+          .where((entry) => entry.turnId == turnId)
+          .map((entry) => entry.item)
+          .toList(growable: false)
+          .reversed
+          .toList(growable: false);
+      page
+        ..items = _mergeThreadItems(page.items, incoming, prepend: true)
+        ..started = true
+        ..nextCursor = _normalizedNextCursor(response.nextCursor, cursor)
+        ..error = null;
+
+      final currentIndex = turns.indexWhere((turn) => turn.id == turnId);
+      if (currentIndex < 0) return false;
+      final current = turns[currentIndex];
+      final updated = _turnWith(
+        current,
+        items: _composeTurnItems(page.summaryItems, page.items),
+      );
+      turns = [
+        ...turns.take(currentIndex),
+        updated,
+        ...turns.skip(currentIndex + 1),
+      ];
+      final updatedThread = codexThreadWithTurns(selectedThread!, turns);
+      selectedThread = updatedThread;
+      _threads[thread.id] = updatedThread;
+      _rebuildCatalog();
+      return incoming.isNotEmpty;
+    } catch (error) {
+      if (_closed ||
+          generation != _readGeneration ||
+          selectedThread?.id != thread.id ||
+          !identical(_turnItemPages[turnId], page)) {
+        return false;
+      }
+      page.error = '$error';
+      return false;
+    } finally {
+      if (!_closed && identical(_turnItemPages[turnId], page)) {
+        page.loading = false;
+        _notify();
+      }
+    }
   }
 
   /// Opens a thread that is already subscribed on this app-server connection.
@@ -586,10 +739,13 @@ class CodexConversationState extends ChangeNotifier {
   }
 
   /// Opens a thread restored and subscribed by `thread/resume`.
-  void openResumedConversation(CodexThreadResumeResponse response) {
+  void openResumedConversation(
+    CodexThreadResumeResponse response, {
+    CodexHistoryPage? history,
+  }) {
     _openSubscribedConversation(
       thread: response.thread,
-      initialTurnsPage: response.initialTurnsPage,
+      history: history,
       model: response.model,
       reasoningEffort: response.reasoningEffort,
       activePermissionProfile: response.activePermissionProfile,
@@ -608,8 +764,8 @@ class CodexConversationState extends ChangeNotifier {
 
   /// Rebuilds an evicted local session from a bounded snapshot while keeping
   /// the app-server subscription owned by the registry unchanged.
-  void openHydratedConversation(CodexThread thread, CodexTurnsPage page) {
-    _openConversation(thread: thread, initialTurnsPage: page, resumed: false);
+  void openHydratedConversation(CodexThread thread, CodexHistoryPage history) {
+    _openConversation(thread: thread, history: history, resumed: false);
   }
 
   /// Applies a newer persisted snapshot without resetting transient composer,
@@ -619,20 +775,34 @@ class CodexConversationState extends ChangeNotifier {
   /// changes arrive through a file watch rather than this connection's normal
   /// turn notifications, so the newest bounded page is merged into any older
   /// pages the user has already loaded.
-  void refreshPersistedSnapshot(CodexThread thread, CodexTurnsPage page) {
+  void refreshPersistedSnapshot(CodexThread thread, CodexHistoryPage history) {
     if (_closed || selectedThread?.id != thread.id) return;
     _flushPendingDeltas();
 
-    final recent = page.data.reversed.toList(growable: false);
+    final recent = history.turns.data.reversed.toList(growable: false);
+    final previouslySummaryTurnIds = Set<String>.of(_summaryTurnIds);
     final recentIds = recent.map((turn) => turn.id).toSet();
     final currentById = {for (final turn in turns) turn.id: turn};
+    _summaryTurnIds.addAll(
+      recent
+          .where(
+            (turn) =>
+                currentById[turn.id] == null ||
+                previouslySummaryTurnIds.contains(turn.id),
+          )
+          .map((turn) => turn.id),
+    );
     final firstOverlap = turns.indexWhere(
       (turn) => recentIds.contains(turn.id),
     );
     final merged = <CodexTurn>[
       if (firstOverlap < 0) ...turns else ...turns.take(firstOverlap),
       for (final persisted in recent)
-        _preferPersistedTurn(currentById[persisted.id], persisted),
+        _preferPersistedTurn(
+          currentById[persisted.id],
+          persisted,
+          wasSummary: previouslySummaryTurnIds.contains(persisted.id),
+        ),
       if (firstOverlap >= 0)
         ...turns
             .skip(firstOverlap)
@@ -647,13 +817,31 @@ class CodexConversationState extends ChangeNotifier {
     selectedThread = refreshed;
     turns = deduplicated;
     if (firstOverlap <= 0) {
-      _setTurnPagination(thread.id, page.nextCursor);
+      _setTurnPagination(thread.id, history.turns.nextCursor);
     }
     _notify();
   }
 
-  CodexTurn _preferPersistedTurn(CodexTurn? current, CodexTurn persisted) {
+  CodexTurn _preferPersistedTurn(
+    CodexTurn? current,
+    CodexTurn persisted, {
+    required bool wasSummary,
+  }) {
     if (current == null) return persisted;
+    final page = _turnItemPages[persisted.id];
+    if (page != null) {
+      page.summaryItems = persisted.items;
+      return _turnWith(
+        persisted,
+        items: _composeTurnItems(page.summaryItems, page.items),
+      );
+    }
+    if (!wasSummary) {
+      // A turn created by this live subscription already has its complete
+      // streamed items. Refresh its persisted metadata without replacing that
+      // richer content with the summary projection.
+      return _turnWith(persisted, items: current.items);
+    }
     if (current.status != CodexTurnStatus.inProgress &&
         persisted.status == CodexTurnStatus.inProgress) {
       return current;
@@ -671,14 +859,14 @@ class CodexConversationState extends ChangeNotifier {
 
   void _openSubscribedConversation({
     required CodexThread thread,
-    CodexTurnsPage? initialTurnsPage,
+    CodexHistoryPage? history,
     required String model,
     required CodexReasoningEffort? reasoningEffort,
     required CodexActivePermissionProfile? activePermissionProfile,
   }) {
     _openConversation(
       thread: thread,
-      initialTurnsPage: initialTurnsPage,
+      history: history,
       resumed: true,
       model: model,
       reasoningEffort: reasoningEffort,
@@ -689,26 +877,26 @@ class CodexConversationState extends ChangeNotifier {
   void _openConversation({
     required CodexThread thread,
     required bool resumed,
-    CodexTurnsPage? initialTurnsPage,
+    CodexHistoryPage? history,
     String? model,
     CodexReasoningEffort? reasoningEffort,
     CodexActivePermissionProfile? activePermissionProfile,
   }) {
     if (_closed) return;
-    final loadedTurns = initialTurnsPage == null
+    _resetTurnPagination();
+    final loadedTurns = history == null
         ? thread.turns
-        : initialTurnsPage.data.reversed.toList(growable: false);
-    final openedThread = initialTurnsPage == null
+        : history.turns.data.reversed.toList(growable: false);
+    if (history != null) _markSummaryTurns(loadedTurns);
+    final openedThread = history == null
         ? thread
         : codexThreadWithTurns(thread, loadedTurns);
     _threads[openedThread.id] = openedThread;
     if (resumed) _resumedThreads[openedThread.id] = openedThread;
     selectedThread = openedThread;
     turns = loadedTurns;
-    if (initialTurnsPage == null) {
-      _resetTurnPagination();
-    } else {
-      _setTurnPagination(openedThread.id, initialTurnsPage.nextCursor);
+    if (history != null) {
+      _setTurnPagination(openedThread.id, history.turns.nextCursor);
     }
     readingThreadId = null;
     readError = null;
@@ -2173,12 +2361,21 @@ class CodexConversationState extends ChangeNotifier {
     required int readGeneration,
   }) async {
     try {
-      // Resume restores this connection's live subscription. Bootstrap only a
-      // bounded recent page so reconnecting a long thread cannot recreate the
-      // former single-frame full-history response.
-      final response = await connection.resumeThread(
-        threadId,
-        initialTurnsPage: codexThreadResumeInitialTurnsPage,
+      // Resume only restores this connection's live subscription. Persisted
+      // turn summaries are fetched separately so tool output cannot inflate
+      // the resume response itself.
+      final response = await connection.resumeThread(threadId);
+      if (_closed ||
+          connection.state.phase != CodexConnectionPhase.connected ||
+          connectionGeneration != _connectionGeneration ||
+          readGeneration != _readGeneration ||
+          selectedThread?.id != threadId) {
+        return;
+      }
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: threadId,
+        cursor: response.turnsBackwardsCursor,
       );
       if (_closed ||
           connection.state.phase != CodexConnectionPhase.connected ||
@@ -2187,36 +2384,15 @@ class CodexConversationState extends ChangeNotifier {
           selectedThread?.id != threadId) {
         return;
       }
-      final initialPage = response.initialTurnsPage;
-      final page = initialPage == null
-          ? await connection.listThreadTurns(
-              CodexThreadTurnsListParams(
-                itemsView: codexThreadTurnsItemsView,
-                limit: codexThreadTurnsPageSize,
-                sortDirection: CodexSortDirection.desc,
-                threadId: threadId,
-              ),
-            )
-          : null;
-      if (_closed ||
-          connection.state.phase != CodexConnectionPhase.connected ||
-          connectionGeneration != _connectionGeneration ||
-          readGeneration != _readGeneration ||
-          selectedThread?.id != threadId) {
-        return;
-      }
-      final loadedTurns = (initialPage?.data ?? page!.data).reversed.toList(
-        growable: false,
-      );
+      _resetTurnPagination();
+      final loadedTurns = history.turns.data.reversed.toList(growable: false);
+      _markSummaryTurns(loadedTurns);
       final thread = codexThreadWithTurns(response.thread, loadedTurns);
       _resumedThreads[thread.id] = thread;
       _threads[thread.id] = thread;
       selectedThread = thread;
       turns = loadedTurns;
-      _setTurnPagination(
-        thread.id,
-        initialPage?.nextCursor ?? page?.nextCursor,
-      );
+      _setTurnPagination(thread.id, history.turns.nextCursor);
       readError = null;
       _failedReadThreadId = null;
       _rebuildCatalog();
@@ -3074,7 +3250,7 @@ final class CodexConversationRegistry extends ChangeNotifier {
 
   CodexConversationState registerHydrated(
     CodexThread thread,
-    CodexTurnsPage page, {
+    CodexHistoryPage history, {
     required CodexThreadSessionKind kind,
     String? parentThreadId,
   }) {
@@ -3083,7 +3259,8 @@ final class CodexConversationRegistry extends ChangeNotifier {
       kind: kind,
       parentThreadId: parentThreadId,
     );
-    final session = _newSession(handle)..openHydratedConversation(thread, page);
+    final session = _newSession(handle)
+      ..openHydratedConversation(thread, history);
     _sessionChanged(handle, session);
     return session;
   }
@@ -3093,6 +3270,7 @@ final class CodexConversationRegistry extends ChangeNotifier {
     required CodexThreadSessionKind kind,
     String? parentThreadId,
     bool createSession = true,
+    CodexHistoryPage? history,
   }) {
     final handle = registerThread(
       response.thread,
@@ -3102,7 +3280,7 @@ final class CodexConversationRegistry extends ChangeNotifier {
     );
     if (!createSession) return null;
     final session = _newSession(handle);
-    session.openResumedConversation(response);
+    session.openResumedConversation(response, history: history);
     _sessionChanged(handle, session);
     return session;
   }
@@ -3166,29 +3344,20 @@ final class CodexConversationRegistry extends ChangeNotifier {
     if (canHydrateWithoutResume ||
         (handle.wasSubscribed && handle.subscribedEpoch == epoch)) {
       final response = await connection.readThread(handle.thread.id);
-      final page = await connection.listThreadTurns(
-        CodexThreadTurnsListParams(
-          itemsView: codexThreadTurnsItemsView,
-          limit: codexThreadTurnsPageSize,
-          sortDirection: CodexSortDirection.desc,
-          threadId: handle.thread.id,
-        ),
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: handle.thread.id,
       );
       _ensureHydrationCurrent(handle, epoch: epoch);
       handle.thread = response.thread;
       session = _newSession(handle)
-        ..openHydratedConversation(
-          response.thread,
-          CodexTurnsPage(
-            backwardsCursor: page.backwardsCursor,
-            data: page.data,
-            nextCursor: page.nextCursor,
-          ),
-        );
+        ..openHydratedConversation(response.thread, history);
     } else {
-      final response = await connection.resumeThread(
-        handle.thread.id,
-        initialTurnsPage: codexThreadResumeInitialTurnsPage,
+      final response = await connection.resumeThread(handle.thread.id);
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: handle.thread.id,
+        cursor: response.turnsBackwardsCursor,
       );
       _validateThread(handle, response.thread);
       _ensureHydrationCurrent(handle, epoch: epoch);
@@ -3196,7 +3365,8 @@ final class CodexConversationRegistry extends ChangeNotifier {
         ..thread = response.thread
         ..wasSubscribed = true
         ..subscribedEpoch = epoch;
-      session = _newSession(handle)..openResumedConversation(response);
+      session = _newSession(handle)
+        ..openResumedConversation(response, history: history);
     }
     _replayPendingEvents(handle.thread.id, session);
     _sessionChanged(handle, session);
@@ -3446,39 +3616,31 @@ final class CodexConversationRegistry extends ChangeNotifier {
           if (session != null &&
               handle.kind == CodexThreadSessionKind.persisted) {
             final response = await connection.readThread(handle.thread.id);
-            final page = await connection.listThreadTurns(
-              CodexThreadTurnsListParams(
-                itemsView: codexThreadTurnsItemsView,
-                limit: codexThreadTurnsPageSize,
-                sortDirection: CodexSortDirection.desc,
-                threadId: handle.thread.id,
-              ),
+            final history = await loadCodexHistoryPage(
+              connection: connection,
+              threadId: handle.thread.id,
             );
             if (!_isCurrentEpoch(epoch)) return;
             handle.thread = response.thread;
-            session.openHydratedConversation(
-              response.thread,
-              CodexTurnsPage(
-                backwardsCursor: page.backwardsCursor,
-                data: page.data,
-                nextCursor: page.nextCursor,
-              ),
-            );
+            session.openHydratedConversation(response.thread, history);
           }
           continue;
         }
-        final response = await connection.resumeThread(
-          handle.thread.id,
-          initialTurnsPage: session == null
-              ? null
-              : codexThreadResumeInitialTurnsPage,
-        );
+        final response = await connection.resumeThread(handle.thread.id);
         _validateThread(handle, response.thread);
         if (!_isCurrentEpoch(epoch)) return;
         handle
           ..thread = response.thread
           ..subscribedEpoch = epoch;
-        if (session != null) session.openResumedConversation(response);
+        if (session != null) {
+          final history = await loadCodexHistoryPage(
+            connection: connection,
+            threadId: handle.thread.id,
+            cursor: response.turnsBackwardsCursor,
+          );
+          if (!_isCurrentEpoch(epoch)) return;
+          session.openResumedConversation(response, history: history);
+        }
       } catch (_) {
         if (!_isCurrentEpoch(epoch)) return;
         handle.subscribedEpoch = null;
@@ -3790,10 +3952,24 @@ final class CodexServiceState extends CodexConversationState {
       selectedConversation?.hasOlderTurns ?? super.hasOlderTurns;
 
   @override
+  CodexTurnItemsState turnItemsState(String turnId) =>
+      selectedConversation?.turnItemsState(turnId) ??
+      super.turnItemsState(turnId);
+
+  @override
   Future<bool> loadOlderTurns() async {
     final session = selectedConversation;
     if (session == null) return super.loadOlderTurns();
     final loaded = await session.loadOlderTurns();
+    _syncSelectedConversation();
+    return loaded;
+  }
+
+  @override
+  Future<bool> loadTurnItems(String turnId) async {
+    final session = selectedConversation;
+    if (session == null) return super.loadTurnItems(turnId);
+    final loaded = await session.loadTurnItems(turnId);
     _syncSelectedConversation();
     return loaded;
   }
@@ -3815,9 +3991,11 @@ final class CodexServiceState extends CodexConversationState {
       if (preview == null) return;
       conversations.registerHydrated(
         preview,
-        CodexTurnsPage(
-          data: turns.reversed.toList(growable: false),
-          nextCursor: _olderTurnsCursor,
+        CodexHistoryPage(
+          turns: CodexThreadTurnsListResponse(
+            data: turns.reversed.toList(growable: false),
+            nextCursor: _olderTurnsCursor,
+          ),
         ),
         kind: CodexThreadSessionKind.persisted,
       );
@@ -4097,7 +4275,7 @@ final class CodexServiceState extends CodexConversationState {
       }
       final session = selectedConversation;
       if (session == null || session.selectedThread?.id != threadId) return;
-      session.refreshPersistedSnapshot(snapshot.thread, snapshot.page);
+      session.refreshPersistedSnapshot(snapshot.thread, snapshot.history);
       // Read-only threads may not be subscribed to queue notifications.
       unawaited(session.refreshQueue(showLoading: false));
     } catch (_) {
@@ -4146,7 +4324,7 @@ final class CodexServiceState extends CodexConversationState {
           !identical(selectedConversation, conversation)) {
         return;
       }
-      conversation.refreshPersistedSnapshot(snapshot.thread, snapshot.page);
+      conversation.refreshPersistedSnapshot(snapshot.thread, snapshot.history);
       unawaited(conversation.refreshQueue());
     } catch (_) {
       // Cached content remains usable when the best-effort entry refresh
@@ -4154,29 +4332,14 @@ final class CodexServiceState extends CodexConversationState {
     }
   }
 
-  Future<({CodexThread thread, CodexTurnsPage page})>
+  Future<({CodexThread thread, CodexHistoryPage history})>
   _readPersistedThreadSnapshot(String threadId) async {
     final results = await Future.wait<Object>([
       connection.readThread(threadId),
-      connection.listThreadTurns(
-        CodexThreadTurnsListParams(
-          itemsView: codexThreadTurnsItemsView,
-          limit: codexThreadTurnsPageSize,
-          sortDirection: CodexSortDirection.desc,
-          threadId: threadId,
-        ),
-      ),
+      loadCodexHistoryPage(connection: connection, threadId: threadId),
     ]);
     final response = results[0] as CodexThreadReadResponse;
-    final page = results[1] as CodexThreadTurnsListResponse;
-    return (
-      thread: response.thread,
-      page: CodexTurnsPage(
-        backwardsCursor: page.backwardsCursor,
-        data: page.data,
-        nextCursor: page.nextCursor,
-      ),
-    );
+    return (thread: response.thread, history: results[1] as CodexHistoryPage);
   }
 
   @override
@@ -4230,6 +4393,73 @@ CodexTurn _turnWith(CodexTurn turn, {List<CodexThreadItem>? items}) {
     startedAt: turn.startedAt,
     status: turn.status,
   );
+}
+
+final class _CodexTurnItemPageState {
+  _CodexTurnItemPageState({required this.summaryItems});
+
+  List<CodexThreadItem> summaryItems;
+  List<CodexThreadItem> items = const [];
+  String? nextCursor;
+  String? error;
+  bool started = false;
+  bool loading = false;
+}
+
+String? _normalizedNextCursor(String? value, String? current) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty || normalized == current) {
+    return null;
+  }
+  return normalized;
+}
+
+List<CodexThreadItem> _composeTurnItems(
+  List<CodexThreadItem> summary,
+  List<CodexThreadItem> details,
+) {
+  if (details.isEmpty) return summary;
+  var leadingEnd = 0;
+  while (leadingEnd < summary.length &&
+      summary[leadingEnd] is CodexUserMessageThreadItem) {
+    leadingEnd++;
+  }
+  final withLeading = _mergeThreadItems(
+    summary.take(leadingEnd).toList(growable: false),
+    details,
+    prepend: false,
+  );
+  return _mergeThreadItems(
+    withLeading,
+    summary.skip(leadingEnd).toList(growable: false),
+    prepend: false,
+  );
+}
+
+List<CodexThreadItem> _mergeThreadItems(
+  List<CodexThreadItem> current,
+  List<CodexThreadItem> incoming, {
+  required bool prepend,
+}) {
+  if (incoming.isEmpty) return current;
+  final ordered = prepend
+      ? <CodexThreadItem>[...incoming, ...current]
+      : <CodexThreadItem>[...current, ...incoming];
+  final merged = <CodexThreadItem>[];
+  final indexById = <String, int>{};
+  for (final item in ordered) {
+    final id = _threadItemId(item);
+    final index = id == null ? null : indexById[id];
+    if (index == null) {
+      if (id != null) indexById[id] = merged.length;
+      merged.add(item);
+    } else {
+      // Cursor pages can overlap at their boundary. Keep the later copy in
+      // [ordered], which is also the fresher representation during refresh.
+      merged[index] = item;
+    }
+  }
+  return List.unmodifiable(merged);
 }
 
 String? _threadItemId(CodexThreadItem item) {

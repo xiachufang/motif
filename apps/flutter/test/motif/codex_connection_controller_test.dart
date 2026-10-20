@@ -635,6 +635,12 @@ void main() {
               'nextCursor': 'older',
               'backwardsCursor': 'newer',
             };
+          case 'thread/items/list':
+            result = {
+              'data': <Object?>[],
+              'nextCursor': 'older-items',
+              'backwardsCursor': 'newer-items',
+            };
           case 'thread/name/set':
           case 'thread/archive':
           case 'thread/delete':
@@ -743,6 +749,17 @@ void main() {
           ),
         )).data.single.id,
         'turn-page-1',
+      );
+      expect(
+        (await controller.listThreadItems(
+          const CodexThreadItemsListParams(
+            cursor: 'items-anchor',
+            limit: 10,
+            sortDirection: CodexSortDirection.desc,
+            threadId: 'thread-1',
+          ),
+        )).nextCursor,
+        'older-items',
       );
       expect(
         (await controller.startThread(
@@ -875,6 +892,12 @@ void main() {
         'sortDirection': 'desc',
         'threadId': 'thread-1',
       });
+      expect(requests['thread/items/list']?['params'], {
+        'cursor': 'items-anchor',
+        'limit': 10,
+        'sortDirection': 'desc',
+        'threadId': 'thread-1',
+      });
       expect(requests['thread/start']?['params'], {
         'cwd': '/work/new-project',
         'model': 'codex-test',
@@ -956,7 +979,7 @@ void main() {
           .where((request) => request['id'] != null)
           .map((request) => request['id'])
           .toSet();
-      expect(ids, hasLength(26));
+      expect(ids, hasLength(27));
       await controller.close();
     },
   );

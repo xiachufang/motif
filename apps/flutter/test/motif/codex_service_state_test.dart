@@ -189,14 +189,12 @@ void main() {
       expect(client.turnListParams, hasLength(1));
       expect(client.turnListParams.single.threadId, 'first');
       expect(client.turnListParams.single.limit, codexThreadTurnsPageSize);
-      expect(
-        client.turnListParams.single.itemsView?.value,
-        codexThreadTurnsItemsView.value,
-      );
+      expect(client.turnListParams.single.itemsView?.value, 'summary');
       expect(
         client.turnListParams.single.sortDirection,
         CodexSortDirection.desc,
       );
+      expect(client.itemListParams, isEmpty);
       expect(client.resumedThreadIds, isEmpty);
       expect(state.selectedThread?.id, 'first');
 
@@ -307,6 +305,7 @@ void main() {
       expect(client.resumedThreadIds, isEmpty);
       expect(client.readThreadIds, ['thread', 'thread']);
       expect(client.turnListParams, hasLength(2));
+      expect(client.itemListParams, isEmpty);
       expect(
         (state.turns.last.items.single as CodexAgentMessageThreadItem).text,
         'While backgrounded',
@@ -802,7 +801,7 @@ void main() {
     await state.close();
   });
 
-  test('loads recent turns first and prepends older cursor pages', () async {
+  test('loads recent turn summaries and prepends older cursor pages', () async {
     const oldest = CodexTurn(
       id: 'turn-1',
       items: [],
@@ -848,6 +847,7 @@ void main() {
 
     expect(state.turns.map((turn) => turn.id), ['turn-3', 'turn-4']);
     expect(state.hasOlderTurns, isTrue);
+    expect(client.itemListParams, isEmpty);
 
     expect(await state.loadOlderTurns(), isTrue);
     expect(state.turns.map((turn) => turn.id), [
@@ -861,9 +861,110 @@ void main() {
       null,
       'older-page',
     ]);
+    expect(
+      client.turnListParams.map((params) => params.itemsView?.value),
+      everyElement('summary'),
+    );
 
     await state.close();
   });
+
+  test(
+    'loads full turn items only when requested and keeps a per-turn cursor',
+    () async {
+      const question = CodexUserMessageThreadItem(
+        id: 'question',
+        content: [CodexTextUserInput(text: 'Question')],
+      );
+      const answer = CodexAgentMessageThreadItem(
+        id: 'answer',
+        phase: CodexMessagePhase('final_answer'),
+        text: 'Answer',
+      );
+      const olderActivity = CodexAgentMessageThreadItem(
+        id: 'older-activity',
+        text: 'Older activity',
+      );
+      const recentActivity = CodexAgentMessageThreadItem(
+        id: 'recent-activity',
+        text: 'Recent activity',
+      );
+      const summary = CodexTurn(
+        id: 'turn-1',
+        items: [question, answer],
+        itemsView: CodexTurnItemsView('summary'),
+        status: CodexTurnStatus.completed,
+      );
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('thread')]),
+        },
+        turnPages: const {
+          'thread': {
+            null: CodexThreadTurnsListResponse(data: [summary]),
+          },
+        },
+        itemPages: const {
+          'thread': {
+            null: CodexThreadItemsListResponse(
+              data: [
+                CodexThreadItemEntry(item: answer, turnId: 'turn-1'),
+                CodexThreadItemEntry(item: recentActivity, turnId: 'turn-1'),
+              ],
+              nextCursor: 'older-items',
+            ),
+            'older-items': CodexThreadItemsListResponse(
+              data: [
+                CodexThreadItemEntry(item: olderActivity, turnId: 'turn-1'),
+                CodexThreadItemEntry(item: question, turnId: 'turn-1'),
+              ],
+            ),
+          },
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      await state.readThread('thread');
+
+      expect(client.itemListParams, isEmpty);
+      expect(
+        state.turnItemsState('turn-1').phase,
+        CodexTurnItemsPhase.notLoaded,
+      );
+
+      expect(await state.loadTurnItems('turn-1'), isTrue);
+      expect(state.turnItemsState('turn-1').phase, CodexTurnItemsPhase.partial);
+      expect(state.turns.single.items, [question, recentActivity, answer]);
+
+      expect(await state.loadTurnItems('turn-1'), isTrue);
+      expect(
+        state.turnItemsState('turn-1').phase,
+        CodexTurnItemsPhase.complete,
+      );
+      expect(state.turns.single.items, [
+        question,
+        olderActivity,
+        recentActivity,
+        answer,
+      ]);
+      expect(client.itemListParams.map((params) => params.cursor), [
+        null,
+        'older-items',
+      ]);
+      expect(
+        client.itemListParams.map((params) => params.turnId),
+        everyElement('turn-1'),
+      );
+      expect(
+        client.itemListParams.map((params) => params.limit),
+        everyElement(codexThreadTurnItemsPageSize),
+      );
+
+      await state.close();
+    },
+  );
 
   test('manages threads through app-server APIs', () async {
     final original = thread('managed', updatedAt: 10);
@@ -1331,7 +1432,11 @@ void main() {
     final source = thread(
       'source',
       turns: const [
-        CodexTurn(id: 'turn-1', items: [], status: CodexTurnStatus.completed),
+        CodexTurn(
+          id: 'turn-1',
+          items: [CodexAgentMessageThreadItem(id: 'answer', text: 'Done')],
+          status: CodexTurnStatus.completed,
+        ),
       ],
     );
     final client =
@@ -1369,7 +1474,8 @@ void main() {
     expect(client.forkParams.single.excludeTurns, isTrue);
     final forkPage = client.turnListParams.last;
     expect(forkPage.threadId, 'forked-source');
-    expect(forkPage.limit, 10);
+    expect(forkPage.limit, codexThreadTurnsPageSize);
+    expect(forkPage.itemsView?.value, 'summary');
     expect(forkPage.sortDirection, CodexSortDirection.desc);
     expect(state.turns.any((turn) => turn.id == 'turn-1'), isTrue);
     expect(client.renamedThreads.single.threadId, 'forked-source');
@@ -1394,7 +1500,11 @@ void main() {
       final source = thread(
         'source',
         turns: const [
-          CodexTurn(id: 'turn-1', items: [], status: CodexTurnStatus.completed),
+          CodexTurn(
+            id: 'turn-1',
+            items: [CodexAgentMessageThreadItem(id: 'answer', text: 'Done')],
+            status: CodexTurnStatus.completed,
+          ),
         ],
       );
       final client = FakeCodexClient(
@@ -2098,6 +2208,7 @@ final class FakeCodexClient extends ChangeNotifier
   FakeCodexClient({
     required this.pages,
     this.turnPages = const {},
+    this.itemPages = const {},
     this.projects = const [],
     this.pinnedThreadIds = const [],
     this.projectPages,
@@ -2108,6 +2219,7 @@ final class FakeCodexClient extends ChangeNotifier
 
   final Map<String?, CodexThreadListResponse> pages;
   final Map<String, Map<String?, CodexThreadTurnsListResponse>> turnPages;
+  final Map<String, Map<String?, CodexThreadItemsListResponse>> itemPages;
   List<CodexProject> projects;
   List<String> pinnedThreadIds;
   Map<String?, CodexProjectListResponse>? projectPages;
@@ -2129,6 +2241,7 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> readThreadIds = [];
   final List<bool> readIncludeTurns = [];
   final List<CodexThreadTurnsListParams> turnListParams = [];
+  final List<CodexThreadItemsListParams> itemListParams = [];
   final Map<String, Completer<CodexThreadReadResponse>> readGates = {};
   final List<CodexThreadForkParams> forkParams = [];
   final Map<String, CodexThread> forkedThreads = {};
@@ -2271,6 +2384,31 @@ final class FakeCodexClient extends ChangeNotifier
             .firstWhere((thread) => thread.id == params.threadId);
     return CodexThreadTurnsListResponse(
       data: original.turns.reversed.toList(growable: false),
+    );
+  }
+
+  @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) async {
+    itemListParams.add(params);
+    if (forkedThreads.containsKey(params.threadId) &&
+        forkHistoryError != null) {
+      throw forkHistoryError!;
+    }
+    final configured = itemPages[params.threadId]?[params.cursor];
+    if (configured != null) return configured;
+    final original =
+        forkedThreads[params.threadId] ??
+        pages.values
+            .expand((page) => page.data)
+            .firstWhere((thread) => thread.id == params.threadId);
+    return CodexThreadItemsListResponse(
+      data: [
+        for (final turn in original.turns.reversed)
+          for (final item in turn.items.reversed)
+            CodexThreadItemEntry(item: item, turnId: turn.id),
+      ],
     );
   }
 

@@ -185,6 +185,9 @@ abstract interface class CodexAppServerClient implements Listenable {
   Future<CodexThreadTurnsListResponse> listThreadTurns(
     CodexThreadTurnsListParams params,
   );
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  );
   Future<CodexThreadStartResponse> startThread(CodexThreadStartParams params);
   Future<CodexThreadForkResponse> forkThread(CodexThreadForkParams params);
   Future<CodexThreadUnsubscribeResponse> unsubscribeThread(String threadId);
@@ -543,6 +546,14 @@ final class CodexConnectionController extends ChangeNotifier
   ) => _typedRequest(
     (id) => CodexThreadTurnsListRequest(id: id, params: params),
     CodexThreadTurnsListResponse.fromJson,
+  );
+
+  @override
+  Future<CodexThreadItemsListResponse> listThreadItems(
+    CodexThreadItemsListParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadItemsListRequest(id: id, params: params),
+    CodexThreadItemsListResponse.fromJson,
   );
 
   @override

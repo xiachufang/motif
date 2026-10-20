@@ -101,12 +101,19 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   );
   final Set<String> _resolvedPlanItems = <String>{};
   final Set<String> _expandedHistoryTurnIds = <String>{};
+  final GlobalKey _historyCenterKey = GlobalKey(
+    debugLabel: 'codex-history-center',
+  );
   List<CodexPendingAttachment> _attachments = const [];
   List<CodexComposerReference> _references = const [];
   ObservationSubscription<_ConversationScrollSnapshot>? _scrollSubscription;
   String? _scrollThreadId;
+  String? _historyCenterThreadId;
+  String? _historyCenterTurnId;
+  bool _reserveHistoryControlSpace = false;
   bool _followTail = true;
   bool _scrollScheduled = false;
+  bool _olderTurnsCheckScheduled = false;
   CodexState? _draftState;
   String? _draftServerId;
   String? _draftThreadId;
@@ -333,19 +340,26 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
           Expanded(
             child: ListenableBuilder(
               listenable: state,
-              builder: (context, _) => _CodexConversationViewport(
-                key: const ValueKey('codex-conversation-viewport'),
-                state: state,
-                scrollController: _scroll,
-                onScrollNotification: _onUserScroll,
-                onLoadOlderTurns: _loadOlderTurns,
-                turnActionBuilder: widget.turnActionBuilder,
-                expandedHistoryTurnIds: _expandedHistoryTurnIds,
-                onToggleHistory: _toggleHistory,
-                onOpenFile: widget.onOpenFile,
-                onOpenImage: widget.onOpenImage,
-                onOpenTurnDiff: widget.onOpenTurnDiff,
-              ),
+              builder: (context, _) {
+                final historyCenterTurnId = _resolveHistoryCenterTurnId(state);
+                _scheduleOlderTurnsIfNeeded();
+                return _CodexConversationViewport(
+                  key: const ValueKey('codex-conversation-viewport'),
+                  state: state,
+                  scrollController: _scroll,
+                  historyCenterKey: _historyCenterKey,
+                  historyCenterTurnId: historyCenterTurnId,
+                  reserveHistoryControlSpace: _reserveHistoryControlSpace,
+                  onScrollNotification: _onUserScroll,
+                  onLoadOlderTurns: _loadOlderTurns,
+                  turnActionBuilder: widget.turnActionBuilder,
+                  expandedHistoryTurnIds: _expandedHistoryTurnIds,
+                  onToggleHistory: _toggleHistory,
+                  onOpenFile: widget.onOpenFile,
+                  onOpenImage: widget.onOpenImage,
+                  onOpenTurnDiff: widget.onOpenTurnDiff,
+                );
+              },
             ),
           ),
           ListenableBuilder(
@@ -808,6 +822,29 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
     _scheduleScrollToBottom();
   }
 
+  String? _resolveHistoryCenterTurnId(CodexConversationState state) {
+    final threadId = state.viewModel.selectedThread?.id;
+    final turns = state.viewModel.turns;
+    if (_historyCenterThreadId != threadId) {
+      _historyCenterThreadId = threadId;
+      _historyCenterTurnId = turns.firstOrNull?.id;
+      _reserveHistoryControlSpace =
+          state.loadingOlderTurns ||
+          state.olderTurnsError != null ||
+          state.hasOlderTurns;
+    } else if (turns.isNotEmpty &&
+        (_historyCenterTurnId == null ||
+            !turns.any((turn) => turn.id == _historyCenterTurnId))) {
+      _historyCenterTurnId = turns.first.id;
+    }
+    if (state.loadingOlderTurns ||
+        state.olderTurnsError != null ||
+        state.hasOlderTurns) {
+      _reserveHistoryControlSpace = true;
+    }
+    return _historyCenterTurnId;
+  }
+
   void _bindScrollUpdates() {
     _scrollSubscription?.dispose();
     _scrollSubscription = observe(
@@ -836,11 +873,15 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
   }
 
   void _toggleHistory(String turnId) {
+    final expanding = !_expandedHistoryTurnIds.contains(turnId);
     setState(() {
-      if (!_expandedHistoryTurnIds.add(turnId)) {
+      if (expanding) {
+        _expandedHistoryTurnIds.add(turnId);
+      } else {
         _expandedHistoryTurnIds.remove(turnId);
       }
     });
+    if (expanding) unawaited(widget.state.loadTurnItems(turnId));
   }
 
   void _scheduleScrollToBottom() {
@@ -856,25 +897,34 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
     final state = widget.state;
     if (state.loadingOlderTurns || !state.hasOlderTurns) return;
     _followTail = false;
-    final beforeMaxExtent = _scroll.hasClients
-        ? _scroll.position.maxScrollExtent
-        : 0.0;
-    final beforePixels = _scroll.hasClients ? _scroll.position.pixels : 0.0;
-    final threadId = state.selectedThread?.id;
-    final loaded = await state.loadOlderTurns();
-    if (!loaded || !mounted || state.selectedThread?.id != threadId) return;
+    await state.loadOlderTurns();
+  }
+
+  void _scheduleOlderTurnsIfNeeded() {
+    final state = widget.state;
+    if (_olderTurnsCheckScheduled ||
+        state.loadingOlderTurns ||
+        state.olderTurnsError != null ||
+        !state.hasOlderTurns ||
+        !mounted) {
+      return;
+    }
+    _olderTurnsCheckScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _olderTurnsCheckScheduled = false;
       if (!mounted || !_scroll.hasClients) return;
-      final addedExtent = _scroll.position.maxScrollExtent - beforeMaxExtent;
-      final target = (beforePixels + addedExtent).clamp(
-        _scroll.position.minScrollExtent,
-        _scroll.position.maxScrollExtent,
-      );
-      _scroll.jumpTo(target);
+      if (_scroll.position.extentBefore <= 480) {
+        unawaited(_loadOlderTurns());
+      }
     });
   }
 
   bool _onUserScroll(ScrollNotification notification) {
+    if (notification.depth == 0 &&
+        widget.state.olderTurnsError == null &&
+        notification.metrics.extentBefore <= 480) {
+      unawaited(_loadOlderTurns());
+    }
     if (notification is UserScrollNotification) {
       switch (notification.direction) {
         case ScrollDirection.forward:
@@ -893,10 +943,6 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
             _followTail = true;
           }
       }
-      if (notification.direction != ScrollDirection.idle &&
-          notification.metrics.pixels <= 240) {
-        unawaited(_loadOlderTurns());
-      }
     }
     return false;
   }
@@ -909,6 +955,9 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   const _CodexConversationViewport({
     required this.state,
     required this.scrollController,
+    required this.historyCenterKey,
+    required this.historyCenterTurnId,
+    required this.reserveHistoryControlSpace,
     required this.onScrollNotification,
     required this.onLoadOlderTurns,
     required this.turnActionBuilder,
@@ -922,6 +971,9 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
 
   final CodexConversationState state;
   final ScrollController scrollController;
+  final GlobalKey historyCenterKey;
+  final String? historyCenterTurnId;
+  final bool reserveHistoryControlSpace;
   final NotificationListenerCallback<ScrollNotification> onScrollNotification;
   final Future<void> Function() onLoadOlderTurns;
   final CodexTurnActionBuilder turnActionBuilder;
@@ -934,21 +986,15 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   @override
   Widget build(BuildContext context) {
     final turns = state.viewModel.turns;
-    final conversationChildren = <Widget>[
-      if (state.loadingOlderTurns ||
-          state.olderTurnsError != null ||
-          state.hasOlderTurns)
-        _OlderTurnsControl(
-          loading: state.loadingOlderTurns,
-          error: state.olderTurnsError,
-          onLoad: onLoadOlderTurns,
-          onRetry: onLoadOlderTurns,
-        ),
-      if (state.readError != null)
-        _InlineError(message: state.readError!, onRetry: state.retryRead),
-      if (turns.isEmpty) const _EmptyConversation(),
-      for (final turn in turns)
-        ..._turnSliverChildren(
+    var centerTurnIndex = historyCenterTurnId == null
+        ? 0
+        : turns.indexWhere((turn) => turn.id == historyCenterTurnId);
+    if (centerTurnIndex < 0) centerTurnIndex = 0;
+
+    _TurnSliverSection buildTurnSection(CodexTurnViewModel turn) {
+      return _TurnSliverSection(
+        key: ValueKey('codex-turn-section-${turn.id}'),
+        children: _turnSliverChildren(
           state: state,
           turnModel: turn,
           actionBuilder: turnActionBuilder,
@@ -958,44 +1004,212 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
           onOpenImage: onOpenImage,
           onOpenTurnDiff: onOpenTurnDiff,
         ),
-      for (final request in state.pendingServerRequests)
-        _ServerRequestCard(
-          key: ValueKey(request.toJson().toString()),
-          state: state,
-          request: request,
+      );
+    }
+
+    final turnsBeforeCenter = turns
+        .take(centerTurnIndex)
+        .toList(growable: false);
+    final olderTurnPages = <List<CodexTurnViewModel>>[];
+    for (var end = turnsBeforeCenter.length; end > 0;) {
+      final start = end > codexThreadTurnsPageSize
+          ? end - codexThreadTurnsPageSize
+          : 0;
+      olderTurnPages.add(turnsBeforeCenter.sublist(start, end));
+      end = start;
+    }
+
+    final historyChromeChildren = <({Key key, Widget child})>[
+      (
+        key: const ValueKey('codex-history-leading-space'),
+        child: const SizedBox(height: MotifSpacing.lg),
+      ),
+      if (state.loadingOlderTurns ||
+          state.olderTurnsError != null ||
+          state.hasOlderTurns ||
+          reserveHistoryControlSpace)
+        (
+          key: const ValueKey('codex-history-control'),
+          child: _OlderTurnsControl(
+            loading: state.loadingOlderTurns,
+            error: state.olderTurnsError,
+            exhausted:
+                !state.loadingOlderTurns &&
+                state.olderTurnsError == null &&
+                !state.hasOlderTurns,
+            onRetry: onLoadOlderTurns,
+          ),
         ),
-      if (state.sendError != null) _InlineError(message: state.sendError!),
-      if (state.forkError != null) _InlineError(message: state.forkError!),
+      if (state.readError != null)
+        (
+          key: const ValueKey('codex-history-read-error'),
+          child: _InlineError(
+            message: state.readError!,
+            onRetry: state.retryRead,
+          ),
+        ),
+      if (turns.isEmpty)
+        (
+          key: const ValueKey('codex-history-empty'),
+          child: const _EmptyConversation(),
+        ),
     ];
+    final olderPageChildren = <({Key key, Widget child})>[
+      // Keep page boundaries stable from the center outward. Loading another
+      // older page therefore adds work only beyond already measured content.
+      for (final page in olderTurnPages)
+        (
+          key: ValueKey('codex-turn-page-older-${page.last.id}'),
+          child: _TurnPageSliverSection(
+            turns: [for (final turn in page) buildTurnSection(turn)],
+          ),
+        ),
+    ];
+    final turnsFromCenter = turns.skip(centerTurnIndex).toList(growable: false);
+    final currentPageChildren = <({Key key, Widget child})>[
+      for (
+        var start = 0;
+        start < turnsFromCenter.length;
+        start += codexThreadTurnsPageSize
+      )
+        (
+          key: ValueKey('codex-turn-page-${turnsFromCenter[start].id}'),
+          child: _TurnPageSliverSection(
+            turns: [
+              for (final turn
+                  in turnsFromCenter.skip(start).take(codexThreadTurnsPageSize))
+                buildTurnSection(turn),
+            ],
+          ),
+        ),
+    ];
+    final footerChildren = <Widget>[
+      for (final request in state.pendingServerRequests)
+        KeyedSubtree(
+          key: ValueKey('codex-server-request-${request.toJson()}'),
+          child: _ServerRequestCard(state: state, request: request),
+        ),
+      if (state.sendError != null)
+        KeyedSubtree(
+          key: const ValueKey('codex-send-error'),
+          child: _InlineError(message: state.sendError!),
+        ),
+      if (state.forkError != null)
+        KeyedSubtree(
+          key: const ValueKey('codex-fork-error'),
+          child: _InlineError(message: state.forkError!),
+        ),
+      const SizedBox(
+        key: ValueKey('codex-conversation-tail-space'),
+        height: MotifSpacing.xxl,
+      ),
+    ];
+    final historyChromePaintOrder = historyChromeChildren.reversed.toList(
+      growable: false,
+    );
+    final historyChromeIndexByKey = <Key, int>{
+      for (var index = 0; index < historyChromePaintOrder.length; index++)
+        historyChromePaintOrder[index].key: index,
+    };
+    final olderPageIndexByKey = <Key, int>{
+      for (var index = 0; index < olderPageChildren.length; index++)
+        olderPageChildren[index].key: index,
+    };
+    final currentPageIndexByKey = <Key, int>{
+      for (var index = 0; index < currentPageChildren.length; index++)
+        currentPageChildren[index].key: index,
+    };
     return NotificationListener<ScrollNotification>(
       onNotification: onScrollNotification,
       child: SelectionArea(
         child: CustomScrollView(
           key: const ValueKey('codex-turn-stream'),
           controller: scrollController,
+          center: historyCenterKey,
           // TODO(flutter): use ScrollCacheExtent.pixels when the native-assets
           // test frontend catches up with the SDK API.
           // ignore: deprecated_member_use
           cacheExtent: 1600,
           slivers: [
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(
-                MotifSpacing.xl,
-                MotifSpacing.lg,
-                MotifSpacing.xl,
-                MotifSpacing.xxl,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xl),
               sliver: SliverList.builder(
-                itemCount: conversationChildren.length,
+                itemCount: historyChromePaintOrder.length,
+                findChildIndexCallback: (key) => historyChromeIndexByKey[key],
                 itemBuilder: (context, index) {
-                  final child = conversationChildren[index];
+                  final entry = historyChromePaintOrder[index];
                   return Center(
+                    key: entry.key,
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 860),
-                      child: SizedBox(width: double.infinity, child: child),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: entry.child,
+                      ),
                     ),
                   );
                 },
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xl),
+              sliver: SliverList.builder(
+                itemCount: olderPageChildren.length,
+                findChildIndexCallback: (key) => olderPageIndexByKey[key],
+                itemBuilder: (context, index) {
+                  // This sliver grows upward from the center, so the newest
+                  // older page is its first child. New pages are appended away
+                  // from the visible anchor.
+                  final entry = olderPageChildren[index];
+                  return Center(
+                    key: entry.key,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 860),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: entry.child,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            SliverPadding(
+              key: historyCenterKey,
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xl),
+              sliver: SliverList.builder(
+                itemCount: currentPageChildren.length,
+                findChildIndexCallback: (key) => currentPageIndexByKey[key],
+                itemBuilder: (context, index) {
+                  final entry = currentPageChildren[index];
+                  return Center(
+                    key: entry.key,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 860),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: entry.child,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xl),
+              sliver: SliverToBoxAdapter(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 860),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: footerChildren,
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
@@ -1005,17 +1219,44 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   }
 }
 
+/// Lays out one API-sized page at once, making its full Markdown extent known
+/// before the user scrolls through it. This prevents a lazy sliver from
+/// revising the page's total height as unusually tall turns enter the cache.
+class _TurnPageSliverSection extends StatelessWidget {
+  const _TurnPageSliverSection({required this.turns});
+
+  final List<Widget> turns;
+
+  @override
+  Widget build(BuildContext context) =>
+      Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: turns);
+}
+
+/// Preserves state within a measured page when a turn changes or more pages
+/// are inserted before it.
+class _TurnSliverSection extends StatelessWidget {
+  const _TurnSliverSection({required this.children, super.key});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: children,
+  );
+}
+
 class _OlderTurnsControl extends StatelessWidget {
   const _OlderTurnsControl({
     required this.loading,
     required this.error,
-    required this.onLoad,
+    required this.exhausted,
     required this.onRetry,
   });
 
   final bool loading;
   final String? error;
-  final Future<void> Function() onLoad;
+  final bool exhausted;
   final Future<void> Function() onRetry;
 
   @override
@@ -1023,20 +1264,22 @@ class _OlderTurnsControl extends StatelessWidget {
     if (error != null) {
       return _InlineError(message: error!, onRetry: onRetry);
     }
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: MotifSpacing.md),
-        child: loading
-            ? const SizedBox.square(
-                dimension: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : TextButton.icon(
-                key: const ValueKey('codex-load-older-turns'),
-                onPressed: () => unawaited(onLoad()),
-                icon: const Icon(Icons.expand_less),
-                label: const Text('Load earlier messages'),
-              ),
+    return SizedBox(
+      height: MotifControlSize.lg + MotifSpacing.md,
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: SizedBox(
+          height: MotifControlSize.lg,
+          child: Center(
+            child: exhausted || !loading
+                ? const SizedBox.shrink()
+                : const SizedBox.square(
+                    key: ValueKey('codex-loading-older-turns'),
+                    dimension: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+          ),
+        ),
       ),
     );
   }
@@ -1053,6 +1296,7 @@ List<Widget> _turnSliverChildren({
   CodexOpenTurnDiff? onOpenTurnDiff,
 }) {
   final turn = turnModel.turn;
+  final itemState = state.turnItemsState(turn.id);
   final items = turnModel.items
       .map((model) => model.structuralItem)
       .toList(growable: false);
@@ -1110,12 +1354,34 @@ List<Widget> _turnSliverChildren({
         onOpenTurnDiff: onOpenTurnDiff,
       ),
     );
-    if (turn.status == CodexTurnStatus.interrupted) {
+    final initialItemsLoading =
+        itemState.phase == CodexTurnItemsPhase.loading && !itemState.hasMore;
+    final canLoadInitialItems =
+        itemState.phase == CodexTurnItemsPhase.notLoaded || initialItemsLoading;
+    if (turn.status == CodexTurnStatus.interrupted || canLoadInitialItems) {
       result.add(
         _TurnTimingStatus(
           key: ValueKey('codex-turn-status-${turn.id}'),
           label: _workedLabel(turn),
           turnId: turn.id,
+          loading: initialItemsLoading,
+          onTap: itemState.phase == CodexTurnItemsPhase.notLoaded
+              ? () => unawaited(state.loadTurnItems(turn.id))
+              : null,
+        ),
+      );
+    }
+    final showInlineItemControl = switch (itemState.phase) {
+      CodexTurnItemsPhase.partial || CodexTurnItemsPhase.failed => true,
+      CodexTurnItemsPhase.loading => itemState.hasMore,
+      CodexTurnItemsPhase.notLoaded || CodexTurnItemsPhase.complete => false,
+    };
+    if (showInlineItemControl) {
+      result.add(
+        _TurnItemsLoadControl(
+          turnId: turn.id,
+          state: itemState,
+          onLoad: () => unawaited(state.loadTurnItems(turn.id)),
         ),
       );
     }
@@ -1134,7 +1400,9 @@ List<Widget> _turnSliverChildren({
         .skip(leadingEnd)
         .take(historyEnd - leadingEnd)
         .toList(growable: false);
-    final hasExpandableHistory = history.any(_isExpandableHistoryItem);
+    final hasExpandableHistory =
+        history.any(_isExpandableHistoryItem) ||
+        itemState.phase != CodexTurnItemsPhase.complete;
     final responseItems = items.skip(responseIndex).toList(growable: false);
     result
       ..addAll(
@@ -1152,9 +1420,28 @@ List<Widget> _turnSliverChildren({
         _WorkedHeader(
           turn: turn,
           expanded: historyExpanded,
+          loading: itemState.phase == CodexTurnItemsPhase.loading,
           onTap: hasExpandableHistory ? onToggleHistory : null,
         ),
       );
+    final showInlineItemControl = switch (itemState.phase) {
+      CodexTurnItemsPhase.partial || CodexTurnItemsPhase.failed => true,
+      CodexTurnItemsPhase.loading => itemState.hasMore,
+      CodexTurnItemsPhase.notLoaded || CodexTurnItemsPhase.complete => false,
+    };
+    if (showInlineItemControl) {
+      result.add(
+        CodexMotionExpansion(
+          key: ValueKey('codex-turn-items-control-${turn.id}'),
+          expanded: historyExpanded,
+          child: _TurnItemsLoadControl(
+            turnId: turn.id,
+            state: itemState,
+            onLoad: () => unawaited(state.loadTurnItems(turn.id)),
+          ),
+        ),
+      );
+    }
     if (history.isNotEmpty) {
       final collapsedItems = <CodexThreadItem>[];
       var collapsedGroup = 0;
@@ -1397,11 +1684,13 @@ class _WorkedHeader extends StatelessWidget {
   const _WorkedHeader({
     required this.turn,
     required this.expanded,
+    required this.loading,
     required this.onTap,
   });
 
   final CodexTurn turn;
   final bool expanded;
+  final bool loading;
   final VoidCallback? onTap;
 
   @override
@@ -1428,19 +1717,119 @@ class _WorkedHeader extends StatelessWidget {
             ),
             if (onTap != null) ...[
               const SizedBox(width: MotifSpacing.xs),
-              AnimatedRotation(
-                turns: expanded ? 0.25 : 0,
-                duration: codexExpansionDuration(context),
-                curve: codexExpansionCurve(context),
-                child: Icon(
-                  Icons.keyboard_arrow_right_rounded,
-                  size: MotifIconSize.sm,
-                  color: c.textTertiary,
+              if (loading)
+                const SizedBox.square(
+                  key: ValueKey('codex-turn-items-loading'),
+                  dimension: MotifIconSize.sm,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                )
+              else
+                AnimatedRotation(
+                  turns: expanded ? 0.25 : 0,
+                  duration: codexExpansionDuration(context),
+                  curve: codexExpansionCurve(context),
+                  child: Icon(
+                    Icons.keyboard_arrow_right_rounded,
+                    size: MotifIconSize.sm,
+                    color: c.textTertiary,
+                  ),
                 ),
-              ),
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TurnItemsLoadControl extends StatelessWidget {
+  const _TurnItemsLoadControl({
+    required this.turnId,
+    required this.state,
+    required this.onLoad,
+  });
+
+  final String turnId;
+  final CodexTurnItemsState state;
+  final VoidCallback onLoad;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: MotifSpacing.md),
+      child: switch (state.phase) {
+        CodexTurnItemsPhase.loading => const Center(
+          child: SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(strokeWidth: 1.5),
+          ),
+        ),
+        CodexTurnItemsPhase.failed => Row(
+          children: [
+            Expanded(
+              child: Text(
+                state.error ?? 'Could not load activity',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: MotifType.caption.copyWith(color: c.danger),
+              ),
+            ),
+            _TurnItemsLoadButton(
+              onPressed: onLoad,
+              icon: Icons.refresh_rounded,
+              label: 'Retry',
+            ),
+          ],
+        ),
+        CodexTurnItemsPhase.notLoaded => const SizedBox.shrink(),
+        CodexTurnItemsPhase.partial => Align(
+          alignment: Alignment.centerLeft,
+          child: _TurnItemsLoadButton(
+            key: ValueKey('codex-load-earlier-turn-items-$turnId'),
+            onPressed: onLoad,
+            icon: Icons.expand_less_rounded,
+            label: 'Load earlier activity',
+          ),
+        ),
+        CodexTurnItemsPhase.complete => const SizedBox.shrink(),
+      },
+    );
+  }
+}
+
+class _TurnItemsLoadButton extends StatelessWidget {
+  const _TurnItemsLoadButton({
+    required this.onPressed,
+    required this.icon,
+    required this.label,
+    super.key,
+  });
+
+  final VoidCallback onPressed;
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.motif;
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: c.textSecondary,
+        minimumSize: const Size(0, 32),
+        padding: const EdgeInsets.symmetric(horizontal: MotifSpacing.xs),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        textStyle: MotifType.subhead,
+        visualDensity: const VisualDensity(vertical: -4),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: MotifIconSize.sm),
+          const SizedBox(width: MotifSpacing.xs),
+          Text(label),
+        ],
       ),
     );
   }
@@ -1528,28 +1917,55 @@ class _TurnTimingStatus extends StatelessWidget {
   const _TurnTimingStatus({
     required this.label,
     required this.turnId,
+    this.loading = false,
+    this.onTap,
     super.key,
   });
 
   final String label;
   final String turnId;
+  final bool loading;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = context.motif;
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: MotifSpacing.sm),
-      margin: const EdgeInsets.only(
-        top: MotifSpacing.xl,
-        bottom: MotifSpacing.md,
-      ),
-      decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: c.border)),
-      ),
-      child: Text(
-        label,
-        key: ValueKey('codex-turn-time-$turnId'),
-        style: MotifType.subhead.copyWith(color: c.textTertiary),
+    return InkWell(
+      key: ValueKey('codex-turn-items-toggle-$turnId'),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: MotifSpacing.sm),
+        margin: const EdgeInsets.only(
+          top: MotifSpacing.xl,
+          bottom: MotifSpacing.md,
+        ),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: c.border)),
+        ),
+        child: Row(
+          children: [
+            Text(
+              label,
+              key: ValueKey('codex-turn-time-$turnId'),
+              style: MotifType.subhead.copyWith(color: c.textTertiary),
+            ),
+            if (onTap != null || loading) ...[
+              const SizedBox(width: MotifSpacing.xs),
+              if (loading)
+                const SizedBox.square(
+                  key: ValueKey('codex-turn-items-loading'),
+                  dimension: MotifIconSize.sm,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                )
+              else
+                Icon(
+                  Icons.keyboard_arrow_right_rounded,
+                  size: MotifIconSize.sm,
+                  color: c.textTertiary,
+                ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -2078,6 +2494,8 @@ class _RemoteImage extends StatelessWidget {
               snapshot.data!,
               width: 160,
               height: 120,
+              cacheWidth: _imageCacheExtent(context, 160),
+              cacheHeight: _imageCacheExtent(context, 120),
               fit: BoxFit.cover,
               errorBuilder: (_, _, _) =>
                   const Icon(Icons.broken_image_outlined),
@@ -2112,13 +2530,17 @@ class _CodexMarkdownImage extends StatelessWidget {
           );
     if (path == null) return const Icon(Icons.broken_image_outlined);
     final image = remote
-        ? _RemoteUrlImage(url: path, fit: BoxFit.contain)
+        ? _RemoteUrlImage(url: path, height: 160, fit: BoxFit.contain)
         : FutureBuilder<Uint8List>(
             future: state.readRemoteFile(path),
             builder: (context, snapshot) {
-              if (!snapshot.hasData) return const LinearProgressIndicator();
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
               return Image.memory(
                 snapshot.data!,
+                height: 160,
+                cacheHeight: _imageCacheExtent(context, 160),
                 fit: BoxFit.contain,
                 errorBuilder: (_, _, _) =>
                     const Icon(Icons.broken_image_outlined),
@@ -2131,8 +2553,8 @@ class _CodexMarkdownImage extends StatelessWidget {
           ? null
           : () => _invokeOpenImage(onOpenImage!, path),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 640, maxHeight: 480),
-        child: image,
+        constraints: const BoxConstraints(maxWidth: 640),
+        child: SizedBox(height: 160, child: image),
       ),
     );
   }
@@ -2148,6 +2570,12 @@ class _RemoteUrlImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cacheWidth = width == null
+        ? null
+        : _imageCacheExtent(context, width!);
+    final cacheHeight = height == null
+        ? null
+        : _imageCacheExtent(context, height!);
     final uri = Uri.tryParse(url);
     final data = uri?.data;
     if (data != null) {
@@ -2155,6 +2583,8 @@ class _RemoteUrlImage extends StatelessWidget {
         data.contentAsBytes(),
         width: width,
         height: height,
+        cacheWidth: cacheWidth,
+        cacheHeight: cacheHeight,
         fit: fit,
         errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
       );
@@ -2163,11 +2593,16 @@ class _RemoteUrlImage extends StatelessWidget {
       url,
       width: width,
       height: height,
+      cacheWidth: cacheWidth,
+      cacheHeight: cacheHeight,
       fit: fit,
       errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
     );
   }
 }
+
+int _imageCacheExtent(BuildContext context, double logicalExtent) =>
+    (logicalExtent * MediaQuery.devicePixelRatioOf(context)).ceil();
 
 void _openMarkdownFile(
   CodexConversationState state,
@@ -4127,6 +4562,8 @@ class _AttachmentThumbnail extends StatelessWidget {
           attachment.bytes,
           width: size,
           height: size,
+          cacheWidth: _imageCacheExtent(context, size),
+          cacheHeight: _imageCacheExtent(context, size),
           fit: BoxFit.cover,
         ),
       );
@@ -4161,11 +4598,7 @@ class _AttachmentThumbnail extends StatelessWidget {
 }
 
 class _ServerRequestCard extends StatelessWidget {
-  const _ServerRequestCard({
-    required this.state,
-    required this.request,
-    super.key,
-  });
+  const _ServerRequestCard({required this.state, required this.request});
 
   final CodexConversationState state;
   final CodexServerRequest request;
