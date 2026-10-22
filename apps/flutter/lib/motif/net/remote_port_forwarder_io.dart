@@ -18,7 +18,7 @@ class RemotePortForwarder {
   });
 
   final RpcSessionTransport rpc;
-  final String sessionId;
+  final String? sessionId;
   final String remoteHost;
   final int remotePort;
   final String localScheme;
@@ -34,7 +34,7 @@ class RemotePortForwarder {
 
   static Future<RemotePortForwarder> start({
     required RpcSessionTransport rpc,
-    required String sessionId,
+    String? sessionId,
     String remoteHost = '127.0.0.1',
     required int remotePort,
     int? localPort,
@@ -115,13 +115,12 @@ class RemotePortForwarder {
     if (remotePort <= 0 || remotePort > 65535) {
       throw ArgumentError.value(remotePort, 'remotePort', 'expected 1-65535');
     }
-    if (remoteHost != '127.0.0.1' &&
-        remoteHost != 'localhost' &&
-        remoteHost != '::1') {
+    if (remoteHost != 'localhost' &&
+        InternetAddress.tryParse(remoteHost) == null) {
       throw ArgumentError.value(
         remoteHost,
         'remoteHost',
-        'only remote loopback hosts are supported',
+        'expected an IP address or localhost',
       );
     }
   }
@@ -138,7 +137,7 @@ class _ForwardedConnection {
   });
 
   final RpcSessionTransport rpc;
-  final String sessionId;
+  final String? sessionId;
   final String remoteHost;
   final int remotePort;
   final Socket local;
@@ -177,7 +176,7 @@ class _ForwardedConnection {
       ws = await rpc.openRawWebSocketAsync(
         '/tcp',
         query: {
-          'session': sessionId,
+          'session': ?sessionId,
           'host': remoteHost,
           'port': '$remotePort',
         },

@@ -32,7 +32,7 @@ import 'terminal_error_view.dart';
 import 'terminal_byte_batcher.dart';
 import 'terminal_fonts.dart';
 import 'terminal_focus_policy.dart';
-import 'terminal_hyperlink.dart';
+import '../ui/widgets/web_link_opener.dart';
 import 'terminal_link.dart';
 import 'terminal_palette.dart';
 import 'terminal_pointer_policy.dart';

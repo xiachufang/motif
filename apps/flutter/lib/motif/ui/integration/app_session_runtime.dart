@@ -2,9 +2,11 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../models/coding_agent_hooks.dart';
 import '../../models/settings.dart';
+import '../../net/server_web_link_proxy.dart';
 import '../../session/session_feature_runtime.dart';
 import '../../state/app/app_state.dart';
 import '../../state/server/coding_agent_hook_prompt.dart' as hooks;
+import '../../state/server/server_transport.dart';
 import '../screens/quick_command_editor.dart';
 import '../screens/terminal_settings_sheet.dart';
 
@@ -47,6 +49,7 @@ final class AppSessionRuntime implements SessionFeatureRuntime {
     String session,
   ) {
     final value = _app.workspaceCapabilities(serverId, session);
+    final transport = _app.serverInstance(serverId).transport;
     return SessionWorkspaceCapabilities(
       viewModel: value.viewModel,
       attachment: value.attachment,
@@ -54,6 +57,9 @@ final class AppSessionRuntime implements SessionFeatureRuntime {
       views: value.views,
       workspace: value.workspace,
       remotePorts: value.remotePorts,
+      openWebLinkProxy: transport is PoolServerTransport
+          ? (url) => openServerWebLinkProxy(transport.pool, url)
+          : null,
     );
   }
 

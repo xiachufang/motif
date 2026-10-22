@@ -1,8 +1,8 @@
-//! `GET /tcp?session=<sid>&host=127.0.0.1&port=<port>` — raw TCP tunnel.
+//! `GET /tcp?host=<ip>&port=<port>[&session=<sid>]` — authenticated TCP tunnel.
 //!
 //! The client opens a local loopback listener and, for every browser TCP
 //! connection, opens one `/tcp` WebSocket. This handler dials the requested
-//! loopback service from the motifd host and splices bytes both ways.
+//! IP service from the motifd host and splices bytes both ways.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -51,25 +51,29 @@ pub async fn tcp_upgrade(
         return (StatusCode::UNAUTHORIZED, "missing or invalid Bearer token").into_response();
     }
 
-    let Some(session_id) = q.session.clone() else {
-        return (StatusCode::BAD_REQUEST, "missing ?session=<id>").into_response();
-    };
-    let Some(entry) = state.conns.get(&session_id) else {
-        return (StatusCode::CONFLICT, "unknown or expired session_id").into_response();
-    };
-    let snap = entry.state.lock().snapshot();
-    if snap.attached.is_none() {
-        return (StatusCode::CONFLICT, "session not attached").into_response();
-    }
-    let Some(session) = crate::rpc::current_session(&state.manager, &snap) else {
-        return (StatusCode::NOT_FOUND, "attached motif session vanished").into_response();
+    // Browser links in Codex use a server-scoped authenticated connection.
+    // Existing workspace tunnels retain their attachment lease and shutdown.
+    let (session, client_id, lease) = if let Some(session_id) = &q.session {
+        let Some(entry) = state.conns.get(session_id) else {
+            return (StatusCode::CONFLICT, "unknown or expired session_id").into_response();
+        };
+        let snap = entry.state.lock().snapshot();
+        if snap.attached.is_none() {
+            return (StatusCode::CONFLICT, "session not attached").into_response();
+        }
+        let Some(session) = crate::rpc::current_session(&state.manager, &snap) else {
+            return (StatusCode::NOT_FOUND, "attached motif session vanished").into_response();
+        };
+        (Some(session), snap.client_id, Some(entry.acquire_lease()))
+    } else {
+        (None, format!("web-link-{}", ulid::Ulid::new()), None)
     };
 
     let host = q.host.unwrap_or_else(|| "127.0.0.1".to_string());
     if !is_allowed_remote_host(&host) {
         return (
             StatusCode::FORBIDDEN,
-            "tcp forwarding is restricted to remote loopback hosts",
+            "tcp forwarding requires an IP address or localhost",
         )
             .into_response();
     }
@@ -81,7 +85,6 @@ pub async fn tcp_upgrade(
             .into_response();
     };
 
-    let client_id = snap.client_id;
     tracing::info!(
         peer = %peer,
         client_id = %client_id,
@@ -89,7 +92,6 @@ pub async fn tcp_upgrade(
         port,
         "tcp ws upgrade requested",
     );
-    let lease = entry.acquire_lease();
 
     ws.on_upgrade(move |socket| async move {
         handle_tcp_socket(socket, session, client_id, host, port, peer).await;
@@ -98,12 +100,12 @@ pub async fn tcp_upgrade(
 }
 
 fn is_allowed_remote_host(host: &str) -> bool {
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
+    host == "localhost" || host.parse::<std::net::IpAddr>().is_ok()
 }
 
 async fn handle_tcp_socket(
     socket: WebSocket,
-    session: Arc<Session>,
+    session: Option<Arc<Session>>,
     client_id: ClientId,
     host: String,
     port: u16,
@@ -215,18 +217,22 @@ async fn handle_tcp_socket(
         }
     });
 
-    let mut shutdown = session.subscribe_shutdown();
-    loop {
-        if *shutdown.borrow() {
-            break;
-        }
-        let item = tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
+    let shutdown = async {
+        if let Some(session) = session {
+            let mut shutdown = session.subscribe_shutdown();
+            loop {
+                if *shutdown.borrow() || shutdown.changed().await.is_err() {
                     break;
                 }
-                continue;
             }
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(shutdown);
+    loop {
+        let item = tokio::select! {
+            _ = &mut shutdown => break,
             item = ws_rx.next() => item,
         };
         let Some(item) = item else { break };
@@ -259,4 +265,27 @@ async fn handle_tcp_socket(
 
 fn us_to_ms(us: u64) -> f64 {
     us as f64 / 1000.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_remote_host;
+
+    #[test]
+    fn forwarding_accepts_ip_literals_and_localhost_only() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "192.168.1.10",
+            "8.8.8.8",
+            "::1",
+            "2001:db8::1",
+            "localhost",
+        ] {
+            assert!(is_allowed_remote_host(host), "{host}");
+        }
+        for host in ["example.com", "192.168.1.999", "", "127.0.0.1:80"] {
+            assert!(!is_allowed_remote_host(host), "{host}");
+        }
+    }
 }

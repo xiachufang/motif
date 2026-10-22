@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import 'syntax_highlight.dart';
+import 'web_link_opener.dart';
 
 /// Incremental Markdown renderer used while a protocol item is streaming.
 ///
@@ -364,9 +365,10 @@ class CodexMarkdown extends StatelessWidget {
       onTapLink: (_, href, _) {
         if (href == null) return;
         final uri = Uri.tryParse(href);
-        if (uri != null &&
-            const {'http', 'https', 'mailto'}.contains(uri.scheme)) {
-          unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+        if (uri != null && const {'http', 'https'}.contains(uri.scheme)) {
+          unawaited(openWebLink(context, href));
+        } else if (uri?.scheme == 'mailto') {
+          unawaited(launchUrl(uri!, mode: LaunchMode.externalApplication));
         } else {
           onTapFileLink?.call(href);
         }

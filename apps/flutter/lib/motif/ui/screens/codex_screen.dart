@@ -558,10 +558,13 @@ class CodexScreenState extends State<CodexScreen> {
             name:
                 'side-chat/${widget.controller.serverId}/${collection.parentThreadId}',
           ),
-          builder: (_) => SideChatScreen(
-            collection: collection,
-            codexState: widget.controller.preferences,
-            speechService: widget.speechService,
+          builder: (_) => InheritedTheme.captureAll(
+            context,
+            SideChatScreen(
+              collection: collection,
+              codexState: widget.controller.preferences,
+              speechService: widget.speechService,
+            ),
           ),
         ),
       );

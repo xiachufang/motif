@@ -47,6 +47,7 @@ import '../widgets/observation_select.dart';
 import '../widgets/quick_command_row.dart';
 import '../widgets/rename_dialog.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/web_link_opener.dart';
 import 'change_directory_panel.dart';
 import 'file_tree_panel.dart';
 import 'git_diff_panel.dart';
@@ -250,15 +251,18 @@ class _SessionScreenHostState extends State<SessionScreen> {
       views: capabilities.views,
       workspace: capabilities.workspace,
       remotePorts: capabilities.remotePorts,
-      child: _SessionPane(
-        serverId: serverId,
-        session: session,
-        initialViewId: initialViewId,
-        initialViewSpec: _viewSpecForTarget(initialTarget),
-        allowSessionSwitching: allowSessionSwitching,
-        titleOverride: titleOverride,
-        workspaceActive: workspaceActive,
-        onWorkspaceSelected: onWorkspaceSelected,
+      child: WebLinkScope(
+        openProxy: capabilities.openWebLinkProxy,
+        child: _SessionPane(
+          serverId: serverId,
+          session: session,
+          initialViewId: initialViewId,
+          initialViewSpec: _viewSpecForTarget(initialTarget),
+          allowSessionSwitching: allowSessionSwitching,
+          titleOverride: titleOverride,
+          workspaceActive: workspaceActive,
+          onWorkspaceSelected: onWorkspaceSelected,
+        ),
       ),
     );
   }

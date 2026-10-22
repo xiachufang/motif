@@ -7,11 +7,13 @@ import '../../codex/codex_feature_controller.dart';
 import '../../codex/codex_navigation.dart';
 import '../../codex/codex_state.dart';
 import '../../models/motif_proto.dart';
+import '../../net/server_web_link_proxy.dart';
 import '../../state/app/app_state.dart';
 import '../../state/dependency_scope.dart';
 import '../../state/server/server_transport.dart';
 import '../screens/codex_screen.dart';
 import '../screens/session_screen.dart';
+import '../widgets/web_link_opener.dart';
 
 /// App composition boundary for Codex. The feature receives only its own
 /// controller and emits workspace requests back through a callback.
@@ -116,15 +118,21 @@ final class _AppCodexScreenState extends State<AppCodexScreen> {
     if (controller == null || app == null) {
       return const SizedBox.shrink();
     }
-    return CodexScreen(
-      key: _screenKey,
-      controller: controller,
-      speechService: app.platform.speech,
-      onWorkspaceRequested: (request) => CodexSessionCoordinator.open(
-        context,
-        app: app,
-        serverId: widget.serverId,
-        request: request,
+    final transport = app.serverInstance(widget.serverId).transport;
+    return WebLinkScope(
+      openProxy: transport is PoolServerTransport
+          ? (url) => openServerWebLinkProxy(transport.pool, url)
+          : null,
+      child: CodexScreen(
+        key: _screenKey,
+        controller: controller,
+        speechService: app.platform.speech,
+        onWorkspaceRequested: (request) => CodexSessionCoordinator.open(
+          context,
+          app: app,
+          serverId: widget.serverId,
+          request: request,
+        ),
       ),
     );
   }

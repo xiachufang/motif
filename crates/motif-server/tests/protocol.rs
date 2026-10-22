@@ -1815,3 +1815,54 @@ async fn tcp_ws_forwards_loopback_service() {
     let _ = ws.close(None).await;
     echo_task.await.unwrap();
 }
+
+#[tokio::test]
+async fn tcp_ws_server_scoped_links_require_auth_and_forward_without_attachment() {
+    let server = TestServer::start().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("ws://{}/tcp?host=127.0.0.1&port={port}", server.addr);
+    let unauthorized = tokio_tungstenite::connect_async(&url).await.unwrap_err();
+    assert!(matches!(unauthorized,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == http::StatusCode::UNAUTHORIZED));
+
+    for host in ["example.com", "192.168.1.999"] {
+        let mut req = format!("ws://{}/tcp?host={host}&port={port}", server.addr)
+            .into_client_request()
+            .unwrap();
+        req.headers_mut().insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", server.token)).unwrap(),
+        );
+        let denied = tokio_tungstenite::connect_async(req).await.unwrap_err();
+        assert!(matches!(denied,
+            tokio_tungstenite::tungstenite::Error::Http(response)
+                if response.status() == http::StatusCode::FORBIDDEN));
+    }
+
+    let echo = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0; 4];
+        socket.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+        socket.write_all(b"pong").await.unwrap();
+    });
+    let mut req = url.into_client_request().unwrap();
+    req.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {}", server.token)).unwrap(),
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    ws.send(Message::Binary(Bytes::from_static(b"ping")))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(2), ws.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply.into_data(), Bytes::from_static(b"pong"));
+    let _ = ws.close(None).await;
+    echo.await.unwrap();
+}

@@ -11,7 +11,7 @@ class RemotePortForwarder {
 
   static Future<RemotePortForwarder> start({
     required RpcSessionTransport rpc,
-    required String sessionId,
+    String? sessionId,
     String remoteHost = '127.0.0.1',
     required int remotePort,
     int? localPort,

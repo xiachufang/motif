@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../models/coding_agent_hooks.dart';
 import '../models/motif_proto.dart';
 import '../models/settings.dart';
+import '../net/web_link.dart';
 import '../platform/services.dart';
 import '../state/workspace/remote_port/remote_port_controller.dart';
 import '../state/workspace/session_attachment.dart';
@@ -44,6 +45,7 @@ final class SessionWorkspaceCapabilities {
     required this.views,
     required this.workspace,
     required this.remotePorts,
+    this.openWebLinkProxy,
   });
 
   final WorkspaceViewModel viewModel;
@@ -52,6 +54,7 @@ final class SessionWorkspaceCapabilities {
   final ViewController views;
   final WorkspaceApi workspace;
   final RemotePortController remotePorts;
+  final WebLinkProxyFactory? openWebLinkProxy;
 }
 
 final class SessionServerGroup {

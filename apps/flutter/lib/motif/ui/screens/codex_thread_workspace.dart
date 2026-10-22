@@ -2114,7 +2114,10 @@ class _CollapsedPlanCard extends _$_CollapsedPlanCard {
         onTap: () => Navigator.of(context).push<void>(
           MaterialPageRoute<void>(
             settings: RouteSettings(name: 'codex-plan/${plan.id}'),
-            builder: (_) => _PlanDetailScreen(plan: plan),
+            builder: (_) => InheritedTheme.captureAll(
+              context,
+              _PlanDetailScreen(plan: plan),
+            ),
           ),
         ),
         child: Padding(

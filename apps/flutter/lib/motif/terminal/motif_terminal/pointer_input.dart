@@ -426,10 +426,7 @@ extension _MotifTerminalPointerInput on _MotifTerminalViewState {
       return;
     }
 
-    final opened = await openTerminalHyperlink(match.target);
-    if (!opened && mounted) {
-      showMotifToast(context, 'Could not open this terminal link.');
-    }
+    await openWebLink(context, match.target);
   }
 
   Future<void> _openLinkOrSendTouchClick(

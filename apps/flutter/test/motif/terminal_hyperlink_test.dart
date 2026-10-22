@@ -1,14 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:motif/motif/terminal/terminal_hyperlink.dart';
+import 'package:motif/motif/net/web_link.dart';
 
 void main() {
   test('accepts http and https OSC 8 destinations', () {
     expect(
-      parseOpenableTerminalHyperlink('https://example.com/docs?q=osc8'),
+      parseWebLink('https://example.com/docs?q=osc8'),
       Uri.parse('https://example.com/docs?q=osc8'),
     );
     expect(
-      parseOpenableTerminalHyperlink('http://127.0.0.1:8080/'),
+      parseWebLink('http://127.0.0.1:8080/'),
       Uri.parse('http://127.0.0.1:8080/'),
     );
   });
@@ -24,7 +24,7 @@ void main() {
         ' https://example.com',
         'https://example.com\u0007',
       ]) {
-        expect(parseOpenableTerminalHyperlink(value), isNull, reason: value);
+        expect(parseWebLink(value), isNull, reason: value);
       }
     },
   );
