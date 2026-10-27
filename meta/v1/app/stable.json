@@ -1,14 +1,14 @@
 {
   "assets": {
     "linux-x86_64": {
-      "file": "Motif-flutter-1.0.88-71-linux-x86_64.tar.gz",
-      "publishedAt": "2026-10-22T06:07:23Z",
-      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.88",
-      "sha256": "38b3b9b2ab5776c64d8ab64547b762ba2f19fd9149fe296e10668ccee597bd65",
-      "size": 48863321,
-      "tag": "v1.0.88",
-      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.88/Motif-flutter-1.0.88-71-linux-x86_64.tar.gz",
-      "version": "1.0.88"
+      "file": "Motif-flutter-1.0.89-72-linux-x86_64.tar.gz",
+      "publishedAt": "2026-10-27T03:55:57Z",
+      "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.89",
+      "sha256": "b4f023b83cb538e693b7ce8639976692b10da341ac38bae6d604a68ecf5d9fe6",
+      "size": 48882905,
+      "tag": "v1.0.89",
+      "url": "https://github.com/xiachufang/motif/releases/download/v1.0.89/Motif-flutter-1.0.89-72-linux-x86_64.tar.gz",
+      "version": "1.0.89"
     },
     "macos-arm64": {
       "file": "Motif-v1.0.88-notarized.dmg",
@@ -34,5 +34,5 @@
   "channel": "stable",
   "product": "app",
   "schema": 1,
-  "updatedAt": "2026-10-22T06:15:14Z"
+  "updatedAt": "2026-10-27T03:55:58Z"
 }
