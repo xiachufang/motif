@@ -43,9 +43,10 @@ const codexThreadTurnsItemsView = CodexTurnItemsView('summary');
 
 /// One bounded slice of persisted conversation turns.
 final class CodexHistoryPage {
-  const CodexHistoryPage({required this.turns});
+  const CodexHistoryPage({required this.turns, this.itemPages = const {}});
 
   final CodexThreadTurnsListResponse turns;
+  final Map<String, CodexThreadItemsListResponse> itemPages;
 }
 
 enum CodexTurnItemsPhase { notLoaded, loading, partial, complete, failed }
@@ -62,25 +63,41 @@ final class CodexTurnItemsState {
   final bool hasMore;
 }
 
-/// Global history is paged by turn summaries. Full tool output stays out of
-/// the normal conversation restore path and is fetched only for an expanded
-/// turn through `thread/items/list`.
+/// History is paged by turn summaries. Running turns also load their newest
+/// item page; older tool output is fetched on demand through `thread/items/list`.
 Future<CodexHistoryPage> loadCodexHistoryPage({
   required CodexAppServerClient connection,
   required String threadId,
   String? cursor,
+  Set<String> refreshTurnIds = const {},
 }) async {
-  return CodexHistoryPage(
-    turns: await connection.listThreadTurns(
-      CodexThreadTurnsListParams(
-        cursor: cursor,
-        itemsView: codexThreadTurnsItemsView,
-        limit: codexThreadTurnsPageSize,
-        sortDirection: CodexSortDirection.desc,
-        threadId: threadId,
-      ),
+  final turns = await connection.listThreadTurns(
+    CodexThreadTurnsListParams(
+      cursor: cursor,
+      itemsView: codexThreadTurnsItemsView,
+      limit: codexThreadTurnsPageSize,
+      sortDirection: CodexSortDirection.desc,
+      threadId: threadId,
     ),
   );
+  // Summary projections omit intermediate activity even while a turn runs.
+  // Read its newest bounded item page, including the final poll after it ends.
+  final itemPages = await Future.wait([
+    for (final turn in turns.data)
+      if (turn.status == CodexTurnStatus.inProgress ||
+          refreshTurnIds.contains(turn.id))
+        connection
+            .listThreadItems(
+              CodexThreadItemsListParams(
+                limit: codexThreadTurnItemsPageSize,
+                sortDirection: CodexSortDirection.desc,
+                threadId: threadId,
+                turnId: turn.id,
+              ),
+            )
+            .then((page) => MapEntry(turn.id, page)),
+  ]);
+  return CodexHistoryPage(turns: turns, itemPages: Map.fromEntries(itemPages));
 }
 
 abstract interface class CodexConnectionLease {
@@ -524,8 +541,7 @@ class CodexConversationState extends ChangeNotifier {
         threadId: threadId,
       );
       if (_closed || generation != _readGeneration) return;
-      final loadedTurns = history.turns.data.reversed.toList(growable: false);
-      _markSummaryTurns(loadedTurns);
+      final loadedTurns = _restoreHistoryTurns(history);
       final thread = codexThreadWithTurns(response.thread, loadedTurns);
       _threads[thread.id] = thread;
       selectedThread = thread;
@@ -642,6 +658,56 @@ class CodexConversationState extends ChangeNotifier {
     _summaryTurnIds.addAll(values.map((turn) => turn.id));
   }
 
+  List<CodexTurn> _restoreHistoryTurns(CodexHistoryPage history) {
+    _markSummaryTurns(history.turns.data);
+    _mergeHistoryItemPages(history);
+    return history.turns.data.reversed
+        .map((turn) {
+          final page = _turnItemPages[turn.id];
+          return page == null
+              ? turn
+              : _turnWith(
+                  turn,
+                  items: _composeTurnItems(turn.items, page.items),
+                );
+        })
+        .toList(growable: false);
+  }
+
+  void _mergeHistoryItemPages(CodexHistoryPage history) {
+    for (final turn in history.turns.data) {
+      final response = history.itemPages[turn.id];
+      if (response == null || !_summaryTurnIds.contains(turn.id)) continue;
+      final page = _turnItemPages.putIfAbsent(
+        turn.id,
+        () => _CodexTurnItemPageState(summaryItems: turn.items),
+      );
+      final incoming = response.data
+          .where((entry) => entry.turnId == turn.id)
+          .map((entry) => entry.item)
+          .toList(growable: false)
+          .reversed
+          .toList(growable: false);
+      final existingIds = page.items.map(_threadItemId).toSet();
+      final overlaps = incoming.any(
+        (item) => existingIds.contains(_threadItemId(item)),
+      );
+      // Preserve the older-page cursor when the refreshed tail overlaps. If
+      // a background gap exceeds one page, let pagination fill that gap too.
+      if (!page.started || !overlaps) {
+        page.nextCursor = _normalizedNextCursor(response.nextCursor, null);
+        page.prependBeforeItemId = incoming.isEmpty
+            ? null
+            : _threadItemId(incoming.first);
+      }
+      page
+        ..summaryItems = turn.items
+        ..items = _mergeThreadItems(page.items, incoming, prepend: false)
+        ..started = true
+        ..error = null;
+    }
+  }
+
   /// Loads one user-requested page of full items for a single persisted turn.
   /// Pages are independent from the scroll-driven turn summary cursor.
   Future<bool> loadTurnItems(String turnId) async {
@@ -685,11 +751,26 @@ class CodexConversationState extends ChangeNotifier {
           .toList(growable: false)
           .reversed
           .toList(growable: false);
+      final anchor = page.items.indexWhere(
+        (item) => _threadItemId(item) == page.prependBeforeItemId,
+      );
+      final insertionIndex = anchor < 0 ? 0 : anchor;
       page
-        ..items = _mergeThreadItems(page.items, incoming, prepend: true)
+        ..items = _mergeThreadItems(
+          _mergeThreadItems(
+            page.items.take(insertionIndex).toList(growable: false),
+            incoming,
+            prepend: false,
+          ),
+          page.items.skip(insertionIndex).toList(growable: false),
+          prepend: false,
+        )
         ..started = true
         ..nextCursor = _normalizedNextCursor(response.nextCursor, cursor)
         ..error = null;
+      if (incoming.isNotEmpty) {
+        page.prependBeforeItemId = _threadItemId(incoming.first);
+      }
 
       final currentIndex = turns.indexWhere((turn) => turn.id == turnId);
       if (currentIndex < 0) return false;
@@ -792,6 +873,7 @@ class CodexConversationState extends ChangeNotifier {
           )
           .map((turn) => turn.id),
     );
+    _mergeHistoryItemPages(history);
     final firstOverlap = turns.indexWhere(
       (turn) => recentIds.contains(turn.id),
     );
@@ -827,7 +909,18 @@ class CodexConversationState extends ChangeNotifier {
     CodexTurn persisted, {
     required bool wasSummary,
   }) {
-    if (current == null) return persisted;
+    if (current != null) {
+      if (current.status != CodexTurnStatus.inProgress &&
+          persisted.status == CodexTurnStatus.inProgress) {
+        return current;
+      }
+      // A resumed conversation receives authoritative live item events.
+      // Its rollout snapshot can lag behind those events during a turn.
+      if (current.status == CodexTurnStatus.inProgress &&
+          isThreadResumed(selectedThread!.id)) {
+        return _turnWith(persisted, items: current.items);
+      }
+    }
     final page = _turnItemPages[persisted.id];
     if (page != null) {
       page.summaryItems = persisted.items;
@@ -836,15 +929,12 @@ class CodexConversationState extends ChangeNotifier {
         items: _composeTurnItems(page.summaryItems, page.items),
       );
     }
+    if (current == null) return persisted;
     if (!wasSummary) {
       // A turn created by this live subscription already has its complete
       // streamed items. Refresh its persisted metadata without replacing that
       // richer content with the summary projection.
       return _turnWith(persisted, items: current.items);
-    }
-    if (current.status != CodexTurnStatus.inProgress &&
-        persisted.status == CodexTurnStatus.inProgress) {
-      return current;
     }
     if (persisted.status != CodexTurnStatus.inProgress) return persisted;
 
@@ -886,8 +976,7 @@ class CodexConversationState extends ChangeNotifier {
     _resetTurnPagination();
     final loadedTurns = history == null
         ? thread.turns
-        : history.turns.data.reversed.toList(growable: false);
-    if (history != null) _markSummaryTurns(loadedTurns);
+        : _restoreHistoryTurns(history);
     final openedThread = history == null
         ? thread
         : codexThreadWithTurns(thread, loadedTurns);
@@ -2385,8 +2474,7 @@ class CodexConversationState extends ChangeNotifier {
         return;
       }
       _resetTurnPagination();
-      final loadedTurns = history.turns.data.reversed.toList(growable: false);
-      _markSummaryTurns(loadedTurns);
+      final loadedTurns = _restoreHistoryTurns(history);
       final thread = codexThreadWithTurns(response.thread, loadedTurns);
       _resumedThreads[thread.id] = thread;
       _threads[thread.id] = thread;
@@ -4336,7 +4424,14 @@ final class CodexServiceState extends CodexConversationState {
   _readPersistedThreadSnapshot(String threadId) async {
     final results = await Future.wait<Object>([
       connection.readThread(threadId),
-      loadCodexHistoryPage(connection: connection, threadId: threadId),
+      loadCodexHistoryPage(
+        connection: connection,
+        threadId: threadId,
+        refreshTurnIds: {
+          for (final turn in selectedConversation?.turns ?? <CodexTurn>[])
+            if (turn.status == CodexTurnStatus.inProgress) turn.id,
+        },
+      ),
     ]);
     final response = results[0] as CodexThreadReadResponse;
     return (thread: response.thread, history: results[1] as CodexHistoryPage);
@@ -4401,6 +4496,7 @@ final class _CodexTurnItemPageState {
   List<CodexThreadItem> summaryItems;
   List<CodexThreadItem> items = const [];
   String? nextCursor;
+  String? prependBeforeItemId;
   String? error;
   bool started = false;
   bool loading = false;

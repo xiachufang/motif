@@ -474,6 +474,263 @@ void main() {
     await state.close();
   });
 
+  test('polls running item details and captures the final item page', () async {
+    const question = CodexUserMessageThreadItem(
+      id: 'question',
+      content: [CodexTextUserInput(text: 'Continue')],
+    );
+    const running = CodexCommandExecutionThreadItem(
+      id: 'command',
+      command: 'work',
+      cwd: CodexLegacyAppPathString('/tmp'),
+      commandActions: [],
+      status: CodexCommandExecutionStatus.inProgress,
+    );
+    const completed = CodexCommandExecutionThreadItem(
+      id: 'command',
+      command: 'work',
+      cwd: CodexLegacyAppPathString('/tmp'),
+      commandActions: [],
+      status: CodexCommandExecutionStatus.completed,
+      aggregatedOutput: 'Done',
+      exitCode: 0,
+    );
+    const activity = CodexAgentMessageThreadItem(
+      id: 'activity',
+      text: 'Still working',
+    );
+    const answer = CodexAgentMessageThreadItem(
+      id: 'answer',
+      phase: CodexMessagePhase('final_answer'),
+      text: 'Finished',
+    );
+    const finalActivity = CodexAgentMessageThreadItem(
+      id: 'final-activity',
+      text: 'Last activity before completion',
+    );
+    final initial = thread('thread', path: '/tmp/codex/thread.jsonl');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [initial]),
+      },
+      turnPages: {
+        'thread': {
+          null: const CodexThreadTurnsListResponse(
+            data: [
+              CodexTurn(
+                id: 'turn',
+                items: [question],
+                itemsView: CodexTurnItemsView('summary'),
+                status: CodexTurnStatus.inProgress,
+              ),
+            ],
+          ),
+        },
+      },
+      itemPages: {
+        'thread': {
+          null: const CodexThreadItemsListResponse(
+            data: [CodexThreadItemEntry(item: running, turnId: 'turn')],
+            nextCursor: 'older-items',
+          ),
+          'older-items': const CodexThreadItemsListResponse(
+            data: [CodexThreadItemEntry(item: question, turnId: 'turn')],
+          ),
+        },
+      },
+    );
+    final state = CodexServiceState(
+      serverId: 'server',
+      connection: client,
+      selectedThreadActivePollInterval: const Duration(milliseconds: 10),
+      selectedThreadIdlePollInterval: const Duration(milliseconds: 20),
+    );
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    await state.readThread('thread');
+    expect(state.turns.single.items, [question, running]);
+    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.partial);
+
+    // The summary stays unchanged while commands and commentary advance.
+    client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
+      data: [
+        CodexThreadItemEntry(item: activity, turnId: 'turn'),
+        CodexThreadItemEntry(item: completed, turnId: 'turn'),
+      ],
+      nextCursor: 'newer-cursor',
+    );
+    await waitFor(() => state.turns.single.items.contains(activity));
+    expect(state.turns.single.items, [question, completed, activity]);
+    expect(
+      state.viewModel.turns.single.items
+          .map((item) => item.item)
+          .whereType<CodexCommandExecutionThreadItem>()
+          .single
+          .status,
+      CodexCommandExecutionStatus.completed,
+    );
+
+    client.turnPages['thread']![null] = const CodexThreadTurnsListResponse(
+      data: [
+        CodexTurn(
+          id: 'turn',
+          items: [question, answer],
+          itemsView: CodexTurnItemsView('summary'),
+          status: CodexTurnStatus.completed,
+        ),
+      ],
+    );
+    client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
+      data: [
+        CodexThreadItemEntry(item: answer, turnId: 'turn'),
+        CodexThreadItemEntry(item: finalActivity, turnId: 'turn'),
+        CodexThreadItemEntry(item: activity, turnId: 'turn'),
+      ],
+      nextCursor: 'completion-cursor',
+    );
+    await waitFor(() => state.turns.single.status == CodexTurnStatus.completed);
+    expect(state.turns.single.items, [
+      question,
+      completed,
+      activity,
+      finalActivity,
+      answer,
+    ]);
+    expect(await state.loadTurnItems('turn'), isTrue);
+    expect(client.itemListParams.last.cursor, 'older-items');
+    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.complete);
+    expect(
+      state.turns.single.items.whereType<CodexUserMessageThreadItem>(),
+      hasLength(1),
+    );
+    expect(
+      client.itemListParams.map((p) => p.limit),
+      everyElement(codexThreadTurnItemsPageSize),
+    );
+    expect(client.resumedThreadIds, isEmpty);
+
+    final itemReads = client.itemListParams.length;
+    final threadReads = client.readThreadIds.length;
+    await waitFor(() => client.readThreadIds.length > threadReads + 1);
+    expect(client.itemListParams, hasLength(itemReads));
+    await state.close();
+  });
+
+  test('fills a polling gap without reordering already loaded items', () async {
+    const oldItem = CodexAgentMessageThreadItem(id: 'old', text: 'Old');
+    const gapItem = CodexAgentMessageThreadItem(id: 'gap', text: 'Gap');
+    const latestItem = CodexAgentMessageThreadItem(
+      id: 'latest',
+      text: 'Latest',
+    );
+    const summary = CodexTurn(
+      id: 'turn',
+      items: [],
+      itemsView: CodexTurnItemsView('summary'),
+      status: CodexTurnStatus.inProgress,
+    );
+    final initial = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [initial]),
+      },
+      itemPages: {
+        'thread': {
+          'gap-page': const CodexThreadItemsListResponse(
+            data: [
+              CodexThreadItemEntry(item: gapItem, turnId: 'turn'),
+              CodexThreadItemEntry(item: oldItem, turnId: 'turn'),
+            ],
+          ),
+        },
+      },
+    );
+    final state = CodexConversationState(
+      serverId: 'server',
+      connection: client,
+    );
+    state.openHydratedConversation(
+      initial,
+      const CodexHistoryPage(turns: CodexThreadTurnsListResponse(data: [])),
+    );
+    state.refreshPersistedSnapshot(
+      initial,
+      const CodexHistoryPage(
+        turns: CodexThreadTurnsListResponse(data: [summary]),
+        itemPages: {
+          'turn': CodexThreadItemsListResponse(
+            data: [CodexThreadItemEntry(item: oldItem, turnId: 'turn')],
+          ),
+        },
+      ),
+    );
+    state.refreshPersistedSnapshot(
+      initial,
+      const CodexHistoryPage(
+        turns: CodexThreadTurnsListResponse(data: [summary]),
+        itemPages: {
+          'turn': CodexThreadItemsListResponse(
+            data: [CodexThreadItemEntry(item: latestItem, turnId: 'turn')],
+            nextCursor: 'gap-page',
+          ),
+        },
+      ),
+    );
+    expect(state.turns.single.items, [oldItem, latestItem]);
+    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.partial);
+    await state.loadTurnItems('turn');
+    expect(client.itemListParams.single.cursor, 'gap-page');
+    expect(state.turns.single.items, [oldItem, gapItem, latestItem]);
+    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.complete);
+    await state.close();
+  });
+
+  test('persisted item refresh does not replace newer live events', () async {
+    const summary = CodexTurn(
+      id: 'turn',
+      items: [],
+      itemsView: CodexTurnItemsView('summary'),
+      status: CodexTurnStatus.inProgress,
+    );
+    const stale = CodexAgentMessageThreadItem(id: 'activity', text: 'Before');
+    const fresh = CodexAgentMessageThreadItem(id: 'activity', text: 'After');
+    const history = CodexHistoryPage(
+      turns: CodexThreadTurnsListResponse(data: [summary]),
+      itemPages: {
+        'turn': CodexThreadItemsListResponse(
+          data: [CodexThreadItemEntry(item: stale, turnId: 'turn')],
+        ),
+      },
+    );
+    final initial = thread('thread');
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(data: [initial]),
+      },
+    );
+    final state = CodexConversationState(
+      serverId: 'server',
+      connection: client,
+    );
+    state.openResumedConversation(
+      await client.resumeThread('thread'),
+      history: history,
+    );
+    state.applyTypedMessage(
+      const CodexItemCompletedNotification2(
+        params: CodexItemCompletedNotification(
+          completedAtMs: 1,
+          threadId: 'thread',
+          turnId: 'turn',
+          item: fresh,
+        ),
+      ),
+    );
+    state.refreshPersistedSnapshot(initial, history);
+    expect(state.turns.single.items, [fresh]);
+    await state.close();
+  });
+
   test('expires an unchanged external-active projection', () async {
     final selected = thread('thread');
     final client = FakeCodexClient(
