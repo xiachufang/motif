@@ -474,146 +474,212 @@ void main() {
     await state.close();
   });
 
-  test('polls running item details and captures the final item page', () async {
-    const question = CodexUserMessageThreadItem(
-      id: 'question',
-      content: [CodexTextUserInput(text: 'Continue')],
-    );
-    const running = CodexCommandExecutionThreadItem(
-      id: 'command',
-      command: 'work',
-      cwd: CodexLegacyAppPathString('/tmp'),
-      commandActions: [],
-      status: CodexCommandExecutionStatus.inProgress,
-    );
-    const completed = CodexCommandExecutionThreadItem(
-      id: 'command',
-      command: 'work',
-      cwd: CodexLegacyAppPathString('/tmp'),
-      commandActions: [],
-      status: CodexCommandExecutionStatus.completed,
-      aggregatedOutput: 'Done',
-      exitCode: 0,
-    );
-    const activity = CodexAgentMessageThreadItem(
-      id: 'activity',
-      text: 'Still working',
-    );
-    const answer = CodexAgentMessageThreadItem(
-      id: 'answer',
-      phase: CodexMessagePhase('final_answer'),
-      text: 'Finished',
-    );
-    const finalActivity = CodexAgentMessageThreadItem(
-      id: 'final-activity',
-      text: 'Last activity before completion',
-    );
-    final initial = thread('thread', path: '/tmp/codex/thread.jsonl');
-    final client = FakeCodexClient(
-      pages: {
-        null: CodexThreadListResponse(data: [initial]),
-      },
-      turnPages: {
-        'thread': {
-          null: const CodexThreadTurnsListResponse(
-            data: [
-              CodexTurn(
-                id: 'turn',
-                items: [question],
-                itemsView: CodexTurnItemsView('summary'),
-                status: CodexTurnStatus.inProgress,
+  for (final runningStatus in [
+    CodexTurnStatus.inProgress,
+    CodexTurnStatus.interrupted,
+  ]) {
+    test(
+      'polls $runningStatus item details and captures the final item page',
+      () async {
+        const question = CodexUserMessageThreadItem(
+          id: 'question',
+          content: [CodexTextUserInput(text: 'Continue')],
+        );
+        const running = CodexCommandExecutionThreadItem(
+          id: 'command',
+          command: 'work',
+          cwd: CodexLegacyAppPathString('/tmp'),
+          commandActions: [],
+          status: CodexCommandExecutionStatus.inProgress,
+        );
+        const completed = CodexCommandExecutionThreadItem(
+          id: 'command',
+          command: 'work',
+          cwd: CodexLegacyAppPathString('/tmp'),
+          commandActions: [],
+          status: CodexCommandExecutionStatus.completed,
+          aggregatedOutput: 'Done',
+          exitCode: 0,
+        );
+        const activity = CodexAgentMessageThreadItem(
+          id: 'activity',
+          text: 'Still working',
+        );
+        const answer = CodexAgentMessageThreadItem(
+          id: 'answer',
+          phase: CodexMessagePhase('final_answer'),
+          text: 'Finished',
+        );
+        const finalActivity = CodexAgentMessageThreadItem(
+          id: 'final-activity',
+          text: 'Last activity before completion',
+        );
+        final initial = thread('thread', path: '/tmp/codex/thread.jsonl');
+        final client = FakeCodexClient(
+          pages: {
+            null: CodexThreadListResponse(data: [initial]),
+          },
+          turnPages: {
+            'thread': {
+              null: CodexThreadTurnsListResponse(
+                data: [
+                  CodexTurn(
+                    id: 'turn',
+                    items: [question],
+                    itemsView: CodexTurnItemsView('summary'),
+                    status: runningStatus,
+                    startedAt: 1,
+                  ),
+                ],
               ),
-            ],
-          ),
-        },
+            },
+          },
+          itemPages: {
+            'thread': {
+              null: const CodexThreadItemsListResponse(
+                data: [CodexThreadItemEntry(item: running, turnId: 'turn')],
+                nextCursor: 'older-items',
+              ),
+              'older-items': const CodexThreadItemsListResponse(
+                data: [CodexThreadItemEntry(item: question, turnId: 'turn')],
+              ),
+            },
+          },
+        );
+        final state = CodexServiceState(
+          serverId: 'server',
+          connection: client,
+          selectedThreadActivePollInterval: const Duration(milliseconds: 10),
+          selectedThreadIdlePollInterval: const Duration(milliseconds: 20),
+        );
+        await state.start();
+        await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+        await state.readThread('thread');
+        expect(state.turns.single.items, [question, running]);
+        if (runningStatus == CodexTurnStatus.interrupted) {
+          expect(state.activeTurn, isNull);
+          expect(state.projectedExternalActiveTurn?.id, 'turn');
+        }
+        expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.partial);
+
+        // The summary stays unchanged while commands and commentary advance.
+        client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
+          data: [
+            CodexThreadItemEntry(item: activity, turnId: 'turn'),
+            CodexThreadItemEntry(item: completed, turnId: 'turn'),
+          ],
+          nextCursor: 'newer-cursor',
+        );
+        await waitFor(() => state.turns.single.items.contains(activity));
+        expect(state.turns.single.items, [question, completed, activity]);
+        expect(
+          state.viewModel.turns.single.items
+              .map((item) => item.item)
+              .whereType<CodexCommandExecutionThreadItem>()
+              .single
+              .status,
+          CodexCommandExecutionStatus.completed,
+        );
+
+        client.turnPages['thread']![null] = const CodexThreadTurnsListResponse(
+          data: [
+            CodexTurn(
+              id: 'turn',
+              items: [question, answer],
+              itemsView: CodexTurnItemsView('summary'),
+              status: CodexTurnStatus.completed,
+            ),
+          ],
+        );
+        client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
+          data: [
+            CodexThreadItemEntry(item: answer, turnId: 'turn'),
+            CodexThreadItemEntry(item: finalActivity, turnId: 'turn'),
+            CodexThreadItemEntry(item: activity, turnId: 'turn'),
+          ],
+          nextCursor: 'completion-cursor',
+        );
+        await waitFor(
+          () => state.turns.single.status == CodexTurnStatus.completed,
+        );
+        expect(state.turns.single.items, [
+          question,
+          completed,
+          activity,
+          finalActivity,
+          answer,
+        ]);
+        expect(await state.loadTurnItems('turn'), isTrue);
+        expect(client.itemListParams.last.cursor, 'older-items');
+        expect(
+          state.turnItemsState('turn').phase,
+          CodexTurnItemsPhase.complete,
+        );
+        expect(
+          state.turns.single.items.whereType<CodexUserMessageThreadItem>(),
+          hasLength(1),
+        );
+        expect(
+          client.itemListParams.map((p) => p.limit),
+          everyElement(codexThreadTurnItemsPageSize),
+        );
+        expect(client.resumedThreadIds, isEmpty);
+
+        final itemReads = client.itemListParams.length;
+        final threadReads = client.readThreadIds.length;
+        await waitFor(() => client.readThreadIds.length > threadReads + 1);
+        expect(client.itemListParams, hasLength(itemReads));
+        await state.close();
       },
-      itemPages: {
-        'thread': {
-          null: const CodexThreadItemsListResponse(
-            data: [CodexThreadItemEntry(item: running, turnId: 'turn')],
-            nextCursor: 'older-items',
-          ),
-          'older-items': const CodexThreadItemsListResponse(
-            data: [CodexThreadItemEntry(item: question, turnId: 'turn')],
-          ),
+    );
+  }
+
+  test('only refreshes the latest unfinished external turn', () async {
+    const unfinished = CodexTurn(
+      id: 'older-turn',
+      items: [],
+      status: CodexTurnStatus.interrupted,
+      startedAt: 1,
+    );
+    for (final terminal in [
+      const CodexTurn(
+        id: 'latest-turn',
+        items: [],
+        status: CodexTurnStatus.interrupted,
+        startedAt: 2,
+        completedAt: 3,
+      ),
+      const CodexTurn(
+        id: 'latest-turn',
+        items: [],
+        status: CodexTurnStatus.interrupted,
+        startedAt: 2,
+        durationMs: 1000,
+      ),
+    ]) {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('thread')]),
         },
-      },
-    );
-    final state = CodexServiceState(
-      serverId: 'server',
-      connection: client,
-      selectedThreadActivePollInterval: const Duration(milliseconds: 10),
-      selectedThreadIdlePollInterval: const Duration(milliseconds: 20),
-    );
-    await state.start();
-    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
-    await state.readThread('thread');
-    expect(state.turns.single.items, [question, running]);
-    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.partial);
-
-    // The summary stays unchanged while commands and commentary advance.
-    client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
-      data: [
-        CodexThreadItemEntry(item: activity, turnId: 'turn'),
-        CodexThreadItemEntry(item: completed, turnId: 'turn'),
-      ],
-      nextCursor: 'newer-cursor',
-    );
-    await waitFor(() => state.turns.single.items.contains(activity));
-    expect(state.turns.single.items, [question, completed, activity]);
-    expect(
-      state.viewModel.turns.single.items
-          .map((item) => item.item)
-          .whereType<CodexCommandExecutionThreadItem>()
-          .single
-          .status,
-      CodexCommandExecutionStatus.completed,
-    );
-
-    client.turnPages['thread']![null] = const CodexThreadTurnsListResponse(
-      data: [
-        CodexTurn(
-          id: 'turn',
-          items: [question, answer],
-          itemsView: CodexTurnItemsView('summary'),
-          status: CodexTurnStatus.completed,
-        ),
-      ],
-    );
-    client.itemPages['thread']![null] = const CodexThreadItemsListResponse(
-      data: [
-        CodexThreadItemEntry(item: answer, turnId: 'turn'),
-        CodexThreadItemEntry(item: finalActivity, turnId: 'turn'),
-        CodexThreadItemEntry(item: activity, turnId: 'turn'),
-      ],
-      nextCursor: 'completion-cursor',
-    );
-    await waitFor(() => state.turns.single.status == CodexTurnStatus.completed);
-    expect(state.turns.single.items, [
-      question,
-      completed,
-      activity,
-      finalActivity,
-      answer,
-    ]);
-    expect(await state.loadTurnItems('turn'), isTrue);
-    expect(client.itemListParams.last.cursor, 'older-items');
-    expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.complete);
-    expect(
-      state.turns.single.items.whereType<CodexUserMessageThreadItem>(),
-      hasLength(1),
-    );
-    expect(
-      client.itemListParams.map((p) => p.limit),
-      everyElement(codexThreadTurnItemsPageSize),
-    );
-    expect(client.resumedThreadIds, isEmpty);
-
-    final itemReads = client.itemListParams.length;
-    final threadReads = client.readThreadIds.length;
-    await waitFor(() => client.readThreadIds.length > threadReads + 1);
-    expect(client.itemListParams, hasLength(itemReads));
-    await state.close();
+        turnPages: {
+          'thread': {
+            null: CodexThreadTurnsListResponse(data: [terminal, unfinished]),
+            'older-page': const CodexThreadTurnsListResponse(
+              data: [unfinished],
+            ),
+          },
+        },
+      );
+      await loadCodexHistoryPage(connection: client, threadId: 'thread');
+      await loadCodexHistoryPage(
+        connection: client,
+        threadId: 'thread',
+        cursor: 'older-page',
+      );
+      expect(client.itemListParams, isEmpty);
+      await client.close();
+      client.dispose();
+    }
   });
 
   test('fills a polling gap without reordering already loaded items', () async {

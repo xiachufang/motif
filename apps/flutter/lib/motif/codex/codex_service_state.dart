@@ -41,6 +41,15 @@ const codexThreadTurnsPageSize = 10;
 const codexThreadTurnItemsPageSize = 25;
 const codexThreadTurnsItemsView = CodexTurnItemsView('summary');
 
+// A separate app-server projects an externally running turn as interrupted
+// until terminal timing is persisted. Both display and item loading must use
+// this same shape rather than relying on inProgress alone.
+bool _isExternalActiveTurnCandidate(CodexTurn turn) =>
+    turn.status == CodexTurnStatus.interrupted &&
+    turn.startedAt != null &&
+    turn.completedAt == null &&
+    turn.durationMs == null;
+
 /// One bounded slice of persisted conversation turns.
 final class CodexHistoryPage {
   const CodexHistoryPage({required this.turns, this.itemPages = const {}});
@@ -85,6 +94,9 @@ Future<CodexHistoryPage> loadCodexHistoryPage({
   final itemPages = await Future.wait([
     for (final turn in turns.data)
       if (turn.status == CodexTurnStatus.inProgress ||
+          (cursor == null &&
+              identical(turn, turns.data.firstOrNull) &&
+              _isExternalActiveTurnCandidate(turn)) ||
           refreshTurnIds.contains(turn.id))
         connection
             .listThreadItems(
@@ -301,11 +313,7 @@ class CodexConversationState extends ChangeNotifier {
   CodexTurn? get _externalActiveCandidate {
     if (activeTurn != null) return null;
     final latest = turns.lastOrNull;
-    if (latest == null ||
-        latest.status != CodexTurnStatus.interrupted ||
-        latest.startedAt == null ||
-        latest.completedAt != null ||
-        latest.durationMs != null) {
+    if (latest == null || !_isExternalActiveTurnCandidate(latest)) {
       return null;
     }
     return latest;
@@ -4430,6 +4438,8 @@ final class CodexServiceState extends CodexConversationState {
         refreshTurnIds: {
           for (final turn in selectedConversation?.turns ?? <CodexTurn>[])
             if (turn.status == CodexTurnStatus.inProgress) turn.id,
+          if (selectedConversation?._externalActiveCandidate case final turn?)
+            turn.id,
         },
       ),
     ]);
