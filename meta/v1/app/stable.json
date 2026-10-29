@@ -2,10 +2,10 @@
   "assets": {
     "linux-x86_64": {
       "file": "Motif-flutter-1.0.91-74-linux-x86_64.tar.gz",
-      "publishedAt": "2026-10-29T07:56:16Z",
+      "publishedAt": "2026-10-29T08:19:14Z",
       "releasePage": "https://github.com/xiachufang/motif/releases/tag/v1.0.91",
-      "sha256": "aa0626d8b5fad88ac4eb04a197836fcfc50cabba72486e0e4c1f916adcd8273c",
-      "size": 50384917,
+      "sha256": "07165a6325c83cd445d6cac3ec875fbbbc89675e00497dd573b5281df0fc09b5",
+      "size": 50412210,
       "tag": "v1.0.91",
       "url": "https://github.com/xiachufang/motif/releases/download/v1.0.91/Motif-flutter-1.0.91-74-linux-x86_64.tar.gz",
       "version": "1.0.91"
@@ -34,5 +34,5 @@
   "channel": "stable",
   "product": "app",
   "schema": 1,
-  "updatedAt": "2026-10-29T08:05:01Z"
+  "updatedAt": "2026-10-29T08:19:14Z"
 }
