@@ -94,9 +94,22 @@ jobs:
       # Windows runners ship MSVC + Git Bash but not GNU make.
       # (The hook resolves Git Bash explicitly — see _bashExecutable in
       # hook/build.dart — so no PATH juggling is needed for the WSL-bash trap.)
-      - name: Install make (Windows)
+      - name: Install Windows build tools
         if: runner.os == 'Windows'
-        run: choco install make -y
+        shell: pwsh
+        run: |
+          choco install make pkgconfiglite -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Avoid Strawberry Perl's pkg-config.BAT: native hooks launched from
+          # Git Bash can lose the backslashes in its batch-file command line.
+          $pkgConfig = Get-ChildItem "$env:ChocolateyInstall/lib/pkgconfiglite" -Recurse -Filter pkg-config.exe |
+            Select-Object -First 1
+          if (-not $pkgConfig) { throw 'Native pkg-config.exe was not installed' }
+          $pkgConfig.Directory.FullName | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          "PKG_CONFIG=$($pkgConfig.FullName.Replace('\', '/'))" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          & $pkgConfig.FullName --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Run under bash everywhere: on Windows this is Git Bash, which satisfies
       # both the Makefile's `SHELL := /bin/bash` and the build hook's
