@@ -59,7 +59,6 @@ FROM rust:1-bookworm AS builder
 
 ARG TARGETARCH
 ARG ZIG_VERSION=0.17.0
-ARG ZIG_BUILD_SEED=1
 ARG GO_VERSION=1.27.1
 ARG LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast
 ENV PATH="/usr/local/go/bin:/opt/zig:${PATH}"
@@ -78,16 +77,6 @@ RUN set -eux; \
     mkdir -p /opt/zig; \
     tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; \
     rm /tmp/zig.tar.xz; \
-    mv /opt/zig/zig /opt/zig/zig-real; \
-    { \
-      echo '#!/usr/bin/env sh'; \
-      echo 'if [ "${1:-}" = "build" ]; then'; \
-      echo '  shift'; \
-      echo "  exec /opt/zig/zig-real build --seed ${ZIG_BUILD_SEED} \"\$@\""; \
-      echo 'fi'; \
-      echo 'exec /opt/zig/zig-real "$@"'; \
-    } > /opt/zig/zig; \
-    chmod 0755 /opt/zig/zig; \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz; \
     rm -rf /usr/local/go; \
     tar -C /usr/local -xzf /tmp/go.tar.gz; \
