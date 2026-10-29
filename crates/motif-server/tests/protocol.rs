@@ -1116,6 +1116,15 @@ async fn pty_ws_framed_output_is_required_and_decodable() {
         "expected decoded framed live output to contain BIG_FRAME_DONE; got {} decoded bytes",
         big.decoded.len()
     );
+    #[cfg(unix)]
+    assert_eq!(
+        big.decoded
+            .windows(b"COMPRESSIBLE\r\n".len())
+            .filter(|w| *w == b"COMPRESSIBLE\r\n")
+            .count(),
+        16384 / b"COMPRESSIBLE\n".len(),
+        "live burst must arrive without lost or duplicated lines"
+    );
 
     let mut replay = client.open_pty_ws(&pty_id, None).await.unwrap();
     let _: serde_json::Value =
@@ -1128,6 +1137,83 @@ async fn pty_ws_framed_output_is_required_and_decodable() {
         "expected at least one compressed replay PTY frame; got {} decoded bytes",
         replayed.decoded.len()
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fish_prompt_end_survives_hidden_right_prompt() {
+    let Some(fish) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("fish"))
+            .find(|candidate| candidate.is_file())
+    }) else {
+        eprintln!("skipping fish PTY regression: fish is not installed");
+        return;
+    };
+    let server = TestServer::start().await;
+    let dir = TempDir::new().unwrap();
+    let client = TestClient::connect(&server, "fish-prompts", dir.path())
+        .await
+        .unwrap();
+
+    // Empty and over-wide right prompts are both suppressed by fish's reader.
+    // Neither may suppress the left prompt's input boundary marker.
+    for mode_prompt in ["", "MODE"] {
+        for right_prompt in ["", "RIGHT".repeat(40).as_str()] {
+            let config = TempDir::new().unwrap();
+            let fish_config = config.path().join("fish");
+            std::fs::create_dir(&fish_config).unwrap();
+            std::fs::write(
+                fish_config.join("config.fish"),
+                format!(
+                    "function fish_mode_prompt; {mode_prompt}; end\n\
+                     function fish_prompt; printf 'LEFT>'; end\n\
+                     function fish_right_prompt; printf '%s' '{right_prompt}'; end\n",
+                    mode_prompt = if mode_prompt.is_empty() {
+                        String::new()
+                    } else {
+                        format!("printf '{mode_prompt}'")
+                    },
+                ),
+            )
+            .unwrap();
+            let created: ppty::PtyCreateResult = client
+                .call(
+                    "pty.create",
+                    ppty::PtyCreateParams {
+                        cmd: Some(fish.to_string_lossy().into_owned()),
+                        cwd: Some(dir.path().to_path_buf()),
+                        env: vec![(
+                            "XDG_CONFIG_HOME".into(),
+                            config.path().to_string_lossy().into_owned(),
+                        )],
+                        cols: 20,
+                        rows: 8,
+                    },
+                )
+                .await
+                .unwrap();
+            let mut ws = client.open_pty_ws(&created.info.id, None).await.unwrap();
+            ws.read_text(Duration::from_secs(2)).await.unwrap();
+            // Ask for a fresh prompt after attach: a cold snapshot intentionally
+            // contains terminal state rather than shell-integration markers.
+            ws.write(b"\n").await.unwrap();
+            let output =
+                read_framed_until(&mut ws, b"LEFT>\x1b]7777;B\x07", Duration::from_secs(5))
+                    .await
+                    .unwrap();
+            assert!(output.decoded.windows(9).any(|w| w == b"\x1b]7777;A\x07"));
+            let _: serde_json::Value = client
+                .call(
+                    "pty.kill",
+                    ppty::PtyKillParams {
+                        pty_id: created.info.id,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
 }
 
 struct FramedRead {

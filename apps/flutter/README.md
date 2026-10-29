@@ -12,7 +12,7 @@ six platforms. All code here is written by AI.
 ## Requirements
 
 - **Flutter SDK**
-- **Zig 0.16.0** — required to build the libghostty native/WASM engine
+- **Zig 0.17.0** — required to build the libghostty native/WASM engine
 - **Xcode Command Line Tools** — for macOS/iOS builds
 - Platform SDKs as needed (Android NDK 28 + JDK 17 for Android; a Linux/Windows
   host for those desktop builds)
@@ -32,9 +32,9 @@ If already cloned without `--recursive`:
 git submodule update --init --recursive
 ```
 
-### 2. Install Zig 0.16.0
+### 2. Install Zig 0.17.0
 
-Install Zig `0.16.0` and ensure it is on your `PATH`. (Without Zig, pure-Dart
+Install Zig `0.17.0` and ensure it is on your `PATH`. (Without Zig, pure-Dart
 code still analyzes/tests; the terminal just won't render until native assets
 are built.)
 
@@ -95,7 +95,7 @@ only renders bytes relayed from `motifd`.
 
 ## Platform build matrix
 
-Requires **Zig 0.16.0** on `PATH` for the libghostty native asset.
+Requires **Zig 0.17.0** on `PATH` for the libghostty native asset.
 
 | Platform | Build | Native engine | Notes |
 |---|---|---|---|

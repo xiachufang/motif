@@ -100,7 +100,7 @@ vt100              = "0.16"
 tui-term           = "0.3"
 # Headless VT engine (same libghostty the iOS client renders with) for
 # server-side screen+scrollback VT snapshots on PTY replay. Builds
-# libghostty-vt from source via Zig 0.16.0.
+# libghostty-vt from source via Zig 0.17.0.
 #
 # Vendored from uzaaft/libghostty-rs commit 72ac98f (0.2.1). The sys crate
 # builds against apps/flutter/ghostty so Rust and Flutter share one Ghostty

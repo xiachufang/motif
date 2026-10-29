@@ -184,9 +184,9 @@ check-cargo: ## Check Cargo is available.
 check-flutter: ## Check Flutter is available.
 	@command -v "$(FLUTTER)" >/dev/null || { echo "Missing flutter. Install Flutter first."; exit 1; }
 
-check-zig: ## Check Zig 0.16.0 for libghostty-vt builds.
-	@command -v zig >/dev/null || { echo "Missing zig. libghostty-vt requires Zig 0.16.0."; exit 1; }
-	@[ "$$(zig version)" = "0.16.0" ] || { echo "Zig $$(zig version) found, but libghostty-vt requires Zig 0.16.0."; exit 1; }
+check-zig: ## Check Zig 0.17.0 for libghostty-vt builds.
+	@command -v zig >/dev/null || { echo "Missing zig. libghostty-vt requires Zig 0.17.0."; exit 1; }
+	@[ "$$(zig version)" = "0.17.0" ] || { echo "Zig $$(zig version) found, but libghostty-vt requires Zig 0.17.0."; exit 1; }
 
 check-macos-tools: ## Check macOS app packaging tools.
 	@[ "$(UNAME_S)" = "Darwin" ] || { echo "This target must run on macOS."; exit 1; }

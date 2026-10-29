@@ -5,6 +5,9 @@ Raw FFI bindings for libghostty-vt.
 - Builds `libghostty-vt.a` from Motif's `apps/flutter/ghostty` checkout via Zig
   by default, so the Rust and Flutter bindings always share one C ABI.
 - Exposes checked-in generated bindings in `src/bindings.rs`.
+- The shared checkout is pinned to Ghostty `b2c78c9bd` (1.4.1-dev) and requires
+  Zig 0.17.0. See `patches/ghostty/README.md` for binding regeneration and WASM
+  smoke-test commands.
 - Static linking is the baseline rather than a Cargo feature. Enable the
   additive `link-dynamic` feature to link the shared library instead.
 - Set `GHOSTTY_SOURCE_DIR` to override that checkout explicitly.

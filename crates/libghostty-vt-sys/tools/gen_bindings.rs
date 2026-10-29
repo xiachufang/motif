@@ -65,6 +65,7 @@ fn main() {
         .allowlist_function("[Gg]hostty.*")
         .allowlist_type("[Gg]hostty.*")
         .allowlist_var("GHOSTTY_.*")
+        .blocklist_item("GHOSTTY_ENUM_MAX_VALUE")
         .generate_cstr(true)
         .derive_default(true)
         .size_t_is_usize(true)
@@ -86,6 +87,16 @@ fn main() {
 }
 
 const PREFIXES: &[(&str, &str)] = &[
+    ("GhosttySearchOption", "GHOSTTY_SEARCH_OPT"),
+    ("GhosttySysOption", "GHOSTTY_SYS_OPT"),
+    (
+        "GhosttyTerminalUnknownSequenceTag",
+        "GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE",
+    ),
+    (
+        "GhosttyTerminalResizeWindowTag",
+        "GHOSTTY_TERMINAL_RESIZE_WINDOW",
+    ),
     ("GhosttyOptimizeMode", "GHOSTTY_OPTIMIZE"),
     ("GhosttyKeyEncoderOption", "GHOSTTY_KEY_ENCODER_OPT"),
     ("GhosttyMouseTrackingMode", "GHOSTTY_MOUSE_TRACKING"),
@@ -93,6 +104,7 @@ const PREFIXES: &[(&str, &str)] = &[
     ("GhosttySgrAttributeTag", "GHOSTTY_SGR_ATTR"),
     ("GhosttyOscCommandData", "GHOSTTY_OSC_DATA"),
     ("GhosttyOscCommandType", "GHOSTTY_OSC_COMMAND"),
+    ("GhosttyOscOption", "GHOSTTY_OSC_OPT"),
     ("GhosttyTerminalOption", "GHOSTTY_TERMINAL_OPT"),
     (
         "GhosttyTerminalScrollViewportTag",
@@ -110,6 +122,15 @@ const PREFIXES: &[(&str, &str)] = &[
     (
         "GhosttySelectionGestureEventOption",
         "GHOSTTY_SELECTION_GESTURE_EVENT_OPT",
+    ),
+    (
+        "GhosttySnapshotDecoderOption",
+        "GHOSTTY_SNAPSHOT_DECODER_OPT",
+    ),
+    ("GhosttySemanticPromptKind", "GHOSTTY_SEMANTIC_PROMPT"),
+    (
+        "GhosttySemanticPromptPromptKind",
+        "GHOSTTY_SEMANTIC_PROMPT_PROMPT",
     ),
 ];
 
@@ -143,7 +164,7 @@ impl ParseCallbacks for Callbacks {
 
         // Remove redundant C prefixes
         let prefix = PREFIXES
-            .into_iter()
+            .iter()
             .find(|(v, _)| *v == enum_name)
             .map(|(_, n)| n.to_string())
             .unwrap_or(enum_name.to_shouty_snake_case());

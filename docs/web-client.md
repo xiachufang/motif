@@ -53,7 +53,7 @@ cargo build -p motif-server --release
 ```
 
 The Make target first compiles `ghostty-vt.wasm` from the repository's
-`apps/flutter/ghostty` submodule with Zig 0.16.0. The generated WASM file is
+`apps/flutter/ghostty` submodule with Zig 0.17.0. The generated WASM file is
 ignored by Git and must not be reused across Ghostty C ABI upgrades.
 
 If `apps/flutter/build/web` is missing, `build.rs` still lets Rust compile and

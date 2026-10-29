@@ -31,10 +31,10 @@ esac
 
 if [[ -n "${ZIG:-}" && -x "$ZIG" ]]; then
   export PATH="$(dirname "$ZIG"):$PATH"
-elif [[ -x "/opt/homebrew/opt/zig@0.16/bin/zig" ]]; then
-  export PATH="/opt/homebrew/opt/zig@0.16/bin:$PATH"
+elif [[ -x "/opt/homebrew/opt/zig@0.17/bin/zig" ]]; then
+  export PATH="/opt/homebrew/opt/zig@0.17/bin:$PATH"
 elif [[ -x "/opt/homebrew/opt/zig/bin/zig" ]] && \
-    [[ "$(/opt/homebrew/opt/zig/bin/zig version)" == "0.16.0" ]]; then
+    [[ "$(/opt/homebrew/opt/zig/bin/zig version)" == "0.17.0" ]]; then
   export PATH="/opt/homebrew/opt/zig/bin:$PATH"
 fi
 
@@ -171,8 +171,8 @@ require_command() {
 }
 
 require_command zig
-if [[ "$(zig version)" != "0.16.0" ]]; then
-  echo "error: Ghostty requires Zig 0.16.0; found $(zig version)" >&2
+if [[ "$(zig version)" != "0.17.0" ]]; then
+  echo "error: Ghostty requires Zig 0.17.0; found $(zig version)" >&2
   exit 1
 fi
 

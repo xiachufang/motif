@@ -21,7 +21,11 @@
     const data = JSON.parse(window.GhosttyVt.gridCellsJson(t));
     let redRun = null;
     for (const row of data.rows) for (const run of row) if (run.t.includes('RED')) redRun = run;
-    const colorOk = !!redRun && redRun.f[0] > 150 && redRun.f[1] < 120 && redRun.f[2] < 120;
+    const plainRun = data.rows[0][0];
+    const colorOk = !!redRun && redRun.f[0] > 150 && redRun.f[1] < 120 && redRun.f[2] < 120 &&
+      plainRun.f.every(value => value === 255) &&
+      plainRun.b.every(value => value === 0) &&
+      redRun.b.every(value => value === 0);
     const cur = data.cursor || {};
     const cursorOk = cur.vis === true && cur.y >= 0 && cur.x >= 0;
     const scrollTerm = window.GhosttyVt.newTerminal(12, 3);
@@ -42,7 +46,7 @@
     const preservedMetrics = JSON.parse(
       window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
     );
-    window.GhosttyVt.scroll(scrollTerm, 2);
+    window.GhosttyVt.scrollToOffset(scrollTerm, preservedMetrics.offset + 2);
     const deltaMetrics = JSON.parse(
       window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
     );
@@ -54,6 +58,13 @@
     const resizedMetrics = JSON.parse(
       window.GhosttyVt.scrollbarMetricsJson(scrollTerm),
     );
+    const middleData = JSON.parse(window.GhosttyVt.gridCellsJson(scrollTerm));
+    window.GhosttyVt.scrollToOffset(scrollTerm, 2);
+    const overscanData = JSON.parse(window.GhosttyVt.gridCellsJson(scrollTerm));
+    const overscanOk = topData.rows.length === 4 &&
+      middleData.rows.length === 5 &&
+      overscanData.rows.length === 6 &&
+      overscanData.cursor.vis === false;
     const initialMaxOffset = bottomMetrics.total - bottomMetrics.len;
     const currentMaxOffset = preservedMetrics.total - preservedMetrics.len;
     const scrollOk = initialMaxOffset > 0 &&
@@ -103,10 +114,13 @@
       applicationUp === '1b4f41' &&
       plainPaste === '610d62' &&
       bracketedPaste === '1b5b3230307e610a621b5b3230317e';
-    const pass = textOk && colorOk && cursorOk && scrollOk && inputOk;
+    const pass = textOk && colorOk && cursorOk && scrollOk && overscanOk && inputOk;
+    for (const terminal of [t, scrollTerm, inputTerm]) {
+      window.GhosttyVt.freeTerminal(terminal);
+    }
     out.textContent = (pass ? 'RESULT:PASS' : 'RESULT:FAIL') +
       '\ntextOk=' + textOk + ' colorOk=' + colorOk + ' cursorOk=' + cursorOk +
-      ' scrollOk=' + scrollOk + ' inputOk=' + inputOk +
+      ' scrollOk=' + scrollOk + ' overscanOk=' + overscanOk + ' inputOk=' + inputOk +
       ' cursor=' + JSON.stringify(cur) +
       ' redFg=' + (redRun ? JSON.stringify(redRun.f) : 'none') +
       ' scrollbar=' + JSON.stringify(resizedMetrics) +

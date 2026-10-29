@@ -9,13 +9,13 @@ OUT_DIR="${GHOSTTY_WASM_OUT_DIR:-$PROJECT_DIR/build/ghostty-wasm}"
 ZIG_BIN="${ZIG:-zig}"
 
 if ! command -v "$ZIG_BIN" >/dev/null 2>&1; then
-  echo "error: Zig 0.16.0 is required to build Ghostty WebAssembly" >&2
+  echo "error: Zig 0.17.0 is required to build Ghostty WebAssembly" >&2
   exit 1
 fi
 
 zig_version="$($ZIG_BIN version)"
-if [[ "$zig_version" != "0.16.0" ]]; then
-  echo "error: Zig $zig_version found, but Ghostty requires Zig 0.16.0" >&2
+if [[ "$zig_version" != "0.17.0" ]]; then
+  echo "error: Zig $zig_version found, but Ghostty requires Zig 0.17.0" >&2
   exit 1
 fi
 

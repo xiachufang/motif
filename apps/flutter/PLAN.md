@@ -67,7 +67,7 @@ Reference implementation: [ghostling](https://github.com/ghostty-org/ghostling) 
 
 ### Prerequisites
 
-- **Zig 0.16.0** (required by ghostty's build system)
+- **Zig 0.17.0** (required by ghostty's build system)
 - **cmake** (for building the PTY helper)
 
 ---
@@ -411,7 +411,7 @@ for a 60fps timer — each read drains the kernel buffer (typically <4KB) in mic
 ## Build & Run
 
 ```bash
-# 1. Build libghostty-vt (requires Zig 0.16.0)
+# 1. Build libghostty-vt (requires Zig 0.17.0)
 cd ghostty && zig build -Demit-lib-vt=true && cd ..
 
 # 2. Generate FFI bindings (only needed when C headers change)

@@ -82,10 +82,6 @@ function __motif_fish_has_mode_prompt
     functions fish_mode_prompt | string match -rvq '^ *(#|function |end$|$)'
 end
 
-function __motif_fish_has_right_prompt
-    functions fish_right_prompt | string match -rvq '^ *(#|function |end$|$)'
-end
-
 function __motif_install_prompt_wrappers
     if functions --query fish_prompt
         functions --copy fish_prompt __motif_fish_prompt
@@ -101,12 +97,6 @@ function __motif_install_prompt_wrappers
         functions --copy fish_mode_prompt __motif_fish_mode_prompt
     end
 
-    set -l has_right 0
-    if __motif_fish_has_right_prompt
-        set has_right 1
-        functions --copy fish_right_prompt __motif_fish_right_prompt
-    end
-
     if test "$has_mode" = 1
         function fish_mode_prompt
             __motif_prompt_start
@@ -114,33 +104,18 @@ function __motif_install_prompt_wrappers
         end
     end
 
-    if test "$has_right" = 1
-        if test "$has_mode" = 1
-            function fish_prompt
-                __motif_fish_prompt
-            end
-        else
-            function fish_prompt
-                __motif_prompt_start
-                __motif_fish_prompt
-            end
-        end
-        function fish_right_prompt
-            __motif_fish_right_prompt
+    # fish may discard the right prompt when it is empty or does not fit.
+    # Keep the input boundary in the left prompt so it is always delivered.
+    if test "$has_mode" = 1
+        function fish_prompt
+            __motif_fish_prompt
             __motif_prompt_end
         end
     else
-        if test "$has_mode" = 1
-            function fish_prompt
-                __motif_fish_prompt
-                __motif_prompt_end
-            end
-        else
-            function fish_prompt
-                __motif_prompt_start
-                __motif_fish_prompt
-                __motif_prompt_end
-            end
+        function fish_prompt
+            __motif_prompt_start
+            __motif_fish_prompt
+            __motif_prompt_end
         end
     end
 end

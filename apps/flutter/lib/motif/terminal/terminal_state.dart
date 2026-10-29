@@ -172,10 +172,13 @@ class TerminalState {
     ghostty_render_state_new(nullptr, rsPtr);
     _renderState = rsPtr.value;
     calloc.free(rsPtr);
-    final verticalOverscan = calloc<Bool>()..value = true;
+    final verticalOverscan = calloc<GhosttyRenderStateOverscan>();
+    verticalOverscan.ref
+      ..above = 1
+      ..below = 1;
     final verticalOverscanResult = ghostty_render_state_set(
       _renderState,
-      GhosttyRenderStateOption.GHOSTTY_RENDER_STATE_OPTION_VERTICAL_OVERSCAN,
+      GhosttyRenderStateOption.GHOSTTY_RENDER_STATE_OPTION_OVERSCAN,
       verticalOverscan.cast(),
     );
     calloc.free(verticalOverscan);
@@ -500,7 +503,11 @@ class TerminalState {
   GhosttyRenderStateColors getColors() {
     final colors = calloc<GhosttyRenderStateColors>();
     colors.ref.size = sizeOf<GhosttyRenderStateColors>();
-    ghostty_render_state_colors_get(_renderState, colors);
+    ghostty_render_state_get(
+      _renderState,
+      GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_COLORS,
+      colors.cast(),
+    );
     final result = colors.ref;
     // Copy values before freeing - we need to return the struct by value
     // Actually GhosttyRenderStateColors is a Struct, return the pointer
@@ -517,7 +524,11 @@ class TerminalState {
   }();
 
   GhosttyRenderStateColors get colors {
-    ghostty_render_state_colors_get(_renderState, _colorsPtr);
+    ghostty_render_state_get(
+      _renderState,
+      GhosttyRenderStateData.GHOSTTY_RENDER_STATE_DATA_COLORS,
+      _colorsPtr.cast(),
+    );
     return _colorsPtr.ref;
   }
 

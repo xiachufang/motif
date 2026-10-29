@@ -68,7 +68,7 @@ jobs:
           go-version: '1.27.1'
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0                        # apps/flutter/ghostty minimum
+          version: 0.17.0                        # apps/flutter/ghostty minimum
 
       - name: Assert repair tag matches pubspec version
         if: inputs.release_tag != ''

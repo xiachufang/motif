@@ -11,7 +11,7 @@ const _tailscaleAssetName = 'motif/platform/tailscale_ffi.dart';
 // The embedded-server cdylib (a C ABI over motif-server). Desktop only — the
 // app runs an in-process motifd from the tray, like the Tauri menu-bar app.
 const _motifEmbedAssetName = 'motif/platform/motif_embed_ffi.dart';
-const _homebrewVersionedZig = '/opt/homebrew/opt/zig@0.16/bin/zig';
+const _homebrewVersionedZig = '/opt/homebrew/opt/zig@0.17/bin/zig';
 const _homebrewZig = '/opt/homebrew/opt/zig/bin/zig';
 
 bool _envFlagEnabled(String name) {
@@ -30,7 +30,7 @@ Future<bool> _hasSupportedZig() async {
   ]) {
     try {
       final result = await Process.run(candidate, ['version']);
-      if (result.exitCode == 0 && result.stdout.toString().trim() == '0.16.0') {
+      if (result.exitCode == 0 && result.stdout.toString().trim() == '0.17.0') {
         return true;
       }
     } catch (_) {
@@ -660,8 +660,8 @@ Future<void> main(List<String> args) async {
 
     if (!await _hasSupportedZig()) {
       throw StateError(
-        'Zig 0.16.0 is required to build libghostty-vt. Expected `ZIG`, '
-        '`zig` on PATH, or $_homebrewZig to resolve to Zig 0.16.0.',
+        'Zig 0.17.0 is required to build libghostty-vt. Expected `ZIG`, '
+        '`zig` on PATH, or $_homebrewZig to resolve to Zig 0.17.0.',
       );
     }
 

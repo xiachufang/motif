@@ -48,13 +48,13 @@ deploy/
 
 **Prerequisite (motif-server only):** `motifd` depends on `libghostty-vt`, which
 builds the [ghostty](https://github.com/ghostty-org/ghostty) VT engine from source
-via **Zig 0.16.0**. The Rust wrapper and Flutter native/WASM bindings all build
+via **Zig 0.17.0**. The Rust wrapper and Flutter native/WASM bindings all build
 against the `apps/flutter/ghostty` submodule, so clone with `--recursive` (or run
-`git submodule update --init --recursive`) and put Zig 0.16.0 on `PATH`:
-- Linux: install the Zig 0.16.0 official tarball.
+`git submodule update --init --recursive`) and put Zig 0.17.0 on `PATH`:
+- Linux: install the Zig 0.17.0 official tarball.
 - Windows: use a native MSVC developer environment with Rust, Git Bash, and
-  Zig 0.16.0 on `PATH`. Native terminal sessions use Windows ConPTY.
-- macOS: install with `brew install zig@0.16` or use the official Zig 0.16.0
+  Zig 0.17.0 on `PATH`. Native terminal sessions use Windows ConPTY.
+- macOS: install with `brew install zig@0.17` or use the official Zig 0.17.0
   tarball.
 - Offline/CI: set `GHOSTTY_SOURCE_DIR` / `GHOSTTY_ZIG_SYSTEM_DIR` to vendor the
   ghostty source and Zig packages.

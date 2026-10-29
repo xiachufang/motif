@@ -14,7 +14,7 @@ FROM debian:bookworm-slim AS web-builder
 
 ARG TARGETARCH
 ARG FLUTTER_VERSION=stable
-ARG ZIG_VERSION=0.16.0
+ARG ZIG_VERSION=0.17.0
 ENV PATH="/opt/flutter/bin:/opt/zig:${PATH}"
 
 RUN set -eux; \
@@ -58,7 +58,7 @@ RUN --mount=type=cache,target=/root/.pub-cache \
 FROM rust:1-bookworm AS builder
 
 ARG TARGETARCH
-ARG ZIG_VERSION=0.16.0
+ARG ZIG_VERSION=0.17.0
 ARG ZIG_BUILD_SEED=1
 ARG GO_VERSION=1.27.1
 ARG LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseFast

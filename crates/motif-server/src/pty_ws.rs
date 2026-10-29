@@ -37,8 +37,9 @@
 //! resume cursor. Both replay kinds decode to opaque PTY bytes the client feeds
 //! into its terminal identically.
 //!
-//! A live subscriber that lags past the broadcast capacity is closed with 4011;
-//! the client reconnects without `since=` and gets a fresh snapshot.
+//! A live subscriber that lags past the broadcast capacity catches up from the
+//! byte ring. If those bytes were overwritten, it is closed with 4011 and the
+//! client reconnects without `since=` for a fresh snapshot.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -63,8 +64,8 @@ use crate::ws::{
     PING_INTERVAL_DUR, TIMING_TARGET,
 };
 
-/// 4011 — a live subscriber fell too far behind and the broadcast channel
-/// lagged (skipped bytes). The client reconnects without `since=` and gets a
+/// 4011 — a live subscriber fell beyond the retained byte history.
+/// The client reconnects without `since=` and gets a
 /// fresh VT snapshot. (Cold/truncated/stale cursors no longer close the
 /// socket — the emulator serves a snapshot inline instead.)
 const CLOSE_HISTORY_TRUNCATED: CloseCode = 4011;
@@ -182,6 +183,7 @@ async fn handle_pty_socket(
     };
     let start = reply.start;
     let replay = reply.replay;
+    let mut output_cursor = start + replay.len() as u64;
     let mut output_rx = reply.rx;
 
     // Lead with a Text meta frame announcing the absolute offset the client
@@ -285,50 +287,64 @@ async fn handle_pty_socket(
     let out_tx_fwd = out_tx.clone();
     let fwd_pty_id = pty_id.clone();
     let fwd_client = client_id.clone();
+    let fwd_pty = Arc::clone(&pty);
     let forwarder = tokio::spawn(async move {
         loop {
-            match output_rx.recv().await {
-                Ok(bytes) => {
-                    let frame = encode_pty_output_frame(
-                        &bytes,
-                        bytes.len() >= LIVE_COMPRESS_THRESHOLD_BYTES,
-                    );
-                    let size = frame.len();
-                    let send = out_tx_fwd
-                        .send(OutMsg {
-                            msg: Message::Binary(frame.into()),
-                            enqueued_at: Instant::now(),
-                            tag: "pty.output".into(),
-                            size,
-                        })
-                        .await;
-                    if send.is_err() {
+            let bytes = match output_rx.recv().await {
+                Ok(bytes) => bytes,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // Broadcast capacity counts frames, not bytes. Tiny PTY
+                    // writes can exhaust it even though all bytes still fit
+                    // in the ring. Atomically take an exact delta plus a new
+                    // receiver so recovery neither loses nor duplicates bytes.
+                    if let Some(reply) = fwd_pty.subscribe_delta(output_cursor).await {
+                        output_rx = reply.rx;
+                        tracing::debug!(
+                            client_id = %fwd_client, pty_id = %fwd_pty_id,
+                            skipped = n, recovered_bytes = reply.replay.len(),
+                            "pty subscriber caught up from byte history",
+                        );
+                        bytes::Bytes::from(reply.replay)
+                    } else {
+                        tracing::warn!(
+                            client_id = %fwd_client, pty_id = %fwd_pty_id,
+                            skipped = n, "pty subscriber exceeded byte history; closing 4011",
+                        );
+                        let _ = out_tx_fwd
+                            .send(OutMsg {
+                                msg: Message::Close(Some(CloseFrame {
+                                    code: CLOSE_HISTORY_TRUNCATED,
+                                    reason: "subscriber lagged".into(),
+                                })),
+                                enqueued_at: Instant::now(),
+                                tag: "close".into(),
+                                size: 0,
+                            })
+                            .await;
                         break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    // Subscriber too slow — its view is now
-                    // inconsistent (we skipped bytes). Best honest
-                    // recovery: close 4011 so the client knows to
-                    // resync from current total.
-                    tracing::warn!(
-                        client_id = %fwd_client, pty_id = %fwd_pty_id,
-                        skipped = n, "pty subscriber lagged; closing 4011",
-                    );
-                    let _ = out_tx_fwd
-                        .send(OutMsg {
-                            msg: Message::Close(Some(CloseFrame {
-                                code: CLOSE_HISTORY_TRUNCATED,
-                                reason: "subscriber lagged".into(),
-                            })),
-                            enqueued_at: Instant::now(),
-                            tag: "close".into(),
-                            size: 0,
-                        })
-                        .await;
-                    break;
-                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            // Recovered deltas may span the whole ring. Bound their wire frames
+            // just like initial replay, keeping memory and render latency low.
+            for chunk in bytes.chunks(REPLAY_CHUNK_BYTES) {
+                let frame =
+                    encode_pty_output_frame(chunk, chunk.len() >= LIVE_COMPRESS_THRESHOLD_BYTES);
+                let size = frame.len();
+                if out_tx_fwd
+                    .send(OutMsg {
+                        msg: Message::Binary(frame.into()),
+                        enqueued_at: Instant::now(),
+                        tag: "pty.output".into(),
+                        size,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                output_cursor += chunk.len() as u64;
             }
         }
     });

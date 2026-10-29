@@ -53,7 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.0
       - name: Validate PowerShell 7 bootstrap
         shell: pwsh
         run: ./crates/motif-server/tests/validate-powershell-bootstrap.ps1

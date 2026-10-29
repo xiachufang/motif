@@ -93,9 +93,9 @@ const EMU_CHANNEL_CAPACITY: usize = 256;
 
 /// Fan-out depth for per-PTY broadcast::Sender<Bytes>. Each `/pty/<id>`
 /// subscriber holds one slot; lagged subscribers get `RecvError::Lagged`
-/// and we close their socket (the new-protocol 4011 path can handle a
-/// resync). 256 frames at READ_CHUNK = ~2 MB queued per slow consumer
-/// before we cut them off.
+/// and recover any missing bytes from the ring. Frame sizes vary, so a burst
+/// of tiny writes can exhaust this channel well before the byte ring fills.
+/// Only subscribers that fall beyond the ring need a 4011 resync.
 const PTY_BROADCAST_CAPACITY: usize = 256;
 
 /// Conservative terminal identity shared by the child environment and
@@ -200,6 +200,9 @@ enum EmuCmd {
     /// emulator thread so no output is lost or duplicated across the boundary.
     Subscribe {
         since: Option<u64>,
+        /// False for live gap recovery: return only an exact byte delta, or
+        /// drop the reply if the cursor is no longer in the ring.
+        allow_snapshot: bool,
         reply: oneshot::Sender<SubscribeReply>,
     },
 }
@@ -291,12 +294,30 @@ impl Pty {
     ///
     /// Returns `None` if the emulator thread is gone (PTY already exited).
     pub async fn subscribe(&self, since: Option<u64>) -> Option<SubscribeReply> {
+        self.subscribe_with_policy(since, true).await
+    }
+
+    /// Recover a live subscriber without replacing its terminal contents.
+    /// Returns `None` if any requested bytes have left the ring.
+    pub(crate) async fn subscribe_delta(&self, since: u64) -> Option<SubscribeReply> {
+        self.subscribe_with_policy(Some(since), false).await
+    }
+
+    async fn subscribe_with_policy(
+        &self,
+        since: Option<u64>,
+        allow_snapshot: bool,
+    ) -> Option<SubscribeReply> {
         let (tx, rx) = oneshot::channel();
         // Non-blocking unless the bounded channel is full (slow emulator);
         // a failed send means the emulator thread has exited.
         if self
             .emu_tx
-            .send(EmuCmd::Subscribe { since, reply: tx })
+            .send(EmuCmd::Subscribe {
+                since,
+                allow_snapshot,
+                reply: tx,
+            })
             .is_err()
         {
             return None;
@@ -847,8 +868,8 @@ fn reader_loop(
                             // frames for no one — instead a slow emulator blocks
                             // this reader (backpressure to the OS pty buffer).
                             // Live WS subscribers that fall > PTY_BROADCAST_CAPACITY
-                            // behind still get a `Lagged` and are closed by the
-                            // WS handler.
+                            // behind recover from the byte ring in the WS
+                            // handler, or close if those bytes were overwritten.
                             pty.feed(&bytes);
                         }
                     }
@@ -1069,9 +1090,16 @@ fn emulator_loop(
                     cur_cols = cols;
                 }
             }
-            EmuCmd::Subscribe { since, reply } => {
+            EmuCmd::Subscribe {
+                since,
+                allow_snapshot,
+                reply,
+            } => {
                 let total = ring.total();
                 let origin = ring.origin;
+                if !allow_snapshot && !since.is_some_and(|s| s >= origin && s <= total) {
+                    continue;
+                }
                 let (start, replay) = match since {
                     // Warm incremental resume. Normally a raw byte delta
                     // `[s, total)` with start == s, so the client counting the
@@ -1084,7 +1112,7 @@ fn emulator_loop(
                     Some(s) if s >= origin && s <= total => {
                         let skip = (s - origin) as usize;
                         let delta_len = ring.bytes.len() - skip; // == total - s
-                        let snap = if delta_len > SNAPSHOT_VS_DELTA_THRESHOLD {
+                        let snap = if allow_snapshot && delta_len > SNAPSHOT_VS_DELTA_THRESHOLD {
                             term.as_ref().map(formatter_vt_snapshot)
                         } else {
                             None
@@ -1382,8 +1410,24 @@ mod tests {
     /// the reply arrives — which also makes it a barrier (see `flush`).
     fn subscribe(tx: &SyncSender<EmuCmd>, since: Option<u64>) -> SubscribeReply {
         let (rtx, rrx) = oneshot::channel();
-        tx.send(EmuCmd::Subscribe { since, reply: rtx }).unwrap();
+        tx.send(EmuCmd::Subscribe {
+            since,
+            allow_snapshot: true,
+            reply: rtx,
+        })
+        .unwrap();
         rrx.blocking_recv().unwrap()
+    }
+
+    fn subscribe_delta(tx: &SyncSender<EmuCmd>, since: u64) -> Option<SubscribeReply> {
+        let (rtx, rrx) = oneshot::channel();
+        tx.send(EmuCmd::Subscribe {
+            since: Some(since),
+            allow_snapshot: false,
+            reply: rtx,
+        })
+        .unwrap();
+        rrx.blocking_recv().ok()
     }
 
     /// Barrier: when this returns, every prior Feed has been processed and
@@ -1713,6 +1757,52 @@ mod tests {
         flush(&tx); // ensure "gh" was processed + broadcast
         assert_eq!(&rx.try_recv().unwrap()[..], b"gh");
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn broadcast_lag_recovers_exact_bytes_without_snapshot_or_duplicates() {
+        let tx = spawn_emu(80, 24);
+        let mut live = subscribe(&tx, Some(RING_ORIGIN_BASE));
+        feed(&tx, b"already delivered");
+        flush(&tx);
+        let delivered = live.rx.try_recv().unwrap();
+        let cursor = live.start + delivered.len() as u64;
+
+        // More frames than the broadcast can hold, but fewer bytes than the
+        // ring. Redraws also make the snapshot smaller than the raw delta;
+        // live recovery must retain the exact stream despite that shortcut.
+        let chunk = b"\rprogress..........".repeat(64);
+        let count = PTY_BROADCAST_CAPACITY + 32;
+        let expected = chunk.repeat(count);
+        assert!(expected.len() > SNAPSHOT_VS_DELTA_THRESHOLD);
+        assert!(expected.len() < RING_BYTES);
+        for _ in 0..count {
+            feed(&tx, &chunk);
+        }
+        flush(&tx);
+        assert!(matches!(live.rx.try_recv(), Err(TryRecvError::Lagged(_))));
+
+        let mut recovered = subscribe_delta(&tx, cursor).unwrap();
+        assert_eq!(recovered.start, cursor);
+        assert_eq!(recovered.replay, expected);
+        feed(&tx, b"next output");
+        flush(&tx);
+        assert_eq!(&recovered.rx.try_recv().unwrap()[..], b"next output");
+        assert!(matches!(recovered.rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn delta_recovery_rejects_overwritten_and_future_cursors() {
+        let tx = spawn_emu(80, 24);
+        for chunk in vec![b'x'; RING_BYTES + 1].chunks(READ_CHUNK) {
+            feed(&tx, chunk);
+        }
+        assert!(subscribe_delta(&tx, RING_ORIGIN_BASE).is_none());
+        let total = RING_ORIGIN_BASE + RING_BYTES as u64 + 1;
+        assert!(subscribe_delta(&tx, total + 1).is_none());
+        let current = subscribe_delta(&tx, total).unwrap();
+        assert_eq!(current.start, total);
+        assert!(current.replay.is_empty());
     }
 
     #[test]

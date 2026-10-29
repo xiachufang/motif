@@ -47,7 +47,7 @@ fi
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
 
-retry brew install zig@0.16 go
+retry brew install zig@0.17 go
 
 # Match the GitHub release workflows and libtailscale's minimum Go version.
 # The installed go command downloads and runs this exact compiler as needed.

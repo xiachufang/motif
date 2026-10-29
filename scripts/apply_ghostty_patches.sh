@@ -15,8 +15,8 @@ GHOSTTY_DIR="$(cd "$GHOSTTY_DIR" && pwd -P)"
 shopt -s nullglob
 patches=("$PATCH_DIR"/*.patch)
 if (( ${#patches[@]} == 0 )); then
-  echo "error: no Ghostty patches found under $PATCH_DIR" >&2
-  exit 1
+  echo "[ghostty] No local patches required"
+  exit 0
 fi
 
 if git_dir="$(git -C "$GHOSTTY_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then

@@ -23,14 +23,13 @@
   const TERMINAL_OPT_SCROLLBACK_MAX_LINES = 28;
   const SCROLL_VIEWPORT_BOTTOM = 1;
   const SCROLL_VIEWPORT_ROW = 3;
-  const RENDER_STATE_OPTION_VERTICAL_OVERSCAN = 1;
+  const RENDER_STATE_OPTION_OVERSCAN = 1;
   const MODE_BRACKETED_PASTE = 2004;
 
   let e = null; // wasm exports
   const dv = () => new DataView(e.memory.buffer);
   const u8 = () => new Uint8Array(e.memory.buffer);
-  const alloc = (n) =>
-    e.ghostty_wasm_alloc_u8_array ? e.ghostty_wasm_alloc_u8_array(n) : e.ghostty_alloc(0, n);
+  const alloc = (n) => e.ghostty_wasm_alloc(n);
   const rdU32 = (p) => dv().getUint32(p, true);
   const textEncoder = new TextEncoder();
 
@@ -41,8 +40,8 @@
   let keyTextBuf, keyTextCapacity;
 
   const freeBytes = (ptr, len) => {
-    if (ptr && e.ghostty_wasm_free_u8_array) {
-      e.ghostty_wasm_free_u8_array(ptr, len);
+    if (ptr && e.ghostty_wasm_free) {
+      e.ghostty_wasm_free(ptr, len);
     }
   };
 
@@ -123,7 +122,7 @@
       const buf = alloc(bytes.length);
       u8().set(bytes, buf);
       e.ghostty_terminal_vt_write(term, buf, bytes.length);
-      if (e.ghostty_wasm_free_u8_array) e.ghostty_wasm_free_u8_array(buf, bytes.length);
+      if (e.ghostty_wasm_free) e.ghostty_wasm_free(buf, bytes.length);
       // Ghostty owns viewport following and history anchoring across writes.
     },
 
@@ -229,10 +228,18 @@
       e.ghostty_render_state_get(rsSlot.rs, DATA_ROW_ITERATOR, iterSlot);
       const iter = () => rdU32(iterSlot);
       const cells = () => rdU32(cellsSlot);
-      const readColor = (kind) => {
-        e.ghostty_render_state_row_cells_get(cells(), kind, cslot);
+      const rgb = () => {
         const d = dv();
         return [d.getUint8(cslot), d.getUint8(cslot + 1), d.getUint8(cslot + 2)];
+      };
+      e.ghostty_render_state_get(rsSlot.rs, FG_COLOR, cslot);
+      const defaultForeground = rgb();
+      e.ghostty_render_state_get(rsSlot.rs, BG_COLOR, cslot);
+      const defaultBackground = rgb();
+      const readColor = (kind, fallback) => {
+        // An unstyled cell has no explicit color and leaves the output untouched.
+        const result = e.ghostty_render_state_row_cells_get(cells(), kind, cslot);
+        return result === 0 ? rgb() : fallback;
       };
       const rows = [];
       let guard = 0;
@@ -251,8 +258,8 @@
             ch = '';
             for (let i = 0; i < glen; i++) ch += String.fromCodePoint(d.getUint32(gbuf + i * 4, true));
           }
-          const f = readColor(FG_COLOR);
-          const b = readColor(BG_COLOR);
+          const f = readColor(FG_COLOR, defaultForeground);
+          const b = readColor(BG_COLOR, defaultBackground);
           if (cur && cur.f[0] === f[0] && cur.f[1] === f[1] && cur.f[2] === f[2] &&
               cur.b[0] === b[0] && cur.b[1] === b[1] && cur.b[2] === b[2]) {
             cur.t += ch;
@@ -265,7 +272,7 @@
       }
       // Cursor position (viewport coords) + visibility.
       const rsGet = (kind, bytes) => {
-        e.ghostty_render_state_get(rsSlot.rs, kind, cslot);
+        if (e.ghostty_render_state_get(rsSlot.rs, kind, cslot) !== 0) return 0;
         const d = dv();
         return bytes === 1 ? d.getUint8(cslot) : d.getUint16(cslot, true);
       };
@@ -296,14 +303,15 @@
       const rsSlotPtr = alloc(4);
       e.ghostty_render_state_new(0, rsSlotPtr);
       rsSlot = { rs: rdU32(rsSlotPtr) };
-      const verticalOverscan = alloc(1);
-      dv().setUint8(verticalOverscan, 1);
+      const verticalOverscan = alloc(4);
+      dv().setUint16(verticalOverscan, 1, true);
+      dv().setUint16(verticalOverscan + 2, 1, true);
       e.ghostty_render_state_set(
         rsSlot.rs,
-        RENDER_STATE_OPTION_VERTICAL_OVERSCAN,
+        RENDER_STATE_OPTION_OVERSCAN,
         verticalOverscan,
       );
-      freeBytes(verticalOverscan, 1);
+      freeBytes(verticalOverscan, 4);
       iterSlot = alloc(4);
       e.ghostty_render_state_row_iterator_new(0, iterSlot);
       cellsSlot = alloc(4);
