@@ -621,6 +621,13 @@ void main() {
             };
           case 'thread/list':
             result = {'data': <Object?>[], 'nextCursor': null};
+          case 'thread/search':
+            result = {
+              'data': [
+                {'thread': threadJson('search-hit'), 'snippet': 'matched text'},
+              ],
+              'nextCursor': 'next-search',
+            };
           case 'thread/read':
             result = {'thread': threadJson('thread-1')};
           case 'thread/turns/list':
@@ -731,6 +738,19 @@ void main() {
         ),
       );
       expect(list.data, isEmpty);
+      final search = await controller.searchThreads(
+        const CodexThreadSearchParams(
+          archived: true,
+          searchTerm: 'text',
+          limit: 25,
+          cursor: 'search-page',
+          sortKey: CodexThreadSearchSortKey.recencyAt,
+          sortDirection: CodexSortDirection.desc,
+        ),
+      );
+      expect(search.data.single.thread.id, 'search-hit');
+      expect(search.data.single.snippet, 'matched text');
+      expect(search.nextCursor, 'next-search');
       await controller.setThreadName('thread-1', 'Renamed thread');
       await controller.archiveThread('thread-1');
       expect(
@@ -875,6 +895,14 @@ void main() {
         'sortDirection': 'desc',
         'sortKey': 'recency_at',
       });
+      expect(requests['thread/search']?['params'], {
+        'archived': true,
+        'cursor': 'search-page',
+        'limit': 25,
+        'searchTerm': 'text',
+        'sortKey': 'recency_at',
+        'sortDirection': 'desc',
+      });
       expect(requests['thread/name/set']?['params'], {
         'name': 'Renamed thread',
         'threadId': 'thread-1',
@@ -979,7 +1007,7 @@ void main() {
           .where((request) => request['id'] != null)
           .map((request) => request['id'])
           .toSet();
-      expect(ids, hasLength(27));
+      expect(ids, hasLength(28));
       await controller.close();
     },
   );

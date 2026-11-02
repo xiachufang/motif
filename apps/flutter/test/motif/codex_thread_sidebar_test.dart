@@ -15,6 +15,185 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'fake_codex_queue.dart';
 
 void main() {
+  testWidgets('switching from projects to timeline loads and scrolls pages', (
+    tester,
+  ) async {
+    final client = SidebarFakeClient({
+      for (var index = 0; index < 25; index++)
+        't$index': thread(
+          't$index',
+          name: 'Thread $index',
+          updatedAt: 30 - index,
+        ),
+    })..pageSize = 10;
+    final state = CodexServiceState(serverId: 'server', connection: client);
+    await tester.runAsync(() => state.refreshCatalog(loadTimeline: false));
+    final preferences = CodexState();
+    final mode = ValueNotifier(CodexSidebarMode.projects);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            height: 400,
+            child: ValueListenableBuilder<CodexSidebarMode>(
+              valueListenable: mode,
+              builder: (context, value, _) => CodexThreadSidebar(
+                serviceState: state,
+                codexState: preferences,
+                mode: value,
+                onModeChanged: (next) => mode.value = next,
+                onThreadSelected: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(client.listParams.every((p) => p.projectIdSpecified), isTrue);
+    await tester.tap(find.byKey(const ValueKey('codex-mode-timeline')));
+    await tester.pumpAndSettle();
+    var timelineRequests = client.listParams
+        .where((p) => !p.projectIdSpecified)
+        .toList();
+    expect(timelineRequests.map((p) => p.cursor), [null]);
+    expect(state.timelineThreads, hasLength(10));
+    await tester.drag(
+      find.byKey(const ValueKey('codex-timeline-list')),
+      const Offset(0, -350),
+    );
+    await tester.pumpAndSettle();
+    timelineRequests = client.listParams
+        .where((p) => !p.projectIdSpecified)
+        .toList();
+    expect(timelineRequests.map((p) => p.cursor), [null, '10']);
+    expect(state.timelineThreads, hasLength(20));
+    await tester.pumpWidget(const SizedBox.shrink());
+    mode.dispose();
+    await tester.runAsync(state.close);
+  });
+
+  testWidgets('search pages on demand and ignores replies for an old query', (
+    tester,
+  ) async {
+    final client = SidebarFakeClient({
+      for (var index = 0; index < 4; index++)
+        'match-$index': thread(
+          'match-$index',
+          name: 'Match $index',
+          updatedAt: 20 - index,
+        ),
+      'beta': thread('beta', name: 'Beta', updatedAt: 1),
+    })..pageSize = 2;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalogPhase = CodexCatalogPhase.ready;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.timeline,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('codex-threads-search')));
+    await tester.pumpAndSettle();
+    final field = find.descendant(
+      of: find.byKey(const ValueKey('codex-thread-search-field')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(field, 'Match');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(client.searchParams.map((p) => p.cursor), [null]);
+    expect(find.text('Match 0'), findsOneWidget);
+    expect(find.text('Match 2'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('codex-query-more')));
+    await tester.pumpAndSettle();
+    expect(client.searchParams.map((p) => p.cursor), [null, '2']);
+    expect(find.text('Match 2'), findsOneWidget);
+    expect(find.byKey(const ValueKey('codex-query-more')), findsNothing);
+
+    final gate = Completer<CodexThreadSearchResponse>();
+    client.searchGates['Alpha'] = gate;
+    await tester.enterText(field, 'Alpha');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+    await tester.enterText(field, 'Beta');
+    gate.complete(
+      CodexThreadSearchResponse(
+        data: [
+          CodexThreadSearchResult(
+            thread: thread('stale', name: 'Stale answer', updatedAt: 1),
+            snippet: 'stale',
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Stale answer'), findsNothing);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('codex-thread-beta')), findsOneWidget);
+    expect(find.text('Stale answer'), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(state.close);
+  });
+
+  testWidgets('archived threads load one page at a time', (tester) async {
+    final client = SidebarFakeClient(
+      {},
+      archivedThreads: {
+        for (var index = 0; index < 3; index++)
+          'archived-$index': thread(
+            'archived-$index',
+            name: 'Archived $index',
+            updatedAt: 10 - index,
+          ),
+      },
+    )..pageSize = 2;
+    final state = CodexServiceState(serverId: 'server', connection: client)
+      ..catalogPhase = CodexCatalogPhase.ready;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: Scaffold(
+          body: SizedBox(
+            width: 340,
+            child: CodexThreadSidebar(
+              serviceState: state,
+              codexState: CodexState(),
+              mode: CodexSidebarMode.timeline,
+              onModeChanged: (_) {},
+              onThreadSelected: (_) {},
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('codex-threads-archived')));
+    await tester.pumpAndSettle();
+    expect(client.listParams.single.archived, isTrue);
+    expect(client.listParams.single.cursor, isNull);
+    expect(find.text('Archived 2'), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('codex-query-more')));
+    await tester.pumpAndSettle();
+    expect(client.listParams.last.cursor, '2');
+    expect(find.text('Archived 2'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(state.close);
+  });
+
   test('CodexState owns independent in-memory sidebar chrome', () {
     final first = CodexState();
     final second = CodexState();
@@ -213,7 +392,7 @@ void main() {
     ];
     final client = SidebarFakeClient({
       for (final thread in threads) thread.id: thread,
-    });
+    }, projects: projects);
     final state = CodexServiceState(serverId: 'server', connection: client)
       ..catalog = buildCodexCatalog(
         threads,
@@ -633,8 +812,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
     await tester.pumpAndSettle();
-    expect(client.listParams.last.archived, isFalse);
-    expect(client.listParams.last.searchTerm, 'Renamed');
+    expect(client.searchParams.last.archived, isFalse);
+    expect(client.searchParams.last.searchTerm, 'Renamed');
     expect(
       find.byKey(const ValueKey('codex-thread-search-results')),
       findsOneWidget,
@@ -761,9 +940,16 @@ void main() {
 final class SidebarFakeClient extends ChangeNotifier
     with FakeCodexQueue
     implements CodexAppServerClient {
-  SidebarFakeClient(this.threads, {Map<String, CodexThread>? archivedThreads})
-    : archivedThreads = archivedThreads ?? {};
+  SidebarFakeClient(
+    this.threads, {
+    this.projects = const [],
+    Map<String, CodexThread>? archivedThreads,
+  }) : archivedThreads = archivedThreads ?? {};
 
+  final List<CodexProject> projects;
+  int pageSize = 50;
+  final List<CodexThreadSearchParams> searchParams = [];
+  final Map<String, Completer<CodexThreadSearchResponse>> searchGates = {};
   final Map<String, CodexThread> threads;
   final Map<String, CodexThread> archivedThreads;
   final List<String> readThreadIds = [];
@@ -802,7 +988,37 @@ final class SidebarFakeClient extends ChangeNotifier
   @override
   Future<CodexProjectListResponse> listProjects(
     CodexProjectListParams params,
-  ) async => const CodexProjectListResponse(data: []);
+  ) async => CodexProjectListResponse(data: projects);
+
+  @override
+  Future<CodexThreadSearchResponse> searchThreads(
+    CodexThreadSearchParams params,
+  ) async {
+    searchParams.add(params);
+    if (searchGates[params.searchTerm] case final gate?) return gate.future;
+    final source = params.archived == true ? archivedThreads : threads;
+    final matches = source.values
+        .where(
+          (thread) =>
+              codexThreadTitle(thread).contains(params.searchTerm) ||
+              thread.preview.contains(params.searchTerm),
+        )
+        .toList();
+    final offset = int.parse(params.cursor ?? '0');
+    final page = matches
+        .skip(offset)
+        .take(pageSize < (params.limit ?? pageSize) ? pageSize : params.limit!)
+        .toList();
+    return CodexThreadSearchResponse(
+      data: [
+        for (final thread in page)
+          CodexThreadSearchResult(thread: thread, snippet: thread.preview),
+      ],
+      nextCursor: offset + page.length < matches.length
+          ? '${offset + page.length}'
+          : null,
+    );
+  }
 
   @override
   Future<CodexThreadListResponse> listThreads(
@@ -815,11 +1031,27 @@ final class SidebarFakeClient extends ChangeNotifier
     final data = source.values
         .where(
           (thread) =>
-              searchTerm == null ||
-              codexThreadTitle(thread).contains(searchTerm),
+              (searchTerm == null ||
+                  codexThreadTitle(thread).contains(searchTerm)) &&
+              (!params.projectIdSpecified && params.projectId == null ||
+                  thread.projectId == params.projectId) &&
+              (params.cwd == null ||
+                  params.cwd!.value == thread.cwd.value ||
+                  params.cwd!.value is List &&
+                      (params.cwd!.value as List).contains(thread.cwd.value)),
         )
         .toList();
-    return CodexThreadListResponse(data: data);
+    final offset = int.parse(params.cursor ?? '0');
+    final page = data
+        .skip(offset)
+        .take(pageSize < (params.limit ?? pageSize) ? pageSize : params.limit!)
+        .toList();
+    return CodexThreadListResponse(
+      data: page,
+      nextCursor: offset + page.length < data.length
+          ? '${offset + page.length}'
+          : null,
+    );
   }
 
   @override

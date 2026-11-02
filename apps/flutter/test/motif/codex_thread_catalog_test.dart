@@ -50,6 +50,30 @@ void main() {
     expect(buildCodexCatalog([thread('cwd')], const []).projects, isEmpty);
   });
 
+  test(
+    'keeps threads for unloaded projects out of Recents until paging ends',
+    () {
+      final threads = [
+        thread('assigned', projectId: 'older-project'),
+        thread('unassigned', cwd: '/elsewhere'),
+      ];
+      final partial = buildCodexCatalog(
+        threads,
+        const [],
+        projectsComplete: false,
+      );
+      expect(partial.allThreads.map((t) => t.id), contains('assigned'));
+      expect(partial.projectlessThreads.single.id, 'unassigned');
+      final complete = buildCodexCatalog(threads, const []);
+      expect(
+        complete.projectlessThreads.map((t) => t.id),
+        contains('assigned'),
+      );
+      final loaded = buildCodexCatalog(threads, [project('older-project')]);
+      expect(loaded.projects.single.threads.single.id, 'assigned');
+    },
+  );
+
   test('groups threads without projectId using native project roots', () {
     final snapshot = buildCodexCatalog(
       [

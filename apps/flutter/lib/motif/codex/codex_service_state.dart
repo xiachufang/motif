@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import 'codex_connection_controller.dart';
+import 'codex_catalog_page.dart';
 import 'codex_composer_models.dart';
 import 'codex_observation_view_models.dart';
 import 'codex_thread_catalog.dart';
@@ -38,6 +39,9 @@ CodexSendFailureKind? _codexSendFailureKind(Object error) {
 }
 
 const codexThreadTurnsPageSize = 10;
+const codexCatalogThreadPageSize = 50;
+const codexProjectThreadPageSize = 10;
+const codexProjectPageSize = 20;
 const codexThreadTurnItemsPageSize = 25;
 const codexThreadTurnsItemsView = CodexTurnItemsView('summary');
 
@@ -149,6 +153,7 @@ class CodexConversationState extends ChangeNotifier {
     this.listenToConnectionMessages = true,
     this.recoverOnReconnect = true,
     this.externalActiveLeaseDuration = const Duration(minutes: 5),
+    this.shouldLoadTimelineOnConnect,
     Set<CodexConversationFeature> features = const {
       CodexConversationFeature.goals,
     },
@@ -172,12 +177,40 @@ class CodexConversationState extends ChangeNotifier {
   final bool listenToConnectionMessages;
   final bool recoverOnReconnect;
   final Duration externalActiveLeaseDuration;
+  final bool Function()? shouldLoadTimelineOnConnect;
   final Set<CodexConversationFeature> features;
   final CodexConversationViewModel viewModel;
 
   CodexCatalogPhase catalogPhase = CodexCatalogPhase.idle;
   String? catalogError;
   CodexCatalogSnapshot catalog = const CodexCatalogSnapshot.empty();
+  CodexCatalogPage timelinePage = CodexCatalogPage();
+  CodexCatalogPage projectsPage = CodexCatalogPage();
+  CodexCatalogPage projectlessPage = CodexCatalogPage();
+  final Map<String, CodexCatalogPage> _projectThreadPages = {};
+  final Map<String, CodexCatalogPage> _legacyProjectThreadPages = {};
+  int _catalogPageRevision = 0;
+  int _projectsGeneration = 0;
+  bool _catalogUseStateDbOnly = false;
+  final Set<String> _removedCatalogThreadIds = {};
+  bool get catalogPaginationEnabled => _catalogLoadedOnce;
+
+  CodexCatalogPage projectThreadsPage(String projectId) =>
+      _projectThreadPages.putIfAbsent(projectId, CodexCatalogPage.new);
+
+  CodexCatalogPage legacyProjectThreadsPage(String projectId) =>
+      _legacyProjectThreadPages.putIfAbsent(projectId, CodexCatalogPage.new);
+
+  List<CodexThread> get timelineThreads => !timelinePage.started
+      ? catalog.allThreads
+      : catalog.allThreads
+            .where(
+              (thread) =>
+                  timelinePage.threadIds.contains(thread.id) ||
+                  thread.id == selectedThread?.id ||
+                  codexThreadIsActive(thread),
+            )
+            .toList(growable: false);
   CodexThread? selectedThread;
   String? readingThreadId;
   String? readError;
@@ -409,10 +442,52 @@ class CodexConversationState extends ChangeNotifier {
   /// This is intentionally separate from [catalog]: archived threads and
   /// transient search results should not affect project grouping or the
   /// currently selected conversation.
-  Future<List<CodexThread>> listThreadsForManagement({
+  Future<CodexThreadQueryPage> listThreadsForManagement({
     required bool archived,
     String? searchTerm,
-  }) => _loadThreads(archived: archived, searchTerm: searchTerm);
+    String? cursor,
+  }) async {
+    final search = searchTerm?.trim();
+    if (search != null && search.isNotEmpty) {
+      try {
+        final response = await connection.searchThreads(
+          CodexThreadSearchParams(
+            archived: archived,
+            cursor: cursor,
+            limit: codexCatalogThreadPageSize,
+            searchTerm: search,
+            sortDirection: CodexSortDirection.desc,
+            sortKey: CodexThreadSearchSortKey.recencyAt,
+          ),
+        );
+        return CodexThreadQueryPage(
+          threads: response.data.map((result) => result.thread).toList(),
+          nextCursor: response.nextCursor,
+          snippets: {
+            for (final result in response.data)
+              result.thread.id: result.snippet,
+          },
+        );
+      } on CodexRpcException catch (error) {
+        if (error.error.code != -32601) rethrow;
+        // Older app-servers only expose title filtering through thread/list.
+      }
+    }
+    final response = await connection.listThreads(
+      CodexThreadListParams(
+        archived: archived,
+        cursor: cursor,
+        limit: codexCatalogThreadPageSize,
+        searchTerm: search == null || search.isEmpty ? null : search,
+        sortDirection: CodexSortDirection.desc,
+        sortKey: CodexThreadSortKey.recencyAt,
+      ),
+    );
+    return CodexThreadQueryPage(
+      threads: response.data,
+      nextCursor: response.nextCursor,
+    );
+  }
 
   Future<void> renameThread(String threadId, String name) async {
     final normalized = name.trim();
@@ -444,6 +519,8 @@ class CodexConversationState extends ChangeNotifier {
     final response = await connection.unarchiveThread(threadId);
     if (_closed) return;
     final thread = response.thread;
+    _removedCatalogThreadIds.remove(thread.id);
+    timelinePage.threadIds.add(thread.id);
     if (!thread.ephemeral) _threads[thread.id] = thread;
     _rebuildCatalog();
     _notify();
@@ -457,59 +534,277 @@ class CodexConversationState extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> refreshCatalog({bool showLoading = true}) async {
+  Future<void> refreshCatalog({
+    bool showLoading = true,
+    bool useStateDbOnly = false,
+    bool loadTimeline = true,
+  }) async {
     final response = connection.state.response;
     if (_closed ||
         connection.state.phase != CodexConnectionPhase.connected ||
         response == null) {
       return;
     }
-    final knownThreadIds = _threads.keys.toSet();
-    final insertBeforeThreadId = selectedThread?.id;
-    final generation = ++_refreshGeneration;
+    ++_refreshGeneration;
+    _catalogUseStateDbOnly = useStateDbOnly;
+    _catalogLoadedOnce = true;
+    _projectThreadPages.clear();
+    _legacyProjectThreadPages.clear();
+    projectlessPage = CodexCatalogPage();
+    timelinePage = CodexCatalogPage();
     if (showLoading || _threads.isEmpty) {
-      catalogPhase = CodexCatalogPhase.loading;
+      catalogPhase = loadTimeline
+          ? CodexCatalogPhase.loading
+          : CodexCatalogPhase.ready;
       catalogError = null;
       _notify();
     }
 
+    await Future.wait([
+      if (loadTimeline) loadMoreTimelineThreads(),
+      refreshProjects(),
+      _refreshPinnedThreads(response.codexHome.value),
+    ]);
+  }
+
+  void _catalogPageChanged() {
+    _catalogPageRevision++;
+    _notify();
+  }
+
+  Future<void> refreshProjects() async {
+    final generation = ++_projectsGeneration;
+    projectsPage = CodexCatalogPage();
+    await _loadProjectsPage(projectsPage, generation, replace: true);
+  }
+
+  Future<void> loadMoreProjects() => _loadProjectsPage(
+    projectsPage,
+    _projectsGeneration,
+    replace: !projectsPage.started,
+  );
+
+  Future<void> _loadProjectsPage(
+    CodexCatalogPage page,
+    int generation, {
+    bool replace = false,
+  }) async {
+    if (_closed ||
+        page.loading ||
+        !page.hasMore ||
+        connection.state.phase != CodexConnectionPhase.connected) {
+      return;
+    }
+    page.loading = true;
+    page.error = null;
+    _catalogPageChanged();
     try {
-      final results = await Future.wait<Object>([
-        _loadAllThreads(),
-        _loadAllProjects(),
-        _readPinnedThreadIds(response.codexHome.value),
-      ]);
-      final loadedThreads = results[0] as List<CodexThread>;
-      final projects = results[1] as List<CodexProject>;
-      final pinnedThreadIds = results[2] as List<String>;
-      if (_closed || generation != _refreshGeneration) return;
-      if (_catalogLoadedOnce) {
-        for (final thread in loadedThreads) {
-          if (!thread.ephemeral && !knownThreadIds.contains(thread.id)) {
-            _recordThreadPlacement(thread.id, insertBeforeThreadId);
-          }
-        }
-      }
-      _threads
-        ..clear()
-        ..addEntries(
-          loadedThreads
-              .where((thread) => !thread.ephemeral)
-              .map((thread) => MapEntry(thread.id, thread)),
-        );
-      _projects = projects;
-      _pinnedThreadIds = pinnedThreadIds;
-      _catalogLoadedOnce = true;
+      final response = await connection.listProjects(
+        CodexProjectListParams(
+          cursor: page.nextCursor,
+          limit: codexProjectPageSize,
+          sortKey: CodexProjectSortKey.position,
+        ),
+      );
+      if (_closed || generation != _projectsGeneration) return;
+      _projects = {
+        if (!replace)
+          for (final project in _projects) project.id: project,
+        for (final project in response.data) project.id: project,
+      }.values.toList();
+      page.accept(response.nextCursor);
       _rebuildCatalog();
-      catalogPhase = CodexCatalogPhase.ready;
-      catalogError = null;
+    } catch (error) {
+      if (_closed || generation != _projectsGeneration) return;
+      page.error = '$error';
+    } finally {
+      if (!_closed && generation == _projectsGeneration) {
+        page.loading = false;
+        _catalogPageChanged();
+      }
+    }
+  }
+
+  Future<void> loadMoreTimelineThreads() =>
+      _loadCatalogThreadPage(timelinePage, timeline: true);
+
+  Future<void> loadMoreProjectlessThreads() =>
+      _loadCatalogThreadPage(projectlessPage, projectIdSpecified: true);
+
+  Future<void> loadMoreProjectThreads(CodexProject project) async {
+    await Future.wait([
+      _loadCatalogThreadPage(
+        projectThreadsPage(project.id),
+        projectId: project.id,
+      ),
+      if (project.roots.isNotEmpty)
+        _loadCatalogThreadPage(
+          legacyProjectThreadsPage(project.id),
+          projectIdSpecified: true,
+          cwd: CodexThreadListCwdFilter(
+            project.roots.map((root) => root.path.value).toList(),
+          ),
+        ),
+    ]);
+  }
+
+  Future<void> _loadCatalogThreadPage(
+    CodexCatalogPage page, {
+    bool timeline = false,
+    String? projectId,
+    bool projectIdSpecified = false,
+    CodexThreadListCwdFilter? cwd,
+  }) async {
+    if (_closed ||
+        page.loading ||
+        !page.hasMore ||
+        connection.state.phase != CodexConnectionPhase.connected) {
+      return;
+    }
+    final generation = _refreshGeneration;
+    final firstPage = !page.started;
+    final knownThreadIds = _threads.keys.toSet();
+    final knownThreads = Map<String, CodexThread>.of(_threads);
+    final insertBeforeThreadId = selectedThread?.id;
+    page.loading = true;
+    page.error = null;
+    _catalogPageChanged();
+    try {
+      CodexThreadListParams params({bool? databaseOnly}) =>
+          CodexThreadListParams(
+            archived: false,
+            cursor: page.nextCursor,
+            limit: timeline
+                ? codexCatalogThreadPageSize
+                : codexProjectThreadPageSize,
+            projectId: projectId,
+            projectIdSpecified: projectIdSpecified,
+            cwd: cwd,
+            sortDirection: CodexSortDirection.desc,
+            sortKey: CodexThreadSortKey.recencyAt,
+            useStateDbOnly: databaseOnly,
+          );
+      var response = await connection.listThreads(
+        params(databaseOnly: _catalogUseStateDbOnly ? true : null),
+      );
+      if (_closed || generation != _refreshGeneration) return;
+      if (timeline &&
+          firstPage &&
+          _catalogUseStateDbOnly &&
+          response.data.isEmpty) {
+        // An empty/uninitialized index needs one normal scan before paging.
+        _catalogUseStateDbOnly = false;
+        response = await connection.listThreads(params());
+      }
+      if (_closed || generation != _refreshGeneration) return;
+      page.accept(response.nextCursor);
+      if (firstPage) {
+        // Keep other query caches and the selected conversation intact.
+        final retainedIds = {
+          ..._pinnedThreadIds,
+          if (selectedThread != null) selectedThread!.id,
+          for (final other in [
+            timelinePage,
+            ..._projectThreadPages.values,
+            ..._legacyProjectThreadPages.values,
+            projectlessPage,
+          ])
+            ...other.threadIds,
+          for (final thread in response.data) thread.id,
+          for (final entry in _threads.entries)
+            if (!identical(entry.value, knownThreads[entry.key])) entry.key,
+        };
+        final cwdFilter = cwd?.value;
+        _threads.removeWhere((id, thread) {
+          if (retainedIds.contains(id)) return false;
+          if (timeline) return true;
+          if (projectId != null) return thread.projectId == projectId;
+          return projectIdSpecified &&
+              thread.projectId == null &&
+              (cwdFilter == null ||
+                  cwdFilter == thread.cwd.value ||
+                  cwdFilter is List && cwdFilter.contains(thread.cwd.value));
+        });
+      }
+      for (final thread in response.data) {
+        if (thread.ephemeral || _removedCatalogThreadIds.contains(thread.id)) {
+          continue;
+        }
+        if (timeline &&
+            firstPage &&
+            knownThreadIds.isNotEmpty &&
+            !knownThreadIds.contains(thread.id)) {
+          _recordThreadPlacement(thread.id, insertBeforeThreadId);
+        }
+        // A page can overlap a thread updated by a live event or another query.
+        final current = _threads[thread.id];
+        if (identical(current, knownThreads[thread.id]) &&
+            (current == null ||
+                codexThreadTimestamp(thread) >=
+                    codexThreadTimestamp(current))) {
+          _threads[thread.id] = thread;
+        }
+        page.threadIds.add(thread.id);
+      }
+      _rebuildCatalog();
       _syncSelectedThread();
-      _notify();
+      if (timeline) {
+        catalogPhase = CodexCatalogPhase.ready;
+        catalogError = null;
+      }
     } catch (error) {
       if (_closed || generation != _refreshGeneration) return;
-      catalogPhase = CodexCatalogPhase.failed;
-      catalogError = '$error';
-      _notify();
+      page.error = '$error';
+      if (timeline && firstPage) {
+        catalogPhase = CodexCatalogPhase.failed;
+        catalogError = '$error';
+      }
+    } finally {
+      if (!_closed && generation == _refreshGeneration) {
+        page.loading = false;
+        _catalogPageChanged();
+      }
+    }
+  }
+
+  Future<void> _refreshPinnedThreads(String codexHome) async {
+    final generation = _refreshGeneration;
+    final ids = (await _readPinnedThreadIds(
+      codexHome,
+    )).where((id) => !_removedCatalogThreadIds.contains(id)).toList();
+    if (_closed || generation != _refreshGeneration) return;
+    _pinnedThreadIds = ids;
+    _rebuildCatalog();
+    _catalogPageChanged();
+    // Bounded concurrency; old pins need not occur in the recent first page.
+    for (var index = 0; index < ids.length; index += 4) {
+      if (_closed || generation != _refreshGeneration) return;
+      await Future.wait([
+        for (final id in ids.skip(index).take(4))
+          if (!_threads.containsKey(id))
+            () async {
+              try {
+                final response = await connection.readThread(id);
+                if (_closed ||
+                    generation != _refreshGeneration ||
+                    !_pinnedThreadIds.contains(id)) {
+                  return;
+                }
+                final pathParts =
+                    response.thread.path?.replaceAll('\\', '/').split('/') ??
+                    const <String>[];
+                if (!response.thread.ephemeral &&
+                    !pathParts.contains('archived_sessions')) {
+                  _threads.putIfAbsent(id, () => response.thread);
+                }
+              } catch (_) {
+                // Deleted or unavailable pins must not block the catalog.
+              }
+            }(),
+      ]);
+      if (_closed || generation != _refreshGeneration) return;
+      _rebuildCatalog();
+      _catalogPageChanged();
     }
   }
 
@@ -2325,62 +2620,6 @@ class CodexConversationState extends ChangeNotifier {
     }
   }
 
-  Future<List<CodexThread>> _loadAllThreads() => _loadThreads(archived: false);
-
-  Future<List<CodexThread>> _loadThreads({
-    required bool archived,
-    String? searchTerm,
-  }) async {
-    final threads = <CodexThread>[];
-    final seenCursors = <String>{};
-    final normalizedSearch = searchTerm?.trim();
-    String? cursor;
-    while (true) {
-      final response = await connection.listThreads(
-        CodexThreadListParams(
-          archived: archived,
-          cursor: cursor,
-          limit: 100,
-          searchTerm: normalizedSearch == null || normalizedSearch.isEmpty
-              ? null
-              : normalizedSearch,
-          sortDirection: CodexSortDirection.desc,
-          sortKey: CodexThreadSortKey.recencyAt,
-        ),
-      );
-      threads.addAll(response.data);
-      final next = response.nextCursor;
-      if (next == null || next.isEmpty || !seenCursors.add(next)) break;
-      cursor = next;
-    }
-    return threads;
-  }
-
-  Future<List<CodexProject>> _loadAllProjects() async {
-    final projects = <String, CodexProject>{};
-    final seenCursors = <String>{};
-    String? cursor;
-    while (true) {
-      final response = await connection.listProjects(
-        CodexProjectListParams(
-          cursor: cursor,
-          limit: 100,
-          sortKey: CodexProjectSortKey.position,
-        ),
-      );
-      for (final project in response.data) {
-        projects[project.id] = project;
-      }
-      final next = response.nextCursor;
-      if (next == null || next.isEmpty) break;
-      if (!seenCursors.add(next)) {
-        throw StateError('Repeated project/list cursor');
-      }
-      cursor = next;
-    }
-    return projects.values.toList();
-  }
-
   // Pin order is a desktop UI preference, not a project assignment. App-server
   // does not expose it; no project data is read from this private preferences file.
   Future<List<String>> _readPinnedThreadIds(String codexHome) async {
@@ -2401,6 +2640,17 @@ class CodexConversationState extends ChangeNotifier {
     final state = connection.state;
     if (state.phase != CodexConnectionPhase.connected) {
       _connectionGeneration++;
+      _refreshGeneration++;
+      _projectsGeneration++;
+      for (final page in [
+        timelinePage,
+        projectsPage,
+        projectlessPage,
+        ..._projectThreadPages.values,
+        ..._legacyProjectThreadPages.values,
+      ]) {
+        page.loading = false;
+      }
       _queueLoadGeneration++;
       queueLoading = false;
       if (recoverOnReconnect &&
@@ -2437,7 +2687,13 @@ class CodexConversationState extends ChangeNotifier {
       _loadedInitializeResponse = response;
       unawaited(_loadModels());
       unawaited(_loadCollaborationModes());
-      unawaited(refreshCatalog(showLoading: true));
+      unawaited(
+        refreshCatalog(
+          showLoading: true,
+          useStateDbOnly: true,
+          loadTimeline: shouldLoadTimelineOnConnect?.call() ?? true,
+        ),
+      );
       unawaited(refreshQueue());
       if (threadId != null) {
         unawaited(
@@ -2517,7 +2773,7 @@ class CodexConversationState extends ChangeNotifier {
         return;
 
       case CodexProjectChangedNotification2():
-        unawaited(refreshCatalog(showLoading: false));
+        unawaited(refreshProjects());
         return;
       case CodexThreadProjectUpdatedNotification2(:final params):
         final current = _threads[params.threadId];
@@ -2533,6 +2789,8 @@ class CodexConversationState extends ChangeNotifier {
         }
 
       case CodexThreadStartedNotification2(:final params):
+        _removedCatalogThreadIds.remove(params.thread.id);
+        timelinePage.threadIds.add(params.thread.id);
         if (!params.thread.ephemeral) {
           if (!_threads.containsKey(params.thread.id)) {
             _recordThreadPlacement(params.thread.id, selectedThread?.id);
@@ -2560,6 +2818,7 @@ class CodexConversationState extends ChangeNotifier {
       case CodexThreadDeletedNotification2(:final params):
         _removeThread(params.threadId);
       case CodexThreadUnarchivedNotification2(:final params):
+        _removedCatalogThreadIds.remove(params.threadId);
         if (!_threads.containsKey(params.threadId)) {
           unawaited(refreshCatalog(showLoading: false));
         }
@@ -2719,6 +2978,16 @@ class CodexConversationState extends ChangeNotifier {
   }
 
   void _removeThread(String threadId) {
+    _removedCatalogThreadIds.add(threadId);
+    _pinnedThreadIds = _pinnedThreadIds.where((id) => id != threadId).toList();
+    for (final page in [
+      timelinePage,
+      projectlessPage,
+      ..._projectThreadPages.values,
+      ..._legacyProjectThreadPages.values,
+    ]) {
+      page.threadIds.remove(threadId);
+    }
     _forgetThreadPlacement(threadId);
     _threads.remove(threadId);
     _resumedThreads.remove(threadId);
@@ -3004,6 +3273,9 @@ class CodexConversationState extends ChangeNotifier {
       pinnedThreadIds: _pinnedThreadIds,
       selectedProjectId: selectedThread?.projectId,
       insertBeforeByThreadId: _insertBeforeByThreadId,
+      projectsComplete:
+          !catalogPaginationEnabled ||
+          (projectsPage.started && !projectsPage.hasMore),
     );
   }
 
@@ -3174,6 +3446,7 @@ class CodexConversationState extends ChangeNotifier {
         identityHashCode(catalog),
         catalogPhase,
         catalogError,
+        _catalogPageRevision,
         creatingProjectId,
         creatingProjectlessThread,
         createThreadError,
@@ -3941,6 +4214,7 @@ final class CodexServiceState extends CodexConversationState {
     required super.serverId,
     required super.connection,
     super.externalActiveLeaseDuration,
+    super.shouldLoadTimelineOnConnect,
     this.selectedThreadActivePollInterval = const Duration(seconds: 1),
     this.selectedThreadIdlePollInterval = const Duration(seconds: 5),
   }) : super(listenToConnectionMessages: false, recoverOnReconnect: false) {

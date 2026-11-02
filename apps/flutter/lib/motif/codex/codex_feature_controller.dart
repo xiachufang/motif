@@ -80,6 +80,8 @@ final class CodexFeatureController extends ChangeNotifier {
           CodexServiceState(
             serverId: serverId,
             connection: connectionFactory(),
+            shouldLoadTimelineOnConnect: () =>
+                preferences.sidebarMode == CodexSidebarMode.timeline,
           );
       state.configureModelPreference(
         preferredModelId: preferences.selectedModelId(serverId),

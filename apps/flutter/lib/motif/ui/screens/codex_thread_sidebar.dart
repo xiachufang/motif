@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_observation/flutter_observation.dart';
 
 import '../../codex/codex_service_state.dart';
+import '../../codex/codex_catalog_page.dart';
 import '../../codex/codex_state.dart';
 import '../../codex/codex_thread_catalog.dart';
 import '../../codex/protocol/generated/codex_app_server_protocol.dart';
@@ -32,6 +33,7 @@ class CodexThreadSidebarViewModel extends _$CodexThreadSidebarViewModel {
     String? queryError,
     required this.projectsScrollController,
     required this.timelineScrollController,
+    required this.queryScrollController,
   }) : super(
          expandedProjects,
          visibleThreadCounts,
@@ -47,6 +49,10 @@ class CodexThreadSidebarViewModel extends _$CodexThreadSidebarViewModel {
 
   final ScrollController projectsScrollController;
   final ScrollController timelineScrollController;
+  final ScrollController queryScrollController;
+  String? queryNextCursor;
+  final Set<String> querySeenCursors = {};
+  final Map<String, String> querySnippets = {};
   Timer? searchTimer;
   int queryGeneration = 0;
 }
@@ -79,7 +85,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   @ObservableState(name: 'viewModel')
   CodexThreadSidebarViewModel createViewModel() {
     final preferences = codexState.projectSidebar(_serverId);
-    return CodexThreadSidebarViewModel(
+    final model = CodexThreadSidebarViewModel(
       expandedProjects: ObservableSet(preferences.expandedProjects),
       visibleThreadCounts: ObservableMap(preferences.visibleThreadCounts),
       queryResults: ObservableList<CodexThread>(),
@@ -89,11 +95,34 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       timelineScrollController: _createScrollController(
         CodexSidebarMode.timeline,
       ),
+      queryScrollController: ScrollController(),
       seededSelectedProject: preferences.initialized
           ? serviceState.catalog.selectedProjectId
           : null,
       showAllProjects: preferences.showAllProjects,
     );
+    model.timelineScrollController.addListener(() {
+      final controller = model.timelineScrollController;
+      if (controller.hasClients &&
+          controller.offset > 0 &&
+          controller.position.extentAfter < 200 &&
+          serviceState.catalogPaginationEnabled &&
+          !_usesQueryResults(model) &&
+          serviceState.timelinePage.error == null) {
+        unawaited(serviceState.loadMoreTimelineThreads());
+      }
+    });
+    model.queryScrollController.addListener(() {
+      final controller = model.queryScrollController;
+      if (controller.hasClients &&
+          controller.offset > 0 &&
+          controller.position.extentAfter < 200 &&
+          _usesQueryResults(model) &&
+          model.queryError == null) {
+        unawaited(_runThreadQuery(model, loadMore: true));
+      }
+    });
+    return model;
   }
 
   ScrollController _createScrollController(CodexSidebarMode mode) {
@@ -117,6 +146,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   void disposeStates({required CodexThreadSidebarViewModel viewModel}) {
     viewModel.searchTimer?.cancel();
     viewModel.queryGeneration++;
+    viewModel.queryScrollController.dispose();
     _disposeScrollController(
       viewModel.projectsScrollController,
       CodexSidebarMode.projects,
@@ -144,6 +174,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   }) {
     final _ = serviceState.viewModel.catalogRevision;
     _scheduleSelectedProjectSeed(context, viewModel);
+    _scheduleCatalogLoads(context, viewModel);
     final c = context.motif;
     final state = serviceState;
     return ColoredBox(
@@ -195,16 +226,22 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
                   selected: false,
                   busy:
                       viewModel.queryLoading ||
-                      state.catalogPhase == CodexCatalogPhase.loading,
+                      state.catalogPhase == CodexCatalogPhase.loading ||
+                      state.projectsPage.loading,
                   onTap:
                       viewModel.queryLoading ||
-                          state.catalogPhase == CodexCatalogPhase.loading
+                          state.catalogPhase == CodexCatalogPhase.loading ||
+                          state.projectsPage.loading
                       ? null
                       : () {
                           if (_usesQueryResults(viewModel)) {
                             unawaited(_runThreadQuery(viewModel));
                           } else {
-                            unawaited(state.refreshCatalog());
+                            unawaited(
+                              state.refreshCatalog(
+                                loadTimeline: mode == CodexSidebarMode.timeline,
+                              ),
+                            );
                           }
                         },
                 ),
@@ -233,7 +270,8 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
             CodexMotionPresence(
               visible:
                   state.catalogPhase == CodexCatalogPhase.loading &&
-                  state.catalog.allThreads.isNotEmpty,
+                  (state.catalog.allThreads.isNotEmpty ||
+                      state.catalog.projects.isNotEmpty),
               child: LinearProgressIndicator(
                 key: const ValueKey('codex-catalog-refresh-loading'),
                 minHeight: 2,
@@ -244,10 +282,18 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
             CodexMotionPresence(
               visible:
                   state.catalogPhase == CodexCatalogPhase.failed &&
-                  state.catalog.allThreads.isNotEmpty,
+                  (state.catalog.allThreads.isNotEmpty ||
+                      state.catalog.projects.isNotEmpty),
               child: _CatalogErrorBanner(
                 error: state.catalogError ?? 'Could not refresh threads',
                 onRetry: state.retryCatalog,
+              ),
+            ),
+            CodexMotionPresence(
+              visible: state.projectsPage.error != null,
+              child: _CatalogErrorBanner(
+                error: state.projectsPage.error ?? '',
+                onRetry: state.refreshProjects,
               ),
             ),
             CodexMotionPresence(
@@ -261,7 +307,10 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
               visible: viewModel.queryError != null,
               child: _CatalogErrorBanner(
                 error: viewModel.queryError ?? '',
-                onRetry: () => _runThreadQuery(viewModel),
+                onRetry: () => _runThreadQuery(
+                  viewModel,
+                  loadMore: viewModel.queryNextCursor != null,
+                ),
               ),
             ),
             Expanded(
@@ -280,7 +329,8 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     }
     if ((state.catalogPhase == CodexCatalogPhase.idle ||
             state.catalogPhase == CodexCatalogPhase.loading) &&
-        state.catalog.allThreads.isEmpty) {
+        state.catalog.allThreads.isEmpty &&
+        state.catalog.projects.isEmpty) {
       return const Center(
         key: ValueKey('codex-sidebar-loading-state'),
         child: CircularProgressIndicator(
@@ -289,7 +339,8 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       );
     }
     if (state.catalogPhase == CodexCatalogPhase.failed &&
-        state.catalog.allThreads.isEmpty) {
+        state.catalog.allThreads.isEmpty &&
+        state.catalog.projects.isEmpty) {
       return _CatalogFailure(
         key: const ValueKey('codex-sidebar-failure-state'),
         error: state.catalogError ?? 'Could not load Codex threads',
@@ -316,7 +367,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       );
     }
     final results = viewModel.queryResults;
-    if (results.isEmpty) {
+    if (results.isEmpty && viewModel.queryNextCursor == null) {
       return _EmptyCatalog(
         label: viewModel.showArchived
             ? 'No archived threads'
@@ -329,6 +380,7 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
             ? 'codex-archived-thread-list'
             : 'codex-thread-search-results',
       ),
+      controller: viewModel.queryScrollController,
       padding: const EdgeInsets.only(bottom: MotifSpacing.xl),
       children: [
         CodexSidebarSectionHeading(
@@ -344,7 +396,23 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
             viewModel,
             thread,
             archived: viewModel.showArchived,
-            subtitle: _managementThreadSubtitle(thread),
+            subtitle:
+                viewModel.querySnippets[thread.id]?.trim().isNotEmpty == true
+                ? viewModel.querySnippets[thread.id]
+                : _managementThreadSubtitle(thread),
+          ),
+        if (viewModel.queryNextCursor != null)
+          _ShowMoreRow(
+            key: const ValueKey('codex-query-more'),
+            label: viewModel.queryLoading
+                ? 'Loading…'
+                : viewModel.queryError != null
+                ? 'Retry'
+                : 'Show more',
+            busy: viewModel.queryLoading,
+            onTap: viewModel.queryLoading
+                ? null
+                : () => unawaited(_runThreadQuery(viewModel, loadMore: true)),
           ),
       ],
     );
@@ -372,6 +440,9 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     }
 
     children.add(const CodexSidebarSectionHeading('Projects'));
+    if (serviceState.projectsPage.loading) {
+      children.add(const LinearProgressIndicator(minHeight: 2));
+    }
     children.addAll(
       snapshot.projects
           .take(_initialProjectCount)
@@ -400,6 +471,17 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
           label: viewModel.showAllProjects ? 'Show less' : 'Show more',
           onTap: () =>
               _setShowAllProjects(viewModel, !viewModel.showAllProjects),
+        ),
+      );
+    }
+    if (serviceState.catalogPaginationEnabled &&
+        (viewModel.showAllProjects ||
+            snapshot.projects.length <= _initialProjectCount)) {
+      children.add(
+        _catalogPageFooter(
+          serviceState.projectsPage,
+          serviceState.loadMoreProjects,
+          'codex-projects-load-more',
         ),
       );
     }
@@ -444,6 +526,15 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
         ),
       ),
     );
+    if (serviceState.catalogPaginationEnabled) {
+      children.add(
+        _catalogPageFooter(
+          serviceState.projectlessPage,
+          serviceState.loadMoreProjectlessThreads,
+          'codex-recents-more',
+        ),
+      );
+    }
     if (snapshot.allThreads.isEmpty && snapshot.projects.isEmpty) {
       children.add(const _EmptyCatalog());
     }
@@ -462,9 +553,20 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   ) {
     final projectId = group.project.id;
     final expanded = _projectIsExpanded(viewModel, projectId);
+    final page = serviceState.projectThreadsPage(projectId);
+    final legacyPage = serviceState.legacyProjectThreadsPage(projectId);
+    final loading = page.loading || legacyPage.loading;
+    final pageError = page.error ?? legacyPage.error;
+    final hasMorePages =
+        serviceState.catalogPaginationEnabled &&
+        (page.hasMore ||
+            (group.project.roots.isNotEmpty && legacyPage.hasMore));
     final nested = <Widget>[];
     if (group.threads.isEmpty) {
-      nested.add(const _EmptyProjectRow());
+      if (!serviceState.catalogPaginationEnabled ||
+          (!hasMorePages && pageError == null)) {
+        nested.add(const _EmptyProjectRow());
+      }
     } else {
       final visibleThreadCount =
           viewModel.visibleThreadCounts[projectId] ?? _initialThreadCount;
@@ -485,24 +587,66 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
               ),
             ),
       );
-      if (group.threads.length > _initialThreadCount) {
+      if (group.threads.length > _initialThreadCount ||
+          (serviceState.catalogPaginationEnabled && hasMorePages)) {
         nested.add(
           _ShowMoreRow(
             key: ValueKey('codex-project-threads-more-$projectId'),
-            label: hasMoreThreads ? 'Show more' : 'Show less',
-            onTap: () => _setVisibleThreadCount(
-              viewModel,
-              projectId,
-              hasMoreThreads
-                  ? (effectiveThreadCount + _threadPageSize <
-                            group.threads.length
-                        ? effectiveThreadCount + _threadPageSize
-                        : group.threads.length)
-                  : _initialThreadCount,
-            ),
+            label: loading
+                ? 'Loading…'
+                : pageError != null
+                ? 'Retry'
+                : hasMoreThreads || hasMorePages
+                ? 'Show more'
+                : 'Show less',
+            busy: loading,
+            onTap: loading
+                ? null
+                : () async {
+                    if (hasMoreThreads || hasMorePages) {
+                      _setVisibleThreadCount(
+                        viewModel,
+                        projectId,
+                        effectiveThreadCount + _threadPageSize,
+                      );
+                      if (effectiveThreadCount + _threadPageSize >
+                              group.threads.length &&
+                          hasMorePages) {
+                        await serviceState.loadMoreProjectThreads(
+                          group.project,
+                        );
+                      }
+                    } else {
+                      _setVisibleThreadCount(
+                        viewModel,
+                        projectId,
+                        _initialThreadCount,
+                      );
+                    }
+                  },
           ),
         );
       }
+    }
+    if (serviceState.catalogPaginationEnabled &&
+        group.threads.isEmpty &&
+        (hasMorePages || pageError != null)) {
+      nested.add(
+        _ShowMoreRow(
+          key: ValueKey('codex-project-threads-more-$projectId'),
+          label: loading
+              ? 'Loading…'
+              : pageError != null
+              ? 'Retry'
+              : 'Show more',
+          busy: loading,
+          onTap: loading
+              ? null
+              : () => unawaited(
+                  serviceState.loadMoreProjectThreads(group.project),
+                ),
+        ),
+      );
     }
     return Column(
       key: ValueKey('codex-project-section-$projectId'),
@@ -546,11 +690,11 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     BuildContext context,
     CodexThreadSidebarViewModel viewModel,
   ) {
-    final snapshot = serviceState.catalog;
-    final priority = snapshot.allThreads.where(codexThreadIsActive).toList()
-      ..sort(compareCodexThreadsByRecency);
+    final priority =
+        serviceState.timelineThreads.where(codexThreadIsActive).toList()
+          ..sort(compareCodexThreadsByRecency);
     final dated =
-        snapshot.allThreads
+        serviceState.timelineThreads
             .where((thread) => !codexThreadIsActive(thread))
             .toList()
           ..sort(compareCodexThreadsByRecency);
@@ -577,6 +721,15 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
       );
     }
     if (children.isEmpty) children.add(const _EmptyCatalog());
+    if (serviceState.catalogPaginationEnabled) {
+      children.add(
+        _catalogPageFooter(
+          serviceState.timelinePage,
+          serviceState.loadMoreTimelineThreads,
+          'codex-timeline-more',
+        ),
+      );
+    }
     return ListView(
       key: const ValueKey('codex-timeline-list'),
       controller: viewModel.timelineScrollController,
@@ -659,6 +812,63 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   bool _usesQueryResults(CodexThreadSidebarViewModel viewModel) =>
       viewModel.showArchived || viewModel.query.trim().isNotEmpty;
 
+  Widget _catalogPageFooter(
+    CodexCatalogPage page,
+    Future<void> Function() onLoad,
+    String key,
+  ) {
+    if (!page.hasMore && page.error == null) return const SizedBox.shrink();
+    return _ShowMoreRow(
+      key: ValueKey(key),
+      label: page.loading
+          ? 'Loading…'
+          : page.error != null
+          ? 'Retry'
+          : 'Show more',
+      busy: page.loading,
+      onTap: page.loading ? null : () => unawaited(onLoad()),
+    );
+  }
+
+  void _scheduleCatalogLoads(
+    BuildContext context,
+    CodexThreadSidebarViewModel viewModel,
+  ) {
+    if (!serviceState.catalogPaginationEnabled ||
+        _usesQueryResults(viewModel)) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!context.mounted || _usesQueryResults(viewModel)) {
+        return;
+      }
+      if (mode == CodexSidebarMode.timeline) {
+        final page = serviceState.timelinePage;
+        if (!page.started && !page.loading && page.error == null) {
+          unawaited(serviceState.loadMoreTimelineThreads());
+        }
+        return;
+      }
+      final page = serviceState.projectlessPage;
+      if (!page.started && !page.loading && page.error == null) {
+        unawaited(serviceState.loadMoreProjectlessThreads());
+      }
+      final groups = serviceState.catalog.projects;
+      for (final group
+          in viewModel.showAllProjects
+              ? groups
+              : groups.take(_initialProjectCount)) {
+        final projectPage = serviceState.projectThreadsPage(group.project.id);
+        if (_projectIsExpanded(viewModel, group.project.id) &&
+            !projectPage.started &&
+            !projectPage.loading &&
+            projectPage.error == null) {
+          unawaited(serviceState.loadMoreProjectThreads(group.project));
+        }
+      }
+    });
+  }
+
   String? _managementThreadSubtitle(CodexThread thread) {
     final project = serviceState.catalog.projectNameForThread(thread.id);
     if (project != null) return project;
@@ -675,6 +885,9 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
 
   void _toggleArchived(CodexThreadSidebarViewModel viewModel) {
     viewModel.showArchived = !viewModel.showArchived;
+    viewModel.queryResults.clear();
+    viewModel.querySnippets.clear();
+    viewModel.queryNextCursor = null;
     viewModel.queryError = null;
     if (_usesQueryResults(viewModel)) {
       unawaited(_runThreadQuery(viewModel));
@@ -687,6 +900,10 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
   }
 
   void _setQuery(CodexThreadSidebarViewModel viewModel, String value) {
+    viewModel.queryGeneration++;
+    viewModel.queryNextCursor = null;
+    viewModel.queryResults.clear();
+    viewModel.querySnippets.clear();
     viewModel.query = value;
     viewModel.queryError = null;
     viewModel.searchTimer?.cancel();
@@ -703,17 +920,43 @@ class CodexThreadSidebar extends _$CodexThreadSidebar {
     );
   }
 
-  Future<void> _runThreadQuery(CodexThreadSidebarViewModel viewModel) async {
+  Future<void> _runThreadQuery(
+    CodexThreadSidebarViewModel viewModel, {
+    bool loadMore = false,
+  }) async {
+    if (loadMore &&
+        (viewModel.queryLoading || viewModel.queryNextCursor == null)) {
+      return;
+    }
     viewModel.searchTimer?.cancel();
     final generation = ++viewModel.queryGeneration;
+    final cursor = loadMore ? viewModel.queryNextCursor : null;
+    if (!loadMore) {
+      viewModel.queryNextCursor = null;
+      viewModel.querySeenCursors.clear();
+      viewModel.querySnippets.clear();
+    }
     viewModel.queryLoading = true;
     viewModel.queryError = null;
     try {
-      final threads = await serviceState.listThreadsForManagement(
+      final response = await serviceState.listThreadsForManagement(
         archived: viewModel.showArchived,
         searchTerm: viewModel.query,
+        cursor: cursor,
       );
       if (generation != viewModel.queryGeneration) return;
+      final threads = {
+        if (loadMore)
+          for (final thread in viewModel.queryResults) thread.id: thread,
+        for (final thread in response.threads)
+          if (!thread.ephemeral) thread.id: thread,
+      }.values.toList();
+      final next = response.nextCursor?.trim();
+      viewModel.queryNextCursor =
+          next == null || next.isEmpty || !viewModel.querySeenCursors.add(next)
+          ? null
+          : next;
+      viewModel.querySnippets.addAll(response.snippets);
       viewModel.queryResults.replaceRange(
         0,
         viewModel.queryResults.length,
@@ -1073,10 +1316,16 @@ class _ProjectRow extends StatelessWidget {
 }
 
 class _ShowMoreRow extends StatelessWidget {
-  const _ShowMoreRow({required this.label, required this.onTap, super.key});
+  const _ShowMoreRow({
+    required this.label,
+    required this.onTap,
+    this.busy = false,
+    super.key,
+  });
 
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -1092,6 +1341,13 @@ class _ShowMoreRow extends StatelessWidget {
           ),
           child: Row(
             children: [
+              if (busy) ...[
+                const SizedBox.square(
+                  dimension: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: MotifSpacing.sm),
+              ],
               Text(
                 label,
                 style: MotifType.sidebar.copyWith(color: c.textTertiary),

@@ -48,6 +48,7 @@ CodexCatalogSnapshot buildCodexCatalog(
   Iterable<String> pinnedThreadIds = const [],
   String? selectedProjectId,
   Map<String, String?> insertBeforeByThreadId = const {},
+  bool projectsComplete = true,
 }) {
   final unique = <String, CodexThread>{
     for (final thread in source)
@@ -75,6 +76,9 @@ CodexCatalogSnapshot buildCodexCatalog(
         : _projectForDirectory(thread.cwd.value, orderedProjects);
     if (project != null) names[thread.id] = project.name;
     if (pinnedIds.contains(thread.id)) continue;
+    if (project == null && thread.projectId != null && !projectsComplete) {
+      continue;
+    }
     if (project == null) {
       projectless.add(thread);
     } else {

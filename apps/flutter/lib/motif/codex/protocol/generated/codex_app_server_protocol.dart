@@ -36832,6 +36832,7 @@ final class CodexThreadListCwdFilter implements CodexJsonEncodable {
 
 final class CodexThreadListParams implements CodexJsonEncodable {
   const CodexThreadListParams({
+    this.projectIdSpecified = false,
     this.ancestorThreadId,
     this.archived,
     this.cursor,
@@ -36849,6 +36850,7 @@ final class CodexThreadListParams implements CodexJsonEncodable {
     this.useStateDbOnly,
   });
 
+  final bool projectIdSpecified;
   final String? ancestorThreadId;
   final bool? archived;
   final String? cursor;
@@ -36868,6 +36870,7 @@ final class CodexThreadListParams implements CodexJsonEncodable {
   factory CodexThreadListParams.fromJson(Object? json) {
     final map = CodexJson.asMap(json, 'CodexThreadListParams');
     return CodexThreadListParams(
+      projectIdSpecified: map.containsKey('projectId'),
       ancestorThreadId:
           map.containsKey('ancestorThreadId') && map['ancestorThreadId'] != null
           ? CodexJson.asString(
@@ -36977,7 +36980,8 @@ final class CodexThreadListParams implements CodexJsonEncodable {
     if (originators != null) 'originators': CodexJson.encode(originators),
     if (parentThreadId != null)
       'parentThreadId': CodexJson.encode(parentThreadId),
-    if (projectId != null) 'projectId': CodexJson.encode(projectId),
+    if (projectIdSpecified || projectId != null)
+      'projectId': CodexJson.encode(projectId),
     if (searchTerm != null) 'searchTerm': CodexJson.encode(searchTerm),
     if (sectionId != null) 'sectionId': CodexJson.encode(sectionId),
     if (sortDirection != null) 'sortDirection': CodexJson.encode(sortDirection),

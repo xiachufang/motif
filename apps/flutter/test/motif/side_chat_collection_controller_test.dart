@@ -358,6 +358,27 @@ final class _SideChatFakeClient extends ChangeNotifier
   ) async => const CodexProjectListResponse(data: []);
 
   @override
+  Future<CodexThreadSearchResponse> searchThreads(
+    CodexThreadSearchParams params,
+  ) async {
+    final response = await listThreads(
+      CodexThreadListParams(
+        archived: params.archived,
+        cursor: params.cursor,
+        limit: params.limit,
+        searchTerm: params.searchTerm,
+      ),
+    );
+    return CodexThreadSearchResponse(
+      data: [
+        for (final thread in response.data)
+          CodexThreadSearchResult(thread: thread, snippet: thread.preview),
+      ],
+      nextCursor: response.nextCursor,
+    );
+  }
+
+  @override
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
   ) async {

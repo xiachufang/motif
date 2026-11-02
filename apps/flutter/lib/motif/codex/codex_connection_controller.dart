@@ -171,6 +171,9 @@ abstract interface class CodexAppServerClient implements Listenable {
   );
   Future<CodexProjectListResponse> listProjects(CodexProjectListParams params);
   Future<CodexThreadListResponse> listThreads(CodexThreadListParams params);
+  Future<CodexThreadSearchResponse> searchThreads(
+    CodexThreadSearchParams params,
+  );
   Future<CodexThreadSetNameResponse> setThreadName(
     String threadId,
     String name,
@@ -482,6 +485,14 @@ final class CodexConnectionController extends ChangeNotifier
         (id) => CodexThreadListRequest(id: id, params: params),
         CodexThreadListResponse.fromJson,
       );
+
+  @override
+  Future<CodexThreadSearchResponse> searchThreads(
+    CodexThreadSearchParams params,
+  ) => _typedRequest(
+    (id) => CodexThreadSearchRequest(id: id, params: params),
+    CodexThreadSearchResponse.fromJson,
+  );
 
   @override
   Future<CodexThreadSetNameResponse> setThreadName(

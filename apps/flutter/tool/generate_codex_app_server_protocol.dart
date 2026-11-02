@@ -340,6 +340,8 @@ final class _Generator {
       required.addAll(commonRequired);
     }
     final fields = <_Field>[];
+    // thread/list distinguishes an omitted project filter from explicit null.
+    final hasProjectFilter = name == 'CodexThreadListParams';
     final usedFields = <String>{};
     for (final entry in properties.entries) {
       if (literals.containsKey(entry.key)) continue;
@@ -371,6 +373,7 @@ final class _Generator {
       out.writeln('  const $name();');
     } else {
       out.writeln('  const $name({');
+      if (hasProjectFilter) out.writeln('    this.projectIdSpecified = false,');
       for (final field in fields) {
         out.writeln(
           '    ${field.required ? 'required ' : ''}this.${field.name},',
@@ -379,6 +382,7 @@ final class _Generator {
       out.writeln('  });');
     }
     out.writeln();
+    if (hasProjectFilter) out.writeln('  final bool projectIdSpecified;');
     for (final field in fields) {
       var type = _type(field.schema);
       if (!field.required && !type.endsWith('?')) type = '$type?';
@@ -413,6 +417,9 @@ final class _Generator {
       out.writeln('    return const $name();');
     } else {
       out.writeln('    return $name(');
+      if (hasProjectFilter) {
+        out.writeln("      projectIdSpecified: map.containsKey('projectId'),");
+      }
       for (final field in fields) {
         final raw = 'map[${_q(field.wire)}]';
         if (field.required) {
@@ -437,7 +444,11 @@ final class _Generator {
       out.writeln('    ${_q(literal.key)}: ${_q(literal.value)},');
     }
     for (final field in fields) {
-      if (field.required) {
+      if (hasProjectFilter && field.wire == 'projectId') {
+        out.writeln(
+          "    if (projectIdSpecified || projectId != null) 'projectId': CodexJson.encode(projectId),",
+        );
+      } else if (field.required) {
         out.writeln('    ${_q(field.wire)}: CodexJson.encode(${field.name}),');
       } else {
         out.writeln(

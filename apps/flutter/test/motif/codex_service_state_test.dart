@@ -14,7 +14,322 @@ import 'fake_codex_queue.dart';
 
 void main() {
   test(
-    'loads all project pages and applies server assignment changes',
+    'project mode defers the global timeline query until it is requested',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('first')]),
+        },
+        projects: [testProject()],
+      );
+      final state = CodexServiceState(
+        serverId: 'server',
+        connection: client,
+        shouldLoadTimelineOnConnect: () => false,
+      );
+      await state.start();
+      await waitFor(() => state.projectsPage.started);
+      expect(state.catalogPhase, CodexCatalogPhase.ready);
+      expect(client.listParams, isEmpty);
+      await state.loadMoreProjectlessThreads();
+      expect(
+        client.listParams.single.toJson(),
+        containsPair('projectId', null),
+      );
+      await state.loadMoreTimelineThreads();
+      expect(client.listParams.last.projectIdSpecified, isFalse);
+      expect(client.listParams.last.limit, codexCatalogThreadPageSize);
+      await state.close();
+    },
+  );
+
+  test(
+    'unsupported search falls back to a bounded title-filtered page',
+    () async {
+      final client =
+          FakeCodexClient(
+              pages: {
+                null: CodexThreadListResponse(
+                  data: [thread('hit')],
+                  nextCursor: 'older',
+                ),
+              },
+            )
+            ..searchError = const CodexRpcException(
+              CodexJSONRPCErrorError(code: -32601, message: 'Method not found'),
+            );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      final page = await state.listThreadsForManagement(
+        archived: true,
+        searchTerm: 'hit',
+      );
+      expect(page.threads.single.id, 'hit');
+      expect(page.nextCursor, 'older');
+      expect(client.listParams.single.searchTerm, 'hit');
+      expect(client.listParams.single.limit, codexCatalogThreadPageSize);
+      await state.close();
+    },
+  );
+
+  test(
+    'automatic loading uses the database and manual refresh repairs metadata',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('first')]),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.listParams.single.useStateDbOnly, isTrue);
+      await state.refreshCatalog();
+      expect(client.listParams.last.useStateDbOnly, isNull);
+      await state.close();
+    },
+  );
+
+  test(
+    'an empty database first page falls back to a normal scan once',
+    () async {
+      final client = FakeCodexClient(pages: const {});
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.listParams.map((p) => p.useStateDbOnly), [true, null]);
+      await state.close();
+    },
+  );
+
+  test('a late next page cannot restore an archived thread', () async {
+    final client = FakeCodexClient(
+      pages: {
+        null: CodexThreadListResponse(
+          data: [thread('first')],
+          nextCursor: 'older',
+        ),
+      },
+    );
+    final state = CodexServiceState(serverId: 'server', connection: client);
+    await state.start();
+    await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+    final gate = Completer<CodexThreadListResponse>();
+    client.listGates['older'] = gate;
+    final pending = state.loadMoreTimelineThreads();
+    await state.archiveThread('older-thread');
+    gate.complete(CodexThreadListResponse(data: [thread('older-thread')]));
+    await pending;
+    expect(state.catalog.allThreads.map((t) => t.id), ['first']);
+    await state.close();
+  });
+
+  test(
+    'projects become visible while the thread first page is still pending',
+    () async {
+      final gate = Completer<CodexThreadListResponse>();
+      final client = FakeCodexClient(pages: const {}, projects: [testProject()])
+        ..listGates[null] = gate;
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.projectsPage.started);
+      expect(state.catalog.projects.single.project.id, 'motif');
+      expect(state.catalogPhase, CodexCatalogPhase.loading);
+      expect(client.listParams, hasLength(1));
+      gate.complete(
+        CodexThreadListResponse(data: [thread('first')], nextCursor: 'older'),
+      );
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.listParams, hasLength(1));
+      expect(state.timelinePage.hasMore, isTrue);
+      await state.close();
+    },
+  );
+
+  test(
+    'project queries page independently and preserve directory grouping',
+    () async {
+      final assigned = thread('assigned');
+      final legacy = thread('legacy', projectId: null);
+      final older = thread('older');
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(
+            data: [assigned, legacy],
+            nextCursor: 'older',
+          ),
+          'older': CodexThreadListResponse(data: [older]),
+        },
+        projects: [testProject()],
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.listParams, hasLength(1));
+      await state.loadMoreProjectThreads(testProject());
+      expect(
+        client.listParams.where((params) => params.projectId == 'motif'),
+        hasLength(1),
+      );
+      final legacyQuery = client.listParams.last;
+      expect(legacyQuery.toJson(), containsPair('projectId', null));
+      expect(legacyQuery.cwd?.value, ['/work/motif']);
+      expect(
+        state.catalog.projects.single.threads.map((t) => t.id),
+        containsAll(['assigned', 'legacy']),
+      );
+      await state.loadMoreProjectThreads(testProject());
+      expect(state.projectThreadsPage('motif').hasMore, isFalse);
+      expect(state.timelinePage.hasMore, isTrue);
+      expect(state.timelineThreads.map((t) => t.id), isNot(contains('older')));
+      expect(
+        state.catalog.projects.single.threads.map((t) => t.id),
+        contains('older'),
+      );
+      final count = client.listParams.length;
+      await state.loadMoreProjectThreads(testProject());
+      expect(client.listParams.length, count);
+      await state.close();
+    },
+  );
+
+  test(
+    'project-only refresh replaces stale members after a successful first page',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('old')]),
+        },
+        projects: [testProject()],
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.refreshCatalog(loadTimeline: false);
+      await state.loadMoreProjectThreads(testProject());
+      expect(state.catalog.projects.single.threads.single.id, 'old');
+      await state.refreshCatalog(loadTimeline: false);
+      client.listError = StateError('offline');
+      await state.loadMoreProjectThreads(testProject());
+      expect(state.catalog.projects.single.threads.single.id, 'old');
+      client.listError = null;
+      client.pages[null] = CodexThreadListResponse(data: [thread('fresh')]);
+      await state.loadMoreProjectThreads(testProject());
+      expect(state.catalog.projects.single.threads.single.id, 'fresh');
+      await state.close();
+    },
+  );
+
+  test(
+    'next-page failure preserves results and refresh discards a stale page',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(
+            data: [thread('first')],
+            nextCursor: 'older',
+          ),
+        },
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      client.listError = StateError('offline');
+      await state.loadMoreTimelineThreads();
+      expect(state.timelinePage.error, contains('offline'));
+      expect(state.catalogPhase, CodexCatalogPhase.ready);
+      expect(state.catalog.allThreads.single.id, 'first');
+      client.listError = null;
+      final gate = Completer<CodexThreadListResponse>();
+      client.listGates['older'] = gate;
+      final oldPage = state.loadMoreTimelineThreads();
+      await state.loadMoreTimelineThreads();
+      expect(
+        client.listParams.where((params) => params.cursor == 'older'),
+        hasLength(2),
+      );
+      client.pages[null] = CodexThreadListResponse(data: [thread('fresh')]);
+      await state.refreshCatalog();
+      gate.complete(CodexThreadListResponse(data: [thread('stale')]));
+      await oldPage;
+      expect(state.catalog.allThreads.map((t) => t.id), ['fresh']);
+      expect(state.timelinePage.loading, isFalse);
+      await state.close();
+    },
+  );
+
+  test(
+    'search uses the dedicated API with snippets and only one page',
+    () async {
+      final client = FakeCodexClient(pages: const {})
+        ..searchPages = {
+          null: CodexThreadSearchResponse(
+            data: [
+              CodexThreadSearchResult(
+                thread: thread('hit'),
+                snippet: 'matched message',
+              ),
+            ],
+            nextCursor: 'next',
+          ),
+          'next': CodexThreadSearchResponse(
+            data: [
+              CodexThreadSearchResult(
+                thread: thread('older-hit'),
+                snippet: 'older message',
+              ),
+            ],
+          ),
+        };
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      final first = await state.listThreadsForManagement(
+        archived: true,
+        searchTerm: '  message  ',
+      );
+      expect(first.threads.single.id, 'hit');
+      expect(first.snippets['hit'], 'matched message');
+      expect(first.nextCursor, 'next');
+      expect(client.searchParams.single.searchTerm, 'message');
+      expect(client.searchParams.single.archived, isTrue);
+      expect(client.listParams, isEmpty);
+      await state.listThreadsForManagement(
+        archived: true,
+        searchTerm: 'message',
+        cursor: first.nextCursor,
+      );
+      expect(client.searchParams.map((p) => p.cursor), [null, 'next']);
+      expect(state.catalog.allThreads, isEmpty);
+      await state.close();
+    },
+  );
+
+  test(
+    'project notifications refresh projects without listing threads again',
+    () async {
+      final client = FakeCodexClient(
+        pages: {
+          null: CodexThreadListResponse(data: [thread('member')]),
+        },
+        projects: [testProject()],
+      );
+      final state = CodexServiceState(serverId: 'server', connection: client);
+      await state.start();
+      await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      final count = client.listParams.length;
+      client.projects = [testProject(name: 'Changed')];
+      client.emit(
+        CodexServerNotification.fromJson({
+          'method': 'project/changed',
+          'params': {'projectId': 'motif', 'changeType': 'updated'},
+        }),
+      );
+      await waitFor(
+        () => state.catalog.projects.single.project.name == 'Changed',
+      );
+      expect(client.listParams.length, count);
+      await state.close();
+    },
+  );
+
+  test(
+    'loads project pages on demand and applies server assignment changes',
     () async {
       final assigned = thread('assigned', projectId: 'second');
       final unassigned = thread('unassigned', projectId: null);
@@ -35,6 +350,8 @@ void main() {
       final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
+      expect(client.projectListParams.map((p) => p.cursor), [null]);
+      await state.loadMoreProjects();
       expect(client.projectListParams.map((p) => p.cursor), [null, 'page2']);
       expect(state.catalog.projects.map((g) => g.project.id), [
         'first',
@@ -114,8 +431,9 @@ void main() {
       )..projectError = StateError('project/list unavailable');
       final state = CodexServiceState(serverId: 'server', connection: client);
       await state.start();
-      await waitFor(() => state.catalogPhase == CodexCatalogPhase.failed);
-      expect(state.catalogError, contains('project/list unavailable'));
+      await waitFor(() => state.projectsPage.error != null);
+      expect(state.catalogPhase, CodexCatalogPhase.ready);
+      expect(state.projectsPage.error, contains('project/list unavailable'));
       expect(state.catalog.projects, isEmpty);
       client.projectError = null;
       client.projectPages = {
@@ -129,8 +447,9 @@ void main() {
         ),
       };
       await state.refreshCatalog();
-      expect(state.catalogPhase, CodexCatalogPhase.failed);
-      expect(state.catalogError, contains('Repeated project/list cursor'));
+      await state.loadMoreProjects();
+      expect(state.catalogPhase, CodexCatalogPhase.ready);
+      expect(state.projectsPage.hasMore, isFalse);
       await state.close();
     },
   );
@@ -171,9 +490,13 @@ void main() {
       await state.start();
       await waitFor(() => state.catalogPhase == CodexCatalogPhase.ready);
 
+      expect(client.listParams, hasLength(1));
+      expect(state.timelinePage.hasMore, isTrue);
+      await state.loadMoreTimelineThreads();
       expect(client.listParams, hasLength(2));
+      expect(state.timelinePage.hasMore, isFalse);
       expect(client.listParams.first.archived, isFalse);
-      expect(client.listParams.first.limit, 100);
+      expect(client.listParams.first.limit, codexCatalogThreadPageSize);
       expect(client.listParams.first.sortKey, CodexThreadSortKey.recencyAt);
       expect(client.listParams.first.sortDirection, CodexSortDirection.desc);
       expect(state.catalog.allThreads.map((thread) => thread.id), [
@@ -184,8 +507,8 @@ void main() {
       expect(client.watchedPaths, isEmpty);
 
       await state.readThread('first');
-      expect(client.readThreadIds, ['first']);
-      expect(client.readIncludeTurns, [false]);
+      expect(client.readThreadIds, ['second', 'first']);
+      expect(client.readIncludeTurns, [false, false]);
       expect(client.turnListParams, hasLength(1));
       expect(client.turnListParams.single.threadId, 'first');
       expect(client.turnListParams.single.limit, codexThreadTurnsPageSize);
@@ -1305,9 +1628,9 @@ void main() {
       archived: true,
       searchTerm: 'managed',
     );
-    expect(searchResults.single.id, 'managed');
-    expect(client.listParams.last.archived, isTrue);
-    expect(client.listParams.last.searchTerm, 'managed');
+    expect(searchResults.threads.single.id, 'managed');
+    expect(client.searchParams.last.archived, isTrue);
+    expect(client.searchParams.last.searchTerm, 'managed');
 
     await state.renameThread('managed', 'Renamed');
     expect(client.renamedThreads.single, (
@@ -2585,6 +2908,10 @@ final class FakeCodexClient extends ChangeNotifier
   final List<String> unwatchedIds = [];
   Completer<void>? unsubscribeGate;
   Object? listError;
+  final Map<String?, Completer<CodexThreadListResponse>> listGates = {};
+  final List<CodexThreadSearchParams> searchParams = [];
+  Map<String?, CodexThreadSearchResponse>? searchPages;
+  Object? searchError;
   Object? resumeError;
   Object? forkHistoryError;
   Completer<CodexTurnSteerResponse>? steerGate;
@@ -2632,13 +2959,50 @@ final class FakeCodexClient extends ChangeNotifier
   }
 
   @override
+  Future<CodexThreadSearchResponse> searchThreads(
+    CodexThreadSearchParams params,
+  ) async {
+    searchParams.add(params);
+    if (searchError != null) throw searchError!;
+    if (searchPages != null) {
+      return searchPages![params.cursor] ??
+          const CodexThreadSearchResponse(data: []);
+    }
+    final response =
+        pages[params.cursor] ?? const CodexThreadListResponse(data: []);
+    return CodexThreadSearchResponse(
+      data: [
+        for (final thread in response.data)
+          CodexThreadSearchResult(thread: thread, snippet: thread.preview),
+      ],
+      nextCursor: response.nextCursor,
+    );
+  }
+
+  @override
   Future<CodexThreadListResponse> listThreads(
     CodexThreadListParams params,
   ) async {
     listParams.add(params);
     final error = listError;
     if (error != null) throw error;
-    return pages[params.cursor] ?? const CodexThreadListResponse(data: []);
+    if (listGates[params.cursor] case final gate?) return gate.future;
+    final page =
+        pages[params.cursor] ?? const CodexThreadListResponse(data: []);
+    return CodexThreadListResponse(
+      data: page.data
+          .where(
+            (thread) =>
+                (!params.projectIdSpecified && params.projectId == null ||
+                    thread.projectId == params.projectId) &&
+                (params.cwd == null ||
+                    params.cwd!.value == thread.cwd.value ||
+                    params.cwd!.value is List &&
+                        (params.cwd!.value as List).contains(thread.cwd.value)),
+          )
+          .toList(),
+      nextCursor: page.nextCursor,
+    );
   }
 
   @override

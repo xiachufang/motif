@@ -97,8 +97,18 @@ Thread 与工作目录都在运行 `motifd` 的主机上。切换手机、平板
 重新打开同一个 server 即可继续已有 Thread；关闭 Motif 客户端不会停止正在运行的
 服务端任务。
 
-项目列表直接通过 App Server 的实验性 `project/list` 接口分页读取，保留服务端的
-名称、多目录 roots 和项目顺序。Thread 优先按服务端返回的 `projectId` 归组；尚无 ID 的
+项目列表通过 App Server 的实验性 `project/list` 接口独立分页读取，保留服务端的
+名称、多目录 roots 和项目顺序，不等待 Thread 请求完成。展开项目时才通过
+`thread/list(projectId: …)` 加载该项目的 Thread，继续展开时读取下一页；项目外的
+Recents 也单独分页。切换到时间视图时才按 `recency_at` 倒序读取 Thread，滚动到底部
+或点击 Show more 继续加载。项目变化通知只刷新项目列表。
+
+自动连接使用 `useStateDbOnly` 快速读取已索引的 Thread；时间列表的索引为空时会
+回退普通扫描。手动刷新会扫描日志并修复元数据，适用于发现索引遗漏的历史 Thread。
+搜索使用 `thread/search`，显示命中摘要并按需分页；旧服务端未实现该接口时，回退
+`thread/list` 的标题过滤。归档列表进入后才加载，归档内搜索也使用独立的分页查询。
+
+Thread 优先按服务端返回的 `projectId` 归组；尚无 ID 的
 历史对话按 `cwd` 匹配接口返回的项目根目录（优先最具体的根目录，共享根目录有歧义时不归组）。
 这仅影响显示，不改写服务端归属，也不读取桌面私有配置里的项目定义、归属或选中项目。
 新建项目内 Thread 会向 `thread/start` 传递 `projectId`；Fork 使用
