@@ -1889,7 +1889,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Older activity detail'), findsOneWidget);
-    expect(client.itemListParams.map((params) => params.cursor), [
+    expect(client.itemListParams.map((params) => params.cursor?.toJson()), [
       null,
       'older-items',
     ]);
@@ -3407,7 +3407,7 @@ Each item contains text selected from an earlier Codex response.
           description: 'Review the current implementation.',
           enabled: true,
           name: 'review',
-          path: CodexV2AbsolutePathBuf('/skills/review/SKILL.md'),
+          path: CodexLegacyAppPathString('/skills/review/SKILL.md'),
           scope: CodexSkillScope.user,
         ),
       ];
@@ -4650,7 +4650,7 @@ final class WorkspaceFakeClient extends ChangeNotifier
     CodexThreadItemsListParams params,
   ) async {
     itemListParams.add(params);
-    final configured = itemPages[params.cursor];
+    final configured = itemPages[params.cursor?.toJson()];
     if (configured != null) return configured;
     return CodexThreadItemsListResponse(
       data: [

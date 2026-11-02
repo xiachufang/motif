@@ -27,6 +27,7 @@ import '../theme/motif_theme.dart';
 import '../widgets/adaptive_modal.dart';
 import '../widgets/codex_markdown.dart';
 import '../widgets/codex_motion.dart';
+import '../widgets/codex_subagent_activity.dart';
 import '../widgets/codex_turn_activity.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
@@ -72,6 +73,7 @@ class CodexThreadWorkspace extends StatefulWidget {
     this.onOpenFile,
     this.onOpenImage,
     this.onOpenTurnDiff,
+    this.onOpenSubagent,
     super.key,
   });
 
@@ -82,6 +84,7 @@ class CodexThreadWorkspace extends StatefulWidget {
   final CodexOpenFile? onOpenFile;
   final CodexOpenImage? onOpenImage;
   final CodexOpenTurnDiff? onOpenTurnDiff;
+  final CodexOpenSubagent? onOpenSubagent;
 
   @override
   State<CodexThreadWorkspace> createState() => _CodexThreadWorkspaceState();
@@ -358,6 +361,7 @@ class _CodexThreadWorkspaceState extends State<CodexThreadWorkspace>
                   onOpenFile: widget.onOpenFile,
                   onOpenImage: widget.onOpenImage,
                   onOpenTurnDiff: widget.onOpenTurnDiff,
+                  onOpenSubagent: widget.onOpenSubagent,
                 );
               },
             ),
@@ -966,6 +970,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
     required this.onOpenFile,
     required this.onOpenImage,
     required this.onOpenTurnDiff,
+    required this.onOpenSubagent,
     super.key,
   });
 
@@ -982,6 +987,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
   final CodexOpenFile? onOpenFile;
   final CodexOpenImage? onOpenImage;
   final CodexOpenTurnDiff? onOpenTurnDiff;
+  final CodexOpenSubagent? onOpenSubagent;
 
   @override
   Widget build(BuildContext context) {
@@ -1003,6 +1009,7 @@ class _CodexConversationViewport extends _$_CodexConversationViewport {
           onOpenFile: onOpenFile,
           onOpenImage: onOpenImage,
           onOpenTurnDiff: onOpenTurnDiff,
+          onOpenSubagent: onOpenSubagent,
         ),
       );
     }
@@ -1294,6 +1301,7 @@ List<Widget> _turnSliverChildren({
   CodexOpenFile? onOpenFile,
   CodexOpenImage? onOpenImage,
   CodexOpenTurnDiff? onOpenTurnDiff,
+  CodexOpenSubagent? onOpenSubagent,
 }) {
   final turn = turnModel.turn;
   final itemState = state.turnItemsState(turn.id);
@@ -1327,6 +1335,7 @@ List<Widget> _turnSliverChildren({
         onOpenFile: onOpenFile,
         onOpenImage: onOpenImage,
         onOpenTurnDiff: onOpenTurnDiff,
+        onOpenSubagent: onOpenSubagent,
       ),
     );
     result.add(
@@ -1341,6 +1350,7 @@ List<Widget> _turnSliverChildren({
         onOpenFile: onOpenFile,
         onOpenImage: onOpenImage,
         onOpenTurnDiff: onOpenTurnDiff,
+        onOpenSubagent: onOpenSubagent,
       ),
     );
   } else if (response == null) {
@@ -1352,6 +1362,7 @@ List<Widget> _turnSliverChildren({
         onOpenFile: onOpenFile,
         onOpenImage: onOpenImage,
         onOpenTurnDiff: onOpenTurnDiff,
+        onOpenSubagent: onOpenSubagent,
       ),
     );
     final initialItemsLoading =
@@ -1414,6 +1425,7 @@ List<Widget> _turnSliverChildren({
           onOpenFile: onOpenFile,
           onOpenImage: onOpenImage,
           onOpenTurnDiff: onOpenTurnDiff,
+          onOpenSubagent: onOpenSubagent,
         ),
       )
       ..add(
@@ -1471,6 +1483,7 @@ List<Widget> _turnSliverChildren({
                 onOpenFile: onOpenFile,
                 onOpenImage: onOpenImage,
                 onOpenTurnDiff: onOpenTurnDiff,
+                onOpenSubagent: onOpenSubagent,
               ),
             ),
           ),
@@ -1479,7 +1492,8 @@ List<Widget> _turnSliverChildren({
       }
 
       for (final item in history) {
-        if (item is CodexUserMessageThreadItem) {
+        if (item is CodexUserMessageThreadItem ||
+            item is CodexSubAgentActivityThreadItem) {
           flushCollapsedItems();
           result.addAll(
             _turnContent(
@@ -1490,6 +1504,7 @@ List<Widget> _turnSliverChildren({
               onOpenFile: onOpenFile,
               onOpenImage: onOpenImage,
               onOpenTurnDiff: onOpenTurnDiff,
+              onOpenSubagent: onOpenSubagent,
             ),
           );
         } else {
@@ -1507,6 +1522,7 @@ List<Widget> _turnSliverChildren({
         onOpenFile: onOpenFile,
         onOpenImage: onOpenImage,
         onOpenTurnDiff: onOpenTurnDiff,
+        onOpenSubagent: onOpenSubagent,
       ),
     );
   }
@@ -1547,6 +1563,7 @@ List<Widget> _turnContent(
   CodexOpenFile? onOpenFile,
   CodexOpenImage? onOpenImage,
   CodexOpenTurnDiff? onOpenTurnDiff,
+  CodexOpenSubagent? onOpenSubagent,
 }) {
   final itemList = items.toList(growable: false);
   final isActive =
@@ -1612,6 +1629,24 @@ List<Widget> _turnContent(
   }
 
   for (final item in itemList) {
+    if (item is CodexSubAgentActivityThreadItem) {
+      flushActivity();
+      result.add(
+        Padding(
+          key: ValueKey('codex-subagent-${turn.id}-${item.id}'),
+          padding: const EdgeInsets.only(bottom: _turnTopLevelItemSpacing),
+          child: CodexSubagentActivity(
+            item: item,
+            metadata: state.catalog.allThreads
+                .where((thread) => thread.id == item.agentThreadId)
+                .firstOrNull,
+            onOpenSubagent: onOpenSubagent,
+          ),
+        ),
+      );
+      bottomHasProgressOrAssistant = true;
+      continue;
+    }
     // Reasoning participates in the active activity group's collapsed title,
     // but remains absent from completed turn history and has no expanded body.
     if (item is CodexReasoningThreadItem) {
@@ -2029,7 +2064,9 @@ bool _isFinalAnswerMessage(CodexAgentMessageThreadItem item) =>
     item.text.trim().isNotEmpty && item.phase?.value == 'final_answer';
 
 bool _isExpandableHistoryItem(CodexThreadItem item) => switch (item) {
-  CodexUserMessageThreadItem() || CodexReasoningThreadItem() => false,
+  CodexUserMessageThreadItem() ||
+  CodexReasoningThreadItem() ||
+  CodexSubAgentActivityThreadItem() => false,
   CodexAgentMessageThreadItem value => value.text.trim().isNotEmpty,
   CodexPlanThreadItem value => value.text.trim().isNotEmpty,
   _ => true,

@@ -1034,7 +1034,7 @@ class CodexConversationState extends ChangeNotifier {
     try {
       final response = await connection.listThreadItems(
         CodexThreadItemsListParams(
-          cursor: cursor,
+          cursor: cursor == null ? null : CodexThreadItemsListCursor(cursor),
           limit: codexThreadTurnItemsPageSize,
           sortDirection: CodexSortDirection.desc,
           threadId: thread.id,

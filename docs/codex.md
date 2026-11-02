@@ -97,6 +97,11 @@ Thread 与工作目录都在运行 `motifd` 的主机上。切换手机、平板
 重新打开同一个 server 即可继续已有 Thread；关闭 Motif 客户端不会停止正在运行的
 服务端任务。
 
+子 agent 的状态消息按发生顺序独立显示在执行记录中，名称旁显示 started、
+finished 等状态；同一子 agent 的多次消息保留各自位置。点击名称会在 Side Chat
+中打开现有子线程，主对话保持原位。子线程按需读取历史和执行详情，运行中仅在
+可见时刷新，不会因查看而创建 fork 或接管运行中的任务。
+
 项目列表通过 App Server 的实验性 `project/list` 接口独立分页读取，保留服务端的
 名称、多目录 roots 和项目顺序，不等待 Thread 请求完成。展开项目时才通过
 `thread/list(projectId: …)` 加载该项目的 Thread，继续展开时读取下一页；项目外的
@@ -114,7 +119,7 @@ Thread 优先按服务端返回的 `projectId` 归组；尚无 ID 的
 新建项目内 Thread 会向 `thread/start` 传递 `projectId`；Fork 使用
 服务端返回的归属。`project/changed` 和 `thread/project/updated` 通知用于刷新项目与归属。
 
-服务端需要支持这些接口（当前协议由桌面 App 内置的 `0.155.0-alpha.9.2` 生成）。
+服务端需要支持这些接口（当前协议由 Codex CLI `0.164.0` 生成）。
 不支持 `project/list` 时会显示加载错误，不根据目录创建项目。无法匹配项目的 Thread
 显示在项目外。置顶顺序仍单独读取
 桌面偏好中的 `pinned-thread-ids`，因为当前协议没有对应字段；它不参与项目归属判断。

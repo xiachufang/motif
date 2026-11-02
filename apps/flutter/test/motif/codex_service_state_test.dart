@@ -933,7 +933,7 @@ void main() {
           answer,
         ]);
         expect(await state.loadTurnItems('turn'), isTrue);
-        expect(client.itemListParams.last.cursor, 'older-items');
+        expect(client.itemListParams.last.cursor?.toJson(), 'older-items');
         expect(
           state.turnItemsState('turn').phase,
           CodexTurnItemsPhase.complete,
@@ -1068,7 +1068,7 @@ void main() {
     expect(state.turns.single.items, [oldItem, latestItem]);
     expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.partial);
     await state.loadTurnItems('turn');
-    expect(client.itemListParams.single.cursor, 'gap-page');
+    expect(client.itemListParams.single.cursor?.toJson(), 'gap-page');
     expect(state.turns.single.items, [oldItem, gapItem, latestItem]);
     expect(state.turnItemsState('turn').phase, CodexTurnItemsPhase.complete);
     await state.close();
@@ -1595,7 +1595,7 @@ void main() {
         recentActivity,
         answer,
       ]);
-      expect(client.itemListParams.map((params) => params.cursor), [
+      expect(client.itemListParams.map((params) => params.cursor?.toJson()), [
         null,
         'older-items',
       ]);
@@ -3083,7 +3083,7 @@ final class FakeCodexClient extends ChangeNotifier
         forkHistoryError != null) {
       throw forkHistoryError!;
     }
-    final configured = itemPages[params.threadId]?[params.cursor];
+    final configured = itemPages[params.threadId]?[params.cursor?.toJson()];
     if (configured != null) return configured;
     final original =
         forkedThreads[params.threadId] ??

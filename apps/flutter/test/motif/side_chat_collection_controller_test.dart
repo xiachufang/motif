@@ -12,6 +12,183 @@ import 'package:motif/motif/ui/theme/motif_theme.dart';
 import 'fake_codex_queue.dart';
 
 void main() {
+  testWidgets('a subagent message inside Side Chat opens the nested child', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1100, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final child = CodexThread.fromJson({
+      ..._sideThread(
+        'agent',
+        parentThreadId: 'parent-thread',
+        updatedAt: 1,
+      ).toJson(),
+      'ephemeral': false,
+      'turns': [
+        const CodexTurn(
+          id: 'turn',
+          status: CodexTurnStatus.completed,
+          items: [
+            CodexUserMessageThreadItem(
+              id: 'input',
+              content: [
+                CodexTextUserInput(text: 'Review the parser', textElements: []),
+              ],
+            ),
+            CodexSubAgentActivityThreadItem(
+              id: 'nested',
+              agentPath: '/root/nested_reviewer',
+              agentThreadId: 'nested-agent',
+              kind: CodexSubAgentActivityKind.completed,
+            ),
+            CodexAgentMessageThreadItem(
+              id: 'answer',
+              text: 'Nested review finished',
+              phase: CodexMessagePhase('final_answer'),
+            ),
+          ],
+        ).toJson(),
+      ],
+    });
+    final nested = _sideThread(
+      'nested-agent',
+      parentThreadId: 'agent',
+      updatedAt: 2,
+    );
+    final client = _SideChatFakeClient(restoredThreads: [child, nested]);
+    final collection = SideChatCollectionController(
+      serverId: 'server',
+      parentThreadId: 'parent-thread',
+      connection: client,
+    );
+    await collection.openSubagent('agent', name: 'Reviewer');
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: motifTheme(Brightness.light),
+        home: SideChatScreen(collection: collection),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Nested reviewer finished'));
+    await tester.pumpAndSettle();
+    expect(collection.selected?.id, 'nested-agent');
+    expect(
+      find.byKey(const ValueKey('side-chat-title-nested-agent')),
+      findsOneWidget,
+    );
+    expect(collection.entries, hasLength(2));
+    expect(client.resumed, isEmpty);
+    expect(client.forks, isEmpty);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.runAsync(collection.close);
+    collection.dispose();
+  });
+
+  test('opens a persistent subagent by reading its existing thread', () async {
+    final child = CodexThread.fromJson({
+      ..._sideThread(
+        'agent',
+        parentThreadId: 'parent-thread',
+        updatedAt: 30,
+      ).toJson(),
+      'ephemeral': false,
+    });
+    final client = _SideChatFakeClient(restoredThreads: [child]);
+    final saved = <List<String>>[];
+    final collection = SideChatCollectionController(
+      serverId: 'server',
+      parentThreadId: 'parent-thread',
+      connection: client,
+      onIndexChanged: (ids, _) => saved.add(ids),
+    );
+    final entry = await collection.openSubagent(
+      'agent',
+      name: 'Parser reviewer',
+    );
+    expect(entry?.id, 'agent');
+    expect(entry?.name, 'Parser reviewer');
+    expect(collection.selectedConversation?.selectedThread?.id, 'agent');
+    expect(client.reads, ['agent']);
+    expect(client.resumed, isEmpty);
+    expect(client.forks, isEmpty);
+    expect(client.itemListParams, isEmpty);
+    expect(
+      await collection.openSubagent('agent', name: 'Parser reviewer'),
+      same(entry),
+    );
+    expect(collection.entries, hasLength(1));
+    final regular = await collection.createSideChat();
+    expect(regular?.name, 'Side Chat 1');
+    expect(saved.last, ['side-1']);
+    await collection.select('agent');
+    expect(saved.last, ['side-1']);
+    await collection.close();
+  });
+
+  test(
+    'missing subagents do not create replacement forks and can retry',
+    () async {
+      final client = _SideChatFakeClient();
+      final collection = SideChatCollectionController(
+        serverId: 'server',
+        parentThreadId: 'parent-thread',
+        connection: client,
+        initialThreadIds: const ['stale-side'],
+      );
+      expect(await collection.openSubagent('agent', name: 'Reviewer'), isNull);
+      expect(collection.error, isNotNull);
+      expect(client.forks, isEmpty);
+      client._threads['agent'] = _sideThread(
+        'agent',
+        parentThreadId: 'parent-thread',
+        updatedAt: 2,
+      );
+      expect(
+        (await collection.openSubagent('agent', name: 'Reviewer'))?.id,
+        'agent',
+      );
+      expect(collection.error, isNull);
+      expect(client.forks, isEmpty);
+      await collection.close();
+    },
+  );
+
+  testWidgets(
+    'visible running subagents refresh without resuming and stop when hidden',
+    (tester) async {
+      final child = CodexThread.fromJson({
+        ..._sideThread(
+          'agent',
+          parentThreadId: 'parent-thread',
+          updatedAt: 30,
+        ).toJson(),
+        'ephemeral': false,
+        'status': {'type': 'active', 'activeFlags': <String>[]},
+        'turns': [
+          {'id': 'turn', 'status': 'inProgress', 'items': <Object>[]},
+        ],
+      });
+      final client = _SideChatFakeClient(restoredThreads: [child]);
+      final collection = SideChatCollectionController(
+        serverId: 'server',
+        parentThreadId: 'parent-thread',
+        connection: client,
+      );
+      await collection.openSubagent('agent', name: 'Reviewer');
+      await tester.pump(const Duration(seconds: 5));
+      expect(client.reads, hasLength(2));
+      collection.setVisible(false);
+      await tester.pump(const Duration(seconds: 6));
+      expect(client.reads, hasLength(2));
+      expect(client.resumed, isEmpty);
+      expect(client.forks, isEmpty);
+      collection.dispose();
+      await tester.pump();
+    },
+  );
+
   test(
     'forks ephemeral conversations directly from the fixed parent',
     () async {
@@ -312,6 +489,7 @@ final class _SideChatFakeClient extends ChangeNotifier
   final List<CodexThreadForkParams> forks = [];
   final List<String> unsubscribed = [];
   final List<String> resumed = [];
+  final List<String> reads = [];
   final List<bool> resumeIncludesTurns = [];
   final List<CodexThreadResumeInitialTurnsPageParams?> resumeInitialTurnsPages =
       [];
@@ -384,6 +562,17 @@ final class _SideChatFakeClient extends ChangeNotifier
   ) async {
     listCalls++;
     return const CodexThreadListResponse(data: []);
+  }
+
+  @override
+  Future<CodexThreadReadResponse> readThread(
+    String threadId, {
+    bool includeTurns = false,
+  }) async {
+    reads.add(threadId);
+    final thread = _threads[threadId];
+    if (thread == null) throw StateError('Missing thread: $threadId');
+    return CodexThreadReadResponse(thread: thread);
   }
 
   @override

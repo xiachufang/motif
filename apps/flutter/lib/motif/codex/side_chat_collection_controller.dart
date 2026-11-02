@@ -16,6 +16,7 @@ final class SideChatEntry {
     required this.registry,
     required this.lastActivityAt,
     required this.activitySignature,
+    this.subagentName,
   });
 
   final String id;
@@ -23,8 +24,10 @@ final class SideChatEntry {
   final CodexConversationRegistry registry;
   DateTime lastActivityAt;
   String activitySignature;
+  final String? subagentName;
 
-  String get name => 'Side Chat $index';
+  bool get isSubagent => subagentName != null;
+  String get name => subagentName ?? 'Side Chat $index';
   CodexConversationState? get conversationOrNull => registry.sessionFor(id);
   CodexConversationState get conversation =>
       conversationOrNull ??
@@ -140,6 +143,8 @@ final class SideChatCollectionController extends ChangeNotifier {
   var _closed = false;
   var _visible = true;
   var _sequence = 0;
+  Timer? _subagentPoll;
+  bool _refreshingSubagent = false;
 
   String get _visibilityOwner => 'side-chat:$parentThreadId';
 
@@ -150,7 +155,9 @@ final class SideChatCollectionController extends ChangeNotifier {
   }
 
   List<SideChatEntry> get _entriesByIndex {
-    final result = _entries.toList(growable: false);
+    final result = _entries
+        .where((entry) => !entry.isSubagent)
+        .toList(growable: false);
     result.sort((a, b) => a.index.compareTo(b.index));
     return result;
   }
@@ -186,9 +193,11 @@ final class SideChatCollectionController extends ChangeNotifier {
     });
   }
 
-  Future<SideChatEntry?> _restoreOrCreateInitial() async {
+  Future<SideChatEntry?> _restoreOrCreateInitial({
+    bool createIfEmpty = true,
+  }) async {
     final ids = List<String>.of(_restorableThreadIds);
-    if (ids.isEmpty) return createSideChat();
+    if (ids.isEmpty) return createIfEmpty ? createSideChat() : null;
 
     try {
       await _ensureConnected();
@@ -249,7 +258,65 @@ final class SideChatCollectionController extends ChangeNotifier {
       }
       return null;
     }
-    return createSideChat();
+    return createIfEmpty ? createSideChat() : null;
+  }
+
+  /// Opens the existing child without forking it or acquiring its writer.
+  /// Agent entries stay in this collection, separate from the saved fork index.
+  Future<SideChatEntry?> openSubagent(
+    String threadId, {
+    required String name,
+  }) async {
+    final id = threadId.trim();
+    if (_closed || id.isEmpty || id == parentThreadId) return null;
+    final existing = _entries.where((entry) => entry.id == id).firstOrNull;
+    if (existing != null) {
+      await select(id);
+      return existing;
+    }
+    try {
+      await _ensureConnected();
+      if (_entries.isEmpty && _restorableThreadIds.isNotEmpty) {
+        await _restoreOrCreateInitial(createIfEmpty: false);
+      }
+      if (_closed) return null;
+      final response = await connection.readThread(id);
+      if (_closed) return null;
+      if (response.thread.id != id) {
+        throw StateError('Unexpected subagent thread');
+      }
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: id,
+      );
+      if (_closed) return null;
+      final conversation = registry.registerHydrated(
+        response.thread,
+        history,
+        kind: CodexThreadSessionKind.persisted,
+        parentThreadId: parentThreadId,
+      );
+      final entry = _addEntry(
+        id: id,
+        index: 0,
+        lastActivityAt: _threadActivityAt(response.thread),
+        conversation: conversation,
+        subagentName: name,
+      );
+      final previousId = _selectedId;
+      _selectedId = id;
+      _updateVisibility(previousId, id);
+      _updateSubagentPolling();
+      error = null;
+      notifyListeners();
+      return entry;
+    } catch (value) {
+      if (!_closed) {
+        error = '$value';
+        notifyListeners();
+      }
+      return null;
+    }
   }
 
   Future<SideChatEntry?> createSideChat() {
@@ -380,6 +447,7 @@ final class SideChatCollectionController extends ChangeNotifier {
     required int index,
     required CodexConversationState? conversation,
     required DateTime lastActivityAt,
+    String? subagentName,
   }) {
     final existing = _entries.where((entry) => entry.id == id).firstOrNull;
     if (existing != null) return existing;
@@ -389,6 +457,7 @@ final class SideChatCollectionController extends ChangeNotifier {
       registry: registry,
       lastActivityAt: lastActivityAt,
       activitySignature: _activitySignature(conversation),
+      subagentName: subagentName,
     );
     _entries.add(entry);
     return entry;
@@ -412,13 +481,15 @@ final class SideChatCollectionController extends ChangeNotifier {
     final previousId = _selectedId;
     if (previousId != threadId) {
       _selectedId = threadId;
-      _restorableSelectedId = threadId;
+      if (selected?.isSubagent != true) _restorableSelectedId = threadId;
       _updateVisibility(previousId, threadId);
       _publishIndex();
       notifyListeners();
     }
     final entry = selected;
     if (entry != null) await _ensureEntrySession(entry);
+    if (entry?.isSubagent == true) await _refreshSelectedSubagent();
+    _updateSubagentPolling();
   }
 
   Future<SideChatEntry?> _ensureEntrySession(SideChatEntry entry) async {
@@ -440,6 +511,7 @@ final class SideChatCollectionController extends ChangeNotifier {
   void setVisible(bool value) {
     if (_closed || _visible == value) return;
     _visible = value;
+    _updateSubagentPolling();
     final id = _selectedId;
     if (id == null) return;
     if (value) {
@@ -457,6 +529,51 @@ final class SideChatCollectionController extends ChangeNotifier {
     }
     if (nextId != null) {
       registry.acquireVisibility(nextId, _visibilityOwner);
+    }
+  }
+
+  void _updateSubagentPolling() {
+    final conversation = selectedConversation;
+    final active =
+        selected?.status is CodexActiveThreadStatus ||
+        conversation?.activeTurn != null ||
+        conversation?.projectedExternalActiveTurn != null;
+    if (_closed || !_visible || selected?.isSubagent != true || !active) {
+      _subagentPoll?.cancel();
+      _subagentPoll = null;
+      return;
+    }
+    _subagentPoll ??= Timer.periodic(const Duration(seconds: 5), (_) {
+      unawaited(_refreshSelectedSubagent());
+    });
+  }
+
+  Future<void> _refreshSelectedSubagent() async {
+    final entry = selected;
+    if (_closed ||
+        !_visible ||
+        entry?.isSubagent != true ||
+        _refreshingSubagent ||
+        connection.state.phase != CodexConnectionPhase.connected) {
+      return;
+    }
+    _refreshingSubagent = true;
+    try {
+      final response = await connection.readThread(entry!.id);
+      final history = await loadCodexHistoryPage(
+        connection: connection,
+        threadId: entry.id,
+      );
+      if (_closed || selected?.id != entry.id) return;
+      entry.conversationOrNull?.refreshPersistedSnapshot(
+        response.thread,
+        history,
+      );
+    } catch (_) {
+      // Keep the last loaded conversation visible during transient read errors.
+    } finally {
+      _refreshingSubagent = false;
+      _updateSubagentPolling();
     }
   }
 
@@ -483,10 +600,15 @@ final class SideChatCollectionController extends ChangeNotifier {
       _restorableThreadIds = _entriesByIndex
           .map((candidate) => candidate.id)
           .toList(growable: false);
-      _restorableSelectedId = _selectedId;
+      if (_restorableThreadIds.contains(_selectedId)) {
+        _restorableSelectedId = _selectedId;
+      } else if (!_restorableThreadIds.contains(_restorableSelectedId)) {
+        _restorableSelectedId = _restorableThreadIds.firstOrNull;
+      }
       _updateVisibility(null, _selectedId);
       _publishIndex();
     }
+    _updateSubagentPolling();
     notifyListeners();
   }
 
@@ -520,6 +642,7 @@ final class SideChatCollectionController extends ChangeNotifier {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _subagentPoll?.cancel();
     registry.removeListener(_onRegistryChanged);
     connection.removeListener(_onConnectionChanged);
     if (_visible && _selectedId != null) {

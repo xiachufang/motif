@@ -1120,6 +1120,123 @@ void main() {
     app.dispose();
   });
 
+  for (final width in [1000.0, 390.0]) {
+    testWidgets(
+      'subagent name opens its existing side thread at width $width',
+      (tester) async {
+        tester.view.physicalSize = Size(width, 1000);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        final app = await appState();
+        final client = ScreenFakeClient();
+        final state = readyServiceState(connection: client);
+        final parent = state.catalog.allThreads.single;
+        state.selectedThread = parent;
+        const event = CodexSubAgentActivityThreadItem(
+          id: 'agent-message',
+          agentPath: '/root/parser_reviewer',
+          agentThreadId: 'agent',
+          kind: CodexSubAgentActivityKind.completed,
+        );
+        state.turns = const [
+          CodexTurn(
+            id: 'parent-turn',
+            status: CodexTurnStatus.completed,
+            items: [
+              event,
+              CodexAgentMessageThreadItem(
+                id: 'parent-answer',
+                text: 'Parent answer',
+                phase: CodexMessagePhase('final_answer'),
+              ),
+            ],
+          ),
+        ];
+        final child = CodexThread.fromJson({
+          ...parent.toJson(),
+          'id': 'agent',
+          'sessionId': 'agent',
+          'parentThreadId': parent.id,
+          'ephemeral': false,
+          'turns': [
+            const CodexTurn(
+              id: 'child-turn',
+              status: CodexTurnStatus.completed,
+              items: [
+                CodexAgentMessageThreadItem(
+                  id: 'child-answer',
+                  text: 'Existing subagent result',
+                  phase: CodexMessagePhase('final_answer'),
+                ),
+              ],
+            ).toJson(),
+          ],
+        });
+        client.threadReadResponses[child.id] = CodexThreadReadResponse(
+          thread: child,
+        );
+        await tester.pumpWidget(
+          MotifScope(
+            appState: app,
+            codexState: CodexState(),
+            child: MaterialApp(
+              theme: motifTheme(Brightness.light),
+              home: _CodexTestHost(
+                app: app,
+                codex: CodexState(),
+                serviceState: state,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Parser reviewer finished'));
+        if (width < 768) {
+          // The underlying toolbar animates while its side drawer is open.
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 600));
+          await tester.pump();
+        } else {
+          await tester.pumpAndSettle();
+        }
+        expect(
+          find.byKey(const ValueKey('side-chat-title-agent')),
+          findsOneWidget,
+        );
+        expect(find.text('Parser reviewer'), findsWidgets);
+        expect(find.text('Existing subagent result'), findsOneWidget);
+        expect(client.forkParams, isEmpty);
+        expect(client.resumedThreadIds, isEmpty);
+        expect(state.selectedThread?.id, parent.id);
+        expect(
+          tester
+              .widget<CodexThreadWorkspace>(
+                find.byType(CodexThreadWorkspace).last,
+              )
+              .state
+              .selectedThread
+              ?.id,
+          child.id,
+        );
+        if (width < 768) {
+          expect(
+            find.byKey(const ValueKey('codex-side-chat-drawer')),
+            findsOneWidget,
+          );
+        }
+        await tester.tap(find.byType(BackButton).last);
+        await tester.pumpAndSettle();
+        expect(find.text('Parser reviewer finished'), findsOneWidget);
+        expect(state.selectedThread?.id, parent.id);
+        await tester.runAsync(state.conversations.close);
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        app.dispose();
+      },
+    );
+  }
+
   testWidgets('restart discards associated local workspaces and reconnects', (
     tester,
   ) async {

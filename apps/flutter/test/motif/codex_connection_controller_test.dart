@@ -773,7 +773,7 @@ void main() {
       expect(
         (await controller.listThreadItems(
           const CodexThreadItemsListParams(
-            cursor: 'items-anchor',
+            cursor: CodexThreadItemsListCursor('items-anchor'),
             limit: 10,
             sortDirection: CodexSortDirection.desc,
             threadId: 'thread-1',

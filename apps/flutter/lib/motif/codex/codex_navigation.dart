@@ -6,6 +6,8 @@ typedef CodexOpenFile = FutureOr<void> Function(String path);
 typedef CodexOpenImage = FutureOr<void> Function(String path);
 typedef CodexOpenTurnDiff =
     FutureOr<void> Function(DiffDocument document, {String? initialPath});
+typedef CodexOpenSubagent =
+    FutureOr<void> Function(String threadId, {required String name});
 
 /// Explicit request to leave Codex and open its terminal workspace.
 ///

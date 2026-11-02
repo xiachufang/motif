@@ -465,6 +465,7 @@ class CodexScreenState extends State<CodexScreen> {
         onOpenImage: (path) => _openFile(conversation, path, image: true),
         onOpenTurnDiff: (document, {initialPath}) =>
             _openTurnDiff(conversation, document, initialPath: initialPath),
+        onOpenSubagent: _openSubagent,
       ),
     );
   }
@@ -573,6 +574,34 @@ class CodexScreenState extends State<CodexScreen> {
         unawaited(MotifWindowTitle.set('Codex — Motif').catchError((_) {}));
       }
       widget.controller.setSideChatOpening(false);
+    }
+  }
+
+  Future<void> _openSubagent(String threadId, {required String name}) async {
+    if (widget.controller.sideChatOpening) return;
+    final collection = widget.controller.openSideChats();
+    if (collection == null) return;
+    widget.controller.setSideChatOpening(true);
+    var presented = false;
+    try {
+      final entry = await collection.openSubagent(threadId, name: name);
+      if (!mounted ||
+          widget.controller.service?.selectedThread?.id !=
+              collection.parentThreadId) {
+        return;
+      }
+      if (entry == null) {
+        showMotifToast(context, collection.error ?? 'Could not open subagent');
+        return;
+      }
+      presented = true;
+      if (MediaQuery.sizeOf(context).width < _mobileBreakpoint) {
+        _scaffoldKey.currentState?.openEndDrawer();
+      } else {
+        await _showSideChat(collection);
+      }
+    } finally {
+      if (!presented) widget.controller.setSideChatOpening(false);
     }
   }
 

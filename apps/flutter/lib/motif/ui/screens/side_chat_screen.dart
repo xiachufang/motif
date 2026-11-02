@@ -13,6 +13,7 @@ import '../../platform/window_title.dart';
 import '../theme/codex_typography.dart';
 import '../theme/motif_theme.dart';
 import '../widgets/codex_motion.dart';
+import '../widgets/top_toast.dart';
 import 'codex_resource_screens.dart';
 import 'codex_thread_workspace.dart';
 import 'side_chat_sidebar.dart';
@@ -41,6 +42,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
 
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   bool _desktopSidebarVisible = true;
+  bool _openingSubagent = false;
 
   @override
   void initState() {
@@ -165,6 +167,7 @@ class _SideChatScreenState extends State<SideChatScreen> {
         onOpenImage: (path) => _openFile(conversation, path, image: true),
         onOpenTurnDiff: (document, {initialPath}) =>
             _openTurnDiff(conversation, document, initialPath: initialPath),
+        onOpenSubagent: _openSubagent,
       );
     }
     final state = collection.connectionState;
@@ -212,6 +215,22 @@ class _SideChatScreenState extends State<SideChatScreen> {
             : CodexFilePreviewScreen(state: state, path: path, image: image),
       ),
     );
+  }
+
+  Future<void> _openSubagent(String threadId, {required String name}) async {
+    if (_openingSubagent) return;
+    _openingSubagent = true;
+    try {
+      final entry = await widget.collection.openSubagent(threadId, name: name);
+      if (mounted && entry == null) {
+        showMotifToast(
+          context,
+          widget.collection.error ?? 'Could not open subagent',
+        );
+      }
+    } finally {
+      _openingSubagent = false;
+    }
   }
 
   Future<void> _openTurnDiff(
