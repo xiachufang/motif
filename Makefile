@@ -494,7 +494,17 @@ notarize-flutter-macos-dmg: package-flutter-macos-dmg
 	fi; \
 	$(macos_keychain_args); \
 	xcrun notarytool submit "$(MACOS_DMG)" --keychain-profile "$(MACOS_NOTARY_KEYCHAIN_PROFILE)" "$$@" --wait; \
-	xcrun stapler staple "$(MACOS_DMG)"; \
+	staple_attempt=1; \
+	until xcrun stapler staple "$(MACOS_DMG)"; do \
+		if [ "$$staple_attempt" -ge 5 ]; then \
+			echo "Could not staple the notarization ticket after 5 attempts." >&2; \
+			exit 1; \
+		fi; \
+		staple_delay=$$((staple_attempt * 15)); \
+		echo "Ticket stapling failed; retrying in $$staple_delay seconds (attempt $$staple_attempt/5)." >&2; \
+		sleep "$$staple_delay"; \
+		staple_attempt=$$((staple_attempt + 1)); \
+	done; \
 	xcrun stapler validate "$(MACOS_DMG)"; \
 	spctl --assess --type open --context context:primary-signature --verbose=2 "$(MACOS_DMG)"; \
 	echo "Signed and notarized Flutter macOS DMG: $(MACOS_DMG)"
