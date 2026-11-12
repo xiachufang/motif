@@ -17,6 +17,7 @@ import '../widgets/desktop_update_dialog.dart';
 import '../widgets/motif_form.dart';
 import '../widgets/observation_select.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/web_link_opener.dart';
 
 class SessionListSettingsSheet extends StatefulWidget {
   const SessionListSettingsSheet({
@@ -283,6 +284,21 @@ class _SessionListSettingsSheetState extends State<SessionListSettingsSheet>
             ],
           ),
         ],
+        const SizedBox(height: MotifSpacing.xl),
+        MotifSection(
+          title: 'About',
+          children: [
+            MotifSectionRow(
+              leading: Icon(Icons.info_outline, color: c.accent),
+              title: 'ICP filing number',
+              subtitle: '沪ICP备2025127333号-7A',
+              showChevron: true,
+              onTap: () => unawaited(
+                openWebLink(context, 'https://beian.miit.gov.cn/'),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
