@@ -7,7 +7,12 @@ name: release-motifd
 on:
   push:
     tags: ['v*']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to repair and publish (for example v1.0.94)
+        required: false
+        type: string
 
 concurrency:
   group: release-motifd-${{ github.ref }}
@@ -54,8 +59,18 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Assert repair tag matches pubspec version
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          version="$(awk '/^version:/ {split($2, parts, "+"); print parts[1]; exit}' apps/flutter/pubspec.yaml)"
+          test "$RELEASE_TAG" = "v$version"
+
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.44.4'
           channel: stable
       - uses: dtolnay/rust-toolchain@1.95
       - uses: actions/setup-go@v5
@@ -148,7 +163,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -165,7 +180,7 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: dist/release/motifd-*.tar.gz
           fail_on_unmatched_files: true
 
@@ -189,5 +204,6 @@ jobs:
             python3 scripts/publish_release_metadata.py \
               --product motifd \
               --platform "$platform" \
-              --artifact "$artifact"
+              --artifact "$artifact" \
+              --tag "${{ inputs.release_tag || github.ref_name }}"
           done

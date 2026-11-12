@@ -13,7 +13,7 @@
 FROM debian:bookworm-slim AS web-builder
 
 ARG TARGETARCH
-ARG FLUTTER_VERSION=stable
+ARG FLUTTER_VERSION=3.44.4
 ARG ZIG_VERSION=0.17.0
 ENV PATH="/opt/flutter/bin:/opt/zig:${PATH}"
 
